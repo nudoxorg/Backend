@@ -1,5 +1,6 @@
 //! Deterministic, parallel, content-versioned filesystem ingestion.
 
+use super::source_budget::{SourceAdmissionLedger, SourceAdmissionLimits, SourceAdmissionPolicy};
 use super::source_frontier;
 use backend_compile::{
     DeclarationKind, InputContentSchema, SourceExcerpt, SourceLanguage, SyntaxFrontend, typed_of,
@@ -25,13 +26,10 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 use unicode_normalization::UnicodeNormalization;
 
-const MAX_SOURCE_BYTES: usize = 512 * 1024;
 // One relation row can never exceed the canonical node capacity, so the
 // per-record ceiling is that bound rather than an independent number that
 // would admit records the tree must later reject.
 const MAX_ENCODED_RECORD_BYTES: usize = ProductSourceRecord::ROW_VALUE_CAPACITY;
-const MAX_TOTAL_SOURCE_BYTES: usize = 64 * 1024 * 1024;
-const MAX_TOTAL_ENCODED_RECORD_BYTES: usize = 64 * 1024 * 1024;
 const MAX_DIRECTORY_ENTRIES: usize = 100_000;
 const MAX_DISCOVERY_ENTRIES: usize = 500_000;
 const MAX_COMPILER_WORKSPACE_FILE_BYTES: usize = 64 * 1024 * 1024;
@@ -44,8 +42,7 @@ const COMPILER_WORKSPACE_POLICY_IDENTITY: &str = "nudox.compiler-workspace.v1/gi
 const MAX_COMPILER_CONFIGURATION_FILES_PER_LANGUAGE: usize = 4_096;
 pub(super) const MAX_COMPILER_CONFIGURATION_FILE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_COMPILER_CONFIGURATION_BYTES_PER_LANGUAGE: usize = 32 * 1024 * 1024;
-const MAX_WORKERS: usize = 8;
-const RESULT_QUEUE_PER_WORKER: usize = 2;
+const RESULT_QUEUE_PER_WORKER: usize = 1;
 const INDEX_SCAN_CANCELLED: &str = "index scan cancelled";
 
 fn check_scan_cancellation(cancellation: Option<&AtomicBool>) -> Result<(), String> {
@@ -61,7 +58,7 @@ fn check_scan_cancellation(cancellation: Option<&AtomicBool>) -> Result<(), Stri
 pub(super) struct IndexSnapshot {
     pub(super) source_version: [u8; 32],
     pub(super) files: Vec<([u8; 32], ProductSourceRecord)>,
-    pub(super) compiler_sources: Vec<CompilerSource>,
+    pub(super) compiler_sources: Vec<CompilerSourceHandle>,
     pub(super) reused_compiler_files: Vec<ReusedCompilerFile>,
     pub(super) compiler_configuration: CompilerConfigurationSnapshot,
     pub(super) revision_fence: CompilerRevisionFence,
@@ -69,6 +66,9 @@ pub(super) struct IndexSnapshot {
     /// byte-length budget, which is also charged for files admitted from a
     /// verified frontier.
     pub(super) source_bytes_read: usize,
+    /// Limits pinned for source admission, compiler rereads, and warm-cache
+    /// identity during this scan's downstream compilation.
+    pub(super) source_admission_policy: SourceAdmissionPolicy,
 }
 
 /// Captured tree and file metadata used to reject a compiler result if known
@@ -143,12 +143,27 @@ pub(super) struct CompilerConfigurationFile {
     pub(super) content: [u8; 32],
 }
 
+/// Compact source capability retained between baseline parsing and compiler
+/// admission. The compiler rereads this path through `ProjectRoot` and checks
+/// the exact identity before constructing the contiguous text it needs.
+#[derive(Clone)]
+pub(super) struct CompilerSourceHandle {
+    pub(super) relative_path: String,
+    pub(super) profile: LanguageProfile,
+    pub(super) content: [u8; 32],
+    /// Exact source-fact identity persisted with the corresponding source row.
+    pub(super) source_fact_identity: SourceFactIdentity,
+}
+
 /// UTF-8 source admitted for one exact semantic authority slot.
 #[derive(Clone)]
 pub(super) struct CompilerSource {
     pub(super) relative_path: String,
     pub(super) profile: LanguageProfile,
     pub(super) source: String,
+    pub(super) content: [u8; 32],
+    /// Exact source-fact identity revalidated during compiler admission.
+    pub(super) source_fact_identity: SourceFactIdentity,
 }
 
 /// A file whose prior analysis is still exact, so the scan keeps its content
@@ -158,7 +173,12 @@ pub(super) struct ReusedCompilerFile {
     pub(super) relative_path: String,
     pub(super) profile: LanguageProfile,
     pub(super) content: [u8; 32],
+    /// Exact source-fact identity copied from the validated source row.
+    pub(super) source_fact_identity: SourceFactIdentity,
 }
+
+/// Domain-typed identity of the canonical bytes consumed by semantic compilers.
+pub(super) type SourceFactIdentity = backend_version::ContentId<backend_version::SourceFactDomain>;
 
 struct ScannedFile {
     relative: String,
@@ -172,7 +192,7 @@ struct ScannedFile {
     /// `None` when the claiming frontend has no semantic profile for this
     /// extension: the file is still a project row, it simply carries nothing
     /// a compiler could be asked to analyse.
-    compiler_source: Option<CompilerSource>,
+    compiler_source: Option<CompilerSourceHandle>,
     reused_compiler: Option<ReusedCompilerFile>,
 }
 
@@ -279,7 +299,7 @@ impl ProjectRoot {
         .map_err(|error| SourceFault::from_open(error.kind()))
     }
 
-    fn read(&self, relative: &Path) -> Result<Vec<u8>, SourceFault> {
+    fn read(&self, relative: &Path, maximum_bytes: usize) -> Result<Vec<u8>, SourceFault> {
         if relative.as_os_str().is_empty()
             || relative
                 .components()
@@ -291,7 +311,7 @@ impl ProjectRoot {
         }
         #[cfg(unix)]
         {
-            read_bounded(self.open_confined(relative)?, MAX_SOURCE_BYTES)
+            read_bounded(self.open_confined(relative)?, maximum_bytes)
         }
         #[cfg(windows)]
         {
@@ -300,7 +320,7 @@ impl ProjectRoot {
                 .directory
                 .open_file_read(&segments)
                 .map_err(|error| SourceFault::from_open(error.kind()))?;
-            read_bounded(file, MAX_SOURCE_BYTES)
+            read_bounded(file, maximum_bytes)
         }
         #[cfg(not(any(unix, windows)))]
         {
@@ -315,7 +335,7 @@ impl ProjectRoot {
             }
             let file = std::fs::File::open(canonical)
                 .map_err(|error| SourceFault::from_open(error.kind()))?;
-            read_bounded(file, MAX_SOURCE_BYTES)
+            read_bounded(file, maximum_bytes)
         }
     }
 
@@ -933,40 +953,6 @@ impl SourceFault {
 }
 
 #[derive(Default)]
-struct IngestBudget {
-    source_bytes: usize,
-    encoded_record_bytes: usize,
-}
-
-impl IngestBudget {
-    fn charge(&mut self, file: &ScannedFile) -> Result<(), String> {
-        self.charge_lengths(file.source_bytes, file.encoded_record_bytes)
-    }
-
-    fn charge_lengths(
-        &mut self,
-        source_bytes: usize,
-        encoded_record_bytes: usize,
-    ) -> Result<(), String> {
-        self.source_bytes = self
-            .source_bytes
-            .checked_add(source_bytes)
-            .ok_or_else(|| "source byte count overflow".to_owned())?;
-        self.encoded_record_bytes = self
-            .encoded_record_bytes
-            .checked_add(encoded_record_bytes)
-            .ok_or_else(|| "decoded record byte count overflow".to_owned())?;
-        if self.source_bytes > MAX_TOTAL_SOURCE_BYTES {
-            return Err("project source exceeds the bounded ingest budget".to_owned());
-        }
-        if self.encoded_record_bytes > MAX_TOTAL_ENCODED_RECORD_BYTES {
-            return Err("project decoded records exceed the bounded ingest budget".to_owned());
-        }
-        Ok(())
-    }
-}
-
-#[derive(Default)]
 struct DiscoveryBudget {
     entries: usize,
 }
@@ -1191,12 +1177,13 @@ fn scan_source_paths(
     reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
     frontends: &FrontendSet,
     delta: Option<&source_frontier::SourceDelta>,
+    source_policy: SourceAdmissionPolicy,
     cancellation: Option<&AtomicBool>,
 ) -> Result<Vec<ScannedFile>, String> {
-    let workers = thread::available_parallelism()
-        .map_or(1, usize::from)
-        .min(MAX_WORKERS)
-        .min(paths.len().max(1));
+    let workers = source_policy.worker_count(
+        thread::available_parallelism().map_or(1, usize::from),
+        paths.len(),
+    );
     let chunk = paths.len().div_ceil(workers);
     thread::scope(|scope| {
         let queue = workers
@@ -1219,43 +1206,77 @@ fn scan_source_paths(
                         .filter(|delta| delta.is_current())
                         .and_then(|delta| delta.unchanged.get(path))
                     {
-                        let Some(record) = reusable.get(&cached.key) else {
-                            let _ = sender
-                                .send(Err("source frontier lost its exact CAS row".to_owned()));
-                            break;
-                        };
-                        let profile = match profile_fault(frontends, path) {
-                            Ok(profile) => profile,
-                            Err(SourceFault::Unavailable(_))
-                            | Err(SourceFault::UnavailableRead(_, _))
-                            | Err(SourceFault::Vanished) => {
-                                let _ =
-                                    sender.send(Err("source frontier profile changed".to_owned()));
+                        let cached_length_admitted = usize::try_from(cached.revision.length)
+                            .ok()
+                            .is_some_and(|length| source_policy.admit_actual_file(length).is_ok());
+                        if !cached_length_admitted {
+                            scan_file(
+                                root,
+                                root_capability,
+                                path,
+                                project,
+                                reusable,
+                                frontends,
+                                source_policy,
+                            )
+                        } else {
+                            let Some(record) = reusable.get(&cached.key) else {
+                                let _ = sender
+                                    .send(Err("source frontier lost its exact CAS row".to_owned()));
                                 break;
-                            }
-                            Err(SourceFault::Fatal(error)) => {
-                                let _ = sender.send(Err(error));
+                            };
+                            let Some(source_fact_identity) = record
+                                .file_fields()
+                                .and_then(|fields| fields.source_identity)
+                            else {
+                                let _ = sender.send(Err(
+                                    "source frontier row lost its exact source-fact identity"
+                                        .to_owned(),
+                                ));
                                 break;
-                            }
-                        };
-                        let Ok(source_bytes) = usize::try_from(cached.revision.length) else {
-                            let _ = sender
-                                .send(Err("source byte length exceeds this target".to_owned()));
-                            break;
-                        };
-                        reused_scanned_file(
-                            cached.relative_path.clone(),
-                            cached.key,
-                            record.clone(),
-                            source_bytes,
-                            0,
-                            cached.content,
-                            profile,
-                            Some(cached.encoded_record_bytes),
-                        )
-                        .map(Some)
+                            };
+                            let profile = match profile_fault(frontends, path) {
+                                Ok(profile) => profile,
+                                Err(SourceFault::Unavailable(_))
+                                | Err(SourceFault::UnavailableRead(_, _))
+                                | Err(SourceFault::Vanished) => {
+                                    let _ = sender
+                                        .send(Err("source frontier profile changed".to_owned()));
+                                    break;
+                                }
+                                Err(SourceFault::Fatal(error)) => {
+                                    let _ = sender.send(Err(error));
+                                    break;
+                                }
+                            };
+                            let Ok(source_bytes) = usize::try_from(cached.revision.length) else {
+                                let _ = sender
+                                    .send(Err("source byte length exceeds this target".to_owned()));
+                                break;
+                            };
+                            reused_scanned_file(
+                                cached.relative_path.clone(),
+                                cached.key,
+                                record.clone(),
+                                source_bytes,
+                                0,
+                                cached.content,
+                                profile,
+                                source_fact_identity,
+                                Some(cached.encoded_record_bytes),
+                            )
+                            .map(Some)
+                        }
                     } else {
-                        scan_file(root, root_capability, path, project, reusable, frontends)
+                        scan_file(
+                            root,
+                            root_capability,
+                            path,
+                            project,
+                            reusable,
+                            frontends,
+                            source_policy,
+                        )
                     };
                     let failed = result.is_err();
                     if sender.send(result).is_err() || failed {
@@ -1266,7 +1287,6 @@ fn scan_source_paths(
         }
         drop(sender);
         let mut output = Vec::with_capacity(paths.len());
-        let mut budget = IngestBudget::default();
         let mut failure = None;
         for result in receiver {
             if failure.is_none() {
@@ -1274,11 +1294,7 @@ fn scan_source_paths(
             }
             match result {
                 Ok(Some(file)) if failure.is_none() => {
-                    if let Err(error) = budget.charge(&file) {
-                        failure = Some(error);
-                    } else {
-                        output.push(file);
-                    }
+                    output.push(file);
                 }
                 Err(error) if failure.is_none() => failure = Some(error),
                 Ok(_) | Err(_) => {}
@@ -1289,7 +1305,20 @@ fn scan_source_paths(
                 failure = Some("source analysis worker panicked".to_owned());
             }
         }
-        failure.map_or(Ok(output), Err)
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        output.sort_by(|left, right| left.relative.cmp(&right.relative));
+        let mut budget = SourceAdmissionLedger::default();
+        for file in &output {
+            let admitted = source_policy
+                .admit_actual_file(file.source_bytes)
+                .map_err(|refusal| refusal.to_string())?;
+            budget
+                .admit(source_policy, admitted, file.encoded_record_bytes, false)
+                .map_err(|refusal| refusal.to_string())?;
+        }
+        Ok(output)
     })
 }
 
@@ -1317,7 +1346,12 @@ pub(super) fn recover_indexed_excerpt(
     {
         return None;
     }
-    let bytes = ProjectRoot::open(root).ok()?.read(relative).ok()?;
+    let source_policy = SourceAdmissionPolicy::from_environment().ok()?;
+    let bytes = ProjectRoot::open(root)
+        .ok()?
+        .read(relative, source_policy.limits().max_file_source_bytes)
+        .ok()?;
+    source_policy.admit_actual_file(bytes.len()).ok()?;
     if backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(&bytes)
         != expected_source
     {
@@ -1386,6 +1420,7 @@ pub(super) fn scan_project_for_unproven_authorities_cancellable(
     reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
     cancellation: &AtomicBool,
 ) -> Result<IndexSnapshot, String> {
+    let source_policy = SourceAdmissionPolicy::from_environment()?;
     check_scan_cancellation(Some(cancellation))?;
     scan_project_with_configuration_policy_attempt(
         coordinate,
@@ -1395,6 +1430,7 @@ pub(super) fn scan_project_for_unproven_authorities_cancellable(
         false,
         true,
         Some(cancellation),
+        source_policy,
     )
 }
 
@@ -1419,6 +1455,7 @@ fn scan_project_with_configuration_policy(
     discovery: DiscoveryPolicy,
     capture_configuration_contents: bool,
 ) -> Result<IndexSnapshot, String> {
+    let source_policy = SourceAdmissionPolicy::from_environment()?;
     scan_project_with_configuration_policy_attempt(
         coordinate,
         project,
@@ -1427,6 +1464,7 @@ fn scan_project_with_configuration_policy(
         capture_configuration_contents,
         true,
         None,
+        source_policy,
     )
 }
 
@@ -1438,6 +1476,7 @@ fn scan_project_with_configuration_policy_attempt(
     capture_configuration_contents: bool,
     allow_frontier_reuse: bool,
     cancellation: Option<&AtomicBool>,
+    source_policy: SourceAdmissionPolicy,
 ) -> Result<IndexSnapshot, String> {
     check_scan_cancellation(cancellation)?;
     let root = Path::new(coordinate)
@@ -1583,13 +1622,14 @@ fn scan_project_with_configuration_policy_attempt(
                 directories.iter().all(|(_, revision)| revision.is_some()),
                 reusable,
                 state,
+                source_policy.identity(),
                 |path| frontends.for_path(path).is_some(),
             )
         })
     } else {
         None
     };
-    preflight_source_bytes(&paths, cancellation)?;
+    preflight_source_bytes(&paths, source_policy, cancellation)?;
     let mut scanned = scan_source_paths(
         &root,
         &root_capability,
@@ -1598,6 +1638,7 @@ fn scan_project_with_configuration_policy_attempt(
         reusable,
         frontends,
         source_delta.as_ref(),
+        source_policy,
         cancellation,
     )?;
     let source_bytes_read = scanned
@@ -1628,6 +1669,7 @@ fn scan_project_with_configuration_policy_attempt(
                 capture_configuration_contents,
                 false,
                 cancellation,
+                source_policy,
             )?;
             full.source_bytes_read = full.source_bytes_read.saturating_add(source_bytes_read);
             return Ok(full);
@@ -1689,6 +1731,7 @@ fn scan_project_with_configuration_policy_attempt(
         compiler_configuration,
         revision_fence,
         source_bytes_read,
+        source_admission_policy: source_policy,
     };
     if let (Some(before), Some(wanted)) = (cache_witness.as_ref(), wanted_paths.as_ref()) {
         let after = source_frontier::git_source_state(&root, wanted, &local_policy_paths);
@@ -2117,6 +2160,7 @@ fn compiler_configuration_language(path: &Path) -> Option<Language> {
 /// rather than describing a file, can still stop the scan.
 fn preflight_source_bytes(
     paths: &[PathBuf],
+    source_policy: SourceAdmissionPolicy,
     cancellation: Option<&AtomicBool>,
 ) -> Result<(), String> {
     let mut total = 0_usize;
@@ -2128,17 +2172,16 @@ fn preflight_source_bytes(
         let Ok(length) = usize::try_from(metadata.len()) else {
             continue;
         };
-        if length > MAX_SOURCE_BYTES {
+        if length > source_policy.limits().max_file_source_bytes {
             continue;
         }
         total = total
             .checked_add(length)
             .ok_or_else(|| "source byte count overflow".to_owned())?;
-        if total > MAX_TOTAL_SOURCE_BYTES {
-            return Err("project source exceeds the bounded ingest budget".to_owned());
-        }
     }
-    Ok(())
+    source_policy
+        .admit_preflight(total, paths.len())
+        .map_err(|refusal| refusal.to_string())
 }
 
 /// Scans one discovered file into a row, or into a typed per-file fault.
@@ -2152,8 +2195,17 @@ fn scan_file(
     project: [u8; 32],
     reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
     frontends: &FrontendSet,
+    source_policy: SourceAdmissionPolicy,
 ) -> Result<Option<ScannedFile>, String> {
-    match scan_one(root, root_capability, path, project, reusable, frontends) {
+    match scan_one(
+        root,
+        root_capability,
+        path,
+        project,
+        reusable,
+        frontends,
+        source_policy,
+    ) {
         Ok(file) => Ok(Some(file)),
         Err(SourceFault::Vanished) => Ok(None),
         Err(SourceFault::Fatal(message)) => {
@@ -2222,12 +2274,17 @@ fn scan_one(
     project: [u8; 32],
     reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
     frontends: &FrontendSet,
+    source_policy: SourceAdmissionPolicy,
 ) -> Result<ScannedFile, SourceFault> {
     let relative_path = path
         .strip_prefix(root)
         .map_err(|_| SourceFault::Fatal("source path escaped its project root".to_owned()))?;
-    let bytes = root_capability.read(relative_path)?;
+    let bytes =
+        root_capability.read(relative_path, source_policy.limits().max_file_source_bytes)?;
     let source_bytes = bytes.len();
+    source_policy.admit_actual_file(source_bytes).map_err(|_| {
+        SourceFault::UnavailableRead(SourceUnavailableReason::TooLarge, source_bytes)
+    })?;
     let relative = relative_path
         .to_string_lossy()
         .replace(std::path::MAIN_SEPARATOR, "/");
@@ -2256,8 +2313,13 @@ fn scan_one(
                 // and this fence keeps such a row from becoming compiler input.
                 && fields.content_version != [0; 32]
                 && fields.analysis_version == analysis
+                && fields.source_identity.is_some()
         })
     {
+        let source_fact_identity = record
+            .file_fields()
+            .and_then(|fields| fields.source_identity)
+            .expect("reusable available source rows carry a source-fact identity");
         // The bytes already hashed to the admitted text. Drop them here; a
         // later package compile re-reads through the project root and refuses
         // the compile if that second read no longer matches `content`.
@@ -2269,14 +2331,15 @@ fn scan_one(
             bytes.len(),
             content,
             profile,
+            source_fact_identity,
             None,
         )
         .map_err(SourceFault::Fatal);
     }
 
-    // The read is capped by MAX_SOURCE_BYTES. Move that bounded buffer into
-    // its UTF-8 owner to avoid a second per-file source allocation; project-
-    // level retained sources are still governed by their separate budgets.
+    // Move the bounded read buffer into its UTF-8 owner to avoid a second
+    // per-file source allocation. The scan-wide source, retained-text, row,
+    // and in-flight budgets are separate policy limits.
     let source = String::from_utf8(bytes).map_err(|error| {
         SourceFault::UnavailableRead(SourceUnavailableReason::NotText, error.as_bytes().len())
     })?;
@@ -2296,6 +2359,7 @@ fn scan_one(
     // Constructing through the capacity-aware path sheds derived detail in a
     // fixed order and records how far it had to go, instead of failing the
     // whole project when the relation delta is later prepared.
+    let source_fact_identity = SourceFactIdentity::from_canonical_bytes(source.as_bytes());
     let record = ProductSourceRecord::file_within_row_capacity(
         project,
         relative.clone(),
@@ -2308,19 +2372,18 @@ fn scan_one(
     // Persist the exact `SourceFactDomain` identity the semantic compiler
     // derives from these bytes, so the view can detect an in-place edit by
     // comparing content identity instead of path sets.
-    .with_source_identity(backend_version::ContentId::<
-        backend_version::SourceFactDomain,
-    >::from_canonical_bytes(source.as_bytes()))
+    .with_source_identity(source_fact_identity)
     .map_err(SourceFault::Fatal)?;
     scanned_file(
         relative,
         key,
         record,
-        source,
         source_bytes,
         source_bytes,
         path,
         profile,
+        content,
+        source_fact_identity,
     )
     .map_err(SourceFault::Fatal)
 }
@@ -2329,11 +2392,12 @@ fn scanned_file(
     relative: String,
     key: [u8; 32],
     record: ProductSourceRecord,
-    source: String,
     source_bytes: usize,
     source_bytes_read: usize,
     path: &Path,
     profile: LanguageProfile,
+    content: [u8; 32],
+    source_fact_identity: SourceFactIdentity,
 ) -> Result<ScannedFile, String> {
     finish_scanned_file(
         relative.clone(),
@@ -2342,10 +2406,11 @@ fn scanned_file(
         source_bytes,
         source_bytes_read,
         path,
-        Some(CompilerSource {
+        Some(CompilerSourceHandle {
             profile,
             relative_path: relative,
-            source,
+            content,
+            source_fact_identity,
         }),
         None,
         None,
@@ -2360,6 +2425,7 @@ fn reused_scanned_file(
     source_bytes_read: usize,
     content: [u8; 32],
     profile: LanguageProfile,
+    source_fact_identity: SourceFactIdentity,
     encoded_record_bytes: Option<usize>,
 ) -> Result<ScannedFile, String> {
     let path = PathBuf::from(&relative);
@@ -2375,6 +2441,7 @@ fn reused_scanned_file(
             profile,
             relative_path: relative,
             content,
+            source_fact_identity,
         }),
         encoded_record_bytes,
     )
@@ -2387,7 +2454,7 @@ fn finish_scanned_file(
     source_bytes: usize,
     source_bytes_read: usize,
     path: &Path,
-    compiler_source: Option<CompilerSource>,
+    compiler_source: Option<CompilerSourceHandle>,
     reused_compiler: Option<ReusedCompilerFile>,
     known_encoded_record_bytes: Option<usize>,
 ) -> Result<ScannedFile, String> {
@@ -2417,16 +2484,16 @@ fn finish_scanned_file(
     })
 }
 
-/// Merges freshly analyzed compiler text with files whose text was dropped.
-///
-/// Reused files are read again through [`ProjectRoot`], which follows no
-/// symlink. The compile is refused when that read hashes to anything other
-/// than the content version the scan admitted. Fresh files keep the text from
-/// the scan that built their relation row.
-pub(super) fn admit_compiler_sources(
+/// Reopens fresh and reused source handles through [`ProjectRoot`]. Both paths
+/// must still hash to the identity admitted during scanning before contiguous
+/// UTF-8 strings are created for the compiler boundary. The immutable policy
+/// comes from the same scan that created these handles; it is never re-read
+/// from the environment midway through an index attempt.
+pub(super) fn admit_compiler_sources_with_policy(
     root: &Path,
-    fresh: Vec<CompilerSource>,
+    fresh: Vec<CompilerSourceHandle>,
     reused: Vec<ReusedCompilerFile>,
+    source_policy: SourceAdmissionPolicy,
 ) -> Result<Vec<CompilerSource>, String> {
     let canonical = root
         .canonicalize()
@@ -2438,15 +2505,14 @@ pub(super) fn admit_compiler_sources(
         ));
     }
     let capability = ProjectRoot::open(&canonical)?;
-    enum Pending {
-        Fresh(CompilerSource),
-        Reused(ReusedCompilerFile),
-    }
-    let mut pending = BTreeMap::<String, Pending>::new();
+    let mut pending = BTreeMap::<String, (LanguageProfile, [u8; 32], SourceFactIdentity)>::new();
     for source in fresh {
         let path = source.relative_path.clone();
         if pending
-            .insert(path.clone(), Pending::Fresh(source))
+            .insert(
+                path.clone(),
+                (source.profile, source.content, source.source_fact_identity),
+            )
             .is_some()
         {
             return Err(format!("compiler source {path} was admitted twice"));
@@ -2455,36 +2521,51 @@ pub(super) fn admit_compiler_sources(
     for source in reused {
         let path = source.relative_path.clone();
         if pending
-            .insert(path.clone(), Pending::Reused(source))
+            .insert(
+                path.clone(),
+                (source.profile, source.content, source.source_fact_identity),
+            )
             .is_some()
         {
             return Err(format!("compiler source {path} was admitted twice"));
         }
     }
     let mut admitted = Vec::with_capacity(pending.len());
-    for (path, source) in pending {
-        match source {
-            Pending::Fresh(source) => admitted.push(source),
-            Pending::Reused(reused) => {
-                let bytes = capability
-                    .read(Path::new(&path))
-                    .map_err(|error| reread_fault(&path, error))?;
-                let content = typed_of::<InputContentSchema>(&bytes).to_bytes();
-                if content != reused.content {
-                    return Err(format!(
-                        "source {path} changed after its content hash was admitted"
-                    ));
-                }
-                let source = std::str::from_utf8(&bytes)
-                    .map_err(|_| format!("source {path} is no longer UTF-8"))?
-                    .to_owned();
-                admitted.push(CompilerSource {
-                    relative_path: path,
-                    profile: reused.profile,
-                    source,
-                });
-            }
+    let mut retained_bytes = 0_usize;
+    for (path, (profile, expected_content, expected_source_fact_identity)) in pending {
+        let bytes = capability
+            .read(
+                Path::new(&path),
+                source_policy.limits().max_file_source_bytes,
+            )
+            .map_err(|error| reread_fault(&path, error))?;
+        source_policy
+            .admit_actual_file(bytes.len())
+            .map_err(|refusal| refusal.to_string())?;
+        let content = typed_of::<InputContentSchema>(&bytes).to_bytes();
+        if content != expected_content {
+            return Err(format!(
+                "source {path} changed after its content hash was admitted"
+            ));
         }
+        let source_fact_identity = SourceFactIdentity::from_canonical_bytes(&bytes);
+        if source_fact_identity != expected_source_fact_identity {
+            return Err(format!(
+                "source {path} changed after its source-fact identity was admitted"
+            ));
+        }
+        retained_bytes = source_policy
+            .admit_retained_total(retained_bytes, bytes.len())
+            .map_err(|refusal| refusal.to_string())?;
+        let source =
+            String::from_utf8(bytes).map_err(|_| format!("source {path} is no longer UTF-8"))?;
+        admitted.push(CompilerSource {
+            relative_path: path,
+            profile,
+            source,
+            content: expected_content,
+            source_fact_identity,
+        });
     }
     Ok(admitted)
 }
@@ -2496,7 +2577,7 @@ pub(super) fn admit_compiler_sources(
 /// profile is absent from this set no longer has source.
 pub(super) fn live_compiler_profiles(
     source_root: &Path,
-    fresh: &[CompilerSource],
+    fresh: &[CompilerSourceHandle],
     reused: &[ReusedCompilerFile],
 ) -> BTreeSet<LanguageProfile> {
     let mut live = BTreeSet::new();
@@ -2531,7 +2612,7 @@ pub(super) fn retired_selected_profiles(
 
 /// The paths whose compiler text is still part of this scan.
 pub(super) fn present_compiler_paths(
-    fresh: &[CompilerSource],
+    fresh: &[CompilerSourceHandle],
     reused: &[ReusedCompilerFile],
 ) -> BTreeSet<String> {
     let mut present = BTreeSet::new();
@@ -2572,10 +2653,10 @@ pub(super) fn lost_compiler_profiles(
 /// is not read again and its package compiler is not invoked.
 pub(super) fn select_compiler_inputs(
     source_root: &Path,
-    fresh: Vec<CompilerSource>,
+    fresh: Vec<CompilerSourceHandle>,
     reused: Vec<ReusedCompilerFile>,
     lost: &BTreeSet<LanguageProfile>,
-) -> (Vec<CompilerSource>, Vec<ReusedCompilerFile>) {
+) -> (Vec<CompilerSourceHandle>, Vec<ReusedCompilerFile>) {
     let mut dirty = lost.clone();
     let mut classified = Vec::with_capacity(fresh.len());
     for source in fresh {
@@ -2751,21 +2832,6 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_budgets_reject_the_first_byte_beyond_each_limit() {
-        let mut source = IngestBudget {
-            source_bytes: MAX_TOTAL_SOURCE_BYTES,
-            encoded_record_bytes: 0,
-        };
-        assert!(source.charge_lengths(1, 0).is_err());
-
-        let mut decoded = IngestBudget {
-            source_bytes: 0,
-            encoded_record_bytes: MAX_TOTAL_ENCODED_RECORD_BYTES,
-        };
-        assert!(decoded.charge_lengths(0, 1).is_err());
-    }
-
-    #[test]
     fn structural_frontend_inventory_has_exactly_one_parser_per_language() -> Result<(), String> {
         let frontends = FrontendSet::build()?;
         for language in SourceLanguage::ALL {
@@ -2820,7 +2886,8 @@ mod tests {
         let root = ProjectRoot::open(&project)?;
 
         symlink(&outside, project.join("victim.rs")).map_err(|error| error.to_string())?;
-        assert!(root.read(Path::new("victim.rs")).is_err());
+        let maximum = SourceAdmissionLimits::default().max_file_source_bytes;
+        assert!(root.read(Path::new("victim.rs"), maximum).is_err());
 
         fs::create_dir(project.join("real")).map_err(|error| error.to_string())?;
         fs::write(project.join("real/lib.rs"), b"pub fn safe() {}")
@@ -2828,13 +2895,13 @@ mod tests {
         // A confined read still succeeds; a substituted symlink is refused
         // rather than admitted, and the refusal is now a typed per-file fault.
         assert_eq!(
-            root.read(Path::new("real/lib.rs"))
+            root.read(Path::new("real/lib.rs"), maximum)
                 .map_err(|error| format!("{error:?}"))?,
             b"pub fn safe() {}"
         );
         fs::remove_dir_all(project.join("real")).map_err(|error| error.to_string())?;
         symlink(&scratch.0, project.join("real")).map_err(|error| error.to_string())?;
-        assert!(root.read(Path::new("real/outside.rs")).is_err());
+        assert!(root.read(Path::new("real/outside.rs"), maximum).is_err());
         Ok(())
     }
 
@@ -2973,10 +3040,12 @@ mod tests {
         Ok(())
     }
 
-    fn retained_compiler_bytes(scan: &IndexSnapshot) -> usize {
+    fn retained_compiler_handle_bytes(scan: &IndexSnapshot) -> usize {
         scan.compiler_sources
             .iter()
-            .map(|source| source.source.len())
+            .map(|source| {
+                std::mem::size_of::<CompilerSourceHandle>() + source.relative_path.capacity()
+            })
             .sum()
     }
 
@@ -3030,12 +3099,12 @@ mod tests {
             ["edited.rs", "kept.rs"]
         );
         assert!(cold.reused_compiler_files.is_empty());
-        let cold_retained = retained_compiler_bytes(&cold);
-        assert_eq!(cold_retained, edited_v1.len() + kept.len());
+        let cold_retained = retained_compiler_handle_bytes(&cold);
+        assert!(cold_retained < edited_v1.len() + kept.len());
 
         let reusable = cold.files.iter().cloned().collect::<BTreeMap<_, _>>();
         let warm = scan_project(root, project, &reusable)?;
-        let warm_retained = retained_compiler_bytes(&warm);
+        let warm_retained = retained_compiler_handle_bytes(&warm);
         assert_eq!(warm_retained, 0);
         assert_eq!(warm.reused_compiler_files.len(), 2);
         assert_eq!(cold.source_version, warm.source_version);
@@ -3052,12 +3121,23 @@ mod tests {
         let delta = scan_project(root, project, &reusable)?;
         assert_eq!(delta.compiler_sources.len(), 1);
         assert_eq!(delta.compiler_sources[0].relative_path, "edited.rs");
-        assert_eq!(delta.compiler_sources[0].source, edited_v2);
+        assert_eq!(
+            delta.compiler_sources[0].content,
+            typed_of::<InputContentSchema>(edited_v2.as_bytes()).to_bytes()
+        );
+        assert_eq!(
+            delta.compiler_sources[0].source_fact_identity,
+            SourceFactIdentity::from_canonical_bytes(edited_v2.as_bytes())
+        );
         assert_eq!(delta.reused_compiler_files.len(), 1);
         assert_eq!(delta.reused_compiler_files[0].relative_path, "kept.rs");
         assert_eq!(
             delta.reused_compiler_files[0].content,
             typed_of::<InputContentSchema>(kept.as_bytes()).to_bytes()
+        );
+        assert_eq!(
+            delta.reused_compiler_files[0].source_fact_identity,
+            SourceFactIdentity::from_canonical_bytes(kept.as_bytes())
         );
         assert!(Arc::ptr_eq(
             declarations_for(&warm, "kept.rs")?,
@@ -3068,13 +3148,13 @@ mod tests {
             declarations_for(&delta, "edited.rs")?,
         ));
 
-        // A fresh file keeps the scanned text when the disk changes afterwards.
-        // Re-reading it would compile bytes the relation row does not name.
-        fs::write(scratch.0.join("edited.rs"), edited_v3).map_err(|error| error.to_string())?;
-        let admitted = admit_compiler_sources(
+        // Fresh and reused handles both reopen through the root capability,
+        // compare the exact admitted content identity, then build text.
+        let admitted = admit_compiler_sources_with_policy(
             scratch.0.as_path(),
             delta.compiler_sources.clone(),
             delta.reused_compiler_files.clone(),
+            delta.source_admission_policy,
         )?;
         assert_eq!(
             admitted
@@ -3083,13 +3163,38 @@ mod tests {
                 .collect::<Vec<_>>(),
             [("edited.rs", edited_v2), ("kept.rs", kept)]
         );
+        assert_eq!(
+            admitted[0].source_fact_identity,
+            SourceFactIdentity::from_canonical_bytes(edited_v2.as_bytes())
+        );
+        assert_eq!(
+            admitted[1].source_fact_identity,
+            SourceFactIdentity::from_canonical_bytes(kept.as_bytes())
+        );
+        drop(admitted);
 
-        let delta_fresh_bytes = retained_compiler_bytes(&delta);
+        fs::write(scratch.0.join("edited.rs"), edited_v3).map_err(|error| error.to_string())?;
+        let Err(error) = admit_compiler_sources_with_policy(
+            scratch.0.as_path(),
+            delta.compiler_sources.clone(),
+            delta.reused_compiler_files.clone(),
+            delta.source_admission_policy,
+        ) else {
+            return Err("a changed fresh file was compiled".to_owned());
+        };
+        assert!(
+            error.contains("edited.rs") && error.contains("changed after its content hash"),
+            "{error}"
+        );
+
+        let delta_fresh_bytes = retained_compiler_handle_bytes(&delta);
+        fs::write(scratch.0.join("edited.rs"), edited_v2).map_err(|error| error.to_string())?;
         fs::write(scratch.0.join("kept.rs"), kept_v4).map_err(|error| error.to_string())?;
-        let Err(error) = admit_compiler_sources(
+        let Err(error) = admit_compiler_sources_with_policy(
             scratch.0.as_path(),
             delta.compiler_sources,
             delta.reused_compiler_files,
+            delta.source_admission_policy,
         ) else {
             return Err("a changed reused file was compiled".to_owned());
         };
@@ -3102,7 +3207,7 @@ mod tests {
             "the refusal must not echo the torn bytes: {error}"
         );
         eprintln!(
-            "ingest_delta files=2 cold_retained_bytes={cold_retained} warm_retained_bytes={warm_retained} delta_fresh_bytes={delta_fresh_bytes} delta_reused=1"
+            "ingest_delta files=2 cold_source_handle_bytes={cold_retained} warm_source_handle_bytes={warm_retained} delta_source_handle_bytes={delta_fresh_bytes} delta_reused=1"
         );
         Ok(())
     }
@@ -3159,18 +3264,25 @@ mod tests {
         let scratch = Scratch(std::env::temp_dir().join(unique));
         fs::create_dir_all(&scratch.0).map_err(|error| error.to_string())?;
         let profile = LanguageProfile::Rust(RustEdition::Rust2024);
-        let Err(error) = admit_compiler_sources(
+        let policy = SourceAdmissionPolicy::new(SourceAdmissionLimits::default())
+            .map_err(|error| error.to_string())?;
+        let source = b"pub fn a() {}";
+        let source_fact_identity = SourceFactIdentity::from_canonical_bytes(source);
+        let Err(error) = admit_compiler_sources_with_policy(
             scratch.0.as_path(),
-            vec![CompilerSource {
+            vec![CompilerSourceHandle {
                 relative_path: "a.rs".to_owned(),
                 profile,
-                source: "pub fn a() {}".to_owned(),
+                content: typed_of::<InputContentSchema>(source).to_bytes(),
+                source_fact_identity,
             }],
             vec![ReusedCompilerFile {
                 relative_path: "a.rs".to_owned(),
                 profile,
                 content: [9; 32],
+                source_fact_identity,
             }],
+            policy,
         ) else {
             return Err("one path was admitted as both fresh and reused".to_owned());
         };
@@ -3282,9 +3394,12 @@ mod tests {
         assert_eq!(warm.reused_compiler_files.len(), 1);
         fs::remove_file(project.join("kept.rs")).map_err(|error| error.to_string())?;
         symlink(&outside, project.join("kept.rs")).map_err(|error| error.to_string())?;
-        let Err(error) =
-            admit_compiler_sources(project.as_path(), Vec::new(), warm.reused_compiler_files)
-        else {
+        let Err(error) = admit_compiler_sources_with_policy(
+            project.as_path(),
+            Vec::new(),
+            warm.reused_compiler_files,
+            warm.source_admission_policy,
+        ) else {
             return Err("a symlinked reused file was admitted".to_owned());
         };
         assert!(error.contains("kept.rs"), "{error}");
@@ -3375,6 +3490,25 @@ mod tests {
         snapshot.files.iter().cloned().collect()
     }
 
+    fn scan_with_source_policy(
+        root: &Path,
+        project: [u8; 32],
+        reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
+        source_policy: SourceAdmissionPolicy,
+    ) -> Result<IndexSnapshot, String> {
+        let root = root.to_str().ok_or("non-UTF-8 Git path")?;
+        scan_project_with_configuration_policy_attempt(
+            root,
+            project,
+            reusable,
+            source_selection_policy(),
+            true,
+            true,
+            None,
+            source_policy,
+        )
+    }
+
     #[cfg(unix)]
     #[test]
     fn git_frontier_warm_scan_reads_no_source_bytes_with_ignored_build_output() -> Result<(), String>
@@ -3412,6 +3546,160 @@ mod tests {
         assert_eq!(warm.source_bytes_read, 0);
         assert_eq!(warm.files.len(), 1);
         assert_eq!(cold.source_version, warm.source_version);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn changed_source_quota_invalidates_warm_frontier_before_file_admission() -> Result<(), String>
+    {
+        let Some(repository) = git_test_repo(
+            "frontier-source-quota-identity",
+            &[("lib.rs", b"pub fn stable() -> u8 { 7 }\n")],
+        )?
+        else {
+            return Ok(());
+        };
+        let root = &repository.0;
+        let project = git_project_key(root);
+        let default = SourceAdmissionPolicy::new(SourceAdmissionLimits::default())
+            .map_err(|error| error.to_string())?;
+        let cold = scan_with_source_policy(root, project, &BTreeMap::new(), default)?;
+        let reusable = reusable_rows(&cold);
+        assert_eq!(
+            cold.source_bytes_read,
+            b"pub fn stable() -> u8 { 7 }\n".len()
+        );
+
+        let mut changed_limits = SourceAdmissionLimits::default();
+        changed_limits.max_file_source_bytes = 16;
+        changed_limits.max_in_flight_source_bytes = 32;
+        let changed =
+            SourceAdmissionPolicy::new(changed_limits).map_err(|error| error.to_string())?;
+        assert_ne!(default.identity(), changed.identity());
+        let warm = scan_with_source_policy(root, project, &reusable, changed)?;
+        let row = warm.files[0].1.file_fields().ok_or("expected source row")?;
+        assert_eq!(warm.source_bytes_read, 0);
+        assert!(warm.reused_compiler_files.is_empty());
+        assert!(warm.compiler_sources.is_empty());
+        assert_eq!(
+            row.retention,
+            backend_engine::DeclarationRetention::Unavailable(SourceUnavailableReason::TooLarge),
+            "the tightened quota must refuse the cached file as too large"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn many_small_files_85_mib_cold_and_warm_scans_obey_admission_and_memory_caps()
+    -> Result<(), String> {
+        const FILE_COUNT: usize = 10_880;
+        const FILE_BYTES: usize = 8 * 1024;
+        let repository = GitScratch(scratch_dir("source-budget-85-mib")?);
+        let root = &repository.0;
+        git_test_command(root, &["init", "-q"])?;
+        git_test_command(
+            root,
+            &["config", "user.email", "source-budget@example.invalid"],
+        )?;
+        git_test_command(root, &["config", "user.name", "Source Budget Test"])?;
+        for index in 0..FILE_COUNT {
+            let prefix = format!("pub fn generated_{index}() -> usize {{ {index} }}\n");
+            if prefix.len() >= FILE_BYTES {
+                return Err("generated source prefix exceeded the fixture size".to_owned());
+            }
+            let mut bytes = vec![b' '; FILE_BYTES];
+            bytes[..prefix.len()].copy_from_slice(prefix.as_bytes());
+            fs::write(root.join(format!("generated_{index:05}.rs")), &bytes)
+                .map_err(|error| error.to_string())?;
+        }
+        git_test_command(root, &["add", "-A"])?;
+        git_test_command(root, &["commit", "-m", "large source budget fixture"])?;
+
+        let project = git_project_key(root);
+        let policy = SourceAdmissionPolicy::new(SourceAdmissionLimits::default())
+            .map_err(|error| error.to_string())?;
+        let limits = policy.limits();
+        let expected_bytes = FILE_COUNT * FILE_BYTES;
+        assert!(expected_bytes > 84 * 1024 * 1024);
+        assert!(FILE_COUNT > 10_000);
+        assert!(expected_bytes < limits.max_project_source_bytes);
+        assert!(expected_bytes < limits.max_retained_compiler_source_bytes);
+        assert!(limits.max_in_flight_source_bytes < expected_bytes);
+
+        let cold = scan_with_source_policy(root, project, &BTreeMap::new(), policy)?;
+        let cold_handle_bytes = retained_compiler_handle_bytes(&cold);
+        assert_eq!(cold.files.len(), FILE_COUNT);
+        assert_eq!(cold.source_bytes_read, expected_bytes);
+        assert!(cold_handle_bytes < expected_bytes / 20);
+        assert!(
+            policy.worker_count(usize::MAX, FILE_COUNT) * 2 * limits.max_file_source_bytes
+                <= limits.max_in_flight_source_bytes,
+            "active parse buffers plus queued results must fit the in-flight budget"
+        );
+
+        let compiler_sources = admit_compiler_sources_with_policy(
+            root,
+            cold.compiler_sources.clone(),
+            cold.reused_compiler_files.clone(),
+            policy,
+        )?;
+        let materialized_bytes = compiler_sources
+            .iter()
+            .map(|source| source.source.len())
+            .sum::<usize>();
+        assert_eq!(materialized_bytes, expected_bytes);
+        assert!(materialized_bytes <= limits.max_retained_compiler_source_bytes);
+        drop(compiler_sources);
+
+        let warm = scan_with_source_policy(root, project, &reusable_rows(&cold), policy)?;
+        assert_eq!(warm.source_version, cold.source_version);
+        assert_eq!(warm.source_bytes_read, 0);
+        assert!(warm.compiler_sources.is_empty());
+        assert_eq!(warm.reused_compiler_files.len(), FILE_COUNT);
+        Ok(())
+    }
+
+    #[test]
+    fn one_valid_generated_tsx_over_512_kib_is_scanned_and_reopened() -> Result<(), String> {
+        const GENERATED_BYTES: usize = 768 * 1024;
+        let root = scratch_dir("large-generated-tsx")?;
+        let generated = "x".repeat(GENERATED_BYTES);
+        let source =
+            format!("const Generated = <div>{generated}</div>;\nexport default Generated;\n");
+        fs::write(root.join("Generated.tsx"), &source).map_err(|error| error.to_string())?;
+        let root_text = root.to_str().ok_or("non-UTF-8 scratch path")?;
+        let policy = SourceAdmissionPolicy::new(SourceAdmissionLimits::default())
+            .map_err(|error| error.to_string())?;
+        assert!(source.len() > 512 * 1024);
+        assert!(source.len() < policy.limits().max_file_source_bytes);
+
+        let scan = scan_with_source_policy(&root, [21; 32], &BTreeMap::new(), policy)?;
+        assert_eq!(scan.source_bytes_read, source.len());
+        assert_eq!(scan.compiler_sources.len(), 1);
+        assert_eq!(
+            scan.compiler_sources[0].profile,
+            LanguageProfile::TypeScript(TypeScriptSource::Tsx)
+        );
+        assert_eq!(
+            scan.compiler_sources[0].content,
+            typed_of::<InputContentSchema>(source.as_bytes()).to_bytes()
+        );
+        let admitted = admit_compiler_sources_with_policy(
+            &root,
+            scan.compiler_sources.clone(),
+            Vec::new(),
+            scan.source_admission_policy,
+        )?;
+        assert_eq!(admitted.len(), 1);
+        assert_eq!(admitted[0].content, scan.compiler_sources[0].content);
+        assert_eq!(
+            admitted[0].source_fact_identity,
+            SourceFactIdentity::from_canonical_bytes(source.as_bytes())
+        );
+        assert_eq!(admitted[0].source, source);
+        fs::remove_dir_all(&root).map_err(|error| error.to_string())?;
         Ok(())
     }
 
@@ -3610,7 +3898,8 @@ mod tests {
             changed.len() + b"pub fn kept() {}\n".len()
         );
         assert!(raced.compiler_sources.iter().any(|source| {
-            source.relative_path == "lib.rs" && source.source.as_bytes() == changed
+            source.relative_path == "lib.rs"
+                && source.content == typed_of::<InputContentSchema>(changed).to_bytes()
         }));
         Ok(())
     }
@@ -3763,7 +4052,12 @@ mod tests {
             &lost,
         );
         assert_eq!(reused.len(), 0);
-        let admitted = admit_compiler_sources(scratch.as_path(), fresh, reused)?;
+        let admitted = admit_compiler_sources_with_policy(
+            scratch.as_path(),
+            fresh,
+            reused,
+            delta.source_admission_policy,
+        )?;
         assert_eq!(
             admitted
                 .iter()
@@ -3812,7 +4106,12 @@ mod tests {
         );
         assert!(fresh.is_empty());
         assert!(reused.is_empty());
-        let admitted = admit_compiler_sources(scratch.as_path(), fresh, reused)?;
+        let admitted = admit_compiler_sources_with_policy(
+            scratch.as_path(),
+            fresh,
+            reused,
+            delta.source_admission_policy,
+        )?;
         assert!(admitted.is_empty());
         let _ = fs::remove_dir_all(&scratch);
         Ok(())
@@ -3856,7 +4155,12 @@ mod tests {
             &lost,
         );
         assert!(reused.is_empty());
-        let admitted = admit_compiler_sources(scratch.as_path(), fresh, reused)?;
+        let admitted = admit_compiler_sources_with_policy(
+            scratch.as_path(),
+            fresh,
+            reused,
+            delta.source_admission_policy,
+        )?;
         assert_eq!(admitted.len(), 1);
         assert_eq!(admitted[0].relative_path, "old/src/lib.rs");
         assert_eq!(admitted[0].source, old_v2);
@@ -4297,7 +4601,10 @@ mod robustness_tests {
 
         assert_eq!(scan.source_bytes_read, source.len());
         assert_eq!(scan.compiler_sources.len(), 1);
-        assert_eq!(scan.compiler_sources[0].source.as_bytes(), source);
+        assert_eq!(
+            scan.compiler_sources[0].content,
+            typed_of::<InputContentSchema>(source).to_bytes()
+        );
         let fields = scan.files[0]
             .1
             .file_fields()
@@ -4320,7 +4627,12 @@ mod robustness_tests {
     {
         let scratch = scratch("oversized")?;
         fs::write(scratch.0.join("good.rs"), good_source()).map_err(|e| e.to_string())?;
-        let huge = vec![b'\n'; MAX_SOURCE_BYTES.saturating_add(1)];
+        let huge = vec![
+            b'\n';
+            SourceAdmissionLimits::default()
+                .max_file_source_bytes
+                .saturating_add(1)
+        ];
         fs::write(scratch.0.join("huge.rs"), &huge).map_err(|e| e.to_string())?;
 
         let scan = scan(&scratch)?;
@@ -4434,6 +4746,8 @@ mod robustness_tests {
         fs::remove_file(&vanishing).map_err(|e| e.to_string())?;
 
         let capability = ProjectRoot::open(Path::new(root))?;
+        let source_policy = SourceAdmissionPolicy::new(SourceAdmissionLimits::default())
+            .map_err(|error| error.to_string())?;
         let scanned = scan_file(
             Path::new(root),
             &capability,
@@ -4441,6 +4755,7 @@ mod robustness_tests {
             [8; 32],
             &BTreeMap::new(),
             frontends,
+            source_policy,
         )?;
         assert!(
             scanned.is_none(),
@@ -4693,13 +5008,23 @@ mod profile_tests {
         fs::create_dir_all(scratch.0.join(".angular/cache")).map_err(|e| e.to_string())?;
         fs::write(
             scratch.0.join(".angular/cache/x.js"),
-            vec![b'x'; MAX_SOURCE_BYTES.saturating_add(1)],
+            vec![
+                b'x';
+                SourceAdmissionLimits::default()
+                    .max_file_source_bytes
+                    .saturating_add(1)
+            ],
         )
         .map_err(|error| error.to_string())?;
         fs::create_dir_all(scratch.0.join(".next/static")).map_err(|error| error.to_string())?;
         fs::write(
             scratch.0.join(".next/static/chunk.js"),
-            vec![b'x'; MAX_SOURCE_BYTES.saturating_add(1)],
+            vec![
+                b'x';
+                SourceAdmissionLimits::default()
+                    .max_file_source_bytes
+                    .saturating_add(1)
+            ],
         )
         .map_err(|error| error.to_string())?;
 

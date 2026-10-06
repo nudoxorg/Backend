@@ -614,8 +614,13 @@ pub(super) fn finish_index_scan(
         if dirty.is_empty() {
             (Vec::new(), Vec::new(), Vec::new())
         } else {
-            let sources = ingest::admit_compiler_sources(source_root, fresh, reused)
-                .map_err(BuiltinModelError)?;
+            let sources = ingest::admit_compiler_sources_with_policy(
+                source_root,
+                fresh,
+                reused,
+                scan.source_admission_policy,
+            )
+            .map_err(BuiltinModelError)?;
             if defer && owner_cluster.is_none() {
                 let prior_file_frontier = CapturedProjectFileFrontier::capture(
                     project_key,
@@ -4457,7 +4462,7 @@ fn is_compiler_configuration(path: &str) -> bool {
 
 fn semantic_input_digest(scan: &ingest::IndexSnapshot, profile: LanguageProfile) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"backend.local-service.semantic-input.v1\0");
+    hasher.update(b"backend.local-service.semantic-input.v2\0");
     hasher.update(&scan.source_version);
     hasher.update(&<[u8; 2]>::from(profile));
     for source in scan
@@ -4468,7 +4473,7 @@ fn semantic_input_digest(scan: &ingest::IndexSnapshot, profile: LanguageProfile)
         let path = source.relative_path.as_bytes();
         hasher.update(&(path.len() as u64).to_le_bytes());
         hasher.update(path);
-        hasher.update(blake3::hash(source.source.as_bytes()).as_bytes());
+        hasher.update(&source.content);
     }
     for source in scan
         .reused_compiler_files

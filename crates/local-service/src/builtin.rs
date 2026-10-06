@@ -63,6 +63,8 @@ const ECHO_AUTHORITY_SECRET: [u8; 32] = [0x5a; 32];
 mod ingest;
 #[path = "builtin/profile.rs"]
 mod profile;
+#[path = "builtin/source_budget.rs"]
+mod source_budget;
 #[path = "builtin/source_frontier.rs"]
 mod source_frontier;
 use profile::{
