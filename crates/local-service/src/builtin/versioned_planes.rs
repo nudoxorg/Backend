@@ -726,7 +726,8 @@ impl SelectedNativeImageSource for OwnedSemanticAuthoritySelectionSource {
             return Err(OwnedSemanticAuthoritySelectionError::StaleSelection);
         }
         #[cfg(test)]
-        self.loader.wait_at_native_history_fence_gate();
+        self.loader
+            .wait_at_native_history_fence_gate(&target, self.store.root());
         Ok(OwnedSemanticAuthorityPublicationFence {
             _selections: selections,
             target,

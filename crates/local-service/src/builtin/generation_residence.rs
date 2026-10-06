@@ -1709,6 +1709,46 @@ mod tests {
         use backend_semantic::ir::{JumboRopeLimits, SemanticTypedPlaneVerificationTierV2};
         use std::time::{Duration, Instant};
 
+        fn target_root_for_diagnostic(
+            store_root: &std::path::Path,
+            target: &SemanticTargetKey,
+        ) -> std::path::PathBuf {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(b"backend.semantic.local-generation-target.v1\0");
+            for field in [target.package().as_bytes(), target.coordinate().as_bytes()] {
+                hasher.update(&(field.len() as u64).to_be_bytes());
+                hasher.update(field);
+            }
+            hasher.update(&<[u8; 2]>::from(target.profile()));
+            let identity = hasher.finalize();
+            let leaf = identity
+                .as_bytes()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            store_root.join(leaf)
+        }
+
+        fn refs_catalog_evidence(target_root: &std::path::Path) -> String {
+            let path = target_root.join("history").join("refs.catalog");
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    let digest = blake3::hash(&bytes);
+                    let prefix = bytes
+                        .iter()
+                        .take(256)
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>();
+                    format!(
+                        "path={path:?} bytes={} blake3={} prefix_hex={prefix}",
+                        bytes.len(),
+                        digest.to_hex()
+                    )
+                }
+                Err(error) => format!("path={path:?} read_error={error}"),
+            }
+        }
+
         // FileSemanticRangeStore's persisted V3 range-CAS format requires
         // 16 KiB chunks. Keep both writer-side and reopen-side stores on the
         // same valid production policy rather than TransportLimits' generic
@@ -1789,9 +1829,9 @@ mod tests {
         // serving selector. It pauses the actual async publisher before the
         // replication API can begin the commit/ref CAS sequence.
         let fence_deadline = Instant::now() + Duration::from_secs(60);
-        loop {
+        let worker_fence_diagnostic = loop {
             match fence_reached_result.try_recv() {
-                Ok(()) => break,
+                Ok(diagnostic) => break diagnostic,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     panic!("real V3 publication dropped its marker-fence notification")
                 }
@@ -1825,7 +1865,7 @@ mod tests {
                 "real V3 publication did not acquire the marker fence within 60 seconds; latest owner status: {status:?}; selected stamp: {stamp_a:?}"
             );
             std::thread::sleep(Duration::from_millis(10));
-        }
+        };
         let loader = authority.native_history_loader_for_test();
         assert!(
             authority.native_history_reader_holds_selector(),
@@ -1844,6 +1884,8 @@ mod tests {
         .expect("derive selected history target");
         let branch = HistoryRefName::new("selected-native-v3").expect("valid history branch");
         let writer_target = target.clone();
+        let writer_target_diagnostic = writer_target.clone();
+        let writer_store_root_diagnostic = store.root().to_path_buf();
         let writer_branch = branch.clone();
         let writer_key = key.clone();
         let writer = std::thread::spawn(move || {
@@ -1965,7 +2007,19 @@ mod tests {
                     std::thread::sleep(Duration::from_millis(10));
                 };
                 panic!(
-                    "generation B marker commits after generation A CAS: {error}; generation A publication status: {status:?}"
+                    "generation B marker commits after generation A CAS: {error}; generation A publication status: {status:?}; worker target={:?} worker store root={:?}; writer target={:?} writer store root={:?}; worker refs catalog: {}; writer refs catalog: {}",
+                    worker_fence_diagnostic.target,
+                    worker_fence_diagnostic.store_root,
+                    writer_target_diagnostic,
+                    writer_store_root_diagnostic,
+                    refs_catalog_evidence(&target_root_for_diagnostic(
+                        &worker_fence_diagnostic.store_root,
+                        &worker_fence_diagnostic.target,
+                    )),
+                    refs_catalog_evidence(&target_root_for_diagnostic(
+                        &writer_store_root_diagnostic,
+                        &writer_target_diagnostic,
+                    )),
                 );
             }
         };

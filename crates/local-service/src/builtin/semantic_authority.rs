@@ -417,8 +417,15 @@ pub(super) struct NativeHistoryPublicationWork {
 
 #[cfg(test)]
 struct NativeHistoryFenceGate {
-    reached: std::sync::mpsc::SyncSender<()>,
+    reached: std::sync::mpsc::SyncSender<NativeHistoryFenceDiagnostic>,
     release: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+pub(super) struct NativeHistoryFenceDiagnostic {
+    pub(super) target: backend_replication::SemanticTargetKey,
+    pub(super) store_root: PathBuf,
 }
 
 pub(super) struct SelectedClosureImageLoader {
@@ -511,7 +518,7 @@ impl SelectedClosureImageLoader {
     #[cfg(test)]
     pub(super) fn install_native_history_fence_gate(
         &self,
-        reached: std::sync::mpsc::SyncSender<()>,
+        reached: std::sync::mpsc::SyncSender<NativeHistoryFenceDiagnostic>,
         release: std::sync::mpsc::Receiver<()>,
     ) {
         *self
@@ -522,7 +529,11 @@ impl SelectedClosureImageLoader {
     }
 
     #[cfg(test)]
-    pub(super) fn wait_at_native_history_fence_gate(&self) {
+    pub(super) fn wait_at_native_history_fence_gate(
+        &self,
+        target: &backend_replication::SemanticTargetKey,
+        store_root: &Path,
+    ) {
         let gate = self
             .native_history_fence_gate
             .lock()
@@ -530,7 +541,10 @@ impl SelectedClosureImageLoader {
             .take();
         if let Some(gate) = gate {
             gate.reached
-                .send(())
+                .send(NativeHistoryFenceDiagnostic {
+                    target: target.clone(),
+                    store_root: store_root.to_path_buf(),
+                })
                 .expect("native-history fence test is listening");
             gate.release
                 .recv_timeout(Duration::from_secs(60))
@@ -1422,7 +1436,7 @@ impl SemanticAuthority {
     #[cfg(test)]
     pub(super) fn install_native_history_fence_gate(
         &self,
-        reached: std::sync::mpsc::SyncSender<()>,
+        reached: std::sync::mpsc::SyncSender<NativeHistoryFenceDiagnostic>,
         release: std::sync::mpsc::Receiver<()>,
     ) {
         self.image_loader
