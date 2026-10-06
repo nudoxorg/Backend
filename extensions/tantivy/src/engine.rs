@@ -2437,7 +2437,7 @@ mod lexical_token_contract_tests {
         assert_eq!(
             normalize_query_terms("HTTPServer2 httpserver2", Limits::default())
                 .expect("folded query terms"),
-            ["2", "http", "httpserver2", "server"]
+            ["2", "http", "httpserver", "httpserver2", "server"]
         );
 
         let mut long_camel = String::from("aAbB");
@@ -2830,11 +2830,10 @@ fn write_projection_manifest(
     Ok(())
 }
 
-fn verify_projection_manifest(
+fn read_projection_manifest(
     directory: &Path,
     fingerprint: [u8; 32],
-    budget: DurableCacheBudget,
-) -> Result<(), TantivySourceError> {
+) -> Result<BTreeMap<String, (u64, [u8; 32])>, TantivySourceError> {
     let metadata = match fs::symlink_metadata(directory) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -2926,7 +2925,21 @@ fn verify_projection_manifest(
             ));
         }
     }
-    if offset != bytes.len() || expected != projection_file_fingerprints(directory, budget)? {
+    if offset != bytes.len() {
+        return Err(TantivySourceError::Corrupt(
+            "durable projection integrity manifest has trailing bytes",
+        ));
+    }
+    Ok(expected)
+}
+
+fn verify_projection_manifest(
+    directory: &Path,
+    fingerprint: [u8; 32],
+    budget: DurableCacheBudget,
+) -> Result<(), TantivySourceError> {
+    let expected = read_projection_manifest(directory, fingerprint)?;
+    if expected != projection_file_fingerprints(directory, budget)? {
         return Err(TantivySourceError::Corrupt(
             "durable projection files do not match their integrity manifest",
         ));
@@ -2937,6 +2950,44 @@ fn verify_projection_manifest(
             budget_bytes: budget.max_bytes(),
             required_bytes,
         });
+    }
+    Ok(())
+}
+
+// Inactive cache maintenance checks only the bounded manifest and file sizes.
+// Full payload hashing remains part of selected-root admission; doing it for
+// every retained root here would serialize unrelated readers under the fence.
+fn classify_inactive_projection(
+    directory: &Path,
+    fingerprint: [u8; 32],
+) -> Result<(), TantivySourceError> {
+    let expected = read_projection_manifest(directory, fingerprint)?;
+    let mut actual = BTreeMap::new();
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let name = entry.file_name().into_string().map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "invalid inactive projection filename")
+        })?;
+        if is_volatile_projection_file(&name) {
+            continue;
+        }
+        if !is_projection_file_name(&name) || actual.len() >= MAX_PROJECTION_FILES {
+            return Err(io::Error::new(io::ErrorKind::InvalidData,
+                "inactive projection contains foreign or excessive entries").into());
+        }
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if !metadata.file_type().is_file() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData,
+                "inactive projection contains a non-regular entry").into());
+        }
+        actual.insert(name, metadata.len());
+    }
+    if actual.len() != expected.len() || expected.iter().any(|(name, (size, _))| {
+        actual.get(name) != Some(size)
+    }) {
+        return Err(TantivySourceError::Corrupt(
+            "inactive projection file sizes do not match their integrity manifest",
+        ));
     }
     Ok(())
 }
@@ -3219,7 +3270,19 @@ fn remove_incomplete_stages(
 }
 
 fn copy_projection_tree(source: &Path, destination: &Path) -> Result<(), io::Error> {
-    fs::create_dir(destination)?;
+    let destination_info = fs::symlink_metadata(destination)?;
+    if !destination_info.is_dir() || destination_info.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "copy-on-write destination is not a direct stage directory",
+        ));
+    }
+    if fs::read_dir(destination)?.next().is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "copy-on-write destination stage is not empty",
+        ));
+    }
     let mut count = 0_usize;
     for entry in fs::read_dir(source)? {
         count = count.saturating_add(1);
@@ -3430,9 +3493,14 @@ fn prune_durable_roots_entries(
         }
         let metadata = fs::symlink_metadata(entry.path())?;
         if !metadata.file_type().is_dir() {
-            remove_projection_path(&entry.path())?;
-            continue;
+            return Err(io::Error::new(io::ErrorKind::InvalidData,
+                "durable root name refers to a foreign file or link").into());
         }
+        // A typed name alone is not ownership. Admit the private directory and
+        // recognized regular-file layout before considering any cleanup.
+        let directory = backend_platform::DirectoryCapability::open(&entry.path())?;
+        directory.validate_private()?;
+        directory.verify_path(&entry.path())?;
         let bytes = durable_root_size(&entry.path())?;
         let modified = metadata.modified().unwrap_or(std::time::UNIX_EPOCH);
         let last_used = durable_root_last_used(&entry.path(), modified)?;
@@ -3448,13 +3516,33 @@ fn prune_durable_roots_entries(
         }
         let lease = open_root_lease(&entry.path())?;
         match lease.try_lock() {
-            Ok(()) => candidates.push(Candidate {
-                path: entry.path(),
-                last_used,
-                bytes,
-                selected: false,
-                retained: false,
-            }),
+            Ok(()) => {
+                // The binding marker proves this is our projection for this
+                // exact content name. Hold its exclusive lease throughout
+                // validation and cleanup; foreign names and real I/O remain
+                // terminal rather than being recast as corruption.
+                let binding = read_binding_stamp(&entry.path())?;
+                if hex_fingerprint(binding) != name {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData,
+                        "inactive durable root name does not match its binding").into());
+                }
+                match classify_inactive_projection(&entry.path(), binding) {
+                    Err(error) if is_definitively_corrupt_root(&error) => {
+                        directory.verify_path(&entry.path())?;
+                        remove_projection_path(&entry.path())?;
+                        continue;
+                    }
+                    Ok(()) => {}
+                    Err(error) => return Err(error),
+                }
+                candidates.push(Candidate {
+                    path: entry.path(),
+                    last_used,
+                    bytes,
+                    selected: false,
+                    retained: false,
+                });
+            }
             Err(fs::TryLockError::WouldBlock) => {
                 pinned_bytes = pinned_bytes
                     .checked_add(bytes)
