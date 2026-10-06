@@ -1228,6 +1228,32 @@ impl AdmittedCompilation {
     }
 }
 
+/// Input selected by one admitted retained compiler generation.
+struct SelectedGenerationInput([u8; 32]);
+
+/// Latest input named by the capture relation of one committed owner snapshot.
+/// A candidate authority observation alone cannot construct this projection.
+struct ObservedLatestInput([u8; 32]);
+
+impl ObservedLatestInput {
+    fn from_snapshot(
+        snapshot: &backend_engine::WorkspaceSnapshot,
+        key: SelectedSemanticPublicationKey<'_>,
+    ) -> Result<Option<Self>, BuiltinModelError> {
+        let Some(relation) = semantic_capture_relation(snapshot).map_err(|error| {
+            BuiltinModelError(format!("open committed semantic input capture: {error}"))
+        })?
+        else {
+            return Ok(None);
+        };
+        relation
+            .lookup(key.key)
+            .map(|record| record.map(|record| Self(*record.capture().input_digest())))
+            .map_err(|error| {
+                BuiltinModelError(format!("read committed semantic input capture: {error}"))
+            })
+    }
+}
 /// Process-local handle to the selected semantic authority and its CAS.
 ///
 /// The mutable Turso handle stays on the local owner thread. Read misses use a
@@ -1245,9 +1271,8 @@ pub(crate) struct SemanticAuthority {
     selected_image_plans: Arc<super::selected_full_image::SelectedFullImagePlanCache>,
     history: BTreeMap<HistoryKey, HistoryFact>,
     retained_generations: BTreeMap<HistoryKey, u64>,
-    /// Only observations named by committed product selections are exposed as
-    /// semantic freshness. Newer candidate observations remain private until
-    /// their product intent commits.
+    /// Observations named by committed compiler selections. They describe the
+    /// selected generation, never the latest captured input used by freshness.
     committed_observations: BTreeMap<ProductSemanticPublicationKey, SourceObservationReceipt>,
     native_history_state: NativeHistoryOwnerState,
     native_history_sender: SyncSender<NativeHistoryPublicationWork>,
@@ -3403,35 +3428,58 @@ impl SemanticAuthority {
         }
     }
 
+    /// Compares a retained generation's admitted input with the latest capture
+    /// in the exact immutable owner snapshot used by the query. Pending or
+    /// refused capture input remains factual latest input after its marker
+    /// commits; it does not select or manufacture a compiler generation.
     pub(crate) fn freshness(
         &self,
+        snapshot: &backend_engine::WorkspaceSnapshot,
         key: SelectedSemanticPublicationKey<'_>,
         claim: SemanticPublicationClaim,
-    ) -> backend_engine::SemanticVersionFreshness {
-        let key = key.key;
-        let history_key = (key.clone(), *claim.binding().identity.as_ref());
+    ) -> Result<backend_engine::SemanticVersionFreshness, BuiltinModelError> {
+        let history_key = (key.key.clone(), *claim.binding().identity.as_ref());
         let Some(history) = self.history.get(&history_key) else {
-            return backend_engine::SemanticVersionFreshness::Unverified;
+            return Ok(backend_engine::SemanticVersionFreshness::Unverified);
         };
-        let Some(latest) = self.committed_observations.get(key) else {
-            return backend_engine::SemanticVersionFreshness::Unverified;
+        let relation = snapshot
+            .relation::<BuiltinSemanticRelation>()
+            .map_err(|error| {
+                BuiltinModelError(format!(
+                    "open committed freshness generation history: {error}"
+                ))
+            })?;
+        let generation_key = key.key.for_generation(claim.binding().identity);
+        let Some(ProductSemanticPublicationRecord::Published {
+            claim: committed_claim,
+            ..
+        }) = relation.lookup(&generation_key).map_err(|error| {
+            BuiltinModelError(format!(
+                "read committed freshness generation history: {error}"
+            ))
+        })?
+        else {
+            return Ok(backend_engine::SemanticVersionFreshness::Unverified);
         };
-        let selected_input = *history.selected.input_digest();
-        let Some(latest_input) = latest.observation().revision() else {
-            return backend_engine::SemanticVersionFreshness::Unverified;
+        if committed_claim != claim {
+            return Err(BuiltinModelError(
+                "semantic freshness claim differs from committed generation history".to_owned(),
+            ));
+        }
+        let selected = SelectedGenerationInput(*history.selected.input_digest());
+        let Some(latest) = ObservedLatestInput::from_snapshot(snapshot, key)? else {
+            return Ok(backend_engine::SemanticVersionFreshness::Unverified);
         };
-        if history.selected.observation().sequence() == latest.sequence()
-            && selected_input == latest_input
-        {
+        Ok(if selected.0 == latest.0 {
             backend_engine::SemanticVersionFreshness::Current {
-                input_digest: selected_input,
+                input_digest: selected.0,
             }
         } else {
             backend_engine::SemanticVersionFreshness::Historical {
-                selected_input,
-                latest_input,
+                selected_input: selected.0,
+                latest_input: latest.0,
             }
-        }
+        })
     }
 
     pub(crate) fn retained_generation(

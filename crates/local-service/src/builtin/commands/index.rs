@@ -6451,7 +6451,7 @@ pub(super) fn semantic_versions(
                             &selected_key,
                         )
                         .map_err(|error| BuiltinModelError(error.to_owned()))?;
-                    let freshness = semantic_authority.freshness(freshness_key, claim);
+                    let freshness = semantic_authority.freshness(&snapshot, freshness_key, claim)?;
                     generations.push((
                         target,
                         selected_key,

@@ -268,7 +268,7 @@ pub(super) fn execute_semantic_shapes(
     // observation. History status is
     // intentionally outside this shape authority: it is an asynchronous,
     // derived sidecar and is neither echoed nor triggered by a shape read.
-    if semantic_authority.freshness(freshness_key, claim) != request.source().freshness {
+    if semantic_authority.freshness(&snapshot, freshness_key, claim)? != request.source().freshness {
         return Ok(CommandReply::Failed(CommandFailure::InvalidQuery(
             "semantic shape source freshness changed after selection".to_owned(),
         )));
@@ -466,7 +466,9 @@ pub(super) fn execute_semantic_shapes(
             "workspace selection changed during semantic shape projection".to_owned(),
         )));
     }
-    if semantic_authority.freshness(freshness_key, claim) != request.source().freshness {
+    if semantic_authority.freshness(&final_snapshot, freshness_key, claim)?
+        != request.source().freshness
+    {
         return Ok(CommandReply::Failed(CommandFailure::InvalidQuery(
             "semantic shape source freshness changed during projection".to_owned(),
         )));
