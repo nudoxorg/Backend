@@ -1,0 +1,12 @@
+
+running 2 tests
+test jsonrpc::tests::combined_budget_shortens_only_the_readable_preview_with_explicit_provenance ... ok
+test jsonrpc::tests::default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapshots ... FAILED
+
+failures:
+
+failures:
+    jsonrpc::tests::default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapshots
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 103 filtered out; finished in 0.03s
+
