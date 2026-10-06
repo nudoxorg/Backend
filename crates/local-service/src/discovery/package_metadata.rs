@@ -9,7 +9,13 @@ use backend_library::{ProductText, RegistryPackageDiscoveryObservation};
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_CACHE_OBJECTS: usize = 32;
 const MAX_CACHE_ENCODED_BYTES: usize = 64 * 1024 * 1024;
-const PARSER_IDENTITY: &str = "exact-registry-package-metadata-v3";
+const PARSER_IDENTITY: &str = "exact-registry-package-metadata-v4";
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ExactVersionPresence {
+    Absent,
+    Present,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct ObjectKey {
@@ -21,7 +27,9 @@ struct ObjectKey {
 struct CachedObject {
     etag: Option<String>,
     releases: Vec<DiscoveryReleaseObservation>,
-    /// Establishes the requested version only; never a complete package history.
+    /// Permits exact absence only when the requested version is absent from
+    /// the admitted document. A recorded PyPI release without files cannot
+    /// become a negative version observation.
     complete: bool,
     proof: [u8; 32],
     observed: Instant,
@@ -282,7 +290,7 @@ impl DiscoveryGateway {
             } else {
                 Some(unavailable(
                     Some(request.source.id()),
-                    "the bounded package document does not establish whether this release exists",
+                    "the registry records this version without distribution files",
                 ))
             };
             return PackageMetadataPreparation::Cached(observation);
@@ -463,7 +471,7 @@ impl DiscoveryGateway {
         } else {
             Some(unavailable(
                 Some(source.id()),
-                "the bounded package document does not establish whether this release exists",
+                "the registry records this version without distribution files",
             ))
         };
         // Releasing the current task witness allows replacement while queued
@@ -565,7 +573,7 @@ fn parse_object(
         RegistryEcosystem::Npm => {
             let version =
                 admit_registry_coordinate(package).map_err(|_| DiscoveryStoreError::Decode)?;
-            let projected = exact_version_document(
+            let (projected, _) = exact_version_document(
                 bytes,
                 "versions",
                 version.version().as_str(),
@@ -580,7 +588,7 @@ fn parse_object(
         RegistryEcosystem::Pypi => {
             let version =
                 admit_registry_coordinate(package).map_err(|_| DiscoveryStoreError::Decode)?;
-            let projected = exact_version_document(
+            let (projected, presence) = exact_version_document(
                 bytes,
                 "releases",
                 version.version().as_str(),
@@ -590,7 +598,9 @@ fn parse_object(
             for release in &mut parsed.releases {
                 release.proof = *blake3::hash(bytes).as_bytes();
             }
-            Ok((parsed.releases, true))
+            let admits_absence =
+                presence == ExactVersionPresence::Absent || !parsed.releases.is_empty();
+            Ok((parsed.releases, admits_absence))
         }
         RegistryEcosystem::Golang => {
             let value: serde_json::Value =
@@ -638,7 +648,7 @@ fn exact_version_document(
     field: &str,
     version: &str,
     maximum: usize,
-) -> Result<Vec<u8>, DiscoveryStoreError> {
+) -> Result<(Vec<u8>, ExactVersionPresence), DiscoveryStoreError> {
     if bytes.len() > maximum {
         return Err(DiscoveryStoreError::Bounds);
     }
@@ -649,7 +659,9 @@ fn exact_version_document(
         return Err(DiscoveryStoreError::Decode);
     };
     let mut selected = serde_json::Map::new();
+    let mut presence = ExactVersionPresence::Absent;
     if let Some(metadata) = versions.remove(version) {
+        presence = ExactVersionPresence::Present;
         if field == "versions" {
             let release = metadata.as_object().ok_or(DiscoveryStoreError::Decode)?;
             if release
@@ -666,7 +678,7 @@ fn exact_version_document(
     if bytes.len() > maximum {
         return Err(DiscoveryStoreError::Bounds);
     }
-    Ok(bytes)
+    Ok((bytes, presence))
 }
 
 fn fetch_object(
@@ -755,6 +767,7 @@ mod tests {
     use std::net::TcpListener;
 
     const REQUESTS: &str = r#"{"info":{"name":"requests","version":"2.34.2"},"releases":{"2.34.2":[{"yanked":false,"upload_time_iso_8601":"2026-10-01T12:00:00Z"}]}}"#;
+    const SAMPLEPROJECT: &str = include_str!("fixtures/pypi-sampleproject-project-20261006.json");
 
     fn server(
         responses: Vec<(&'static str, &'static str)>,
@@ -824,6 +837,56 @@ mod tests {
             metadata_offline: false,
             package_metadata: PackageMetadataCache::default(),
         }
+    }
+
+    #[test]
+    fn package_metadata_recorded_pypi_release_without_files_is_unavailable_not_missing() {
+        // Official PyPI responses captured 2026-10-06: project JSON retains
+        // releases["1.0"]=[] and the release-specific endpoint returns 200
+        // with info.version="1.0". No files does not prove version absence.
+        let release: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "fixtures/pypi-sampleproject-release-1.0-20261006.json"
+        ))
+        .expect("captured official release metadata");
+        assert_eq!(release["info"]["version"], "1.0");
+        assert_eq!(
+            release["urls"].as_array().expect("distribution set").len(),
+            0
+        );
+        let (endpoint, server) = server(vec![("200 OK", SAMPLEPROJECT), ("200 OK", SAMPLEPROJECT)]);
+        let feed = discovery_source_identity(&endpoint);
+        let mut owner = gateway(endpoint);
+        let recorded =
+            PackageCoordinate::parse("pkg:pypi/sampleproject@1.0").expect("recorded release");
+        let unavailable = owner
+            .observe_package(&recorded)
+            .expect("no distributable release evidence");
+        assert!(matches!(
+            &unavailable,
+            RegistryPackageDiscoveryObservation::Unavailable { message, .. }
+                if message.as_str().contains("without distribution files")
+        ));
+        assert_eq!(
+            owner.observe_package(&recorded),
+            Some(unavailable),
+            "the admitted unavailable observation is reused without another fetch"
+        );
+        assert!(
+            owner
+                .store
+                .facts()
+                .all(|(_, fact)| fact.coordinate != recorded)
+        );
+        assert_eq!(owner.store.progress_token(feed).sequence, 0);
+
+        let absent =
+            PackageCoordinate::parse("pkg:pypi/sampleproject@999.0.0").expect("absent release");
+        assert!(matches!(
+            owner.observe_package(&absent),
+            Some(RegistryPackageDiscoveryObservation::Missing { .. })
+        ));
+        assert_eq!(owner.store.progress_token(feed).sequence, 0);
+        assert_eq!(server.join().expect("bounded fixture server").len(), 2);
     }
 
     #[test]
