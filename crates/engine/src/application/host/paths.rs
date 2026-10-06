@@ -14,6 +14,7 @@ use super::{
     LocalCompilerHost, LocalCompilerHostError, LocalHostDiscovery, LocalHostEnvironment,
     LocalHostVariable, PLATFORM_PATH_CAPACITY,
 };
+use crate::application::typescript_host::TypeScriptSelectionOrigin;
 
 /// Closed filesystem role retained by host setup diagnostics.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -28,6 +29,12 @@ pub enum LocalHostDirectory {
     NativeWorkParent,
     /// One process-unique empty native work owner.
     NativeWork,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct TypeScriptNodeSelection {
+    pub(super) path: PathBuf,
+    pub(super) origin: TypeScriptSelectionOrigin,
 }
 
 /// Closed file or directory authority role.
@@ -100,14 +107,29 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
     pub(super) fn typescript_node_executable(
         &self,
         home: Option<&Path>,
-    ) -> Result<Option<PathBuf>, LocalCompilerHostError> {
+    ) -> Result<Option<TypeScriptNodeSelection>, LocalCompilerHostError> {
         let variable = LocalHostVariable::NudoxTypeScriptNode;
         let role = LocalHostPathRole::TypeScriptNode;
         if let Some(path) = self.optional_absolute_path(variable)? {
-            return self.validate_file(role, variable, path).map(Some);
+            return self.validate_file(role, variable, path).map(|path| {
+                Some(TypeScriptNodeSelection {
+                    path,
+                    origin: TypeScriptSelectionOrigin::ExplicitConfiguration,
+                })
+            });
         }
-
-        first_existing(role, typescript_node_candidates(home))
+        if let Some(path) = first_existing_on_search_path(role, self.environment.search_path())? {
+            return Ok(Some(TypeScriptNodeSelection {
+                path,
+                origin: TypeScriptSelectionOrigin::OrdinarySearchPath,
+            }));
+        }
+        first_existing(role, typescript_node_candidates(home)).map(|path| {
+            path.map(|path| TypeScriptNodeSelection {
+                path,
+                origin: TypeScriptSelectionOrigin::PlatformLocation,
+            })
+        })
     }
 
     pub(super) fn directory(
@@ -429,6 +451,42 @@ fn first_existing(
     Ok(None)
 }
 
+fn first_existing_on_search_path(
+    role: LocalHostPathRole,
+    search_path: Option<std::ffi::OsString>,
+) -> Result<Option<PathBuf>, LocalCompilerHostError> {
+    const MAX_SEARCH_PATH_BYTES: usize = 64 * 1024;
+    const MAX_SEARCH_PATH_ENTRIES: usize = 256;
+
+    let Some(search_path) = search_path else {
+        return Ok(None);
+    };
+    if search_path.len() > MAX_SEARCH_PATH_BYTES {
+        return Ok(None);
+    }
+    for directory in std::env::split_paths(&search_path).take(MAX_SEARCH_PATH_ENTRIES) {
+        if !directory.is_absolute() {
+            continue;
+        }
+        let path = directory.join(if cfg!(windows) { "node.exe" } else { "node" });
+        match fs::metadata(&path) {
+            Ok(metadata) if metadata.is_file() => {
+                return canonicalize_executable_existing(role, &path).map(Some);
+            }
+            Ok(_) => continue,
+            Err(source) if source.kind() == io::ErrorKind::NotFound => continue,
+            Err(source) => {
+                return Err(LocalCompilerHostError::Canonicalize {
+                    role,
+                    path: path.into_boxed_path(),
+                    source,
+                });
+            }
+        }
+    }
+    Ok(None)
+}
+
 fn first_existing_directory(
     role: LocalHostPathRole,
     candidates: ArrayVec<PathBuf, PLATFORM_PATH_CAPACITY>,
@@ -528,6 +586,7 @@ mod tests {
     struct TestEnvironment {
         home: PathBuf,
         node: Option<PathBuf>,
+        search_path: Option<std::ffi::OsString>,
     }
 
     impl LocalHostEnvironment for TestEnvironment {
@@ -540,6 +599,10 @@ mod tests {
                     .map(|path| path.as_os_str().to_os_string()),
                 _ => None,
             }
+        }
+
+        fn search_path(&self) -> Option<std::ffi::OsString> {
+            self.search_path.clone()
         }
     }
 
@@ -578,14 +641,15 @@ mod tests {
             TestEnvironment {
                 home: home.clone(),
                 node: None,
+                search_path: None,
             },
             LocalHostDiscovery::ExplicitOnly,
         );
         assert_eq!(
             host.typescript_node_executable(Some(&home))
                 .expect("finite node admission")
-                .as_deref(),
-            Some(fs::canonicalize(&node).expect("canonical node").as_path()),
+                .map(|selection| selection.path),
+            Some(fs::canonicalize(&node).expect("canonical node")),
             "project TypeScript gets a finite Node runtime without enabling ambient PATH discovery",
         );
 
@@ -605,20 +669,49 @@ mod tests {
             TestEnvironment {
                 home: home.clone(),
                 node: Some(explicit.clone()),
+                search_path: None,
             },
             LocalHostDiscovery::ExplicitOnly,
         );
         assert_eq!(
             host.typescript_node_executable(Some(&home))
                 .expect("explicit node admission")
-                .as_deref(),
-            Some(
-                fs::canonicalize(&explicit)
-                    .expect("canonical explicit node")
-                    .as_path()
-            ),
+                .map(|selection| selection.path),
+            Some(fs::canonicalize(&explicit).expect("canonical explicit node")),
         );
 
+        fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
+    fn project_node_can_be_selected_from_process_path_then_pinned() {
+        let root = private_test_directory("node-path-search");
+        let home = root.join("home");
+        let directory = root.join("ordinary path node");
+        let node = directory.join("node");
+        executable(&node);
+        let search_path = std::env::join_paths([&directory]).expect("encode test PATH");
+
+        let host = LocalCompilerHost::new(
+            TestEnvironment {
+                home,
+                node: None,
+                search_path: Some(search_path),
+            },
+            LocalHostDiscovery::ExplicitOnly,
+        );
+        let selection = host
+            .typescript_node_executable(None)
+            .expect("PATH Node is canonicalized during host admission")
+            .expect("Node from PATH is selected");
+        assert_eq!(
+            selection.path,
+            fs::canonicalize(&node).expect("canonical node"),
+        );
+        assert_eq!(
+            selection.origin,
+            TypeScriptSelectionOrigin::OrdinarySearchPath
+        );
         fs::remove_dir_all(root).expect("remove test directory");
     }
 }

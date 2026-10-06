@@ -181,6 +181,14 @@ impl LocalHostVariable {
 pub trait LocalHostEnvironment {
     /// Returns one exact OS-native value when the named variable is present.
     fn value(&self, variable: LocalHostVariable) -> Option<OsString>;
+
+    /// Returns the process search path for selecting a project-scoped Node host runtime.
+    ///
+    /// Host admission immediately resolves the selected `node` to one canonical executable and
+    /// captures its version and bytes. The search path itself is never passed to compiler children.
+    fn search_path(&self) -> Option<OsString> {
+        None
+    }
 }
 
 /// Production environment reader.
@@ -190,6 +198,10 @@ pub struct ProcessHostEnvironment;
 impl LocalHostEnvironment for ProcessHostEnvironment {
     fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
         std::env::var_os(variable.environment_name())
+    }
+
+    fn search_path(&self) -> Option<OsString> {
+        std::env::var_os("PATH")
     }
 }
 
@@ -206,6 +218,10 @@ impl LocalHostEnvironment for WorkspaceCompilerEnvironment {
         } else {
             ProcessHostEnvironment.value(variable)
         }
+    }
+
+    fn search_path(&self) -> Option<OsString> {
+        ProcessHostEnvironment.search_path()
     }
 }
 

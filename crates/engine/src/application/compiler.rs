@@ -1622,6 +1622,9 @@ pub enum PackageSemanticError {
         /// Exact closed compiler terminal.
         terminal: Box<CompilerTerminal>,
     },
+    /// An installed TypeScript source or toolchain witness changed before publication.
+    #[error("admitted TypeScript project changed before publication")]
+    TypeScriptProjectWitness(#[source] crate::application::TypeScriptProjectHostError),
     /// Required embedding inference could not produce a complete bounded output plane.
     #[error("required package embedding failed for {path}: {cause}")]
     Embedding {
@@ -1735,6 +1738,8 @@ pub(crate) struct StagedPackageCompilation {
     execution_identity: Option<LocalCompilerExecutionIdentity>,
     plane_execution_identity: Option<LocalCompilerPlaneExecutionIdentity>,
     cargo_workspace_facts: Option<std::sync::Arc<RustCargoWorkspaceFactsV1>>,
+    typescript_witness:
+        Option<std::sync::Arc<crate::application::typescript_host::TypeScriptProjectWitness>>,
     embeddings: Option<StagedEmbeddingOutput>,
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
 }
@@ -2593,6 +2598,26 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 Coverage::Partial,
             );
         }
+        if let Some(project) = typescript_project.as_ref()
+            && let Err(cause) = project.validate_current()
+        {
+            let toolchain = self.toolchain(first_application_request).unwrap_or(
+                ToolchainSelection::ExplicitlyUnavailable {
+                    tool: NativeTool::TypeScriptCompiler,
+                },
+            );
+            let terminal = package_authority_terminal(
+                package.package_target.target(),
+                first_application_request,
+                first_authority,
+                toolchain,
+                PackageAuthorityError::TypeScriptProjectHost(cause),
+            );
+            return Err(PackageSemanticError::Compile {
+                path: first_source.relative_path.into(),
+                terminal: Box::new(terminal),
+            });
+        }
         let project_plane_seed = typescript_toolchain.and_then(|toolchain| {
             typescript_project.as_ref().and_then(|project| {
                 LocalCompilerPlaneExecutionSeed::for_typescript_project(
@@ -2625,6 +2650,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     .cargo_workspace_facts()
                     .map(std::sync::Arc::clone)
             }),
+            typescript_witness: typescript_project
+                .as_ref()
+                .map(|project| std::sync::Arc::clone(&project.witness)),
             embeddings: embedding_identity.map(|identity| StagedEmbeddingOutput {
                 identity,
                 artifacts: if embedding_unavailable.is_some() {
@@ -2866,6 +2894,11 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         cancelled: &AtomicBool,
         progress: &mut impl FnMut(PackageCompilePhase),
     ) -> Result<PublishedSemanticPackage, PackageSemanticError> {
+        if let Some(witness) = staged.typescript_witness.as_ref() {
+            witness
+                .validate_current()
+                .map_err(PackageSemanticError::TypeScriptProjectWitness)?;
+        }
         let count = staged.artifacts.len();
         if count == 0 {
             return Err(PackageSemanticError::Capacity { lane: "manifest" });
@@ -2990,6 +3023,11 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         staged: StagedPackageCompilation,
         cancelled: &AtomicBool,
     ) -> Result<StagedSemanticPackage, PackageSemanticError> {
+        if let Some(witness) = staged.typescript_witness.as_ref() {
+            witness
+                .validate_current()
+                .map_err(PackageSemanticError::TypeScriptProjectWitness)?;
+        }
         let package_identity = staged.package_identity;
         let target_identity = staged.target_identity;
         let profile = staged.profile;
@@ -4081,12 +4119,8 @@ const fn source_terminal(cause: SourceError) -> CompilerTerminal {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ToolchainRouteError {
     UnsupportedStage(backend_semantic::vocabulary::FrontendError),
-    Missing {
-        selected: NativeTool,
-    },
-    ToolingUnavailable {
-        tool: NativeTool,
-    },
+    Missing { selected: NativeTool },
+    ToolingUnavailable { tool: NativeTool },
 }
 
 const fn toolchain_terminal(

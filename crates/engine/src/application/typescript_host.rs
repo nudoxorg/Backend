@@ -7,12 +7,13 @@
 
 use std::{
     fs::{self, File},
-    io::Read,
+    io::{self, Read},
     path::{Path, PathBuf},
 };
 
 use backend_frontend_typescript::legacy::{Checker, ExplicitTypeScriptChecker};
 use backend_semantic::vocabulary::NativeTool;
+use backend_version::{ContentId, SourceFactDomain};
 use blake3::Hasher;
 use thiserror::Error;
 
@@ -21,12 +22,1165 @@ use crate::driver::ToolchainResolutionError;
 
 const MAX_PROJECT_ANCESTORS: usize = 32;
 const MAX_PACKAGE_MANIFEST_BYTES: usize = 64 * 1024;
+const MAX_PNPM_WORKSPACE_BYTES: usize = 64 * 1024;
+const MAX_PROJECT_CONFIG_FILES: usize = 256;
+const MAX_PROJECT_CONFIG_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_ANGULAR_WORKSPACE_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_RESOLVED_SOURCE_FILES: usize = 4096;
+const MAX_RESOLVED_SOURCE_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_SOURCE_FILE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_TYPESCRIPT_PACKAGE_FILES: usize = 256;
+const MAX_TYPESCRIPT_PACKAGE_BYTES: u64 = 96 * 1024 * 1024;
+const MAX_NODE_EXECUTABLE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_COMPILER_SHIM_BYTES: usize = 16 * 1024;
+const MAX_SHEBANG_BYTES: usize = 256;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FileIdentity {
+    pub(crate) first: u64,
+    pub(crate) second: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FileSnapshot {
+    path: Box<Path>,
+    identity: FileIdentity,
+    length: u64,
+    digest: [u8; 32],
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct TypeScriptFileInput {
+    pub(crate) path: Box<Path>,
+    pub(crate) bytes: Box<[u8]>,
+    pub(crate) content_id: ContentId<SourceFactDomain>,
+    pub(crate) identity: FileIdentity,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct TypeScriptConfigInput {
+    pub(crate) path: Box<Path>,
+    pub(crate) bytes: Box<[u8]>,
+    pub(crate) content_id: ContentId<SourceFactDomain>,
+    pub(crate) identity: FileIdentity,
+    pub(crate) project_candidate: bool,
+    pub(crate) selected_build_config: bool,
+    pub(crate) extends: Box<[Box<Path>]>,
+    pub(crate) references: Box<[Box<Path>]>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct TypeScriptProjectInputs<'a> {
+    pub(crate) package_root: &'a Path,
+    pub(crate) workspace_root: &'a Path,
+    pub(crate) typescript_module_root: &'a Path,
+    pub(crate) compiler_path: &'a Path,
+    pub(crate) compiler_version: &'a [u8],
+    pub(crate) compiler_origin: TypeScriptSelectionOrigin,
+    pub(crate) node_path: &'a Path,
+    pub(crate) node_version: &'a [u8],
+    pub(crate) node_origin: TypeScriptSelectionOrigin,
+    pub(crate) fingerprint: [u8; 32],
+    pub(crate) config_candidates: &'a [TypeScriptConfigInput],
+    pub(crate) selected_build_config_paths: &'a [Box<Path>],
+    pub(crate) typescript_files: &'a [TypeScriptFileInput],
+    witness: &'a TypeScriptProjectWitness,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub(crate) enum TypeScriptSelectionOrigin {
+    ExplicitConfiguration = 1,
+    ProjectLocalInstallation = 2,
+    OrdinarySearchPath = 3,
+    PlatformLocation = 4,
+}
+
+impl TypeScriptProjectInputs<'_> {
+    pub(crate) fn load_source(
+        &self,
+        path: &Path,
+    ) -> Result<TypeScriptFileInput, TypeScriptProjectHostError> {
+        self.witness.load_source(path)
+    }
+
+    pub(crate) fn validate_current(&self) -> Result<(), TypeScriptProjectHostError> {
+        self.witness.validate_current()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WorkspaceBoundary {
+    root: Box<Path>,
+    files: Box<[FileSnapshot]>,
+}
+
+#[derive(Debug)]
+pub(crate) struct TypeScriptProjectWitness {
+    project_root: Box<Path>,
+    home_root: Option<Box<Path>>,
+    discovered_compiler: Box<Path>,
+    discovered_module_root: Box<Path>,
+    discovered_version: Box<str>,
+    compiler: Box<Path>,
+    node: Box<Path>,
+    module_root: Box<Path>,
+    package_root: Box<Path>,
+    workspace: Option<WorkspaceBoundary>,
+    workspace_root: Box<Path>,
+    files: Box<[FileSnapshot]>,
+    typescript_files: Box<[TypeScriptFileInput]>,
+    config_candidates: Box<[TypeScriptConfigInput]>,
+    selected_build_config_paths: Box<[Box<Path>]>,
+    config_paths: Box<[Box<Path>]>,
+    loaded_source_files: std::sync::Mutex<std::collections::BTreeMap<PathBuf, FileSnapshot>>,
+    fingerprint: [u8; 32],
+}
+
+impl TypeScriptProjectWitness {
+    fn capture(
+        project_root: &Path,
+        home_root: Option<&Path>,
+        discovered: &ProjectTypeScript,
+        compiler: &Path,
+        node: &Path,
+        module_root: &Path,
+        package_root: &Path,
+        workspace: Option<&WorkspaceBoundary>,
+    ) -> Result<Self, TypeScriptProjectHostError> {
+        let mut files = Vec::new();
+        files.push(capture_file_snapshot(node, MAX_NODE_EXECUTABLE_BYTES)?);
+        let typescript_files = collect_module_inputs(package_root)?;
+        files.extend(
+            typescript_files
+                .iter()
+                .map(|input| snapshot_from_input(input)),
+        );
+        if !compiler.starts_with(package_root) {
+            files.push(capture_file_snapshot(compiler, MAX_NODE_EXECUTABLE_BYTES)?);
+        }
+        if let Some(workspace) = workspace {
+            files.extend(workspace.files.iter().cloned());
+        }
+        let workspace_root = workspace
+            .map(|workspace| workspace.root.as_ref())
+            .unwrap_or(project_root);
+        let (selected_build_config_paths, angular_snapshot) =
+            angular_build_config_paths(workspace_root, module_root)?;
+        if let Some(snapshot) = angular_snapshot {
+            files.push(snapshot);
+        }
+        let config_candidates = collect_project_configs(
+            project_root,
+            workspace_root,
+            module_root,
+            &selected_build_config_paths,
+        )?;
+        files.extend(
+            config_candidates
+                .iter()
+                .map(|input| snapshot_from_config(input)),
+        );
+        files.sort_unstable_by(|left, right| left.path.cmp(&right.path));
+        files.dedup_by(|left, right| left.path == right.path);
+        let fingerprint = witness_fingerprint(&files);
+        Ok(Self {
+            project_root: project_root.to_path_buf().into_boxed_path(),
+            home_root: home_root.map(|root| root.to_path_buf().into_boxed_path()),
+            discovered_compiler: discovered.compiler.to_path_buf().into_boxed_path(),
+            discovered_module_root: discovered.module_root.to_path_buf().into_boxed_path(),
+            discovered_version: discovered.version.clone().into_boxed_str(),
+            compiler: compiler.to_path_buf().into_boxed_path(),
+            node: node.to_path_buf().into_boxed_path(),
+            module_root: module_root.to_path_buf().into_boxed_path(),
+            package_root: package_root.to_path_buf().into_boxed_path(),
+            workspace: workspace.cloned(),
+            workspace_root: workspace_root.to_path_buf().into_boxed_path(),
+            files: files.into_boxed_slice(),
+            typescript_files: typescript_files.into_boxed_slice(),
+            config_paths: config_candidates
+                .iter()
+                .map(|config| config.path.clone())
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            selected_build_config_paths: selected_build_config_paths
+                .iter()
+                .map(|path| path.clone().into_boxed_path())
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            config_candidates: config_candidates.into_boxed_slice(),
+            loaded_source_files: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            fingerprint,
+        })
+    }
+
+    fn load_source(&self, path: &Path) -> Result<TypeScriptFileInput, TypeScriptProjectHostError> {
+        if !path.is_absolute() {
+            return Err(TypeScriptProjectHostError::SourceOutsideCapability {
+                path: path.to_path_buf().into_boxed_path(),
+            });
+        }
+        let canonical =
+            fs::canonicalize(path).map_err(|source| TypeScriptProjectHostError::PackagePath {
+                path: path.to_path_buf().into_boxed_path(),
+                source,
+            })?;
+        if !canonical.starts_with(&self.workspace_root) && !canonical.starts_with(&self.module_root)
+        {
+            return Err(TypeScriptProjectHostError::SourceOutsideCapability {
+                path: canonical.into_boxed_path(),
+            });
+        }
+        let (snapshot, bytes) = read_regular_file(&canonical, MAX_SOURCE_FILE_BYTES)?;
+        let mut loaded = self.loaded_source_files.lock().map_err(|_| {
+            TypeScriptProjectHostError::WitnessLockPoisoned {
+                path: canonical.clone().into_boxed_path(),
+            }
+        })?;
+        if let Some(previous) = loaded.get(&canonical) {
+            if previous != &snapshot {
+                return Err(TypeScriptProjectHostError::WitnessChanged {
+                    path: canonical.into_boxed_path(),
+                });
+            }
+        } else {
+            if loaded.len() >= MAX_RESOLVED_SOURCE_FILES {
+                return Err(TypeScriptProjectHostError::ResolvedSourceLimit {
+                    observed: loaded.len().saturating_add(1),
+                    maximum: MAX_RESOLVED_SOURCE_FILES,
+                });
+            }
+            let observed = loaded
+                .values()
+                .map(|file| file.length)
+                .fold(snapshot.length, u64::saturating_add);
+            if observed > MAX_RESOLVED_SOURCE_BYTES {
+                return Err(TypeScriptProjectHostError::ResolvedSourceBytes {
+                    observed,
+                    maximum: MAX_RESOLVED_SOURCE_BYTES,
+                });
+            }
+            loaded.insert(canonical.clone(), snapshot.clone());
+        }
+        Ok(TypeScriptFileInput {
+            path: canonical.into_boxed_path(),
+            content_id: ContentId::<SourceFactDomain>::from_canonical_bytes(&bytes),
+            identity: snapshot.identity,
+            bytes: bytes.into_boxed_slice(),
+        })
+    }
+
+    pub(crate) fn validate_current(&self) -> Result<(), TypeScriptProjectHostError> {
+        let current_project =
+            match find_project_typescript_with_home(&self.project_root, self.home_root.as_deref())?
+            {
+                ProjectTypeScriptSearch::Found(project) => project,
+                ProjectTypeScriptSearch::NotFound | ProjectTypeScriptSearch::Pnp(_) => {
+                    return Err(TypeScriptProjectHostError::WitnessChanged {
+                        path: self.project_root.to_path_buf().into_boxed_path(),
+                    });
+                }
+            };
+        let package_root = fs::canonicalize(current_project.module_root.join("typescript"))
+            .map_err(|source| TypeScriptProjectHostError::PackagePath {
+                path: current_project
+                    .module_root
+                    .join("typescript")
+                    .into_boxed_path(),
+                source,
+            })?;
+        if current_project.compiler != self.discovered_compiler
+            || current_project.module_root != self.discovered_module_root
+            || current_project.version != self.discovered_version
+            || package_root != self.package_root
+            || current_project.workspace != self.workspace
+        {
+            return Err(TypeScriptProjectHostError::WitnessChanged {
+                path: self.project_root.to_path_buf().into_boxed_path(),
+            });
+        }
+
+        let current = Self::capture(
+            &self.project_root,
+            self.home_root.as_deref(),
+            &current_project,
+            &self.compiler,
+            &self.node,
+            &self.module_root,
+            &self.package_root,
+            self.workspace.as_ref(),
+        )?;
+        if current.files != self.files || current.fingerprint != self.fingerprint {
+            let changed = first_changed_snapshot(&self.files, &current.files)
+                .unwrap_or_else(|| self.package_root.to_path_buf());
+            return Err(TypeScriptProjectHostError::WitnessChanged {
+                path: changed.into_boxed_path(),
+            });
+        }
+        if current.config_paths != self.config_paths
+            || current.selected_build_config_paths != self.selected_build_config_paths
+        {
+            return Err(TypeScriptProjectHostError::WitnessChanged {
+                path: self.workspace_root.to_path_buf().into_boxed_path(),
+            });
+        }
+        let loaded = self.loaded_source_files.lock().map_err(|_| {
+            TypeScriptProjectHostError::WitnessLockPoisoned {
+                path: self.project_root.clone(),
+            }
+        })?;
+        for (path, expected) in loaded.iter() {
+            let observed = capture_file_snapshot(path, MAX_SOURCE_FILE_BYTES)?;
+            if &observed != expected {
+                return Err(TypeScriptProjectHostError::WitnessChanged {
+                    path: path.clone().into_boxed_path(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+fn snapshot_from_input(input: &TypeScriptFileInput) -> FileSnapshot {
+    FileSnapshot {
+        path: input.path.clone(),
+        identity: input.identity,
+        length: u64::try_from(input.bytes.len()).unwrap_or(u64::MAX),
+        digest: *blake3::hash(&input.bytes).as_bytes(),
+    }
+}
+
+fn snapshot_from_config(input: &TypeScriptConfigInput) -> FileSnapshot {
+    FileSnapshot {
+        path: input.path.clone(),
+        identity: input.identity,
+        length: u64::try_from(input.bytes.len()).unwrap_or(u64::MAX),
+        digest: *blake3::hash(&input.bytes).as_bytes(),
+    }
+}
+
+fn first_changed_snapshot(expected: &[FileSnapshot], observed: &[FileSnapshot]) -> Option<PathBuf> {
+    for (expected, observed) in expected.iter().zip(observed) {
+        if expected != observed {
+            return Some(expected.path.to_path_buf());
+        }
+    }
+    expected
+        .get(observed.len())
+        .or_else(|| observed.get(expected.len()))
+        .map(|snapshot| snapshot.path.to_path_buf())
+}
+
+fn witness_fingerprint(files: &[FileSnapshot]) -> [u8; 32] {
+    let mut digest = Hasher::new();
+    digest.update(b"compiler.typescript.immutable-files.v1\0");
+    for file in files {
+        let path = file.path.as_os_str().as_encoded_bytes();
+        digest.update(&(path.len() as u64).to_be_bytes());
+        digest.update(path);
+        digest.update(&file.identity.first.to_be_bytes());
+        digest.update(&file.identity.second.to_be_bytes());
+        digest.update(&file.length.to_be_bytes());
+        digest.update(&file.digest);
+    }
+    *digest.finalize().as_bytes()
+}
+
+fn capture_file_snapshot(
+    path: &Path,
+    maximum_bytes: u64,
+) -> Result<FileSnapshot, TypeScriptProjectHostError> {
+    let (snapshot, _) = read_regular_file(path, maximum_bytes)?;
+    Ok(snapshot)
+}
+
+fn read_regular_file(
+    path: &Path,
+    maximum_bytes: u64,
+) -> Result<(FileSnapshot, Vec<u8>), TypeScriptProjectHostError> {
+    #[cfg(unix)]
+    let mut file = {
+        use rustix::fs::{Mode, OFlags, open};
+        use std::os::fd::OwnedFd;
+
+        let descriptor: OwnedFd = open(
+            path,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|source| TypeScriptProjectHostError::PackagePath {
+            path: path.to_path_buf().into_boxed_path(),
+            source: io::Error::from(source),
+        })?;
+        File::from(descriptor)
+    };
+    #[cfg(not(unix))]
+    let mut file = {
+        let before = fs::symlink_metadata(path).map_err(|source| {
+            TypeScriptProjectHostError::PackagePath {
+                path: path.to_path_buf().into_boxed_path(),
+                source,
+            }
+        })?;
+        if !before.file_type().is_file() {
+            return Err(TypeScriptProjectHostError::RegularFileRequired {
+                path: path.to_path_buf().into_boxed_path(),
+            });
+        }
+        File::open(path).map_err(|source| TypeScriptProjectHostError::PackagePath {
+            path: path.to_path_buf().into_boxed_path(),
+            source,
+        })?
+    };
+
+    let before = file
+        .metadata()
+        .map_err(|source| TypeScriptProjectHostError::PackagePath {
+            path: path.to_path_buf().into_boxed_path(),
+            source,
+        })?;
+    if !before.file_type().is_file() {
+        return Err(TypeScriptProjectHostError::RegularFileRequired {
+            path: path.to_path_buf().into_boxed_path(),
+        });
+    }
+    if before.len() > maximum_bytes {
+        return Err(TypeScriptProjectHostError::FileTooLarge {
+            path: path.to_path_buf().into_boxed_path(),
+            observed: before.len(),
+            maximum: maximum_bytes,
+        });
+    }
+    let identity =
+        file_identity(&before).map_err(|source| TypeScriptProjectHostError::PackagePath {
+            path: path.to_path_buf().into_boxed_path(),
+            source,
+        })?;
+    let reserve = usize::try_from(before.len()).unwrap_or(usize::MAX);
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(reserve).map_err(|source| {
+        TypeScriptProjectHostError::FileAllocation {
+            path: path.to_path_buf().into_boxed_path(),
+            message: source.to_string().into_boxed_str(),
+        }
+    })?;
+    let mut limited = (&mut file).take(maximum_bytes.saturating_add(1));
+    limited
+        .read_to_end(&mut bytes)
+        .map_err(|source| TypeScriptProjectHostError::PackagePath {
+            path: path.to_path_buf().into_boxed_path(),
+            source,
+        })?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > maximum_bytes {
+        return Err(TypeScriptProjectHostError::FileTooLarge {
+            path: path.to_path_buf().into_boxed_path(),
+            observed: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+            maximum: maximum_bytes,
+        });
+    }
+    let after = file
+        .metadata()
+        .map_err(|source| TypeScriptProjectHostError::PackagePath {
+            path: path.to_path_buf().into_boxed_path(),
+            source,
+        })?;
+    if identity
+        != file_identity(&after).map_err(|source| TypeScriptProjectHostError::PackagePath {
+            path: path.to_path_buf().into_boxed_path(),
+            source,
+        })?
+        || after.len() != u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+    {
+        return Err(TypeScriptProjectHostError::WitnessChanged {
+            path: path.to_path_buf().into_boxed_path(),
+        });
+    }
+    let snapshot = FileSnapshot {
+        path: path.to_path_buf().into_boxed_path(),
+        identity,
+        length: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+        digest: *blake3::hash(&bytes).as_bytes(),
+    };
+    Ok((snapshot, bytes))
+}
+
+#[cfg(unix)]
+fn file_identity(metadata: &fs::Metadata) -> io::Result<FileIdentity> {
+    use std::os::unix::fs::MetadataExt;
+
+    Ok(FileIdentity {
+        first: metadata.dev(),
+        second: metadata.ino(),
+    })
+}
+
+#[cfg(windows)]
+fn file_identity(metadata: &fs::Metadata) -> io::Result<FileIdentity> {
+    use std::os::windows::fs::MetadataExt;
+
+    Ok(FileIdentity {
+        first: u64::from(metadata.volume_serial_number().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "file volume identity is unavailable",
+            )
+        })?),
+        second: metadata.file_index().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::Unsupported, "file index is unavailable")
+        })?,
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn file_identity(_metadata: &fs::Metadata) -> io::Result<FileIdentity> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "this platform cannot provide stable file identity",
+    ))
+}
+
+fn collect_module_inputs(
+    package_root: &Path,
+) -> Result<Vec<TypeScriptFileInput>, TypeScriptProjectHostError> {
+    let package_root = fs::canonicalize(package_root).map_err(|source| {
+        TypeScriptProjectHostError::PackagePath {
+            path: package_root.to_path_buf().into_boxed_path(),
+            source,
+        }
+    })?;
+    let mut paths = Vec::new();
+    collect_regular_module_paths(&package_root, &mut paths)?;
+    paths.sort_unstable();
+    if paths.len() > MAX_TYPESCRIPT_PACKAGE_FILES {
+        return Err(TypeScriptProjectHostError::ModuleFileLimit {
+            observed: paths.len(),
+            maximum: MAX_TYPESCRIPT_PACKAGE_FILES,
+        });
+    }
+    let mut total_bytes = 0_u64;
+    let mut output = Vec::new();
+    for path in paths {
+        let remaining = MAX_TYPESCRIPT_PACKAGE_BYTES.saturating_sub(total_bytes);
+        let (snapshot, bytes) = read_regular_file(&path, remaining)?;
+        total_bytes = total_bytes.saturating_add(snapshot.length);
+        output.push(TypeScriptFileInput {
+            path: snapshot.path,
+            content_id: ContentId::<SourceFactDomain>::from_canonical_bytes(&bytes),
+            identity: snapshot.identity,
+            bytes: bytes.into_boxed_slice(),
+        });
+    }
+    Ok(output)
+}
+
+fn collect_project_configs(
+    project_root: &Path,
+    workspace_root: &Path,
+    module_root: &Path,
+    selected_build_configs: &[PathBuf],
+) -> Result<Vec<TypeScriptConfigInput>, TypeScriptProjectHostError> {
+    let mut paths = Vec::new();
+    collect_tsconfig_paths(workspace_root, &mut paths, 0)?;
+    paths.extend(selected_build_configs.iter().cloned());
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    paths.sort_unstable();
+    paths.dedup();
+    if paths.len() > MAX_PROJECT_CONFIG_FILES {
+        return Err(TypeScriptProjectHostError::ConfigFileLimit {
+            observed: paths.len(),
+            maximum: MAX_PROJECT_CONFIG_FILES,
+        });
+    }
+
+    let mut candidate_paths = std::collections::BTreeSet::new();
+    for path in &paths {
+        candidate_paths.insert(canonical_regular_config(path, workspace_root, module_root)?);
+    }
+    let mut selected_paths = std::collections::BTreeSet::new();
+    for path in selected_build_configs {
+        selected_paths.insert(canonical_regular_config(path, workspace_root, module_root)?);
+    }
+    let mut pending = paths;
+    let mut captured = std::collections::BTreeMap::<PathBuf, TypeScriptConfigInput>::new();
+    let mut total_bytes = 0_u64;
+    while let Some(path) = pending.pop() {
+        if captured.contains_key(&path) {
+            continue;
+        }
+        if captured.len() >= MAX_PROJECT_CONFIG_FILES {
+            return Err(TypeScriptProjectHostError::ConfigFileLimit {
+                observed: captured.len().saturating_add(1),
+                maximum: MAX_PROJECT_CONFIG_FILES,
+            });
+        }
+        let canonical = canonical_regular_config(&path, workspace_root, module_root)?;
+        if captured.contains_key(&canonical) {
+            continue;
+        }
+        let remaining = MAX_PROJECT_CONFIG_BYTES.saturating_sub(total_bytes);
+        let (snapshot, bytes) = read_regular_file(&canonical, remaining)?;
+        total_bytes = total_bytes.saturating_add(snapshot.length);
+        let value = parse_typescript_config(&canonical, &bytes)?;
+        let extends = config_paths_from_field(
+            &value,
+            "extends",
+            &canonical,
+            project_root,
+            workspace_root,
+            module_root,
+            false,
+        )?;
+        let references = config_paths_from_field(
+            &value,
+            "references",
+            &canonical,
+            project_root,
+            workspace_root,
+            module_root,
+            true,
+        )?;
+        pending.extend(extends.iter().cloned());
+        pending.extend(references.iter().cloned());
+        captured.insert(
+            canonical.clone(),
+            TypeScriptConfigInput {
+                path: canonical.clone().into_boxed_path(),
+                bytes: bytes.clone().into_boxed_slice(),
+                content_id: ContentId::<SourceFactDomain>::from_canonical_bytes(&bytes),
+                identity: snapshot.identity,
+                project_candidate: candidate_paths.contains(&canonical),
+                selected_build_config: selected_paths.contains(&canonical),
+                extends: extends
+                    .into_iter()
+                    .map(PathBuf::into_boxed_path)
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+                references: references
+                    .into_iter()
+                    .map(PathBuf::into_boxed_path)
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            },
+        );
+    }
+    Ok(captured.into_values().collect())
+}
+
+fn angular_build_config_paths(
+    workspace_root: &Path,
+    module_root: &Path,
+) -> Result<(Vec<PathBuf>, Option<FileSnapshot>), TypeScriptProjectHostError> {
+    let path = workspace_root.join("angular.json");
+    match fs::symlink_metadata(&path) {
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok((Vec::new(), None)),
+        Err(source) => {
+            return Err(TypeScriptProjectHostError::PackagePath {
+                path: path.into_boxed_path(),
+                source,
+            });
+        }
+        Ok(_) => {}
+    }
+    let (snapshot, bytes) = read_regular_file(&path, MAX_ANGULAR_WORKSPACE_BYTES)?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|source| {
+        TypeScriptProjectHostError::ConfigInvalid {
+            config: path.clone().into_boxed_path(),
+            message: source.to_string().into_boxed_str(),
+        }
+    })?;
+    let Some(projects) = value.get("projects") else {
+        return Err(TypeScriptProjectHostError::ConfigInvalid {
+            config: path.into_boxed_path(),
+            message: "Angular workspace must contain a projects object".into(),
+        });
+    };
+    let Some(projects) = projects.as_object() else {
+        return Err(TypeScriptProjectHostError::ConfigInvalid {
+            config: path.into_boxed_path(),
+            message: "Angular workspace projects must be an object".into(),
+        });
+    };
+    let mut selected = Vec::new();
+    for project in projects.values() {
+        for targets_key in ["architect", "targets"] {
+            if let Some(targets) = project
+                .get(targets_key)
+                .and_then(serde_json::Value::as_object)
+                && let Some(build) = targets.get("build")
+            {
+                collect_angular_tsconfig(build, &mut selected, &path)?;
+            }
+        }
+    }
+    let mut resolved = Vec::new();
+    for raw in selected {
+        let candidate = workspace_root.join(raw);
+        resolved.push(resolve_relative_config(
+            &candidate,
+            workspace_root,
+            module_root,
+        )?);
+    }
+    resolved.sort_unstable();
+    resolved.dedup();
+    Ok((resolved, Some(snapshot)))
+}
+
+fn collect_angular_tsconfig(
+    target: &serde_json::Value,
+    output: &mut Vec<String>,
+    workspace: &Path,
+) -> Result<(), TypeScriptProjectHostError> {
+    if let Some(options) = target.get("options") {
+        if !options.is_object() {
+            return Err(TypeScriptProjectHostError::ConfigInvalid {
+                config: workspace.to_path_buf().into_boxed_path(),
+                message: "Angular build options must be an object".into(),
+            });
+        }
+        if let Some(value) = options.get("tsConfig") {
+            let value =
+                value
+                    .as_str()
+                    .ok_or_else(|| TypeScriptProjectHostError::ConfigInvalid {
+                        config: workspace.to_path_buf().into_boxed_path(),
+                        message: "Angular build tsConfig must be a string".into(),
+                    })?;
+            output.push(value.to_owned());
+        }
+    }
+    if let Some(configurations) = target
+        .get("configurations")
+        .and_then(serde_json::Value::as_object)
+    {
+        for configuration in configurations.values() {
+            if let Some(value) = configuration.get("tsConfig") {
+                let value =
+                    value
+                        .as_str()
+                        .ok_or_else(|| TypeScriptProjectHostError::ConfigInvalid {
+                            config: workspace.to_path_buf().into_boxed_path(),
+                            message: "Angular build configuration tsConfig must be a string".into(),
+                        })?;
+                output.push(value.to_owned());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_tsconfig_paths(
+    directory: &Path,
+    output: &mut Vec<PathBuf>,
+    depth: usize,
+) -> Result<(), TypeScriptProjectHostError> {
+    if depth > MAX_PROJECT_ANCESTORS * 2 {
+        return Err(TypeScriptProjectHostError::ConfigDirectoryDepth {
+            directory: directory.to_path_buf().into_boxed_path(),
+        });
+    }
+    for entry in
+        fs::read_dir(directory).map_err(|source| TypeScriptProjectHostError::PackagePath {
+            path: directory.to_path_buf().into_boxed_path(),
+            source,
+        })?
+    {
+        let entry = entry.map_err(|source| TypeScriptProjectHostError::PackagePath {
+            path: directory.to_path_buf().into_boxed_path(),
+            source,
+        })?;
+        let path = entry.path();
+        let name = entry.file_name();
+        if name == "node_modules"
+            || name == ".git"
+            || name == ".yarn"
+            || name == "dist"
+            || name == "build"
+            || name == "target"
+        {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(&path).map_err(|source| {
+            TypeScriptProjectHostError::PackagePath {
+                path: path.clone().into_boxed_path(),
+                source,
+            }
+        })?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            collect_tsconfig_paths(&path, output, depth + 1)?;
+        } else if metadata.is_file() {
+            let file_name = name.to_string_lossy();
+            if file_name == "tsconfig.json"
+                || file_name.starts_with("tsconfig.") && file_name.ends_with(".json")
+            {
+                output.push(path);
+                if output.len() > MAX_PROJECT_CONFIG_FILES {
+                    return Err(TypeScriptProjectHostError::ConfigFileLimit {
+                        observed: output.len(),
+                        maximum: MAX_PROJECT_CONFIG_FILES,
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn canonical_regular_config(
+    path: &Path,
+    workspace_root: &Path,
+    module_root: &Path,
+) -> Result<PathBuf, TypeScriptProjectHostError> {
+    let metadata =
+        fs::symlink_metadata(path).map_err(|source| TypeScriptProjectHostError::PackagePath {
+            path: path.to_path_buf().into_boxed_path(),
+            source,
+        })?;
+    if !metadata.file_type().is_file() {
+        return Err(TypeScriptProjectHostError::RegularFileRequired {
+            path: path.to_path_buf().into_boxed_path(),
+        });
+    }
+    let canonical =
+        fs::canonicalize(path).map_err(|source| TypeScriptProjectHostError::PackagePath {
+            path: path.to_path_buf().into_boxed_path(),
+            source,
+        })?;
+    if !canonical.starts_with(workspace_root) && !canonical.starts_with(module_root) {
+        return Err(TypeScriptProjectHostError::ConfigEscapesBoundary {
+            config: canonical.into_boxed_path(),
+            boundary: workspace_root.to_path_buf().into_boxed_path(),
+        });
+    }
+    Ok(canonical)
+}
+
+fn parse_typescript_config(
+    path: &Path,
+    bytes: &[u8],
+) -> Result<serde_json::Value, TypeScriptProjectHostError> {
+    let text =
+        std::str::from_utf8(bytes).map_err(|source| TypeScriptProjectHostError::ConfigInvalid {
+            config: path.to_path_buf().into_boxed_path(),
+            message: source.to_string().into_boxed_str(),
+        })?;
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let stripped = strip_jsonc(text).ok_or_else(|| TypeScriptProjectHostError::ConfigInvalid {
+        config: path.to_path_buf().into_boxed_path(),
+        message: "unterminated string or comment".into(),
+    })?;
+    let value: serde_json::Value = serde_json::from_str(&stripped).map_err(|source| {
+        TypeScriptProjectHostError::ConfigInvalid {
+            config: path.to_path_buf().into_boxed_path(),
+            message: source.to_string().into_boxed_str(),
+        }
+    })?;
+    if !value.is_object() {
+        return Err(TypeScriptProjectHostError::ConfigInvalid {
+            config: path.to_path_buf().into_boxed_path(),
+            message: "configuration root must be an object".into(),
+        });
+    }
+    Ok(value)
+}
+
+fn strip_jsonc(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            output.push(byte);
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
+        } else if byte == b'"' {
+            in_string = true;
+            output.push(byte);
+            index += 1;
+        } else if byte == b'/' && bytes.get(index + 1) == Some(&b'/') {
+            output.extend_from_slice(b"  ");
+            index += 2;
+            while index < bytes.len() && bytes[index] != b'\n' {
+                output.push(b' ');
+                index += 1;
+            }
+        } else if byte == b'/' && bytes.get(index + 1) == Some(&b'*') {
+            output.extend_from_slice(b"  ");
+            index += 2;
+            let mut closed = false;
+            while index < bytes.len() {
+                if bytes[index] == b'*' && bytes.get(index + 1) == Some(&b'/') {
+                    output.extend_from_slice(b"  ");
+                    index += 2;
+                    closed = true;
+                    break;
+                }
+                output.push(if bytes[index] == b'\n' { b'\n' } else { b' ' });
+                index += 1;
+            }
+            if !closed {
+                return None;
+            }
+        } else {
+            output.push(byte);
+            index += 1;
+        }
+    }
+    if in_string {
+        return None;
+    }
+    let mut compact = Vec::with_capacity(output.len());
+    let mut next_significant = vec![0_u8; output.len()];
+    let mut next = 0_u8;
+    for index in (0..output.len()).rev() {
+        if !output[index].is_ascii_whitespace() {
+            next = output[index];
+        }
+        next_significant[index] = next;
+    }
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut index = 0;
+    while index < output.len() {
+        let byte = output[index];
+        if in_string {
+            compact.push(byte);
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
+        } else if byte == b'"' {
+            in_string = true;
+            compact.push(byte);
+            index += 1;
+        } else if byte == b','
+            && next_significant
+                .get(index + 1)
+                .is_some_and(|next| *next == b'}' || *next == b']')
+        {
+            index += 1;
+        } else {
+            compact.push(byte);
+            index += 1;
+        }
+    }
+    String::from_utf8(compact).ok()
+}
+
+fn config_paths_from_field(
+    value: &serde_json::Value,
+    field: &str,
+    source: &Path,
+    project_root: &Path,
+    workspace_root: &Path,
+    module_root: &Path,
+    references: bool,
+) -> Result<Vec<PathBuf>, TypeScriptProjectHostError> {
+    let Some(field_value) = value.get(field) else {
+        return Ok(Vec::new());
+    };
+    let strings = if references {
+        let entries =
+            field_value
+                .as_array()
+                .ok_or_else(|| TypeScriptProjectHostError::ConfigInvalid {
+                    config: source.to_path_buf().into_boxed_path(),
+                    message: "references must be an array".into(),
+                })?;
+        entries
+            .iter()
+            .map(|entry| {
+                entry
+                    .get("path")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| TypeScriptProjectHostError::ConfigInvalid {
+                        config: source.to_path_buf().into_boxed_path(),
+                        message: "each reference must contain a string path".into(),
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        match field_value {
+            serde_json::Value::String(value) => vec![value.as_str()],
+            serde_json::Value::Array(values) => values
+                .iter()
+                .map(|entry| {
+                    entry
+                        .as_str()
+                        .ok_or_else(|| TypeScriptProjectHostError::ConfigInvalid {
+                            config: source.to_path_buf().into_boxed_path(),
+                            message: "extends entries must be strings".into(),
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            _ => {
+                return Err(TypeScriptProjectHostError::ConfigInvalid {
+                    config: source.to_path_buf().into_boxed_path(),
+                    message: "extends must be a string or an array of strings".into(),
+                });
+            }
+        }
+    };
+    let mut resolved = Vec::new();
+    for raw in strings {
+        if references || raw.starts_with('.') || Path::new(raw).is_absolute() {
+            let candidate = if Path::new(raw).is_absolute() {
+                PathBuf::from(raw)
+            } else {
+                source.parent().unwrap_or(project_root).join(raw)
+            };
+            let config = resolve_relative_config(&candidate, workspace_root, module_root)?;
+            resolved.push(config);
+        } else {
+            let config = resolve_package_config(raw, source, workspace_root, module_root)?
+                .ok_or_else(|| TypeScriptProjectHostError::ConfigMissing {
+                    config: PathBuf::from(raw).into_boxed_path(),
+                })?;
+            resolved.push(config);
+        }
+    }
+    Ok(resolved)
+}
+
+fn resolve_relative_config(
+    candidate: &Path,
+    workspace_root: &Path,
+    module_root: &Path,
+) -> Result<PathBuf, TypeScriptProjectHostError> {
+    let choices = if candidate.is_dir() {
+        vec![candidate.join("tsconfig.json")]
+    } else if candidate.extension().is_none() {
+        vec![
+            candidate.with_extension("json"),
+            candidate.join("tsconfig.json"),
+            candidate.to_path_buf(),
+        ]
+    } else {
+        vec![candidate.to_path_buf()]
+    };
+    for choice in choices {
+        if fs::symlink_metadata(&choice).is_ok_and(|metadata| metadata.file_type().is_file()) {
+            return canonical_regular_config(&choice, workspace_root, module_root);
+        }
+    }
+    Err(TypeScriptProjectHostError::ConfigMissing {
+        config: candidate.to_path_buf().into_boxed_path(),
+    })
+}
+
+fn resolve_package_config(
+    raw: &str,
+    source: &Path,
+    workspace_root: &Path,
+    module_root: &Path,
+) -> Result<Option<PathBuf>, TypeScriptProjectHostError> {
+    let mut ancestor = source.parent();
+    while let Some(directory) = ancestor {
+        let node_modules = directory.join("node_modules");
+        if node_modules.starts_with(workspace_root) || node_modules == module_root {
+            let candidate = node_modules.join(raw);
+            for choice in [
+                candidate.clone(),
+                candidate.with_extension("json"),
+                candidate.join("tsconfig.json"),
+            ] {
+                if fs::symlink_metadata(&choice)
+                    .is_ok_and(|metadata| metadata.file_type().is_file())
+                {
+                    return canonical_regular_config(&choice, workspace_root, module_root)
+                        .map(Some);
+                }
+            }
+        }
+        if directory == workspace_root {
+            break;
+        }
+        ancestor = directory.parent();
+    }
+    Ok(None)
+}
+
+fn collect_regular_module_paths(
+    directory: &Path,
+    output: &mut Vec<PathBuf>,
+) -> Result<(), TypeScriptProjectHostError> {
+    let metadata = fs::symlink_metadata(directory).map_err(|source| {
+        TypeScriptProjectHostError::PackagePath {
+            path: directory.to_path_buf().into_boxed_path(),
+            source,
+        }
+    })?;
+    if !metadata.is_dir() {
+        return Err(TypeScriptProjectHostError::RegularDirectoryRequired {
+            path: directory.to_path_buf().into_boxed_path(),
+        });
+    }
+    for entry in
+        fs::read_dir(directory).map_err(|source| TypeScriptProjectHostError::PackagePath {
+            path: directory.to_path_buf().into_boxed_path(),
+            source,
+        })?
+    {
+        let entry = entry.map_err(|source| TypeScriptProjectHostError::PackagePath {
+            path: directory.to_path_buf().into_boxed_path(),
+            source,
+        })?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|source| {
+            TypeScriptProjectHostError::PackagePath {
+                path: path.clone().into_boxed_path(),
+                source,
+            }
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(TypeScriptProjectHostError::ModuleEntrySymlink {
+                path: path.into_boxed_path(),
+            });
+        }
+        if metadata.is_dir() {
+            collect_regular_module_paths(&path, output)?;
+        } else if metadata.is_file() {
+            output.push(path);
+        } else {
+            return Err(TypeScriptProjectHostError::RegularFileRequired {
+                path: path.into_boxed_path(),
+            });
+        }
+        if output.len() > MAX_TYPESCRIPT_PACKAGE_FILES {
+            return Err(TypeScriptProjectHostError::ModuleFileLimit {
+                observed: output.len(),
+                maximum: MAX_TYPESCRIPT_PACKAGE_FILES,
+            });
+        }
+    }
+    Ok(())
+}
 
 /// Closed host inputs used to admit TypeScript projects after package-root selection.
 #[derive(Clone, Debug)]
 pub struct TypeScriptProjectHost {
     explicit_compiler: Option<Box<Path>>,
     node: Option<Box<Path>>,
+    node_origin: Option<TypeScriptSelectionOrigin>,
+    home_root: Option<Box<Path>>,
     explicit_module_root: Option<Box<Path>>,
     report_program: Option<Box<Path>>,
     probe_limits: ToolchainProbeLimits,
@@ -40,9 +1194,34 @@ impl TypeScriptProjectHost {
         report_program: Option<PathBuf>,
         probe_limits: ToolchainProbeLimits,
     ) -> Self {
+        let node_origin = node
+            .as_ref()
+            .map(|_| TypeScriptSelectionOrigin::ExplicitConfiguration);
+        Self::new_with_node_origin(
+            explicit_compiler,
+            node,
+            node_origin,
+            None,
+            explicit_module_root,
+            report_program,
+            probe_limits,
+        )
+    }
+
+    pub(crate) fn new_with_node_origin(
+        explicit_compiler: Option<PathBuf>,
+        node: Option<PathBuf>,
+        node_origin: Option<TypeScriptSelectionOrigin>,
+        home_root: Option<PathBuf>,
+        explicit_module_root: Option<PathBuf>,
+        report_program: Option<PathBuf>,
+        probe_limits: ToolchainProbeLimits,
+    ) -> Self {
         Self {
             explicit_compiler: explicit_compiler.map(PathBuf::into_boxed_path),
             node: node.map(PathBuf::into_boxed_path),
+            node_origin,
+            home_root: home_root.map(PathBuf::into_boxed_path),
             explicit_module_root: explicit_module_root.map(PathBuf::into_boxed_path),
             report_program: report_program.map(PathBuf::into_boxed_path),
             probe_limits,
@@ -70,7 +1249,18 @@ impl TypeScriptProjectHost {
             }
         })?;
 
-        let project = match find_project_typescript(&project_root)? {
+        let home_root = self
+            .home_root
+            .as_deref()
+            .map(|home| {
+                fs::canonicalize(home).map_err(|source| TypeScriptProjectHostError::HomePath {
+                    home: home.to_path_buf().into_boxed_path(),
+                    source,
+                })
+            })
+            .transpose()?;
+        let project = match find_project_typescript_with_home(&project_root, home_root.as_deref())?
+        {
             ProjectTypeScriptSearch::Found(project) => Some(project),
             ProjectTypeScriptSearch::NotFound => None,
             ProjectTypeScriptSearch::Pnp(marker) => {
@@ -84,19 +1274,74 @@ impl TypeScriptProjectHost {
             return Ok(None);
         };
 
-        let compiler = self
+        let selected_compiler = self
             .explicit_compiler
             .as_deref()
             .unwrap_or(project.compiler.as_path());
-        let node =
+        let compiler = fs::canonicalize(selected_compiler).map_err(|source| {
+            TypeScriptProjectHostError::PackagePath {
+                path: selected_compiler.to_path_buf().into_boxed_path(),
+                source,
+            }
+        })?;
+        let selected_node =
             self.node
                 .as_deref()
                 .ok_or_else(|| TypeScriptProjectHostError::NodeUnavailable {
                     package_root: project_root.clone().into_boxed_path(),
                 })?;
+        let node = fs::canonicalize(selected_node).map_err(|source| {
+            TypeScriptProjectHostError::NodePath {
+                node: selected_node.to_path_buf().into_boxed_path(),
+                source,
+            }
+        })?;
+
+        let (module_root, expected_version) = match self.explicit_module_root.as_deref() {
+            Some(root) => read_typescript_module(root)?,
+            None if self.explicit_compiler.is_some() => {
+                let root = find_module_root_for_compiler(&compiler)?;
+                match root {
+                    Some(root) => read_typescript_module(&root)?,
+                    None if compiler == project.compiler => {
+                        (project.module_root.clone(), project.version.clone())
+                    }
+                    None => {
+                        return Err(TypeScriptProjectHostError::ExplicitModuleRootRequired {
+                            compiler: compiler.into_boxed_path(),
+                        });
+                    }
+                }
+            }
+            None => (project.module_root.clone(), project.version.clone()),
+        };
+        let package_root = fs::canonicalize(module_root.join("typescript")).map_err(|source| {
+            TypeScriptProjectHostError::PackagePath {
+                path: module_root.join("typescript").into_boxed_path(),
+                source,
+            }
+        })?;
+        if !package_root.starts_with(&module_root) {
+            return Err(TypeScriptProjectHostError::PackageEscapesNodeModules {
+                package: package_root.into_boxed_path(),
+                node_modules: module_root.into_boxed_path(),
+            });
+        }
+        let witness = TypeScriptProjectWitness::capture(
+            &project_root,
+            home_root.as_deref(),
+            &project,
+            &compiler,
+            &node,
+            &module_root,
+            &package_root,
+            project.workspace.as_ref(),
+        )?;
+        witness.validate_current()?;
+
         let node_version = crate::application::toolchain_probe::probe_command(
             NativeTool::TypeScriptCompiler,
-            node,
+            &node,
             &["--version"],
             self.probe_limits,
         )
@@ -104,21 +1349,12 @@ impl TypeScriptProjectHost {
             node: node.to_path_buf().into_boxed_path(),
             source,
         })?;
+        witness.validate_current()?;
 
-        let (module_root, expected_version) = match self.explicit_module_root.as_deref() {
-            Some(root) => read_typescript_module(root)?,
-            None if self.explicit_compiler.is_some() => {
-                let root = find_module_root_for_compiler(compiler)?
-                    .unwrap_or_else(|| project.module_root.clone());
-                read_typescript_module(&root)?
-            }
-            None => (project.module_root.clone(), project.version.clone()),
-        };
-
-        let version = if is_module_tsc_script(compiler, &module_root) {
+        let version = if is_module_tsc_script(&compiler, &module_root) {
             crate::application::toolchain_probe::probe_typescript_script_with_node(
-                compiler,
-                node,
+                &compiler,
+                &node,
                 self.probe_limits,
             )
             .map_err(|source| TypeScriptProjectHostError::CompilerProbe {
@@ -129,7 +1365,7 @@ impl TypeScriptProjectHost {
         } else {
             crate::application::toolchain_probe::probe_version(
                 NativeTool::TypeScriptCompiler,
-                compiler,
+                &compiler,
                 self.probe_limits,
             )
             .map_err(|source| TypeScriptProjectHostError::CompilerProbe {
@@ -138,6 +1374,7 @@ impl TypeScriptProjectHost {
                 source,
             })?
         };
+        witness.validate_current()?;
         let observed_version = parse_tsc_version(&version).ok_or_else(|| {
             TypeScriptProjectHostError::InvalidCompilerVersion {
                 compiler: compiler.to_path_buf().into_boxed_path(),
@@ -170,12 +1407,32 @@ impl TypeScriptProjectHost {
             &expected_version,
             &node_version,
             checker.local_configuration_fingerprint(),
+            witness.fingerprint,
+            if self.explicit_compiler.is_some() {
+                TypeScriptSelectionOrigin::ExplicitConfiguration
+            } else {
+                TypeScriptSelectionOrigin::ProjectLocalInstallation
+            },
+            self.node_origin
+                .unwrap_or(TypeScriptSelectionOrigin::PlatformLocation),
         );
         Ok(Some(AdmittedTypeScriptProject {
             checker,
             compiler: compiler.to_path_buf().into_boxed_path(),
             compiler_version: version,
+            compiler_origin: if self.explicit_compiler.is_some() {
+                TypeScriptSelectionOrigin::ExplicitConfiguration
+            } else {
+                TypeScriptSelectionOrigin::ProjectLocalInstallation
+            },
+            node: node.to_path_buf().into_boxed_path(),
+            node_version,
+            node_origin: self
+                .node_origin
+                .unwrap_or(TypeScriptSelectionOrigin::PlatformLocation),
+            module_root: module_root.into_boxed_path(),
             fingerprint,
+            witness: std::sync::Arc::new(witness),
         }))
     }
 }
@@ -186,7 +1443,38 @@ pub(crate) struct AdmittedTypeScriptProject {
     pub(crate) checker: ExplicitTypeScriptChecker,
     pub(crate) compiler: Box<Path>,
     pub(crate) compiler_version: Box<[u8]>,
+    compiler_origin: TypeScriptSelectionOrigin,
+    node: Box<Path>,
+    node_version: Box<[u8]>,
+    node_origin: TypeScriptSelectionOrigin,
+    module_root: Box<Path>,
     pub(crate) fingerprint: [u8; 32],
+    pub(crate) witness: std::sync::Arc<TypeScriptProjectWitness>,
+}
+
+impl AdmittedTypeScriptProject {
+    pub(crate) fn inputs(&self) -> TypeScriptProjectInputs<'_> {
+        TypeScriptProjectInputs {
+            package_root: &self.witness.project_root,
+            workspace_root: &self.witness.workspace_root,
+            typescript_module_root: &self.module_root,
+            compiler_path: &self.compiler,
+            compiler_version: &self.compiler_version,
+            compiler_origin: self.compiler_origin,
+            node_path: &self.node,
+            node_version: &self.node_version,
+            node_origin: self.node_origin,
+            fingerprint: self.fingerprint,
+            config_candidates: &self.witness.config_candidates,
+            selected_build_config_paths: &self.witness.selected_build_config_paths,
+            typescript_files: &self.witness.typescript_files,
+            witness: &self.witness,
+        }
+    }
+
+    pub(crate) fn validate_current(&self) -> Result<(), TypeScriptProjectHostError> {
+        self.witness.validate_current()
+    }
 }
 
 #[derive(Debug)]
@@ -194,6 +1482,7 @@ struct ProjectTypeScript {
     module_root: PathBuf,
     compiler: PathBuf,
     version: String,
+    workspace: Option<WorkspaceBoundary>,
 }
 
 enum ProjectTypeScriptSearch {
@@ -205,12 +1494,39 @@ enum ProjectTypeScriptSearch {
 fn find_project_typescript(
     root: &Path,
 ) -> Result<ProjectTypeScriptSearch, TypeScriptProjectHostError> {
+    find_project_typescript_with_home(root, None)
+}
+
+fn find_project_typescript_with_home(
+    root: &Path,
+    home_root: Option<&Path>,
+) -> Result<ProjectTypeScriptSearch, TypeScriptProjectHostError> {
+    let workspace = discover_workspace_boundary(root, home_root)?;
+    let scan_root = workspace
+        .as_ref()
+        .map(|workspace| workspace.root.as_ref())
+        .unwrap_or(root);
+    let mut ancestors = Vec::new();
+    let mut current = root;
+    loop {
+        ancestors.push(current);
+        if current == scan_root || ancestors.len() >= MAX_PROJECT_ANCESTORS {
+            break;
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        if !parent.starts_with(scan_root) {
+            break;
+        }
+        current = parent;
+    }
     let mut pnp = None;
-    for ancestor in root.ancestors().take(MAX_PROJECT_ANCESTORS) {
+    for ancestor in ancestors {
         let node_modules = ancestor.join("node_modules");
         let package = node_modules.join("typescript");
         match fs::symlink_metadata(&package) {
-            Ok(_) => return inspect_project_package(&node_modules, &package),
+            Ok(_) => return inspect_project_package(&node_modules, &package, workspace),
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
             Err(source) => {
                 return Err(TypeScriptProjectHostError::PackagePath {
@@ -219,9 +1535,11 @@ fn find_project_typescript(
                 });
             }
         }
-        let marker = ancestor.join(".pnp.cjs");
-        if marker.is_file() && pnp.is_none() {
-            pnp = Some(marker);
+        for marker_name in [".pnp.cjs", ".pnp.loader.mjs"] {
+            let marker = ancestor.join(marker_name);
+            if path_exists(&marker)? && pnp.is_none() {
+                pnp = Some(marker);
+            }
         }
     }
     Ok(match pnp {
@@ -233,6 +1551,7 @@ fn find_project_typescript(
 fn inspect_project_package(
     node_modules: &Path,
     package: &Path,
+    workspace: Option<WorkspaceBoundary>,
 ) -> Result<ProjectTypeScriptSearch, TypeScriptProjectHostError> {
     let node_modules = fs::canonicalize(node_modules).map_err(|source| {
         TypeScriptProjectHostError::PackagePath {
@@ -278,22 +1597,33 @@ fn inspect_project_package(
     let bin_link = node_modules.join(".bin/tsc");
     match fs::symlink_metadata(&bin_link) {
         Ok(metadata) => {
-            if !metadata.file_type().is_symlink() {
+            if metadata.file_type().is_symlink() {
+                let target = fs::canonicalize(&bin_link).map_err(|source| {
+                    TypeScriptProjectHostError::PackagePath {
+                        path: bin_link.clone().into_boxed_path(),
+                        source,
+                    }
+                })?;
+                if target != compiler {
+                    return Err(TypeScriptProjectHostError::CompilerLinkMismatch {
+                        shim: bin_link.into_boxed_path(),
+                        target: target.into_boxed_path(),
+                        expected: compiler.into_boxed_path(),
+                    });
+                }
+            } else if metadata.is_file() {
+                let (_, bytes) = read_regular_file(
+                    &bin_link,
+                    u64::try_from(MAX_COMPILER_SHIM_BYTES).unwrap_or(u64::MAX),
+                )?;
+                if !has_bounded_shebang(&bytes) {
+                    return Err(TypeScriptProjectHostError::CompilerShimRejected {
+                        shim: bin_link.into_boxed_path(),
+                    });
+                }
+            } else {
                 return Err(TypeScriptProjectHostError::CompilerShimRejected {
                     shim: bin_link.into_boxed_path(),
-                });
-            }
-            let target = fs::canonicalize(&bin_link).map_err(|source| {
-                TypeScriptProjectHostError::PackagePath {
-                    path: bin_link.clone().into_boxed_path(),
-                    source,
-                }
-            })?;
-            if target != compiler {
-                return Err(TypeScriptProjectHostError::CompilerLinkMismatch {
-                    shim: bin_link.into_boxed_path(),
-                    target: target.into_boxed_path(),
-                    expected: compiler.into_boxed_path(),
                 });
             }
         }
@@ -309,7 +1639,168 @@ fn inspect_project_package(
         module_root: node_modules,
         compiler,
         version,
+        workspace,
     }))
+}
+
+fn has_bounded_shebang(bytes: &[u8]) -> bool {
+    if bytes.len() > MAX_COMPILER_SHIM_BYTES || !bytes.starts_with(b"#!") {
+        return false;
+    }
+    let Some(end) = bytes
+        .iter()
+        .take(MAX_SHEBANG_BYTES)
+        .position(|byte| *byte == b'\n')
+    else {
+        return false;
+    };
+    end > 2
+        && bytes[2..end]
+            .iter()
+            .all(|byte| byte.is_ascii_graphic() || *byte == b' ')
+}
+
+fn discover_workspace_boundary(
+    root: &Path,
+    home_root: Option<&Path>,
+) -> Result<Option<WorkspaceBoundary>, TypeScriptProjectHostError> {
+    for (index, ancestor) in root.ancestors().take(MAX_PROJECT_ANCESTORS).enumerate() {
+        if index > 0 && home_root.is_some_and(|home| ancestor == home) {
+            break;
+        }
+        if index > 0 && home_root.is_none() {
+            break;
+        }
+        let mut files = Vec::new();
+        let manifest = ancestor.join("package.json");
+        if path_exists(&manifest)? {
+            let (snapshot, bytes) = read_regular_file(
+                &manifest,
+                u64::try_from(MAX_PACKAGE_MANIFEST_BYTES).unwrap_or(u64::MAX),
+            )?;
+            let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|source| {
+                TypeScriptProjectHostError::WorkspaceConfigInvalid {
+                    path: manifest.clone().into_boxed_path(),
+                    message: source.to_string().into_boxed_str(),
+                }
+            })?;
+            if has_valid_workspaces_field(&value, &manifest)? {
+                files.push(snapshot);
+            }
+        }
+        let pnpm = ancestor.join("pnpm-workspace.yaml");
+        if path_exists(&pnpm)? {
+            let (snapshot, bytes) = read_regular_file(
+                &pnpm,
+                u64::try_from(MAX_PNPM_WORKSPACE_BYTES).unwrap_or(u64::MAX),
+            )?;
+            if !valid_pnpm_workspace(&bytes) {
+                return Err(TypeScriptProjectHostError::WorkspaceConfigInvalid {
+                    path: pnpm.into_boxed_path(),
+                    message: "pnpm workspace file must contain a bounded non-empty packages list"
+                        .into(),
+                });
+            }
+            files.push(snapshot);
+        }
+        if !files.is_empty() {
+            return Ok(Some(WorkspaceBoundary {
+                root: ancestor.to_path_buf().into_boxed_path(),
+                files: files.into_boxed_slice(),
+            }));
+        }
+    }
+    Ok(None)
+}
+
+fn path_exists(path: &Path) -> Result<bool, TypeScriptProjectHostError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(TypeScriptProjectHostError::PackagePath {
+            path: path.to_path_buf().into_boxed_path(),
+            source,
+        }),
+    }
+}
+
+fn has_valid_workspaces_field(
+    value: &serde_json::Value,
+    path: &Path,
+) -> Result<bool, TypeScriptProjectHostError> {
+    let Some(workspaces) = value.get("workspaces") else {
+        return Ok(false);
+    };
+    let patterns = workspaces
+        .as_array()
+        .or_else(|| {
+            workspaces
+                .get("packages")
+                .and_then(serde_json::Value::as_array)
+        })
+        .ok_or_else(|| TypeScriptProjectHostError::WorkspaceConfigInvalid {
+            path: path.to_path_buf().into_boxed_path(),
+            message: "workspaces must be an array or an object with a packages array".into(),
+        })?;
+    if patterns.is_empty()
+        || patterns.iter().any(|pattern| {
+            pattern
+                .as_str()
+                .is_none_or(|pattern| pattern.trim().is_empty() || Path::new(pattern).is_absolute())
+                || pattern.as_str().is_some_and(|pattern| {
+                    Path::new(pattern)
+                        .components()
+                        .any(|component| component == std::path::Component::ParentDir)
+                })
+        })
+    {
+        return Err(TypeScriptProjectHostError::WorkspaceConfigInvalid {
+            path: path.to_path_buf().into_boxed_path(),
+            message: "workspace package patterns must be non-empty relative strings".into(),
+        });
+    }
+    Ok(true)
+}
+
+fn valid_pnpm_workspace(bytes: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    let mut in_packages = false;
+    let mut count = 0;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if trimmed == "packages:" {
+            in_packages = true;
+            continue;
+        }
+        if in_packages {
+            if line.len() != trimmed.len() && trimmed.starts_with('-') {
+                let pattern = trimmed[1..].trim().trim_matches(['\'', '"']);
+                if pattern.is_empty()
+                    || Path::new(pattern).is_absolute()
+                    || Path::new(pattern)
+                        .components()
+                        .any(|component| component == std::path::Component::ParentDir)
+                {
+                    return false;
+                }
+                count += 1;
+                continue;
+            }
+            if line.len() != trimmed.len() {
+                continue;
+            }
+            break;
+        }
+        if trimmed.starts_with('-') {
+            return false;
+        }
+    }
+    in_packages && count > 0
 }
 
 fn find_module_root_for_compiler(
@@ -342,7 +1833,19 @@ fn read_typescript_module(root: &Path) -> Result<(PathBuf, String), TypeScriptPr
             path: root.to_path_buf().into_boxed_path(),
             source,
         })?;
-    let manifest = root.join("typescript/package.json");
+    let package = fs::canonicalize(root.join("typescript")).map_err(|source| {
+        TypeScriptProjectHostError::PackagePath {
+            path: root.join("typescript").into_boxed_path(),
+            source,
+        }
+    })?;
+    if !package.starts_with(&root) {
+        return Err(TypeScriptProjectHostError::PackageEscapesNodeModules {
+            package: package.into_boxed_path(),
+            node_modules: root.into_boxed_path(),
+        });
+    }
+    let manifest = package.join("package.json");
     let (name, version) = read_package_manifest(&manifest)?;
     if name != "typescript" {
         return Err(TypeScriptProjectHostError::InvalidPackageName {
@@ -358,17 +1861,10 @@ fn read_typescript_module(root: &Path) -> Result<(PathBuf, String), TypeScriptPr
 }
 
 fn read_package_manifest(path: &Path) -> Result<(String, String), TypeScriptProjectHostError> {
-    let file = File::open(path).map_err(|source| TypeScriptProjectHostError::PackagePath {
-        path: path.to_path_buf().into_boxed_path(),
-        source,
-    })?;
-    let mut bytes = Vec::new();
-    file.take(u64::try_from(MAX_PACKAGE_MANIFEST_BYTES + 1).unwrap_or(u64::MAX))
-        .read_to_end(&mut bytes)
-        .map_err(|source| TypeScriptProjectHostError::PackagePath {
-            path: path.to_path_buf().into_boxed_path(),
-            source,
-        })?;
+    let (_, bytes) = read_regular_file(
+        path,
+        u64::try_from(MAX_PACKAGE_MANIFEST_BYTES).unwrap_or(u64::MAX),
+    )?;
     if bytes.len() > MAX_PACKAGE_MANIFEST_BYTES {
         return Err(TypeScriptProjectHostError::ManifestTooLarge {
             manifest: path.to_path_buf().into_boxed_path(),
@@ -456,6 +1952,9 @@ fn project_fingerprint(
     package_version: &str,
     node_version: &[u8],
     checker_fingerprint: [u8; 32],
+    witness_fingerprint: [u8; 32],
+    compiler_origin: TypeScriptSelectionOrigin,
+    node_origin: TypeScriptSelectionOrigin,
 ) -> [u8; 32] {
     let mut digest = Hasher::new();
     digest.update(b"compiler.typescript.project-admission.v1\0");
@@ -469,6 +1968,8 @@ fn project_fingerprint(
     digest.update(&(node_version.len() as u64).to_be_bytes());
     digest.update(node_version);
     digest.update(&checker_fingerprint);
+    digest.update(&witness_fingerprint);
+    digest.update(&[compiler_origin as u8, node_origin as u8]);
     *digest.finalize().as_bytes()
 }
 
@@ -486,6 +1987,12 @@ pub enum TypeScriptProjectHostError {
     },
     #[error("TypeScript package root is not absolute: {package_root:?}")]
     RelativePackageRoot { package_root: Box<Path> },
+    #[error("could not canonicalize the host home boundary {home:?}")]
+    HomePath {
+        home: Box<Path>,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("could not resolve selected TypeScript package root {package_root:?}")]
     PackageRoot {
         package_root: Box<Path>,
@@ -506,6 +2013,14 @@ pub enum TypeScriptProjectHostError {
         #[source]
         source: ToolchainProbeError,
     },
+    #[error("could not resolve selected Node executable {node:?}")]
+    NodePath {
+        node: Box<Path>,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("explicit TypeScript executable {compiler:?} requires its matching module root")]
+    ExplicitModuleRootRequired { compiler: Box<Path> },
     #[error("could not read TypeScript package path {path:?}")]
     PackagePath {
         path: Box<Path>,
@@ -533,6 +2048,54 @@ pub enum TypeScriptProjectHostError {
         manifest: Box<Path>,
         message: Box<str>,
     },
+    #[error("workspace configuration {path:?} is malformed: {message}")]
+    WorkspaceConfigInvalid { path: Box<Path>, message: Box<str> },
+    #[error("TypeScript configuration {config:?} is malformed: {message}")]
+    ConfigInvalid {
+        config: Box<Path>,
+        message: Box<str>,
+    },
+    #[error("TypeScript configuration {config:?} does not exist")]
+    ConfigMissing { config: Box<Path> },
+    #[error("TypeScript configuration {config:?} escapes workspace boundary {boundary:?}")]
+    ConfigEscapesBoundary {
+        config: Box<Path>,
+        boundary: Box<Path>,
+    },
+    #[error("project contains {observed} TypeScript configuration files, maximum is {maximum}")]
+    ConfigFileLimit { observed: usize, maximum: usize },
+    #[error("TypeScript configuration scan exceeded its directory depth at {directory:?}")]
+    ConfigDirectoryDepth { directory: Box<Path> },
+    #[error(
+        "captured TypeScript file {path:?} exceeds its {maximum}-byte bound (observed {observed})"
+    )]
+    FileTooLarge {
+        path: Box<Path>,
+        observed: u64,
+        maximum: u64,
+    },
+    #[error("captured TypeScript file allocation failed at {path:?}: {message}")]
+    FileAllocation { path: Box<Path>, message: Box<str> },
+    #[error("expected a regular file at {path:?}")]
+    RegularFileRequired { path: Box<Path> },
+    #[error("expected a regular directory at {path:?}")]
+    RegularDirectoryRequired { path: Box<Path> },
+    #[error("TypeScript module contains a symlink at {path:?}")]
+    ModuleEntrySymlink { path: Box<Path> },
+    #[error("TypeScript package contains {observed} regular files, maximum is {maximum}")]
+    ModuleFileLimit { observed: usize, maximum: usize },
+    #[error("TypeScript project witness changed at {path:?} after admission")]
+    WitnessChanged { path: Box<Path> },
+    #[error(
+        "resolved TypeScript source path {path:?} is outside the admitted workspace and compiler roots"
+    )]
+    SourceOutsideCapability { path: Box<Path> },
+    #[error("resolved TypeScript source count {observed} exceeds the {maximum}-file bound")]
+    ResolvedSourceLimit { observed: usize, maximum: usize },
+    #[error("resolved TypeScript source bytes {observed} exceed the {maximum}-byte bound")]
+    ResolvedSourceBytes { observed: u64, maximum: u64 },
+    #[error("TypeScript project witness lock was poisoned at {path:?}")]
+    WitnessLockPoisoned { path: Box<Path> },
     #[error("TypeScript compiler entry {compiler:?} is outside package {package:?}")]
     CompilerEscapesPackage {
         compiler: Box<Path>,
@@ -680,7 +2243,7 @@ mod tests {
     }
 
     #[test]
-    fn project_discovery_accepts_pnpm_package_symlinks_but_rejects_regular_shims() {
+    fn project_discovery_accepts_pnpm_package_symlinks_and_bounded_shebang_shims() {
         let fixture = Fixture::new();
         let modules = fixture.0.join("node_modules");
         let pnpm_package = modules.join(".pnpm/typescript@5.9.3/node_modules/typescript");
@@ -708,10 +2271,13 @@ mod tests {
 
         fs::remove_file(modules.join(".bin/tsc")).expect("remove package manager shim");
         fs::write(modules.join(".bin/tsc"), "#!/bin/sh\nexit 0\n").expect("write unknown wrapper");
-        assert!(matches!(
-            find_project_typescript(&fixture.0),
-            Err(TypeScriptProjectHostError::CompilerShimRejected { .. })
-        ));
+        let ProjectTypeScriptSearch::Found(project) =
+            find_project_typescript(&fixture.0).expect("inspect regular package-manager shim")
+        else {
+            panic!("regular bounded shim metadata should not replace direct package compiler");
+        };
+        assert!(project.compiler.ends_with("typescript/bin/tsc"));
+        assert!(!project.compiler.ends_with("node_modules/.bin/tsc"));
     }
 
     #[test]
@@ -829,6 +2395,28 @@ printf 'Version 5.9.3\n'
     }
 
     #[test]
+    fn explicit_compiler_never_falls_back_to_an_unrelated_project_module_root() {
+        let fixture = Fixture::new();
+        fixture.install("5.9.3");
+        let explicit_compiler = fixture.0.join("global-bin/tsc");
+        fs::create_dir_all(explicit_compiler.parent().unwrap()).expect("create compiler dir");
+        fs::write(&explicit_compiler, "#!/bin/sh\nexit 0\n").expect("write compiler file");
+        let node = fixture.0.join("node");
+        fs::write(&node, "Node fixture").expect("write Node file");
+        let host = TypeScriptProjectHost::new(
+            Some(explicit_compiler),
+            Some(node),
+            None,
+            None,
+            Fixture::limits(),
+        );
+        assert!(matches!(
+            host.admit(&fixture.0),
+            Err(TypeScriptProjectHostError::ExplicitModuleRootRequired { .. })
+        ));
+    }
+
+    #[test]
     fn each_project_root_selects_its_own_typescript_installation() {
         let fixture = Fixture::new();
         let first = fixture.0.join("apps/first");
@@ -853,6 +2441,207 @@ printf 'Version 5.9.3\n'
         assert_eq!(first_project.version, "5.9.3");
         assert_eq!(second_project.version, "5.8.4");
         assert_ne!(first_project.module_root, second_project.module_root);
+    }
+
+    #[test]
+    fn workspace_boundary_finds_nearest_root_install_and_excludes_home_parent() {
+        let fixture = Fixture::new();
+        let home = fixture.0.join("home");
+        let workspace = home.join("repo");
+        let app = workspace.join("apps/web");
+        fs::create_dir_all(&app).expect("create selected app root");
+        fs::create_dir_all(&home).expect("create synthetic home");
+        fs::write(
+            workspace.join("package.json"),
+            r#"{"name":"workspace","private":true,"workspaces":["apps/*"]}"#,
+        )
+        .expect("write npm workspace manifest");
+        install_at(&workspace.join("node_modules"), "5.9.3");
+        install_at(&home.join("node_modules"), "5.8.4");
+
+        let ProjectTypeScriptSearch::Found(project) =
+            find_project_typescript_with_home(&app, Some(&home))
+                .expect("admit nearest workspace installation")
+        else {
+            panic!("workspace TypeScript should be found");
+        };
+        assert_eq!(project.version, "5.9.3");
+        assert_eq!(project.workspace.as_ref().unwrap().root.as_ref(), workspace);
+
+        let unrelated = home.join("loose-project");
+        fs::create_dir_all(&unrelated).expect("create loose project");
+        assert!(matches!(
+            find_project_typescript_with_home(&unrelated, Some(&home))
+                .expect("home install is outside the project search boundary"),
+            ProjectTypeScriptSearch::NotFound
+        ));
+    }
+
+    #[test]
+    fn malformed_workspace_and_typescript_configurations_are_typed_refusals() {
+        let fixture = Fixture::new();
+        fs::write(
+            fixture.0.join("package.json"),
+            r#"{"name":"broken","workspaces":{"packages":"apps/*"}}"#,
+        )
+        .expect("write malformed workspace declaration");
+        assert!(matches!(
+            discover_workspace_boundary(&fixture.0, None),
+            Err(TypeScriptProjectHostError::WorkspaceConfigInvalid { .. })
+        ));
+
+        let modules = fixture.install("5.9.3");
+        fs::write(fixture.0.join("tsconfig.json"), r#"{"compilerOptions": }"#)
+            .expect("write malformed TypeScript config");
+        let ProjectTypeScriptSearch::Found(project) =
+            find_project_typescript(&fixture.0).expect("discover selected TypeScript")
+        else {
+            panic!("local TypeScript package should be found");
+        };
+        let module_root = fs::canonicalize(modules).expect("canonical module root");
+        assert!(matches!(
+            collect_project_configs(&fixture.0, &fixture.0, &module_root, &[]),
+            Err(TypeScriptProjectHostError::ConfigInvalid { .. })
+        ));
+        assert_eq!(project.version, "5.9.3");
+    }
+
+    #[test]
+    fn config_candidates_preserve_jsonc_edges_and_include_config_closure() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        let member = fixture.0.join("packages/member");
+        fs::create_dir_all(member.join("src")).expect("create referenced project");
+        fs::create_dir_all(fixture.0.join("configs")).expect("create base config directory");
+        fs::write(
+            fixture.0.join("tsconfig.json"),
+            "{\n // root candidate\n \"extends\": \"./configs/base\",\n \"references\": [{\"path\": \"./packages/member\"}],\n}\n",
+        )
+        .expect("write JSONC config candidate");
+        fs::write(
+            fixture.0.join("configs/base.json"),
+            "{\"compilerOptions\":{}}",
+        )
+        .expect("write base config closure file");
+        fs::write(member.join("tsconfig.json"), "{\"compilerOptions\":{}}")
+            .expect("write referenced project config");
+        let module_root = fs::canonicalize(modules).expect("canonical module root");
+
+        let configs = collect_project_configs(&fixture.0, &fixture.0, &module_root, &[])
+            .expect("capture config candidates and closure");
+        assert_eq!(
+            configs
+                .iter()
+                .filter(|config| config.project_candidate)
+                .count(),
+            2
+        );
+        assert_eq!(configs.len(), 3);
+        let root =
+            fs::canonicalize(fixture.0.join("tsconfig.json")).expect("canonical root config");
+        let base =
+            fs::canonicalize(fixture.0.join("configs/base.json")).expect("canonical base config");
+        let member_config =
+            fs::canonicalize(member.join("tsconfig.json")).expect("canonical referenced config");
+        let root_input = configs
+            .iter()
+            .find(|config| config.path.as_ref() == root)
+            .expect("root candidate is retained");
+        assert_eq!(root_input.extends.as_ref(), [base.as_path()]);
+        assert_eq!(root_input.references.as_ref(), [member_config.as_path()]);
+    }
+
+    #[test]
+    fn angular_build_tsconfig_is_an_explicit_program_candidate() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        fs::write(
+            fixture.0.join("angular.json"),
+            r#"{"projects":{"app":{"architect":{"build":{"options":{"tsConfig":"tsconfig.app.json"}}}}}}"#,
+        )
+        .expect("write Angular build configuration");
+        fs::write(fixture.0.join("tsconfig.json"), "{\"compilerOptions\":{}}")
+            .expect("write workspace default config");
+        fs::write(
+            fixture.0.join("tsconfig.app.json"),
+            "{\"files\":[\"src/main.ts\"]}",
+        )
+        .expect("write selected Angular app config");
+        let module_root = fs::canonicalize(modules).expect("canonical module root");
+        let (selected, angular_snapshot) =
+            angular_build_config_paths(&fixture.0, &module_root).expect("read Angular target");
+        assert_eq!(selected.len(), 1);
+        assert!(angular_snapshot.is_some());
+        let configs = collect_project_configs(&fixture.0, &fixture.0, &module_root, &selected)
+            .expect("capture Angular candidate and its closure");
+        let app_config =
+            fs::canonicalize(fixture.0.join("tsconfig.app.json")).expect("canonical app config");
+        let input = configs
+            .iter()
+            .find(|config| config.path.as_ref() == app_config)
+            .expect("app config is present");
+        assert!(input.project_candidate);
+        assert!(input.selected_build_config);
+    }
+
+    #[test]
+    fn admitted_project_source_loader_records_and_revalidates_content_identity() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        let ProjectTypeScriptSearch::Found(project) =
+            find_project_typescript(&fixture.0).expect("discover project TypeScript")
+        else {
+            panic!("local TypeScript package should be found");
+        };
+        let node = fixture.0.join("node");
+        fs::write(&node, b"node witness").expect("write fake Node bytes");
+        let node = fs::canonicalize(node).expect("canonical Node");
+        let compiler = project.compiler.clone();
+        let module_root = project.module_root.clone();
+        let package_root = fs::canonicalize(module_root.join("typescript"))
+            .expect("canonical TypeScript module root");
+        let witness = TypeScriptProjectWitness::capture(
+            &fixture.0,
+            None,
+            &project,
+            &compiler,
+            &node,
+            &module_root,
+            &package_root,
+            project.workspace.as_ref(),
+        )
+        .expect("capture project witness");
+        let source = fixture.0.join("src/main.ts");
+        fs::create_dir_all(source.parent().unwrap()).expect("create source directory");
+        fs::write(&source, b"export const value = 1;").expect("write source bytes");
+        let source = fs::canonicalize(source).expect("canonical source");
+        let input = witness
+            .load_source(&source)
+            .expect("load source by capability");
+        assert_eq!(
+            input.content_id,
+            ContentId::<SourceFactDomain>::from_canonical_bytes(&input.bytes)
+        );
+        assert!(input.path.starts_with(&fixture.0));
+        witness
+            .validate_current()
+            .expect("unchanged source witness");
+
+        fs::write(&source, b"export const value = 2;").expect("change loaded source");
+        assert!(matches!(
+            witness.validate_current(),
+            Err(TypeScriptProjectHostError::WitnessChanged { .. })
+        ));
+        let outside = fixture.0.parent().unwrap().join(format!(
+            "typescript-outside-capability-{}.ts",
+            std::process::id()
+        ));
+        fs::write(&outside, b"export {}; ").expect("write out-of-capability file");
+        assert!(matches!(
+            witness.load_source(&outside),
+            Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })
+        ));
+        fs::remove_file(outside).expect("remove outside file");
     }
 
     fn install_at(modules: &Path, version: &str) {
