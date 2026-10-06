@@ -1578,6 +1578,20 @@ enum ProjectionAdmissionFaultWire {
     },
     TypeRowCapacity,
     ComputedRowCapacity,
+    TypeProjectionDepthLimit {
+        depth: u64,
+        maximum: u64,
+    },
+    TypeProjectionCycle {
+        type_id: u32,
+    },
+    TypeProjectionRecursiveReference {
+        distance: u32,
+    },
+    TypeProjectionWidth {
+        actual: u64,
+        maximum: u64,
+    },
     OccurrenceOwner {
         owner: u32,
         fact_count: u64,
