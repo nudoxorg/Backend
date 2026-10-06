@@ -78,6 +78,8 @@ pub enum TszSourceError {
     DuplicatePath,
     /// TSZ needs at least one source file to construct a project program.
     EmptyProject,
+    /// An explicitly admitted library was not valid UTF-8.
+    InvalidUtf8,
 }
 
 impl std::fmt::Display for TszSourceError {
@@ -87,11 +89,60 @@ impl std::fmt::Display for TszSourceError {
             Self::UnsupportedExtension => "TSZ source path extension is not supported",
             Self::DuplicatePath => "TypeScript project contains a duplicate source path",
             Self::EmptyProject => "TypeScript project requires at least one source file",
+            Self::InvalidUtf8 => "TypeScript library source is not valid UTF-8",
         })
     }
 }
 
 impl std::error::Error for TszSourceError {}
+
+/// Exact UTF-8 bytes for one caller-selected TypeScript library source.
+///
+/// Build this from the host's admitted path and content bytes, then pass the
+/// resulting `LibFile` to [`TszProjectAuthority::update`]. No filesystem
+/// lookup or ambient TypeScript library discovery occurs here.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TszLibraryInput {
+    path: String,
+    source: String,
+}
+
+impl TszLibraryInput {
+    /// Admits a canonical library path and exact UTF-8 source bytes.
+    ///
+    /// # Errors
+    /// Returns an input error for an unsupported path or invalid UTF-8.
+    pub fn from_utf8(
+        path: impl Into<String>,
+        source: impl Into<Vec<u8>>,
+    ) -> Result<Self, TszSourceError> {
+        let path = path.into();
+        validate_source_path(&path)?;
+        let source = String::from_utf8(source.into()).map_err(|_| TszSourceError::InvalidUtf8)?;
+        Ok(Self { path, source })
+    }
+
+    /// Stable path included in the project library identity.
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// Exact UTF-8 text retained for parsing and source-token admission.
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// Constructs a TSZ library directly from these admitted in-memory bytes.
+    #[must_use]
+    pub fn into_lib_file(self) -> Arc<tsz::lib_loader::LibFile> {
+        Arc::new(tsz::lib_loader::LibFile::from_source(
+            self.path,
+            self.source,
+        ))
+    }
+}
 
 /// Typed failures at the TSZ adapter boundary.
 #[derive(Debug, Error)]
@@ -918,10 +969,12 @@ mod tests {
         let mut authority = TszProjectAuthority::new();
         let mut first_options = options();
         first_options.checker.no_lib = true;
-        let first_library = Arc::new(tsz::lib_loader::LibFile::from_source(
-            "lib.fixture.d.ts".to_owned(),
-            "declare type LibraryLabel = string;".to_owned(),
-        ));
+        let first_library = TszLibraryInput::from_utf8(
+            "lib.fixture.d.ts",
+            b"declare type LibraryLabel = string;".to_vec(),
+        )
+        .expect("host bytes form an in-memory TSZ library")
+        .into_lib_file();
         let first = authority
             .update(
                 vec![input("src/main.ts", "export const value = 1;")],
@@ -962,10 +1015,12 @@ mod tests {
             .expect("unchanged explicit library set is reused");
         assert!(repeated.reused_project_result);
 
-        let changed_library = Arc::new(tsz::lib_loader::LibFile::from_source(
-            "lib.fixture.d.ts".to_owned(),
-            "declare type LibraryLabel = number;".to_owned(),
-        ));
+        let changed_library = TszLibraryInput::from_utf8(
+            "lib.fixture.d.ts",
+            b"declare type LibraryLabel = number;".to_vec(),
+        )
+        .expect("changed host bytes form a new in-memory TSZ library")
+        .into_lib_file();
         let changed = authority
             .update(
                 vec![input("src/main.ts", "export const value = 1;")],
@@ -976,6 +1031,18 @@ mod tests {
         assert_eq!(changed.parsed_and_bound, 1);
         assert_eq!(changed.reused_binds, 0);
         assert!(!changed.reused_project_result);
+    }
+
+    #[test]
+    fn in_memory_library_input_rejects_invalid_utf8_and_untyped_paths() {
+        assert_eq!(
+            TszLibraryInput::from_utf8("lib.fixture.d.ts", vec![0xff]),
+            Err(TszSourceError::InvalidUtf8)
+        );
+        assert_eq!(
+            TszLibraryInput::from_utf8("lib.fixture.json", b"{}".to_vec()),
+            Err(TszSourceError::UnsupportedExtension)
+        );
     }
 
     #[test]
