@@ -6,8 +6,9 @@ use crate::{
     SemanticDeclarationIdentity, SemanticDeclarationShape, SemanticLiteral, SemanticObjectMember,
     SemanticPropertyKey, SemanticShapeBatch, SemanticShapeEntry, SemanticShapeFact,
     SemanticShapeImageOrigin, SemanticShapeLanguageFact, SemanticShapeLanguageFacts,
-    SemanticShapeMember, SemanticShapeSourceOrigin, SemanticShapeUnavailable, SemanticTypeElement,
-    SemanticTypeExpr, SemanticTypeFact, SemanticTypeUnavailable, SymbolAddress,
+    SemanticShapeMember, SemanticShapeMemberName, SemanticShapeSourceOrigin,
+    SemanticShapeUnavailable, SemanticTypeElement, SemanticTypeExpr, SemanticTypeFact,
+    SemanticTypeUnavailable, SymbolAddress,
 };
 use backend_semantic::ir::{
     BuiltinType, CSharpNullability, CSharpReferenceKind, ChannelDirection, Confidence,
@@ -271,7 +272,7 @@ struct SemanticTypeElementWire {
 #[serde(deny_unknown_fields)]
 struct SemanticShapeMemberWire {
     identity: SemanticDeclarationIdentity,
-    name: crate::SourceAtomText,
+    name: SemanticShapeMemberName,
     kind: ItemKindWire,
     ty: SemanticTypeFactWire,
     language: SemanticShapeLanguageFactsWire,
@@ -801,6 +802,10 @@ fn shape_wire_fact(
                 SemanticDeclarationShapeWire::Aggregate(members) => {
                     for member in members {
                         shape_wire_node(nodes)?;
+                        member
+                            .name
+                            .validate()
+                            .map_err(|_| "semantic-shape member name is malformed")?;
                         shape_wire_language(&member.language, 0, nodes)?;
                         shape_wire_type_fact(&member.ty, 0, nodes)?;
                     }
