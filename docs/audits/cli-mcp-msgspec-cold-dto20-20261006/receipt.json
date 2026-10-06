@@ -1,0 +1,83 @@
+{
+  "schema": "nudox.private-owner-clone-diagnostic.v1",
+  "original_run": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T095613Z-python-configured-6195576e",
+  "diagnostic_root": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T095613Z-python-configured-6195576e-diagnostic-07b73119",
+  "candidate_manifest_path": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/runtime-build-manifest.json",
+  "candidate_manifest_sha256": "a693977a9bcbf2e25c7b7ebb3c820d8a971ac5a190cf25708d608ee69c4c07f8",
+  "owner_argv": [
+    "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+    "--workspace",
+    "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T095613Z-python-configured-6195576e-diagnostic-07b73119/state",
+    "--endpoint",
+    "/tmp/nudox-diagnostic-f81ae20b3f364fb7.sock",
+    "--idle-timeout-ms",
+    "0"
+  ],
+  "owner_pid": 972602,
+  "owner_exit": -15,
+  "owner_socket_ready_before_cli": true,
+  "owner_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "original_state_mutated": false,
+  "original_project_source_hash": "6133828ddc02a0adae271a1e4a1021f1b73b52f3bf10ac5c38985508a7a0d4f0",
+  "started_utc": "2026-10-06T11:23:32Z",
+  "finished_utc": "2026-10-06T11:23:42Z",
+  "commands": [
+    {
+      "label": "clone-health",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T095613Z-python-configured-6195576e/project",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T095613Z-python-configured-6195576e-diagnostic-07b73119/state",
+        "--endpoint",
+        "/tmp/nudox-diagnostic-f81ae20b3f364fb7.sock",
+        "--passive",
+        "health"
+      ],
+      "exit": 0,
+      "seconds": 0.10737263597548008,
+      "stdout_sha256": "9e23c12c50e6d7a69b01f92ea4f43120a0107a03ac063c77ad9c6d760c497c64",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout": "{\"readiness\":\"ready\",\"revision\":\"c1ae0be46001cfa5f32b4759ac5a5d0288f6240e6c3cfb7163340c0ad5331845\",\"revision_tag\":\"c1ae0be4\",\"source\":\"a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1\",\"source_tag\":\"a98a2689\",\"sequence\":0,\"rows\":5339,\"coverage\":[{\"lane\":\"exact\",\"state\":\"complete\"},{\"lane\":\"names\",\"state\":\"complete\"},{\"lane\":\"graph\",\"state\":\"complete\"},{\"lane\":\"semantic\",\"state\":\"unavailable\",\"reason\":\"unconfigured\"}],\"capabilities\":{\"frontends_ready\":9,\"frontends_total\":9,\"oracles_ready\":0,\"oracles_total\":18,\"embedding\":\"unconfigured\",\"unavailable\":[{\"reason\":\"no-manifest\",\"count\":11}],\"summary\":\"frontends 9/9 ready \u00b7 oracles 0/18 ready \u00b7 11 no-manifest \u00b7 embedding unconfigured\"},\"answer\":\"status\",\"detail\":\"full\",\"budget\":{\"bytes\":805,\"estimatedTokens\":202,\"bytesPerToken\":4}}",
+      "stderr": ""
+    },
+    {
+      "label": "clone-after-health",
+      "argv": [
+        "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "--json",
+        "--detail",
+        "full",
+        "--project",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T095613Z-python-configured-6195576e/project",
+        "--workspace",
+        "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T095613Z-python-configured-6195576e-diagnostic-07b73119/state",
+        "--endpoint",
+        "/tmp/nudox-diagnostic-f81ae20b3f364fb7.sock",
+        "--passive",
+        "health"
+      ],
+      "exit": 0,
+      "seconds": 0.0882239310303703,
+      "stdout_sha256": "9e23c12c50e6d7a69b01f92ea4f43120a0107a03ac063c77ad9c6d760c497c64",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout": "{\"readiness\":\"ready\",\"revision\":\"c1ae0be46001cfa5f32b4759ac5a5d0288f6240e6c3cfb7163340c0ad5331845\",\"revision_tag\":\"c1ae0be4\",\"source\":\"a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1\",\"source_tag\":\"a98a2689\",\"sequence\":0,\"rows\":5339,\"coverage\":[{\"lane\":\"exact\",\"state\":\"complete\"},{\"lane\":\"names\",\"state\":\"complete\"},{\"lane\":\"graph\",\"state\":\"complete\"},{\"lane\":\"semantic\",\"state\":\"unavailable\",\"reason\":\"unconfigured\"}],\"capabilities\":{\"frontends_ready\":9,\"frontends_total\":9,\"oracles_ready\":0,\"oracles_total\":18,\"embedding\":\"unconfigured\",\"unavailable\":[{\"reason\":\"no-manifest\",\"count\":11}],\"summary\":\"frontends 9/9 ready \u00b7 oracles 0/18 ready \u00b7 11 no-manifest \u00b7 embedding unconfigured\"},\"answer\":\"status\",\"detail\":\"full\",\"budget\":{\"bytes\":805,\"estimatedTokens\":202,\"bytesPerToken\":4}}",
+      "stderr": ""
+    }
+  ],
+  "raw_diagnostic_sha256": "7b4a6888d4a144ae71be9db9a52fb024a58c8b70b8b4623b4d76529802700b26",
+  "raw_diagnostic_path": "/Users/mileswirht/Downloads/nudox-active-20261005/cli-mcp/report7/msgspec-retained-cold-dto20-diagnostic.json",
+  "prior_candidate_commit": "9f44dae6342fb286178178bda5be33ea79d969a4",
+  "prior_owner_exit": 70,
+  "prior_stderr_sha256": "c92af9be3b1d82b47c278aca384c0a4b32d15647f601f4206fe230287a823d34",
+  "prior_error": "admit complete source facts: compact source row is incomplete and has no complete facts manifest",
+  "original_and_clone_workspace_journal_sha256": "dbe3b435c43ff67b2b7254ef21c809a083303ce54437e0484641dd79eddf7dd6",
+  "original_and_clone_workspace_journal_bytes": 6947834,
+  "acceptance_scope": "retained refused-add cold owner admission only",
+  "native_package_passes": 0,
+  "source_compilation": "not proved"
+}
