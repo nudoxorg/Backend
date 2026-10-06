@@ -66,16 +66,54 @@ fn typed_forms_reject_crossed_cardinality_and_foreign_cells() {
 #[test]
 fn every_tag_round_trips_through_its_frozen_discriminant() {
     // Decoding every frozen code and re-encoding the result must be the
-    // identity on 0..32, and 32 must stay outside the registry.
-    for ordinal in 0_u8..32 {
+    // identity on 0..35, and the next code stays outside the registry.
+    for ordinal in 0_u8..35 {
         assert_eq!(
             SemanticTypeTag::try_from(ordinal).map(u8::from),
             Ok(ordinal)
         );
     }
     assert_eq!(
-        SemanticTypeTag::try_from(32),
-        Err(backend_semantic::ir_vocabulary::SemanticTypeTagError { actual: 32 })
+        SemanticTypeTag::try_from(35),
+        Err(backend_semantic::ir_vocabulary::SemanticTypeTagError { actual: 35 })
+    );
+}
+
+#[test]
+fn typescript_deferred_operators_keep_distinct_arity_and_cells() {
+    assert_eq!(record(SemanticTypeTag::KeyOf).validate(1), Ok(()));
+    assert_eq!(record(SemanticTypeTag::IndexedAccess).validate(2), Ok(()));
+    assert_eq!(record(SemanticTypeTag::TypeOf).validate(0), Ok(()));
+
+    let mut key_of = record(SemanticTypeTag::KeyOf);
+    key_of.text = Some(b"keyof");
+    assert_eq!(
+        key_of.validate(1),
+        Err(SemanticTypeFault::ReservedCell {
+            tag: SemanticTypeTag::KeyOf,
+            cell: TypeCell::Text,
+            actual: 1,
+        })
+    );
+
+    assert_eq!(
+        record(SemanticTypeTag::IndexedAccess).validate(1),
+        Err(SemanticTypeFault::ChildCount {
+            tag: SemanticTypeTag::IndexedAccess,
+            law: ChildCountLaw { min: 2, max: 2 },
+            actual: 1,
+        })
+    );
+
+    let mut type_of = record(SemanticTypeTag::TypeOf);
+    type_of.payload1 = 1;
+    assert_eq!(
+        type_of.validate(0),
+        Err(SemanticTypeFault::ReservedCell {
+            tag: SemanticTypeTag::TypeOf,
+            cell: TypeCell::Payload1,
+            actual: 1,
+        })
     );
 }
 

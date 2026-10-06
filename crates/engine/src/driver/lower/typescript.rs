@@ -21,7 +21,7 @@ use backend_frontend_typescript::{
         ConditionalType, FunctionShape, IndexSignature as TszIndexSignature, IntrinsicKind,
         LiteralValue as TszLiteral, MappedModifier as TszMappedModifier, MappedType,
         ObjectShape as TszObjectShape, ParamInfo, TemplateSpan, TypeData, TypeId as TszTypeId,
-        TypeParamInfo, TypeParamOrigin as TszTypeParamOrigin,
+        TypeParamInfo, TypeParamOrigin as TszTypeParamOrigin, SymbolRef as TszSymbolRef,
     },
 };
 use backend_semantic::ir::{
@@ -529,6 +529,9 @@ struct FactRegistry<'a, 'source> {
     name_starts: &'a [u32],
     name_ends: &'a [u32],
     fact_kinds: &'a [EntityKind],
+    /// Exact TypeScript-symbol to same-file emitted-entity coordinate joins.
+    /// This is present only while projecting one native checker observation.
+    native_tsz_entities: Option<&'a HashMap<TszSymbolId, u32>>,
     fact_len: u32,
 }
 
@@ -4984,6 +4987,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             name_starts: &self.name_starts,
             name_ends: &self.name_ends,
             fact_kinds: &self.fact_kinds,
+            native_tsz_entities: None,
             fact_len: u32::try_from(self.facts.len()).map_err(|_| lane_rejection())?,
         };
         for declaration in declarations {
@@ -5060,16 +5064,6 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         database: &dyn TszTypeDatabase,
         project: &'source TszProject,
     ) -> Result<(), TypeScriptCollectError> {
-        let registry = FactRegistry {
-            source: self.source,
-            tsz_project: Some(project),
-            decl_starts: &self.decl_starts,
-            decl_ends: &self.decl_ends,
-            name_starts: &self.name_starts,
-            name_ends: &self.name_ends,
-            fact_kinds: &self.fact_kinds,
-            fact_len: u32::try_from(self.facts.len()).map_err(|_| lane_rejection())?,
-        };
         let mut symbols_by_span = HashMap::<(u32, u32), TszSymbolId>::new();
         let mut ambiguous_spans = std::collections::HashSet::new();
         for (&raw_node, &symbol) in bound_file.node_symbols.iter() {
@@ -5113,6 +5107,59 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 std::collections::hash_map::Entry::Occupied(_) => {}
             }
         }
+
+        // `TypeQuery(SymbolRef)` can be represented only when the exact TSZ
+        // symbol binds to one entity row emitted from this source. Symbols
+        // with multiple local declaration facts (for example overloads) are
+        // deliberately removed from this inverse map instead of choosing an
+        // arbitrary row.
+        let fact_len = u32::try_from(self.facts.len()).map_err(|_| lane_rejection())?;
+        let mut native_tsz_entities = HashMap::<TszSymbolId, u32>::new();
+        let mut ambiguous_symbols = std::collections::HashSet::new();
+        for fact_index in 0..self.facts.len() {
+            if self.fact_kinds.get(fact_index) == Some(&EntityKind::Reexport) {
+                continue;
+            }
+            let (Some(&name_start), Some(&name_end)) = (
+                self.name_starts.get(fact_index),
+                self.name_ends.get(fact_index),
+            ) else {
+                continue;
+            };
+            if name_start == UNSET || name_end == UNSET {
+                continue;
+            }
+            let Some(&symbol) = symbols_by_span.get(&(name_start, name_end)) else {
+                continue;
+            };
+            if ambiguous_symbols.contains(&symbol) {
+                continue;
+            }
+            let Ok(fact) = u32::try_from(fact_index) else {
+                return Err(lane_rejection());
+            };
+            match native_tsz_entities.entry(symbol) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(fact);
+                }
+                std::collections::hash_map::Entry::Occupied(entry) if *entry.get() != fact => {
+                    native_tsz_entities.remove(&symbol);
+                    ambiguous_symbols.insert(symbol);
+                }
+                std::collections::hash_map::Entry::Occupied(_) => {}
+            }
+        }
+        let registry = FactRegistry {
+            source: self.source,
+            tsz_project: Some(project),
+            decl_starts: &self.decl_starts,
+            decl_ends: &self.decl_ends,
+            name_starts: &self.name_starts,
+            name_ends: &self.name_ends,
+            fact_kinds: &self.fact_kinds,
+            native_tsz_entities: Some(&native_tsz_entities),
+            fact_len,
+        };
 
         let fact_count = self.facts.len();
         for fact_index in 0..fact_count {
@@ -5191,6 +5238,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             name_starts: &self.name_starts,
             name_ends: &self.name_ends,
             fact_kinds: &self.fact_kinds,
+            native_tsz_entities: None,
             fact_len: u32::try_from(self.facts.len()).map_err(|_| lane_rejection())?,
         };
         for narrowing in narrowings {
@@ -8288,14 +8336,21 @@ fn intern_native_tsz_type<'source>(
     active: &mut std::collections::HashSet<TszTypeId>,
 ) -> Result<u32, TypeScriptCollectError> {
     if depth > MAX_TYPE_DEPTH {
-        return intern_computed_leaf(
-            facts,
-            unknown_record(TypeReason::TruncatedAtDepthLimit),
+        return Err(computed_fault(
+            registry,
             owner,
-        );
+            FactFault::TypeProjectionDepthLimit {
+                depth,
+                maximum: MAX_TYPE_DEPTH,
+            },
+        ));
     }
     if !active.insert(type_id) {
-        return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
+        return Err(computed_fault(
+            registry,
+            owner,
+            FactFault::TypeProjectionCycle { type_id: type_id.0 },
+        ));
     }
     let result =
         intern_native_tsz_type_inner(registry, facts, database, type_id, owner, depth, active);
@@ -8360,7 +8415,14 @@ fn intern_native_tsz_type_inner<'source>(
         TypeData::Tuple(list) => {
             let elements = database.tuple_list(list);
             if elements.len() > MAX_TYPE_CHILDREN {
-                return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
+                return Err(computed_fault(
+                    registry,
+                    owner,
+                    FactFault::TypeProjectionWidth {
+                        actual: elements.len(),
+                        maximum: MAX_TYPE_CHILDREN,
+                    },
+                ));
             }
             let mut children = Vec::with_capacity(elements.len());
             for element in elements.iter() {
@@ -8404,7 +8466,14 @@ fn intern_native_tsz_type_inner<'source>(
         TypeData::Application(application_id) => {
             let application = database.type_application(application_id);
             if application.args.len().saturating_add(1) > MAX_TYPE_CHILDREN {
-                return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
+                return Err(computed_fault(
+                    registry,
+                    owner,
+                    FactFault::TypeProjectionWidth {
+                        actual: application.args.len().saturating_add(1),
+                        maximum: MAX_TYPE_CHILDREN,
+                    },
+                ));
             }
             let mut children = Vec::with_capacity(application.args.len() + 1);
             children.push((
@@ -8461,7 +8530,14 @@ fn intern_native_tsz_type_inner<'source>(
         TypeData::TemplateLiteral(template_id) => {
             let parts = database.template_list(template_id);
             if parts.len() > MAX_TYPE_CHILDREN {
-                return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
+                return Err(computed_fault(
+                    registry,
+                    owner,
+                    FactFault::TypeProjectionWidth {
+                        actual: parts.len(),
+                        maximum: MAX_TYPE_CHILDREN,
+                    },
+                ));
             }
             // Resolve every cooked segment to exact owner bytes first, so a
             // failed name proof cannot leave an incomplete pending child run.
@@ -8540,14 +8616,61 @@ fn intern_native_tsz_type_inner<'source>(
             active,
             SemanticTypeTag::Intersection,
         ),
+        TypeData::KeyOf(inner) => {
+            let child = intern_native_tsz_type(
+                registry, facts, database, inner, owner, next_depth, active,
+            )?;
+            intern_native_tsz_row(
+                registry,
+                facts,
+                SemanticTypeRecord::leaf(SemanticTypeTag::KeyOf),
+                owner,
+                &[(child, None, 0)],
+            )
+        }
+        TypeData::IndexAccess(object, index) => {
+            let object = intern_native_tsz_type(
+                registry, facts, database, object, owner, next_depth, active,
+            )?;
+            let index = intern_native_tsz_type(
+                registry, facts, database, index, owner, next_depth, active,
+            )?;
+            intern_native_tsz_row(
+                registry,
+                facts,
+                SemanticTypeRecord::leaf(SemanticTypeTag::IndexedAccess),
+                owner,
+                &[(object, None, 0), (index, None, 0)],
+            )
+        }
+        TypeData::TypeQuery(TszSymbolRef(symbol)) => {
+            let Some(target) = registry
+                .native_tsz_entities
+                .and_then(|entities| entities.get(&TszSymbolId(symbol)))
+                .copied()
+            else {
+                // Cross-file or otherwise unowned symbols remain an explicit
+                // gap. Never translate a TSZ symbol index into an entity row
+                // without the exact same-file source-span join above.
+                return intern_computed_leaf(
+                    facts,
+                    unknown_record(TypeReason::OracleGap),
+                    owner,
+                );
+            };
+            let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::TypeOf);
+            record.payload0 = target;
+            intern_native_tsz_row(registry, facts, record, owner, &[])
+        }
+        TypeData::Recursive(distance) => Err(computed_fault(
+            registry,
+            owner,
+            FactFault::TypeProjectionRecursiveReference { distance },
+        )),
         TypeData::Callable(_)
         | TypeData::BoundParameter(_)
         | TypeData::Lazy(_)
-        | TypeData::Recursive(_)
         | TypeData::Enum(_, _)
-        | TypeData::IndexAccess(_, _)
-        | TypeData::TypeQuery(_)
-        | TypeData::KeyOf(_)
         | TypeData::UniqueSymbol(_)
         | TypeData::StringIntrinsic { .. }
         | TypeData::ModuleNamespace(_)
@@ -8702,11 +8825,18 @@ fn intern_native_tsz_function<'source>(
     depth: u8,
     active: &mut std::collections::HashSet<TszTypeId>,
 ) -> Result<u32, TypeScriptCollectError> {
-    if function.this_type.is_some()
-        || function.type_predicate.is_some()
-        || function.is_constructor
-        || function.params.len().saturating_add(1) > MAX_TYPE_CHILDREN
-    {
+    let child_count = function.params.len().saturating_add(1);
+    if child_count > MAX_TYPE_CHILDREN {
+        return Err(computed_fault(
+            registry,
+            owner,
+            FactFault::TypeProjectionWidth {
+                actual: child_count,
+                maximum: MAX_TYPE_CHILDREN,
+            },
+        ));
+    }
+    if function.this_type.is_some() || function.type_predicate.is_some() || function.is_constructor {
         return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
     }
     let mut children = Vec::with_capacity(function.params.len() + 1);
@@ -9071,7 +9201,14 @@ fn intern_native_tsz_row<'source>(
     children: &[(u32, Option<&'source [u8]>, u8)],
 ) -> Result<u32, TypeScriptCollectError> {
     if children.len() > MAX_TYPE_CHILDREN {
-        return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
+        return Err(computed_fault(
+            registry,
+            owner,
+            FactFault::TypeProjectionWidth {
+                actual: children.len(),
+                maximum: MAX_TYPE_CHILDREN,
+            },
+        ));
     }
     for (target, name, flags) in children {
         facts
@@ -9429,7 +9566,8 @@ mod lane_tests {
         TszProjectOptions, TszProjectSemanticOptions,
     };
     use backend_semantic::ir::{
-        EntityKind, FragmentError, FragmentView, OccurrenceFault, SemanticReader,
+        ComputedType, EntityKind, FragmentError, FragmentView, OccurrenceFault, SemanticReader,
+        TypeExpr, TypeId, TypeQuery,
     };
     use backend_semantic::vocabulary::{
         CompileRecipeFact, LanguageProfile, NativeTool, Stage, TypeScriptSource,
@@ -9656,6 +9794,121 @@ mod lane_tests {
             ));
         }
         Ok(())
+    }
+
+    #[test]
+    fn native_tsz_preserves_distinct_keyof_indexed_access_and_local_typeof() -> Result<(), LaneError> {
+        let source = concat!(
+            "export const marker = { value: 1 };\n",
+            "export type MarkerQuery = typeof marker;\n",
+            "export type Keys<T> = keyof T;\n",
+            "export type Value<T, K extends keyof T> = T[K];\n",
+        );
+        let ir = owned_tsz_ir(source)?;
+        let observed = |name: &[u8]| -> Result<TypeId, LaneError> {
+            let item = ir
+                .items()
+                .find(|item| item.name() == name)
+                .ok_or(LaneError::Missing("operator declaration"))?;
+            ir.typescript_extension(item.id())
+                .and_then(|extension| extension.observed)
+                .ok_or(LaneError::Missing("native operator observation"))
+        };
+
+        let marker = ir
+            .items()
+            .find(|item| item.name() == b"marker")
+            .ok_or(LaneError::Missing("typeof target entity"))?;
+        let TypeExpr::Computed(ComputedType::TypeOf(TypeQuery::Entity(target))) = ir
+            .ty(observed(b"MarkerQuery")?)
+            .ok_or(LaneError::Missing("typeof computed row"))?
+        else {
+            return Err(LaneError::Missing("distinct entity-targeted TypeOf row"));
+        };
+        if target != marker.id() {
+            return Err(LaneError::Missing("exact TypeOf entity coordinate"));
+        }
+
+        if !matches!(
+            ir.ty(observed(b"Keys")?),
+            Some(TypeExpr::Computed(ComputedType::KeyOf(_)))
+        ) {
+            return Err(LaneError::Missing("distinct computed KeyOf row"));
+        }
+        if !matches!(
+            ir.ty(observed(b"Value")?),
+            Some(TypeExpr::Computed(ComputedType::IndexedAccess { .. }))
+        ) {
+            return Err(LaneError::Missing(
+                "distinct object/index-ordered IndexedAccess row",
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_wide_non_associative_tuple_fails_with_exact_bounded_cause() {
+        let elements = std::iter::repeat_n("unknown", super::MAX_TYPE_CHILDREN + 1)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let source = format!("export declare const wide: [{elements}];");
+        let error = match owned_tsz_ir(&source) {
+            Ok(_) => panic!("wide tuple must refuse atomically"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            LaneError::Collection(TypeScriptCollectError::Rejected(super::FactRejection {
+                cause: super::FactFault::TypeProjectionWidth {
+                    actual,
+                    maximum: super::MAX_TYPE_CHILDREN,
+                },
+                ..
+            })) if actual == super::MAX_TYPE_CHILDREN + 1
+        ));
+    }
+
+    #[test]
+    fn native_tsz_recursive_structural_type_fails_with_exact_typed_cause() {
+        let source = "export type Recursive = { next: Recursive };";
+        let error = match owned_tsz_ir(source) {
+            Ok(_) => panic!("recursive row must refuse atomically"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            LaneError::Collection(TypeScriptCollectError::Rejected(super::FactRejection {
+                cause: super::FactFault::TypeProjectionRecursiveReference { distance: 0 },
+                ..
+            }))
+                | LaneError::Collection(TypeScriptCollectError::Rejected(super::FactRejection {
+                    cause: super::FactFault::TypeProjectionCycle { .. },
+                    ..
+                }))
+        ));
+    }
+
+    #[test]
+    fn native_tsz_deep_structural_type_fails_at_the_exact_depth_bound() {
+        let mut ty = "string".to_owned();
+        for index in 0..(usize::from(super::MAX_TYPE_DEPTH) + 1) {
+            ty = format!("{{ p{index}: {ty} }}");
+        }
+        let source = format!("export declare const deep: {ty};");
+        let error = match owned_tsz_ir(&source) {
+            Ok(_) => panic!("deep row must refuse atomically"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            LaneError::Collection(TypeScriptCollectError::Rejected(super::FactRejection {
+                cause: super::FactFault::TypeProjectionDepthLimit {
+                    depth,
+                    maximum: super::MAX_TYPE_DEPTH,
+                },
+                ..
+            })) if depth == super::MAX_TYPE_DEPTH + 1
+        ));
     }
 
     /// One validated report over the exact fixture source carrying the given

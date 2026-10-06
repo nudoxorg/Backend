@@ -150,6 +150,14 @@ pub enum FactFault {
     TypeRowCapacity,
     /// The computed type-row lane is full.
     ComputedRowCapacity,
+    /// Native checker type projection crossed the configured recursion bound.
+    TypeProjectionDepthLimit { depth: u8, maximum: u8 },
+    /// A native interned type handle was revisited on the active descent path.
+    TypeProjectionCycle { type_id: u32 },
+    /// TSZ exposed a recursive back-reference that has no exact local-row encoding.
+    TypeProjectionRecursiveReference { distance: u32 },
+    /// A non-associative native type constructor exceeds the row's child bound.
+    TypeProjectionWidth { actual: usize, maximum: usize },
     /// An occurrence names an owner outside the pushed prefix.
     OccurrenceOwner {
         /// Owner ordinal the occurrence named.
