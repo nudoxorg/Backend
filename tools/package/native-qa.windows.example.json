@@ -4,18 +4,20 @@
   "source_sha": "REPLACE_WITH_CANONICAL_SOURCE_SHA",
   "tested_by": "REPLACE_WITH_OPERATOR",
   "tested_at": "REPLACE_WITH_UTC_TIMESTAMP",
-  "macos_version": "REPLACE_WITH_TEST_HOST_VERSION",
+  "os_version": "REPLACE_WITH_TEST_HOST_VERSION",
+  "host_os": "Windows",
+  "target": "x86_64-pc-windows-gnu",
   "cases": {
+    "authenticode": false,
+    "browser_download_launch": false,
     "bundled_helpers": false,
     "clean_environment": false,
+    "cli_mcp": false,
     "cold_restart": false,
-    "finder_launch": false,
-    "gatekeeper": false,
+    "desktop_launch": false,
+    "install_uninstall": false,
     "minimum_os": false,
     "preferences": false,
-    "project_index_search": false,
-    "browser_download_launch": false,
-    "cli_mcp": false,
-    "homebrew_install": false
+    "project_index_search": false
   }
 }

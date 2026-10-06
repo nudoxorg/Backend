@@ -16,7 +16,7 @@ def candidate(directory):
     root = Path(directory)
     build = json.dumps({"source": {"git_revision": "a" * 40, "git_tree": "b" * 40, "cargo_lock_sha256": "c" * 64}}).encode()
     with zipfile.ZipFile(root / release.ASSET, "w") as archive:
-        for executable in ("Nudox", "backend-desktop", "backend-cli", "backend-mcp", "backend-locald"):
+        for executable in ("Nudox", "nudox-cli", "nudox-mcp", "nudox-locald", "backend-desktop", "backend-cli", "backend-mcp", "backend-locald"):
             archive.writestr("Nudox.app/Contents/MacOS/" + executable, b"test fixture")
         archive.writestr("Nudox.app/Contents/Resources/build-manifest.json", build)
         archive.writestr("Nudox.app/Contents/Info.plist", plistlib.dumps({"CFBundleShortVersionString": "0.2.0", "LSMinimumSystemVersion": "14.0"}))
@@ -33,12 +33,13 @@ class FakeGitHub(release.GitHub):
         super().__init__("acme/test", "test-only-token")
         self.release = existing
         self.uploaded = {}
+        self.asset_data = {}
         self.calls = []
 
     def api(self, path, method="GET", body=None):
         self.calls.append((path, method, body))
         if method == "POST":
-            self.release = {"id": 42, "tag_name": body["tag_name"], "assets": [], "draft": True, "prerelease": body["prerelease"]}
+            self.release = {"id": 42, "tag_name": body["tag_name"], "assets": [], "draft": True, "prerelease": body["prerelease"], "body": body["body"]}
         elif method == "PATCH":
             self.release.update(body)
         elif path.startswith("/releases?"):
@@ -51,8 +52,12 @@ class FakeGitHub(release.GitHub):
     def upload(self, release_id, path):
         asset = {"name": path.name, "id": len(self.uploaded) + 1}
         self.uploaded[asset["id"]] = release.sha256(path)
+        self.asset_data[asset["id"]] = path.read_bytes()
         self.release["assets"].append(asset)
         return asset
+
+    def asset_json(self, asset):
+        return json.loads(self.asset_data[asset["id"]])
 
     def asset_hash(self, asset):
         return self.uploaded.get(asset["id"], "different bytes")
@@ -109,10 +114,10 @@ class CandidateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             candidate(directory)
             github = FakeGitHub()
-            github.publish(directory, "v0.2.0-rc.1", False)
+            github.publish(directory, "v0.2.0-rc.1-macos", False)
             # A retry after interruption before the final draft publication.
             github.release["draft"] = True
-            github.publish(directory, "v0.2.0-rc.1", False)
+            github.publish(directory, "v0.2.0-rc.1-macos", False)
             self.assertFalse(github.release["draft"])
             self.assertTrue(github.release["prerelease"])
             self.assertEqual(len(github.uploaded), 4)
@@ -129,7 +134,7 @@ class CandidateTests(unittest.TestCase):
             return type("Result", (), {"stdout": json.dumps(replies.pop(0))})()
         manifest = {"version": "0.2.0", "source_sha": "d" * 40, "asset": release.ASSET, "sha256": "e" * 64, "minimum_os": "14.0", "platform": "macos"}
         with patch.object(release.subprocess, "run", side_effect=ssh), patch.object(release, "public_metadata", return_value=old), patch.object(release, "verify_public_download", side_effect=ValueError("bad bytes")):
-            with self.assertRaisesRegex(ValueError, "previous Mac channel restored"):
+            with self.assertRaisesRegex(ValueError, "previous platform channel restored"):
                 release.promote(manifest, "test", "key", "hosts")
         self.assertEqual(commands[-1], {"action": "rollback", "expected_sha256": "b" * 64, "platform": "macos", "history_sha256": "a" * 64})
 
@@ -143,7 +148,7 @@ class CandidateTests(unittest.TestCase):
             self.assertEqual(github.calls, [])
             (root / "native-qa.json").unlink()
             with self.assertRaisesRegex(ValueError, "regular file"):
-                github.publish(root, "v0.2.0-rc.1", False)
+                github.publish(root, "v0.2.0-rc.1-macos", False)
             self.assertEqual(github.calls, [])
 
 
