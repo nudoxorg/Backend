@@ -2,7 +2,7 @@
 
 use crate::interface::{
     CompilerAttempt, CompilerFragmentFailure, CompilerFragmentFaultFacts,
-    CompilerFragmentFaultKind, CompilerFragmentFaultPhase, MAX_COMPILER_FRAGMENT_DETAIL_BYTES,
+    CompilerFragmentFaultKind, MAX_COMPILER_FRAGMENT_DETAIL_BYTES,
 };
 use crate::{
     CommandId, DependencyFacts, ForgeCoordinate, ForgeObjectId, ForgeRevision,
@@ -18,6 +18,18 @@ use std::collections::BTreeSet;
 use std::io::{self, Write};
 use std::num::NonZeroU64;
 use std::{fmt, str::FromStr};
+
+#[path = "surface/package_compiler_failure.rs"]
+mod package_compiler_failure;
+pub use package_compiler_failure::{
+    AuthorityClassFact, AuthorityPhaseFact, CompilerAuthorityDiagnosticFacts, CompilerLanguageFact,
+    CompilerNativeToolFact, CompilerStageFact, PackageCompilerFailureCause,
+    PackageCompilerFailurePhase, PackageForeignKeyFaultFacts, PackageLanguageProjectionFault,
+    PackageLineageFaultFacts, PackageLoweringFaultFacts, PackageParentageFact,
+    PackageProjectionAdmissionFaultFacts, PackageProjectionConstructorFaultFacts,
+    PackageProjectionSemanticTypeFaultFacts, PackageTypeCellFact,
+    PackageTypeScriptProjectionFaultFacts, PackageTypeTagFact,
+};
 
 /// Largest user-authored operand retained by the product service.
 pub const MAX_PRODUCT_TEXT_BYTES: usize = 4096;
@@ -1585,9 +1597,8 @@ pub struct PackageCompilerFailure {
     relative_path: ProductText,
     source_identity: ContentId<SourceFactDomain>,
     source_byte_len: u32,
-    recipe_identity: ContentId<CompileRecipeDomain>,
-    kind: CompilerFragmentFaultKind,
-    facts: CompilerFragmentFaultFacts,
+    recipe_identity: Option<ContentId<CompileRecipeDomain>>,
+    cause: PackageCompilerFailureCause,
     detail: String,
     detail_truncated: bool,
 }
@@ -1613,21 +1624,55 @@ impl PackageCompilerFailure {
         failure: &CompilerFragmentFailure,
     ) -> Result<Self, ProductAdmissionError> {
         let relative_path = package_relative_source_path(relative_path)?;
-        let explanation = failure.detail();
-        let (detail, detail_truncated) =
-            sanitize_package_compiler_detail(&explanation.text, explanation.truncated);
+        let cause = PackageCompilerFailureCause::Fragment {
+            kind: failure.kind(),
+            facts: failure.facts(),
+        };
+        let (detail, detail_truncated) = detail_for_package_cause(&cause);
         let summary = Self {
             relative_path,
             source_identity: attempt.source.identity,
             source_byte_len: attempt.source.byte_len,
-            recipe_identity: attempt.recipe,
-            kind: failure.kind(),
-            facts: failure.facts(),
+            recipe_identity: Some(attempt.recipe),
+            cause,
             detail,
             detail_truncated,
         };
         summary.validate()?;
         Ok(summary)
+    }
+
+    /// Projects a package member's exact compiler terminal into a bounded
+    /// structured refusal. Pre-recipe setup failures retain their source
+    /// identity and truthfully omit a recipe that was never established.
+    pub fn from_package_terminal(
+        relative_path: &str,
+        terminal: &crate::interface::CompilerTerminal,
+    ) -> Result<Option<Self>, ProductAdmissionError> {
+        let Some((recipe_identity, cause)) =
+            package_compiler_failure::package_failure_from_terminal(terminal)
+        else {
+            return Ok(None);
+        };
+        let source = match terminal {
+            crate::interface::CompilerTerminal::Toolchain { source, .. }
+            | crate::interface::CompilerTerminal::ToolingUnavailable { source, .. } => *source,
+            crate::interface::CompilerTerminal::Compile { attempted, .. } => attempted.source,
+            _ => return Ok(None),
+        };
+        let relative_path = package_relative_source_path(relative_path)?;
+        let (detail, detail_truncated) = detail_for_package_cause(&cause);
+        let summary = Self {
+            relative_path,
+            source_identity: source.identity,
+            source_byte_len: source.byte_len,
+            recipe_identity,
+            cause,
+            detail,
+            detail_truncated,
+        };
+        summary.validate()?;
+        Ok(Some(summary))
     }
 
     /// Package-relative source member that reached the compiler terminal.
@@ -1650,32 +1695,44 @@ impl PackageCompilerFailure {
 
     /// Exact recipe identity attempted for this source member.
     #[must_use]
-    pub const fn recipe_identity(&self) -> ContentId<CompileRecipeDomain> {
+    pub const fn recipe_identity(&self) -> Option<ContentId<CompileRecipeDomain>> {
         self.recipe_identity
     }
 
     /// Closed preparation, write, or validation phase derived from `kind`.
     #[must_use]
-    pub const fn phase(&self) -> CompilerFragmentFaultPhase {
-        self.kind.phase()
+    pub const fn phase(&self) -> PackageCompilerFailurePhase {
+        self.cause.phase()
     }
 
     /// Specific closed semantic/IR error variant.
     #[must_use]
-    pub const fn kind(&self) -> CompilerFragmentFaultKind {
-        self.kind
+    pub const fn cause(&self) -> &PackageCompilerFailureCause {
+        &self.cause
     }
 
     /// Stable specific variant tag, including its phase family.
     #[must_use]
     pub const fn kind_tag(&self) -> &'static str {
-        self.kind.tag()
+        self.cause.kind_tag()
     }
 
-    /// Named, bounded operands retained for this error variant.
+    /// Native executable selected by the compiler registry for setup failures.
     #[must_use]
-    pub const fn facts(&self) -> CompilerFragmentFaultFacts {
-        self.facts
+    pub const fn required_native_tool(&self) -> Option<CompilerNativeToolFact> {
+        self.cause.required_native_tool()
+    }
+
+    /// Configured executable family when a selected-tool mismatch occurred.
+    #[must_use]
+    pub const fn configured_native_tool(&self) -> Option<CompilerNativeToolFact> {
+        self.cause.configured_native_tool()
+    }
+
+    /// Whether the selected tool must be configured before retrying.
+    #[must_use]
+    pub const fn requires_tool_configuration(&self) -> bool {
+        self.cause.requires_tool_configuration()
     }
 
     /// Sanitized human explanation, capped at 384 UTF-8 bytes.
@@ -1735,7 +1792,13 @@ impl PackageCompilerFailure {
                 .chars()
                 .any(|character| matches!(character, '"' | '\\'))
             || (self.detail.is_empty() && !self.detail_truncated)
-            || !compiler_fault_facts_match_kind(self.kind, self.facts)
+            || !package_cause_is_valid(&self.cause)
+            || (self.recipe_identity.is_none()
+                != matches!(
+                    &self.cause,
+                    PackageCompilerFailureCause::Toolchain { .. }
+                        | PackageCompilerFailureCause::ToolingUnavailable { .. }
+                ))
         {
             return Err(ProductAdmissionError::PackageCompilerFailureShape);
         }
@@ -2077,6 +2140,69 @@ fn sanitize_package_compiler_detail(value: &str, source_truncated: bool) -> (Str
     (retained, truncated)
 }
 
+fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, bool) {
+    let prefix = match cause {
+        PackageCompilerFailureCause::Fragment { .. } => "compact fragment fault",
+        PackageCompilerFailureCause::Toolchain {
+            selected,
+            configured: None,
+            ..
+        } => {
+            let text = format!(
+                "{} is selected but is not configured; set {} or configure the project-local tool at {}",
+                selected.executable(),
+                selected.configuration_variable(),
+                selected
+                    .project_local_path()
+                    .unwrap_or("a valid executable path")
+            );
+            return sanitize_package_compiler_detail(&text, false);
+        }
+        PackageCompilerFailureCause::Toolchain {
+            selected,
+            configured: Some(configured),
+            ..
+        } => {
+            let text = format!(
+                "{} is required but {} is configured; set {} to the selected tool path",
+                selected.executable(),
+                configured.executable(),
+                selected.configuration_variable()
+            );
+            return sanitize_package_compiler_detail(&text, false);
+        }
+        PackageCompilerFailureCause::ToolingUnavailable { tool, .. } => {
+            let text = format!(
+                "{} is unavailable; configure {} with a valid tool path",
+                tool.executable(),
+                tool.configuration_variable()
+            );
+            return sanitize_package_compiler_detail(&text, false);
+        }
+        PackageCompilerFailureCause::Lowering(_) => "lowering fault",
+        PackageCompilerFailureCause::Authority { .. } => "authority fault",
+    };
+    let facts = serde_json::to_string(cause).unwrap_or_else(|_| "facts unavailable".to_owned());
+    let text = format!("{prefix} {}; facts={facts}", cause.kind_tag());
+    sanitize_package_compiler_detail(&text, false)
+}
+
+fn package_cause_is_valid(cause: &PackageCompilerFailureCause) -> bool {
+    match cause {
+        PackageCompilerFailureCause::Fragment { kind, facts } => {
+            compiler_fault_facts_match_kind(*kind, *facts)
+        }
+        PackageCompilerFailureCause::Toolchain {
+            selected,
+            configured,
+            ..
+        } => configured.is_none_or(|configured| *selected != configured),
+        PackageCompilerFailureCause::ToolingUnavailable { .. }
+        | PackageCompilerFailureCause::Lowering(_)
+        | PackageCompilerFailureCause::Authority { .. } => true,
+    }
+}
+
 fn is_canonical_package_relative_source_path(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= PackageCompilerFailure::MAX_RELATIVE_PATH_BYTES
@@ -2094,11 +2220,10 @@ struct PackageCompilerFailureWire {
     relative_path: String,
     source_identity: String,
     source_byte_len: u32,
-    recipe_identity: String,
-    phase: CompilerFragmentFaultPhase,
+    recipe_identity: Option<String>,
+    phase: PackageCompilerFailurePhase,
     kind_tag: String,
-    kind: CompilerFragmentFaultKind,
-    facts: CompilerFragmentFaultFacts,
+    cause: PackageCompilerFailureCause,
     detail: String,
     detail_truncated: bool,
 }
@@ -2113,15 +2238,17 @@ impl<DomainTag: Domain> Serialize for ContentIdDisplay<'_, DomainTag> {
 
 impl Serialize for PackageCompilerFailure {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("PackageCompilerFailure", 10)?;
+        let mut state = serializer.serialize_struct("PackageCompilerFailure", 9)?;
         state.serialize_field("relative_path", &self.relative_path)?;
         state.serialize_field("source_identity", &ContentIdDisplay(&self.source_identity))?;
         state.serialize_field("source_byte_len", &self.source_byte_len)?;
-        state.serialize_field("recipe_identity", &ContentIdDisplay(&self.recipe_identity))?;
+        state.serialize_field(
+            "recipe_identity",
+            &self.recipe_identity.as_ref().map(ContentIdDisplay),
+        )?;
         state.serialize_field("phase", &self.phase())?;
         state.serialize_field("kind_tag", self.kind_tag())?;
-        state.serialize_field("kind", &self.kind)?;
-        state.serialize_field("facts", &self.facts)?;
+        state.serialize_field("cause", &self.cause)?;
         state.serialize_field("detail", &self.detail)?;
         state.serialize_field("detail_truncated", &self.detail_truncated)?;
         state.end()
@@ -2135,20 +2262,34 @@ impl<'de> Deserialize<'de> for PackageCompilerFailure {
             package_relative_source_path(&wire.relative_path).map_err(D::Error::custom)?;
         let source_identity = parse_content_identity::<SourceFactDomain>(&wire.source_identity)
             .map_err(D::Error::custom)?;
-        let recipe_identity = parse_content_identity::<CompileRecipeDomain>(&wire.recipe_identity)
+        let recipe_identity = wire
+            .recipe_identity
+            .as_deref()
+            .map(parse_content_identity::<CompileRecipeDomain>)
+            .transpose()
             .map_err(D::Error::custom)?;
         let summary = Self {
             relative_path,
             source_identity,
             source_byte_len: wire.source_byte_len,
             recipe_identity,
-            kind: wire.kind,
-            facts: wire.facts,
+            cause: wire.cause,
             detail: wire.detail,
             detail_truncated: wire.detail_truncated,
         };
         summary.validate().map_err(D::Error::custom)?;
         if wire.phase != summary.phase() || wire.kind_tag != summary.kind_tag() {
+            return Err(D::Error::custom(
+                ProductAdmissionError::PackageCompilerFailureShape,
+            ));
+        }
+        if summary.recipe_identity.is_none()
+            != matches!(
+                &summary.cause,
+                PackageCompilerFailureCause::Toolchain { .. }
+                    | PackageCompilerFailureCause::ToolingUnavailable { .. }
+            )
+        {
             return Err(D::Error::custom(
                 ProductAdmissionError::PackageCompilerFailureShape,
             ));
@@ -2185,13 +2326,18 @@ fn lower_hex_nibble(value: u8) -> Option<u8> {
 
 /// Terminal effect of one index job.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "state", content = "detail", rename_all = "kebab-case")]
+#[serde(
+    tag = "state",
+    content = "detail",
+    rename_all = "kebab-case",
+    deny_unknown_fields
+)]
 pub enum IndexJobOutcome {
     /// Semantic admission and the owner publication completed.
     Published,
     /// The candidate was refused and did not replace the prior publication.
     Refused(ProductText),
-    /// A compact-fragment compiler refusal with a typed, source-bound cause.
+    /// A package compiler refusal with a typed, source-bound cause.
     RefusedWithCompilerFailure {
         /// Human-readable refusal retained for older surface presenters.
         detail: ProductText,
@@ -4787,16 +4933,25 @@ mod tests {
         assert_eq!(decoded.relative_path(), "src/recovery.ts");
         assert_eq!(decoded.source_byte_len(), 12);
         assert_eq!(decoded.kind_tag(), "build_invalid_occurrence_span");
-        assert_eq!(decoded.phase(), CompilerFragmentFaultPhase::Prepare);
+        assert_eq!(decoded.phase(), PackageCompilerFailurePhase::Prepare);
         assert!(decoded.detail().contains("occurrence span"));
 
         let json: serde_json::Value = serde_json::from_slice(&encoded).expect("JSON object");
-        assert_eq!(json["kind"]["family"], "build");
-        assert_eq!(json["kind"]["kind"], "invalid_occurrence_span");
-        assert_eq!(json["facts"]["kind"], "occurrence_span");
-        assert_eq!(json["facts"]["owner"], 7);
-        assert_eq!(json["facts"]["start"], 18);
-        assert_eq!(json["facts"]["end"], 24);
+        assert_eq!(json["cause"]["family"], "fragment");
+        assert_eq!(json["cause"]["fault"]["kind"]["family"], "build");
+        assert_eq!(
+            json["cause"]["fault"]["kind"]["kind"],
+            "invalid_occurrence_span"
+        );
+        assert_eq!(json["cause"]["fault"]["facts"]["kind"], "occurrence_span");
+        assert_eq!(json["cause"]["fault"]["facts"]["owner"], 7);
+        assert_eq!(json["cause"]["fault"]["facts"]["start"], 18);
+        assert_eq!(json["cause"]["fault"]["facts"]["end"], 24);
+        assert!(
+            json["recipe_identity"]
+                .as_str()
+                .is_some_and(|value| value.starts_with("content:"))
+        );
         assert_eq!(json["phase"], "prepare");
         assert!(encoded.len() <= PackageCompilerFailure::MAX_ENCODED_BYTES);
         assert_eq!(
@@ -4824,7 +4979,7 @@ mod tests {
         }
 
         let mut malformed_facts = original.clone();
-        malformed_facts["facts"]["kind"] = serde_json::json!("tree_entity");
+        malformed_facts["cause"]["fault"]["facts"]["kind"] = serde_json::json!("tree_entity");
         assert!(serde_json::from_value::<PackageCompilerFailure>(malformed_facts).is_err());
 
         let mut unknown = original;
@@ -4838,8 +4993,208 @@ mod tests {
         // among the admitted characters (control bytes and backslashes are banned).
         let path = "\"".repeat(PackageCompilerFailure::MAX_RELATIVE_PATH_BYTES);
         let failure = compiler_failure(&path);
-        let encoded = serde_json::to_vec(&failure).expect("encode worst-case path");
+        let encoded = failure
+            .encode_bounded_json()
+            .expect("encode worst-case escaped path");
         assert!(encoded.len() <= PackageCompilerFailure::MAX_ENCODED_BYTES);
+        assert_eq!(
+            PackageCompilerFailure::decode_bounded_json(&encoded),
+            Ok(failure)
+        );
+        let mixed_path = format!("{}{}", "\"".repeat(512), "雪".repeat(682));
+        let mixed = compiler_failure(&mixed_path);
+        let mixed_encoded = mixed
+            .encode_bounded_json()
+            .expect("mixed unicode and escaped path");
+        assert!(mixed_encoded.len() <= PackageCompilerFailure::MAX_ENCODED_BYTES);
+    }
+
+    #[test]
+    fn package_setup_failure_names_the_selected_tool_without_inventing_a_recipe() {
+        use crate::interface::CompilerTerminal;
+        use backend_semantic::vocabulary::{Language, NativeTool, Stage};
+
+        let source = crate::interface::SourceAuthority {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"typescript bytes"),
+            byte_len: 16,
+        };
+        let terminal = CompilerTerminal::Toolchain {
+            source,
+            language: Language::TypeScript,
+            stage: Stage::LowerIr,
+            selected: NativeTool::TypeScriptCompiler,
+            configured: None,
+        };
+        let failure = PackageCompilerFailure::from_package_terminal("src/index.ts", &terminal)
+            .expect("valid package summary")
+            .expect("toolchain terminal is projected");
+
+        assert_eq!(failure.recipe_identity(), None);
+        assert_eq!(failure.phase(), PackageCompilerFailurePhase::Setup);
+        assert_eq!(failure.kind_tag(), "toolchain_configuration_mismatch");
+        assert_eq!(
+            failure.required_native_tool(),
+            Some(CompilerNativeToolFact::TypeScriptCompiler)
+        );
+        assert_eq!(failure.configured_native_tool(), None);
+        assert!(failure.requires_tool_configuration());
+        assert!(failure.detail().contains("NUDOX_TSC"));
+        assert!(failure.detail().contains("node_modules/.bin/tsc"));
+
+        let encoded = failure.encode_bounded_json().expect("encode setup failure");
+        let json: serde_json::Value = serde_json::from_slice(&encoded).expect("setup JSON");
+        assert_eq!(json["cause"]["family"], "toolchain");
+        assert_eq!(json["cause"]["fault"]["selected"], "type_script_compiler");
+        assert_eq!(
+            json["cause"]["fault"]["configured"],
+            serde_json::Value::Null
+        );
+        assert_eq!(json["recipe_identity"], serde_json::Value::Null);
+        assert!(PackageCompilerFailure::decode_bounded_json(&encoded).is_ok());
+    }
+
+    #[test]
+    fn package_lowering_failure_keeps_nested_source_recovery_reasons_distinct() {
+        use crate::interface::{
+            CompilerAttempt, CompilerCause, CompilerTerminal, LoweringCause, SourceAuthority,
+        };
+        use backend_semantic::vocabulary::{
+            LoweringUnsupported, ProjectionAdmissionFault, ProjectionSemanticTypeFault,
+            ProjectionSemanticTypeTag, ProjectionTypeCell,
+        };
+
+        let attempt = CompilerAttempt {
+            source: SourceAuthority {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(
+                    b"typescript recovery source",
+                ),
+                byte_len: 27,
+            },
+            recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(
+                b"typescript recovery recipe",
+            ),
+        };
+        let angular = CompilerTerminal::Compile {
+            attempted: attempt,
+            cause: CompilerCause::Lowering(LoweringCause::new(LoweringUnsupported::FactRejected {
+                fact: 14,
+                name_len: 8,
+                cause: ProjectionAdmissionFault::TypeChild {
+                    position: 2,
+                    cause: ProjectionSemanticTypeFault::ChildNameRequired {
+                        tag: ProjectionSemanticTypeTag::AnonymousRecord,
+                        position: 2,
+                    },
+                },
+            })),
+        };
+        let zod = CompilerTerminal::Compile {
+            attempted: attempt,
+            cause: CompilerCause::Lowering(LoweringCause::new(LoweringUnsupported::FactRejected {
+                fact: 6,
+                name_len: 11,
+                cause: ProjectionAdmissionFault::TypeRecord {
+                    cause: ProjectionSemanticTypeFault::MissingCell {
+                        tag: ProjectionSemanticTypeTag::Mapped,
+                        cell: ProjectionTypeCell::Text,
+                    },
+                },
+            })),
+        };
+        let angular = PackageCompilerFailure::from_package_terminal("src/angular.ts", &angular)
+            .expect("angular summary")
+            .expect("angular fault projected");
+        let zod = PackageCompilerFailure::from_package_terminal("src/zod.ts", &zod)
+            .expect("zod summary")
+            .expect("zod fault projected");
+        assert_ne!(angular.kind_tag(), zod.kind_tag());
+        assert_eq!(
+            angular.kind_tag(),
+            "lowering_projection_type_child_child_name_required"
+        );
+        assert_eq!(
+            zod.kind_tag(),
+            "lowering_projection_type_record_missing_cell"
+        );
+        assert_eq!(angular.phase(), PackageCompilerFailurePhase::Lowering);
+
+        let angular_json: serde_json::Value = serde_json::from_slice(
+            &angular
+                .encode_bounded_json()
+                .expect("encode angular refusal"),
+        )
+        .expect("angular JSON");
+        assert_eq!(
+            angular_json["cause"]["fault"]["cause"]["fault"],
+            "type_child"
+        );
+        assert_eq!(angular_json["cause"]["fault"]["cause"]["position"], 2);
+        assert_eq!(
+            angular_json["cause"]["fault"]["cause"]["cause"]["fault"],
+            "child_name_required"
+        );
+        assert_eq!(
+            angular_json["cause"]["fault"]["cause"]["cause"]["tag"],
+            "anonymous_record"
+        );
+        assert_eq!(
+            angular_json["cause"]["fault"]["cause"]["cause"]["position"],
+            2
+        );
+
+        let zod_json: serde_json::Value =
+            serde_json::from_slice(&zod.encode_bounded_json().expect("encode zod refusal"))
+                .expect("zod JSON");
+        assert_eq!(zod_json["cause"]["fault"]["cause"]["fault"], "type_record");
+        assert_eq!(
+            zod_json["cause"]["fault"]["cause"]["cause"]["fault"],
+            "missing_cell"
+        );
+        assert_eq!(
+            zod_json["cause"]["fault"]["cause"]["cause"]["tag"],
+            "mapped"
+        );
+        assert_eq!(zod_json["cause"]["fault"]["cause"]["cause"]["cell"], "text");
+    }
+
+    #[test]
+    fn package_authority_summary_never_copies_native_output() {
+        use crate::interface::{
+            AuthorityDiagnosticClass, AuthorityPhase, CompilerAttempt, CompilerCause,
+            CompilerDiagnostic, CompilerTerminal, SourceAuthority,
+        };
+
+        let attempt = CompilerAttempt {
+            source: SourceAuthority {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"authority source"),
+                byte_len: 16,
+            },
+            recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"authority recipe"),
+        };
+        let diagnostic = CompilerDiagnostic::from_native(b"PRIVATE-RAW-COMPILER-OUTPUT", 27, false)
+            .expect("retained diagnostic");
+        let terminal = CompilerTerminal::Compile {
+            attempted: attempt,
+            cause: CompilerCause::Authority {
+                phase: AuthorityPhase::TypeCheck,
+                class: AuthorityDiagnosticClass::Type,
+                diagnostic: Some(diagnostic),
+            },
+        };
+        let failure = PackageCompilerFailure::from_package_terminal("src/authority.ts", &terminal)
+            .expect("authority summary")
+            .expect("authority fault projected");
+        let encoded = failure
+            .encode_bounded_json()
+            .expect("bounded authority JSON");
+        assert!(!String::from_utf8_lossy(&encoded).contains("PRIVATE-RAW-COMPILER-OUTPUT"));
+        assert!(failure.detail().contains("type_check"));
+        assert!(failure.detail().contains("type"));
+        let json: serde_json::Value = serde_json::from_slice(&encoded).expect("authority JSON");
+        assert_eq!(json["cause"]["fault"]["phase"], "type_check");
+        assert_eq!(json["cause"]["fault"]["class"], "type");
+        assert_eq!(json["cause"]["fault"]["diagnostic"]["observed_bytes"], 27);
+        assert!(json["cause"]["fault"]["diagnostic"].get("bytes").is_none());
     }
 
     #[test]

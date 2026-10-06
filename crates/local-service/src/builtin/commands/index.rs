@@ -26,8 +26,8 @@ use backend_engine::builtin::{
 };
 use backend_extension_turso::SourceObservationReceipt;
 use backend_library::interface::{
-    CompilerCause, CompilerRuntimeCause, CompilerTerminal, CorrelationId, GenerateTarget,
-    PackageCompileRequest, PackageUrl,
+    CompilerRuntimeCause, CompilerTerminal, CorrelationId, GenerateTarget, PackageCompileRequest,
+    PackageUrl,
 };
 use backend_library::{
     CargoPackageAliasEvidenceV1, CompileExecutionIntent, PackageCompilerFailure,
@@ -2045,7 +2045,7 @@ impl From<BuiltinModelError> for DeferredProfileFailure {
     }
 }
 
-fn typed_fragment_failure(
+fn typed_package_compiler_failure(
     compiled: &Result<StagedSemanticPackage, PackageSemanticRuntimeError>,
 ) -> Result<Option<PackageCompilerFailure>, BuiltinModelError> {
     let Err(PackageSemanticRuntimeError::Package(PackageSemanticError::Compile { path, terminal })) =
@@ -2053,18 +2053,9 @@ fn typed_fragment_failure(
     else {
         return Ok(None);
     };
-    let CompilerTerminal::Compile {
-        attempted,
-        cause: CompilerCause::FragmentFailure(failure),
-    } = terminal.as_ref()
-    else {
-        return Ok(None);
-    };
-    PackageCompilerFailure::from_fragment_failure(path, *attempted, failure)
-        .map(Some)
-        .map_err(|error| {
-            BuiltinModelError(format!("compiler failure projection was rejected: {error}"))
-        })
+    PackageCompilerFailure::from_package_terminal(path, terminal).map_err(|error| {
+        BuiltinModelError(format!("compiler failure projection was rejected: {error}"))
+    })
 }
 
 /// Admits exactly one profile candidate on the owner loop and then drops its
@@ -2091,7 +2082,7 @@ pub(super) fn finish_deferred_profile(
         .snapshot()
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic publications: {error}")))?;
-    let compiler_failure = typed_fragment_failure(&compiled)?;
+    let compiler_failure = typed_package_compiler_failure(&compiled)?;
     let (staged, publication_coverage) =
         match admit_local_compile(compiled, profile.expected_artifacts) {
             Ok(admitted) => admitted,
