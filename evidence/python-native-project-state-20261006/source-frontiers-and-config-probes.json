@@ -1,0 +1,1747 @@
+{
+  "schema": "python-native-source-frontiers-config-probes.v1",
+  "scope": "Post-authority forensic capture of the same selected original source frontier and configuration names; authoritative before/after guards are in the committed producer witness. No external ambient module or OS purity claim.",
+  "native_receipt_sha256": "80df46206ea0cd274934a88e70053e0e3f858600ea5bcb1d93c1aa812c45ad4c",
+  "frontiers": [
+    {
+      "package": "requests",
+      "source_root": "/root/nudox-corpus-20261006/python/packages/pypi-requests-2.34.2/source/requests-2.34.2",
+      "raw_report_sha256": "6724fbc3317aabbf394580368f643ece8af00b7f3f2095b9335167fce1c37296",
+      "selected_profile": "Python314",
+      "source_frontier": [
+        {
+          "blake3": "d2e79ea67443604f19adab3269b3d960d84f83243d54bcd4748cd81667e7f5a8",
+          "bytes": 179,
+          "path": "setup.py"
+        },
+        {
+          "blake3": "0b080961fde1dc58a364020af5375b4f4b7890e0d48dcaf1fd67332bec86ec28",
+          "bytes": 5922,
+          "path": "src/requests/__init__.py"
+        },
+        {
+          "blake3": "de21e0429c00fea17217259a06fca5c0f4717f8b206ff83b12eb09cc5f882840",
+          "bytes": 435,
+          "path": "src/requests/__version__.py"
+        },
+        {
+          "blake3": "71e22752f6ee93d9e2a501c465d359da5894b0479d1493b5ba40fe8a946af1f8",
+          "bytes": 1542,
+          "path": "src/requests/_internal_utils.py"
+        },
+        {
+          "blake3": "80b94acd7089f4477eb6e4a65952b07701e80f36c109a2a0f33c3c32a42550b5",
+          "bytes": 5838,
+          "path": "src/requests/_types.py"
+        },
+        {
+          "blake3": "93b7e152300d25ce0ab98f6a6071e90b08e68aa6333785ad69503dde00bc1e6e",
+          "bytes": 28064,
+          "path": "src/requests/adapters.py"
+        },
+        {
+          "blake3": "5d41167a316157594fa9769fbd7af306126945286c81f5f708f29fa63ec3660e",
+          "bytes": 7152,
+          "path": "src/requests/api.py"
+        },
+        {
+          "blake3": "f3415f28af7f8388926ee64f4077d78ff2f94ef958b33c3999acede575385471",
+          "bytes": 12233,
+          "path": "src/requests/auth.py"
+        },
+        {
+          "blake3": "84e19053c1998f6d5e4c16ac77cd9cd3ae99a9d977b629632fb6b9aa366cc99e",
+          "bytes": 430,
+          "path": "src/requests/certs.py"
+        },
+        {
+          "blake3": "b5e0404702a400e6a94ba137057c25ce26854da2f0aa174c0fd8d76b5e3ad0e5",
+          "bytes": 2465,
+          "path": "src/requests/compat.py"
+        },
+        {
+          "blake3": "7cd584bea2117d05236ccba3e410bb4cd5f3ac2d9ef84a6d52f35f1633275ce5",
+          "bytes": 21549,
+          "path": "src/requests/cookies.py"
+        },
+        {
+          "blake3": "49759def672080a1682c6729578312fde98b17b368a6a5866b621529d3e7d6c8",
+          "bytes": 4564,
+          "path": "src/requests/exceptions.py"
+        },
+        {
+          "blake3": "e1419d0d32aaddb8bdcaab2af60e1ed187f88ad817411c6d1f4fc2bb2cac83d5",
+          "bytes": 4210,
+          "path": "src/requests/help.py"
+        },
+        {
+          "blake3": "37f94bb0f7aa37783c9ebe4d43ce969bd3a438dc8682f56ec342bc9097cd3e34",
+          "bytes": 1138,
+          "path": "src/requests/hooks.py"
+        },
+        {
+          "blake3": "0adcd34e9ce4edf9bee3634cf7ae7eef0a29e7b495d1adf8f45ee2f688dd7eda",
+          "bytes": 41783,
+          "path": "src/requests/models.py"
+        },
+        {
+          "blake3": "9758cec96df72ce062d9081ce6d37c5b2ee08acac341a74a35862857bddc94cf",
+          "bytes": 904,
+          "path": "src/requests/packages.py"
+        },
+        {
+          "blake3": "017bbdc5df66ae128b6acc35a559b63408ebe2c2b4246d1e0311ea3dded4c5ab",
+          "bytes": 34248,
+          "path": "src/requests/sessions.py"
+        },
+        {
+          "blake3": "b455b32b5bb18229fe4be347d00d0695c1f689dee8d71a0fc11f765f48525690",
+          "bytes": 4351,
+          "path": "src/requests/status_codes.py"
+        },
+        {
+          "blake3": "69c8b831dc588f7f688f3526126c55f40699132924705e592f7c6640f516aced",
+          "bytes": 4134,
+          "path": "src/requests/structures.py"
+        },
+        {
+          "blake3": "429c33b3c5cf5ac19795aeee3c8a9f5927bb9fecfda6b9b2941f272df442603d",
+          "bytes": 36322,
+          "path": "src/requests/utils.py"
+        },
+        {
+          "blake3": "8abe6e4ca8edf2a5ed8416b1c0240da13836bc48899ec7cb372ed8db02b9e069",
+          "bytes": 469,
+          "path": "tests/__init__.py"
+        },
+        {
+          "blake3": "0e64ea7c5fa053b6207735c0d3366acc2734e700e72d6157a056a5f4e0d14c69",
+          "bytes": 480,
+          "path": "tests/compat.py"
+        },
+        {
+          "blake3": "ca7cdc030d362bab339bdc76823f43a99a798f612c96c2abe8760b8f55354731",
+          "bytes": 1934,
+          "path": "tests/conftest.py"
+        },
+        {
+          "blake3": "30c55b975bff6ea392b8d7a62434a242b86ab63601931c885bda0c53ba7d5199",
+          "bytes": 314,
+          "path": "tests/test_adapters.py"
+        },
+        {
+          "blake3": "2533dc4bedc7f01aec4928f74b44d5c171a56394cfeb9da97633f44217af6799",
+          "bytes": 839,
+          "path": "tests/test_help.py"
+        },
+        {
+          "blake3": "be38d4a5815464eac8ffc020d74f6017ed9e77c8030878cd06ddfdbefe039f4d",
+          "bytes": 424,
+          "path": "tests/test_hooks.py"
+        },
+        {
+          "blake3": "43abe138233c7211d25cc9f4e7ce43688f0c6ab8c2d8f148d5478ccf91326e2c",
+          "bytes": 15343,
+          "path": "tests/test_lowlevel.py"
+        },
+        {
+          "blake3": "3420d3377d28ffc006cde53718d3148e747703e4846ebb9b9d548bd0f9b09cca",
+          "bytes": 229,
+          "path": "tests/test_packages.py"
+        },
+        {
+          "blake3": "3e15698e80886a7086b80f4cb4c15b590efe226c206cc0942b9952f9d70bdacc",
+          "bytes": 107631,
+          "path": "tests/test_requests.py"
+        },
+        {
+          "blake3": "b2922ed59514694e6b51169917bf9bea498726c0d93e24ec824123773116bfc7",
+          "bytes": 2757,
+          "path": "tests/test_structures.py"
+        },
+        {
+          "blake3": "bbb754244023721a8783ff3c3e1d790d50d5233a373bdc94ee4563be790c7d59",
+          "bytes": 5547,
+          "path": "tests/test_testserver.py"
+        },
+        {
+          "blake3": "dc9ab91e178cc96b5c02bf04c7db1d28cf6154a7ae9f2490a3729679b4a4b85f",
+          "bytes": 31454,
+          "path": "tests/test_utils.py"
+        },
+        {
+          "blake3": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+          "bytes": 0,
+          "path": "tests/testserver/__init__.py"
+        },
+        {
+          "blake3": "52dd10070ddd1801d45ea89a3993d39dc5b56114d522c2f79f82b32a12b81510",
+          "bytes": 5147,
+          "path": "tests/testserver/server.py"
+        },
+        {
+          "blake3": "0b33bb1cb4dd24dc7176a433d51efdf76c2f00488a16cb04baff246a4d6222ae",
+          "bytes": 366,
+          "path": "tests/utils.py"
+        }
+      ],
+      "captured_configuration_probe_names": [
+        {
+          "path": "pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": ".pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "pyproject.toml",
+          "present": true,
+          "sha256": "249147c8688043884fd91b951a013c5bf0aef445894527ad75124a12a41225e1",
+          "bytes": 3153
+        },
+        {
+          "path": "mypy.ini",
+          "present": false
+        },
+        {
+          "path": "pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "setup.cfg",
+          "present": true,
+          "sha256": "1c473cbaee8da5fc46e7f0158794af5cea4414c34a3cf3f180c2001f5e38bd3e",
+          "bytes": 38
+        },
+        {
+          "path": "src/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "src/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "src/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "src/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "src/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "src/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "src/requests/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "src/requests/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "src/requests/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "src/requests/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "src/requests/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "src/requests/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "tests/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "tests/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "tests/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "tests/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "tests/testserver/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/testserver/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/testserver/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "tests/testserver/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "tests/testserver/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "tests/testserver/setup.cfg",
+          "present": false
+        }
+      ]
+    },
+    {
+      "package": "quart",
+      "source_root": "/root/nudox-corpus-20261006/python/packages/pypi-quart-0.23.1/source/quart-0.23.1",
+      "raw_report_sha256": "a4858e0eaf567f2839d44bbb2fb8b1488036a660bd1466108b0e7be2d7b3f290",
+      "selected_profile": "Python314",
+      "source_frontier": [
+        {
+          "blake3": "8c6cea0c0c0ec2dd3c35d8c6bc183e3c1af358738c66d15dbec267f0626f08d1",
+          "bytes": 2914,
+          "path": "src/quart/__init__.py"
+        },
+        {
+          "blake3": "3183fd0d90d39c1e9157f2a98edb3e59a07f37e9d16b6d81cb2b93fc165cc673",
+          "bytes": 101,
+          "path": "src/quart/__main__.py"
+        },
+        {
+          "blake3": "25a3f269c5d7cd76fe0331034866096909705c9d674944d54ca562e06afd39e6",
+          "bytes": 66581,
+          "path": "src/quart/app.py"
+        },
+        {
+          "blake3": "f9a06194aa7026a7e279f7007aeb3e53468fb5894d6a16d29834a113158520ee",
+          "bytes": 16452,
+          "path": "src/quart/asgi.py"
+        },
+        {
+          "blake3": "29b42fcef6dfae0c5500b06592e2a9915b49f570f3cab30178295c0a4c11dd29",
+          "bytes": 14592,
+          "path": "src/quart/blueprints.py"
+        },
+        {
+          "blake3": "dfabc8f18571dd9f5c75b980e6de049791a8f8680f14d613152a98b8e92b6c43",
+          "bytes": 24349,
+          "path": "src/quart/cli.py"
+        },
+        {
+          "blake3": "e61cc748829dc2a94727d5e18ea8353ad633c28978e8ba5d7fed89db02bfb1d7",
+          "bytes": 1533,
+          "path": "src/quart/config.py"
+        },
+        {
+          "blake3": "3ead5d087d9402af078d0adefea2c2061eda748248ebbded24327d9f72963a9c",
+          "bytes": 14727,
+          "path": "src/quart/ctx.py"
+        },
+        {
+          "blake3": "d4e4070af9ae777e2eb595adc48c884ad45bc612bd88f6a18ec6de41a5df6981",
+          "bytes": 1623,
+          "path": "src/quart/datastructures.py"
+        },
+        {
+          "blake3": "d51278dec9b4fb55e212d7ebc23dd4268c5fcbc15144de9ae80d7254a4f8a206",
+          "bytes": 2226,
+          "path": "src/quart/debug.py"
+        },
+        {
+          "blake3": "8168f949e3e7c57d4431467d697dd51f07b1a4ca70b117604ee0dc499dd070ef",
+          "bytes": 8232,
+          "path": "src/quart/formparser.py"
+        },
+        {
+          "blake3": "d0b343317e423936485c7e3509aad6d9b2eda2405ab49fd6a828a4cfb6f2ccd7",
+          "bytes": 1969,
+          "path": "src/quart/globals.py"
+        },
+        {
+          "blake3": "0e970010929d601ecf3ee87270f86adc1ff0fa12b4388199ad4b4b3619d19da1",
+          "bytes": 13585,
+          "path": "src/quart/helpers.py"
+        },
+        {
+          "blake3": "b49b54211be4a2842fee8b7d2f524a45aaf5ee722ea2bca3160f61c4fbe76b3d",
+          "bytes": 1213,
+          "path": "src/quart/json/__init__.py"
+        },
+        {
+          "blake3": "2de83c6b71fabd4c668438a8e6945f470b3e6b4bfe4424746e098f99e325bc32",
+          "bytes": 164,
+          "path": "src/quart/json/provider.py"
+        },
+        {
+          "blake3": "ac61a02630a05c395a44bcf673f99f6e400df08252902939bbf2c927b5ddb743",
+          "bytes": 646,
+          "path": "src/quart/json/tag.py"
+        },
+        {
+          "blake3": "67e55e7ab37a1be6e9135a60113eaf63fd6e6d2f400e5f3d79c0f9a043935e4b",
+          "bytes": 2197,
+          "path": "src/quart/logging.py"
+        },
+        {
+          "blake3": "a6096cbbc0928c743bd6a8c5cd7cc69e520ef05a4a6a9fbf35c28b37c4823aeb",
+          "bytes": 2752,
+          "path": "src/quart/routing.py"
+        },
+        {
+          "blake3": "0f997d81b7066c79cc980d0707f55a25a5599821b10fa3cefcf2e48333f92473",
+          "bytes": 8738,
+          "path": "src/quart/sessions.py"
+        },
+        {
+          "blake3": "a10b127f74f948f16f5f9539061f509dc3789ac6e346d3cf7b41589df2564ef3",
+          "bytes": 3637,
+          "path": "src/quart/signals.py"
+        },
+        {
+          "blake3": "19328fc34429adbb1924e7f68900e723ab8b3b6d0326fc37376f6a8db10b0ea4",
+          "bytes": 5601,
+          "path": "src/quart/templating.py"
+        },
+        {
+          "blake3": "f97b33de4958d83e31b65456cd0e97c494b6d7ade25cf9314044bbc875b0a855",
+          "bytes": 1207,
+          "path": "src/quart/testing/__init__.py"
+        },
+        {
+          "blake3": "02d8b17fa0ea2869fe8f311981d2b44c7df36c651aeea122be44db682afe653b",
+          "bytes": 2727,
+          "path": "src/quart/testing/app.py"
+        },
+        {
+          "blake3": "31fd449e4bb63c3499a74a42be09f586ee1edd83c83ec2db489b7ef9cbed72b4",
+          "bytes": 14602,
+          "path": "src/quart/testing/client.py"
+        },
+        {
+          "blake3": "3f761e40839a927b53c0edc7773589f8a1927e9a978b424176dcba1a51ede013",
+          "bytes": 6769,
+          "path": "src/quart/testing/connections.py"
+        },
+        {
+          "blake3": "278ea9a161dc75efeb11632cf65bb973307cd7f51a800b52822e43cceca9f7ae",
+          "bytes": 7397,
+          "path": "src/quart/testing/utils.py"
+        },
+        {
+          "blake3": "bbe5e368cf448be95a3e0b26ce3e62a413247874c514299c0a4265169157d399",
+          "bytes": 9862,
+          "path": "src/quart/typing.py"
+        },
+        {
+          "blake3": "8f97032ceb79a1b7ee76162657293de96fcffb5d9d25e857562b6f7389913e6f",
+          "bytes": 4972,
+          "path": "src/quart/utils.py"
+        },
+        {
+          "blake3": "910dfd52a4f45c02066dda3843baffde6ee5ce5185c12036c842db1330e61d36",
+          "bytes": 4346,
+          "path": "src/quart/views.py"
+        },
+        {
+          "blake3": "26b1251771174280a25d9ef117ce154982ec1c325fbd177de6bb40e92cdf2983",
+          "bytes": 370,
+          "path": "src/quart/wrappers/__init__.py"
+        },
+        {
+          "blake3": "b2e8ce29c234a2a8d501bef29bbcfebc434113d2ebe19d5ec9d8d47b49cfee59",
+          "bytes": 3646,
+          "path": "src/quart/wrappers/base.py"
+        },
+        {
+          "blake3": "69a8a447cd81a19c051610027ac009d42a5a07820069520818951bf37aa54bfb",
+          "bytes": 13770,
+          "path": "src/quart/wrappers/request.py"
+        },
+        {
+          "blake3": "6f31830ec0f50c24765531c30fc2be345183f9130c823cffb253a3ae45156144",
+          "bytes": 16550,
+          "path": "src/quart/wrappers/response.py"
+        },
+        {
+          "blake3": "8e9dcd6c5df0984b6c7de69b69963871c34318afee339f725df015f11e3f1d48",
+          "bytes": 4194,
+          "path": "src/quart/wrappers/websocket.py"
+        }
+      ],
+      "captured_configuration_probe_names": [
+        {
+          "path": "pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": ".pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "pyproject.toml",
+          "present": true,
+          "sha256": "80ede715b26e8f81dbb929438d25a597d9f1d8f478584433bb710200a7dac590",
+          "bytes": 5258
+        },
+        {
+          "path": "mypy.ini",
+          "present": false
+        },
+        {
+          "path": "pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "setup.cfg",
+          "present": false
+        },
+        {
+          "path": "src/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "src/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "src/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "src/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "src/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "src/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "src/quart/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "src/quart/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "src/quart/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "src/quart/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "src/quart/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "src/quart/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "src/quart/json/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "src/quart/json/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "src/quart/json/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "src/quart/json/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "src/quart/json/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "src/quart/json/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "src/quart/testing/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "src/quart/testing/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "src/quart/testing/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "src/quart/testing/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "src/quart/testing/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "src/quart/testing/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "src/quart/wrappers/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "src/quart/wrappers/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "src/quart/wrappers/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "src/quart/wrappers/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "src/quart/wrappers/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "src/quart/wrappers/setup.cfg",
+          "present": false
+        }
+      ]
+    },
+    {
+      "package": "flask",
+      "source_root": "/root/nudox-corpus-20261006/artifacts/stratified-framework-dossiers-20261006T1030Z/pypi-flask/source",
+      "raw_report_sha256": "6d2424444a8d2f05bced5c4d9774ad65a7ee431aa82e8dea7a9f339b37148d80",
+      "selected_profile": "Python314",
+      "source_frontier": [
+        {
+          "blake3": "68d9327de7413aeee443c341455792e14ef8e86d5a81f4deff84d182447145cd",
+          "bytes": 3386,
+          "path": "docs/conf.py"
+        },
+        {
+          "blake3": "27256d2d0ffd48887c73ee78a0aa61aac5eb87160b47dd788ea2cac79ec0afed",
+          "bytes": 102,
+          "path": "examples/celery/make_celery.py"
+        },
+        {
+          "blake3": "5850c6634ff9f4091276e9d538db51c55e3b2721ea13f029e7b6b2edd743dff0",
+          "bytes": 1019,
+          "path": "examples/celery/src/task_app/__init__.py"
+        },
+        {
+          "blake3": "7458d80574035c2d36e7a9614a7eee5f3d1ca57463298d7b34a0380b8fa767b0",
+          "bytes": 484,
+          "path": "examples/celery/src/task_app/tasks.py"
+        },
+        {
+          "blake3": "86ee4b30e064afd625e13fb5c0a12e45ceba6f96d9891424598d390dfbfaa695",
+          "bytes": 954,
+          "path": "examples/celery/src/task_app/views.py"
+        },
+        {
+          "blake3": "176125e54a41db07720676e7c716e05ac70cb1334e99be0825c9afeab6b20228",
+          "bytes": 97,
+          "path": "examples/javascript/js_example/__init__.py"
+        },
+        {
+          "blake3": "e600d4c7acabac0c00fa1bd468b224f62aa96b6a675733ecd23657a8f5852b57",
+          "bytes": 429,
+          "path": "examples/javascript/js_example/views.py"
+        },
+        {
+          "blake3": "7076a38a139a71ae8f73de90ef7ef6d8a22471ab57f382152b5b7a7f6df5810b",
+          "bytes": 216,
+          "path": "examples/javascript/tests/conftest.py"
+        },
+        {
+          "blake3": "b24695f10694a17b51042655c233542e2d1108fe5288321a6d19cd9bf0f48c6e",
+          "bytes": 727,
+          "path": "examples/javascript/tests/test_js_example.py"
+        },
+        {
+          "blake3": "3c4aceada3f97a87e2518f3a997d5cd2e8f795ccf9bccc6c8b18859fc0c22ea7",
+          "bytes": 1406,
+          "path": "examples/tutorial/flaskr/__init__.py"
+        },
+        {
+          "blake3": "e7e3c181a34d2881599010ac3907c203cb0626ec87da176a3a1a35adecac9f4e",
+          "bytes": 3296,
+          "path": "examples/tutorial/flaskr/auth.py"
+        },
+        {
+          "blake3": "7853ef9931b32f7160d925b7dc32be175ad58df3921e09c6ce9319e7b5e6a00e",
+          "bytes": 3305,
+          "path": "examples/tutorial/flaskr/blog.py"
+        },
+        {
+          "blake3": "26e323f7af263ea2271b588b4f8c41b9686f2f325dee2bdb390b86cfa7f8940f",
+          "bytes": 1317,
+          "path": "examples/tutorial/flaskr/db.py"
+        },
+        {
+          "blake3": "a1115e629ec9ef14f6aeb808b0eaf3e9b6836d1b27af145549ec598bef6f81ef",
+          "bytes": 1454,
+          "path": "examples/tutorial/tests/conftest.py"
+        },
+        {
+          "blake3": "ad4bfa47cf36c03cc007335ebc89484b0dbd3bfcebd21a59aa4ee3fe6ee88214",
+          "bytes": 2070,
+          "path": "examples/tutorial/tests/test_auth.py"
+        },
+        {
+          "blake3": "00cc4e691168f4ebb5eb88094bd10353a1576bbb6a88d66fd22bc1a7585e135d",
+          "bytes": 2503,
+          "path": "examples/tutorial/tests/test_blog.py"
+        },
+        {
+          "blake3": "9c655d5271ac5ffb248e8cc542b6063a89aa0bf61e2fb0da7527fed0c4b5d908",
+          "bytes": 616,
+          "path": "examples/tutorial/tests/test_db.py"
+        },
+        {
+          "blake3": "40ad12847f6011bca5166e76f5518021bfa6de0781c74d4302c70fa81840f51a",
+          "bytes": 298,
+          "path": "examples/tutorial/tests/test_factory.py"
+        },
+        {
+          "blake3": "8664e636971d7c55df5089269f515e23ea7865b54ff437cbd1cebb33b7638c58",
+          "bytes": 2701,
+          "path": "src/flask/__init__.py"
+        },
+        {
+          "blake3": "3cc81f17972fae37396080bf0c0315d2472d9cd9f2bed925e0c817233cb52e02",
+          "bytes": 30,
+          "path": "src/flask/__main__.py"
+        },
+        {
+          "blake3": "6dd09c55282c976a7ad3873efb47a1de50597d1937d58a635b5711e703a49493",
+          "bytes": 61719,
+          "path": "src/flask/app.py"
+        },
+        {
+          "blake3": "031604fe7592e1833c713af31905c2f34b89d9229e5a5f10ec40a34a738cfaab",
+          "bytes": 4541,
+          "path": "src/flask/blueprints.py"
+        },
+        {
+          "blake3": "c6cb957a94e28d82421d6cb06950d7731f1bcb28f2456fd08f9bef0f413ed927",
+          "bytes": 37184,
+          "path": "src/flask/cli.py"
+        },
+        {
+          "blake3": "95c63f7bff14b3fa03425ad2b5c663ee0c0eba9922929297dcca1782d90f51b6",
+          "bytes": 13219,
+          "path": "src/flask/config.py"
+        },
+        {
+          "blake3": "f31668c50727bfac1c0c8b33d048555e28350e667a4395ec5409a5386912b779",
+          "bytes": 15521,
+          "path": "src/flask/ctx.py"
+        },
+        {
+          "blake3": "f171255dfb0c2a3c6c19956929a270a6792a5af3c59932fb71f83bb39c81e2b2",
+          "bytes": 6080,
+          "path": "src/flask/debughelpers.py"
+        },
+        {
+          "blake3": "307936c713967fe17421bab6964b5a68dc255f2889b2a5537df6708ff85d9c0a",
+          "bytes": 1713,
+          "path": "src/flask/globals.py"
+        },
+        {
+          "blake3": "cfae98c5ecb0d576c52842902477460d0c6c2d8d1a5705a994918cbd673e7429",
+          "bytes": 23517,
+          "path": "src/flask/helpers.py"
+        },
+        {
+          "blake3": "c82dc96a6ac6c2794c9ef344d7d72ed9538ee16914754e5333e2a60954e7101e",
+          "bytes": 5602,
+          "path": "src/flask/json/__init__.py"
+        },
+        {
+          "blake3": "2c4da3e47bd2a222c68603e8d425532c2dca3775c21811e2bc04b1afa1fa450d",
+          "bytes": 7672,
+          "path": "src/flask/json/provider.py"
+        },
+        {
+          "blake3": "b31f067d8d1fcaf39cfbe72b1b73996ebb21178febd6deb48a8115710107b7e8",
+          "bytes": 9281,
+          "path": "src/flask/json/tag.py"
+        },
+        {
+          "blake3": "db82d5563fc509058e5fb19eca0fd3f0af424b01e13ce86dbe4be0d940585d29",
+          "bytes": 2377,
+          "path": "src/flask/logging.py"
+        },
+        {
+          "blake3": "307edb474a075cd361c9f146deef5a4fb937856a4dcc6d729dc5ab23e154a979",
+          "bytes": 38106,
+          "path": "src/flask/sansio/app.py"
+        },
+        {
+          "blake3": "fd4fcde51ad51a18233a679f2d1f05a24e8a8f628576492e779eb3c0b822a52f",
+          "bytes": 24637,
+          "path": "src/flask/sansio/blueprints.py"
+        },
+        {
+          "blake3": "1e2fd3ca1c58acf80325e70432c4bde95c151acde8e55c411346b7894c888a06",
+          "bytes": 30371,
+          "path": "src/flask/sansio/scaffold.py"
+        },
+        {
+          "blake3": "3a6d352c7cc5d7f6b0ca9f30104bf968850ac3d3ab6bde49038fc16a1a54f3ac",
+          "bytes": 14969,
+          "path": "src/flask/sessions.py"
+        },
+        {
+          "blake3": "8d048fb7d9e969d843bfb1e357a5bc213b977624a9bccd42b89078d626189226",
+          "bytes": 750,
+          "path": "src/flask/signals.py"
+        },
+        {
+          "blake3": "c252a2b9c0641a0eddb7e5cb394f003d4e416563ce3b56fa11ea983a2071e789",
+          "bytes": 7678,
+          "path": "src/flask/templating.py"
+        },
+        {
+          "blake3": "52ad270f677c66bd7a230abffff02fda8f7bff71bf5a5e6472deb5f8560d25b2",
+          "bytes": 10117,
+          "path": "src/flask/testing.py"
+        },
+        {
+          "blake3": "3c84b30e2140501604c5326235eb60cb539175f0ac05e4fe0f95a13ddca85f9b",
+          "bytes": 3293,
+          "path": "src/flask/typing.py"
+        },
+        {
+          "blake3": "6ce5025839d6354def5b44ba045099b227d9743a202fd2ec6f276caa10e96bfb",
+          "bytes": 6962,
+          "path": "src/flask/views.py"
+        },
+        {
+          "blake3": "0474b749641d3c65fefb8eab221c895fd485de939bb6d7c5fdd90600e9f55b6d",
+          "bytes": 9406,
+          "path": "src/flask/wrappers.py"
+        },
+        {
+          "blake3": "97ec3b50babfbf4bda380d291d94e4e44ecd11292e644717435d0572b7bd8ba3",
+          "bytes": 3285,
+          "path": "tests/conftest.py"
+        },
+        {
+          "blake3": "f5947f74d9d6f5a6bb748e7ec6040f018a5ca7d408b6ac7baf6b78223951a5ed",
+          "bytes": 4978,
+          "path": "tests/test_appctx.py"
+        },
+        {
+          "blake3": "46ed4aa535af2181197c33d67da20a1cb7ea70acfc76e5bfff4c50a9bf75ba8a",
+          "bytes": 256,
+          "path": "tests/test_apps/blueprintapp/__init__.py"
+        },
+        {
+          "blake3": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+          "bytes": 0,
+          "path": "tests/test_apps/blueprintapp/apps/__init__.py"
+        },
+        {
+          "blake3": "bd6cc5c7b66aa124f3390ade4d5744ca70b64d256c39d3da9af51e89493c2387",
+          "bytes": 366,
+          "path": "tests/test_apps/blueprintapp/apps/admin/__init__.py"
+        },
+        {
+          "blake3": "75de1bb0fae5f7599caac9998bdec1cdb76a32451cae585a03a4687680053a6d",
+          "bytes": 327,
+          "path": "tests/test_apps/blueprintapp/apps/frontend/__init__.py"
+        },
+        {
+          "blake3": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+          "bytes": 0,
+          "path": "tests/test_apps/cliapp/__init__.py"
+        },
+        {
+          "blake3": "92367fd14dbed88080a320ef4906e4d1d82e58ea2f7692c9e53c47c906acbacc",
+          "bytes": 52,
+          "path": "tests/test_apps/cliapp/app.py"
+        },
+        {
+          "blake3": "5e20e2fa6f2828f5246e117ef1410a09c3079ca86466102376cb07adf2cb7eb0",
+          "bytes": 169,
+          "path": "tests/test_apps/cliapp/factory.py"
+        },
+        {
+          "blake3": "39c78feaa5db032d0a1ccc9e101e9c27f6249ea6ad7369bab0ad52fd04780adf",
+          "bytes": 73,
+          "path": "tests/test_apps/cliapp/importerrorapp.py"
+        },
+        {
+          "blake3": "ad3d8666ce75457cc59871b502d5aaac6e85a34c235b4014bd5dca69fbcf4b17",
+          "bytes": 55,
+          "path": "tests/test_apps/cliapp/inner1/__init__.py"
+        },
+        {
+          "blake3": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+          "bytes": 0,
+          "path": "tests/test_apps/cliapp/inner1/inner2/__init__.py"
+        },
+        {
+          "blake3": "aa0a174fc6581bac7c49634eeff21774140dc2d642ada717f832f85cb331952a",
+          "bytes": 47,
+          "path": "tests/test_apps/cliapp/inner1/inner2/flask.py"
+        },
+        {
+          "blake3": "e86ea15ebe4fc5d738c7ead2f23c1f680185e556afaa9220539ff6c214059610",
+          "bytes": 67,
+          "path": "tests/test_apps/cliapp/multiapp.py"
+        },
+        {
+          "blake3": "33d9bdf306948022842b7face57d60d6863c45b85c1b768f19f786b84b21ca4e",
+          "bytes": 104,
+          "path": "tests/test_apps/helloworld/hello.py"
+        },
+        {
+          "blake3": "857320e369b59ad2b8c8b4ab66bcbd96506efb34ffee968bd858481fc9a8814f",
+          "bytes": 36,
+          "path": "tests/test_apps/helloworld/wsgi.py"
+        },
+        {
+          "blake3": "9e78b87b2862440256264d8d0d4bc09336c8d9fc59c28e4f6b2d4a4d3dfdf824",
+          "bytes": 73,
+          "path": "tests/test_apps/subdomaintestmodule/__init__.py"
+        },
+        {
+          "blake3": "76975dd03e9f9a5767c453763e7124566bb342244652a909d06c2c7f89353070",
+          "bytes": 3335,
+          "path": "tests/test_async.py"
+        },
+        {
+          "blake3": "2f9bfcf29109926b48ecb920f2214651fa5bb831a92127399a16a4bb34660a31",
+          "bytes": 54160,
+          "path": "tests/test_basic.py"
+        },
+        {
+          "blake3": "461b1840a3889699899bd37db16e33a0b80ad51f3897fa546defb2357093ee0d",
+          "bytes": 28778,
+          "path": "tests/test_blueprints.py"
+        },
+        {
+          "blake3": "3b676ceeed68859b2056e9f94bcd4684508e6d0c6124c145b8024f01ea79efff",
+          "bytes": 20368,
+          "path": "tests/test_cli.py"
+        },
+        {
+          "blake3": "6b8e2ab59820f9498125e809691fb79083dbaae16e8e919fb9982ca06577ba0e",
+          "bytes": 7748,
+          "path": "tests/test_config.py"
+        },
+        {
+          "blake3": "5ed7d77103bdc06aad784fc7b6cb66d2bcfe58c5cc862f08636d05617c240b1c",
+          "bytes": 1093,
+          "path": "tests/test_converters.py"
+        },
+        {
+          "blake3": "527be4d29a4cef29b20fd466153c6d373efc44d0ebcd43c37de4b9f5fd9fe01d",
+          "bytes": 11224,
+          "path": "tests/test_helpers.py"
+        },
+        {
+          "blake3": "f5b2e0088d3dd6d773edf999df3b69d1971c0fa6c1d654b29568b67e625e272f",
+          "bytes": 3317,
+          "path": "tests/test_instance_config.py"
+        },
+        {
+          "blake3": "3a517dc13b996fde17038a1a885816730238a922e5b3efc1ddda2589bafce907",
+          "bytes": 8741,
+          "path": "tests/test_json.py"
+        },
+        {
+          "blake3": "b4101a0d4b08ad72322451da6163fbc4f96b964c71fabd1d9c7643a066e58475",
+          "bytes": 1998,
+          "path": "tests/test_json_tag.py"
+        },
+        {
+          "blake3": "ef6a29d978b06d016036e5d2d0075d904a84f5a6aea8e176dc0310a2b75dad84",
+          "bytes": 2529,
+          "path": "tests/test_logging.py"
+        },
+        {
+          "blake3": "ca5cbd09a14e095405d31b4672ebf648520d5899544e3c9d6420234a210eaf65",
+          "bytes": 712,
+          "path": "tests/test_regression.py"
+        },
+        {
+          "blake3": "b3bc68e8157001d69d71d2cc12bdb48d6e328276ecbf2ffa73cb22c1fbb0e9b2",
+          "bytes": 8691,
+          "path": "tests/test_reqctx.py"
+        },
+        {
+          "blake3": "23ec6a9a2d186b18891dfc9ca66e676ef818c45d65be754e405d507236e16edd",
+          "bytes": 1902,
+          "path": "tests/test_request.py"
+        },
+        {
+          "blake3": "0baa8f443c455e8ce25efac51876ef7f4e3cc8f2e7cd688846263f9aaed80c64",
+          "bytes": 792,
+          "path": "tests/test_session_interface.py"
+        },
+        {
+          "blake3": "6a482c4670a06e2c58a309e24e47477437e882d88167c128ad120ae3aff4dbed",
+          "bytes": 4864,
+          "path": "tests/test_signals.py"
+        },
+        {
+          "blake3": "aa38edc9e45698eee1078a501198e71944463228d6e89425dbf46c904da3c4a3",
+          "bytes": 475,
+          "path": "tests/test_subclassing.py"
+        },
+        {
+          "blake3": "a2c0081ec2e2e913b4bb6b6126f6f83c86c3827813372f7370d0caed331f2d0b",
+          "bytes": 12323,
+          "path": "tests/test_templating.py"
+        },
+        {
+          "blake3": "16a41e2feb962e71db7606a833e780eaee6b65d01795569121895e649c1b7713",
+          "bytes": 10267,
+          "path": "tests/test_testing.py"
+        },
+        {
+          "blake3": "35e58d462704ef3c734a1d03797269e3af1d61f5c874b921dc23b3d78f3f3474",
+          "bytes": 8436,
+          "path": "tests/test_user_error_handler.py"
+        },
+        {
+          "blake3": "3dfa3ec2fe7455ff20a744663b81d898aef33d7d308031e23db2a264a8588d7d",
+          "bytes": 6732,
+          "path": "tests/test_views.py"
+        },
+        {
+          "blake3": "f2533ecbff0c5c72cbb8e4e6e513c85e3e4270d7792426865163c42acc27f3d4",
+          "bytes": 589,
+          "path": "tests/type_check/typing_app_decorators.py"
+        },
+        {
+          "blake3": "44db2ac67cdcc7ce90b1cdb4f1e5c7e3129c2a56aa2266dd9e56e9c3e19e394f",
+          "bytes": 647,
+          "path": "tests/type_check/typing_error_handler.py"
+        },
+        {
+          "blake3": "54e5a8b5fbc0cb03b70f0c47434d79f187d8989789c7a25e2bde1d9db419347c",
+          "bytes": 2532,
+          "path": "tests/type_check/typing_route.py"
+        }
+      ],
+      "captured_configuration_probe_names": [
+        {
+          "path": "pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": ".pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "pyproject.toml",
+          "present": true,
+          "sha256": "ea0777ce44101efe5edd8c152aceef898acf9a98c8bd840ad98473611a573948",
+          "bytes": 6617
+        },
+        {
+          "path": "mypy.ini",
+          "present": false
+        },
+        {
+          "path": "pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "setup.cfg",
+          "present": false
+        },
+        {
+          "path": "docs/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "docs/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "docs/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "docs/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "docs/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "docs/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "examples/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "examples/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "examples/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "examples/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "examples/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "examples/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "examples/celery/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "examples/celery/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "examples/celery/pyproject.toml",
+          "present": true,
+          "sha256": "00d27458e466294e03bd3be48bfb8c436be5f9bd49cee885e2fb2d88f2b684b5",
+          "bytes": 381
+        },
+        {
+          "path": "examples/celery/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "examples/celery/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "examples/celery/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "examples/celery/src/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "examples/celery/src/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "examples/celery/src/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "examples/celery/src/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "examples/celery/src/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "examples/celery/src/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "examples/celery/src/task_app/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "examples/celery/src/task_app/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "examples/celery/src/task_app/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "examples/celery/src/task_app/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "examples/celery/src/task_app/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "examples/celery/src/task_app/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "examples/javascript/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "examples/javascript/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "examples/javascript/pyproject.toml",
+          "present": true,
+          "sha256": "2efeb4bc2175dd05aa6452dd11ed761cbeb278bb3ce1de6aca2ed0caf29ce12a",
+          "bytes": 736
+        },
+        {
+          "path": "examples/javascript/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "examples/javascript/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "examples/javascript/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "examples/javascript/js_example/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "examples/javascript/js_example/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "examples/javascript/js_example/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "examples/javascript/js_example/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "examples/javascript/js_example/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "examples/javascript/js_example/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "examples/javascript/tests/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "examples/javascript/tests/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "examples/javascript/tests/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "examples/javascript/tests/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "examples/javascript/tests/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "examples/javascript/tests/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "examples/tutorial/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "examples/tutorial/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "examples/tutorial/pyproject.toml",
+          "present": true,
+          "sha256": "8ea666f85481f44bc7a5cef54e39ab939f92f5f2cb576f9a6b959866a3fac0aa",
+          "bytes": 771
+        },
+        {
+          "path": "examples/tutorial/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "examples/tutorial/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "examples/tutorial/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "examples/tutorial/flaskr/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "examples/tutorial/flaskr/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "examples/tutorial/flaskr/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "examples/tutorial/flaskr/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "examples/tutorial/flaskr/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "examples/tutorial/flaskr/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "examples/tutorial/tests/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "examples/tutorial/tests/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "examples/tutorial/tests/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "examples/tutorial/tests/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "examples/tutorial/tests/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "examples/tutorial/tests/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "src/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "src/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "src/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "src/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "src/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "src/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "src/flask/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "src/flask/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "src/flask/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "src/flask/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "src/flask/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "src/flask/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "src/flask/json/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "src/flask/json/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "src/flask/json/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "src/flask/json/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "src/flask/json/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "src/flask/json/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "src/flask/sansio/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "src/flask/sansio/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "src/flask/sansio/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "src/flask/sansio/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "src/flask/sansio/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "src/flask/sansio/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "tests/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "tests/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "tests/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "tests/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/blueprintapp/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/blueprintapp/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/blueprintapp/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/blueprintapp/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/blueprintapp/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/blueprintapp/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/blueprintapp/apps/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/blueprintapp/apps/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/blueprintapp/apps/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/blueprintapp/apps/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/blueprintapp/apps/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/blueprintapp/apps/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/blueprintapp/apps/admin/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/blueprintapp/apps/admin/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/blueprintapp/apps/admin/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/blueprintapp/apps/admin/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/blueprintapp/apps/admin/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/blueprintapp/apps/admin/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/blueprintapp/apps/frontend/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/blueprintapp/apps/frontend/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/blueprintapp/apps/frontend/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/blueprintapp/apps/frontend/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/blueprintapp/apps/frontend/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/blueprintapp/apps/frontend/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/cliapp/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/cliapp/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/cliapp/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/cliapp/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/cliapp/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/cliapp/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/cliapp/inner1/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/cliapp/inner1/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/cliapp/inner1/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/cliapp/inner1/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/cliapp/inner1/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/cliapp/inner1/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/cliapp/inner1/inner2/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/cliapp/inner1/inner2/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/cliapp/inner1/inner2/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/cliapp/inner1/inner2/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/cliapp/inner1/inner2/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/cliapp/inner1/inner2/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/helloworld/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/helloworld/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/helloworld/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/helloworld/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/helloworld/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/helloworld/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/subdomaintestmodule/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/subdomaintestmodule/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/subdomaintestmodule/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/subdomaintestmodule/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/subdomaintestmodule/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "tests/test_apps/subdomaintestmodule/setup.cfg",
+          "present": false
+        },
+        {
+          "path": "tests/type_check/pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/type_check/.pyrefly.toml",
+          "present": false
+        },
+        {
+          "path": "tests/type_check/pyproject.toml",
+          "present": false
+        },
+        {
+          "path": "tests/type_check/mypy.ini",
+          "present": false
+        },
+        {
+          "path": "tests/type_check/pyrightconfig.json",
+          "present": false
+        },
+        {
+          "path": "tests/type_check/setup.cfg",
+          "present": false
+        }
+      ]
+    }
+  ]
+}

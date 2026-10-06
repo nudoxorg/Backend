@@ -1,0 +1,42 @@
+{
+  "schema": "python-native-validation-log-identities.v1",
+  "source_commit": "f91ee8a837348ee1f67531279aa3020762bab9e8",
+  "logs": [
+    {
+      "path": "/root/nudox-corpus-20261006/python/project-recovery/native-project-gate-08.log",
+      "sha256": "bcbc277686f4fe1d1153a65d513a305485f39cc815b4eb2327e4636dcd70d81d",
+      "bytes": 1357,
+      "last_lines": [
+        "test native_project_cannot_bind_uncaptured_files_or_external_configured_roots ... ok",
+        "test native_project_restores_cross_module_definitions_preserving_utf8 ... ok",
+        "",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.77s",
+        ""
+      ]
+    },
+    {
+      "path": "/root/nudox-corpus-20261006/python/project-recovery/native-engine-check-05.log",
+      "sha256": "184b92e6b2af1135d32da19ab230f10a91236fe659dc6ccfb2aa9479a056db47",
+      "bytes": 160532,
+      "last_lines": [
+        "478 |     pub const fn total(self) -> NonZeroU32 {",
+        "    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^",
+        "",
+        "warning: `backend-engine` (lib) generated 90 warnings (run `cargo fix --lib -p backend-engine` to apply 14 suggestions)",
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.27s"
+      ]
+    },
+    {
+      "path": "/root/nudox-corpus-20261006/python/project-recovery/native-public-candidate-build-01.log",
+      "sha256": "ca3d9d06e8d92acc09af46d08ad3ab6f067871ee1905af7a3ebe3bce683ec75f",
+      "bytes": 248949,
+      "last_lines": [
+        "    |               ^^^^^^^^^^^^^^^^^^",
+        "",
+        "warning: `backend-mcp` (lib) generated 7 warnings (run `cargo fix --lib -p backend-mcp` to apply 5 suggestions)",
+        "warning: `backend-local-service` (lib) generated 124 warnings (run `cargo fix --lib -p backend-local-service` to apply 28 suggestions)",
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9m 09s"
+      ]
+    }
+  ]
+}
