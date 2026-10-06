@@ -26,3 +26,7 @@ workspace = true
 
 [lib]
 doctest = false
+
+[[test]]
+name = "lower_tests"
+path = "tests/lower_tests.rs"
