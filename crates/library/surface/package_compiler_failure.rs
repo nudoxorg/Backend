@@ -11,7 +11,8 @@ use crate::interface::{
 };
 use backend_semantic::vocabulary::{
     ClangProjectionFault, GoProjectionFault, JavaProjectionFault, LoweringUnsupported, NativeTool,
-    ProjectionAdmissionFault, ProjectionConstructorFault, ProjectionConstructorTag,
+    ProjectionAdmissionFault, ProjectionAnonymousCallableAnchorFault,
+    ProjectionAnonymousCallableAnchorPool, ProjectionConstructorFault, ProjectionConstructorTag,
     ProjectionSemanticTypeFault, ProjectionSemanticTypeTag, ProjectionTypeCell,
     PythonProjectionFault, TypeScriptProjectionFault,
 };
@@ -253,8 +254,7 @@ impl PackageCompilerFailureCause {
     pub const fn required_configuration_variable(&self) -> Option<&'static str> {
         match self {
             Self::RequiredTool { issue, .. } => Some(issue.configuration_variable()),
-            Self::Toolchain { selected, .. }
-            | Self::ToolingUnavailable { tool: selected, .. } => {
+            Self::Toolchain { selected, .. } | Self::ToolingUnavailable { tool: selected, .. } => {
                 Some(selected.configuration_variable())
             }
             _ => None,
@@ -782,6 +782,9 @@ pub enum PackageTypeTagFact {
     ArrayConstExpression,
     ArrayIncomplete,
     CQualified,
+    KeyOf,
+    IndexedAccess,
+    TypeOf,
 }
 
 /// Closed type-record cell operand.
@@ -801,6 +804,15 @@ pub enum PackageTypeCellFact {
 #[serde(tag = "fault", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PackageProjectionAdmissionFaultFacts {
     EmptyName,
+    AnonymousCallableAnchor {
+        cause: PackageAnonymousCallableAnchorFaultFacts,
+    },
+    AnonymousCallableAnchorPoolCapacity {
+        pool: PackageAnonymousCallableAnchorPoolFact,
+        used: u64,
+        requested: u64,
+        capacity: u64,
+    },
     Capacity,
     ChildCapacity,
     ProductChildPoolCapacity {
@@ -842,6 +854,20 @@ pub enum PackageProjectionAdmissionFaultFacts {
     },
     TypeRowCapacity,
     ComputedRowCapacity,
+    TypeProjectionDepthLimit {
+        depth: u64,
+        maximum: u64,
+    },
+    TypeProjectionCycle {
+        type_id: u32,
+    },
+    TypeProjectionRecursiveReference {
+        distance: u32,
+    },
+    TypeProjectionWidth {
+        actual: u64,
+        maximum: u64,
+    },
     OccurrenceOwner {
         owner: u32,
         fact_count: u64,
@@ -897,6 +923,15 @@ impl PackageProjectionAdmissionFaultFacts {
     const fn kind_tag(self) -> &'static str {
         match self {
             Self::EmptyName => "lowering_projection_empty_name",
+            Self::AnonymousCallableAnchor { .. } => "lowering_projection_anonymous_callable_anchor",
+            Self::AnonymousCallableAnchorPoolCapacity { pool, .. } => match pool {
+                PackageAnonymousCallableAnchorPoolFact::Entries => {
+                    "lowering_projection_anonymous_callable_anchor_entry_capacity"
+                }
+                PackageAnonymousCallableAnchorPoolFact::Bytes => {
+                    "lowering_projection_anonymous_callable_anchor_byte_capacity"
+                }
+            },
             Self::Capacity => "lowering_projection_capacity",
             Self::ChildCapacity => "lowering_projection_child_capacity",
             Self::ProductChildPoolCapacity { .. } => {
@@ -925,6 +960,14 @@ impl PackageProjectionAdmissionFaultFacts {
             Self::TypeChildPoolCapacity { .. } => "lowering_projection_type_child_pool_capacity",
             Self::TypeRowCapacity => "lowering_projection_type_row_capacity",
             Self::ComputedRowCapacity => "lowering_projection_computed_row_capacity",
+            Self::TypeProjectionDepthLimit { .. } => {
+                "lowering_projection_type_projection_depth_limit"
+            }
+            Self::TypeProjectionCycle { .. } => "lowering_projection_type_projection_cycle",
+            Self::TypeProjectionRecursiveReference { .. } => {
+                "lowering_projection_type_projection_recursive_reference"
+            }
+            Self::TypeProjectionWidth { .. } => "lowering_projection_type_projection_width",
             Self::OccurrenceOwner { .. } => "lowering_projection_occurrence_owner",
             Self::OccurrenceCapacity => "lowering_projection_occurrence_capacity",
             Self::DocOwner { .. } => "lowering_projection_doc_owner",
@@ -945,6 +988,23 @@ impl PackageProjectionAdmissionFaultFacts {
             Self::ConflictingParentage { .. } => "lowering_projection_conflicting_parentage",
         }
     }
+}
+
+/// Closed reason an anonymous callable anchor could not be admitted.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PackageAnonymousCallableAnchorFaultFacts {
+    InvalidRoute,
+    Encoding,
+    SourceIdentityUnavailable,
+}
+
+/// Bounded anonymous callable anchor pool that reached its limit.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PackageAnonymousCallableAnchorPoolFact {
+    Entries,
+    Bytes,
 }
 
 /// Closed parentage fact from conflicting authority projections.
@@ -1128,6 +1188,9 @@ impl From<ProjectionSemanticTypeTag> for PackageTypeTagFact {
             T::ArrayConstExpression => Self::ArrayConstExpression,
             T::ArrayIncomplete => Self::ArrayIncomplete,
             T::CQualified => Self::CQualified,
+            T::KeyOf => Self::KeyOf,
+            T::IndexedAccess => Self::IndexedAccess,
+            T::TypeOf => Self::TypeOf,
         }
     }
 }
@@ -1206,6 +1269,37 @@ impl From<ProjectionAdmissionFault> for PackageProjectionAdmissionFaultFacts {
         use ProjectionAdmissionFault as F;
         match value {
             F::EmptyName => Self::EmptyName,
+            F::AnonymousCallableAnchor { cause } => Self::AnonymousCallableAnchor {
+                cause: match cause {
+                    ProjectionAnonymousCallableAnchorFault::InvalidRoute => {
+                        PackageAnonymousCallableAnchorFaultFacts::InvalidRoute
+                    }
+                    ProjectionAnonymousCallableAnchorFault::Encoding => {
+                        PackageAnonymousCallableAnchorFaultFacts::Encoding
+                    }
+                    ProjectionAnonymousCallableAnchorFault::SourceIdentityUnavailable => {
+                        PackageAnonymousCallableAnchorFaultFacts::SourceIdentityUnavailable
+                    }
+                },
+            },
+            F::AnonymousCallableAnchorPoolCapacity {
+                pool,
+                used,
+                requested,
+                capacity,
+            } => Self::AnonymousCallableAnchorPoolCapacity {
+                pool: match pool {
+                    ProjectionAnonymousCallableAnchorPool::Entries => {
+                        PackageAnonymousCallableAnchorPoolFact::Entries
+                    }
+                    ProjectionAnonymousCallableAnchorPool::Bytes => {
+                        PackageAnonymousCallableAnchorPoolFact::Bytes
+                    }
+                },
+                used,
+                requested,
+                capacity,
+            },
             F::Capacity => Self::Capacity,
             F::ChildCapacity => Self::ChildCapacity,
             F::ProductChildPoolCapacity {
@@ -1268,6 +1362,16 @@ impl From<ProjectionAdmissionFault> for PackageProjectionAdmissionFaultFacts {
             },
             F::TypeRowCapacity => Self::TypeRowCapacity,
             F::ComputedRowCapacity => Self::ComputedRowCapacity,
+            F::TypeProjectionDepthLimit { depth, maximum } => {
+                Self::TypeProjectionDepthLimit { depth, maximum }
+            }
+            F::TypeProjectionCycle { type_id } => Self::TypeProjectionCycle { type_id },
+            F::TypeProjectionRecursiveReference { distance } => {
+                Self::TypeProjectionRecursiveReference { distance }
+            }
+            F::TypeProjectionWidth { actual, maximum } => {
+                Self::TypeProjectionWidth { actual, maximum }
+            }
             F::OccurrenceOwner { owner, fact_count } => Self::OccurrenceOwner { owner, fact_count },
             F::OccurrenceCapacity => Self::OccurrenceCapacity,
             F::DocOwner { owner, fact_count } => Self::DocOwner { owner, fact_count },
@@ -1659,6 +1763,7 @@ pub(crate) fn package_failure_from_terminal(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn tool_names_match_host_registry_programs() {
         assert_eq!(
@@ -1673,5 +1778,106 @@ mod tests {
             CompilerNativeToolFact::TypeScriptCompiler.project_local_path(),
             Some("node_modules/.bin/tsc")
         );
+    }
+
+    #[test]
+    fn typed_typescript_projection_faults_keep_closed_wire_tags_and_operands() {
+        for (source, expected, tag, wire_fault) in [
+            (
+                ProjectionAdmissionFault::AnonymousCallableAnchor {
+                    cause: ProjectionAnonymousCallableAnchorFault::SourceIdentityUnavailable,
+                },
+                PackageProjectionAdmissionFaultFacts::AnonymousCallableAnchor {
+                    cause: PackageAnonymousCallableAnchorFaultFacts::SourceIdentityUnavailable,
+                },
+                "lowering_projection_anonymous_callable_anchor",
+                "anonymous_callable_anchor",
+            ),
+            (
+                ProjectionAdmissionFault::AnonymousCallableAnchorPoolCapacity {
+                    pool: ProjectionAnonymousCallableAnchorPool::Entries,
+                    used: 4,
+                    requested: 1,
+                    capacity: 4,
+                },
+                PackageProjectionAdmissionFaultFacts::AnonymousCallableAnchorPoolCapacity {
+                    pool: PackageAnonymousCallableAnchorPoolFact::Entries,
+                    used: 4,
+                    requested: 1,
+                    capacity: 4,
+                },
+                "lowering_projection_anonymous_callable_anchor_entry_capacity",
+                "anonymous_callable_anchor_pool_capacity",
+            ),
+            (
+                ProjectionAdmissionFault::TypeProjectionDepthLimit {
+                    depth: 9,
+                    maximum: 8,
+                },
+                PackageProjectionAdmissionFaultFacts::TypeProjectionDepthLimit {
+                    depth: 9,
+                    maximum: 8,
+                },
+                "lowering_projection_type_projection_depth_limit",
+                "type_projection_depth_limit",
+            ),
+            (
+                ProjectionAdmissionFault::TypeProjectionCycle { type_id: 12 },
+                PackageProjectionAdmissionFaultFacts::TypeProjectionCycle { type_id: 12 },
+                "lowering_projection_type_projection_cycle",
+                "type_projection_cycle",
+            ),
+            (
+                ProjectionAdmissionFault::TypeProjectionRecursiveReference { distance: 2 },
+                PackageProjectionAdmissionFaultFacts::TypeProjectionRecursiveReference {
+                    distance: 2,
+                },
+                "lowering_projection_type_projection_recursive_reference",
+                "type_projection_recursive_reference",
+            ),
+            (
+                ProjectionAdmissionFault::TypeProjectionWidth {
+                    actual: 65,
+                    maximum: 64,
+                },
+                PackageProjectionAdmissionFaultFacts::TypeProjectionWidth {
+                    actual: 65,
+                    maximum: 64,
+                },
+                "lowering_projection_type_projection_width",
+                "type_projection_width",
+            ),
+        ] {
+            let actual = PackageProjectionAdmissionFaultFacts::from(source);
+            assert_eq!(actual, expected);
+            assert_eq!(actual.kind_tag(), tag);
+            let wire = serde_json::to_value(actual).expect("serialize exact closed fault");
+            assert_eq!(wire["fault"], wire_fault);
+        }
+
+        for (source, expected, wire_tag) in [
+            (
+                ProjectionSemanticTypeTag::KeyOf,
+                PackageTypeTagFact::KeyOf,
+                "key_of",
+            ),
+            (
+                ProjectionSemanticTypeTag::IndexedAccess,
+                PackageTypeTagFact::IndexedAccess,
+                "indexed_access",
+            ),
+            (
+                ProjectionSemanticTypeTag::TypeOf,
+                PackageTypeTagFact::TypeOf,
+                "type_of",
+            ),
+        ] {
+            let actual = PackageTypeTagFact::from(source);
+            assert_eq!(actual, expected);
+            assert_eq!(
+                serde_json::to_value(actual).expect("serialize exact type tag"),
+                wire_tag
+            );
+        }
     }
 }
