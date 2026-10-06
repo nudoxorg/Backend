@@ -259,6 +259,8 @@ pub(super) fn execute_semantic_shapes(
     let Some((key, claim)) = selected else {
         return Ok(CommandReply::Failed(CommandFailure::NotFound));
     };
+    let freshness_key = super::super::semantic_authority::SelectedSemanticPublicationKey::new(&key)
+        .map_err(|error| BuiltinModelError(error.to_owned()))?;
     // Freshness is a current source-input observation, not part of the
     // immutable generation binding. Recompute it from this exact selected
     // key/claim read from the same immutable snapshot, while the owner handles
@@ -266,7 +268,7 @@ pub(super) fn execute_semantic_shapes(
     // observation. History status is
     // intentionally outside this shape authority: it is an asynchronous,
     // derived sidecar and is neither echoed nor triggered by a shape read.
-    if semantic_authority.freshness(&key, claim) != request.source().freshness {
+    if semantic_authority.freshness(freshness_key, claim) != request.source().freshness {
         return Ok(CommandReply::Failed(CommandFailure::InvalidQuery(
             "semantic shape source freshness changed after selection".to_owned(),
         )));
@@ -441,7 +443,7 @@ pub(super) fn execute_semantic_shapes(
             "workspace selection changed during semantic shape projection".to_owned(),
         )));
     }
-    if semantic_authority.freshness(&key, claim) != request.source().freshness {
+    if semantic_authority.freshness(freshness_key, claim) != request.source().freshness {
         return Ok(CommandReply::Failed(CommandFailure::InvalidQuery(
             "semantic shape source freshness changed during projection".to_owned(),
         )));

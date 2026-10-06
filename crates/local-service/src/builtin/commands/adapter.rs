@@ -3826,12 +3826,17 @@ impl CommandAdapter {
                     None
                 };
                 self.publish_view(daemon, committed.as_ref())?;
+                let freshness_key =
+                    super::super::semantic_authority::SelectedSemanticPublicationKey::new(
+                        &selected_key,
+                    )
+                    .map_err(|error| BuiltinModelError(error.to_owned()))?;
                 let mut version = semantic_version_record(
                     &selected_key,
                     coverage,
                     claim,
                     true,
-                    self.semantic_authority.freshness(&selected_key, claim),
+                    self.semantic_authority.freshness(freshness_key, claim),
                 );
                 version.history_status = self
                     .semantic_authority

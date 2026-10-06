@@ -5627,7 +5627,12 @@ pub(super) fn semantic_versions(
                     .map_err(|error| {
                         BuiltinModelError(format!("admit selected semantic target: {error}"))
                     })?;
-                    let freshness = semantic_authority.freshness(&selected_key, claim);
+                    let freshness_key =
+                        super::super::semantic_authority::SelectedSemanticPublicationKey::new(
+                            &selected_key,
+                        )
+                        .map_err(|error| BuiltinModelError(error.to_owned()))?;
+                    let freshness = semantic_authority.freshness(freshness_key, claim);
                     generations.push((
                         target,
                         selected_key,

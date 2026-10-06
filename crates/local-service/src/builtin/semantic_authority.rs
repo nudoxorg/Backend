@@ -354,6 +354,26 @@ fn artifact_budget() -> ArtifactBudget {
 
 type HistoryKey = (ProductSemanticPublicationKey, [u8; 32]);
 
+/// Checked selected-row capability for freshness reads.
+///
+/// Freshness observations are indexed by a mutable Selected key. Immutable
+/// Generation keys share the same underlying key type, so callers must pass
+/// through this role check before the authority can perform a lookup.
+#[derive(Clone, Copy)]
+pub(crate) struct SelectedSemanticPublicationKey<'key> {
+    key: &'key ProductSemanticPublicationKey,
+}
+
+impl<'key> SelectedSemanticPublicationKey<'key> {
+    /// Admits only a mutable selected-publication row.
+    pub(crate) fn new(key: &'key ProductSemanticPublicationKey) -> Result<Self, &'static str> {
+        if !key.is_selected() {
+            return Err("semantic freshness requires a selected publication key");
+        }
+        Ok(Self { key })
+    }
+}
+
 #[derive(Default)]
 pub(super) struct SelectedClosureSnapshot {
     by_binding: BTreeMap<HistoryKey, SelectedGeneration>,
@@ -3385,9 +3405,10 @@ impl SemanticAuthority {
 
     pub(crate) fn freshness(
         &self,
-        key: &ProductSemanticPublicationKey,
+        key: SelectedSemanticPublicationKey<'_>,
         claim: SemanticPublicationClaim,
     ) -> backend_engine::SemanticVersionFreshness {
+        let key = key.key;
         let history_key = (key.clone(), *claim.binding().identity.as_ref());
         let Some(history) = self.history.get(&history_key) else {
             return backend_engine::SemanticVersionFreshness::Unverified;
@@ -4032,6 +4053,27 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_WORKSPACE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn freshness_key_rejects_immutable_generation_rows() {
+        let coordinate = PackageUrl::parse("pkg:cargo/freshness-key-fixture@0.1.0".to_owned())
+            .expect("admit freshness fixture coordinate");
+        let selected = ProductSemanticPublicationKey::new(
+            backend_engine::PackageReference::Purl(coordinate.clone()),
+            coordinate,
+            LanguageProfile::Rust(RustEdition::Rust2021),
+        )
+        .expect("admit selected semantic key");
+        assert!(SelectedSemanticPublicationKey::new(&selected).is_ok());
+
+        let generation = selected
+            .for_generation_bytes([7; 32])
+            .expect("admit immutable generation key");
+        assert_eq!(
+            SelectedSemanticPublicationKey::new(&generation).err(),
+            Some("semantic freshness requires a selected publication key")
+        );
+    }
 
     #[test]
     fn real_multifile_rust_publication_joins_each_image_recipe_to_its_own_source() {
