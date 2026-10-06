@@ -60,7 +60,7 @@ def cli_walk(route,generation):
  return pages
 
 mcp_state={}
-def mcp_page(route,token,index):
+def mcp_page(route,token,index,overrides=None,expect_error=False):
  new=not mcp_state
  if new:
   argv=[str(mcp),*common];proc=subprocess.Popen(argv,cwd=project,env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=(out/'mcp.stderr').open('wb'),start_new_session=True);sel=selectors.DefaultSelector();sel.register(proc.stdout,selectors.EVENT_READ);mcp_state.update(proc=proc,sel=sel,buf=b'',seq=0)
@@ -82,18 +82,25 @@ def mcp_page(route,token,index):
    rpc('initialize',{'protocolVersion':'2025-11-25','capabilities':{},'clientInfo':{'name':'Sol portable proof','version':'1'}});rpc('notifications/initialized',notify=True)
   args={'query':'pagemark','limit':3,'detail':'full'}
   if token:args['cursor']=token
-  reply=rpc('tools/call',{'name':'backend.'+route,'arguments':args});assert 'error' not in reply and not reply.get('result',{}).get('isError'),reply
+  args.update(overrides or {})
+  reply=rpc('tools/call',{'name':'backend.'+route,'arguments':args})
+  if expect_error:
+   assert ('error' in reply or reply.get('result',{}).get('isError')) and len(json.dumps(reply).encode())<=8192,reply
+   return reply,proc.pid
+  assert 'error' not in reply and not reply.get('result',{}).get('isError'),reply
   return reply['result']['structuredContent'],proc.pid
  finally:mcp_state.update(buf=buf,seq=seq)
 
-def mcp_walk(route):
+def mcp_walk(route,fresh_process=False):
  token=None;coordinates=[];pids=[];pages=[]
  for i in range(30):
   p,pid=mcp_page(route,token,i);pids.append(pid);pages.append(p);coordinates+=ids(p);token=p.get('nextCursor')
+  if fresh_process:
+   mcp_state['proc'].stdin.close();mcp_state['proc'].wait(timeout=20);mcp_state['sel'].close();mcp_state.clear()
   if not token:assert p.get('more') is False;break
  else:raise AssertionError('unresolved MCP token')
- expected=references[route];passed=coordinates==expected and len(set(coordinates))==37 and len(pages)==13 and len(set(pids))==1
- receipt['checks']['persistent-mcp-'+route]={'pass':passed,'identities':coordinates,'page_count':len(pages),'pids':pids};assert passed,'MCP persistent process parity'
+ expected=references[route];passed=coordinates==expected and len(set(coordinates))==37 and len(pages)==13 and len(set(pids))==(13 if fresh_process else 1)
+ receipt['checks'][('fresh-mcp-' if fresh_process else 'persistent-mcp-')+route]={'pass':passed,'identities':coordinates,'page_count':len(pages),'pids':pids};assert passed,'MCP persistent process parity'
 
 def mutate(token,change):
  data=json.loads(bytes.fromhex(token[4:]));change(data);return 'pc2-'+json.dumps(data,separators=(',',':')).encode().hex()
@@ -116,7 +123,19 @@ try:
  ]:
   changed=mutate(token,change);d=cli_page('resolve',changed,label='tamper-'+label);passed=d['exit']!=0 and d['stdout_bytes']+d['stderr_bytes']<=8192;receipt['checks']['tamper-'+label]={'pass':passed,'exit':d['exit'],'body_bytes':d['stdout_bytes']+d['stderr_bytes']};assert passed,label
  stop();start(2);resumed=cli_page('resolve',token,label='pre-cold-token');passed=resumed['exit']==0 and ids(resumed['payload'])==ids(names[1]);receipt['checks']['pre-cold-token']={'pass':passed};assert passed,'pre-cold token'
- cli_walk('resolve',2);cli_walk('search',2);mcp_walk('resolve');mcp_walk('search');receipt['complete']=True;receipt['pass']=all(v['pass'] for v in receipt['checks'].values())
+ cli_walk('resolve',2);cli_walk('search',2);mcp_walk('resolve');mcp_walk('search')
+ mcp_state['proc'].stdin.close();mcp_state['proc'].wait(timeout=20);mcp_state['sel'].close();mcp_state.clear()
+ mcp_walk('resolve',True);mcp_walk('search',True)
+ issued,_=mcp_page('resolve',None,'signer-issue');signed=issued['nextCursor']
+ for label,route,raw,overrides in [
+  ('mac','resolve',signed[:-1]+('0' if signed[-1]!='0' else '1'),{}),
+  ('family','search',signed,{}),
+  ('credit','resolve',signed,{'limit':4}),
+  ('text','resolve',signed,{'query':'pagemark_other'}),
+  ('detail','resolve',signed,{'detail':'standard'}),
+ ]:
+  failed,_=mcp_page(route,raw,'signer-'+label,overrides,True);receipt['checks']['mcp-signer-'+label]={'pass':True,'response':failed}
+ receipt['complete']=True;receipt['pass']=all(v['pass'] for v in receipt['checks'].values())
 except Exception as e:receipt['exception']=repr(e);receipt['pass']=False
 finally:
  if mcp_state:
