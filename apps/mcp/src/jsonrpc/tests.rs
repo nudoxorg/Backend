@@ -63,6 +63,8 @@ struct Fake {
     surface_commands: Vec<SurfaceCommand>,
     /// Number of graph requests that reached the product boundary.
     graph_query_calls: usize,
+    /// Exact index operands that reached the owner admission boundary.
+    index_paths: Vec<String>,
 }
 
 fn basis() -> Basis {
@@ -187,6 +189,9 @@ impl Engine for Fake {
     }
 
     fn probe(&mut self, probe: Probe<'_>) -> Result<ReplyDto, ClientError> {
+        if let Probe::Index(path) | Probe::IndexWithExecutionIntent { path, .. } = probe {
+            self.index_paths.push(path.to_owned());
+        }
         if self.offline {
             return Err(unreachable());
         }
@@ -1549,6 +1554,45 @@ fn advertised_registry_lookups_reach_the_typed_product_commands() {
         [SurfaceCommand::IndexSearch { query, limit: 3, cursor: None }]
             if query.as_str() == "serde"
     ));
+}
+
+#[test]
+fn index_requires_its_advertised_path_before_owner_admission() {
+    let mut server = ready(Fake::default());
+    let listed = request(&mut server, "tools/list", &json!({}));
+    let tool = tool_named(&listed["result"]["tools"], "backend.index");
+    assert_eq!(tool["inputSchema"]["required"], json!(["path"]));
+    assert_eq!(tool["inputSchema"]["properties"]["path"]["type"], "string");
+    assert_eq!(tool["inputSchema"]["properties"]["path"]["minLength"], 1);
+
+    for params in [
+        json!({ "name": "backend.index" }),
+        json!({ "name": "backend.index", "arguments": null }),
+        json!({ "name": "backend.index", "arguments": {} }),
+        json!({ "name": "backend.index", "arguments": { "detail": "full" } }),
+        json!({ "name": "backend.index", "arguments": { "path": null } }),
+        json!({ "name": "backend.index", "arguments": { "path": 7 } }),
+        json!({ "name": "backend.index", "arguments": { "path": [] } }),
+        json!({ "name": "backend.index", "arguments": { "path": "" } }),
+    ] {
+        let response = request(&mut server, "tools/call", &params);
+        assert_eq!(response["id"], 9);
+        assert_eq!(response["error"]["code"], -32602, "{params}: {response}");
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("path")
+        );
+        assert!(server.product.index_paths.is_empty(), "{params}");
+        assert!(server.product.surface_commands.is_empty(), "{params}");
+        assert_eq!(server.product.adapter_boundary, None, "{params}");
+    }
+
+    let explicit = "/abs/explicit-index-project";
+    let accepted = call(&mut server, "backend.index", &json!({ "path": explicit }));
+    assert_eq!(accepted["isError"], false);
+    assert_eq!(server.product.index_paths, [explicit]);
 }
 
 #[test]

@@ -268,7 +268,11 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
     let mut properties = Map::new();
     let mut required = Vec::new();
     for spec in grammar.positional() {
-        properties.insert(spec.json_name().to_owned(), property(*spec));
+        let mut argument = property(*spec);
+        if grammar.tool() == "backend.index" && spec.name() == "path" {
+            argument["minLength"] = json!(1);
+        }
+        properties.insert(spec.json_name().to_owned(), argument);
         if spec.is_required() || (grammar.tool() == "backend.index" && spec.name() == "path") {
             required.push(Value::String(spec.json_name().to_owned()));
         }

@@ -576,6 +576,11 @@ impl<P: Product> Server<P> {
             Some(Value::Object(arguments)) => arguments,
             Some(_) => return Err(RpcError::invalid("arguments must be an object")),
         };
+        // The MCP schema requires an explicit path even though the shared CLI
+        // grammar permits its project default. Admit it before any owner call.
+        if name == "backend.index" {
+            string(arguments, "path")?;
+        }
         let detail = response_detail(name, arguments)?;
         if name == SURFACE_TOOL {
             let mut surface_arguments = arguments.clone();
