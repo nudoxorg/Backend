@@ -1,0 +1,21 @@
+{
+  "schema": "nudox.actual-shared-native-history-admission.v1",
+  "required_profiles": [
+    "python",
+    "typescript"
+  ],
+  "observer_path": "/root/nudox-corpus-20261006/artifacts/report7/observer-163f022c2/run-real-workspace-index-acceptance.py",
+  "observer_sha256": "491f4ab662812bb98a2c29af31382c34e9b7ab189645b56f408aad63070250f2",
+  "history_raw_path": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-f443a03b-history-poll-a6461775/history-22.stdout",
+  "history_raw_sha256": "36c0e6f8fea92c059656fb36d3bb36df4a558d611cf2fbd2ce9e41ef0d481ac8",
+  "history_poll_receipt_sha256": "458c65850fd44da540a995100d42448c9c74aeefdedf40389f9e2bebf939774b",
+  "elapsed_seconds": 42.27066822699271,
+  "selected_head_unchanged": true,
+  "whole_package_pass": false,
+  "package_hash_tool_sha256": "b38ae58dd3c26fb852504d83acdf0bdd047d17b1779982529a6f0b711df3b9e3",
+  "result": "shared_gate_refused",
+  "gate_error": {
+    "type": "AcceptanceError",
+    "message": "h11 expected one selected, complete, current, history-published generation for profile [1, 0]; found 0"
+  }
+}

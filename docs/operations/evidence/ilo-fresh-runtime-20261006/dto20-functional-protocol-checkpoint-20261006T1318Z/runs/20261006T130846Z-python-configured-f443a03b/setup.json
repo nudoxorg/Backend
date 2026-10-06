@@ -1,0 +1,404 @@
+{
+  "schema": "nudox.fresh-real-remote-runtime.v1",
+  "root": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-f443a03b",
+  "language": "python",
+  "mode": "configured",
+  "source": "/root/nudox-corpus-20261006/artifacts/stratified-functional-protocol-python-dossiers-20261006T1306Z/pypi-h11/source",
+  "source_origin": {
+    "archive": {
+      "path": "/root/nudox-corpus-20261006/artifacts/stratified-functional-protocol-python-dossiers-20261006T1306Z/pypi-h11/archive.tar.gz",
+      "sha256": "4e35b956cf45792e4caa5885e69fba00bdbc6ffafbfa020300e549b208ee5ff1",
+      "url": "https://files.pythonhosted.org/packages/01/ee/02a2c011bdab74c6fb3c75474d40b3052059d95df7e73351460c8588d963/h11-0.16.0.tar.gz"
+    },
+    "package": {
+      "ecosystem": "pypi",
+      "id": "h11",
+      "version": "0.16.0"
+    },
+    "registry_metadata": {
+      "path": "/root/nudox-corpus-20261006/artifacts/stratified-functional-protocol-python-dossiers-20261006T1306Z/pypi-h11/registry-metadata.json",
+      "sha256": "82edaa88c2cda51615d444a45e725eeaa7693f6821ab1422de1f031753d9556c",
+      "url": "https://pypi.org/pypi/h11/json"
+    },
+    "schema": "nudox.registry-artifact-origin.v1",
+    "unpack": {
+      "strip_prefix": "h11-0.16.0/"
+    }
+  },
+  "source_before": {
+    "files": [
+      [
+        "LICENSE.txt",
+        1124,
+        "37db5bb85926db28a427a25867f10b1232003aea1be69ccb851138adb8e6f361"
+      ],
+      [
+        "MANIFEST.in",
+        171,
+        "595a413d50aeb9e542e74089fe751873dfd334f8a91aab56fe6455cacface53c"
+      ],
+      [
+        "PKG-INFO",
+        8348,
+        "28f326098ac09fcba79b8f180f96087c841fe2456215cb7b872a9c7d5cd19d64"
+      ],
+      [
+        "README.rst",
+        7165,
+        "66a4f46f080120491ec68ae1227ef3cc4e1733f83ff316b03382d2a431adc3f3"
+      ],
+      [
+        "docs/Makefile",
+        8148,
+        "61acef042d99b9950c8a43f4d5312f024595a81683bf7326d9ca4eb5fef49983"
+      ],
+      [
+        "docs/requirements.txt",
+        58,
+        "72251391d773f8e35b865ebfd4cf1a89d0c7527a8d178c69da2cb5432845dd10"
+      ],
+      [
+        "docs/source/_examples/myclient.py",
+        1245,
+        "ef768e9dba09e70138d301243be4ec8b7d0561e06e37e8830fc6524b21b75894"
+      ],
+      [
+        "docs/source/_static/closelabel.png",
+        168,
+        "3792a485ee43385b7848dd725ae759c70fa7acd82328ffced4ab269ef3e5bb76"
+      ],
+      [
+        "docs/source/_static/facebox.css",
+        1159,
+        "8e110355ae43a3fd91d53e5a1dd7d6d5b4555a8ef3c72e31134564a898aa3535"
+      ],
+      [
+        "docs/source/_static/facebox.js",
+        9323,
+        "034654ada7b46d58ec71cd690ef5c3e342502e4b3634f1153dee4b896e19ef4c"
+      ],
+      [
+        "docs/source/_static/loading.gif",
+        2767,
+        "81ea81be1d862d36c34b6dc4f12aefb87b656e319003263d8274974b48ccf869"
+      ],
+      [
+        "docs/source/_static/show-code.js",
+        3155,
+        "c0a34a6ab94de673af50fd0829ef65e4e7b9c19dae2705768351b2d83e95a735"
+      ],
+      [
+        "docs/source/api.rst",
+        44819,
+        "d13eb68c1a8166f53c872370aeeb99068ff32e7b144a38cc988b9962b71153ef"
+      ],
+      [
+        "docs/source/basic-usage.rst",
+        12631,
+        "af5b43664f0ace57a0f4a61fb5911c3a3b2316e62d123e7261555ff5bd50ae34"
+      ],
+      [
+        "docs/source/changes.rst",
+        10560,
+        "698aa0b56c51882249afc176dcaa9c5e31792a8623ae6bebbbb1c8a2982e06ff"
+      ],
+      [
+        "docs/source/conf.py",
+        10685,
+        "1ad6422d3224d1e66fca16a06b270bb90848ec4951635e90e98430610e6e9e11"
+      ],
+      [
+        "docs/source/examples.rst",
+        630,
+        "a70357984910a992307fe5c1724b7fbc4a564cbeda94e30829392eee7136660d"
+      ],
+      [
+        "docs/source/index.rst",
+        2877,
+        "8b94082a4a36ba9808039e4f6b0306615d519f04b11f4396156d4289bbb61f21"
+      ],
+      [
+        "docs/source/make-state-diagrams.py",
+        6393,
+        "a9ae658a1e674b33c183200b2134863df6dff6d4342e07c91c93d25ebc083c7e"
+      ],
+      [
+        "docs/source/supported-http.rst",
+        4118,
+        "0b4480f5f48a56c1678b347a17a731d5b6b70c46ab489198a6874d89ea06c085"
+      ],
+      [
+        "fuzz/README.rst",
+        2311,
+        "1b0f16dde17e4629c54198a80750acd6b7e6770091de02e4c7b4f05180b58f5e"
+      ],
+      [
+        "fuzz/afl-server-examples/1",
+        44,
+        "be5ee80ad59e776fd6d968a5d4f72c451c397804701a9948ae6de54c10d0b67a"
+      ],
+      [
+        "fuzz/afl-server-examples/2",
+        90,
+        "7753be90b99aba6b5f2c6d881c94b3fd2d0b52f82175257796db826f72933728"
+      ],
+      [
+        "fuzz/afl-server-examples/3",
+        71,
+        "6ca9a0c50b7631a9eda35fc4f732256df979e89225f0d0e356b8775c6321ea99"
+      ],
+      [
+        "fuzz/afl-server-examples/4",
+        22,
+        "9af1494282ee59f2f062df9187e52ebea6793309aaae97a4f1af1fd5e3aedd6a"
+      ],
+      [
+        "fuzz/afl-server.py",
+        1237,
+        "c752bff16c6970bbbf77caaacebf221dcbbdc9de8aa91d54cae1f192638d0df2"
+      ],
+      [
+        "h11/__init__.py",
+        1507,
+        "88ed4ace448ee36c99e9f7e0f953206f1fd9553586518d349d16045a7facde46"
+      ],
+      [
+        "h11/_abnf.py",
+        4815,
+        "c9b8b1af4c6cba99e403a18503232e6ee5c5e9373595bfe117cf743600ac7cd7"
+      ],
+      [
+        "h11/_connection.py",
+        26863,
+        "93d61155fea4a19a9bb6d056dfac5259a26959d6706bec50554f401c4a3d0ee2"
+      ],
+      [
+        "h11/_events.py",
+        11792,
+        "23deda5e86a5d56bbb7642f9e3c04034150290e21b7bec790a2a1803d201635e"
+      ],
+      [
+        "h11/_headers.py",
+        10412,
+        "3fb0fe9413711f074b64f2e29a6630acf1bef59923125bef25925d6408123fee"
+      ],
+      [
+        "h11/_readers.py",
+        8590,
+        "6b8472a4e454082dddd2afe4c4fb8120cee34c3f222ede57f754c7d05b1db8de"
+      ],
+      [
+        "h11/_receivebuffer.py",
+        5252,
+        "c6bb29b1db0d81617145f41c4d7c51f11add8d15d74cad08a39710616a49d56b"
+      ],
+      [
+        "h11/_state.py",
+        13231,
+        "ff92c6fc1191f0509c1507813c7f93307826ffe07e1147160a74287fff578c51"
+      ],
+      [
+        "h11/_util.py",
+        4888,
+        "2d69248d7c89685940cba2eddfdc3bdd44ad925153e68bdcbe8d13918ed162e9"
+      ],
+      [
+        "h11/_version.py",
+        686,
+        "1954ac6cf48f0dc3ae17aa6d7c88979d52686849b7ca05db327aa5aff1a26a1c"
+      ],
+      [
+        "h11/_writers.py",
+        5081,
+        "a052a6e8fb637877db8f844b5fb541eca0dcd60218e778171b7fc747d96d9930"
+      ],
+      [
+        "h11/py.typed",
+        7,
+        "b28c3db284f03fd4ff80401049587b19bf3ce79874e0dc2686cd967be2518193"
+      ],
+      [
+        "h11/tests/__init__.py",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "h11/tests/data/test-file",
+        65,
+        "649d3746ab3df28270dbd387cc983b2e5333c8641a440634af702a05e336c155"
+      ],
+      [
+        "h11/tests/helpers.py",
+        3355,
+        "6b51151bfa7bc54e3046c6b7b4c3d3471b9a2829ab7ada24f6cc575afa9f9900"
+      ],
+      [
+        "h11/tests/test_against_stdlib_http.py",
+        3966,
+        "7850fb255d4481f92f573efddd9cc9585d678514cb57a5e73e3199b21f69f55a"
+      ],
+      [
+        "h11/tests/test_connection.py",
+        38149,
+        "4c7f829daa7070330c739a36eeaba404ddf251fe04638cfb3a74c2b017093615"
+      ],
+      [
+        "h11/tests/test_events.py",
+        4545,
+        "117550bbcb266626fe2482d04388f62869adeef6c92aa29231fca78024c9011e"
+      ],
+      [
+        "h11/tests/test_headers.py",
+        5735,
+        "e66aa3a3fbad8b94825e95d9240e6b05b29ce12dc626ad612f45596b65e5cbe7"
+      ],
+      [
+        "h11/tests/test_helpers.py",
+        652,
+        "7fd9082bcb4815b7b54e197d6f4f7a8b3f242786a1142fe00714a0c3322c854d"
+      ],
+      [
+        "h11/tests/test_io.py",
+        17246,
+        "3dc9f8ff1057766a0cdbb968e3a333645bc03c9dc89814c500f3eceda6a81835"
+      ],
+      [
+        "h11/tests/test_receivebuffer.py",
+        3454,
+        "de319b789337e8092a83fa4084f6fb5f3227d8d4ba4613e0f91ca0f04bbacad9"
+      ],
+      [
+        "h11/tests/test_state.py",
+        8928,
+        "aea965f56a85b093c4d334abb429fd2c7eb9f663cab0379767e0f05f095eb814"
+      ],
+      [
+        "h11/tests/test_util.py",
+        2970,
+        "54ee4be274857b8a60b52c0abafeaeffa9741fb51e8b317958ab874d6ade83bd"
+      ],
+      [
+        "h11.egg-info/PKG-INFO",
+        8348,
+        "28f326098ac09fcba79b8f180f96087c841fe2456215cb7b872a9c7d5cd19d64"
+      ],
+      [
+        "h11.egg-info/SOURCES.txt",
+        1258,
+        "f8c326cc6dc038ea874007dbec419246f8b720637de989d59a2d41723c20af27"
+      ],
+      [
+        "h11.egg-info/dependency_links.txt",
+        1,
+        "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+      ],
+      [
+        "h11.egg-info/top_level.txt",
+        4,
+        "17b742e23977cde87c4c61c43da589acc6deba859b4b7efd1b0762f98bdd722b"
+      ],
+      [
+        "notes.org",
+        7428,
+        "d84895ab87b36661184545c55bb7d36e81a1c4dd3cb767414a80dd6c6a1a781c"
+      ],
+      [
+        "pyproject.toml",
+        1133,
+        "ddb684a564184056b10737f3c40fa1d8ede7d654785e5a665ad9aa9106455bc0"
+      ],
+      [
+        "setup.cfg",
+        38,
+        "1c473cbaee8da5fc46e7f0158794af5cea4414c34a3cf3f180c2001f5e38bd3e"
+      ],
+      [
+        "setup.py",
+        1277,
+        "8120ebb8ba725a9413e97dc3e463cd4a59b2b239d461eed87faac8c5733ca56b"
+      ]
+    ],
+    "sha256": "f7fcb7a52447b531bb0d0d89e7365d1063b505e10ec37ee6da10dc4a07758411"
+  },
+  "runtime_manifest": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/runtime-build-manifest.json",
+  "runtime_manifest_sha256": "a693977a9bcbf2e25c7b7ebb3c820d8a971ac5a190cf25708d608ee69c4c07f8",
+  "runtime_manifest_content": {
+    "schema": "nudox.runtime-build-manifest.v1",
+    "source": {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "tree": "a3911d62ef9c4ef1f8206c4fc05b8a8c6fde5156",
+      "clean": true
+    },
+    "executables": {
+      "backend-locald": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+        "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb",
+        "bytes": 105569312
+      },
+      "backend-cli": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d",
+        "bytes": 43160648
+      },
+      "backend-mcp": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+        "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb",
+        "bytes": 31886392
+      }
+    },
+    "root_receipt": {
+      "schema": "nudox.runtime-artifact-build-receipt.v1",
+      "path": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/root-cargo-receipt.json",
+      "sha256": "523430d258c89c6434c0143be58b9e003065bf22f32d0008b2505ce908f27499"
+    }
+  },
+  "binaries": {
+    "backend-cli": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+      "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d"
+    },
+    "backend-locald": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+      "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb"
+    },
+    "backend-mcp": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+      "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb"
+    }
+  },
+  "env": {
+    "HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-f443a03b/home",
+    "XDG_CONFIG_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-f443a03b/home/.config",
+    "XDG_DATA_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-f443a03b/home/.local/share",
+    "XDG_STATE_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-f443a03b/home/.local/state",
+    "TMPDIR": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-f443a03b/tmp",
+    "PATH": "/nix/store/0nbp03038s33ck712yx9219gcj3a2sqm-nodejs-slim-24.18.0/bin:/nix/store/1xklj6dmgcpgz60c9w2ynaq7ynzfsrrq-go-1.26.4/share/go/bin:/nix/store/9r02ykx9y35lf4gk6gc30gnag1y8ncp7-python3-3.13.15/bin:/nix/store/qdxzxkwh13bgv50066fk2ka3p1zpnjap-pyrefly-1.2.0-dev.1/bin:/root/nudox-corpus-20261006/corpora/next-react-alias-fixture/node_modules/typescript/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin",
+    "LANG": "C.UTF-8",
+    "USER": "root",
+    "LOGNAME": "root",
+    "BACKEND_LOCALD_COMPILER_ENVIRONMENT": "{\"version\":1,\"paths\":[{\"variable\":\"NUDOX_PYTHON\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,57,114,48,50,121,107,120,57,121,51,53,108,102,52,103,107,54,103,99,51,48,103,110,97,103,49,121,56,110,99,112,55,45,112,121,116,104,111,110,51,45,51,46,49,51,46,49,53,47,98,105,110,47,112,121,116,104,111,110,51,46,49,51]}},{\"variable\":\"NUDOX_TSC\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115,47,116,121,112,101,115,99,114,105,112,116,47,98,105,110,47,116,115,99]}},{\"variable\":\"NUDOX_GO\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111,47,98,105,110,47,103,111]}},{\"variable\":\"NUDOX_TYPESCRIPT_NODE\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,48,110,98,112,48,51,48,51,56,115,51,51,99,107,55,49,50,121,120,57,50,49,57,103,99,106,51,97,50,115,113,109,45,110,111,100,101,106,115,45,115,108,105,109,45,50,52,46,49,56,46,48,47,98,105,110,47,110,111,100,101]}},{\"variable\":\"NUDOX_TYPESCRIPT_MODULE_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115]}},{\"variable\":\"NUDOX_PYREFLY\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,113,100,120,122,120,107,119,104,49,51,98,103,118,53,48,48,54,54,102,107,50,107,97,51,112,49,122,112,110,106,97,112,45,112,121,114,101,102,108,121,45,49,46,50,46,48,45,100,101,118,46,49,47,98,105,110,47,112,121,114,101,102,108,121]}},{\"variable\":\"NUDOX_GO_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111]}}]}"
+  },
+  "compiler_snapshot_sha256": "0f13715f573afb87eb795bc2eb7960737abd1b7e7cd8a35ddf54a46f4a51e066",
+  "workspace_preexisting": false,
+  "endpoint_preexisting": false,
+  "fresh_home_entries": [],
+  "installer_tested": false,
+  "dependency_closure_copied": false,
+  "accepted_project_pass": false,
+  "journey_options": {
+    "skip_update_cancel": false,
+    "cancel_before_first_add": false,
+    "transport_only": false,
+    "public_compiler_variables": [],
+    "requested_queries": [
+      "receive_data"
+    ],
+    "edit_file": "h11/_connection.py",
+    "keep_edited_source": true,
+    "first_publish_only": false,
+    "witness_path": "h11/_connection.py",
+    "witness_line": 364,
+    "resolve_detail": "summary",
+    "resolve_limit": 10
+  }
+}

@@ -1,0 +1,590 @@
+{
+  "schema": "nudox.fresh-real-remote-runtime.v1",
+  "root": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19",
+  "language": "python",
+  "mode": "configured",
+  "source": "/root/nudox-corpus-20261006/artifacts/stratified-functional-protocol-python-dossiers-20261006T1306Z/pypi-decorator/source",
+  "source_origin": {
+    "archive": {
+      "path": "/root/nudox-corpus-20261006/artifacts/stratified-functional-protocol-python-dossiers-20261006T1306Z/pypi-decorator/archive.tar.gz",
+      "sha256": "4cbcdd55a6efadb9dbea26b858f4fb3264567b52d69ca0d25b721b553f60ea82",
+      "url": "https://files.pythonhosted.org/packages/60/8b/32f9823da46cde7df2087faa08cd98d01b908f8dcab982cdba9c84e85355/decorator-5.3.1.tar.gz"
+    },
+    "package": {
+      "ecosystem": "pypi",
+      "id": "decorator",
+      "version": "5.3.1"
+    },
+    "registry_metadata": {
+      "path": "/root/nudox-corpus-20261006/artifacts/stratified-functional-protocol-python-dossiers-20261006T1306Z/pypi-decorator/registry-metadata.json",
+      "sha256": "4ba19daa19ed34454d70151ac56a34572a17c9b0de28cccf0b7c0fa2975c5c68",
+      "url": "https://pypi.org/pypi/decorator/json"
+    },
+    "schema": "nudox.registry-artifact-origin.v1",
+    "unpack": {
+      "strip_prefix": "decorator-5.3.1/"
+    }
+  },
+  "source_before": {
+    "files": [
+      [
+        "CHANGES.md",
+        13309,
+        "7f9f92511903237aed405c7d4686755ad335ecbf0a95a40f929def03dadd07a8"
+      ],
+      [
+        "LICENSE.txt",
+        1308,
+        "bd12cc51405c10872497c10ca21601f1d4abc50496595cc89e89ab5dad24fb62"
+      ],
+      [
+        "MANIFEST.in",
+        86,
+        "05e45a4603082dc538f2c8dd2da7dd79e3149cf0ada3a4a8323dd7ea8f60f102"
+      ],
+      [
+        "PKG-INFO",
+        3886,
+        "2133792485403bbd739e1db5960228bedbcde6d00c0acc052b27f39dbae5b5c4"
+      ],
+      [
+        "README.rst",
+        2845,
+        "19157e778a336bff2f9a2745bb9c5071b2e82cc61bb8b8a5891e20d0807ef63d"
+      ],
+      [
+        "docs/_config.yml",
+        27,
+        "10ec8472e3dc8d11b724ac488753a29977ba7b8c00089960c874c05c0ba3eae1"
+      ],
+      [
+        "docs/conf.py",
+        11298,
+        "9071a8c7377e104166b4c4a13b21443896cd0b1a7c2c6afbeed5131e9babe64e"
+      ],
+      [
+        "docs/documentation.md",
+        51910,
+        "575b16cc4505e73ad0ab656b0efaa14be906fec51a4b5a9fd62ff1ced9d86954"
+      ],
+      [
+        "docs/index.rst",
+        30,
+        "6b03993e293f885f55e5bbb64e195e45a9f328a6b1d00334429238e8491b6a5d"
+      ],
+      [
+        "performance.sh",
+        217,
+        "c99e69b79ec8d7e34503cd0a6e78bf6b051a8a076cb7a40569bd76aaf5b6aace"
+      ],
+      [
+        "pyproject.toml",
+        1209,
+        "ded6788224109c80239e5652b302e020977bbaf66cedd38fa737dba9b81d0c44"
+      ],
+      [
+        "setup.cfg",
+        38,
+        "1c473cbaee8da5fc46e7f0158794af5cea4414c34a3cf3f180c2001f5e38bd3e"
+      ],
+      [
+        "src/decorator/__init__.py",
+        17366,
+        "47c88707c658cb85d377454fa9254c38b441ee476e5308332a469e2ed2439983"
+      ],
+      [
+        "src/decorator/__init__.pyi",
+        2896,
+        "5839c4b315d31afa532a6b00a0969548b6e75914dec577802cbe669e25a2ecef"
+      ],
+      [
+        "src/decorator/py.typed",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "src/decorator.egg-info/PKG-INFO",
+        3886,
+        "2133792485403bbd739e1db5960228bedbcde6d00c0acc052b27f39dbae5b5c4"
+      ],
+      [
+        "src/decorator.egg-info/SOURCES.txt",
+        403,
+        "ede9f74339e9f335975cc1882dc576089ebe47a856722ff222c6f47ce4dd7772"
+      ],
+      [
+        "src/decorator.egg-info/dependency_links.txt",
+        1,
+        "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+      ],
+      [
+        "src/decorator.egg-info/top_level.txt",
+        10,
+        "2a7e9e423a3cddcb56c5757204c398b74fd8a634630739ca615b8dcae0bf0d22"
+      ],
+      [
+        "tests/documentation.py",
+        55942,
+        "3940ac93a7af606dbe2a3214e97fb1e9b7a4febfadee2d803fca348523edac9a"
+      ],
+      [
+        "tests/test.py",
+        15840,
+        "98ca5aec7fc8e52828f74d35deed072b3d47943cacbfd541ece0c6235ad497b3"
+      ]
+    ],
+    "sha256": "3c6dea7c2b77bd063d73d2268aedb6b1806978d2fdc372aa2a529c8ff454c480"
+  },
+  "runtime_manifest": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/runtime-build-manifest.json",
+  "runtime_manifest_sha256": "a693977a9bcbf2e25c7b7ebb3c820d8a971ac5a190cf25708d608ee69c4c07f8",
+  "runtime_manifest_content": {
+    "schema": "nudox.runtime-build-manifest.v1",
+    "source": {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "tree": "a3911d62ef9c4ef1f8206c4fc05b8a8c6fde5156",
+      "clean": true
+    },
+    "executables": {
+      "backend-locald": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+        "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb",
+        "bytes": 105569312
+      },
+      "backend-cli": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d",
+        "bytes": 43160648
+      },
+      "backend-mcp": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+        "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb",
+        "bytes": 31886392
+      }
+    },
+    "root_receipt": {
+      "schema": "nudox.runtime-artifact-build-receipt.v1",
+      "path": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/root-cargo-receipt.json",
+      "sha256": "523430d258c89c6434c0143be58b9e003065bf22f32d0008b2505ce908f27499"
+    }
+  },
+  "binaries": {
+    "backend-cli": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+      "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d"
+    },
+    "backend-locald": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+      "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb"
+    },
+    "backend-mcp": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+      "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb"
+    }
+  },
+  "env": {
+    "HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/home",
+    "XDG_CONFIG_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/home/.config",
+    "XDG_DATA_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/home/.local/share",
+    "XDG_STATE_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/home/.local/state",
+    "TMPDIR": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/tmp",
+    "PATH": "/nix/store/0nbp03038s33ck712yx9219gcj3a2sqm-nodejs-slim-24.18.0/bin:/nix/store/1xklj6dmgcpgz60c9w2ynaq7ynzfsrrq-go-1.26.4/share/go/bin:/nix/store/9r02ykx9y35lf4gk6gc30gnag1y8ncp7-python3-3.13.15/bin:/nix/store/qdxzxkwh13bgv50066fk2ka3p1zpnjap-pyrefly-1.2.0-dev.1/bin:/root/nudox-corpus-20261006/corpora/next-react-alias-fixture/node_modules/typescript/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin",
+    "LANG": "C.UTF-8",
+    "USER": "root",
+    "LOGNAME": "root",
+    "BACKEND_LOCALD_COMPILER_ENVIRONMENT": "{\"version\":1,\"paths\":[{\"variable\":\"NUDOX_PYTHON\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,57,114,48,50,121,107,120,57,121,51,53,108,102,52,103,107,54,103,99,51,48,103,110,97,103,49,121,56,110,99,112,55,45,112,121,116,104,111,110,51,45,51,46,49,51,46,49,53,47,98,105,110,47,112,121,116,104,111,110,51,46,49,51]}},{\"variable\":\"NUDOX_TSC\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115,47,116,121,112,101,115,99,114,105,112,116,47,98,105,110,47,116,115,99]}},{\"variable\":\"NUDOX_GO\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111,47,98,105,110,47,103,111]}},{\"variable\":\"NUDOX_TYPESCRIPT_NODE\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,48,110,98,112,48,51,48,51,56,115,51,51,99,107,55,49,50,121,120,57,50,49,57,103,99,106,51,97,50,115,113,109,45,110,111,100,101,106,115,45,115,108,105,109,45,50,52,46,49,56,46,48,47,98,105,110,47,110,111,100,101]}},{\"variable\":\"NUDOX_TYPESCRIPT_MODULE_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115]}},{\"variable\":\"NUDOX_PYREFLY\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,113,100,120,122,120,107,119,104,49,51,98,103,118,53,48,48,54,54,102,107,50,107,97,51,112,49,122,112,110,106,97,112,45,112,121,114,101,102,108,121,45,49,46,50,46,48,45,100,101,118,46,49,47,98,105,110,47,112,121,114,101,102,108,121]}},{\"variable\":\"NUDOX_GO_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111]}}]}"
+  },
+  "compiler_snapshot_sha256": "0f13715f573afb87eb795bc2eb7960737abd1b7e7cd8a35ddf54a46f4a51e066",
+  "workspace_preexisting": false,
+  "endpoint_preexisting": false,
+  "fresh_home_entries": [],
+  "installer_tested": false,
+  "dependency_closure_copied": false,
+  "accepted_project_pass": false,
+  "journey_options": {
+    "skip_update_cancel": false,
+    "cancel_before_first_add": false,
+    "transport_only": false,
+    "public_compiler_variables": [],
+    "requested_queries": [
+      "decorator"
+    ],
+    "edit_file": "src/decorator/__init__.py",
+    "keep_edited_source": true,
+    "first_publish_only": false,
+    "witness_path": "src/decorator/__init__.py",
+    "witness_line": 296,
+    "resolve_detail": "summary",
+    "resolve_limit": 10
+  },
+  "source_after": {
+    "files": [
+      [
+        "CHANGES.md",
+        13309,
+        "7f9f92511903237aed405c7d4686755ad335ecbf0a95a40f929def03dadd07a8"
+      ],
+      [
+        "LICENSE.txt",
+        1308,
+        "bd12cc51405c10872497c10ca21601f1d4abc50496595cc89e89ab5dad24fb62"
+      ],
+      [
+        "MANIFEST.in",
+        86,
+        "05e45a4603082dc538f2c8dd2da7dd79e3149cf0ada3a4a8323dd7ea8f60f102"
+      ],
+      [
+        "PKG-INFO",
+        3886,
+        "2133792485403bbd739e1db5960228bedbcde6d00c0acc052b27f39dbae5b5c4"
+      ],
+      [
+        "README.rst",
+        2845,
+        "19157e778a336bff2f9a2745bb9c5071b2e82cc61bb8b8a5891e20d0807ef63d"
+      ],
+      [
+        "docs/_config.yml",
+        27,
+        "10ec8472e3dc8d11b724ac488753a29977ba7b8c00089960c874c05c0ba3eae1"
+      ],
+      [
+        "docs/conf.py",
+        11298,
+        "9071a8c7377e104166b4c4a13b21443896cd0b1a7c2c6afbeed5131e9babe64e"
+      ],
+      [
+        "docs/documentation.md",
+        51910,
+        "575b16cc4505e73ad0ab656b0efaa14be906fec51a4b5a9fd62ff1ced9d86954"
+      ],
+      [
+        "docs/index.rst",
+        30,
+        "6b03993e293f885f55e5bbb64e195e45a9f328a6b1d00334429238e8491b6a5d"
+      ],
+      [
+        "performance.sh",
+        217,
+        "c99e69b79ec8d7e34503cd0a6e78bf6b051a8a076cb7a40569bd76aaf5b6aace"
+      ],
+      [
+        "pyproject.toml",
+        1209,
+        "ded6788224109c80239e5652b302e020977bbaf66cedd38fa737dba9b81d0c44"
+      ],
+      [
+        "setup.cfg",
+        38,
+        "1c473cbaee8da5fc46e7f0158794af5cea4414c34a3cf3f180c2001f5e38bd3e"
+      ],
+      [
+        "src/decorator/__init__.py",
+        17368,
+        "2801ef22a22bc13948b4fcc06c6507a191164e1e7d7886b64f510081ab0197f9"
+      ],
+      [
+        "src/decorator/__init__.pyi",
+        2896,
+        "5839c4b315d31afa532a6b00a0969548b6e75914dec577802cbe669e25a2ecef"
+      ],
+      [
+        "src/decorator/py.typed",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "src/decorator.egg-info/PKG-INFO",
+        3886,
+        "2133792485403bbd739e1db5960228bedbcde6d00c0acc052b27f39dbae5b5c4"
+      ],
+      [
+        "src/decorator.egg-info/SOURCES.txt",
+        403,
+        "ede9f74339e9f335975cc1882dc576089ebe47a856722ff222c6f47ce4dd7772"
+      ],
+      [
+        "src/decorator.egg-info/dependency_links.txt",
+        1,
+        "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+      ],
+      [
+        "src/decorator.egg-info/top_level.txt",
+        10,
+        "2a7e9e423a3cddcb56c5757204c398b74fd8a634630739ca615b8dcae0bf0d22"
+      ],
+      [
+        "tests/documentation.py",
+        55942,
+        "3940ac93a7af606dbe2a3214e97fb1e9b7a4febfadee2d803fca348523edac9a"
+      ],
+      [
+        "tests/test.py",
+        15840,
+        "98ca5aec7fc8e52828f74d35deed072b3d47943cacbfd541ece0c6235ad497b3"
+      ]
+    ],
+    "sha256": "680f95c90b68fff9a7598f3fc375c66793c3a8c1d62cbba0044ccc76f4caf731"
+  },
+  "checks": [
+    {
+      "query": "decorator",
+      "mcp_search": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "~lanes exact\u271310 names\u271310 graph\u271310 semantic\u2717 unconfigured semantic-search unavailable (unconfigured)\nproject \u203a src/decorator/__init__.py:382 \u203a gen_func_dec  \u00b7  function \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project::semantic::e008c9956e770b0abc9c2069cc2903c6268ecc2ac6cc3fa0f9dcefcf621dbe50::gen_func_dec`  def gen_func_dec(func):\n        \"\"\"Decorator turning a function into a generic function\"\"\"\n\n        # first check the dispatch arguments\n        argset = set(getfullargspec(func).args)\n        if not set(dispatch_args) <= argset:\n            raise NameError('Unknown dispatch arguments %s' % dispatch_str)\n\n        typemap =\nproject \u203a tests/documentation.py:1542 \u203a TailRecursive  \u00b7  struct \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project::semantic::98de5ba955d359fff00debbb2c4fcc3d4953aac58477f024864f366a88781b44::TailRecursive`  class TailRecursive(object):\nproject \u203a decorator  \u00b7  type \u00b7 unknown\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project::semantic::879558743dbfab23e3fea80a56ca986c3d203a2c1cbc7a8fe1134fd2d0247589::decorator`  unknown(unannotated)\nproject \u203a src/decorator/__init__.py:296 \u203a decorator  \u00b7  function \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project::semantic::fe4f4bb13b1cb3dfc763b95b7ab771c88a2033675b3e0a8de25429c88450fe22::decorator`  def decorator(caller, _func=None, kwsyntax=False):\nproject \u203a src/decorator/__init__.py:281 \u203a decoratorx  \u00b7  function \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project::semantic::11b634e6f54a101dc9c0555872a484bb520c7551f2bc006254e3dcf2fb2886e1::decoratorx`  def decoratorx(caller):\nproject \u203a src/decorator/__init__.pyi:69 \u203a decorator  \u00b7  function \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project::semantic::a855503a6cdd232e4ea26a9f13738ccb4a7b230dda029b494251df048b84e7aa::decorator`  def decorator(\nproject \u203a tests/documentation.py:1628 \u203a test_kwonly_no_args  \u00b7  function \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project::semantic::5ea22b2006d22068cbcf128d15d15d5f8e79e6d53c9b90ecddef02a48fb1e9d3::test_kwonly_no_args`  def test_kwonly_no_args():\n    \"\"\"# this was broken with decorator 3.3.3\n    >>> @trace\n    ... def f(**kw): pass\n    ...\n    >>> f()\n    calling f with args (),\nproject \u203a src/decorator/__init__.pyi:68 \u203a decoratorx  \u00b7  function \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project::semantic::6d8b3f94672fa1088e2b648e6750598276957339e1d30cde499c8850f49ccbcf::decoratorx`  def decoratorx(caller: Callable[..., Any]) -> Callable[..., Any]: ...\nproject \u203a decorator  \u00b7  type \u00b7 unknown\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project::semantic::78266667a76c4a4e90f583cec49a3b4f3d203a2c1cbc7a8fe1134fd2d0247589::decorator`  unknown(unannotated)\nproject \u203a src/decorator/__init__.py:423 \u203a register  \u00b7  function \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project::semantic::2be8bde67e5fb8ced2fc6703c0d485d679892dadddc074c4ccfa15b074a941e2::register`  def register(*types):\n\u2026 more rows at this revision; raise `limit` to see them\n",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "answer": "records",
+            "budget": {
+              "bytes": 8239,
+              "bytesPerToken": 4,
+              "estimatedTokens": 2060
+            },
+            "coverage": [
+              {
+                "lane": "exact",
+                "state": "complete"
+              },
+              {
+                "lane": "names",
+                "state": "complete"
+              },
+              {
+                "lane": "graph",
+                "state": "complete"
+              },
+              {
+                "lane": "semantic",
+                "reason": "unconfigured",
+                "state": "unavailable"
+              }
+            ],
+            "detail": "full",
+            "more": true,
+            "nextCursor": "mcp1-1791293036-cGMxLTAwMDNkOTNhZGYxNmFhZTMyNjRmMWJiMmIwM2MxNzI1MWJjMzEyMzU1ZTEzNDkxNDZlNzgxMzQ4ZjYzN2Q0ZjIzNjgwOTFiM2YyZTBmMzk0OGViYjY2MGI1MDMyOWU1ZmIzY2NlMjU1ZmQzNzBkNzY1ZTAyZWZmMjE2ODMyODE2NDNlMzQ2NTBhNWQyZDM4YzUwN2M2MjFiYjdhZGVjOTYzYWZhYzdiZDc0MGJiYzg1MDA3YjFjZDYwOWE2N2ZiMjQ4MmYxMmE0MGIxYTlkOGIzYWYwOTJlYjk1NzQ1NzU5NjdjMTlhNWRiOWNhNDhlZGU1NDIyNmUyOGYyOTM2MWUzNzYwMDAwMzYyOTA0ZTZmYmQ5ODgxNTI2MWE1OWYyNjUyNWEyOGM1OTdlZjJhNTY0OTM1MDVjOTdjYmI2MTEyNWQ2MGY2YjIwMDAwMDAwMDAwMDAwMDAyMDAwMDAwMDAwMDAwMDAwYQ-2af1a41053cb9626aa05448f9acd0693",
+            "query": "decorator",
+            "readiness": "ready",
+            "records": [
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project::semantic::e008c9956e770b0abc9c2069cc2903c6268ecc2ac6cc3fa0f9dcefcf621dbe50::gen_func_dec",
+                  "key": "3900ff72",
+                  "line": 382,
+                  "name": "gen_func_dec",
+                  "path": "src/decorator/__init__.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project",
+                  "segments": [
+                    "gen_func_dec"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a src/decorator/__init__.py:382 \u203a gen_func_dec"
+                },
+                "kind": "function",
+                "language": "python",
+                "score": 4294967290,
+                "signature": "def gen_func_dec(func):\n        \"\"\"Decorator turning a function into a generic function\"\"\"\n\n        # first check the dispatch arguments\n        argset = set(getfullargspec(func).args)\n        if not set(dispatch_args) <= argset:\n            raise NameError('Unknown dispatch arguments %s' % dispatch_str)\n\n        typemap =",
+                "state": "ready",
+                "summary": "Decorator turning a function into a generic function"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project::semantic::98de5ba955d359fff00debbb2c4fcc3d4953aac58477f024864f366a88781b44::TailRecursive",
+                  "key": "410fdc88",
+                  "line": 1542,
+                  "name": "TailRecursive",
+                  "path": "tests/documentation.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project",
+                  "segments": [
+                    "TailRecursive"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a tests/documentation.py:1542 \u203a TailRecursive"
+                },
+                "kind": "struct",
+                "language": "python",
+                "score": 4294967291,
+                "signature": "class TailRecursive(object):",
+                "state": "ready",
+                "summary": "tail_recursive decorator based on Kay Schluehr's recipe"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project::semantic::879558743dbfab23e3fea80a56ca986c3d203a2c1cbc7a8fe1134fd2d0247589::decorator",
+                  "key": "50e184a5",
+                  "name": "decorator",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project",
+                  "segments": [
+                    "decorator"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a decorator"
+                },
+                "kind": "type",
+                "language": "unknown",
+                "score": 4294967293,
+                "signature": "unknown(unannotated)",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project::semantic::fe4f4bb13b1cb3dfc763b95b7ab771c88a2033675b3e0a8de25429c88450fe22::decorator",
+                  "key": "5fa67dbe",
+                  "line": 296,
+                  "name": "decorator",
+                  "path": "src/decorator/__init__.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project",
+                  "segments": [
+                    "decorator"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a src/decorator/__init__.py:296 \u203a decorator"
+                },
+                "kind": "function",
+                "language": "python",
+                "score": 4294967295,
+                "signature": "def decorator(caller, _func=None, kwsyntax=False):",
+                "state": "ready",
+                "summary": "decorator(caller) converts a caller function into a decorator"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project::semantic::11b634e6f54a101dc9c0555872a484bb520c7551f2bc006254e3dcf2fb2886e1::decoratorx",
+                  "key": "8e2901dc",
+                  "line": 281,
+                  "name": "decoratorx",
+                  "path": "src/decorator/__init__.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project",
+                  "segments": [
+                    "decoratorx"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a src/decorator/__init__.py:281 \u203a decoratorx"
+                },
+                "kind": "function",
+                "language": "python",
+                "score": 4294967287,
+                "signature": "def decoratorx(caller):",
+                "state": "ready",
+                "summary": "A version of \"decorator\" implemented via \"exec\" and not via the"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project::semantic::a855503a6cdd232e4ea26a9f13738ccb4a7b230dda029b494251df048b84e7aa::decorator",
+                  "key": "9a8b2ba5",
+                  "line": 69,
+                  "name": "decorator",
+                  "path": "src/decorator/__init__.pyi",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project",
+                  "segments": [
+                    "decorator"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a src/decorator/__init__.pyi:69 \u203a decorator"
+                },
+                "kind": "function",
+                "language": "python",
+                "score": 4294967292,
+                "signature": "def decorator(",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project::semantic::5ea22b2006d22068cbcf128d15d15d5f8e79e6d53c9b90ecddef02a48fb1e9d3::test_kwonly_no_args",
+                  "key": "b1173365",
+                  "line": 1628,
+                  "name": "test_kwonly_no_args",
+                  "path": "tests/documentation.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project",
+                  "segments": [
+                    "test_kwonly_no_args"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a tests/documentation.py:1628 \u203a test_kwonly_no_args"
+                },
+                "kind": "function",
+                "language": "python",
+                "score": 4294967288,
+                "signature": "def test_kwonly_no_args():\n    \"\"\"# this was broken with decorator 3.3.3\n    >>> @trace\n    ... def f(**kw): pass\n    ...\n    >>> f()\n    calling f with args (),",
+                "state": "ready",
+                "summary": "# this was broken with decorator 3.3.3"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project::semantic::6d8b3f94672fa1088e2b648e6750598276957339e1d30cde499c8850f49ccbcf::decoratorx",
+                  "key": "b41bc186",
+                  "line": 68,
+                  "name": "decoratorx",
+                  "path": "src/decorator/__init__.pyi",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project",
+                  "segments": [
+                    "decoratorx"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a src/decorator/__init__.pyi:68 \u203a decoratorx"
+                },
+                "kind": "function",
+                "language": "python",
+                "score": 4294967286,
+                "signature": "def decoratorx(caller: Callable[..., Any]) -> Callable[..., Any]: ...",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project::semantic::78266667a76c4a4e90f583cec49a3b4f3d203a2c1cbc7a8fe1134fd2d0247589::decorator",
+                  "key": "dfa6007c",
+                  "name": "decorator",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project",
+                  "segments": [
+                    "decorator"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a decorator"
+                },
+                "kind": "type",
+                "language": "unknown",
+                "score": 4294967294,
+                "signature": "unknown(unannotated)",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project::semantic::2be8bde67e5fb8ced2fc6703c0d485d679892dadddc074c4ccfa15b074a941e2::register",
+                  "key": "ece2c48d",
+                  "line": 423,
+                  "name": "register",
+                  "path": "src/decorator/__init__.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T130846Z-python-configured-72b32c19/project",
+                  "segments": [
+                    "register"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a src/decorator/__init__.py:423 \u203a register"
+                },
+                "kind": "function",
+                "language": "python",
+                "score": 4294967289,
+                "signature": "def register(*types):",
+                "state": "ready",
+                "summary": "Decorator to register an implementation for the given types"
+              }
+            ],
+            "semantic_search": {
+              "reason": "unconfigured",
+              "status": "unavailable"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "owned_daemons_remaining": [],
+  "endpoint_remaining": true,
+  "source_unchanged": false
+}

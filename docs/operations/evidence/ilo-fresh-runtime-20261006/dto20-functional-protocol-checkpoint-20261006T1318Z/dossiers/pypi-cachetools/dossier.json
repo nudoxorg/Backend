@@ -1,0 +1,100 @@
+{
+  "schema": "nudox.source-verified-stratified-dossier.v1",
+  "package": {
+    "ecosystem": "pypi",
+    "id": "cachetools",
+    "version": "7.2.1"
+  },
+  "source_root": "/root/nudox-corpus-20261006/artifacts/stratified-functional-protocol-python-dossiers-20261006T1306Z/pypi-cachetools/source",
+  "source_tree_sha256": "74bb15db71da02279974ae861a0a18f171a668d77b4a869559aeee6cc3ac13a4",
+  "source_files": 37,
+  "source_bytes": 234793,
+  "inventory_sha256": "d8decaf54d3bec511da8e0b7e9cc893710a9062528669a9af4f0c66cff653c0d",
+  "origin_sha256": "24ce753224b2c52bc5e4010c37bbd7f19e3b3ce9f60e8ff196f8cb28a3978dd7",
+  "archive_sha256": "b1a7537025c06abf96fcc1443e496af9a3fb95e774e70e1f0af226f73f7f2dcc",
+  "origin_verified": true,
+  "archives_reused": false,
+  "acquisition_requests": [
+    {
+      "url": "https://pypi.org/pypi/cachetools/json",
+      "final_url": "https://pypi.org/pypi/cachetools/json",
+      "status": 200,
+      "seconds": 0.0630502759013325,
+      "bytes": 120018,
+      "sha256": "c28943c8cfdbcbddb0c583287914711ef120f45b1b78b8525e8a50966899792c",
+      "utc": "2026-10-06T13:07:33Z"
+    },
+    {
+      "url": "https://files.pythonhosted.org/packages/31/44/71476a5812da1ddf2c9a3efd31ae76d01480a1cf03ed13ac28aa8f2402e4/cachetools-7.2.1.tar.gz",
+      "final_url": "https://files.pythonhosted.org/packages/31/44/71476a5812da1ddf2c9a3efd31ae76d01480a1cf03ed13ac28aa8f2402e4/cachetools-7.2.1.tar.gz",
+      "status": 200,
+      "seconds": 0.03459669998846948,
+      "bytes": 41357,
+      "sha256": "b1a7537025c06abf96fcc1443e496af9a3fb95e774e70e1f0af226f73f7f2dcc",
+      "utc": "2026-10-06T13:07:33Z"
+    }
+  ],
+  "resource_before": {
+    "memory_available_kib": 47914368,
+    "free_disk_bytes": 53987405824
+  },
+  "dependency_requirements": {
+    "requires_dist": []
+  },
+  "dependency_closure_installed": false,
+  "source_expectations": [
+    {
+      "name": "Cache",
+      "path": "src/cachetools/__init__.py",
+      "line": 45,
+      "end_line": 168,
+      "kind": "ClassDef",
+      "file_sha256": "c595cd9ea1ce7e52be423397398f33ad9fb8074d568bd664f229570e97f7a660",
+      "start_byte": 660,
+      "end_byte": 4347,
+      "declaration_sha256": "b18d905e569838bbcae2b6e881a76714cb6b7aed86995f69fb076c96080368ca",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "TTLCache",
+      "path": "src/cachetools/__init__.py",
+      "line": 450,
+      "end_line": 588,
+      "kind": "ClassDef",
+      "file_sha256": "c595cd9ea1ce7e52be423397398f33ad9fb8074d568bd664f229570e97f7a660",
+      "start_byte": 12776,
+      "end_byte": 17126,
+      "declaration_sha256": "e488e80e6704b4914cd674b0d92ff1839187d7a55dac49a631108dd7523c8091",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "cached",
+      "path": "src/cachetools/__init__.py",
+      "line": 737,
+      "end_line": 765,
+      "kind": "FunctionDef",
+      "file_sha256": "c595cd9ea1ce7e52be423397398f33ad9fb8074d568bd664f229570e97f7a660",
+      "start_byte": 22009,
+      "end_byte": 22917,
+      "declaration_sha256": "dab0ce624acc549c0c7fbd7e8fede2cf2fa16add1f7a15fc76b668712a971670",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "cachedmethod",
+      "path": "src/cachetools/__init__.py",
+      "line": 768,
+      "end_line": 790,
+      "kind": "FunctionDef",
+      "file_sha256": "c595cd9ea1ce7e52be423397398f33ad9fb8074d568bd664f229570e97f7a660",
+      "start_byte": 22920,
+      "end_byte": 23790,
+      "declaration_sha256": "71419a7c8d848b323d9b3ac0d8ac5df110132287a344f9c41141bb4c92dcc337",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    }
+  ],
+  "runtime_acceptance_status": "not_run",
+  "runtime_passes": 0,
+  "package_code_executed": false,
+  "observer_sha256": "d0b89b4bdef9e21f04810f2b42cdf88dedb4d833c85e613138803615d2ed0ffb",
+  "origin_verifier_sha256": "1ef8275b8e6daa9bfe711d05d367316b09635061b4cb9ca147816c6bed3a3039"
+}

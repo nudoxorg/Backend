@@ -1,0 +1,100 @@
+{
+  "schema": "nudox.source-verified-stratified-dossier.v1",
+  "package": {
+    "ecosystem": "pypi",
+    "id": "toolz",
+    "version": "1.1.0"
+  },
+  "source_root": "/root/nudox-corpus-20261006/artifacts/stratified-functional-protocol-python-dossiers-20261006T1306Z/pypi-toolz/source",
+  "source_tree_sha256": "badfd0445a5095a0b09467fbd35a4651e6c8bbfbf9adbdbf2dffcbf891505396",
+  "source_files": 44,
+  "source_bytes": 211124,
+  "inventory_sha256": "8254ea590b99c4dd8435d8b767217c50634978c615bdaf21b408dd06c2000e8c",
+  "origin_sha256": "01cdc9570b740830f10a12ec1046dfba1b6656f7d6c92c72b4560b021f266521",
+  "archive_sha256": "27a5c770d068c110d9ed9323f24f1543e83b2f300a687b7891c1a6d56b697b5b",
+  "origin_verified": true,
+  "archives_reused": false,
+  "acquisition_requests": [
+    {
+      "url": "https://pypi.org/pypi/toolz/json",
+      "final_url": "https://pypi.org/pypi/toolz/json",
+      "status": 200,
+      "seconds": 0.05112229206133634,
+      "bytes": 36997,
+      "sha256": "8f924240c5e8b854ea720801cd3c5f1c2f3e7c98c19dc6dc15fbed7a374b0a51",
+      "utc": "2026-10-06T13:07:33Z"
+    },
+    {
+      "url": "https://files.pythonhosted.org/packages/11/d6/114b492226588d6ff54579d95847662fc69196bdeec318eb45393b24c192/toolz-1.1.0.tar.gz",
+      "final_url": "https://files.pythonhosted.org/packages/11/d6/114b492226588d6ff54579d95847662fc69196bdeec318eb45393b24c192/toolz-1.1.0.tar.gz",
+      "status": 200,
+      "seconds": 0.03295685292687267,
+      "bytes": 52613,
+      "sha256": "27a5c770d068c110d9ed9323f24f1543e83b2f300a687b7891c1a6d56b697b5b",
+      "utc": "2026-10-06T13:07:33Z"
+    }
+  ],
+  "resource_before": {
+    "memory_available_kib": 47914492,
+    "free_disk_bytes": 53987401728
+  },
+  "dependency_requirements": {
+    "requires_dist": []
+  },
+  "dependency_closure_installed": false,
+  "source_expectations": [
+    {
+      "name": "curry",
+      "path": "toolz/functoolz.py",
+      "line": 168,
+      "end_line": 375,
+      "kind": "ClassDef",
+      "file_sha256": "46715ca6e2a9745f6bae7f5762e1be088265cc97b3575ce444455733e211fb85",
+      "start_byte": 4561,
+      "end_byte": 11362,
+      "declaration_sha256": "360a108b4d680f9fc303f4821cfeda1de9d1e3075631756eb331da43dd7d395c",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "memoize",
+      "path": "toolz/functoolz.py",
+      "line": 393,
+      "end_line": 470,
+      "kind": "FunctionDef",
+      "file_sha256": "46715ca6e2a9745f6bae7f5762e1be088265cc97b3575ce444455733e211fb85",
+      "start_byte": 11802,
+      "end_byte": 14153,
+      "declaration_sha256": "d76f7ded908346c0baa08e672da1f53f9eb28755996adf213500e3765608f147",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "compose",
+      "path": "toolz/functoolz.py",
+      "line": 560,
+      "end_line": 583,
+      "kind": "FunctionDef",
+      "file_sha256": "46715ca6e2a9745f6bae7f5762e1be088265cc97b3575ce444455733e211fb85",
+      "start_byte": 16810,
+      "end_byte": 17399,
+      "declaration_sha256": "c9b57f6055c76abdb3d09f2d91f9d942a7b74b5df67707ac618c07feb19b45e0",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "mapcat",
+      "path": "toolz/itertoolz.py",
+      "line": 501,
+      "end_line": 508,
+      "kind": "FunctionDef",
+      "file_sha256": "648edb0b45df62329a7745d87844de649447046b846819291e6cb3fd7cc8f0da",
+      "start_byte": 11471,
+      "end_byte": 11742,
+      "declaration_sha256": "e9773e77466303b8ecc76216b30583aa9791362579258e55a90097d902f2edca",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    }
+  ],
+  "runtime_acceptance_status": "not_run",
+  "runtime_passes": 0,
+  "package_code_executed": false,
+  "observer_sha256": "d0b89b4bdef9e21f04810f2b42cdf88dedb4d833c85e613138803615d2ed0ffb",
+  "origin_verifier_sha256": "1ef8275b8e6daa9bfe711d05d367316b09635061b4cb9ca147816c6bed3a3039"
+}
