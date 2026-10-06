@@ -796,7 +796,7 @@ pub(super) fn finish_index_scan(
                 )
                 .map(PreparedIndex::Compile);
             }
-            let (mut semantic_changes, selected, aliases, completions) = match compile_semantic_publications(
+            let mut compiled = match compile_semantic_publications(
                 daemon,
                 &semantic_context,
                 sources,
@@ -820,10 +820,24 @@ pub(super) fn finish_index_scan(
                     return Err(error);
                 }
             };
-            let completed =
-                completed_capture_changes(daemon, &captures, &semantic_changes, &completions)?;
-            semantic_changes.extend(completed.retained_publications);
-            (semantic_changes, selected, aliases, completed.captures)
+            let completed = completed_capture_changes(
+                daemon,
+                &captures,
+                &compiled.changes,
+                &compiled.admitted,
+            )?;
+            compiled.changes.extend(completed.retained_publications);
+            let selected = compiled
+                .admitted
+                .iter()
+                .map(AdmittedCapturePublication::selected_claim)
+                .collect();
+            (
+                compiled.changes,
+                selected,
+                compiled.cargo_alias_observations,
+                completed.captures,
+            )
         }
     };
     let committed_relation = daemon
@@ -1524,12 +1538,21 @@ fn completed_capture_changes(
             ));
         }
         let mut deltas = semantic_changes.iter().filter(|change| change.key == *key);
-        let delta = deltas.next().and_then(|change| change.after.clone());
+        let delta = deltas.next();
         if deltas.next().is_some() {
             return Err(BuiltinModelError(
                 "semantic capture has duplicate selected publication after-images".to_owned(),
             ));
         }
+        let delta = match delta {
+            Some(change) if change.after.is_none() => {
+                return Err(BuiltinModelError(
+                    "semantic capture completion cannot delete its selected publication".to_owned(),
+                ));
+            }
+            Some(change) => change.after.clone(),
+            None => None,
+        };
         let publication = match (delta, completion) {
             (
                 Some(record @ ProductSemanticPublicationRecord::Published { .. }),
@@ -1767,7 +1790,6 @@ pub(super) struct DeferredIndex {
     completed_profiles: usize,
     pub(super) captures: BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
     semantic_changes: Vec<BuiltinSemanticChange>,
-    selected: Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
     capture_publications: Vec<AdmittedCapturePublication>,
     cargo_alias_observations: BTreeMap<LanguageProfile, CargoPackageAliasEvidenceV1>,
 }
@@ -2170,7 +2192,6 @@ fn prepare_deferred_compile(
         completed_profiles: 0,
         captures,
         semantic_changes: Vec::with_capacity(expected_profiles.saturating_mul(2)),
-        selected: Vec::with_capacity(expected_profiles),
         capture_publications: Vec::with_capacity(expected_profiles),
         cargo_alias_observations: BTreeMap::new(),
     })
@@ -2315,7 +2336,6 @@ pub(super) fn finish_deferred_profile(
     )?;
     let selected_profile = profile.profile();
     job.capture_publications.push(completion);
-    job.selected.push((profile.key, claim));
     if let Some(evidence) = cargo_alias_evidence {
         job.cargo_alias_observations
             .insert(selected_profile, evidence);
@@ -2436,7 +2456,11 @@ pub(super) fn finish_deferred_index(
     };
     Ok(PreparedProductSelection {
         intent,
-        selected: job.selected,
+        selected: job
+            .capture_publications
+            .iter()
+            .map(AdmittedCapturePublication::selected_claim)
+            .collect(),
         revision_fence: Some(job.revision_fence),
     })
 }
@@ -2669,6 +2693,14 @@ impl<'request> SemanticCompilationContext<'request> {
     }
 }
 
+/// Compilation deltas and the one admitted publication collection from which
+/// terminal capture proof and the serving selector are both derived.
+struct CompiledSemanticPublications {
+    changes: Vec<BuiltinSemanticChange>,
+    admitted: Vec<AdmittedCapturePublication>,
+    cargo_alias_observations: Vec<CargoPackageAliasEvidenceV1>,
+}
+
 fn compile_semantic_publications(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     context: &SemanticCompilationContext<'_>,
@@ -2680,15 +2712,7 @@ fn compile_semantic_publications(
     owner_cluster: Option<&super::super::cluster_dispatch::OwnerCompilerClusterRuntime>,
     pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
     execution_intent: CompileExecutionIntent,
-) -> Result<
-    (
-        Vec<BuiltinSemanticChange>,
-        Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
-        Vec<CargoPackageAliasEvidenceV1>,
-        Vec<AdmittedCapturePublication>,
-    ),
-    BuiltinModelError,
-> {
+) -> Result<CompiledSemanticPublications, BuiltinModelError> {
     let mut by_profile = BTreeMap::<LanguageProfile, Vec<OwnedPackageSource>>::new();
     let mut source_paths_by_profile = BTreeMap::<LanguageProfile, BTreeSet<String>>::new();
     for source in sources {
@@ -2710,7 +2734,6 @@ fn compile_semantic_publications(
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic publications: {error}")))?;
     let mut changes = Vec::with_capacity(by_profile.len().saturating_mul(2));
-    let mut selected_claims = Vec::with_capacity(by_profile.len());
     let mut completions = Vec::with_capacity(by_profile.len());
     let mut cargo_alias_observations = Vec::new();
     for (profile, sources) in by_profile {
@@ -3367,13 +3390,16 @@ fn compile_semantic_publications(
             &mut changes,
         )?;
         completions.push(completion);
-        selected_claims.push((key, claim));
         if let Some(evidence) = cargo_alias_evidence {
             cargo_alias_observations.push(evidence);
         }
         let _ = selected;
     }
-    Ok((changes, selected_claims, cargo_alias_observations, completions))
+    Ok(CompiledSemanticPublications {
+        changes,
+        admitted: completions,
+        cargo_alias_observations,
+    })
 }
 
 /// Admits one local compile's output: every expected source is accounted
@@ -3856,6 +3882,10 @@ struct AdmittedCapturePublication {
 }
 
 impl AdmittedCapturePublication {
+    fn selected_claim(&self) -> (ProductSemanticPublicationKey, SemanticPublicationClaim) {
+        (self.key.clone(), self.claim)
+    }
+
     fn record(&self) -> ProductSemanticPublicationRecord {
         ProductSemanticPublicationRecord::Published {
             coverage: self.coverage,
@@ -4143,6 +4173,16 @@ mod admitted_capture_publication_tests {
             completed_capture_changes(&daemon, &captures, &contradictory, &[completion.clone()])
                 .is_err()
         );
+        let deletion = vec![BuiltinSemanticChange {
+            key: key.clone(),
+            after: None,
+        }];
+        for proof in [Vec::new(), vec![completion.clone()]] {
+            assert!(
+                completed_capture_changes(&daemon, &captures, &deletion, &proof).is_err(),
+                "explicit deletion is a contradiction, not an absent publication delta"
+            );
+        }
         let published_delta = vec![BuiltinSemanticChange {
             key: key.clone(),
             after: Some(completion.record()),
