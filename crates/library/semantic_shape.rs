@@ -1527,23 +1527,45 @@ fn admit_minimum_budget(
 /// History publication status is a separate derived sidecar observation: this
 /// contract neither echoes it as authority nor triggers history work to validate it.
 pub fn semantic_shape_source_preimage(origin: &SemanticShapeSourceOrigin) -> Vec<u8> {
+    semantic_shape_source_preimage_parts(
+        &origin.source,
+        &origin.selection_root,
+        origin.semantic_image_bytes.byte_length(),
+        origin.image.map(|image| {
+            (
+                *image.image.identity.as_ref(),
+                image.image.byte_len,
+                crate::SemanticLanguageProfile::new(image.profile),
+            )
+        }),
+    )
+}
+
+// Encoding-only helper for display consistency. Raw image digest bytes here do
+// not create compiler authority, ArtifactIds, SymbolKeys, or product facts.
+pub(crate) fn semantic_shape_source_preimage_parts(
+    source: &SemanticShapeSelection,
+    selection_root: &[u8; 32],
+    semantic_image_bytes: u32,
+    image: Option<([u8; 32], u32, crate::SemanticLanguageProfile)>,
+) -> Vec<u8> {
     fn append(bytes: &mut Vec<u8>, value: &[u8]) {
         bytes.extend_from_slice(&(value.len() as u64).to_be_bytes());
         bytes.extend_from_slice(value);
     }
 
     let mut bytes = b"SEMANTIC-SHAPE-SOURCE\0v4".to_vec();
-    append(&mut bytes, origin.source.package.as_str().as_bytes());
-    append(&mut bytes, origin.source.coordinate.as_str().as_bytes());
-    append(&mut bytes, &origin.source.profile.to_bytes());
-    append(&mut bytes, &origin.source.generation.to_bytes());
-    append(&mut bytes, &origin.source.generation_root);
-    append(&mut bytes, &origin.source.dependency_set);
-    append(&mut bytes, &origin.source.manifest);
-    bytes.extend_from_slice(&origin.source.artifacts.to_be_bytes());
-    bytes.extend_from_slice(&origin.source.semantic_bytes.to_be_bytes());
+    append(&mut bytes, source.package.as_str().as_bytes());
+    append(&mut bytes, source.coordinate.as_str().as_bytes());
+    append(&mut bytes, &source.profile.to_bytes());
+    append(&mut bytes, &source.generation.to_bytes());
+    append(&mut bytes, &source.generation_root);
+    append(&mut bytes, &source.dependency_set);
+    append(&mut bytes, &source.manifest);
+    bytes.extend_from_slice(&source.artifacts.to_be_bytes());
+    bytes.extend_from_slice(&source.semantic_bytes.to_be_bytes());
     bytes.extend_from_slice(&[1, 1]);
-    match origin.source.freshness {
+    match source.freshness {
         crate::SemanticVersionFreshness::Current { input_digest } => {
             bytes.push(0);
             append(&mut bytes, &input_digest);
@@ -1558,16 +1580,13 @@ pub fn semantic_shape_source_preimage(origin: &SemanticShapeSourceOrigin) -> Vec
         }
         crate::SemanticVersionFreshness::Unverified => bytes.push(2),
     }
-    append(&mut bytes, &origin.selection_root);
-    bytes.extend_from_slice(&origin.semantic_image_bytes.byte_length().to_be_bytes());
-    if let Some(image) = origin.image {
+    append(&mut bytes, selection_root);
+    bytes.extend_from_slice(&semantic_image_bytes.to_be_bytes());
+    if let Some((identity, byte_len, profile)) = image {
         bytes.push(1);
-        append(&mut bytes, image.image.identity.as_ref());
-        bytes.extend_from_slice(&image.image.byte_len.to_be_bytes());
-        append(
-            &mut bytes,
-            &crate::SemanticLanguageProfile::new(image.profile).to_bytes(),
-        );
+        append(&mut bytes, &identity);
+        bytes.extend_from_slice(&byte_len.to_be_bytes());
+        append(&mut bytes, &profile.to_bytes());
     } else {
         bytes.push(0);
     }

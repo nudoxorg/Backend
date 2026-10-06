@@ -511,18 +511,13 @@ fn semantic_shapes_jsonrpc_refuses_oversized_view_without_dropping_required_fact
         "../../../../crates/library/fixtures/semantic-shape-read.json"
     ))
     .expect("operands");
-    let mut entries = Vec::new();
-    let mut symbols = Vec::new();
-    for ordinal in 1u8..=32 {
-        let mut entry = view["batch"]["entries"][0].clone();
-        entry["symbol"]["id"] = json!(format!("{ordinal:02x}").repeat(32));
-        entry["fact"] = json!({"state":"unknown","data":{"reason":0,"spelling":"x".repeat(2048)}});
-        entries.push(entry);
-        symbols.push(vec![ordinal; 32]);
-    }
-    view["batch"]["entries"] = json!(entries);
+    // Keep the NotInView row honest. A large retained source operand alone
+    // exceeds the MCP packet budget; no unknown compiler fact is fabricated.
+    let package = format!("/abs/{}", "x".repeat(60000));
+    view["source"]["package"]["value"] = json!(package);
+    operands["source"]["package"]["value"] = json!(package);
+    operands["source"]["selected_source_frontier"]["package"]["value"] = json!(package);
     view["max_bytes"] = json!(262144);
-    operands["symbols"] = json!(symbols);
     operands["max_bytes"] = json!(262144);
     let export: backend_library::SemanticShapeExport =
         serde_json::from_value(view).expect("bounded view");

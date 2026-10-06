@@ -1370,6 +1370,107 @@ fn semantic_shape_reply_round_trips_exact_image_at_depth_limit_and_rejects_bad_i
         serde_json::json!(vec![31u8; 32])
     );
     assert_eq!(value["max_nodes"], 4096);
+    // A display packet has no authority certificate, but contradictory source,
+    // image, selector and caller-budget statements must still fail decoding.
+    for (label, pointer, replacement) in [
+        ("caller nodes", "/max_nodes", serde_json::json!(1)),
+        ("caller bytes", "/max_bytes", serde_json::json!(1)),
+        (
+            "source generation",
+            "/source/generation",
+            serde_json::json!(vec![90u8; 32]),
+        ),
+        (
+            "origin root",
+            "/batch/entries/0/origin/selection_root",
+            serde_json::json!(vec![90u8; 32]),
+        ),
+        (
+            "source commitment",
+            "/batch/entries/0/origin/source_commitment",
+            serde_json::json!("00".repeat(32)),
+        ),
+        (
+            "image identity",
+            "/batch/entries/0/origin/image/image_identity",
+            serde_json::json!("91".repeat(32)),
+        ),
+        (
+            "image extent",
+            "/batch/entries/0/origin/image/byte_len",
+            serde_json::json!(4097),
+        ),
+        (
+            "image profile",
+            "/batch/entries/0/origin/image/profile",
+            serde_json::json!([2, 0]),
+        ),
+        (
+            "missing provenance",
+            "/batch/entries/0/origin",
+            serde_json::Value::Null,
+        ),
+        (
+            "missing identity",
+            "/batch/entries/0/identity",
+            serde_json::Value::Null,
+        ),
+        (
+            "zero selector",
+            "/batch/entries/0/symbol/id",
+            serde_json::json!("00".repeat(32)),
+        ),
+        (
+            "malformed basis",
+            "/batch/basis",
+            serde_json::json!("short"),
+        ),
+    ] {
+        let mut malformed = value.clone();
+        *malformed.pointer_mut(pointer).expect("fixture field") = replacement;
+        assert!(
+            serde_json::from_value::<crate::SemanticShapeExport>(malformed).is_err(),
+            "{label}"
+        );
+    }
+    let mut duplicated = value.clone();
+    duplicated["batch"]["entries"]
+        .as_array_mut()
+        .expect("entries")
+        .push(value["batch"]["entries"][0].clone());
+    assert!(serde_json::from_value::<crate::SemanticShapeExport>(duplicated).is_err());
+    let mut roots = value.clone();
+    let mut second = value["batch"]["entries"][0].clone();
+    second["symbol"]["id"] = serde_json::json!("93".repeat(32));
+    second["origin"]["selection_root"] = serde_json::json!(vec![94u8; 32]);
+    let mut distinct_origin = origin.clone();
+    distinct_origin.selection_root = [94; 32];
+    second["origin"]["source_commitment"] = serde_json::json!(encode_id(
+        crate::semantic_shape_source_key(&distinct_origin).as_bytes()
+    ));
+    roots["batch"]["entries"]
+        .as_array_mut()
+        .expect("entries")
+        .push(second);
+    assert!(
+        serde_json::from_value::<crate::SemanticShapeExport>(roots).is_err(),
+        "each valid source commitment cannot conceal conflicting workspace roots"
+    );
+
+    // The view basis and workspace selection root are different identity planes.
+    // A well-formed changed display basis cannot be authenticated by its decoder.
+    let mut display_only = value.clone();
+    display_only["batch"]["basis"] = serde_json::json!("92".repeat(32));
+    assert!(serde_json::from_value::<crate::SemanticShapeExport>(display_only).is_ok());
+    let other_basis_request = crate::SemanticShapeRequest::new(
+        crate::ViewRevision::from_bytes([92; 32]),
+        source.clone(),
+        request.symbols().to_vec().into_boxed_slice(),
+        request.budget(),
+    )
+    .expect("different request basis");
+    assert!(crate::SemanticShapeExport::from_admitted_reply(&reply, &other_basis_request).is_err());
+
     assert_eq!(
         value["batch"]["entries"][0]["origin"]["selection_root"],
         serde_json::json!(vec![36u8; 32])

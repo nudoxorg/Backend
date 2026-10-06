@@ -560,8 +560,96 @@ impl SemanticShapeExport {
             max_bytes: request.budget().max_bytes(),
             batch: semantic_shape_batch_to_wire(batch)?,
         };
+        value.validate_display_consistency()?;
         value.encode_bounded_json()?;
         Ok(value)
+    }
+    fn validate_display_consistency(&self) -> Result<(), String> {
+        let budget = crate::SemanticShapeBudget::new(self.max_nodes, self.max_bytes)
+            .map_err(|error| error.to_string())?;
+        let profile = self
+            .source
+            .profile()
+            .profile()
+            .map_err(|error| error.to_string())?;
+        if self.source.artifacts() == 0
+            || self.source.coordinate().package_type().language() != profile.language()
+        {
+            return Err("semantic shape export source is malformed".to_owned());
+        }
+        decode_id(&self.batch.basis).map_err(|error| error.to_string())?;
+        let (encoded, nodes) = shape_wire_tree_summary(&self.batch)?;
+        if nodes > usize::from(budget.max_nodes()) || encoded.len() > budget.max_bytes() as usize {
+            return Err("semantic shape export tree exceeds its caller budget".to_owned());
+        }
+        let mut symbols = std::collections::BTreeSet::new();
+        let mut selection_root = None;
+        for entry in &self.batch.entries {
+            let symbol = decode_id(&entry.symbol.id).map_err(|error| error.to_string())?;
+            if symbol == [0; 32] || !symbols.insert(symbol) {
+                return Err("semantic shape export selectors are empty or duplicated".to_owned());
+            }
+            match &entry.origin {
+                Some(origin) => {
+                    if origin.source != self.source
+                        || origin.selection_root == [0; 32]
+                        || selection_root.is_some_and(|root| root != origin.selection_root)
+                        || matches!(
+                            entry.fact,
+                            SemanticShapeFactWire::Unavailable(SemanticShapeUnavailable::NotInView)
+                        )
+                        || origin.semantic_image_bytes == 0
+                        || origin.semantic_image_bytes > crate::MAX_SEMANTIC_SHAPE_IMAGE_BYTES
+                    {
+                        return Err(
+                            "semantic shape export has inconsistent source or selection roots"
+                                .to_owned(),
+                        );
+                    }
+                    selection_root = Some(origin.selection_root);
+                    let image = match (&origin.image, &entry.fact, entry.identity) {
+                        (Some(image), _, Some(_))
+                            if image.byte_len > 0
+                                && image.byte_len <= origin.semantic_image_bytes
+                                && image.profile == self.source.profile() =>
+                        {
+                            let identity = decode_id(&image.image_identity)
+                                .map_err(|error| error.to_string())?;
+                            Some((identity, image.byte_len, image.profile))
+                        }
+                        (None, SemanticShapeFactWire::Unavailable(_), None) => None,
+                        _ => {
+                            return Err(
+                                "semantic shape export image provenance is inconsistent".to_owned()
+                            );
+                        }
+                    };
+                    let preimage = crate::semantic_shape::semantic_shape_source_preimage_parts(
+                        &origin.source,
+                        &origin.selection_root,
+                        origin.semantic_image_bytes,
+                        image,
+                    );
+                    let expected = ObjectKey::<crate::SemanticShapeSourceSchema>::from_value(
+                        preimage.as_slice(),
+                    );
+                    if origin.source_commitment != encode_id(expected.as_bytes()) {
+                        return Err(
+                            "semantic shape export source digest is inconsistent".to_owned()
+                        );
+                    }
+                }
+                None if entry.identity.is_none()
+                    && matches!(
+                        entry.fact,
+                        SemanticShapeFactWire::Unavailable(SemanticShapeUnavailable::NotInView)
+                    ) => {}
+                None => {
+                    return Err("semantic shape export omitted its source provenance".to_owned());
+                }
+            }
+        }
+        Ok(())
     }
     /// Encodes the view under the existing fixed byte ceiling.
     pub fn encode_bounded_json(&self) -> Result<Vec<u8>, String> {
@@ -602,6 +690,9 @@ impl<'de> Deserialize<'de> for SemanticShapeExport {
             batch: value.batch,
         };
         result
+            .validate_display_consistency()
+            .map_err(serde::de::Error::custom)?;
+        result
             .encode_bounded_json()
             .map_err(serde::de::Error::custom)?;
         Ok(result)
@@ -634,6 +725,10 @@ pub(crate) fn semantic_shape_batch_from_wire(
 }
 
 pub(super) fn admit_shape_wire_tree(batch: &SemanticShapeBatchWire) -> Result<Vec<u8>, String> {
+    shape_wire_tree_summary(batch).map(|(encoded, _)| encoded)
+}
+
+fn shape_wire_tree_summary(batch: &SemanticShapeBatchWire) -> Result<(Vec<u8>, usize), String> {
     if batch.entries.is_empty() || batch.entries.len() > crate::MAX_SEMANTIC_SHAPE_BATCH {
         return Err("semantic-shape wire batch exceeds its fixed declaration bound".to_owned());
     }
@@ -642,7 +737,7 @@ pub(super) fn admit_shape_wire_tree(batch: &SemanticShapeBatchWire) -> Result<Ve
         shape_wire_node(&mut nodes)?;
         shape_wire_fact(&entry.fact, 0, &mut nodes)?;
     }
-    bounded_shape_json(batch)
+    bounded_shape_json(batch).map(|encoded| (encoded, nodes))
 }
 
 fn bounded_shape_json<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
