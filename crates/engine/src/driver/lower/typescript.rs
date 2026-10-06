@@ -2266,7 +2266,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                         .as_ref()
                         .map(|annotation| annotation.type_annotation.span());
                     self.declare_formal_parameter_binding(
-                        rest.rest.span(),
+                        rest.rest.argument.span(),
                         annotation,
                         SemanticTypeChild::FLAG_REST,
                         next_depth,
@@ -3691,7 +3691,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             }
             if let Some(rest) = signature.params.rest.as_ref() {
                 params.push(ParamRow {
-                    name: rest.rest.span(),
+                    name: rest.rest.argument.span(),
                     annotation: rest
                         .type_annotation
                         .as_ref()
@@ -3764,7 +3764,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             }
             if let Some(rest) = signature.params.rest.as_ref() {
                 params.push(ParamRow {
-                    name: rest.rest.span(),
+                    name: rest.rest.argument.span(),
                     annotation: rest
                         .type_annotation
                         .as_ref()
@@ -4349,7 +4349,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 }
                 if let Some(rest) = function.params.rest.as_ref() {
                     params.push(ParamRow {
-                        name: rest.rest.span(),
+                        name: rest.rest.argument.span(),
                         annotation: rest
                             .type_annotation
                             .as_ref()
@@ -4758,7 +4758,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 }
                 if let Some(rest) = signature.params.rest.as_ref() {
                     params.push(ParamRow {
-                        name: rest.rest.span(),
+                        name: rest.rest.argument.span(),
                         annotation: rest
                             .type_annotation
                             .as_ref()
@@ -4817,7 +4817,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 }
                 if let Some(rest) = signature.params.rest.as_ref() {
                     params.push(ParamRow {
-                        name: rest.rest.span(),
+                        name: rest.rest.argument.span(),
                         annotation: rest
                             .type_annotation
                             .as_ref()
@@ -8380,7 +8380,9 @@ mod projection_tests {
 mod lane_tests {
     use super::{TypeScriptCollectError, collect_with_checker};
     use crate::driver::lower::{AdmissionFault, FactSet, admit};
-    use backend_frontend_typescript::legacy::{Reference, Report, source_digest};
+    use backend_frontend_typescript::legacy::{
+        GetSpan, Reference, Report, SymbolFlags, source_digest, with_analysis,
+    };
     use backend_semantic::ir::{
         EntityKind, FragmentError, FragmentView, OccurrenceFault, SemanticReader,
     };
@@ -8580,6 +8582,126 @@ mod lane_tests {
             references: references.into_boxed_slice(),
             narrowings: Box::new([]),
         }
+    }
+
+    /// Exact source ranges retained by OXC's bound declaration and typed
+    /// parameter AST for one compiler symbol. The identity is joined through
+    /// `Scoping::symbol_declarations`, never inferred from string positions.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum SignatureTypeSyntax {
+        StringKeyword,
+        NumberKeyword,
+        Other,
+    }
+
+    #[derive(Debug)]
+    struct SignatureSourceFacts {
+        declaration: (u32, u32),
+        parameters: Vec<((u32, u32), backend_semantic::ir::TupleElementKind)>,
+        parameter_types: Vec<SignatureTypeSyntax>,
+        type_parameters: Vec<(u32, u32)>,
+        result: Option<(u32, u32)>,
+    }
+
+    fn signature_source_facts(
+        source: &str,
+        symbol_name: &str,
+    ) -> Result<Vec<SignatureSourceFacts>, LaneError> {
+        with_analysis(TypeScriptSource::TypeScript, source, |module| {
+            let scoping = module.semantic.scoping();
+            let Some(symbol) = scoping.symbol_ids().find(|symbol| {
+                scoping.symbol_name(*symbol) == symbol_name
+                    && scoping
+                        .symbol_flags(*symbol)
+                        .contains(SymbolFlags::Function)
+            }) else {
+                return Vec::new();
+            };
+            let declarations = scoping.symbol_declarations(symbol).collect::<Vec<_>>();
+            module
+                .semantic
+                .nodes()
+                .iter_enumerated()
+                .filter_map(|(node_id, node)| {
+                    if !declarations.contains(&node_id) {
+                        return None;
+                    }
+                    let function = node.kind().as_function()?;
+                    let parameter_types =
+                        function
+                            .params
+                            .items
+                            .iter()
+                            .map(|parameter| {
+                                let Some(annotation) = parameter.type_annotation.as_ref() else {
+                                    return SignatureTypeSyntax::Other;
+                                };
+                                let annotation_span = annotation.type_annotation.span();
+                                let kind = module.semantic.nodes().iter_enumerated().find_map(
+                                    |(_, node)| {
+                                        let kind = node.kind();
+                                        (kind.span() == annotation_span).then_some(kind)
+                                    },
+                                );
+                                if kind.is_some_and(|kind| kind.as_ts_string_keyword().is_some()) {
+                                    SignatureTypeSyntax::StringKeyword
+                                } else if kind
+                                    .is_some_and(|kind| kind.as_ts_number_keyword().is_some())
+                                {
+                                    SignatureTypeSyntax::NumberKeyword
+                                } else {
+                                    SignatureTypeSyntax::Other
+                                }
+                            })
+                            .collect();
+                    let mut parameters = function
+                        .params
+                        .items
+                        .iter()
+                        .map(|parameter| {
+                            (
+                                (parameter.pattern.span().start, parameter.pattern.span().end),
+                                if parameter.optional {
+                                    backend_semantic::ir::TupleElementKind::Optional
+                                } else {
+                                    backend_semantic::ir::TupleElementKind::Required
+                                },
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    if let Some(rest) = function.params.rest.as_ref() {
+                        let span = rest.rest.argument.span();
+                        parameters.push((
+                            (span.start, span.end),
+                            backend_semantic::ir::TupleElementKind::Rest,
+                        ));
+                    }
+                    Some(SignatureSourceFacts {
+                        declaration: (function.span.start, function.span.end),
+                        parameters,
+                        parameter_types,
+                        type_parameters: function
+                            .type_parameters
+                            .as_ref()
+                            .map(|parameters| {
+                                parameters
+                                    .params
+                                    .iter()
+                                    .map(|parameter| {
+                                        (parameter.name.span.start, parameter.name.span.end)
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        result: function.return_type.as_ref().map(|returned| {
+                            let span = returned.type_annotation.span();
+                            (span.start, span.end)
+                        }),
+                    })
+                })
+                .collect()
+        })
+        .map_err(|_| LaneError::Missing("fixture source parses under OXC authority"))
     }
 
     /// A fixture whose checker authority resolved the OXC-unresolved
@@ -8863,14 +8985,19 @@ mod lane_tests {
     /// occupies the separate result role.
     #[test]
     fn optional_and_rest_parameters_keep_owner_local_binding_positions() -> Result<(), LaneError> {
-        let source = "type GatherResult = string;\nexport function gather(head: string, suffix?: number, ...items: boolean[]): GatherResult { return head; }\n";
+        let source = "type GatherResult = string;\nexport function gather<T>(head: T, suffix?: number, ...items: boolean[]): GatherResult { return head; }\n";
         let ir = owned_ir(source, None)?;
-        // The result carrier is the signature's own parameter-kind fact, not
-        // the `GatherResult` alias its annotation names.
-        let expected_result = ir
+        let source_signatures = signature_source_facts(source, "gather")?;
+        let source_signature = source_signatures
+            .first()
+            .ok_or(LaneError::Missing("OXC gather signature"))?;
+        if source_signatures.len() != 1 || source_signature.parameters.len() != 3 {
+            return Err(LaneError::Missing("one exact OXC gather signature"));
+        }
+        let result_alias = ir
             .items()
-            .find(|item| item.name() == b"gather" && item.kind() == EntityKind::Parameter)
-            .ok_or(LaneError::Missing("gather result carrier"))?;
+            .find(|item| item.name() == b"GatherResult" && item.kind() == EntityKind::Alias)
+            .ok_or(LaneError::Missing("GatherResult alias"))?;
         let owner = ir
             .items()
             .find(|item| item.name() == b"gather" && item.kind() == EntityKind::Function)
@@ -8883,6 +9010,18 @@ mod lane_tests {
         let head = carrier(b"head").ok_or(LaneError::Missing("head parameter"))?;
         let suffix = carrier(b"suffix").ok_or(LaneError::Missing("optional parameter"))?;
         let items = carrier(b"items").ok_or(LaneError::Missing("rest parameter"))?;
+        let generic = ir
+            .items()
+            .find(|item| {
+                item.name() == b"T"
+                    && item.kind() == EntityKind::Parameter
+                    && item.parent() == Some(owner.id())
+            })
+            .ok_or(LaneError::Missing("owner-local generic parameter"))?;
+        let generic_source = source_signature
+            .type_parameters
+            .first()
+            .ok_or(LaneError::Missing("OXC gather generic parameter"))?;
         let bindings = match ir.signature_carrier_bindings(owner.id()) {
             Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(bindings)) => {
                 bindings.collect::<Vec<_>>()
@@ -8900,6 +9039,13 @@ mod lane_tests {
                 )
             })
             .collect();
+        let result_target = slots
+            .iter()
+            .find(|(_, role, _, _)| {
+                *role == backend_semantic::ir::SignatureCarrierBindingRole::Result
+            })
+            .map(|(_, _, _, target)| *target)
+            .ok_or(LaneError::Missing("gather result carrier binding"))?;
         if slots
             != vec![
                 (
@@ -8924,18 +9070,114 @@ mod lane_tests {
                     owner.id(),
                     backend_semantic::ir::SignatureCarrierBindingRole::Result,
                     0,
-                    expected_result.id(),
+                    result_target,
                 ),
             ]
         {
             return Err(LaneError::Missing("TypeScript optional/rest slot order"));
         }
+        let result_carrier = ir
+            .item(result_target)
+            .ok_or(LaneError::Missing("gather result carrier row"))?;
+        let function_type = ir
+            .ty(owner
+                .semantic_type()
+                .ok_or(LaneError::Missing("gather type"))?)
+            .ok_or(LaneError::Missing("gather semantic function type"))?;
+        let backend_semantic::ir::TypeExpr::Concrete(
+            backend_semantic::ir::ConcreteType::Function {
+                parameters,
+                results,
+                ..
+            },
+        ) = function_type
+        else {
+            return Err(LaneError::Missing("gather concrete function shape"));
+        };
+        let parameters = ir
+            .tuple_elements(parameters)
+            .ok_or(LaneError::Missing("gather parameter tuple"))?;
+        let results = ir
+            .tuple_elements(results)
+            .ok_or(LaneError::Missing("gather result tuple"))?;
+        let exact_parameter = |id, position: usize| -> bool {
+            let Some(((start, end), _)) = source_signature.parameters.get(position) else {
+                return false;
+            };
+            ir.item(id)
+                .and_then(|item| item.source())
+                .is_some_and(|span| span.start() == *start && span.end() == *end)
+        };
+        if parameters.len() != 3
+            || parameters
+                .iter()
+                .map(|element| element.kind)
+                .collect::<Vec<_>>()
+                != vec![
+                    backend_semantic::ir::TupleElementKind::Required,
+                    backend_semantic::ir::TupleElementKind::Optional,
+                    backend_semantic::ir::TupleElementKind::Rest,
+                ]
+            || source_signature
+                .parameters
+                .iter()
+                .map(|(_, kind)| *kind)
+                .collect::<Vec<_>>()
+                != parameters
+                    .iter()
+                    .map(|element| element.kind)
+                    .collect::<Vec<_>>()
+            || parameters
+                .iter()
+                .map(|element| element.label.and_then(|label| ir.atom(label)))
+                .collect::<Vec<_>>()
+                != vec![Some(b"head".as_slice()), Some(b"suffix"), Some(b"items")]
+            || results.len() != 1
+            || source_signature.result.and_then(|(start, end)| {
+                source
+                    .get(usize::try_from(start).ok()?..usize::try_from(end).ok()?)
+                    .map(str::as_bytes)
+            }) != Some(result_alias.name())
+            || ir.ty(results[0].ty)
+                != Some(backend_semantic::ir::TypeExpr::Concrete(
+                    backend_semantic::ir::ConcreteType::Nominal(result_alias.id()),
+                ))
+            || result_carrier.kind() != EntityKind::Parameter
+            || result_carrier.name() != b"gather"
+            || result_carrier.parent() != Some(owner.id())
+            || result_carrier.source().is_some()
+            || result_carrier.semantic_type() != Some(results[0].ty)
+            || owner.source().is_none_or(|span| {
+                span.start() != source_signature.declaration.0
+                    || span.end() != source_signature.declaration.1
+            })
+            || generic.source().is_none_or(|span| {
+                span.start() != generic_source.0 || span.end() != generic_source.1
+            })
+            || [head, suffix, items].into_iter().any(|id| {
+                ir.item(id).is_none_or(|item| {
+                    item.kind() != EntityKind::Parameter || item.parent() != Some(owner.id())
+                })
+            })
+            || !exact_parameter(head, 0)
+            || !exact_parameter(suffix, 1)
+            || !exact_parameter(items, 2)
+            || generic.id() == head
+            || bindings
+                .iter()
+                .any(|binding| binding.carrier == generic.id())
+        {
+            return Err(LaneError::Missing(
+                "generic optional/rest slots and owner-local result carrier",
+            ));
+        }
         Ok(())
     }
 
     /// Distinct overloads with the same symbol retain their own exact
-    /// parameter and result entities. The expected rows are selected from
-    /// their native declaration extents and result-alias declarations.
+    /// parameter and result carriers. Authored owner/parameter spans identify
+    /// each overload; each synthetic result carrier keeps the overload's
+    /// exact owner and nominal result-alias type.
     #[test]
     fn overloads_keep_exact_owner_local_parameter_and_result_carriers() -> Result<(), LaneError> {
         let source = concat!(
@@ -8945,70 +9187,85 @@ mod lane_tests {
             "declare function decode(value: number): CountResult;\n",
         );
         let ir = owned_ir(source, None)?;
-        let span = |needle: &str| -> Result<(u32, u32), LaneError> {
-            let start = u32::try_from(
-                source
-                    .find(needle)
-                    .ok_or(LaneError::Missing("native declaration text"))?,
-            )?;
-            let end = start + u32::try_from(needle.len())?;
-            Ok((start, end))
-        };
-        let exact_item = |name: &[u8], kind, declaration: &str| {
-            let (start, end) = span(declaration).ok()?;
+        let source_signatures = signature_source_facts(source, "decode")?;
+        let text_source_signature = source_signatures
+            .iter()
+            .find(|signature| {
+                signature.parameter_types.first() == Some(&SignatureTypeSyntax::StringKeyword)
+            })
+            .ok_or(LaneError::Missing("OXC string overload"))?;
+        let count_source_signature = source_signatures
+            .iter()
+            .find(|signature| {
+                signature.parameter_types.first() == Some(&SignatureTypeSyntax::NumberKeyword)
+            })
+            .ok_or(LaneError::Missing("OXC number overload"))?;
+        if source_signatures.len() != 2
+            || text_source_signature.declaration == count_source_signature.declaration
+        {
+            return Err(LaneError::Missing("two exact OXC decode overloads"));
+        }
+        let owner_at = |range: (u32, u32)| {
             ir.items().find(|item| {
-                item.name() == name
-                    && item.kind() == kind
+                item.name() == b"decode"
+                    && item.kind() == EntityKind::Function
                     && item
                         .source()
-                        .is_some_and(|source| source.start() == start && source.end() == end)
+                        .is_some_and(|source| source.start() == range.0 && source.end() == range.1)
             })
         };
-        let text_declaration = "declare function decode(value: string): TextResult;";
-        let count_declaration = "declare function decode(value: number): CountResult;";
-        let text_owner = exact_item(b"decode", EntityKind::Function, text_declaration)
-            .ok_or(LaneError::Missing("string overload at its exact source range"))?;
-        let count_owner = exact_item(b"decode", EntityKind::Function, count_declaration)
-            .ok_or(LaneError::Missing("number overload at its exact source range"))?;
-        let text_parameter_start = u32::try_from(
-            source.find("value: string").ok_or(LaneError::Missing(
-                "string overload parameter source range",
-            ))?,
+        let text_owner = owner_at(text_source_signature.declaration).ok_or(LaneError::Missing(
+            "string overload at its OXC source range",
+        ))?;
+        let count_owner = owner_at(count_source_signature.declaration).ok_or(
+            LaneError::Missing("number overload at its OXC source range"),
         )?;
-        let count_parameter_start = u32::try_from(
-            source.find("value: number").ok_or(LaneError::Missing(
-                "number overload parameter source range",
-            ))?,
-        )?;
-        let parameter_end = u32::try_from("value".len())?;
-        let parameter_at = |start, owner| {
+        let parameter_at = |range: (u32, u32), owner| {
             ir.items().find(|item| {
                 item.name() == b"value"
                     && item.kind() == EntityKind::Parameter
                     && item
                         .source()
-                        .is_some_and(|source| {
-                            source.start() == start && source.end() == start + parameter_end
-                        })
+                        .is_some_and(|source| source.start() == range.0 && source.end() == range.1)
                     && item.parent() == Some(owner)
             })
         };
-        let text_parameter = parameter_at(text_parameter_start, text_owner.id())
-            .ok_or(LaneError::Missing("string overload's exact parameter carrier"))?;
-        let count_parameter = parameter_at(count_parameter_start, count_owner.id())
-            .ok_or(LaneError::Missing("number overload's exact parameter carrier"))?;
-        let text_result = exact_item(
-            b"TextResult",
-            EntityKind::Alias,
-            "type TextResult = string;",
-        )
-        .ok_or(LaneError::Missing("TextResult alias at its source range"))?;
-        let count_result = exact_item(
-            b"CountResult",
-            EntityKind::Alias,
-            "type CountResult = number;",
-        )
-        .ok_or(LaneError::Missing("CountResult alias at its source range"))?;
+        let text_parameter_range = text_source_signature
+            .parameters
+            .first()
+            .map(|(range, _)| *range)
+            .ok_or(LaneError::Missing("OXC string overload parameter"))?;
+        let count_parameter_range = count_source_signature
+            .parameters
+            .first()
+            .map(|(range, _)| *range)
+            .ok_or(LaneError::Missing("OXC number overload parameter"))?;
+        let text_parameter = parameter_at(text_parameter_range, text_owner.id()).ok_or(
+            LaneError::Missing("string overload's exact parameter carrier"),
+        )?;
+        let count_parameter = parameter_at(count_parameter_range, count_owner.id()).ok_or(
+            LaneError::Missing("number overload's exact parameter carrier"),
+        )?;
+        let text_result_spelling = text_source_signature
+            .result
+            .and_then(|(start, end)| {
+                Some(source.get(usize::try_from(start).ok()?..usize::try_from(end).ok()?)?)
+            })
+            .ok_or(LaneError::Missing("OXC string overload result spelling"))?;
+        let count_result_spelling = count_source_signature
+            .result
+            .and_then(|(start, end)| {
+                Some(source.get(usize::try_from(start).ok()?..usize::try_from(end).ok()?)?)
+            })
+            .ok_or(LaneError::Missing("OXC number overload result spelling"))?;
+        let text_result_alias = ir
+            .items()
+            .find(|item| item.name() == b"TextResult" && item.kind() == EntityKind::Alias)
+            .ok_or(LaneError::Missing("TextResult alias"))?;
+        let count_result_alias = ir
+            .items()
+            .find(|item| item.name() == b"CountResult" && item.kind() == EntityKind::Alias)
+            .ok_or(LaneError::Missing("CountResult alias"))?;
         let text_type = text_owner
             .semantic_type()
             .ok_or(LaneError::Missing("string overload function type"))?;
@@ -9021,13 +9278,60 @@ mod lane_tests {
             ));
         }
         let bindings = |owner| match ir.signature_carrier_bindings(owner) {
-            Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(
-                bindings,
-            )) => Some(bindings.collect::<Vec<_>>()),
+            Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(bindings)) => {
+                Some(bindings.collect::<Vec<_>>())
+            }
             _ => None,
         };
-        if bindings(text_owner.id())
-            != Some(vec![
+        let text_bindings = bindings(text_owner.id())
+            .ok_or(LaneError::Missing("string overload signature bindings"))?;
+        let count_bindings = bindings(count_owner.id())
+            .ok_or(LaneError::Missing("number overload signature bindings"))?;
+        let result_carrier = |owner, rows: &[backend_semantic::ir::SignatureCarrierBinding]| {
+            rows.iter()
+                .find(|binding| {
+                    binding.owner == owner
+                        && binding.role == backend_semantic::ir::SignatureCarrierBindingRole::Result
+                        && binding.position == 0
+                })
+                .and_then(|binding| ir.item(binding.carrier))
+        };
+        let text_result_carrier = result_carrier(text_owner.id(), &text_bindings)
+            .ok_or(LaneError::Missing("string overload result carrier"))?;
+        let count_result_carrier = result_carrier(count_owner.id(), &count_bindings)
+            .ok_or(LaneError::Missing("number overload result carrier"))?;
+        let nominal_type = |alias: backend_semantic::ir::ItemView<'_>| {
+            backend_semantic::ir::TypeExpr::Concrete(backend_semantic::ir::ConcreteType::Nominal(
+                alias.id(),
+            ))
+        };
+        let function_result_type = |owner: backend_semantic::ir::ItemView<'_>| -> Result<
+            backend_semantic::ir::TypeExpr,
+            LaneError,
+        > {
+            let type_id = owner
+                .semantic_type()
+                .ok_or(LaneError::Missing("overload function type"))?;
+            let type_expr = ir
+                .ty(type_id)
+                .ok_or(LaneError::Missing("overload function type expression"))?;
+            let backend_semantic::ir::TypeExpr::Concrete(
+                backend_semantic::ir::ConcreteType::Function { results, .. },
+            ) = type_expr
+            else {
+                return Err(LaneError::Missing("overload concrete function type"));
+            };
+            let results = ir
+                .tuple_elements(results)
+                .ok_or(LaneError::Missing("overload result tuple"))?;
+            let result = results
+                .first()
+                .ok_or(LaneError::Missing("overload result cell"))?;
+            ir.ty(result.ty)
+                .ok_or(LaneError::Missing("overload result type expression"))
+        };
+        if text_bindings
+            != vec![
                 backend_semantic::ir::SignatureCarrierBinding {
                     owner: text_owner.id(),
                     role: backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
@@ -9038,11 +9342,11 @@ mod lane_tests {
                     owner: text_owner.id(),
                     role: backend_semantic::ir::SignatureCarrierBindingRole::Result,
                     position: 0,
-                    carrier: text_result.id(),
+                    carrier: text_result_carrier.id(),
                 },
-            ])
-            || bindings(count_owner.id())
-                != Some(vec![
+            ]
+            || count_bindings
+                != vec![
                     backend_semantic::ir::SignatureCarrierBinding {
                         owner: count_owner.id(),
                         role: backend_semantic::ir::SignatureCarrierBindingRole::Parameter,
@@ -9053,9 +9357,37 @@ mod lane_tests {
                         owner: count_owner.id(),
                         role: backend_semantic::ir::SignatureCarrierBindingRole::Result,
                         position: 0,
-                        carrier: count_result.id(),
+                        carrier: count_result_carrier.id(),
                     },
-                ])
+                ]
+            || text_parameter.parent() != Some(text_owner.id())
+            || count_parameter.parent() != Some(count_owner.id())
+            || text_parameter.id() == count_parameter.id()
+            || text_result_carrier.kind() != EntityKind::Parameter
+            || count_result_carrier.kind() != EntityKind::Parameter
+            || text_result_carrier.name() != b"decode"
+            || count_result_carrier.name() != b"decode"
+            || text_result_carrier.parent() != Some(text_owner.id())
+            || count_result_carrier.parent() != Some(count_owner.id())
+            || text_result_carrier.id() == count_result_carrier.id()
+            || text_result_carrier.source().is_some()
+            || count_result_carrier.source().is_some()
+            || text_result_carrier.semantic_type().and_then(|ty| ir.ty(ty))
+                != Some(nominal_type(text_result_alias))
+            || count_result_carrier
+                .semantic_type()
+                .and_then(|ty| ir.ty(ty))
+                != Some(nominal_type(count_result_alias))
+            || text_result_alias.name() != text_result_spelling.as_bytes()
+            || count_result_alias.name() != count_result_spelling.as_bytes()
+            || function_result_type(text_owner)? != nominal_type(text_result_alias)
+            || function_result_type(count_owner)? != nominal_type(count_result_alias)
+            || text_bindings
+                .iter()
+                .any(|binding| binding.owner != text_owner.id())
+            || count_bindings
+                .iter()
+                .any(|binding| binding.owner != count_owner.id())
         {
             return Err(LaneError::Missing(
                 "overload-specific parameter and result carrier identities",
