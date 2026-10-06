@@ -95,6 +95,30 @@ fn refused_index_outcome(
     }
 }
 
+fn capture_terminalization_failed(
+    outcome: backend_library::IndexJobOutcome,
+    error: impl std::fmt::Display,
+) -> backend_library::IndexJobOutcome {
+    let primary = match &outcome {
+        backend_library::IndexJobOutcome::Published => "semantic publication completed".to_owned(),
+        backend_library::IndexJobOutcome::Refused(detail)
+        | backend_library::IndexJobOutcome::Failed(detail) => detail.as_str().to_owned(),
+        backend_library::IndexJobOutcome::RefusedWithCompilerFailure { detail, .. } => {
+            detail.as_str().to_owned()
+        }
+        backend_library::IndexJobOutcome::Cancelled => "index job was cancelled".to_owned(),
+    };
+    let detail = bounded_index_detail(format!(
+        "{primary}; additionally, recording the terminal source-capture outcome failed: {error}"
+    ));
+    match outcome {
+        backend_library::IndexJobOutcome::RefusedWithCompilerFailure { failure, .. } => {
+            backend_library::IndexJobOutcome::RefusedWithCompilerFailure { detail, failure }
+        }
+        _ => backend_library::IndexJobOutcome::Failed(detail),
+    }
+}
+
 fn deferred_profile_refused_outcome(
     refusal: DeferredProfileFailure,
 ) -> backend_library::IndexJobOutcome {
@@ -153,10 +177,42 @@ fn index_operation_failure(
             backend_library::IndexOperationFailureReason::WorkerFailed,
             detail.clone(),
         ),
-        Some(backend_library::IndexJobOutcome::Published) | None => (
+        Some(backend_library::IndexJobOutcome::Published) => (
+            backend_library::IndexOperationFailureReason::WorkerFailed,
+            backend_library::ProductText::from_static(
+                "semantic publication was reported while a captured profile remains Pending",
+            ),
+        ),
+        None => (
             backend_library::IndexOperationFailureReason::WorkerFailed,
             backend_library::ProductText::from_static(
                 "owner restarted or stopped before the exact commit was selected",
+            ),
+        ),
+    }
+}
+
+fn pending_capture_unresolved(
+    outcome: Option<&backend_library::IndexJobOutcome>,
+) -> (
+    backend_library::IndexOperationUnresolvedReason,
+    backend_library::ProductText,
+) {
+    match outcome {
+        Some(outcome) => {
+            let (_, primary) = index_operation_failure(Some(outcome));
+            (
+                backend_library::IndexOperationUnresolvedReason::ReceiptPersistenceFailed,
+                bounded_index_detail(format!(
+                    "the live index job reached a terminal outcome ({}) but its durable source-capture receipt remains Pending",
+                    primary.as_str()
+                )),
+            )
+        }
+        None => (
+            backend_library::IndexOperationUnresolvedReason::SemanticWorkInterruptedAfterCapture,
+            backend_library::ProductText::from_static(
+                "the exact source root is durable, but the owner restarted before recording a semantic worker result",
             ),
         ),
     }
@@ -1083,11 +1139,12 @@ impl CommandAdapter {
                         backend_library::IndexOperationSemanticProfileState::Pending { .. }
                     )
                 }) {
+                    let (reason, detail) = pending_capture_unresolved(terminal_outcome);
                     return Ok(Self::unresolved_index_operation(
                         operation_key,
                         &entry,
-                        backend_library::IndexOperationUnresolvedReason::SemanticWorkInterruptedAfterCapture,
-                        "the exact source root is durable, but the owner restarted before recording a semantic worker result",
+                        reason,
+                        detail.as_str(),
                     ));
                 }
                 return Ok(self
@@ -2139,8 +2196,7 @@ impl CommandAdapter {
                         reason,
                         compiler_failure,
                     ) {
-                        outcome =
-                            backend_library::IndexJobOutcome::Failed(bounded_index_detail(error));
+                        outcome = capture_terminalization_failed(outcome, error);
                     }
                 }
                 let outcome = if let Some(reason) = index_attempt_retirement_reason(&outcome) {
@@ -4044,10 +4100,27 @@ pub(in crate::builtin) fn commit_prepared_builtin_intent(
             "builtin intent owner did not make progress".to_owned(),
         ));
     }
+    let expected_sequence = prepared
+        .base_workspace_sequence
+        .checked_add(1)
+        .ok_or_else(|| BuiltinModelError("workspace sequence exhausted".to_owned()))?;
+    let expected_request_identity = prepared.request_identity;
     match crate::service::wait_for_daemon_reply(daemon, &receiver)
         .map_err(|error| BuiltinModelError(error.to_string()))?
     {
-        backend_engine::DaemonReply::Commit(Ok(_)) => Ok(()),
+        backend_engine::DaemonReply::Commit(Ok(head)) => {
+            if head.request_identity() != expected_request_identity
+                || head.sequence() != expected_sequence
+            {
+                return Err(BuiltinModelError(format!(
+                    "owner commit receipt did not match the prepared intent (request match: {}, sequence: {} expected {})",
+                    head.request_identity() == expected_request_identity,
+                    head.sequence(),
+                    expected_sequence
+                )));
+            }
+            Ok(())
+        }
         backend_engine::DaemonReply::Commit(Err(error)) => {
             Err(BuiltinModelError(error.to_string()))
         }
@@ -4133,7 +4206,8 @@ mod tests {
     use super::{
         ADD_TARGET_REQUIRED, AddTarget, CommandAdapter, Executed, GraphProjectionStamp, IndexJob,
         IndexJobWork, MAX_WAITING_COMMANDS, ProductDaemon, ResidentCatalog, ResidentDependencies,
-        admitted_project_source_root, classify_add_target, legacy_add_compiler_failure,
+        admitted_project_source_root, capture_terminalization_failed, classify_add_target,
+        legacy_add_compiler_failure, pending_capture_unresolved,
     };
     use crate::builtin::{
         BuiltinIntent, BuiltinModel, BuiltinProfile, BuiltinSemanticRelation,
@@ -4151,6 +4225,89 @@ mod tests {
     use std::collections::BTreeMap;
     use std::fs;
     use std::num::NonZeroUsize;
+
+    fn typed_compiler_refusal() -> backend_library::IndexJobOutcome {
+        let attempt = backend_library::interface::CompilerAttempt {
+            source: backend_library::interface::SourceAuthority {
+                identity: backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
+                    b"source bytes",
+                ),
+                byte_len: 12,
+            },
+            recipe: backend_version::ContentId::<backend_version::CompileRecipeDomain>::from_canonical_bytes(
+                b"recipe bytes",
+            ),
+        };
+        let fragment_failure = backend_library::interface::CompilerFragmentFailure::build(
+            backend_semantic::ir::BuildError::InvalidOccurrenceSpan {
+                owner: backend_semantic::ir::EntityId::new(7),
+                start: 18,
+                end: 24,
+            },
+        );
+        let failure = backend_library::PackageCompilerFailure::from_fragment_failure(
+            "src/recovery.ts",
+            attempt,
+            &fragment_failure,
+        )
+        .expect("typed package compiler failure");
+        backend_library::IndexJobOutcome::RefusedWithCompilerFailure {
+            detail: backend_library::ProductText::new("compiler rejected src/recovery.ts")
+                .expect("bounded refusal detail"),
+            failure,
+        }
+    }
+
+    #[test]
+    fn source_capture_terminalization_failure_keeps_primary_typed_refusal() {
+        let primary = typed_compiler_refusal();
+        let backend_library::IndexJobOutcome::RefusedWithCompilerFailure { failure, .. } = &primary
+        else {
+            unreachable!("fixture is typed");
+        };
+        let expected_failure = failure.clone();
+        let combined = capture_terminalization_failed(primary, "store write refused");
+        let backend_library::IndexJobOutcome::RefusedWithCompilerFailure { detail, failure } =
+            combined
+        else {
+            panic!("cleanup failure must not erase the typed compiler refusal");
+        };
+        assert!(
+            detail
+                .as_str()
+                .contains("compiler rejected src/recovery.ts")
+        );
+        assert!(detail.as_str().contains("store write refused"));
+        assert_eq!(failure, expected_failure);
+    }
+
+    #[test]
+    fn live_terminal_pending_capture_is_not_reported_as_restart() {
+        let outcome = typed_compiler_refusal();
+        let (reason, detail) = pending_capture_unresolved(Some(&outcome));
+        assert_eq!(
+            reason,
+            backend_library::IndexOperationUnresolvedReason::ReceiptPersistenceFailed
+        );
+        assert!(
+            detail
+                .as_str()
+                .contains("live index job reached a terminal outcome")
+        );
+        assert!(
+            detail
+                .as_str()
+                .contains("compiler rejected src/recovery.ts")
+        );
+        assert!(!detail.as_str().contains("restarted"));
+
+        let (restart_reason, restart_detail) = pending_capture_unresolved(None);
+        assert_eq!(
+            restart_reason,
+            backend_library::IndexOperationUnresolvedReason::SemanticWorkInterruptedAfterCapture
+        );
+        assert!(restart_detail.as_str().contains("owner restarted"));
+    }
 
     #[test]
     fn legacy_add_failure_keeps_exact_compiler_summary() {

@@ -228,17 +228,11 @@ fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), 
     let cadence = selected_symbol_by_name(&mut session, "cadence8")?;
     let signal = selected_symbol_by_name(&mut session, "MorningSignal")?;
     let cadence_package = selected_package_by_symbol(&mut session, "cadence8", cadence)?;
-    // Resolve the fixture's carrier declarations through separate public name
-    // queries so the callable result is checked against independent stable IDs.
+    // Resolve the parameter carrier through public name search. The result
+    // carrier is a synthetic IR entity and is not itself a searchable symbol.
     let parameter_carrier = selected_symbol_by_name_and_kind(
         &mut session,
         "take",
-        DeclarationKind::Variable,
-        cadence_package,
-    )?;
-    let result_carrier = selected_symbol_by_name_and_kind(
-        &mut session,
-        "cadence8",
         DeclarationKind::Variable,
         cadence_package,
     )?;
@@ -294,19 +288,12 @@ fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), 
         )
         .into());
     }
-    let carrier_shapes = session.semantic_shapes(
-        selected_source.clone(),
-        &[parameter_carrier, result_carrier],
-        shape_budget,
-    )?;
-    assert_eq!(carrier_shapes.entries.len(), 2);
+    let carrier_shapes =
+        session.semantic_shapes(selected_source.clone(), &[parameter_carrier], shape_budget)?;
+    assert_eq!(carrier_shapes.entries.len(), 1);
     let parameter_identity = carrier_shapes.entries[0]
         .identity
         .ok_or_else(|| io::Error::other("take carrier has no stable image identity"))?;
-    let result_identity = carrier_shapes.entries[1]
-        .identity
-        .ok_or_else(|| io::Error::other("result carrier has no stable image identity"))?;
-    assert_ne!(parameter_identity, result_identity);
 
     let shapes = session.semantic_shapes(selected_source, &[cadence, signal], shape_budget)?;
     assert_eq!(shapes.entries.len(), 2);
@@ -354,7 +341,8 @@ fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), 
         return Err(io::Error::other("cadence8 carrier bindings are not captured").into());
     };
     assert_eq!(parameter_bindings.as_ref(), &[parameter_identity]);
-    assert_eq!(result_bindings.as_ref(), &[result_identity]);
+    assert_eq!(result_bindings.len(), 1);
+    assert_ne!(result_bindings[0], parameter_identity);
     let backend_library::SemanticShapeFact::Available { shape, .. } = &signal_shape.fact else {
         return Err(
             io::Error::other("MorningSignal did not return an available compiler shape").into(),

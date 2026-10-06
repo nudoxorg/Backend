@@ -271,18 +271,25 @@ fn prepare_index_project_at(
         &mut committed_captures,
         None,
     );
-    if result.is_err() && !committed_captures.is_empty() {
-        let _ = commit_pending_capture_failure(
-            daemon,
-            package,
-            label,
-            request_id,
-            &committed_captures,
-            backend_engine::builtin::SemanticUnavailableReason::Rejected,
-            None,
-        );
+    match result {
+        Err(primary) if !committed_captures.is_empty() => {
+            match commit_pending_capture_failure(
+                daemon,
+                package,
+                label,
+                request_id,
+                &committed_captures,
+                backend_engine::builtin::SemanticUnavailableReason::Rejected,
+                None,
+            ) {
+                Ok(()) => Err(primary),
+                Err(cleanup) => Err(BuiltinModelError(format!(
+                    "{primary}; additionally, recording the terminal source-capture outcome failed: {cleanup}"
+                ))),
+            }
+        }
+        other => other,
     }
-    result
 }
 
 /// Captures the owner-backed source frontier and workspace root before an
