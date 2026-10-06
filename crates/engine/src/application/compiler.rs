@@ -26,7 +26,9 @@ use backend_compile::{
     EmbeddingNormalization, EmbeddingPurpose, RustCargoWorkspaceFactsV1,
 };
 use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
-use backend_frontend_python::legacy::checker::PythonProjectSource;
+use backend_frontend_python::legacy::checker::{
+    CheckerError as PythonCheckerError, PythonProjectSource,
+};
 use backend_frontend_rust::legacy::{
     RustAnalysisControl, RustAuthorityError, RustWorkspaceEditorBufferObserver, RustWorkspaceFile,
     RustWorkspaceReadFrontierObserver, RustWorkspaceSessionKey, RustWorkspaceSessionLane,
@@ -42,7 +44,8 @@ use backend_library::interface::{
     CompilerRequest as ApplicationCompilerRequest, CompilerTerminal, FragmentCause,
     GeneratedArtifact, PackageCompilePhase, PackageCompileRequest, PackageDeclarationScopeCause,
     PackageSourceCause, PublicationAuthority, PublicationCause, PublicationPhase,
-    SemanticImageAccessError, SemanticImageAuthority, SemanticImageSnapshot, SourceAuthority,
+    PythonAuthorityFailureKind, SemanticImageAccessError, SemanticImageAuthority,
+    SemanticImageSnapshot, SourceAuthority,
 };
 use backend_semantic::ir::{
     EmbeddingPlaneIdentity, JumboRopeLimits, MAX_SEMANTIC_SEGMENT_BYTES, SemanticBuildIdentity,
@@ -4075,6 +4078,12 @@ fn package_authority_terminal(
         }
         cause => {
             let (phase, class) = package_authority_projection(&cause);
+            let python_failure = match &cause {
+                PackageAuthorityError::PythonPyrefly(error) => {
+                    Some(python_authority_failure_kind(error))
+                }
+                _ => None,
+            };
             // Keep the concrete cause chain instead of an empty diagnostic, so
             // a checker that ran but failed (or never ran) explains itself.
             let message = bounded_error_chain(&cause);
@@ -4082,7 +4091,11 @@ fn package_authority_terminal(
                 message.text.as_bytes(),
                 message.text.len(),
                 message.truncated,
-            );
+            )
+            .map(|diagnostic| match python_failure {
+                Some(failure) => diagnostic.with_python_failure(failure),
+                None => diagnostic,
+            });
             compiler_attempt_terminal(
                 request,
                 source,
@@ -4094,6 +4107,32 @@ fn package_authority_terminal(
                 },
             )
         }
+    }
+}
+
+fn python_authority_failure_kind(error: &PythonCheckerError) -> PythonAuthorityFailureKind {
+    use PythonCheckerError as E;
+    match error {
+        E::ProjectPanic => PythonAuthorityFailureKind::ProjectPanic,
+        E::Cancelled { .. } => PythonAuthorityFailureKind::Cancelled,
+        E::Deadline { .. } => PythonAuthorityFailureKind::Deadline,
+        E::ProjectSyntax { .. } => PythonAuthorityFailureKind::SyntaxRejected,
+        E::UncapturedDependency { .. } => PythonAuthorityFailureKind::DependencyOutsideCapture,
+        E::NativeProducerIdentity { .. } => PythonAuthorityFailureKind::ProducerIdentityMismatch,
+        E::IncompleteSourceFrontier { .. } => PythonAuthorityFailureKind::IncompleteSourceFrontier,
+        E::NativeTypeProjection { .. } => PythonAuthorityFailureKind::TypeProjectionUnsupported,
+        E::ProjectReport { .. } => PythonAuthorityFailureKind::ProjectReportMismatch,
+        E::SourceDigest { .. } => PythonAuthorityFailureKind::SourceDigestMismatch,
+        E::PackageRoot { .. } => PythonAuthorityFailureKind::InvalidPackageRoot,
+        E::Spawn { .. } => PythonAuthorityFailureKind::CheckerSpawnFailed,
+        E::Pipe { .. } => PythonAuthorityFailureKind::CheckerIoFailed,
+        E::WorkerPanic { .. } => PythonAuthorityFailureKind::CheckerWorkerPanic,
+        E::Exit { .. } => PythonAuthorityFailureKind::CheckerExited,
+        E::Decode { .. } => PythonAuthorityFailureKind::CheckerProtocolInvalid,
+        E::OutputLimit { .. } => PythonAuthorityFailureKind::CheckerOutputLimit,
+        E::Timeout { .. } => PythonAuthorityFailureKind::CheckerTimeout,
+        E::Workspace { .. } => PythonAuthorityFailureKind::WorkspaceIoFailed,
+        E::InvalidSpan { .. } => PythonAuthorityFailureKind::InvalidFactSpan,
     }
 }
 

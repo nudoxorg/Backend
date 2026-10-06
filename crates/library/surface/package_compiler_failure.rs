@@ -7,7 +7,7 @@
 use crate::interface::{
     AuthorityDiagnosticClass, AuthorityPhase, CompilerCause, CompilerFragmentFaultFacts,
     CompilerFragmentFaultKind, CompilerFragmentFaultPhase, CompilerTerminal, CompilerToolFailure,
-    CompilerToolIssue, CompilerToolRequirement,
+    CompilerToolIssue, CompilerToolRequirement, PythonAuthorityFailureKind,
 };
 use backend_semantic::vocabulary::{
     ClangProjectionFault, GoProjectionFault, JavaProjectionFault, LoweringUnsupported, NativeTool,
@@ -194,6 +194,15 @@ impl PackageCompilerFailureCause {
                 ..
             } => "required_tool_probe_failed",
             Self::Lowering(fault) => fault.kind_tag(),
+            Self::Authority {
+                class: _,
+                diagnostic:
+                    Some(CompilerAuthorityDiagnosticFacts {
+                        python_failure: Some(failure),
+                        ..
+                    }),
+                ..
+            } => failure.kind_tag(),
             Self::Authority { class, .. } => match class {
                 AuthorityClassFact::Syntax => "authority_syntax",
                 AuthorityClassFact::Binding => "authority_binding",
@@ -358,6 +367,10 @@ pub struct CompilerAuthorityDiagnosticFacts {
     pub retained_bytes: u32,
     pub observed_bytes: u64,
     pub truncated: bool,
+    /// Closed Python checker cause when available. Native diagnostic text and
+    /// paths remain local-only and are not serialized into this summary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub python_failure: Option<PythonAuthorityFailureKind>,
 }
 
 /// Closed compact-lowering cause, with exact TypeScript projection operands
@@ -1752,6 +1765,7 @@ pub(crate) fn package_failure_from_terminal(
                         retained_bytes: u32::try_from(diagnostic.byte_len).unwrap_or(u32::MAX),
                         observed_bytes: u64::try_from(diagnostic.observed).unwrap_or(u64::MAX),
                         truncated: diagnostic.truncated,
+                        python_failure: diagnostic.python_failure,
                     }
                 }),
             },

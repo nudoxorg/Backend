@@ -41,9 +41,10 @@ pub use compiler::{
     NativePrimaryCause, NativeWorkCause, NativeWorkCleanupCause, NativeWorkPhase, NativeWorker,
     NativeWorkerPanic, NativeWorkerPanicClass, NativeWorkerPanicMessage, NestedCompilerFaultFacts,
     OccurrenceFaultFacts, PrepareFaultKind, PublicationAuthority, PublicationCause,
-    PublicationPhase, SemanticDataFaultFacts, SemanticImageAccessError, SemanticImageAuthority,
-    SemanticImageSnapshot, SignatureCarrierFaultFacts, SourceAuthority, TypeNodeFaultFacts,
-    UnavailableCompiler, ValidateFaultKind, ValidationFaultFacts, WriteFaultKind,
+    PublicationPhase, PythonAuthorityFailureKind, SemanticDataFaultFacts, SemanticImageAccessError,
+    SemanticImageAuthority, SemanticImageSnapshot, SignatureCarrierFaultFacts, SourceAuthority,
+    TypeNodeFaultFacts, UnavailableCompiler, ValidateFaultKind, ValidationFaultFacts,
+    WriteFaultKind,
 };
 pub use index_sync::{
     BaseGeneration, ClientIndex, ClientManifest, ClientSyncError, ClientSyncPhase,

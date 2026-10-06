@@ -1678,7 +1678,7 @@ pub struct IndexJobTerminal {
 /// `detail` is a bounded explanation only. The phase is derived from the
 /// closed `kind` family and is repeated on the wire for direct presentation,
 /// where deserialization verifies that the two agree.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone)]
 pub struct PackageCompilerFailure {
     relative_path: ProductText,
     source_identity: ContentId<SourceFactDomain>,
@@ -1687,7 +1687,43 @@ pub struct PackageCompilerFailure {
     cause: PackageCompilerFailureCause,
     detail: String,
     detail_truncated: bool,
+    /// Native diagnostic prefix retained for in-process local debugging only.
+    /// This field is intentionally omitted by the manual wire serializer.
+    local_diagnostic: Option<Box<[u8]>>,
 }
+
+impl fmt::Debug for PackageCompilerFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PackageCompilerFailure")
+            .field("relative_path", &self.relative_path)
+            .field("source_identity", &self.source_identity)
+            .field("source_byte_len", &self.source_byte_len)
+            .field("recipe_identity", &self.recipe_identity)
+            .field("cause", &self.cause)
+            .field("detail", &self.detail)
+            .field("detail_truncated", &self.detail_truncated)
+            .field(
+                "local_diagnostic_retained_bytes",
+                &self.local_diagnostic.as_ref().map(|bytes| bytes.len()),
+            )
+            .finish()
+    }
+}
+
+impl PartialEq for PackageCompilerFailure {
+    fn eq(&self, other: &Self) -> bool {
+        self.relative_path == other.relative_path
+            && self.source_identity == other.source_identity
+            && self.source_byte_len == other.source_byte_len
+            && self.recipe_identity == other.recipe_identity
+            && self.cause == other.cause
+            && self.detail == other.detail
+            && self.detail_truncated == other.detail_truncated
+    }
+}
+
+impl Eq for PackageCompilerFailure {}
 
 impl PackageCompilerFailure {
     /// Maximum serialized JSON representation, including worst-case path and
@@ -1721,6 +1757,7 @@ impl PackageCompilerFailure {
             cause,
             detail,
             detail_truncated,
+            local_diagnostic: None,
         };
         summary.validate()?;
         Ok(summary)
@@ -1747,6 +1784,19 @@ impl PackageCompilerFailure {
         };
         let relative_path = package_relative_source_path(relative_path)?;
         let (detail, detail_truncated) = detail_for_package_cause(&cause);
+        let local_diagnostic = match terminal {
+            crate::interface::CompilerTerminal::Compile {
+                cause:
+                    crate::interface::CompilerCause::Authority {
+                        diagnostic: Some(diagnostic),
+                        ..
+                    },
+                ..
+            } => Some(Box::<[u8]>::from(
+                diagnostic.retained_bytes_for_local_debug(),
+            )),
+            _ => None,
+        };
         let summary = Self {
             relative_path,
             source_identity: source.identity,
@@ -1755,6 +1805,7 @@ impl PackageCompilerFailure {
             cause,
             detail,
             detail_truncated,
+            local_diagnostic,
         };
         summary.validate()?;
         Ok(Some(summary))
@@ -1800,6 +1851,18 @@ impl PackageCompilerFailure {
     #[must_use]
     pub const fn facts(&self) -> &PackageCompilerFailureCause {
         &self.cause
+    }
+
+    /// Returns the retained native diagnostic prefix for local debugging only.
+    ///
+    /// This accessor never participates in serialization. Callers must keep the
+    /// returned bytes on the local diagnostic path and use [`Self::facts`] for
+    /// CLI, MCP, receipts, and other public product surfaces. Deserialized
+    /// summaries return `None`, because raw compiler output is intentionally not
+    /// persisted on the wire.
+    #[must_use]
+    pub fn retained_diagnostic_for_local_debug(&self) -> Option<&[u8]> {
+        self.local_diagnostic.as_deref()
     }
 
     /// Stable specific variant tag, including its phase family.
@@ -2251,6 +2314,17 @@ fn sanitize_package_compiler_detail(value: &str, source_truncated: bool) -> (Str
 }
 
 fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, bool) {
+    if let PackageCompilerFailureCause::Authority {
+        diagnostic:
+            Some(CompilerAuthorityDiagnosticFacts {
+                python_failure: Some(failure),
+                ..
+            }),
+        ..
+    } = cause
+    {
+        return sanitize_package_compiler_detail(failure.detail(), false);
+    }
     let prefix = match cause {
         PackageCompilerFailureCause::Fragment(_) => "compact fragment fault",
         PackageCompilerFailureCause::Toolchain {
@@ -2419,6 +2493,7 @@ impl<'de> Deserialize<'de> for PackageCompilerFailure {
             cause: wire.cause,
             detail: wire.detail,
             detail_truncated: wire.detail_truncated,
+            local_diagnostic: None,
         };
         summary.validate().map_err(D::Error::custom)?;
         if wire.phase != summary.phase() || wire.kind_tag != summary.kind_tag() {
@@ -5612,6 +5687,84 @@ mod tests {
         assert_eq!(json["cause"]["fault"]["class"], "type");
         assert_eq!(json["cause"]["fault"]["diagnostic"]["observed_bytes"], 27);
         assert!(json["cause"]["fault"]["diagnostic"].get("bytes").is_none());
+        assert_eq!(
+            failure.retained_diagnostic_for_local_debug(),
+            Some(b"PRIVATE-RAW-COMPILER-OUTPUT".as_slice())
+        );
+        assert!(
+            PackageCompilerFailure::decode_bounded_json(&encoded)
+                .expect("wire refusal decodes")
+                .retained_diagnostic_for_local_debug()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn python_authority_failure_retains_closed_cause_and_local_only_diagnostic() {
+        use crate::interface::{
+            AuthorityDiagnosticClass, AuthorityPhase, CompilerAttempt, CompilerCause,
+            CompilerDiagnostic, CompilerTerminal, PythonAuthorityFailureKind, SourceAuthority,
+        };
+
+        let attempt = CompilerAttempt {
+            source: SourceAuthority {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(
+                    b"python package module.py",
+                ),
+                byte_len: 29,
+            },
+            recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(
+                b"python requests checker recipe",
+            ),
+        };
+        let native_primary = b"private checker identity details: digest=secret";
+        let diagnostic =
+            CompilerDiagnostic::from_native(native_primary, native_primary.len(), false)
+                .expect("bounded primary diagnostic")
+                .with_python_failure(PythonAuthorityFailureKind::ProducerIdentityMismatch);
+        let terminal = CompilerTerminal::Compile {
+            attempted: attempt,
+            cause: CompilerCause::Authority {
+                phase: AuthorityPhase::TypeCheck,
+                class: AuthorityDiagnosticClass::Type,
+                diagnostic: Some(diagnostic),
+            },
+        };
+        let failure =
+            PackageCompilerFailure::from_package_terminal("src/package/module.py", &terminal)
+                .expect("Python failure projection")
+                .expect("authority terminal projects");
+
+        assert_eq!(failure.kind_tag(), "python_producer_identity_mismatch");
+        assert!(
+            failure
+                .detail()
+                .contains("did not match the admitted native producer")
+        );
+        assert_eq!(
+            failure.retained_diagnostic_for_local_debug(),
+            Some(native_primary.as_slice())
+        );
+
+        let encoded = failure
+            .encode_bounded_json()
+            .expect("bounded typed refusal");
+        assert!(!format!("{failure:?}").contains("digest=secret"));
+        assert!(!String::from_utf8_lossy(&encoded).contains("digest=secret"));
+        let json: serde_json::Value = serde_json::from_slice(&encoded).expect("failure JSON");
+        assert_eq!(json["kind_tag"], "python_producer_identity_mismatch");
+        assert_eq!(
+            json["cause"]["fault"]["diagnostic"]["python_failure"],
+            "producer_identity_mismatch"
+        );
+        assert_eq!(json["relative_path"], "src/package/module.py");
+        assert!(json["cause"]["fault"]["diagnostic"].get("bytes").is_none());
+
+        let reopened =
+            PackageCompilerFailure::decode_bounded_json(&encoded).expect("typed failure reopens");
+        assert_eq!(reopened, failure);
+        assert_eq!(reopened.kind_tag(), failure.kind_tag());
+        assert!(reopened.retained_diagnostic_for_local_debug().is_none());
     }
 
     #[test]
