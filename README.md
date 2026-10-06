@@ -44,6 +44,12 @@ project's dependencies yourself, or configure `NUDOX_TSC`,
 `backend-locald` captures those settings and `PATH` at startup; stop and
 restart an already-running daemon after changing them.
 
+For authenticated HTTP MCP, run `backend-mcp --http 127.0.0.1:0`. Set
+`BACKEND_MCP_TOKEN` to supply a credential; otherwise MCP provisions and reuses
+an owner-only `mcp-http-token` file in its workspace state directory. Send that
+file's contents as the HTTP bearer token. The readiness message gives the URL
+and credential source, and never prints the token. Stdio MCP is unchanged.
+
 On macOS, build a normal application bundle with:
 
 ```console
