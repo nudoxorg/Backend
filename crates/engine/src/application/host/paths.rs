@@ -3,12 +3,14 @@
 use std::{
     ffi::OsStr,
     fs, io,
+    io::Read,
     path::{Path, PathBuf},
 };
 
 use arrayvec::ArrayVec;
 use backend_library::interface::PackageEcosystem;
 use backend_semantic::vocabulary::NativeTool;
+use sha2::{Digest, Sha256};
 
 use super::{
     LocalCompilerHost, LocalCompilerHostError, LocalHostDiscovery, LocalHostEnvironment,
@@ -115,6 +117,14 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 Some(TypeScriptNodeSelection {
                     path,
                     origin: TypeScriptSelectionOrigin::ExplicitConfiguration,
+                })
+            });
+        }
+        if let Some(path) = bundled_typescript_node(std::env::current_exe().ok().as_deref())? {
+            return self.validate_file(role, variable, path).map(|path| {
+                Some(TypeScriptNodeSelection {
+                    path,
+                    origin: TypeScriptSelectionOrigin::ValidatedApplicationBundle,
                 })
             });
         }
@@ -578,6 +588,226 @@ fn single_component(value: &OsStr) -> bool {
     !value.is_empty() && Path::new(value).components().count() == 1
 }
 
+const MAX_BUNDLE_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_BUNDLED_NODE_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Discovers a Node runtime only for an executable directly installed in a recognized Nudox
+/// macOS application bundle. The bundle's own finite inventory must bind both this executable
+/// and the runtime bytes before the runtime is considered a candidate.
+fn bundled_typescript_node(
+    executable: Option<&Path>,
+) -> Result<Option<PathBuf>, LocalCompilerHostError> {
+    let Some(executable) = executable else {
+        return Ok(None);
+    };
+    let Ok(executable) = fs::canonicalize(executable) else {
+        return Ok(None);
+    };
+    let Some(macos) = executable.parent() else {
+        return Ok(None);
+    };
+    let Some(contents) = macos.parent() else {
+        return Ok(None);
+    };
+    let Some(bundle_root) = contents.parent() else {
+        return Ok(None);
+    };
+    if macos.file_name() != Some(OsStr::new("MacOS"))
+        || contents.file_name() != Some(OsStr::new("Contents"))
+        || !bundle_root
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|name| name.ends_with(".app"))
+        || !matches!(
+            executable.file_name().and_then(OsStr::to_str),
+            Some("backend-desktop" | "backend-cli" | "backend-mcp" | "backend-locald")
+        )
+    {
+        return Ok(None);
+    }
+
+    let resources = contents.join("Resources");
+    let manifest_path = resources.join("build-manifest.json");
+    if fs::canonicalize(&manifest_path).ok().as_deref() != Some(manifest_path.as_path()) {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: manifest_path.into_boxed_path(),
+            message: "bundle manifest is not at its canonical resource path".into(),
+        });
+    }
+    let manifest_metadata = fs::symlink_metadata(&manifest_path).map_err(|source| {
+        LocalCompilerHostError::BundleManifest {
+            path: manifest_path.clone().into_boxed_path(),
+            message: source.to_string().into_boxed_str(),
+        }
+    })?;
+    if !manifest_metadata.is_file() || manifest_metadata.file_type().is_symlink() {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: manifest_path.into_boxed_path(),
+            message: "expected a regular non-symlink bundle manifest".into(),
+        });
+    }
+    let manifest_bytes =
+        read_bounded(&manifest_path, MAX_BUNDLE_MANIFEST_BYTES).map_err(|source| {
+            LocalCompilerHostError::BundleManifest {
+                path: manifest_path.clone().into_boxed_path(),
+                message: source.to_string().into_boxed_str(),
+            }
+        })?;
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&manifest_bytes).map_err(|source| {
+            LocalCompilerHostError::BundleManifest {
+                path: manifest_path.clone().into_boxed_path(),
+                message: source.to_string().into_boxed_str(),
+            }
+        })?;
+    if manifest.get("schema").and_then(serde_json::Value::as_u64) != Some(1)
+        || manifest.get("product").and_then(serde_json::Value::as_str) != Some("Nudox")
+        || manifest
+            .get("bundle")
+            .and_then(|bundle| bundle.get("identifier"))
+            .and_then(serde_json::Value::as_str)
+            != Some("dev.nudox.desktop")
+    {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: manifest_path.into_boxed_path(),
+            message: "manifest does not describe a supported Nudox app bundle".into(),
+        });
+    }
+    let inventory = manifest
+        .get("files")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| LocalCompilerHostError::BundleManifest {
+            path: manifest_path.clone().into_boxed_path(),
+            message: "manifest is missing its file inventory".into(),
+        })?;
+
+    let runtime_relative = "Contents/Resources/Helpers/typescript/node/bin/node";
+    let executable_relative = executable
+        .strip_prefix(bundle_root)
+        .ok()
+        .and_then(Path::to_str)
+        .map(|path| path.replace('\\', "/"))
+        .ok_or_else(|| LocalCompilerHostError::BundleManifest {
+            path: manifest_path.clone().into_boxed_path(),
+            message: "current executable is outside the bundle inventory".into(),
+        })?;
+    let Some(executable_record) = inventory.get(&executable_relative) else {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: manifest_path.into_boxed_path(),
+            message: "manifest inventory does not contain the current application executable"
+                .into(),
+        });
+    };
+    validate_bundle_inventory_file(
+        executable_record,
+        &bundle_root.join(&executable_relative),
+        MAX_BUNDLED_NODE_BYTES,
+        &manifest_path,
+    )?;
+    let runtime = bundle_root.join(runtime_relative);
+    let Some(runtime_record) = inventory.get(runtime_relative) else {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: manifest_path.into_boxed_path(),
+            message: "manifest inventory does not contain the bundled TypeScript Node runtime"
+                .into(),
+        });
+    };
+    validate_bundle_inventory_file(
+        runtime_record,
+        &runtime,
+        MAX_BUNDLED_NODE_BYTES,
+        &manifest_path,
+    )?;
+    let canonical_runtime =
+        fs::canonicalize(&runtime).map_err(|source| LocalCompilerHostError::BundleManifest {
+            path: runtime.clone().into_boxed_path(),
+            message: source.to_string().into_boxed_str(),
+        })?;
+    if canonical_runtime != runtime || !canonical_runtime.starts_with(bundle_root) {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: runtime.into_boxed_path(),
+            message: "bundled TypeScript Node runtime resolves through a symlink".into(),
+        });
+    }
+    Ok(Some(canonical_runtime))
+}
+
+fn validate_bundle_inventory_file(
+    record: &serde_json::Value,
+    path: &Path,
+    maximum_bytes: u64,
+    manifest: &Path,
+) -> Result<(), LocalCompilerHostError> {
+    let mismatch = || LocalCompilerHostError::BundleManifest {
+        path: manifest.to_path_buf().into_boxed_path(),
+        message: format!("bundle file inventory does not match {:?}", path).into_boxed_str(),
+    };
+    if record.get("kind").and_then(serde_json::Value::as_str) != Some("file") {
+        return Err(mismatch());
+    }
+    let metadata = fs::symlink_metadata(path).map_err(|_| mismatch())?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > maximum_bytes {
+        return Err(mismatch());
+    }
+    let (length, digest) = sha256_file(path)?;
+    if record.get("size_bytes").and_then(serde_json::Value::as_u64) != Some(length)
+        || record.get("sha256").and_then(serde_json::Value::as_str) != Some(digest.as_str())
+    {
+        return Err(mismatch());
+    }
+    Ok(())
+}
+
+fn read_bounded(path: &Path, maximum_bytes: u64) -> io::Result<Vec<u8>> {
+    let file = fs::File::open(path)?;
+    if file.metadata()?.len() > maximum_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "file exceeds byte limit",
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(maximum_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > maximum_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "file exceeds byte limit",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn sha256_file(path: &Path) -> Result<(u64, String), LocalCompilerHostError> {
+    let mut file =
+        fs::File::open(path).map_err(|source| LocalCompilerHostError::BundleManifest {
+            path: path.to_path_buf().into_boxed_path(),
+            message: source.to_string().into_boxed_str(),
+        })?;
+    let mut digest = Sha256::new();
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read =
+            file.read(&mut buffer)
+                .map_err(|source| LocalCompilerHostError::BundleManifest {
+                    path: path.to_path_buf().into_boxed_path(),
+                    message: source.to_string().into_boxed_str(),
+                })?;
+        if read == 0 {
+            break;
+        }
+        total = total.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
+        digest.update(&buffer[..read]);
+    }
+    let digest = digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok((total, digest))
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -722,6 +952,61 @@ mod tests {
             selection.origin,
             TypeScriptSelectionOrigin::OrdinarySearchPath
         );
+        fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
+    fn bundled_node_requires_current_executable_and_runtime_inventory_matches() {
+        let root = private_test_directory("typescript-bundle-node");
+        let bundle = root.join("Nudox.app");
+        let executable = bundle.join("Contents/MacOS/backend-mcp");
+        let runtime = bundle.join("Contents/Resources/Helpers/typescript/node/bin/node");
+        fs::create_dir_all(executable.parent().expect("executable parent"))
+            .expect("create app executable directory");
+        fs::create_dir_all(runtime.parent().expect("runtime parent"))
+            .expect("create bundled runtime directory");
+        fs::write(&executable, b"fixture executable").expect("write executable");
+        fs::write(&runtime, b"fixture node").expect("write Node runtime");
+        let manifest = bundle.join("Contents/Resources/build-manifest.json");
+        let inventory_entry = |path: &Path| {
+            let (size_bytes, sha256) = sha256_file(path).expect("hash inventory fixture");
+            serde_json::json!({
+                "kind": "file",
+                "size_bytes": size_bytes,
+                "sha256": sha256,
+            })
+        };
+        let inventory = serde_json::json!({
+            "Contents/MacOS/backend-mcp": inventory_entry(&executable),
+            "Contents/Resources/Helpers/typescript/node/bin/node": inventory_entry(&runtime),
+        });
+        fs::write(
+            &manifest,
+            serde_json::to_vec(&serde_json::json!({
+                "schema": 1,
+                "product": "Nudox",
+                "bundle": {"identifier": "dev.nudox.desktop"},
+                "files": inventory,
+            }))
+            .expect("serialize fixture manifest"),
+        )
+        .expect("write fixture manifest");
+
+        assert_eq!(
+            bundled_typescript_node(Some(&executable)).expect("validate bundle Node"),
+            Some(fs::canonicalize(&runtime).expect("canonical bundled Node")),
+        );
+        assert_eq!(
+            bundled_typescript_node(Some(&manifest))
+                .expect("unrecognized executable path is ignored"),
+            None,
+        );
+
+        fs::write(&runtime, b"modified Node").expect("change bundled Node bytes");
+        assert!(matches!(
+            bundled_typescript_node(Some(&executable)),
+            Err(LocalCompilerHostError::BundleManifest { .. })
+        ));
         fs::remove_dir_all(root).expect("remove test directory");
     }
 }

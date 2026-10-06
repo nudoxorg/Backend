@@ -74,6 +74,14 @@ pub enum LocalCompilerHostError {
         #[source]
         source: io::Error,
     },
+    /// A recognized application bundle did not match its own bounded file inventory.
+    #[error("invalid application bundle runtime manifest at {path:?}: {message}")]
+    BundleManifest {
+        /// Exact manifest or inventory path that failed validation.
+        path: Box<Path>,
+        /// Bounded validation detail.
+        message: Box<str>,
+    },
     /// A named runtime storage directory could not be created.
     #[error("could not create local compiler {directory:?} directory at {path:?}")]
     CreateDirectory {

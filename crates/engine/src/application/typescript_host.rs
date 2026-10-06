@@ -8,7 +8,6 @@
 use std::{
     fs::{self, File},
     io::{self, Read},
-    ops::Deref,
     path::{Path, PathBuf},
 };
 
@@ -37,7 +36,9 @@ const MAX_COMPILER_SHIM_BYTES: usize = 16 * 1024;
 const MAX_SHEBANG_BYTES: usize = 256;
 const MAX_RESOLVER_DIRECTORIES: usize = 4096;
 const MAX_RESOLVER_OBSERVATIONS: usize = 16_384;
-const MAX_RESOLVER_DIRECTORY_ENTRIES: usize = 65_536;
+const MAX_RESOLVER_DIRECTORY_ENTRIES: usize = 16_384;
+const MAX_RESOLVER_TOTAL_DIRECTORY_ENTRIES: usize = 65_536;
+const MAX_RESOLVER_METADATA_BYTES: usize = 64 * 1024 * 1024;
 const MAX_RESOLVER_DEPTH: usize = 32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -99,6 +100,7 @@ pub(crate) enum TypeScriptSelectionOrigin {
     ProjectLocalInstallation = 2,
     OrdinarySearchPath = 3,
     PlatformLocation = 4,
+    ValidatedApplicationBundle = 5,
 }
 
 impl TypeScriptProjectInputs<'_> {
@@ -106,7 +108,7 @@ impl TypeScriptProjectInputs<'_> {
     pub(crate) fn resolver(&self) -> TypeScriptResolverCapability<'_> {
         TypeScriptResolverCapability {
             witness: self.witness,
-            observations: std::sync::Mutex::new(ResolverObservationLedger::default()),
+            observations: ResolverObservationLedger::default(),
         }
     }
 
@@ -138,26 +140,21 @@ pub(crate) struct TypeScriptDirectoryEntry {
     pub(crate) identity: FileIdentity,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum TypeScriptResolverObservation {
-    Source {
-        path: Box<Path>,
-        content_id: ContentId<SourceFactDomain>,
-        identity: FileIdentity,
-        length: u64,
-    },
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum TypeScriptResolverObservationRef<'a> {
+    Source(&'a TypeScriptFileInput),
     MissingPath {
-        path: Box<Path>,
-        nearest_existing_parent: Option<Box<Path>>,
+        path: &'a Path,
+        nearest_existing_parent: Option<&'a Path>,
     },
     Directory {
-        path: Box<Path>,
+        path: &'a Path,
         identity: FileIdentity,
-        entries: Box<[TypeScriptDirectoryEntry]>,
+        entries: &'a [TypeScriptDirectoryEntry],
     },
     Realpath {
-        path: Box<Path>,
-        canonical_path: Option<Box<Path>>,
+        path: &'a Path,
+        canonical_path: Option<&'a Path>,
         identity: Option<FileIdentity>,
     },
 }
@@ -182,6 +179,9 @@ struct ResolverObservationLedger {
     missing_paths: std::collections::BTreeMap<PathBuf, Option<PathBuf>>,
     directories: std::collections::BTreeMap<PathBuf, DirectorySnapshot>,
     realpaths: std::collections::BTreeMap<PathBuf, RealpathSnapshot>,
+    loaded_source_bytes: u64,
+    directory_entries: usize,
+    retained_metadata_bytes: usize,
 }
 
 impl ResolverObservationLedger {
@@ -201,26 +201,14 @@ impl ResolverObservationLedger {
 #[derive(Debug)]
 pub(crate) struct TypeScriptResolverCapability<'a> {
     witness: &'a TypeScriptProjectWitness,
-    observations: std::sync::Mutex<ResolverObservationLedger>,
-}
-
-pub(crate) struct TypeScriptLoadedSources<'a> {
-    guard: std::sync::MutexGuard<'a, ResolverObservationLedger>,
-}
-
-impl Deref for TypeScriptLoadedSources<'_> {
-    type Target = std::collections::BTreeMap<PathBuf, TypeScriptFileInput>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.guard.loaded_sources
-    }
+    observations: ResolverObservationLedger,
 }
 
 impl TypeScriptResolverCapability<'_> {
-    pub(crate) fn try_load_source(
-        &self,
+    pub(crate) fn try_load_source<'a>(
+        &'a mut self,
         path: &Path,
-    ) -> Result<Option<TypeScriptFileInput>, TypeScriptProjectHostError> {
+    ) -> Result<Option<&'a TypeScriptFileInput>, TypeScriptProjectHostError> {
         let lexical = self.witness.admit_lexical_path(path)?;
         let Some((canonical, identity)) = self.capture_realpath(&lexical)? else {
             self.record_missing(lexical, None)?;
@@ -230,6 +218,20 @@ impl TypeScriptResolverCapability<'_> {
             return Err(TypeScriptProjectHostError::SourceOutsideCapability {
                 path: canonical.into_boxed_path(),
             });
+        }
+        if self.observations.missing_paths.contains_key(&lexical) {
+            return Err(TypeScriptProjectHostError::WitnessChanged {
+                path: lexical.into_boxed_path(),
+            });
+        }
+        if self.observations.loaded_sources.contains_key(&canonical) {
+            record_realpath_ledger(
+                &mut self.observations,
+                lexical,
+                Some(canonical.clone()),
+                identity,
+            )?;
+            return Ok(self.observations.loaded_sources.get(&canonical));
         }
         let (snapshot, bytes) = read_regular_file(&canonical, MAX_SOURCE_FILE_BYTES)?;
         if self
@@ -248,57 +250,48 @@ impl TypeScriptResolverCapability<'_> {
             identity: snapshot.identity,
             bytes: bytes.into_boxed_slice(),
         };
-        let mut ledger = self.lock_observations(&canonical)?;
-        if ledger.missing_paths.contains_key(&lexical) {
-            return Err(TypeScriptProjectHostError::WitnessChanged {
-                path: lexical.into_boxed_path(),
+        if self.observations.observation_count() >= MAX_RESOLVER_OBSERVATIONS {
+            return Err(TypeScriptProjectHostError::ResolverObservationLimit {
+                observed: self.observations.observation_count().saturating_add(1),
+                maximum: MAX_RESOLVER_OBSERVATIONS,
             });
         }
-        if let Some(previous) = ledger.loaded_sources.get(&canonical) {
-            if previous.identity != input.identity
-                || previous.content_id != input.content_id
-                || previous.bytes.as_ref() != input.bytes.as_ref()
-            {
-                return Err(TypeScriptProjectHostError::WitnessChanged {
-                    path: canonical.into_boxed_path(),
-                });
-            }
-        } else {
-            if ledger.observation_count() >= MAX_RESOLVER_OBSERVATIONS {
-                return Err(TypeScriptProjectHostError::ResolverObservationLimit {
-                    observed: ledger.observation_count().saturating_add(1),
-                    maximum: MAX_RESOLVER_OBSERVATIONS,
-                });
-            }
-            let observed_bytes = ledger
-                .loaded_sources
-                .values()
-                .map(|source| u64::try_from(source.bytes.len()).unwrap_or(u64::MAX))
-                .fold(
-                    u64::try_from(input.bytes.len()).unwrap_or(u64::MAX),
-                    u64::saturating_add,
-                );
-            if ledger.loaded_sources.len() >= MAX_RESOLVED_SOURCE_FILES {
-                return Err(TypeScriptProjectHostError::ResolvedSourceLimit {
-                    observed: ledger.loaded_sources.len().saturating_add(1),
-                    maximum: MAX_RESOLVED_SOURCE_FILES,
-                });
-            }
-            if observed_bytes > MAX_RESOLVED_SOURCE_BYTES {
-                return Err(TypeScriptProjectHostError::ResolvedSourceBytes {
-                    observed: observed_bytes,
-                    maximum: MAX_RESOLVED_SOURCE_BYTES,
-                });
-            }
-            ledger
-                .loaded_sources
-                .insert(canonical.clone(), input.clone());
+        if self.observations.loaded_sources.len() >= MAX_RESOLVED_SOURCE_FILES {
+            return Err(TypeScriptProjectHostError::ResolvedSourceLimit {
+                observed: self.observations.loaded_sources.len().saturating_add(1),
+                maximum: MAX_RESOLVED_SOURCE_FILES,
+            });
         }
-        self.record_realpath_locked(&mut ledger, lexical, Some(canonical), identity)?;
-        Ok(Some(input))
+        let observed_bytes = self
+            .observations
+            .loaded_source_bytes
+            .saturating_add(u64::try_from(input.bytes.len()).unwrap_or(u64::MAX));
+        if observed_bytes > MAX_RESOLVED_SOURCE_BYTES {
+            return Err(TypeScriptProjectHostError::ResolvedSourceBytes {
+                observed: observed_bytes,
+                maximum: MAX_RESOLVED_SOURCE_BYTES,
+            });
+        }
+        let path_cost = canonical.as_os_str().as_encoded_bytes().len();
+        ensure_metadata_capacity(&self.observations, path_cost, &canonical)?;
+        record_realpath_ledger(
+            &mut self.observations,
+            lexical,
+            Some(canonical.clone()),
+            identity,
+        )?;
+        self.observations.loaded_source_bytes = observed_bytes;
+        self.observations.retained_metadata_bytes += path_cost;
+        self.observations
+            .loaded_sources
+            .insert(canonical.clone(), input);
+        Ok(self.observations.loaded_sources.get(&canonical))
     }
 
-    pub(crate) fn directory_exists(&self, path: &Path) -> Result<bool, TypeScriptProjectHostError> {
+    pub(crate) fn directory_exists(
+        &mut self,
+        path: &Path,
+    ) -> Result<bool, TypeScriptProjectHostError> {
         let lexical = self.witness.admit_lexical_path(path)?;
         let Some((canonical, identity)) = self.capture_realpath(&lexical)? else {
             self.record_missing(lexical, None)?;
@@ -310,7 +303,7 @@ impl TypeScriptResolverCapability<'_> {
         self.record_realpath(lexical.clone(), Some(canonical.clone()), identity)?;
         let metadata =
             fs::metadata(&canonical).map_err(|source| TypeScriptProjectHostError::PackagePath {
-                path: canonical.clone(),
+                path: canonical.clone().into_boxed_path(),
                 source,
             })?;
         if !metadata.is_dir() {
@@ -321,7 +314,7 @@ impl TypeScriptResolverCapability<'_> {
     }
 
     pub(crate) fn realpath(
-        &self,
+        &mut self,
         path: &Path,
     ) -> Result<Option<Box<Path>>, TypeScriptProjectHostError> {
         let lexical = self.witness.admit_lexical_path(path)?;
@@ -330,7 +323,9 @@ impl TypeScriptResolverCapability<'_> {
             return Ok(None);
         };
         if !self.witness.path_is_admitted(&canonical) {
-            return Err(TypeScriptProjectHostError::SourceOutsideCapability { path: canonical });
+            return Err(TypeScriptProjectHostError::SourceOutsideCapability {
+                path: canonical.into_boxed_path(),
+            });
         }
         self.record_realpath(lexical, Some(canonical.clone()), identity)?;
         Ok(Some(canonical.into_boxed_path()))
@@ -339,7 +334,7 @@ impl TypeScriptResolverCapability<'_> {
     /// Returns matching regular files, sorted by canonical path. Symlinked directories are
     /// traversed only when their resolved target stays inside an admitted root.
     pub(crate) fn read_directory(
-        &self,
+        &mut self,
         path: &Path,
         extensions: &[&str],
         recursive: bool,
@@ -379,12 +374,12 @@ impl TypeScriptResolverCapability<'_> {
             };
             if !self.witness.path_is_admitted(&canonical) {
                 return Err(TypeScriptProjectHostError::SourceOutsideCapability {
-                    path: canonical,
+                    path: canonical.into_boxed_path(),
                 });
             }
             let metadata = fs::metadata(&canonical).map_err(|source| {
                 TypeScriptProjectHostError::PackagePath {
-                    path: canonical.clone(),
+                    path: canonical.clone().into_boxed_path(),
                     source,
                 }
             })?;
@@ -444,71 +439,103 @@ impl TypeScriptResolverCapability<'_> {
 
     pub(crate) fn loaded_sources(
         &self,
-    ) -> Result<TypeScriptLoadedSources<'_>, TypeScriptProjectHostError> {
-        let guard = self.observations.lock().map_err(|_| {
-            TypeScriptProjectHostError::WitnessLockPoisoned {
-                path: self.witness.project_root.clone(),
-            }
-        })?;
-        Ok(TypeScriptLoadedSources { guard })
+    ) -> &std::collections::BTreeMap<PathBuf, TypeScriptFileInput> {
+        &self.observations.loaded_sources
     }
 
-    pub(crate) fn observations(
-        &self,
-    ) -> Result<Vec<TypeScriptResolverObservation>, TypeScriptProjectHostError> {
-        let ledger = self.lock_observations(&self.witness.project_root)?;
+    pub(crate) fn observations(&self) -> Vec<TypeScriptResolverObservationRef<'_>> {
         let mut output = Vec::new();
-        for input in ledger.loaded_sources.values() {
-            output.push(TypeScriptResolverObservation::Source {
-                path: input.path.clone(),
-                content_id: input.content_id,
-                identity: input.identity,
-                length: u64::try_from(input.bytes.len()).unwrap_or(u64::MAX),
+        for input in self.observations.loaded_sources.values() {
+            output.push(TypeScriptResolverObservationRef::Source(input));
+        }
+        for (path, parent) in &self.observations.missing_paths {
+            output.push(TypeScriptResolverObservationRef::MissingPath {
+                path,
+                nearest_existing_parent: parent.as_deref(),
             });
         }
-        for (path, parent) in &ledger.missing_paths {
-            output.push(TypeScriptResolverObservation::MissingPath {
-                path: path.clone().into_boxed_path(),
-                nearest_existing_parent: parent
-                    .as_ref()
-                    .map(|path| path.to_path_buf().into_boxed_path()),
-            });
-        }
-        for snapshot in ledger.directories.values() {
-            output.push(TypeScriptResolverObservation::Directory {
-                path: snapshot.path.clone(),
+        for snapshot in self.observations.directories.values() {
+            output.push(TypeScriptResolverObservationRef::Directory {
+                path: &snapshot.path,
                 identity: snapshot.identity,
-                entries: snapshot.entries.clone(),
+                entries: &snapshot.entries,
             });
         }
-        for snapshot in ledger.realpaths.values() {
-            output.push(TypeScriptResolverObservation::Realpath {
-                path: snapshot.path.clone(),
-                canonical_path: snapshot.canonical_path.clone(),
+        for snapshot in self.observations.realpaths.values() {
+            output.push(TypeScriptResolverObservationRef::Realpath {
+                path: &snapshot.path,
+                canonical_path: snapshot.canonical_path.as_deref(),
                 identity: snapshot.identity,
             });
         }
         output.sort_unstable_by(|left, right| {
-            resolver_observation_path(left).cmp(resolver_observation_path(right))
+            resolver_observation_ref_path(left)
+                .cmp(resolver_observation_ref_path(right))
+                .then_with(|| {
+                    resolver_observation_ref_tag(left).cmp(&resolver_observation_ref_tag(right))
+                })
         });
-        Ok(output)
+        output
     }
 
     pub(crate) fn resolver_witness(&self) -> Result<[u8; 32], TypeScriptProjectHostError> {
-        let observations = self.observations()?;
         let mut digest = Hasher::new();
-        digest.update(b"compiler.typescript.resolver-observations.v1\0");
-        for observation in &observations {
-            digest.update(format!("{observation:?}").as_bytes());
-            digest.update(&[0]);
+        digest.update(b"compiler.typescript.resolver-observations.v2\0");
+        update_len(&mut digest, self.observations.observation_count());
+        for input in self.observations.loaded_sources.values() {
+            digest.update(&[1]);
+            update_logical_path(&mut digest, self.witness, &input.path)?;
+            digest.update(input.content_id.as_ref());
+        }
+        for (path, parent) in &self.observations.missing_paths {
+            digest.update(&[2]);
+            update_logical_path(&mut digest, self.witness, path)?;
+            match parent {
+                Some(parent) => {
+                    digest.update(&[1]);
+                    update_logical_path(&mut digest, self.witness, parent)?;
+                }
+                None => digest.update(&[0]),
+            }
+        }
+        for snapshot in self.observations.directories.values() {
+            digest.update(&[3]);
+            update_logical_path(&mut digest, self.witness, &snapshot.path)?;
+            update_len(&mut digest, snapshot.entries.len());
+            for entry in snapshot.entries.iter() {
+                update_logical_path(&mut digest, self.witness, &entry.path)?;
+                digest.update(&[match entry.kind {
+                    TypeScriptDirectoryEntryKind::RegularFile => 1,
+                    TypeScriptDirectoryEntryKind::Directory => 2,
+                    TypeScriptDirectoryEntryKind::Symlink => 3,
+                    TypeScriptDirectoryEntryKind::Other => 4,
+                }]);
+                match entry.canonical_path.as_deref() {
+                    Some(path) => {
+                        digest.update(&[1]);
+                        update_logical_path(&mut digest, self.witness, path)?;
+                    }
+                    None => digest.update(&[0]),
+                }
+            }
+        }
+        for snapshot in self.observations.realpaths.values() {
+            digest.update(&[4]);
+            update_logical_path(&mut digest, self.witness, &snapshot.path)?;
+            match snapshot.canonical_path.as_deref() {
+                Some(path) => {
+                    digest.update(&[1]);
+                    update_logical_path(&mut digest, self.witness, path)?;
+                }
+                None => digest.update(&[0]),
+            }
         }
         Ok(*digest.finalize().as_bytes())
     }
 
     pub(crate) fn validate_current(&self) -> Result<(), TypeScriptProjectHostError> {
         self.witness.validate_current()?;
-        let ledger = self.lock_observations(&self.witness.project_root)?;
-        for input in ledger.loaded_sources.values() {
+        for input in self.observations.loaded_sources.values() {
             let observed = capture_file_snapshot(&input.path, MAX_SOURCE_FILE_BYTES)?;
             if observed.identity != input.identity
                 || observed.length != u64::try_from(input.bytes.len()).unwrap_or(u64::MAX)
@@ -519,7 +546,7 @@ impl TypeScriptResolverCapability<'_> {
                 });
             }
         }
-        for (path, nearest_parent) in &ledger.missing_paths {
+        for (path, nearest_parent) in &self.observations.missing_paths {
             if !matches!(fs::symlink_metadata(path), Err(ref source) if source.kind() == io::ErrorKind::NotFound)
             {
                 return Err(TypeScriptProjectHostError::WitnessChanged {
@@ -528,7 +555,8 @@ impl TypeScriptResolverCapability<'_> {
             }
             if let Some(parent) = nearest_parent {
                 let observed = capture_directory_snapshot(parent, self.witness)?;
-                if !ledger
+                if !self
+                    .observations
                     .directories
                     .get(parent)
                     .is_some_and(|expected| expected == &observed)
@@ -539,7 +567,7 @@ impl TypeScriptResolverCapability<'_> {
                 }
             }
         }
-        for (path, expected) in &ledger.directories {
+        for (path, expected) in &self.observations.directories {
             let observed = capture_directory_snapshot(path, self.witness)?;
             if &observed != expected {
                 return Err(TypeScriptProjectHostError::WitnessChanged {
@@ -547,13 +575,15 @@ impl TypeScriptResolverCapability<'_> {
                 });
             }
         }
-        for (path, expected) in &ledger.realpaths {
+        for (path, expected) in &self.observations.realpaths {
             let observed = self.capture_realpath(path)?;
             let canonical = observed.as_ref().map(|(path, _)| path.as_path());
             if canonical != expected.canonical_path.as_deref()
-                || observed.as_ref().map(|(_, identity)| *identity) != expected.identity
+                || observed.as_ref().and_then(|(_, identity)| *identity) != expected.identity
             {
-                return Err(TypeScriptProjectHostError::WitnessChanged { path: path.clone() });
+                return Err(TypeScriptProjectHostError::WitnessChanged {
+                    path: path.clone().into_boxed_path(),
+                });
             }
         }
         Ok(())
@@ -588,7 +618,7 @@ impl TypeScriptResolverCapability<'_> {
     }
 
     fn record_missing(
-        &self,
+        &mut self,
         path: PathBuf,
         nearest_existing_parent: Option<PathBuf>,
     ) -> Result<(), TypeScriptProjectHostError> {
@@ -596,8 +626,8 @@ impl TypeScriptResolverCapability<'_> {
             Some(parent) => Some(parent),
             None => nearest_existing_admitted_parent(&path, self.witness)?,
         };
-        let mut ledger = self.lock_observations(&path)?;
-        if ledger
+        if self
+            .observations
             .realpaths
             .get(&path)
             .is_some_and(|snapshot| snapshot.canonical_path.is_some())
@@ -606,118 +636,174 @@ impl TypeScriptResolverCapability<'_> {
                 path: path.into_boxed_path(),
             });
         }
-        if !ledger.missing_paths.contains_key(&path)
-            && ledger.observation_count() >= MAX_RESOLVER_OBSERVATIONS
-        {
-            return Err(TypeScriptProjectHostError::ResolverObservationLimit {
-                observed: ledger.observation_count().saturating_add(1),
-                maximum: MAX_RESOLVER_OBSERVATIONS,
-            });
+        if let Some(parent) = nearest_existing_parent.as_deref() {
+            self.observe_directory(parent)?;
         }
-        ledger
-            .missing_paths
-            .entry(path.clone())
-            .or_insert(nearest_existing_parent.clone());
-        if let Some(parent) = nearest_existing_parent {
-            drop(ledger);
-            self.observe_directory(&parent)?;
+        let existed = self.observations.missing_paths.contains_key(&path);
+        if !existed {
+            ensure_observation_capacity(&self.observations, &path)?;
+            let metadata_cost = path.as_os_str().as_encoded_bytes().len()
+                + nearest_existing_parent
+                    .as_deref()
+                    .map_or(0, |parent| parent.as_os_str().as_encoded_bytes().len());
+            ensure_metadata_capacity(&self.observations, metadata_cost, &path)?;
+            self.observations.retained_metadata_bytes += metadata_cost;
         }
-        Ok(())
+        match self.observations.missing_paths.get(&path) {
+            Some(previous) if previous != &nearest_existing_parent => {
+                Err(TypeScriptProjectHostError::WitnessChanged {
+                    path: path.into_boxed_path(),
+                })
+            }
+            Some(_) => Ok(()),
+            None => {
+                self.observations
+                    .missing_paths
+                    .insert(path, nearest_existing_parent);
+                Ok(())
+            }
+        }
     }
 
     fn record_realpath(
-        &self,
+        &mut self,
         path: PathBuf,
         canonical_path: Option<PathBuf>,
         identity: Option<FileIdentity>,
     ) -> Result<(), TypeScriptProjectHostError> {
-        let mut ledger = self.lock_observations(&path)?;
-        self.record_realpath_locked(
-            &mut ledger,
-            path,
-            canonical_path.map(PathBuf::into_boxed_path),
-            identity,
-        )
-    }
-
-    fn record_realpath_locked(
-        &self,
-        ledger: &mut ResolverObservationLedger,
-        path: PathBuf,
-        canonical_path: Option<Box<Path>>,
-        identity: Option<FileIdentity>,
-    ) -> Result<(), TypeScriptProjectHostError> {
-        let snapshot = RealpathSnapshot {
-            path: path.clone().into_boxed_path(),
-            canonical_path,
-            identity,
-        };
-        if snapshot.canonical_path.is_some() && ledger.missing_paths.contains_key(&path) {
-            return Err(TypeScriptProjectHostError::WitnessChanged {
-                path: path.into_boxed_path(),
-            });
-        }
-        if let Some(previous) = ledger.realpaths.get(&path) {
-            if previous != &snapshot {
-                return Err(TypeScriptProjectHostError::WitnessChanged {
-                    path: path.into_boxed_path(),
-                });
-            }
-        } else {
-            if ledger.observation_count() >= MAX_RESOLVER_OBSERVATIONS {
-                return Err(TypeScriptProjectHostError::ResolverObservationLimit {
-                    observed: ledger.observation_count().saturating_add(1),
-                    maximum: MAX_RESOLVER_OBSERVATIONS,
-                });
-            }
-            ledger.realpaths.insert(path, snapshot);
-        }
-        Ok(())
+        record_realpath_ledger(&mut self.observations, path, canonical_path, identity)
     }
 
     fn observe_directory(
-        &self,
+        &mut self,
         path: &Path,
-    ) -> Result<DirectorySnapshot, TypeScriptProjectHostError> {
+    ) -> Result<&DirectorySnapshot, TypeScriptProjectHostError> {
         let snapshot = capture_directory_snapshot(path, self.witness)?;
-        let mut ledger = self.lock_observations(path)?;
-        if let Some(previous) = ledger.directories.get(path) {
+        if let Some(previous) = self.observations.directories.get(path) {
             if previous != &snapshot {
                 return Err(TypeScriptProjectHostError::WitnessChanged {
                     path: path.to_path_buf().into_boxed_path(),
                 });
             }
-        } else {
-            if ledger.directories.len() >= MAX_RESOLVER_DIRECTORIES {
-                return Err(TypeScriptProjectHostError::ResolverObservationLimit {
-                    observed: ledger.directories.len().saturating_add(1),
-                    maximum: MAX_RESOLVER_DIRECTORIES,
-                });
-            }
-            if ledger.observation_count() >= MAX_RESOLVER_OBSERVATIONS {
-                return Err(TypeScriptProjectHostError::ResolverObservationLimit {
-                    observed: ledger.observation_count().saturating_add(1),
-                    maximum: MAX_RESOLVER_OBSERVATIONS,
-                });
-            }
-            ledger
+            return Ok(self
+                .observations
                 .directories
-                .insert(path.to_path_buf(), snapshot.clone());
+                .get(path)
+                .expect("checked above"));
         }
-        Ok(snapshot)
-    }
-
-    fn lock_observations(
-        &self,
-        path: &Path,
-    ) -> Result<std::sync::MutexGuard<'_, ResolverObservationLedger>, TypeScriptProjectHostError>
-    {
+        if self.observations.directories.len() >= MAX_RESOLVER_DIRECTORIES {
+            return Err(TypeScriptProjectHostError::ResolverObservationLimit {
+                observed: self.observations.directories.len().saturating_add(1),
+                maximum: MAX_RESOLVER_DIRECTORIES,
+            });
+        }
+        ensure_observation_capacity(&self.observations, path)?;
+        let entries = self
+            .observations
+            .directory_entries
+            .saturating_add(snapshot.entries.len());
+        if entries > MAX_RESOLVER_TOTAL_DIRECTORY_ENTRIES {
+            return Err(TypeScriptProjectHostError::ResolverDirectoryLimit {
+                requested_depth: 0,
+                requested_entries: entries,
+                maximum_depth: MAX_RESOLVER_DEPTH,
+                maximum_entries: MAX_RESOLVER_TOTAL_DIRECTORY_ENTRIES,
+            });
+        }
+        let metadata_cost = directory_snapshot_metadata_cost(&snapshot);
+        ensure_metadata_capacity(&self.observations, metadata_cost, path)?;
+        self.observations.directory_entries = entries;
+        self.observations.retained_metadata_bytes += metadata_cost;
         self.observations
-            .lock()
-            .map_err(|_| TypeScriptProjectHostError::WitnessLockPoisoned {
-                path: path.to_path_buf().into_boxed_path(),
-            })
+            .directories
+            .insert(path.to_path_buf(), snapshot);
+        Ok(self
+            .observations
+            .directories
+            .get(path)
+            .expect("inserted above"))
     }
+}
+
+fn ensure_observation_capacity(
+    ledger: &ResolverObservationLedger,
+    path: &Path,
+) -> Result<(), TypeScriptProjectHostError> {
+    let observed = ledger.observation_count().saturating_add(1);
+    if observed > MAX_RESOLVER_OBSERVATIONS {
+        return Err(TypeScriptProjectHostError::ResolverObservationLimit {
+            observed,
+            maximum: MAX_RESOLVER_OBSERVATIONS,
+        });
+    }
+    let _ = path;
+    Ok(())
+}
+
+fn ensure_metadata_capacity(
+    ledger: &ResolverObservationLedger,
+    additional: usize,
+    path: &Path,
+) -> Result<(), TypeScriptProjectHostError> {
+    let observed = ledger.retained_metadata_bytes.saturating_add(additional);
+    if observed > MAX_RESOLVER_METADATA_BYTES {
+        return Err(TypeScriptProjectHostError::ResolverMetadataLimit {
+            path: path.to_path_buf().into_boxed_path(),
+            observed,
+            maximum: MAX_RESOLVER_METADATA_BYTES,
+        });
+    }
+    Ok(())
+}
+
+fn record_realpath_ledger(
+    ledger: &mut ResolverObservationLedger,
+    path: PathBuf,
+    canonical_path: Option<PathBuf>,
+    identity: Option<FileIdentity>,
+) -> Result<(), TypeScriptProjectHostError> {
+    let snapshot = RealpathSnapshot {
+        path: path.clone().into_boxed_path(),
+        canonical_path: canonical_path.map(PathBuf::into_boxed_path),
+        identity,
+    };
+    if snapshot.canonical_path.is_some() && ledger.missing_paths.contains_key(&path) {
+        return Err(TypeScriptProjectHostError::WitnessChanged {
+            path: path.into_boxed_path(),
+        });
+    }
+    if let Some(previous) = ledger.realpaths.get(&path) {
+        if previous != &snapshot {
+            return Err(TypeScriptProjectHostError::WitnessChanged {
+                path: path.into_boxed_path(),
+            });
+        }
+        return Ok(());
+    }
+    ensure_observation_capacity(ledger, &path)?;
+    let metadata_cost = path.as_os_str().as_encoded_bytes().len()
+        + snapshot.canonical_path.as_deref().map_or(0, |canonical| {
+            canonical.as_os_str().as_encoded_bytes().len()
+        });
+    ensure_metadata_capacity(ledger, metadata_cost, &path)?;
+    ledger.retained_metadata_bytes += metadata_cost;
+    ledger.realpaths.insert(path, snapshot);
+    Ok(())
+}
+
+fn directory_snapshot_metadata_cost(snapshot: &DirectorySnapshot) -> usize {
+    snapshot.path.as_os_str().as_encoded_bytes().len()
+        + snapshot
+            .entries
+            .iter()
+            .map(|entry| {
+                entry.path.as_os_str().as_encoded_bytes().len()
+                    + entry
+                        .canonical_path
+                        .as_deref()
+                        .map_or(0, |path| path.as_os_str().as_encoded_bytes().len())
+            })
+            .sum::<usize>()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -759,6 +845,30 @@ impl TypeScriptProjectWitness {
         package_root: &Path,
         workspace: Option<&WorkspaceBoundary>,
     ) -> Result<Self, TypeScriptProjectHostError> {
+        Self::capture_with_node_snapshot(
+            project_root,
+            home_root,
+            discovered,
+            compiler,
+            node,
+            module_root,
+            package_root,
+            workspace,
+            None,
+        )
+    }
+
+    fn capture_with_node_snapshot(
+        project_root: &Path,
+        home_root: Option<&Path>,
+        discovered: &ProjectTypeScript,
+        compiler: &Path,
+        node: &Path,
+        module_root: &Path,
+        package_root: &Path,
+        workspace: Option<&WorkspaceBoundary>,
+        admitted_node_snapshot: Option<&FileSnapshot>,
+    ) -> Result<Self, TypeScriptProjectHostError> {
         // Temporary directories on macOS commonly have both `/var/...` and
         // `/private/var/...` spellings. Keep every boundary in the same
         // canonical namespace as file snapshots so capability checks do not
@@ -776,7 +886,16 @@ impl TypeScriptProjectWitness {
             workspace.root = canonical_directory(&workspace.root)?.into_boxed_path();
         }
         let mut files = Vec::new();
-        files.push(capture_file_snapshot(node, MAX_NODE_EXECUTABLE_BYTES)?);
+        let node_snapshot = match admitted_node_snapshot {
+            Some(snapshot) if snapshot.path.as_ref() == node => snapshot.clone(),
+            Some(_) => {
+                return Err(TypeScriptProjectHostError::WitnessChanged {
+                    path: node.to_path_buf().into_boxed_path(),
+                });
+            }
+            None => capture_file_snapshot(node, MAX_NODE_EXECUTABLE_BYTES)?,
+        };
+        files.push(node_snapshot);
         let typescript_files = collect_module_inputs(&package_root)?;
         files.extend(
             typescript_files
@@ -791,16 +910,16 @@ impl TypeScriptProjectWitness {
         }
         let workspace_root = canonical_workspace
             .as_ref()
-            .map(|workspace| workspace.root.as_ref())
-            .unwrap_or(&project_root);
+            .map(|workspace| workspace.root.to_path_buf())
+            .unwrap_or_else(|| project_root.clone());
         let (selected_build_config_paths, angular_snapshot) =
-            angular_build_config_paths(workspace_root, &module_root)?;
+            angular_build_config_paths(&workspace_root, &module_root)?;
         if let Some(snapshot) = angular_snapshot {
             files.push(snapshot);
         }
         let config_candidates = collect_project_configs(
             &project_root,
-            workspace_root,
+            &workspace_root,
             &module_root,
             &selected_build_config_paths,
         )?;
@@ -823,7 +942,7 @@ impl TypeScriptProjectWitness {
             module_root: module_root.into_boxed_path(),
             package_root: package_root.into_boxed_path(),
             workspace: canonical_workspace,
-            workspace_root: workspace_root.to_path_buf().into_boxed_path(),
+            workspace_root: workspace_root.into_boxed_path(),
             files: files.into_boxed_slice(),
             typescript_files: typescript_files.into_boxed_slice(),
             config_paths: config_candidates
@@ -1159,13 +1278,63 @@ fn extension_matches(path: &Path, extensions: &[&str]) -> bool {
         })
 }
 
-fn resolver_observation_path(observation: &TypeScriptResolverObservation) -> &Path {
+fn resolver_observation_ref_path(observation: &TypeScriptResolverObservationRef<'_>) -> &Path {
     match observation {
-        TypeScriptResolverObservation::Source { path, .. }
-        | TypeScriptResolverObservation::MissingPath { path, .. }
-        | TypeScriptResolverObservation::Directory { path, .. }
-        | TypeScriptResolverObservation::Realpath { path, .. } => path,
+        TypeScriptResolverObservationRef::Source(input) => &input.path,
+        TypeScriptResolverObservationRef::MissingPath { path, .. }
+        | TypeScriptResolverObservationRef::Directory { path, .. }
+        | TypeScriptResolverObservationRef::Realpath { path, .. } => path,
     }
+}
+
+fn resolver_observation_ref_tag(observation: &TypeScriptResolverObservationRef<'_>) -> u8 {
+    match observation {
+        TypeScriptResolverObservationRef::Source(_) => 1,
+        TypeScriptResolverObservationRef::MissingPath { .. } => 2,
+        TypeScriptResolverObservationRef::Directory { .. } => 3,
+        TypeScriptResolverObservationRef::Realpath { .. } => 4,
+    }
+}
+
+fn update_len(digest: &mut Hasher, length: usize) {
+    digest.update(&u64::try_from(length).unwrap_or(u64::MAX).to_le_bytes());
+}
+
+fn update_logical_path(
+    digest: &mut Hasher,
+    witness: &TypeScriptProjectWitness,
+    path: &Path,
+) -> Result<(), TypeScriptProjectHostError> {
+    let (root_tag, root) = if path.starts_with(witness.workspace_root.as_ref()) {
+        (1_u8, witness.workspace_root.as_ref())
+    } else if path.starts_with(witness.module_root.as_ref()) {
+        (2_u8, witness.module_root.as_ref())
+    } else {
+        return Err(TypeScriptProjectHostError::SourceOutsideCapability {
+            path: path.to_path_buf().into_boxed_path(),
+        });
+    };
+    let relative = path.strip_prefix(root).map_err(|_| {
+        TypeScriptProjectHostError::SourceOutsideCapability {
+            path: path.to_path_buf().into_boxed_path(),
+        }
+    })?;
+    let mut logical = String::new();
+    for component in relative.components() {
+        let component = component.as_os_str().to_str().ok_or_else(|| {
+            TypeScriptProjectHostError::NonPortablePath {
+                path: path.to_path_buf().into_boxed_path(),
+            }
+        })?;
+        if !logical.is_empty() {
+            logical.push('/');
+        }
+        logical.push_str(component);
+    }
+    digest.update(&[root_tag]);
+    update_len(digest, logical.len());
+    digest.update(logical.as_bytes());
+    Ok(())
 }
 
 fn snapshot_from_input(input: &TypeScriptFileInput) -> FileSnapshot {
@@ -1484,7 +1653,7 @@ fn collect_project_configs(
             &value,
             "extends",
             &canonical,
-            project_root,
+            &project_root,
             &workspace_root,
             &module_root,
             false,
@@ -2110,6 +2279,14 @@ pub struct TypeScriptProjectHost {
     explicit_module_root: Option<Box<Path>>,
     report_program: Option<Box<Path>>,
     probe_limits: ToolchainProbeLimits,
+    node_identity: std::sync::Arc<std::sync::Mutex<Option<NodeRuntimeIdentity>>>,
+}
+
+#[derive(Clone, Debug)]
+struct NodeRuntimeIdentity {
+    path: Box<Path>,
+    version: Box<[u8]>,
+    snapshot: FileSnapshot,
 }
 
 impl TypeScriptProjectHost {
@@ -2151,7 +2328,58 @@ impl TypeScriptProjectHost {
             explicit_module_root: explicit_module_root.map(PathBuf::into_boxed_path),
             report_program: report_program.map(PathBuf::into_boxed_path),
             probe_limits,
+            node_identity: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
+    }
+
+    fn admit_node_runtime(
+        &self,
+        node: &Path,
+    ) -> Result<NodeRuntimeIdentity, TypeScriptProjectHostError> {
+        let mut cached = self.node_identity.lock().map_err(|_| {
+            TypeScriptProjectHostError::WitnessLockPoisoned {
+                path: node.to_path_buf().into_boxed_path(),
+            }
+        })?;
+        if let Some(identity) = cached.as_ref() {
+            if identity.path.as_ref() != node {
+                return Err(TypeScriptProjectHostError::WitnessChanged {
+                    path: node.to_path_buf().into_boxed_path(),
+                });
+            }
+            let current = capture_file_snapshot(node, MAX_NODE_EXECUTABLE_BYTES)?;
+            if current != identity.snapshot {
+                return Err(TypeScriptProjectHostError::WitnessChanged {
+                    path: node.to_path_buf().into_boxed_path(),
+                });
+            }
+            return Ok(identity.clone());
+        }
+
+        let before = capture_file_snapshot(node, MAX_NODE_EXECUTABLE_BYTES)?;
+        let version = crate::application::toolchain_probe::probe_command(
+            NativeTool::TypeScriptCompiler,
+            node,
+            &["--version"],
+            self.probe_limits,
+        )
+        .map_err(|source| TypeScriptProjectHostError::NodeProbe {
+            node: node.to_path_buf().into_boxed_path(),
+            source,
+        })?;
+        let after = capture_file_snapshot(node, MAX_NODE_EXECUTABLE_BYTES)?;
+        if before != after {
+            return Err(TypeScriptProjectHostError::WitnessChanged {
+                path: node.to_path_buf().into_boxed_path(),
+            });
+        }
+        let identity = NodeRuntimeIdentity {
+            path: node.to_path_buf().into_boxed_path(),
+            version: version.into_boxed_slice(),
+            snapshot: after,
+        };
+        *cached = Some(identity.clone());
+        Ok(identity)
     }
 
     /// Resolves and admits the TypeScript installation selected by one exact package root.
@@ -2253,7 +2481,8 @@ impl TypeScriptProjectHost {
                 node_modules: module_root.into_boxed_path(),
             });
         }
-        let witness = TypeScriptProjectWitness::capture(
+        let node_identity = self.admit_node_runtime(&node)?;
+        let witness = TypeScriptProjectWitness::capture_with_node_snapshot(
             &project_root,
             home_root.as_deref(),
             &project,
@@ -2262,20 +2491,10 @@ impl TypeScriptProjectHost {
             &module_root,
             &package_root,
             project.workspace.as_ref(),
+            Some(&node_identity.snapshot),
         )?;
         witness.validate_current()?;
-
-        let node_version = crate::application::toolchain_probe::probe_command(
-            NativeTool::TypeScriptCompiler,
-            &node,
-            &["--version"],
-            self.probe_limits,
-        )
-        .map_err(|source| TypeScriptProjectHostError::NodeProbe {
-            node: node.to_path_buf().into_boxed_path(),
-            source,
-        })?;
-        witness.validate_current()?;
+        let node_version = node_identity.version;
 
         let version = if is_module_tsc_script(&compiler, &module_root) {
             crate::application::toolchain_probe::probe_typescript_script_with_node(
@@ -3068,6 +3287,16 @@ pub enum TypeScriptProjectHostError {
         maximum_depth: usize,
         maximum_entries: usize,
     },
+    #[error(
+        "TypeScript resolver metadata at {path:?} exceeds the {maximum}-byte bound (observed {observed})"
+    )]
+    ResolverMetadataLimit {
+        path: Box<Path>,
+        observed: usize,
+        maximum: usize,
+    },
+    #[error("TypeScript resolver path {path:?} cannot be encoded as a portable UTF-8 logical path")]
+    NonPortablePath { path: Box<Path> },
     #[error("TypeScript project witness lock was poisoned at {path:?}")]
     WitnessLockPoisoned { path: Box<Path> },
     #[error("TypeScript compiler entry {compiler:?} is outside package {package:?}")]
@@ -3786,9 +4015,9 @@ printf 'Version 5.9.3\n'
             project.workspace.as_ref(),
         )
         .expect("capture project witness");
-        let capability = TypeScriptResolverCapability {
+        let mut capability = TypeScriptResolverCapability {
             witness: &witness,
-            observations: std::sync::Mutex::new(ResolverObservationLedger::default()),
+            observations: ResolverObservationLedger::default(),
         };
 
         let loaded = capability
@@ -3815,20 +4044,15 @@ printf 'Version 5.9.3\n'
             .expect("read bounded TypeScript directory");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].canonical_path.as_deref(), Some(source.as_path()));
-        assert!(
-            capability
-                .loaded_sources()
-                .expect("borrow captured sources")
-                .contains_key(&source)
-        );
-        let observations = capability.observations().expect("capture observations");
+        assert!(capability.loaded_sources().contains_key(&source));
+        let observations = capability.observations();
         assert!(observations.iter().any(|observation| matches!(
             observation,
-            TypeScriptResolverObservation::MissingPath { path, .. } if path.as_ref() == missing
+            TypeScriptResolverObservationRef::MissingPath { path, .. } if *path == missing
         )));
         assert!(observations.iter().any(|observation| matches!(
             observation,
-            TypeScriptResolverObservation::Directory { path, .. } if path.as_ref() == project_root.join("src")
+            TypeScriptResolverObservationRef::Directory { path, .. } if *path == project_root.join("src")
         )));
         let fingerprint = capability.resolver_witness().expect("hash observations");
         assert_ne!(fingerprint, [0; 32]);
@@ -3840,6 +4064,43 @@ printf 'Version 5.9.3\n'
             .expect("materialize formerly missing candidate");
         assert!(matches!(
             capability.validate_current(),
+            Err(TypeScriptProjectHostError::WitnessChanged { .. })
+        ));
+    }
+
+    #[test]
+    fn admitted_node_version_is_probed_once_and_its_binary_stays_witnessed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = Fixture::new();
+        let node = fixture.0.join("node");
+        fs::write(
+            &node,
+            "#!/bin/sh\nprintf x >> \"$0.count\"\nprintf 'v22.0.0\\n'\n",
+        )
+        .expect("write Node probe fixture");
+        fs::set_permissions(&node, fs::Permissions::from_mode(0o755))
+            .expect("make Node probe fixture executable");
+        let host =
+            TypeScriptProjectHost::new(None, Some(node.clone()), None, None, Fixture::limits());
+        let node = fs::canonicalize(node).expect("canonical Node");
+
+        let first = host
+            .admit_node_runtime(&node)
+            .expect("admit and version-probe Node");
+        let second = host
+            .admit_node_runtime(&node)
+            .expect("reuse admitted Node identity");
+        assert_eq!(first.version, b"v22.0.0\n");
+        assert_eq!(first.version, second.version);
+        assert_eq!(
+            fs::read(node.with_extension("count")).expect("probe count"),
+            b"x"
+        );
+
+        fs::write(&node, "#!/bin/sh\nprintf 'v24.0.0\\n'\n").expect("replace selected Node binary");
+        assert!(matches!(
+            host.admit_node_runtime(&node),
             Err(TypeScriptProjectHostError::WitnessChanged { .. })
         ));
     }
