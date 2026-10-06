@@ -30,14 +30,27 @@ const PUBLIC_MARKER: &str = "operation_lifecycle_public_marker";
 #[test]
 fn public_index_operation_replays_and_conflicts_across_restart() -> Result<(), Box<dyn Error>> {
     let mut fixture = FailureFixture::new(lifecycle_tempdir()?);
-    let result = run_public_index_operation_lifecycle(&fixture);
+    let result = run_public_index_operation_lifecycle(&fixture, false);
     if result.is_err() {
         fixture.preserve_after_failure();
     }
     result
 }
 
-fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), Box<dyn Error>> {
+#[test]
+fn first_real_compiler_refusal_has_no_selected_authority_after_cold_reopen()
+-> Result<(), Box<dyn Error>> {
+    let mut fixture = FailureFixture::new(lifecycle_tempdir()?);
+    let result = run_public_index_operation_lifecycle(&fixture, true);
+    if result.is_err() {
+        fixture.preserve_after_failure();
+    }
+    result
+}
+fn run_public_index_operation_lifecycle(
+    fixture: &FailureFixture,
+    first_refusal: bool,
+) -> Result<(), Box<dyn Error>> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -86,7 +99,11 @@ fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), 
     fs::create_dir_all(package_root.join("src"))?;
     fs::write(
         package_root.join("Cargo.toml"),
-        "[package]\nname = \"public_operation_lifecycle_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        if first_refusal {
+            "[package]\nname = \"public_operation_lifecycle_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[dependencies]\nmissing_dependency = { path = \"missing_dependency\" }\n"
+        } else {
+            "[package]\nname = \"public_operation_lifecycle_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"
+        },
     )?;
     fs::write(
         package_root.join("src/lib.rs"),
@@ -167,6 +184,60 @@ fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), 
             CompileExecutionIntent::Interactive,
         ),
     )?;
+    if first_refusal {
+        let failed = with_phase_context(
+            "await actual first Cargo dependency refusal",
+            wait_for_failed(&mut session, operation_key, started),
+        )?;
+        let capture = failed
+            .source_capture
+            .as_ref()
+            .ok_or_else(|| io::Error::other("first refusal omitted its captured input"))?;
+        assert!(!capture.profiles().is_empty());
+        assert!(
+            capture.profiles().iter().all(|profile| matches!(
+                profile.state,
+                backend_library::IndexOperationSemanticProfileState::Unavailable { .. }
+            )),
+            "a failed first compile cannot invent a prior or a published generation"
+        );
+        assert_first_refusal_has_no_authority(&mut session, &package)?;
+        let expected = IndexOperationObservation::Known(failed);
+        drop(session);
+        let report = with_phase_context("close first refused owner", owner.close())?;
+        assert_eq!(
+            report.failures, 0,
+            "typed unavailable queries are domain refusals"
+        );
+        let cold_owner = with_phase_context(
+            "cold reopen first compiler refusal",
+            EmbeddedLocalService::start(config),
+        )?;
+        let mut cold_session = with_phase_context(
+            "connect first-refusal cold owner",
+            Session::connect(cold_owner.endpoint()),
+        )?;
+        assert_eq!(
+            cold_session.index_operation_status(operation_key)?,
+            expected
+        );
+        assert_first_refusal_has_no_authority(&mut cold_session, &package)?;
+        let before_replay = cold_session.revision()?.root;
+        assert_eq!(
+            cold_session.start_index_operation(
+                operation_key,
+                package,
+                CompileExecutionIntent::Interactive
+            )?,
+            expected
+        );
+        assert_eq!(cold_session.revision()?.root, before_replay);
+        drop(cold_session);
+        let report = with_phase_context("close first-refusal cold owner", cold_owner.close())?;
+        assert_eq!(report.failures, 0);
+        return Ok(());
+    }
+
     let published = match with_phase_context(
         "poll initial operation until publication",
         wait_for_published(&mut session, operation_key, started),
@@ -661,6 +732,49 @@ fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), 
     Ok(())
 }
 
+fn assert_first_refusal_has_no_authority(
+    session: &mut Session,
+    package: &PackageReference,
+) -> Result<(), Box<dyn Error>> {
+    assert!(
+        session.semantic_versions(package.clone())?.is_empty(),
+        "captured structural input cannot manufacture a compiler generation"
+    );
+    // Deliberately present a caller-invented selected source. This is an
+    // adversarial negative query, never evidence of compiler publication.
+    let source = backend_library::SemanticVersionRecord {
+        package: package.clone(),
+        coordinate: backend_library::PackageCoordinate::parse(
+            "pkg:cargo/public_operation_lifecycle_fixture@0.1.0".to_owned(),
+        )?,
+        profile: backend_library::SemanticLanguageProfile::new(
+            backend_semantic::vocabulary::LanguageProfile::Rust(
+                backend_semantic::vocabulary::RustEdition::Rust2021,
+            ),
+        ),
+        generation: backend_library::SemanticGenerationId::new([0x61; 32]),
+        generation_root: [0x62; 32],
+        dependency_set: [0x63; 32],
+        manifest: [0x64; 32],
+        artifacts: 1,
+        semantic_bytes: 1,
+        complete: true,
+        selected: true,
+        freshness: backend_library::SemanticVersionFreshness::Unverified,
+        history_status: backend_library::SemanticHistoryPublicationStatus::NotSelected,
+        selected_source_frontier: None,
+    };
+    let budget = SemanticShapeBudget::new(4096, 256 * 1024)?;
+    let symbol = backend_library::SymbolKey::from_value("unselected-first-refusal-probe");
+    assert!(
+        matches!(
+            session.semantic_shapes(source, &[symbol], budget),
+            Err(ClientError::CommandFailed(CommandFailure::NotFound))
+        ),
+        "an invented compiler source must get the typed absent-selection refusal"
+    );
+    Ok(())
+}
 fn selected_rust_source(
     session: &mut Session,
     package: &PackageReference,
