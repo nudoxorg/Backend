@@ -8,12 +8,11 @@ use super::{
     AUTHORITY_VALUE, Arc, AuthorityVersionSchema, Blake3AuthorityVerifier, Budget, Commit,
     CommitProvenance, CompleteSemanticCoverage, CompositeAdmissionValidator, DependencyManifest,
     DispatchError, Dispatcher, ECHO_AUTHORITY_SECRET, LazyClosureUpdate, ObjectClosure, ObjectKey,
-    ObjectVersion, OutputVersion, PreparedTransition, RelationAdmissionRegistry,
-    RelationTransition, RemoteAuthorityPolicy, ResourceVector, Scheduler, Schema,
-    SemanticCoverageAdmissionError, SemanticCoverageBinding, TransactionId, TypedObject,
-    UntrustedSemanticCoverageClaim, WorkspaceClosure, WorkspaceDelta, WorkspaceManifest,
-    WorkspaceModel, WorkspaceSnapshot, admit_manifest, fmt, transition_closure_lazy,
-    workspace_manifest_from_root,
+    ObjectVersion, OutputVersion, PreparedTransition, RelationTransition, RemoteAuthorityPolicy,
+    ResourceVector, Scheduler, Schema, SemanticCoverageAdmissionError, SemanticCoverageBinding,
+    TransactionId, TypedObject, UntrustedSemanticCoverageClaim, WorkspaceClosure, WorkspaceDelta,
+    WorkspaceManifest, WorkspaceModel, WorkspaceSnapshot, admit_manifest, fmt,
+    transition_closure_lazy, workspace_manifest_from_root,
 };
 #[cfg(test)]
 use backend_engine::builtin::SemanticPublicationClaim;
@@ -2128,17 +2127,7 @@ pub(super) fn prepare_transition_with_source_update(
             source_facts_pointer: source_facts_update.pointer.as_ref(),
         },
     )?;
-    let registry = RelationAdmissionRegistry::new()
-        .with_relation::<BuiltinWorkspaceRelation>()
-        .map_err(|error| BuiltinModelError(format!("register builtin relation: {error:?}")))?
-        .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| BuiltinModelError(format!("register semantic relation: {error:?}")))?
-        .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
-        .map_err(|error| {
-            BuiltinModelError(format!("register semantic capture relation: {error:?}"))
-        })?
-        .with_relation::<ProductSourceFileFactsRelation>()
-        .map_err(|error| BuiltinModelError(format!("register source facts relation: {error:?}")))?;
+    let registry = super::product_relation_registry()?;
     let intent_bytes = intent.encode();
     let intent_key = ObjectKey::<BuiltinIntentSchema>::from_value(&intent_bytes);
     let intent_object = TypedObject::from_value(&intent_key, &intent_bytes);
@@ -2878,17 +2867,7 @@ fn admit_persisted_relations(
         .map_err(|error| BuiltinModelError(format!("admit persisted commit: {error}")))?;
     let checked_delta = delta.clone().into_checked();
     let checked_commit = commit.clone().into_checked();
-    let registry = RelationAdmissionRegistry::new()
-        .with_relation::<BuiltinWorkspaceRelation>()
-        .map_err(|error| BuiltinModelError(format!("register builtin relation: {error:?}")))?
-        .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| BuiltinModelError(format!("register semantic relation: {error:?}")))?
-        .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
-        .map_err(|error| {
-            BuiltinModelError(format!("register semantic capture relation: {error:?}"))
-        })?
-        .with_relation::<ProductSourceFileFactsRelation>()
-        .map_err(|error| BuiltinModelError(format!("register source facts relation: {error:?}")))?;
+    let registry = super::product_relation_registry()?;
     // Reopen the exact authenticated closure selected by the physical HEAD.
     // The compact transition envelope intentionally contains only recovery
     // pointers, so rebuilding a new manifest from that subset would produce a

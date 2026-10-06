@@ -1700,8 +1700,8 @@ mod tests {
             return;
         }
 
+        use backend_engine::DaemonConfig;
         use backend_engine::application::StagedSemanticPackage;
-        use backend_engine::{DaemonConfig, RelationAdmissionRegistry};
         use backend_replication::{
             FileSemanticRangeStore, HistoryRefKind, HistoryRefName, SemanticTargetKey,
             TransportLimits, TypedV3HistoryInputReplayStatus,
@@ -1730,11 +1730,8 @@ mod tests {
             .expect("admit product profile");
         let dispatcher = super::super::builtin_dispatcher(Some([0x79; 32]), profile, 1)
             .expect("configure product owner");
-        let registry = RelationAdmissionRegistry::new()
-            .with_relation::<super::super::BuiltinWorkspaceRelation>()
-            .expect("register source relation")
-            .with_relation::<super::super::BuiltinSemanticRelation>()
-            .expect("register semantic relation");
+        let registry =
+            super::super::product_relation_registry().expect("product relation registry");
         let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
             &marker_workspace,
             super::super::BuiltinModel,

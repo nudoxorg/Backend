@@ -762,8 +762,14 @@ impl PreparedTransition {
                     ))
                 })?;
             store.write_object(object).map_err(|error| {
+                let relation_schema = store
+                    .relation_registry()
+                    .contains_schema(object.schema());
                 WorkspaceError::Store(format!(
-                    "write workspace auxiliary object {object_id:?}: {error:?}"
+                    "write workspace auxiliary object {object_id:?} (schema={:?}, key={:?}, version={:?}, relation_schema={relation_schema}, stage=write_object admission/cas): {error:?}",
+                    object.schema(),
+                    object.key(),
+                    object.version(),
                 ))
             })?;
         }

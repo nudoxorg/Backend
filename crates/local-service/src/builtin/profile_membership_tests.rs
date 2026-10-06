@@ -11,6 +11,23 @@ use std::sync::Arc;
 
 type TestFile = ([u8; 32], String, [u8; 32]);
 
+#[test]
+fn product_store_registry_admits_every_persisted_product_relation() {
+    let registry = super::super::product_relation_registry().expect("product relation registry");
+    for schema in [
+        backend_version::SchemaIdentity::of_relation::<BuiltinWorkspaceRelation>(),
+        backend_version::SchemaIdentity::of_relation::<BuiltinSemanticRelation>(),
+        backend_version::SchemaIdentity::of_relation::<
+            backend_engine::builtin::ProductSemanticCaptureRelation,
+        >(),
+        backend_version::SchemaIdentity::of_relation::<
+            backend_engine::builtin::ProductSourceFileFactsRelation,
+        >(),
+    ] {
+        assert!(registry.contains_schema(schema), "missing product relation {schema:?}");
+    }
+}
+
 pub(super) struct TempWorkspace(pub(super) tempfile::TempDir);
 
 impl TempWorkspace {
@@ -31,15 +48,7 @@ pub(super) fn open_daemon(workspace: &Path) -> super::super::ProductDaemon {
         60_000,
     )
     .expect("test dispatcher");
-    let registry = backend_engine::RelationAdmissionRegistry::new()
-        .with_relation::<BuiltinWorkspaceRelation>()
-        .expect("workspace relation registry")
-        .with_relation::<BuiltinSemanticRelation>()
-        .expect("semantic relation registry")
-        .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
-        .expect("semantic capture relation registry")
-        .with_relation::<backend_engine::builtin::ProductSourceFileFactsRelation>()
-        .expect("source facts relation registry");
+    let registry = super::super::product_relation_registry().expect("product relation registry");
     crate::Locald::open_with_dispatcher_and_registry(
         workspace,
         BuiltinModel,

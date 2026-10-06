@@ -75,6 +75,24 @@ use profile::{
 };
 pub use profile::{BuiltinIntent, BuiltinModel, BuiltinModelError};
 
+/// Builds the exact relation admission set used by every product workspace
+/// store and cold-reopen path. Keep this in one place: a relation schema may
+/// use a root digest that is not an ordinary object-version digest, so an
+/// omitted decoder turns valid source-facts objects into corrupt objects.
+pub(super) fn product_relation_registry() -> Result<RelationAdmissionRegistry, BuiltinModelError> {
+    RelationAdmissionRegistry::new()
+        .with_relation::<BuiltinWorkspaceRelation>()
+        .map_err(|error| BuiltinModelError(format!("register builtin relation: {error:?}")))?
+        .with_relation::<BuiltinSemanticRelation>()
+        .map_err(|error| BuiltinModelError(format!("register semantic relation: {error:?}")))?
+        .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
+        .map_err(|error| {
+            BuiltinModelError(format!("register semantic capture relation: {error:?}"))
+        })?
+        .with_relation::<backend_engine::builtin::ProductSourceFileFactsRelation>()
+        .map_err(|error| BuiltinModelError(format!("register source facts relation: {error:?}")))
+}
+
 type ProductDaemon = crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>;
 
 #[path = "builtin/replication.rs"]
@@ -367,15 +385,7 @@ fn genesis_closure(
     // request provenance that the owner will publish.
     let checked_transition = transition.checked();
     let checked_commit = commit.clone().into_checked();
-    let registry = RelationAdmissionRegistry::new()
-        .with_relation::<BuiltinWorkspaceRelation>()
-        .map_err(|error| BuiltinModelError(format!("register builtin relation: {error:?}")))?
-        .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| BuiltinModelError(format!("register semantic relation: {error:?}")))?
-        .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
-        .map_err(|error| {
-            BuiltinModelError(format!("register semantic capture relation: {error:?}"))
-        })?;
+    let registry = product_relation_registry()?;
     WorkspaceClosure::from_checked_transition_with_registry(
         manifest,
         &checked_transition,
@@ -427,17 +437,7 @@ fn transition_closure_lazy(
     if let Some(pointer) = update.source_facts_pointer {
         objects.push(pointer.clone());
     }
-    let registry = RelationAdmissionRegistry::new()
-        .with_relation::<BuiltinWorkspaceRelation>()
-        .map_err(|error| BuiltinModelError(format!("register builtin relation: {error:?}")))?
-        .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| BuiltinModelError(format!("register semantic relation: {error:?}")))?
-        .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
-        .map_err(|error| {
-            BuiltinModelError(format!("register semantic capture relation: {error:?}"))
-        })?
-        .with_relation::<backend_engine::builtin::ProductSourceFileFactsRelation>()
-        .map_err(|error| BuiltinModelError(format!("register source facts relation: {error:?}")))?;
+    let registry = product_relation_registry()?;
     if update.changed_sources.is_empty() {
         WorkspaceClosure::extend_checked_nodes_with_registry(
             base,
@@ -506,13 +506,7 @@ pub(crate) type EmptyOwner = crate::service::LocaldOwner<
 pub(crate) fn open_empty_owner(workspace: &Path) -> Result<EmptyOwner, String> {
     let profile = profile_descriptor(BuiltinProfile::Product)?;
     let dispatcher = builtin_dispatcher(Some([0x3C; 32]), profile, 1)?;
-    let registry = RelationAdmissionRegistry::new()
-        .with_relation::<BuiltinWorkspaceRelation>()
-        .map_err(|error| format!("register source relation: {error:?}"))?
-        .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| format!("register semantic relation: {error:?}"))?
-        .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
-        .map_err(|error| format!("register semantic capture relation: {error:?}"))?;
+    let registry = product_relation_registry().map_err(|error| error.to_string())?;
     let daemon = crate::Locald::open_with_dispatcher_and_registry(
         workspace,
         BuiltinModel,
@@ -563,15 +557,7 @@ fn head_from_relation(
         &commit,
         &empty_delta,
     )?;
-    let registry = RelationAdmissionRegistry::new()
-        .with_relation::<BuiltinWorkspaceRelation>()
-        .map_err(|error| BuiltinModelError(format!("register builtin relation: {error:?}")))?
-        .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| BuiltinModelError(format!("register semantic relation: {error:?}")))?
-        .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
-        .map_err(|error| {
-            BuiltinModelError(format!("register semantic capture relation: {error:?}"))
-        })?;
+    let registry = product_relation_registry()?;
     WorkspaceHead::genesis_with_registry(manifest, closure, &registry)
         .map_err(|error| BuiltinModelError(error.to_string()))
 }
@@ -1521,15 +1507,8 @@ pub(crate) fn compose_owner(
         .max(1);
     let dispatcher = builtin_dispatcher(product_secret, Arc::clone(&profile), attempt_lease_ticks)
         .map_err(ProcessError::Profile)?;
-    let relation_registry = RelationAdmissionRegistry::new()
-        .with_relation::<BuiltinWorkspaceRelation>()
-        .map_err(|error| ProcessError::Profile(format!("register builtin relation: {error:?}")))?
-        .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| ProcessError::Profile(format!("register semantic relation: {error:?}")))?
-        .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
-        .map_err(|error| {
-            ProcessError::Profile(format!("register semantic capture relation: {error:?}"))
-        })?;
+    let relation_registry =
+        product_relation_registry().map_err(|error| ProcessError::Profile(error.to_string()))?;
     let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
         &config.workspace,
         BuiltinModel,
@@ -2416,13 +2395,7 @@ mod owner_fairness_tests {
         let dispatcher =
             builtin_dispatcher(Some(ECHO_AUTHORITY_SECRET), Arc::clone(&profile), 60_000)
                 .expect("test dispatcher");
-        let registry = RelationAdmissionRegistry::new()
-            .with_relation::<BuiltinWorkspaceRelation>()
-            .expect("workspace relation registry")
-            .with_relation::<BuiltinSemanticRelation>()
-            .expect("semantic relation registry")
-            .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
-            .expect("semantic capture relation registry");
+        let registry = product_relation_registry().expect("product relation registry");
         let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
             directory,
             BuiltinModel,

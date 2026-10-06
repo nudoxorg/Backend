@@ -4286,13 +4286,8 @@ mod tests {
             let dispatcher =
                 builtin_dispatcher(Some(ECHO_AUTHORITY_SECRET), Arc::clone(&profile), 60_000)
                     .expect("test dispatcher");
-            let registry = backend_engine::RelationAdmissionRegistry::new()
-                .with_relation::<BuiltinWorkspaceRelation>()
-                .expect("workspace relation registry")
-                .with_relation::<BuiltinSemanticRelation>()
-                .expect("semantic relation registry")
-                .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
-                .expect("semantic capture relation registry");
+            let registry =
+                super::super::product_relation_registry().expect("product relation registry");
             let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
                 &workspace,
                 BuiltinModel,

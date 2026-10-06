@@ -24,16 +24,10 @@ struct RetiredLayoutEvidence {
 }
 
 fn probe_retired_layout(workspace: &std::path::Path) -> Result<RetiredLayoutEvidence, String> {
-    use super::profile::{BuiltinSemanticRelation, BuiltinWorkspaceRelation, RetiredSourceProbe};
-    use backend_engine::{RelationAdmissionRegistry, WorkspaceOwner};
+    use super::profile::RetiredSourceProbe;
+    use backend_engine::WorkspaceOwner;
 
-    let registry = RelationAdmissionRegistry::new()
-        .with_relation::<BuiltinWorkspaceRelation>()
-        .map_err(|error| format!("register source relation: {error:?}"))?
-        .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| format!("register semantic relation: {error:?}"))?
-        .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
-        .map_err(|error| format!("register semantic capture relation: {error:?}"))?;
+    let registry = super::product_relation_registry().map_err(|error| error.to_string())?;
     let owner = WorkspaceOwner::open_with_registry(
         workspace,
         RetiredSourceProbe::new(workspace),
@@ -192,19 +186,13 @@ pub fn write_state_from_another_build(
     authority_secret: &std::path::Path,
 ) -> Result<(), String> {
     use super::BuiltinIntent;
-    use super::profile::{BuiltinSemanticRelation, BuiltinSourceChange, BuiltinWorkspaceRelation};
-    use backend_engine::{ProductSourceRecord, RelationAdmissionRegistry, WorkspaceOwner};
+    use super::profile::BuiltinSourceChange;
+    use backend_engine::{ProductSourceRecord, WorkspaceOwner};
     use backend_engine::{SourceLanguage, package_key};
 
     let _credential = backend_engine::read_authority_secret(authority_secret)
         .map_err(|error| error.to_string())?;
-    let registry = RelationAdmissionRegistry::new()
-        .with_relation::<BuiltinWorkspaceRelation>()
-        .map_err(|error| format!("register source relation: {error:?}"))?
-        .with_relation::<BuiltinSemanticRelation>()
-        .map_err(|error| format!("register semantic relation: {error:?}"))?
-        .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
-        .map_err(|error| format!("register semantic capture relation: {error:?}"))?;
+    let registry = super::product_relation_registry().map_err(|error| error.to_string())?;
     let mut owner = WorkspaceOwner::open_with_registry(
         workspace,
         RetiredFixtureWriter,
