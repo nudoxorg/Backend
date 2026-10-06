@@ -27,6 +27,7 @@ pub use tsz::binder::SymbolId as TszSymbolId;
 pub use tsz::checker::context::CheckerOptions as TszCheckerOptions;
 pub use tsz::checker::diagnostics::Diagnostic as TszDiagnostic;
 pub use tsz::checker::state::CheckerState as TszCheckerState;
+pub use tsz::common::ProjectSemanticOptions as TszProjectSemanticOptions;
 pub use tsz::common::{ModuleKind as TszModuleKind, ScriptTarget as TszScriptTarget};
 pub use tsz::parser::{NodeIndex as TszNodeIndex, ParseDiagnostic as TszParseDiagnostic};
 pub use tsz::tsz_solver::type_handles::TypeId as TszTypeId;
@@ -170,6 +171,11 @@ pub enum TszAuthorityError {
 pub struct TszProjectOptions {
     /// Checker options after tsconfig inheritance and defaults are resolved.
     pub checker: TszCheckerOptions,
+    /// Typed TSZ semantic policies used by the project merge and checker.
+    ///
+    /// Keep semantic policy on this project value so type-origin behavior is
+    /// stable across Rayon workers and direct per-file query caches.
+    pub semantic_options: TszProjectSemanticOptions,
     /// Identity for all configuration and dependency inputs described above.
     pub environment: TszEnvironmentFingerprint,
 }
@@ -210,6 +216,7 @@ pub struct TszProjectAuthority {
 pub struct TszProject {
     options: TszProjectOptions,
     checker_options_digest: [u8; 32],
+    semantic_options_digest: [u8; 32],
     library_digest: [u8; 32],
     bound_sources: BTreeMap<String, Arc<tsz::parallel::BindResult>>,
     lib_files: Vec<Arc<tsz::lib_loader::LibFile>>,
@@ -292,11 +299,21 @@ impl TszProjectAuthority {
             .project
             .as_ref()
             .is_some_and(|current| current.checker_options_digest != checker_digest);
+        let semantic_digest = semantic_options_digest(options.semantic_options);
+        let semantic_options_changed = self
+            .project
+            .as_ref()
+            .is_some_and(|current| current.semantic_options_digest != semantic_digest);
         if environment_changed || checker_options_changed {
             self.bound_sources.clear();
             self.project = None;
             self.environment = Some(options.environment);
             self.libraries = Some(library_digest);
+        } else if semantic_options_changed {
+            // Semantic options affect merged type identities and checking,
+            // but not parser/binder output. Reuse exact source binds while
+            // rebuilding only the merged/checker project result.
+            self.project = None;
         }
 
         report.removed_sources = self
@@ -326,6 +343,7 @@ impl TszProjectAuthority {
             && self.project.as_ref().is_some_and(|current| {
                 current.options.environment == options.environment
                     && current.checker_options_digest == checker_digest
+                    && current.semantic_options_digest == semantic_digest
                     && current.library_digest == library_digest
             })
             && report.removed_sources == 0
@@ -366,10 +384,19 @@ impl TszProjectAuthority {
             .map(|(path, cached)| (path.clone(), Arc::clone(&cached.result)))
             .collect();
         let bind_refs: Vec<_> = bound_sources.values().map(Arc::as_ref).collect();
-        let program = tsz::parallel::merge_bind_results_ref(&bind_refs);
-        let check = tsz::parallel::check_files_parallel(&program, &options.checker, lib_files);
+        let program = tsz::parallel::merge_bind_results_ref_with_project_semantic_options(
+            &bind_refs,
+            options.semantic_options,
+        );
+        let check = tsz::parallel::check_files_parallel_with_project_semantic_options(
+            &program,
+            &options.checker,
+            lib_files,
+            options.semantic_options,
+        );
         self.project = Some(TszProject {
             checker_options_digest: checker_digest,
+            semantic_options_digest: semantic_digest,
             library_digest,
             lib_files: lib_files.to_vec(),
             options,
@@ -603,7 +630,8 @@ impl TszProject {
         let binder = tsz::parallel::create_binder_from_bound_file(file, &self.program, file_index);
         let query_cache =
             tsz::tsz_solver::construction::QueryCache::new(&self.program.type_interner)
-                .with_definition_store(&self.program.definition_store);
+                .with_definition_store(&self.program.definition_store)
+                .with_project_semantic_options(self.options.semantic_options);
         let mut checker = TszCheckerState::new_with_shared_def_store(
             &file.arena,
             &binder,
@@ -619,10 +647,21 @@ impl TszProject {
 }
 
 fn validate_source_path(path: &str) -> Result<(), TszSourceError> {
+    if path.is_empty()
+        || path.starts_with('/')
+        || path.contains('\\')
+        || path.contains('\0')
+        || path.contains(':')
+        || path
+            .split('/')
+            .any(|component| component.is_empty() || matches!(component, "." | ".."))
+    {
+        return Err(TszSourceError::InvalidPath);
+    }
     let Some((basename, extension)) = path.rsplit_once('.') else {
         return Err(TszSourceError::InvalidPath);
     };
-    let filename = basename.rsplit(['/', '\\']).next().unwrap_or(basename);
+    let filename = basename.rsplit('/').next().unwrap_or(basename);
     if path.is_empty() || filename.is_empty() || extension.is_empty() {
         return Err(TszSourceError::InvalidPath);
     }
@@ -726,6 +765,10 @@ fn checker_options_digest(options: &TszCheckerOptions) -> [u8; 32] {
     Sha256::digest(format!("{options:?}").as_bytes()).into()
 }
 
+fn semantic_options_digest(options: TszProjectSemanticOptions) -> [u8; 32] {
+    Sha256::digest(format!("{options:?}").as_bytes()).into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -735,6 +778,7 @@ mod tests {
         checker.no_lib = true;
         TszProjectOptions {
             checker,
+            semantic_options: TszProjectSemanticOptions::structural(),
             environment: TszEnvironmentFingerprint::from_sha256([0x5a; 32]),
         }
     }
@@ -841,6 +885,51 @@ mod tests {
             .expect("exact project revision is reusable");
         assert!(exact.reused_project_result);
         assert_eq!(exact.parsed_and_bound, 0);
+    }
+
+    #[test]
+    fn semantic_option_change_rechecks_without_rebinding_and_reaches_direct_queries() {
+        let sources = vec![input(
+            "src/labels.ts",
+            "export type Labels<T> = { [K in keyof T]: T[K] };",
+        )];
+        let mut authority = TszProjectAuthority::new();
+        authority
+            .update(sources.clone(), options(), &[])
+            .expect("structural project builds");
+
+        let mut declaration_scoped = options();
+        declaration_scoped.semantic_options = TszProjectSemanticOptions::declaration_scoped();
+        let report = authority
+            .update(sources, declaration_scoped, &[])
+            .expect("declaration-scoped project rebuilds");
+        assert_eq!(report.parsed_and_bound, 0);
+        assert_eq!(report.reused_binds, 1);
+        assert!(!report.reused_project_result);
+
+        let project = authority.project().expect("updated project exists");
+        let observed = project
+            .with_file_checker_and_types(0, |_checker, _binder, _file, database| {
+                database.project_semantic_options()
+            })
+            .expect("direct project query exists");
+        assert_eq!(observed, TszProjectSemanticOptions::declaration_scoped());
+
+        let exact = authority
+            .update(
+                vec![input(
+                    "src/labels.ts",
+                    "export type Labels<T> = { [K in keyof T]: T[K] };",
+                )],
+                TszProjectOptions {
+                    checker: options().checker,
+                    semantic_options: TszProjectSemanticOptions::declaration_scoped(),
+                    environment: TszEnvironmentFingerprint::from_sha256([0x5a; 32]),
+                },
+                &[],
+            )
+            .expect("exact semantic project revision is reusable");
+        assert!(exact.reused_project_result);
     }
 
     #[test]
@@ -1043,6 +1132,19 @@ mod tests {
             TszLibraryInput::from_utf8("lib.fixture.json", b"{}".to_vec()),
             Err(TszSourceError::UnsupportedExtension)
         );
+        for path in [
+            "../lib.fixture.d.ts",
+            "/absolute/lib.fixture.d.ts",
+            "./lib.fixture.d.ts",
+            "src//lib.fixture.d.ts",
+            "C:/lib.fixture.d.ts",
+        ] {
+            assert_eq!(
+                TszLibraryInput::from_utf8(path, b"declare const value: string;".to_vec()),
+                Err(TszSourceError::InvalidPath),
+                "un-normalized or absolute path {path:?} must not enter project identity"
+            );
+        }
     }
 
     #[test]

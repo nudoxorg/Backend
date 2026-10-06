@@ -8596,7 +8596,7 @@ fn native_tsz_decl_scoped_parameter_name<'source>(
     let path = database.resolve_atom_ref(file);
     let expected = database.resolve_atom_ref(parameter.name);
     project
-        .declaration_name_source(path, node, expected)
+        .declaration_name_source(&path, node, &expected)
         .map(str::as_bytes)
 }
 
@@ -8835,7 +8835,7 @@ fn intern_native_tsz_object<'source>(
         let name = database.resolve_atom_ref(property.name);
         let spelling = property
             .parent_id
-            .and_then(|symbol| registry.tsz_project?.symbol_name_source(symbol, name))
+            .and_then(|symbol| registry.tsz_project?.symbol_name_source(symbol, &name))
             .map(str::as_bytes);
         let Some(spelling) = spelling else {
             return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
@@ -9321,7 +9321,7 @@ mod lane_tests {
     use backend_frontend_typescript::legacy::{Reference, Report, source_digest};
     use backend_frontend_typescript::{
         TszCheckerOptions, TszEnvironmentFingerprint, TszFileInput, TszProjectAuthority,
-        TszProjectOptions,
+        TszProjectOptions, TszProjectSemanticOptions,
     };
     use backend_semantic::ir::{
         EntityKind, FragmentError, FragmentView, OccurrenceFault, SemanticReader,
@@ -9446,6 +9446,7 @@ mod lane_tests {
         checker.no_lib = true;
         let options = TszProjectOptions {
             checker,
+            semantic_options: TszProjectSemanticOptions::declaration_scoped(),
             environment: TszEnvironmentFingerprint::from_sha256([0x5a; 32]),
         };
         let mut authority = TszProjectAuthority::new();

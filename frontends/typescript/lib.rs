@@ -33,7 +33,8 @@ pub use tsz_authority::{
     TszAuthorityError, TszBinderState, TszCheckerOptions, TszCheckerState, TszDiagnostic,
     TszEnvironmentFingerprint, TszFileInput, TszLibraryInput, TszModuleDetectionKind,
     TszModuleKind, TszNodeIndex, TszParseDiagnostic, TszProject, TszProjectAuthority,
-    TszProjectOptions, TszScriptTarget, TszSourceError, TszSymbolId, TszTypeId, TszUpdateReport,
+    TszProjectOptions, TszProjectSemanticOptions, TszScriptTarget, TszSourceError, TszSymbolId,
+    TszTypeId, TszUpdateReport,
 };
 /// Interned string handle used by TSZ shapes and member names.
 pub use tsz_common::interner::Atom as TszAtom;
