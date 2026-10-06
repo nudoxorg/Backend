@@ -257,7 +257,7 @@ class ProjectCase:
     path: Path
     large: bool
     min_candidates: int
-    symbols: tuple[dict[str, str], ...]
+    symbols: tuple[dict[str, Any], ...]
     package: dict[str, Any] | None = None
     acquisition: dict[str, Any] | None = None
 
@@ -1490,9 +1490,10 @@ def validate_corpus_manifest(
         if root in canonical_roots:
             raise Blocked("project manifest contains duplicate canonical project roots")
 
-        symbols: list[dict[str, str]] = []
+        symbols: list[dict[str, Any]] = []
         for symbol in symbols_value:
-            if not isinstance(symbol, dict) or set(symbol) != {"profile", "path", "name"}:
+            fields = {"profile", "path", "name"}
+            if not isinstance(symbol, dict) or not fields <= set(symbol) or set(symbol) - fields - {"surface_contract"}:
                 raise Blocked(f"project {project_id} has a malformed symbol expectation")
             profile = symbol["profile"]
             relative = symbol["path"]
@@ -1534,7 +1535,10 @@ def validate_corpus_manifest(
                 ) from error
             if not stat.S_ISREG(info.st_mode):
                 raise Blocked(f"project {project_id} expected source is not a regular file")
-            symbols.append({"profile": profile, "path": relative, "name": name})
+            admitted = {"profile": profile, "path": relative, "name": name}
+            if "surface_contract" in symbol:
+                admitted["surface_contract"] = validate_surface_contract(symbol["surface_contract"], root, relative)
+            symbols.append(admitted)
             variants.add(profile)
         if language == "typescript" and not any(
             symbol["profile"] in {"typescript", "tsx"} for symbol in symbols
@@ -1566,7 +1570,7 @@ def canonical_inventory_relative(value: Any, *, allow_root: bool = False) -> tup
     if not isinstance(value, str) or not value or len(value.encode("utf-8")) > 4096:
         raise Blocked("acquired inventory has an invalid relative path")
     path = PurePosixPath(value)
-    if path.is_absolute() or path.as_posix() != value or "\\" in value or any(part in {".", ".."} for part in path.parts):
+    if not path.parts or path.is_absolute() or path.as_posix() != value or "\\" in value or any(part in {".", ".."} for part in path.parts):
         raise Blocked("acquired inventory path is not canonical and confined")
     return path.parts
 
@@ -1652,6 +1656,7 @@ def verify_acquired_source_inventory(case: ProjectCase, manifest_sha: str, deadl
     if case.package["provenance"]["kind"] == "source-tree-sha256" and case.package["provenance"]["sha256"] != tree_sha:
         raise AcceptanceError("declared source-tree hash differs from the independently verified inventory")
     return {"verification": "verified-source-inventory-v1", "package": package,
+            "origin_verification": "unverified-declared-package",
             "source_tree_sha256": tree_sha, "acquired_inventory_sha256": sha256_bytes(raw),
             "target_subdir": binding["target_subdir"],
             "target_root_identity_sha256": sha256_bytes(str(target).encode()),
@@ -2468,6 +2473,228 @@ def assert_search_result(value: Any, symbol: dict[str, str], project_root: Path,
     )
 
 
+def expected_source_span(root: Path, path: str, span: dict[str, Any]) -> dict[str, Any]:
+    fields = {"file_sha256", "start", "end", "slice_sha256"}
+    if not isinstance(span, dict) or set(span) != fields:
+        raise Blocked("surface source witness has missing or unknown fields")
+    parts = canonical_inventory_relative(path)
+    if ignored_source_directory(parts[:-1]):
+        raise Blocked("surface witness names excluded output or tooling source")
+    selected = root
+    for part in parts:
+        selected = selected / part
+        if selected.is_symlink():
+            raise Blocked("surface source witness crosses a symlink")
+    for name in ("file_sha256", "slice_sha256"):
+        if not isinstance(span[name], str) or re.fullmatch(r"[0-9a-f]{64}", span[name]) is None:
+            raise Blocked("surface source witness has an invalid digest")
+    start, end = span["start"], span["end"]
+    if type(start) is not int or type(end) is not int or not 0 <= start < end <= MAX_SOURCE_FILE_BYTES:
+        raise Blocked("surface source witness has an invalid half-open byte interval")
+    content = read_bounded_regular(selected, MAX_SOURCE_FILE_BYTES, "surface source witness")
+    if sha256_bytes(content) != span["file_sha256"] or end > len(content) or sha256_bytes(content[start:end]) != span["slice_sha256"]:
+        raise AcceptanceError("surface source witness does not match exact acquired file bytes")
+    try:
+        content[:start].decode("utf-8")
+        selected_text = content[start:end].decode("utf-8")
+        content[end:].decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise Blocked("surface source span is not on valid UTF-8 boundaries") from error
+    return {"path": path, **span, "line": content[:start].count(b"\n") + 1,
+            "lines": selected_text.splitlines()}
+
+
+def validate_surface_contract(value: Any, root: Path, path: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != {"kind", "source", "references", "graph"}:
+        raise Blocked("surface contract has missing or unknown fields")
+    if not isinstance(value["kind"], str) or not value["kind"] or len(value["kind"]) > 64:
+        raise Blocked("surface contract declaration kind is invalid")
+    expected_source_span(root, path, value["source"])
+    for field in ("references", "graph"):
+        if not isinstance(value[field], list) or len(value[field]) > MAX_SEARCH_RESULTS:
+            raise Blocked("surface obligations exceed their bound")
+        if len({canonical_json(row) for row in value[field]}) != len(value[field]):
+            raise Blocked("surface obligations repeat a source site or edge")
+    for row in value["references"]:
+        if not isinstance(row, dict) or set(row) != {"path", "start", "end", "file_sha256", "slice_sha256", "relation", "confidence"}:
+            raise Blocked("reference obligation has missing or unknown fields")
+        if row["relation"] not in {"calls", "method-call", "type-reference", "reads", "writes", "imports", "implements", "overrides", "reexports", "inherits", "documents"} or row["confidence"] not in {"syntactic", "heuristic", "indexed", "imported", "compiler"}:
+            raise Blocked("reference obligation uses an unknown semantic relation or authority")
+        expected_source_span(root, row["path"], {key: row[key] for key in ("file_sha256", "start", "end", "slice_sha256")})
+    for row in value["graph"]:
+        if not isinstance(row, dict) or set(row) != {"label", "path", "name"} or any(not isinstance(row[key], str) or not row[key] or len(row[key].encode()) > 4096 for key in row):
+            raise Blocked("graph obligation has invalid closed fields")
+        canonical_inventory_relative(row["path"])
+    return value
+
+
+def dto_payload(value: dict[str, Any]) -> dict[str, Any]:
+    return {key: item for key, item in value.items() if key not in {"budget", "detail"}}
+
+
+def assert_surface_identity(value: Any, identity: dict[str, Any], label: str) -> None:
+    if not isinstance(value, dict) or value.get("answer") != "page" or value.get("identity") != identity:
+        raise AcceptanceError(f"{label} lost the exact resolved declaration identity")
+
+
+def assert_source_body(value: Any, identity: dict[str, Any], witness: dict[str, Any], label: str) -> None:
+    assert_surface_identity(value, identity, label)
+    source = value.get("source")
+    expected = {"path": witness["path"], "line": witness["line"], "lines": witness["lines"], "extent": "complete"}
+    if source != expected or value.get("source_fault") is not None:
+        raise AcceptanceError(f"{label} did not retain the exact complete declaration body")
+
+
+def assert_reference_obligations(raw: Any, coordinate: str, obligations: list[dict[str, Any]]) -> dict[str, Any]:
+    if not isinstance(raw, dict) or raw.get("answer") != "surface" or not isinstance(raw.get("surface"), dict) or raw["surface"].get("result") != "references":
+        raise AcceptanceError("raw references did not return the closed references route")
+    data = raw["surface"].get("data")
+    if not isinstance(data, dict) or data.get("target") != coordinate or not isinstance(data.get("references"), list):
+        raise AcceptanceError("raw references lost the requested exact target")
+    rows = data["references"]
+    endpoints = []
+
+    def resolved_endpoint(target: Any) -> bool:
+        def byte_array(value: Any, size: int) -> bool:
+            return isinstance(value, list) and len(value) == size and all(type(byte) is int and 0 <= byte <= 255 for byte in value)
+        if not isinstance(target, dict):
+            return False
+        if target.get("scope") == "local":
+            if set(target) != {"scope", "declaration"}:
+                return False
+        elif target.get("scope") == "stable":
+            if set(target) != {"scope", "fragment", "declaration"} or not byte_array(target["fragment"], 32):
+                return False
+        else:
+            return False
+        declaration = target.get("declaration")
+        return isinstance(declaration, dict) and set(declaration) == {"family", "variant"} and all(byte_array(declaration[key], 16) for key in declaration)
+
+    for expected in obligations:
+        matches = [row for row in rows if isinstance(row, dict)
+                   and row.get("relation") == expected["relation"]
+                   and isinstance(row.get("evidence"), dict)
+                   and row["evidence"].get("confidence") == expected["confidence"]
+                   and row["evidence"].get("source") == {
+                       "file": expected["path"], "start": expected["start"], "end": expected["end"]}]
+        if not matches or any(not resolved_endpoint(row.get("target")) for row in matches):
+            raise AcceptanceError("references omitted a source-bound required semantic use")
+        endpoints.append({"source": {key: expected[key] for key in ("path", "start", "end")},
+                          "semantic_targets": [json.loads(encoded) for encoded in sorted({
+                              canonical_json(row["target"]) for row in matches})]})
+    return {"required_sites": len(obligations), "returned_sites": len(rows),
+            "coverage_claim": "required-source-obligations; not the complete reference universe",
+            "required_endpoint_identities": endpoints,
+            "typed_reference_sha256": sha256_bytes(canonical_json(data))}
+
+
+def assert_graph_obligations(value: Any, identity: dict[str, Any], obligations: list[dict[str, str]]) -> dict[str, Any]:
+    assert_surface_identity(value, identity, "graph")
+    groups = value.get("relations", [])
+    if not isinstance(groups, list):
+        raise AcceptanceError("graph omitted its structured relation groups")
+    for expected in obligations:
+        matches = [target for group in groups if isinstance(group, dict) and group.get("label") == expected["label"]
+                   for target in group.get("relations", []) if isinstance(target, dict)
+                   and target.get("path") == expected["path"] and target.get("name") == expected["name"]
+                   and target.get("project") == identity["project"]]
+        if not matches:
+            raise AcceptanceError("graph omitted a source-backed required declaration edge")
+    return {"required_edges": len(obligations), "coverage_claim": "required-source-obligations; not the complete graph universe"}
+
+
+def run_surface_contracts(case: ProjectCase, binaries: dict[str, BinaryIdentity], workspace: Path,
+                          endpoint: Path, environment: dict[str, str], deadline: Deadline,
+                          evidence: list[dict[str, Any]], phase: str,
+                          previous: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    results = []
+    prior = {(row["profile"], row["path"], row["name"]): row for row in (previous or [])}
+
+    def pair(command: list[str], tool: str, arguments: dict[str, Any], label: str) -> tuple:
+        cli = cli_call(binaries["backend-cli"], workspace, endpoint, case.path, command,
+                       environment, deadline, evidence, "cli-" + label)
+        mcp = mcp_call(binaries["backend-mcp"], workspace, endpoint, case.path, tool,
+                       {**arguments, "detail": "full"}, environment, deadline, evidence, "mcp-" + label)
+        if not isinstance(cli, dict) or not isinstance(mcp, dict) or dto_payload(cli) != dto_payload(mcp):
+            raise AcceptanceError(f"{label} CLI/MCP structured projections differ")
+        return cli, {"cli_dto_sha256": sha256_bytes(canonical_json(dto_payload(cli))),
+                     "mcp_dto_sha256": sha256_bytes(canonical_json(dto_payload(mcp))), "parity": True}
+
+    for symbol in case.symbols:
+        contract = symbol.get("surface_contract")
+        if contract is None:
+            continue
+        validate_surface_contract(contract, case.path, symbol["path"])
+        label = f"{phase}-{case.project_id}-{symbol['profile']}-{symbol['name']}"
+        search, search_proof = pair(["--limit", str(MAX_SEARCH_RESULTS), "search", symbol["name"]],
+            "backend.search", {"query": symbol["name"], "limit": MAX_SEARCH_RESULTS}, label + "-search")
+        assert_search_result(search, symbol, case.path, label + "-search")
+        resolved, resolve_proof = pair(["--limit", str(MAX_SEARCH_RESULTS), "resolve", symbol["name"]],
+            "backend.resolve", {"query": symbol["name"], "limit": MAX_SEARCH_RESULTS}, label + "-resolve")
+        records = resolved.get("records")
+        if resolved.get("answer") != "records" or not isinstance(records, list) or resolved.get("more") is not False:
+            raise AcceptanceError("resolve did not return a complete bounded declaration selection")
+        candidates = [record["identity"] for record in records if isinstance(record, dict)
+            and isinstance(record.get("identity"), dict)
+            and record["identity"].get("path") == symbol["path"]
+            and record["identity"].get("project") == str(case.path)
+            and record["identity"].get("name") == symbol["name"]
+            and record.get("language") == PROFILE_LANGUAGE_VARIANT[symbol["profile"]][1]]
+        if len(candidates) != 1:
+            raise AcceptanceError("resolve could not select one exact source declaration/identity plane")
+        identity = candidates[0]
+        coordinate = identity.get("coordinate")
+        if not isinstance(coordinate, str) or not coordinate or not isinstance(identity.get("key"), str):
+            raise AcceptanceError("resolve omitted the exact coordinate or public key abbreviation")
+        old = prior.get((symbol["profile"], symbol["path"], symbol["name"]))
+        if previous is not None and (old is None or old["resolved_identity"] != identity):
+            raise AcceptanceError("cold resolve changed the retained declaration identity")
+        # Intentionally reuse the OLD exact coordinate after owner restart.
+        coordinate = old["coordinate"] if old is not None else coordinate
+        projections = {"search": search_proof, "resolve": resolve_proof}
+        document, projections["show"] = pair(["show", coordinate], "backend.document",
+            {"coordinate": coordinate}, label + "-show")
+        assert_surface_identity(document, identity, "show")
+        if document.get("kind") != contract["kind"]:
+            raise AcceptanceError("show did not preserve the source-backed semantic declaration kind")
+        source, projections["source"] = pair(["source", coordinate], "backend.source",
+            {"coordinate": coordinate}, label + "-source")
+        source_witness = expected_source_span(case.path, symbol["path"], contract["source"])
+        assert_source_body(source, identity, source_witness, "source")
+        references, projections["references"] = pair(["references", coordinate], "backend.references",
+            {"coordinate": coordinate}, label + "-references")
+        if references.get("answer") != "product" or references.get("heading") != "references":
+            raise AcceptanceError("named references did not return their typed product route")
+        raw_references = mcp_call(binaries["backend-mcp"], workspace, endpoint, case.path, "backend.surface",
+            {"command": {"operation": "references", "target": coordinate}, "detail": "full"},
+            environment, deadline, evidence, "mcp-" + label + "-typed-references")
+        reference_proof = assert_reference_obligations(raw_references, coordinate, contract["references"])
+        graph, projections["graph"] = pair(["graph", coordinate], "backend.graph",
+            {"coordinate": coordinate}, label + "-graph")
+        graph_proof = assert_graph_obligations(graph, identity, contract["graph"])
+        raw_read = mcp_call(binaries["backend-mcp"], workspace, endpoint, case.path, "backend.surface",
+            {"command": {"operation": "read", "locators": [coordinate]}, "detail": "full"},
+            environment, deadline, evidence, "mcp-" + label + "-row-identity")
+        surface = raw_read.get("surface") if isinstance(raw_read, dict) else None
+        data = surface.get("data") if isinstance(surface, dict) else None
+        if not isinstance(raw_read, dict) or raw_read.get("answer") != "surface" or not isinstance(surface, dict) or surface.get("result") != "read" or not isinstance(data, list) or len(data) != 1 or not isinstance(data[0], dict) or data[0].get("label") != coordinate:
+            raise AcceptanceError("read omitted its exact requested declaration row")
+        stable_id = data[0].get("stable_id")
+        if not isinstance(stable_id, list) or len(stable_id) != 32 or any(type(byte) is not int or not 0 <= byte <= 255 for byte in stable_id):
+            raise AcceptanceError("read omitted the complete stable row digest")
+        if old is not None and (old["row_stable_id"] != stable_id or old["projections"] != projections or old["references"] != reference_proof or old["graph"] != graph_proof):
+            raise AcceptanceError("cold old-coordinate surfaces changed their retained row or semantic evidence")
+        results.append({"project_id": case.project_id, "profile": symbol["profile"],
+            "path": symbol["path"], "name": symbol["name"], "coordinate": coordinate,
+            "resolved_identity": identity, "public_key_abbreviation": identity["key"],
+            "row_stable_id": stable_id, "identity_planes": "public display abbreviation; row digest; references retain separate semantic endpoint identities",
+            "contract_sha256": sha256_bytes(canonical_json(contract)),
+            "source": {key: source_witness[key] for key in ("path", "file_sha256", "start", "end", "slice_sha256")},
+            "projections": projections, "references": reference_proof, "graph": graph_proof,
+            "cold_old_coordinate_verified": old is not None})
+    return results
+
+
 def write_json_atomic(path: Path, value: Any) -> None:
     encoded = canonical_json(value) + b"\n"
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -3081,6 +3308,11 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
                 cli_semantic_identity["selected_source_frontier"]
             )
         result["semantic_versions_before_restart"] = semantic_before
+        result["surface_contracts_before_restart"] = {}
+        for case in cases:
+            result["surface_contracts_before_restart"][case.project_id] = run_surface_contracts(
+                case, binaries, workspace, endpoint, client_environment, deadline, evidence, "warm")
+            write_json_atomic(output / "run.json", result)
         write_json_atomic(output / "run.json", result)
 
         before_census = verify_inputs_unchanged(
@@ -3274,6 +3506,12 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
                 cli_semantic_identity["selected_source_frontier"]
             )
         result["semantic_versions_after_restart"] = semantic_after
+        result["surface_contracts_after_restart"] = {}
+        for case in cases:
+            result["surface_contracts_after_restart"][case.project_id] = run_surface_contracts(
+                case, binaries, workspace, endpoint, client_environment, deadline, evidence, "cold",
+                result["surface_contracts_before_restart"][case.project_id])
+            write_json_atomic(output / "run.json", result)
         write_json_atomic(output / "run.json", result)
 
         query_results: list[dict[str, Any]] = []
