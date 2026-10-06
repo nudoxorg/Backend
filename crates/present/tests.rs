@@ -300,7 +300,8 @@ fn a_display_string_never_becomes_an_admitted_command_failure() {
     let operand = Operand::Coordinate(Coordinate::new(DECLARATION));
     for message in [
         backend_library::CommandFailure::NotFound.to_string(),
-        backend_library::CommandFailure::InvalidQuery("limit is out of range".to_owned()).to_string(),
+        backend_library::CommandFailure::InvalidQuery("limit is out of range".to_owned())
+            .to_string(),
         "the frame length prefix was truncated".to_owned(),
     ] {
         let fault = Fault::from_client_error(
@@ -1043,6 +1044,29 @@ fn mcp_add_without_execution_intent_lowers_to_interactive_default() {
         lower(&invocation, "/unused").expect("lower Add"),
         Request::Index(path) if path == PROJECT
     ));
+}
+
+#[test]
+fn outline_current_directory_uses_the_same_active_project_for_cli_and_mcp() {
+    let grammar = grammar_for("outline").expect("outline grammar");
+    for path in [".", "./", ".//"] {
+        let mut cli = Invocation::new(grammar);
+        cli.push(path);
+        let arguments = serde_json::json!({"path": path});
+        let mcp = Invocation::from_json(grammar, arguments.as_object().expect("object"))
+            .expect("outline invocation");
+        for invocation in [cli, mcp] {
+            assert!(
+                matches!(lower(&invocation, PROJECT).expect("active outline"), Request::Outline(root) if root == PROJECT)
+            );
+        }
+    }
+    let arguments = serde_json::json!({"path": "/abs/other-project"});
+    let invocation = Invocation::from_json(grammar, arguments.as_object().expect("object"))
+        .expect("other outline");
+    assert!(
+        matches!(lower(&invocation, PROJECT).expect("other root preserved"), Request::Outline(root) if root == "/abs/other-project")
+    );
 }
 
 #[test]

@@ -338,7 +338,18 @@ pub fn lower(invocation: &Invocation, project: &str) -> Result<Request, Fault> {
             text: invocation.require(0)?.to_owned(),
             limit: limit(invocation)?,
         }),
-        CommandId::Outline => Ok(Request::Outline(path_or(invocation, project))),
+        CommandId::Outline => {
+            let path = path_or(invocation, project);
+            let path = if Path::new(&path)
+                .components()
+                .all(|component| matches!(component, std::path::Component::CurDir))
+            {
+                project.to_owned()
+            } else {
+                path
+            };
+            Ok(Request::Outline(path))
+        }
         CommandId::ProjectTree => {
             let root = path_or(invocation, project);
             let root = ProductText::new(root.as_str())
