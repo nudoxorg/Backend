@@ -863,8 +863,8 @@ mod tests {
             .expect("no distributable release evidence");
         assert!(matches!(
             &unavailable,
-            RegistryPackageDiscoveryObservation::Unavailable { message, .. }
-                if message.as_str().contains("without distribution files")
+            RegistryPackageDiscoveryObservation::Unavailable { reason, .. }
+                if reason.as_str().contains("without distribution files")
         ));
         assert_eq!(
             owner.observe_package(&recorded),
