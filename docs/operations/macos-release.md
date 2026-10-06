@@ -9,6 +9,26 @@ first product archive has not been built, signed, accepted or published. The Con
 pipeline is disabled until credentials and deployed routing are ready. Initial native builds
 run on an existing team Mac; automated native building needs a later Mac runner.
 
+## Handoff from a working development build to the website
+
+Miles's working development build is the input to product acceptance, not the public
+download. Merge the accepted repairs, obtain passing CI for the exact canonical source,
+then use this runbook to create and accept a signed distribution archive from that source.
+The release operator needs a Developer ID Application certificate/private key and notary
+keychain profile on the Mac; Concourse needs the dedicated distribution/promotion
+credentials documented in MachineConfigurations. Production routing is already deployed.
+Enable/apply the release pipeline only after those credentials and the first accepted
+candidate are ready.
+
+The native operator builds/signs/tests and stages the candidate; Concourse validates it;
+the release operator manually triggers `nudox-backend-release/publish-macos`. Successful
+promotion changes the Mac entry in `/v1/releases`, and the website's existing download URL
+serves the new archive with its version label. Routine desktop promotions do not need a
+Web build or Colmena apply. Other platforms keep their independently selected versions.
+After promotion, check the public website label and repeat the browser download/install
+journey. A dedicated Mac runner can automate building later while retaining exact-archive
+native acceptance and deliberate promotion.
+
 ## 1. Select and prepare the native build
 
 Merge the release tooling to Backend canonical, wait for `concourse/backend-fast` success,
@@ -81,6 +101,18 @@ add/index/search a real project; exercise bundled helpers, preferences, quit/rel
 cold restart. Verify Gatekeeper, persistence and optional-toolchain failure messages.
 Test on the advertised minimum OS as well as the development OS. Confirm CLI/MCP can use the
 bundled local owner where advertised. Native QA is required in addition to Linux CI evidence.
+
+The required `browser_download_launch` case must use the final ZIP downloaded in Safari
+from a controlled HTTPS test location before candidate staging. Verify that download's
+SHA-256 matches the release manifest, extract it with Finder, move the app to Applications,
+and launch it on the clean test account/Mac with Gatekeeper enabled and quarantine intact.
+Confirm the quarantine attribute is present on the extracted app before its first launch
+(`xattr -p com.apple.quarantine /Applications/Nudox.app`). Removing quarantine, using
+Open Anyway, or reusing an already-approved installation does not pass this case. The normal
+first-open confirmation for an identified developer is acceptable; an unverifiable developer
+or malware-verification warning is not. Keep this test archive private until acceptance.
+Signing/notarization follows
+[Apple's distribution guidance](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution).
 
 Copy `tools/package/native-qa.example.json` to `candidate/native-qa.json`. Fill the operator,
 time, OS and exact final archive/source hashes. Mark each case true only after it passed.

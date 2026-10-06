@@ -57,6 +57,24 @@ class FakeGitHub(release.GitHub):
 
 
 class CandidateTests(unittest.TestCase):
+    def test_browser_download_launch_is_required_before_staging_or_publication(self):
+        for stable in (False, True):
+            for result in (None, False):
+                with self.subTest(stable=stable, result=result), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    candidate(root)
+                    qa = json.loads((root / "native-qa.json").read_text())
+                    if result is None:
+                        qa["cases"].pop("browser_download_launch")
+                    else:
+                        qa["cases"]["browser_download_launch"] = result
+                    (root / "native-qa.json").write_text(json.dumps(qa))
+                    github = FakeGitHub()
+                    with self.assertRaisesRegex(ValueError, "missing or failed cases"):
+                        github.publish(root, "v0.2.0" if stable else "v0.2.0-rc.1", stable)
+                    self.assertEqual(github.calls, [])
+                    self.assertEqual(github.uploaded, {})
+
     def test_native_acceptance_and_archive_bytes_must_match(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -19,7 +19,7 @@ import zipfile
 from pathlib import Path
 
 ASSET = "nudox-macos-arm64.zip"
-QA_CASES = {"finder_launch", "project_index_search", "bundled_helpers", "preferences", "cold_restart", "clean_environment", "gatekeeper", "minimum_os"}
+QA_CASES = {"finder_launch", "browser_download_launch", "project_index_search", "bundled_helpers", "preferences", "cold_restart", "clean_environment", "gatekeeper", "minimum_os"}
 
 
 def sha256(path):

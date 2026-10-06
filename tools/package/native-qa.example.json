@@ -6,6 +6,7 @@
   "tested_at": "REPLACE_WITH_UTC_TIMESTAMP",
   "macos_version": "REPLACE_WITH_TEST_HOST_VERSION",
   "cases": {
+    "browser_download_launch": false,
     "bundled_helpers": false,
     "clean_environment": false,
     "cold_restart": false,
