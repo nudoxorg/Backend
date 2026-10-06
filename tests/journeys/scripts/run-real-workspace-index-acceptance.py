@@ -28,7 +28,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Callable
 
 from runtime_build_receipt import (
     ReceiptError,
@@ -2374,6 +2374,74 @@ def assert_selected_source_frontier(
     return frontier
 
 
+def await_selected_history(
+    read: Callable[[], Any],
+    case: ProjectCase,
+    profile_codes: dict[str, tuple[int, int]],
+    deadline: Deadline,
+    observations: list[dict[str, Any]],
+    label: str,
+    maximum_wait_seconds: float = 60.0,
+) -> Any:
+    """Await the selected job, retaining typed intermediate states and identity.
+
+    Publication of the index operation does not imply that the asynchronous
+    derived-history worker has finished. This wait never admits Pending as a
+    successful history proof, changes selections, or retries a typed refusal.
+    """
+    started = time.monotonic()
+    expected: dict[tuple[int, int], tuple[Any, ...]] | None = None
+    codes = {profile_codes[symbol["profile"]] for symbol in case.symbols}
+    for ordinal in range(64):
+        deadline.check(label)
+        value = read()
+        observations.append({
+            "ordinal": ordinal,
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "reply": value,
+        })
+        if not isinstance(value, dict) or value.get("answer") != "product" or value.get("heading") != "semantic-versions" or not isinstance(value.get("records"), list):
+            raise AcceptanceError(f"{label} history wait lost the typed semantic-versions route")
+        selected: dict[tuple[int, int], tuple[Any, ...]] = {}
+        in_flight = False
+        terminal_failure = False
+        for code in codes:
+            rows = [row for row in value["records"] if isinstance(row, dict)
+                    and row.get("compiler_profile") == list(code)
+                    and isinstance(row.get("tags"), list)
+                    and all(isinstance(tag, str) for tag in row["tags"])
+                    and {"selected", "complete", "current source input"}.issubset(row["tags"])]
+            if len(rows) != 1:
+                return value  # The strict completeness gate diagnoses this reply.
+            row = rows[0]
+            history = row.get("history_status")
+            if not isinstance(history, dict):
+                raise AcceptanceError(f"{label} history wait omitted its typed state")
+            selection = history.get("selection_id")
+            if not isinstance(selection, list) or len(selection) != 32 or any(type(byte) is not int or not 0 <= byte <= 255 for byte in selection):
+                raise AcceptanceError(f"{label} history wait has an invalid selected identity")
+            selected[code] = (row.get("operand"), tuple(selection),
+                              canonical_json(value.get("selected_source_frontier")))
+            state = history.get("state")
+            if state in {"pending", "not_requested", "deferred"}:
+                in_flight = True
+            elif state not in {"published", "refused", "superseded"}:
+                raise AcceptanceError(f"{label} history wait has an unknown selected state")
+            elif state != "published":
+                terminal_failure = True
+        if expected is None:
+            expected = selected
+        elif selected != expected:
+            raise AcceptanceError(f"{label} selected generation/frontier changed during history wait")
+        if terminal_failure or not in_flight:
+            return value
+        remaining = min(maximum_wait_seconds - (time.monotonic() - started), deadline.remaining())
+        if remaining <= 0 or ordinal == 63:
+            raise AcceptanceError(f"{label} selected history remained in flight within the bounded wait; last typed reply retained")
+        time.sleep(min(1.0, remaining))
+    raise AssertionError("bounded history wait exhausted without classification")
+
+
 def assert_semantic_versions(
     value: Any,
     case: ProjectCase,
@@ -3382,15 +3450,22 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
         project_results = {project["id"]: project for project in result["projects"]}
         for case in cases:
             owner.require_running(f"before semantic profile checks for {case.project_id}")
-            cli_semantic = cli_call(
-                binaries["backend-cli"],
-                workspace,
-                endpoint,
-                case.path,
-                ["semantic-versions", str(case.path)],
-                client_environment,
-                deadline,
-                evidence,
+            history_observations = result.setdefault("history_await", {}).setdefault(
+                f"cli-semantic-versions-before-{case.project_id}", []
+            )
+            cli_semantic = await_selected_history(
+                lambda: cli_call(
+                    binaries["backend-cli"],
+                    workspace,
+                    endpoint,
+                    case.path,
+                    ["semantic-versions", str(case.path)],
+                    client_environment,
+                    deadline,
+                    evidence,
+                    f"cli-semantic-versions-before-{case.project_id}",
+                ),
+                case, profile_codes, deadline, history_observations,
                 f"cli-semantic-versions-before-{case.project_id}",
             )
             cli_semantic_identity = assert_semantic_versions(
@@ -3576,15 +3651,22 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
         semantic_after: dict[str, dict[str, Any]] = {}
         for case in cases:
             owner.require_running(f"after cold semantic profile checks for {case.project_id}")
-            cli_semantic = cli_call(
-                binaries["backend-cli"],
-                workspace,
-                endpoint,
-                case.path,
-                ["semantic-versions", str(case.path)],
-                client_environment,
-                deadline,
-                evidence,
+            history_observations = result.setdefault("history_await", {}).setdefault(
+                f"cli-semantic-versions-after-{case.project_id}", []
+            )
+            cli_semantic = await_selected_history(
+                lambda: cli_call(
+                    binaries["backend-cli"],
+                    workspace,
+                    endpoint,
+                    case.path,
+                    ["semantic-versions", str(case.path)],
+                    client_environment,
+                    deadline,
+                    evidence,
+                    f"cli-semantic-versions-after-{case.project_id}",
+                ),
+                case, profile_codes, deadline, history_observations,
                 f"cli-semantic-versions-after-{case.project_id}",
             )
             cli_semantic_identity = assert_semantic_versions(

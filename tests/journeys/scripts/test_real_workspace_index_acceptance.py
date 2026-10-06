@@ -74,6 +74,60 @@ class SourceContractTests(unittest.TestCase):
         self.assertGreater(capacity["compiler_workspace_total_file_maximum_bytes"], 0)
 
 
+class DerivedHistoryAwaitTests(unittest.TestCase):
+    def reply(self, state, selection=7, generation="generation", reason=None):
+        history = {"state": state, "selection_id": [selection] * 32}
+        if reason is not None:
+            history["reason"] = reason
+        return {"answer": "product", "heading": "semantic-versions",
+                "selected_source_frontier": {"version": "fixed"},
+                "records": [{"compiler_profile": [1, 0], "operand": generation,
+                             "tags": ["selected", "complete", "current source input"],
+                             "history_status": history}]}
+
+    def wait(self, replies, maximum_wait=10):
+        clock = [0.0]
+        observations = []
+        iterator = iter(replies)
+        case = runner.ProjectCase("case", Path("/project"), False, 0,
+                                  ({"profile": "typescript"},))
+        with patch.object(runner.time, "monotonic", side_effect=lambda: clock[0]), \
+             patch.object(runner.time, "sleep", side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)):
+            value = runner.await_selected_history(lambda: next(iterator), case,
+                {"typescript": (1, 0)}, runner.Deadline(100), observations, "await",
+                maximum_wait_seconds=maximum_wait)
+        return value, observations
+
+    def test_pending_publication_is_awaited_without_changing_selection(self):
+        values = [self.reply("not_requested"), self.reply("deferred", reason="worker slot"),
+                  self.reply("pending"), self.reply("published")]
+        last, observed = self.wait(values)
+        self.assertEqual(last, values[-1])
+        self.assertEqual([entry["reply"] for entry in observed], values)
+        self.assertEqual([entry["elapsed_seconds"] for entry in observed], [0, 1, 2, 3])
+
+    def test_typed_refusal_is_terminal_and_retained(self):
+        refused = self.reply("refused", reason="exact native image refused")
+        value, observations = self.wait([self.reply("pending"), refused])
+        self.assertEqual(value, refused)
+        self.assertEqual(len(observations), 2)
+
+    def test_new_selection_or_generation_does_not_count_as_old_job(self):
+        for advanced in (self.reply("published", selection=8),
+                         self.reply("published", generation="replacement")):
+            with self.subTest(advanced=advanced), self.assertRaisesRegex(runner.AcceptanceError, "changed"):
+                self.wait([self.reply("pending"), advanced])
+
+    def test_pending_does_not_become_success_after_timeout(self):
+        with self.assertRaisesRegex(runner.AcceptanceError, "remained in flight"):
+            self.wait([self.reply("pending")] * 3, maximum_wait=2)
+
+    def test_wrong_route_and_invalid_selection_are_not_polled(self):
+        for invalid in ({"answer": "surface"}, self.reply("pending", selection=True)):
+            with self.subTest(invalid=invalid), self.assertRaises(runner.AcceptanceError):
+                self.wait([invalid])
+
+
 class SnapshotToolchainAdmissionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
