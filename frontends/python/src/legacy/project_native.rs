@@ -1250,7 +1250,6 @@ fn native_constructor(ty: &Type) -> NativePythonTypeConstructor {
         Type::LiteralString(_) => NativePythonTypeConstructor::LiteralString,
         Type::Callable(_) => NativePythonTypeConstructor::Callable,
         Type::CallableResidual(_) => NativePythonTypeConstructor::CallableResidual,
-        Type::TypeLevelDslCall(_) => NativePythonTypeConstructor::TypeLevelDslCall,
         Type::Function(_) => NativePythonTypeConstructor::Function,
         Type::BoundMethod(_) => NativePythonTypeConstructor::BoundMethod,
         Type::Overload(_) => NativePythonTypeConstructor::Overload,
@@ -1261,11 +1260,9 @@ fn native_constructor(ty: &Type) -> NativePythonTypeConstructor {
         Type::TypedDict(_) => NativePythonTypeConstructor::TypedDict,
         Type::PartialTypedDict(_) => NativePythonTypeConstructor::PartialTypedDict,
         Type::ShapedArray(_) => NativePythonTypeConstructor::ShapedArray,
-        Type::IntTuple(_) => NativePythonTypeConstructor::IntTuple,
         Type::NNModule(_) => NativePythonTypeConstructor::NNModule,
-        Type::DataFrame(_) => NativePythonTypeConstructor::DataFrame,
-        Type::Series(_) => NativePythonTypeConstructor::Series,
-        Type::Int(_) => NativePythonTypeConstructor::Int,
+        Type::Size(_) => NativePythonTypeConstructor::Size,
+        Type::Dim(_) => NativePythonTypeConstructor::Dim,
         Type::Tuple(_) => NativePythonTypeConstructor::Tuple,
         Type::Module(_) => NativePythonTypeConstructor::Module,
         Type::Forall(_) => NativePythonTypeConstructor::Forall,
@@ -1403,7 +1400,7 @@ mod tests {
         let cancelled = AtomicBool::new(false);
         let control = PythonProjectControl {
             cancelled: &cancelled,
-            deadline: std::time::Instant::now() + Duration::from_secs(5),
+            deadline: Instant::now() + Duration::from_secs(5),
         };
         let site = Span { start: 0, end: 1 };
         let ty = Type::Tuple(Tuple::Concrete(vec![

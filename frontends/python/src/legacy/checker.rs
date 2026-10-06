@@ -265,8 +265,6 @@ pub enum NativePythonTypeConstructor {
     Callable,
     /// Native `Type::CallableResidual` constructor.
     CallableResidual,
-    /// Native `Type::TypeLevelDslCall` constructor.
-    TypeLevelDslCall,
     /// Native `Type::Function` constructor.
     Function,
     /// Native `Type::BoundMethod` constructor.
@@ -287,16 +285,12 @@ pub enum NativePythonTypeConstructor {
     PartialTypedDict,
     /// Native `Type::ShapedArray` constructor.
     ShapedArray,
-    /// Native `Type::IntTuple` constructor.
-    IntTuple,
     /// Native `Type::NNModule` constructor.
     NNModule,
-    /// Native `Type::DataFrame` constructor.
-    DataFrame,
-    /// Native `Type::Series` constructor.
-    Series,
-    /// Native `Type::Int` constructor.
-    Int,
+    /// Native `Type::Size` constructor.
+    Size,
+    /// Native `Type::Dim` constructor.
+    Dim,
     /// Native `Type::Tuple` constructor.
     Tuple,
     /// Native `Type::Module` constructor.
