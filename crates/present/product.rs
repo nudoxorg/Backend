@@ -3557,7 +3557,7 @@ mod tests {
                 observation: observation.clone(),
             };
             assert_eq!(reply.id(), backend_library::CommandId::Package);
-            reply.admit().expect("admitted metadata reply");
+            reply.admit(backend_library::CommandId::Package).expect("admitted metadata reply");
             let view = product_view(&reply);
             let dto = crate::dto::ProductDto::new(&view);
             let encoded = serde_json::to_value(&dto).expect("shared JSON");
