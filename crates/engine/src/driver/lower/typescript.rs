@@ -5531,42 +5531,64 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             let Some(callee_node) = arena.get(call.expression) else {
                 continue;
             };
-            let (site_node, target_symbol, reference_kind) =
-                if callee_node.kind == TszSyntaxKind::PROPERTY_ACCESS_EXPRESSION {
-                    let Some(access) = arena.get_access_expr_at(call.expression) else {
-                        continue;
-                    };
-                    if arena.get_identifier_at(access.name_or_argument).is_none() {
-                        continue;
-                    }
-                    called_member_accesses.insert(call.expression.0);
-                    let Some(target) = native_tsz_member_symbol(
-                        checker,
-                        binder,
-                        arena,
-                        access.expression,
-                        access.name_or_argument,
-                    ) else {
-                        continue;
-                    };
-                    (access.name_or_argument, target, ReferenceKind::MethodCall)
-                } else if arena.get_identifier_at(call.expression).is_some() {
-                    let Some(target) = binder.resolve_identifier(arena, call.expression) else {
-                        continue;
-                    };
-                    (call.expression, target, ReferenceKind::FunctionCall)
-                } else {
+            let (site_node, target_symbol, target_owner, reference_kind) = if callee_node.kind
+                == TszSyntaxKind::PROPERTY_ACCESS_EXPRESSION
+            {
+                let Some(access) = arena.get_access_expr_at(call.expression) else {
                     continue;
                 };
+                if arena.get_identifier_at(access.name_or_argument).is_none() {
+                    continue;
+                }
+                called_member_accesses.insert(call.expression.0);
+                let Some(target) = native_tsz_member_symbol(
+                    checker,
+                    binder,
+                    arena,
+                    access.expression,
+                    access.name_or_argument,
+                ) else {
+                    continue;
+                };
+                (
+                    access.name_or_argument,
+                    target,
+                    None,
+                    ReferenceKind::MethodCall,
+                )
+            } else if arena.get_identifier_at(call.expression).is_some() {
+                let Some(target) = checker.resolve_project_identifier_with_owner(call.expression)
+                else {
+                    continue;
+                };
+                (
+                    call.expression,
+                    target.symbol_id,
+                    Some(target.owner_file_idx),
+                    ReferenceKind::FunctionCall,
+                )
+            } else {
+                continue;
+            };
             let Some((site_start, site_end)) = arena.pos_end_at(site_node) else {
                 continue;
             };
             let Some(owner) = self.owning_fact(site_start) else {
                 continue;
             };
-            let Some(target) =
-                native_tsz_declaration_coordinate(binder, target_symbol, program_files, true)
-            else {
+            let target_binder = match target_owner {
+                Some(owner) => checker.ctx.get_binder_for_file(owner),
+                None => Some(binder),
+            };
+            let Some(target_binder) = target_binder else {
+                continue;
+            };
+            let Some(target) = native_tsz_declaration_coordinate(
+                target_binder,
+                target_symbol,
+                program_files,
+                true,
+            ) else {
                 continue;
             };
             self.commit_native_tsz_occurrence(
@@ -10864,6 +10886,61 @@ mod lane_tests {
     }
 
     #[test]
+    fn native_tsz_joins_named_import_call_to_exact_function_declaration() -> Result<(), LaneError> {
+        let scheduler = "export interface ScheduleRequest { courses: string[]; }\nexport function generateSchedule(request: ScheduleRequest): string[] {\n  return request.courses;\n}\n";
+        let caller = "import { generateSchedule, type ScheduleRequest } from '@/lib/scheduler';\nexport function POST() { const request: ScheduleRequest = { courses: ['CS101'] }; return generateSchedule(request); }\n";
+        let resolutions = [module_resolution(
+            "src/app/api/route.ts",
+            "@/lib/scheduler",
+            TszProjectModuleRequestKind::EsmImport,
+            TszProjectModuleResolutionTarget::File {
+                path: "src/lib/scheduler.ts".to_owned(),
+            },
+        )];
+        let authority = native_tsz_project_with_resolutions(
+            &[
+                ("src/lib/scheduler.ts", scheduler),
+                ("src/app/api/route.ts", caller),
+            ],
+            &resolutions,
+        )?;
+        let project = authority
+            .project()
+            .ok_or(LaneError::Missing("named function alias TSZ project"))?;
+        assert_exact_module_resolution_metadata(project, &resolutions);
+        let caller_facts = collect_native_tsz_file(project, "src/app/api/route.ts", caller)?;
+        let targets = staged_tsz_coordinates(&caller_facts)?;
+        let declaration_start = u32::try_from(
+            scheduler
+                .find("function generateSchedule")
+                .ok_or(LaneError::Missing("named function declaration coordinate"))?,
+        )?;
+        let declaration_name = u32::try_from(
+            scheduler
+                .find("generateSchedule(request")
+                .ok_or(LaneError::Missing("named function declaration name"))?,
+        )?;
+        let declaration_end = u32::try_from(
+            scheduler
+                .find("\n}\n")
+                .ok_or(LaneError::Missing("named function declaration end"))?
+                + 2,
+        )?;
+        assert!(
+            targets.iter().any(|(kind, path, start, end, name, owner)| {
+                *kind == ReferenceKind::FunctionCall
+                    && path == "src/lib/scheduler.ts"
+                    && *start == declaration_start
+                    && *end == declaration_end
+                    && *name == declaration_name
+                    && *owner < caller_facts.len() as u32
+            }),
+            "named aliased call must point to the exact dependency declaration: {targets:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn native_tsz_checker_populates_existing_observed_type_lane() -> Result<(), LaneError> {
         // The multibyte prefix exercises the TSZ-to-OXC name-span join against
         // the original UTF-8 source bytes, without UTF-16 or lossy conversion.
@@ -11071,7 +11148,9 @@ mod lane_tests {
         native
             .closure_witness
             .validate_current(admitted.witness.as_ref())
-            .map_err(|error| LaneError::ConfiguredProject(format!("resolver witness: {error:?}")))?;
+            .map_err(|error| {
+                LaneError::ConfiguredProject(format!("resolver witness: {error:?}"))
+            })?;
         let route_path = native
             .package_paths
             .get("src/app/api/route.ts")
