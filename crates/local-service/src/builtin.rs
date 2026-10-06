@@ -1591,13 +1591,33 @@ pub(crate) fn compose_owner(
             backend_frontend_rust::legacy::RustCargoMetadataPolicy::Offline
         }
     };
+    let compiler_selection = match config.compiler_environment.clone() {
+        Some(snapshot) => {
+            backend_engine::application::LocalCompilerHostSelection::from_closed_snapshot(snapshot)
+                .map_err(|error| {
+                    ProcessError::Profile(format!("admit closed compiler selection: {error}"))
+                })?
+        }
+        None => backend_engine::application::LocalCompilerHost::new(
+            embedded_host::EmbeddedCompilerEnvironment {
+                data_root: compiler_root.clone(),
+                compiler_environment: None,
+                search_path: std::env::var_os("PATH"),
+            },
+            backend_engine::application::LocalHostDiscovery::InstalledTools,
+        )
+        .capture_installed_selection()
+        .map_err(|error| {
+            ProcessError::Profile(format!("capture installed compiler selection: {error}"))
+        })?,
+    };
     let mut compiler_host = backend_engine::application::LocalCompilerHost::new(
         embedded_host::EmbeddedCompilerEnvironment {
-            data_root: compiler_root,
-            compiler_environment: config.compiler_environment.clone(),
-            search_path: std::env::var_os("PATH"),
+            data_root: compiler_root.clone(),
+            compiler_environment: Some(compiler_selection.snapshot().clone()),
+            search_path: None,
         },
-        backend_engine::application::LocalHostDiscovery::ExplicitOnly,
+        backend_engine::application::LocalHostDiscovery::ClosedSnapshot,
     )
     .with_rust_cargo_metadata_policy(cargo_metadata_policy);
     if let Ok(cache_directory) = daemon
@@ -1616,6 +1636,16 @@ pub(crate) fn compose_owner(
                 .open_with_embedding_runtime(embedding.runtime(), embedding.requirement()),
         }
         .map_err(|error| ProcessError::Profile(format!("open compiler owner: {error}")))?;
+    let selection_receipt = compiler_selection.encode_receipt().map_err(|error| {
+        ProcessError::Profile(format!("encode compiler selection receipt: {error}"))
+    })?;
+    backend_platform::durable::write_private_atomic(
+        &compiler_root.join("host-selection-v1.json"),
+        selection_receipt.as_bytes(),
+    )
+    .map_err(|error| {
+        ProcessError::Profile(format!("publish compiler selection receipt: {error}"))
+    })?;
     #[cfg(feature = "cluster-process-journey-hooks")]
     if std::env::var_os("BACKEND_JOURNEY_REMOTE_SEGMENT_GC")
         .is_some_and(|value| value.to_str() == Some("1"))

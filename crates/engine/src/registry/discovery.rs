@@ -34,6 +34,18 @@ pub use backend_library::{
     MAX_DISCOVERY_REVISION_BYTES, RegistryFactReadError, RegistryFactVersionId,
 };
 
+/// Maximum decoded PEP 691 project-index document size.
+///
+/// PyPI's unpaged global project set is already larger than the per-package
+/// metadata budget. Keep its bounded input allowance independent of individual
+/// package documents and discovery transactions; the parsed project count is
+/// still bounded by [`MAX_DISCOVERY_PROJECTS`].
+pub const MAX_PYPI_PROJECT_INDEX_BYTES: usize = 128 * 1024 * 1024;
+
+/// Decoded npm packument budget shared with native package acquisition.
+/// Full packuments for ordinary packages can exceed a discovery event page.
+pub const MAX_NPM_PACKUMENT_BYTES: usize = super::ecosystem::MAX_NATIVE_METADATA_BYTES;
+
 /// Derives the neutral discovery source identity from an admitted endpoint.
 #[must_use]
 pub const fn discovery_source_identity(endpoint: &RegistryEndpoint) -> DiscoverySourceIdentity {
@@ -475,7 +487,7 @@ pub fn parse_npm_packument_document(
     sequence: u64,
     max_versions: usize,
 ) -> Result<NpmPackument, DiscoveryError> {
-    if bytes.len() > 32 * 1024 * 1024 {
+    if bytes.len() > MAX_NPM_PACKUMENT_BYTES {
         return Err(DiscoveryError::Bounds);
     }
     let value: serde_json::Value =
@@ -593,7 +605,9 @@ pub fn parse_pypi_project_list(
     bytes: &[u8],
     max_projects: usize,
 ) -> Result<PypiProjectList, DiscoveryError> {
-    if bytes.len() > 32 * 1024 * 1024 || max_projects == 0 || max_projects > MAX_DISCOVERY_PROJECTS
+    if bytes.len() > MAX_PYPI_PROJECT_INDEX_BYTES
+        || max_projects == 0
+        || max_projects > MAX_DISCOVERY_PROJECTS
     {
         return Err(DiscoveryError::Bounds);
     }
@@ -2540,6 +2554,57 @@ mod tests {
             r#"{{"results":[{{"seq":1,"id":"pkg","doc":{{"name":"pkg","_rev":"{oversized_revision}","versions":{{"1.0.0":{{}}}}}}}}],"last_seq":1}}"#
         );
         assert_eq!(parse(&oversized), Err(DiscoveryError::Bounds));
+    }
+
+    #[test]
+    fn npm_packument_uses_the_native_package_document_budget() {
+        let mut bytes =
+            br#"{"name":"vite","_rev":"1-fixture","versions":{"8.3.3":{"license":"MIT"}}}"#
+                .to_vec();
+        bytes.resize(32 * 1024 * 1024 + 1, b' ');
+        let packument = parse_npm_packument_document(&bytes, "vite", 1, 1)
+            .expect("ordinary package packument larger than an event page");
+        assert_eq!(packument.revision.as_deref(), Some("1-fixture"));
+        assert_eq!(packument.releases.len(), 1);
+        assert_eq!(
+            packument.releases[0].coordinate.as_str(),
+            "pkg:npm/vite@8.3.3"
+        );
+        assert_eq!(
+            packument.releases[0].metadata.license,
+            DiscoveryFacet::Known("MIT".to_owned())
+        );
+        bytes.resize(MAX_NPM_PACKUMENT_BYTES + 1, b' ');
+        assert_eq!(
+            parse_npm_packument_document(&bytes, "vite", 1, 1),
+            Err(DiscoveryError::Bounds)
+        );
+    }
+
+    #[test]
+    fn pep691_global_project_index_has_an_independent_document_budget() {
+        // The public, unpaged /simple/ document exceeds the 32 MiB allowance
+        // for individual package metadata. Valid JSON padding crosses that
+        // former boundary without requiring a huge generated project set.
+        let mut bytes = br#"{"meta":{"_last-serial":41888799},"projects":[{"name":"Requests"},{"name":"my_pkg"}]}"#
+            .to_vec();
+        bytes.resize(32 * 1024 * 1024 + 1, b' ');
+        let projects = parse_pypi_project_list(&bytes, 2).expect("global project-index budget");
+        assert_eq!(projects.serial, Some(41888799));
+        assert_eq!(projects.projects.len(), 2);
+        assert_eq!(projects.projects[0].canonical_name, "my-pkg");
+        assert_eq!(projects.projects[1].canonical_name, "requests");
+        assert!(!projects.is_truncated);
+
+        let capped = parse_pypi_project_list(&bytes, 1).expect("bounded project projection");
+        assert_eq!(capped.projects.len(), 1);
+        assert!(capped.is_truncated);
+
+        bytes.resize(MAX_PYPI_PROJECT_INDEX_BYTES + 1, b' ');
+        assert_eq!(
+            parse_pypi_project_list(&bytes, 2),
+            Err(DiscoveryError::Bounds)
+        );
     }
 
     #[test]

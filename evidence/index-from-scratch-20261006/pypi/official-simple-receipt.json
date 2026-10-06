@@ -1,0 +1,16 @@
+{
+  "schema": "nudox.index-manual-observation.v1",
+  "url": "https://pypi.org/simple/",
+  "accept": "application/vnd.pypi.simple.v1+json",
+  "accept_encoding": "identity",
+  "http_status": 200,
+  "bytes": 44519834,
+  "sha256": "aeef7c57e6e4adaa3cbd3782eda9ac10dde96e275ba5c7d8a85d439a1da0c2ac",
+  "get_seconds": 18.715932,
+  "projects": 907204,
+  "last_serial": 41888799,
+  "source_baseline": "13b2fc3f92ba26e2c807cc2e9c860fa7939aa0e4",
+  "old_byte_limit": 33554432,
+  "old_request_timeout_seconds": 3,
+  "raw_body_external_path": "/tmp/sol61-official-pypi-simple-20261006.json"
+}

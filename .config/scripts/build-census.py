@@ -19,7 +19,9 @@ import datetime as _datetime
 import json
 import os
 import pathlib
+import re
 import selectors
+import shutil
 import struct
 import subprocess
 import sys
@@ -42,8 +44,10 @@ MAX_REPORTED_CARGO_ENTRIES = 512
 MAX_ANCESTRY_DEPTH = 64
 # proc_pidpath rejects buffers above PROC_PIDPATHINFO_MAXSIZE (4*MAXPATHLEN).
 MAX_PATH_BYTES = 4 * 1024
+MAX_RESOURCE_OUTPUT_BYTES = 64 * 1024
 TOTAL_BUILD_CAPACITY = 4
 RESERVED_REMOTE_BUILDS = 1
+GIB = 1024**3
 
 KNOWN_BUILD_VERBS = frozenset({"build", "check", "test", "run", "bench", "install"})
 KNOWN_QUERY_VERBS = frozenset(
@@ -77,6 +81,8 @@ class ProcessRecord:
     state: str | None = None
     identity_validated: bool = True
     comm_candidate: bool = False
+    compiler_candidate: bool = False
+    runtime_owner_candidate: bool = False
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -178,6 +184,7 @@ class CargoEntry:
     classification: str
     verb: str | None
     reason: str | None
+    requested_jobs: int | None
 
 
 def _argv_command(argv: tuple[str, ...] | None) -> tuple[str, str | None, str | None]:
@@ -245,6 +252,54 @@ def _is_cargo_executable(executable: str) -> bool:
     return executable_name in {"cargo", "cargo.exe"}
 
 
+def _is_rustc_executable(executable: str) -> bool:
+    executable_name = pathlib.PurePath(executable).name
+    if executable_name.endswith(" (deleted)"):
+        executable_name = executable_name.removesuffix(" (deleted)")
+    return executable_name in {"rustc", "rustc.exe"}
+
+
+def _is_runtime_owner_executable(executable: str) -> bool:
+    executable_name = pathlib.PurePath(executable).name
+    if executable_name.endswith(" (deleted)"):
+        executable_name = executable_name.removesuffix(" (deleted)")
+    return executable_name in {
+        "backend-locald",
+        "backend-locald.exe",
+        "backend-desktop",
+        "backend-desktop.exe",
+        "locald",
+        "locald.exe",
+    }
+
+
+def _requested_cargo_jobs(argv: tuple[str, ...] | None) -> int | None:
+    """Read only an explicit positive Cargo `--jobs` setting from argv."""
+    if argv is None:
+        return None
+    values: list[str] = []
+    index = 1
+    while index < len(argv):
+        token = argv[index]
+        if token == "--":
+            break
+        if token in {"--jobs", "-j"}:
+            if index + 1 >= len(argv):
+                return None
+            values.append(argv[index + 1])
+            index += 2
+            continue
+        if token.startswith("--jobs="):
+            values.append(token.partition("=")[2])
+        elif token.startswith("-j") and len(token) > 2:
+            values.append(token[2:])
+        index += 1
+    if len(values) != 1 or not values[0].isascii() or not values[0].isdecimal():
+        return None
+    parsed = int(values[0], 10)
+    return parsed if parsed > 0 else None
+
+
 def _safe_argv(record: ProcessRecord, verb: str | None) -> dict[str, Any]:
     """Describe argv without persisting positional values, paths, or secrets."""
     if record.argv is None:
@@ -286,19 +341,117 @@ def classify_cargo_process(record: ProcessRecord) -> CargoEntry | None:
     if not _looks_like_cargo(record):
         return None
     if record.state in {"Z", "X", "zombie", "exited"}:
-        return CargoEntry(record, "exited", None, "process-not-running")
+        return CargoEntry(record, "exited", None, "process-not-running", None)
     if record.executable is None:
-        return CargoEntry(record, "unknown", None, "cargo-candidate-details-unavailable")
+        return CargoEntry(record, "unknown", None, "cargo-candidate-details-unavailable", None)
     classification, verb, reason = _argv_command(record.argv)
     if record.argv_error:
         classification, verb, reason = "unknown", None, record.argv_error
-    return CargoEntry(record, classification, verb, reason)
+    return CargoEntry(record, classification, verb, reason, _requested_cargo_jobs(record.argv))
 
 
 def cargo_entries(snapshot: ProcessSnapshot) -> list[CargoEntry]:
     entries = [entry for record in snapshot.records.values() if (entry := classify_cargo_process(record))]
     entries.sort(key=lambda entry: (entry.record.pid, entry.record.start_token))
     return entries
+
+
+def compiler_groups(snapshot: ProcessSnapshot, entries: Iterable[CargoEntry]) -> list[dict[str, Any]]:
+    """Group compiler and known runtime-owner processes by OS process group."""
+    by_pgid: dict[int, dict[str, Any]] = {}
+    for entry in entries:
+        if entry.classification not in {"build", "unknown"}:
+            continue
+        group = by_pgid.setdefault(
+            entry.record.pgid,
+            {"pgid": entry.record.pgid, "cargo": [], "rustc": [], "unknown_rustc": [], "runtime": [], "unknown_runtime": []},
+        )
+        group["cargo"].append(entry)
+    for record in snapshot.records.values():
+        if record.state in {"Z", "X", "zombie", "exited"}:
+            continue
+        if record.executable is not None and _is_rustc_executable(record.executable):
+            by_pgid.setdefault(
+                record.pgid,
+                {"pgid": record.pgid, "cargo": [], "rustc": [], "unknown_rustc": [], "runtime": [], "unknown_runtime": []},
+            )["rustc"].append(record)
+        elif record.compiler_candidate:
+            by_pgid.setdefault(
+                record.pgid,
+                {"pgid": record.pgid, "cargo": [], "rustc": [], "unknown_rustc": [], "runtime": [], "unknown_runtime": []},
+            )["unknown_rustc"].append(record)
+        elif record.executable is not None and _is_runtime_owner_executable(record.executable):
+            by_pgid.setdefault(
+                record.pgid,
+                {"pgid": record.pgid, "cargo": [], "rustc": [], "unknown_rustc": [], "runtime": [], "unknown_runtime": []},
+            )["runtime"].append(record)
+        elif record.runtime_owner_candidate:
+            by_pgid.setdefault(
+                record.pgid,
+                {"pgid": record.pgid, "cargo": [], "rustc": [], "unknown_rustc": [], "runtime": [], "unknown_runtime": []},
+            )["unknown_runtime"].append(record)
+
+    result: list[dict[str, Any]] = []
+    for pgid, group in sorted(by_pgid.items()):
+        cargo: list[CargoEntry] = group["cargo"]
+        rustc: list[ProcessRecord] = group["rustc"]
+        unknown_rustc: list[ProcessRecord] = group["unknown_rustc"]
+        runtime: list[ProcessRecord] = group["runtime"]
+        unknown_runtime: list[ProcessRecord] = group["unknown_runtime"]
+        if not cargo and not rustc and not unknown_rustc and not runtime and not unknown_runtime:
+            continue
+        if cargo:
+            unknown = any(entry.classification == "unknown" for entry in cargo) or bool(unknown_rustc or unknown_runtime)
+            jobs = [entry.requested_jobs for entry in cargo]
+            requested_jobs = sum(jobs) if jobs and all(value is not None for value in jobs) else None
+            result.append(
+                {
+                    "pgid": pgid,
+                    "kind": "cargo",
+                    "classification": "unknown" if unknown else "build",
+                    "pids": sorted(
+                        [entry.record.pid for entry in cargo]
+                        + [record.pid for record in rustc]
+                        + [record.pid for record in unknown_rustc]
+                        + [record.pid for record in runtime]
+                        + [record.pid for record in unknown_runtime]
+                    ),
+                    "cargo_pids": sorted(entry.record.pid for entry in cargo),
+                    "runtime_owner_pids": sorted(record.pid for record in [*runtime, *unknown_runtime]),
+                    "rustc_process_count": len(rustc) + len(unknown_rustc),
+                    "requested_cargo_jobs": requested_jobs,
+                    "job_limit_known": requested_jobs is not None,
+                }
+            )
+        elif rustc or unknown_rustc:
+            result.append(
+                {
+                    "pgid": pgid,
+                    "kind": "orphan-rustc",
+                    "classification": "unknown" if unknown_rustc or unknown_runtime else "orphan-rustc",
+                    "pids": sorted(record.pid for record in [*rustc, *unknown_rustc, *runtime, *unknown_runtime]),
+                    "cargo_pids": [],
+                    "runtime_owner_pids": sorted(record.pid for record in [*runtime, *unknown_runtime]),
+                    "rustc_process_count": len(rustc) + len(unknown_rustc),
+                    "requested_cargo_jobs": None,
+                    "job_limit_known": False,
+                }
+            )
+        else:
+            result.append(
+                {
+                    "pgid": pgid,
+                    "kind": "runtime-owner",
+                    "classification": "unknown" if unknown_runtime else "runtime-owner",
+                    "pids": sorted(record.pid for record in [*runtime, *unknown_runtime]),
+                    "cargo_pids": [],
+                    "runtime_owner_pids": sorted(record.pid for record in [*runtime, *unknown_runtime]),
+                    "rustc_process_count": 0,
+                    "requested_cargo_jobs": None,
+                    "job_limit_known": False,
+                }
+            )
+    return result
 
 
 def decide_capacity(
@@ -423,8 +576,9 @@ def _snapshot_now() -> ProcessSnapshot:
 def _host_process_rows() -> list[_PsRow]:
     """Read a bounded host-visible PID/UID/comm census, never command lines."""
     if sys.platform == "darwin":
+        ps_path = "/bin/ps"
         command = [
-            "/bin/ps",
+            ps_path,
             "-ww",
             "-A",
             "-o",
@@ -441,8 +595,9 @@ def _host_process_rows() -> list[_PsRow]:
             "ucomm=",
         ]
     elif sys.platform.startswith("linux"):
+        ps_path = shutil.which("ps") or "/bin/ps"
         command = [
-            "/bin/ps",
+            ps_path,
             "-ww",
             "-e",
             "-o",
@@ -594,7 +749,8 @@ def _linux_process_record(row: _PsRow, boot_id: str, argv_budget: _ArgvBudget) -
                     argv = tuple(os.fsdecode(part) for part in parts)
                     argv_error = None
     else:
-        executable = None
+        if not _is_rustc_executable(executable) and not _is_runtime_owner_executable(executable):
+            executable = None
         argv = None
         argv_error = None
     return ProcessRecord(
@@ -623,6 +779,34 @@ def _unknown_cargo_candidate(row: _PsRow) -> ProcessRecord:
     )
 
 
+def _unknown_compiler_candidate(row: _PsRow) -> ProcessRecord:
+    return ProcessRecord(
+        pid=row.pid,
+        ppid=row.ppid,
+        pgid=row.pgid,
+        start_token=None,
+        executable=None,
+        argv=None,
+        argv_error="compiler-candidate-details-unavailable",
+        identity_validated=False,
+        compiler_candidate=True,
+    )
+
+
+def _unknown_runtime_owner_candidate(row: _PsRow) -> ProcessRecord:
+    return ProcessRecord(
+        pid=row.pid,
+        ppid=row.ppid,
+        pgid=row.pgid,
+        start_token=None,
+        executable=None,
+        argv=None,
+        argv_error="runtime-owner-candidate-details-unavailable",
+        identity_validated=False,
+        runtime_owner_candidate=True,
+    )
+
+
 def _linux_processes(
     effective_uid: int,
     rows: list[_PsRow],
@@ -642,8 +826,11 @@ def _linux_processes(
             issues["native-process-scan-timeout"] = 1
             break
         same_uid = row.effective_uid == effective_uid
-        cargo_hint = pathlib.PurePath(row.ucomm).name in {"cargo", "cargo.exe"}
-        if not same_uid and not cargo_hint:
+        command_hint = pathlib.PurePath(row.ucomm).name
+        cargo_hint = command_hint in {"cargo", "cargo.exe"}
+        compiler_hint = command_hint in {"rustc", "rustc.exe"}
+        runtime_hint = _is_runtime_owner_executable(command_hint)
+        if not same_uid and not cargo_hint and not compiler_hint and not runtime_hint:
             continue
         try:
             record = _linux_process_record(row, boot_id, argv_budget)
@@ -653,26 +840,58 @@ def _linux_processes(
                 races["pid-uid-changed-during-scan"] = races.get("pid-uid-changed-during-scan", 0) + 1
                 if cargo_hint:
                     records[row.pid] = _unknown_cargo_candidate(row)
+                elif compiler_hint:
+                    records[row.pid] = _unknown_compiler_candidate(row)
+                elif runtime_hint:
+                    records[row.pid] = _unknown_runtime_owner_candidate(row)
             elif cargo_hint:
                 records[row.pid] = _unknown_cargo_candidate(row)
+            elif compiler_hint:
+                records[row.pid] = _unknown_compiler_candidate(row)
+            elif runtime_hint:
+                records[row.pid] = _unknown_runtime_owner_candidate(row)
         except FileNotFoundError:
             races["pid-exited-during-scan"] = races.get("pid-exited-during-scan", 0) + 1
             if cargo_hint:
                 records[row.pid] = _unknown_cargo_candidate(row)
+            elif compiler_hint:
+                records[row.pid] = _unknown_compiler_candidate(row)
+            elif runtime_hint:
+                records[row.pid] = _unknown_runtime_owner_candidate(row)
         except PermissionError:
-            if same_uid and cargo_hint:
-                records[row.pid] = _unknown_cargo_candidate(row)
+            if same_uid and (cargo_hint or compiler_hint or runtime_hint):
+                records[row.pid] = (
+                    _unknown_cargo_candidate(row)
+                    if cargo_hint
+                    else _unknown_compiler_candidate(row)
+                    if compiler_hint
+                    else _unknown_runtime_owner_candidate(row)
+                )
             elif same_uid:
                 issues["same-uid-process-unreadable"] = issues.get("same-uid-process-unreadable", 0) + 1
             elif cargo_hint:
                 records[row.pid] = _unknown_cargo_candidate(row)
+            elif compiler_hint:
+                records[row.pid] = _unknown_compiler_candidate(row)
+            elif runtime_hint:
+                records[row.pid] = _unknown_runtime_owner_candidate(row)
         except (OSError, ValueError, IndexError):
-            if same_uid and cargo_hint:
-                records[row.pid] = _unknown_cargo_candidate(row)
+            if same_uid and (cargo_hint or compiler_hint or runtime_hint):
+                records[row.pid] = (
+                    _unknown_cargo_candidate(row)
+                    if cargo_hint
+                    else _unknown_compiler_candidate(row)
+                    if compiler_hint
+                    else _unknown_runtime_owner_candidate(row)
+                )
             elif same_uid:
                 issues["same-uid-process-snapshot-incomplete"] = issues.get("same-uid-process-snapshot-incomplete", 0) + 1
             elif cargo_hint:
                 records[row.pid] = _unknown_cargo_candidate(row)
+            elif compiler_hint:
+                records[row.pid] = _unknown_compiler_candidate(row)
+            elif runtime_hint:
+                records[row.pid] = _unknown_runtime_owner_candidate(row)
     return records, issues, races
 
 
@@ -737,8 +956,11 @@ def _darwin_processes(
             break
         pid = row.pid
         same_uid = row.effective_uid == effective_uid
-        cargo_hint = pathlib.PurePath(row.ucomm).name in {"cargo", "cargo.exe"}
-        if not same_uid and not cargo_hint:
+        command_hint = pathlib.PurePath(row.ucomm).name
+        cargo_hint = command_hint in {"cargo", "cargo.exe"}
+        compiler_hint = command_hint in {"rustc", "rustc.exe"}
+        runtime_hint = _is_runtime_owner_executable(command_hint)
+        if not same_uid and not cargo_hint and not compiler_hint and not runtime_hint:
             continue
         info = _ProcBsdInfo()
         ctypes.set_errno(0)
@@ -750,21 +972,41 @@ def _darwin_processes(
                     races["pid-exited-during-scan"] = races.get("pid-exited-during-scan", 0) + 1
                     if cargo_hint:
                         records[pid] = _unknown_cargo_candidate(row)
+                    elif compiler_hint:
+                        records[pid] = _unknown_compiler_candidate(row)
+                    elif runtime_hint:
+                        records[pid] = _unknown_runtime_owner_candidate(row)
                 else:
                     if cargo_hint:
                         records[pid] = _unknown_cargo_candidate(row)
+                    elif compiler_hint:
+                        records[pid] = _unknown_compiler_candidate(row)
+                    elif runtime_hint:
+                        records[pid] = _unknown_runtime_owner_candidate(row)
                     else:
                         issues["same-uid-process-unreadable"] = issues.get("same-uid-process-unreadable", 0) + 1
             elif cargo_hint:
                 records[pid] = _unknown_cargo_candidate(row)
+            elif compiler_hint:
+                records[pid] = _unknown_compiler_candidate(row)
+            elif runtime_hint:
+                records[pid] = _unknown_runtime_owner_candidate(row)
             continue
         if row.effective_uid is not None and int(info.uid) != row.effective_uid:
             if same_uid:
                 races["pid-uid-changed-during-scan"] = races.get("pid-uid-changed-during-scan", 0) + 1
                 if cargo_hint:
                     records[pid] = _unknown_cargo_candidate(row)
+                elif compiler_hint:
+                    records[pid] = _unknown_compiler_candidate(row)
+                elif runtime_hint:
+                    records[pid] = _unknown_runtime_owner_candidate(row)
             elif cargo_hint:
                 records[pid] = _unknown_cargo_candidate(row)
+            elif compiler_hint:
+                records[pid] = _unknown_compiler_candidate(row)
+            elif runtime_hint:
+                records[pid] = _unknown_runtime_owner_candidate(row)
             continue
         path_buffer = ctypes.create_string_buffer(MAX_PATH_BYTES)
         ctypes.set_errno(0)
@@ -775,13 +1017,25 @@ def _darwin_processes(
                     races["pid-exited-during-scan"] = races.get("pid-exited-during-scan", 0) + 1
                     if cargo_hint:
                         records[pid] = _unknown_cargo_candidate(row)
+                    elif compiler_hint:
+                        records[pid] = _unknown_compiler_candidate(row)
+                    elif runtime_hint:
+                        records[pid] = _unknown_runtime_owner_candidate(row)
                 else:
                     if cargo_hint:
                         records[pid] = _unknown_cargo_candidate(row)
+                    elif compiler_hint:
+                        records[pid] = _unknown_compiler_candidate(row)
+                    elif runtime_hint:
+                        records[pid] = _unknown_runtime_owner_candidate(row)
                     else:
                         issues["same-uid-executable-unreadable"] = issues.get("same-uid-executable-unreadable", 0) + 1
             elif cargo_hint:
                 records[pid] = _unknown_cargo_candidate(row)
+            elif compiler_hint:
+                records[pid] = _unknown_compiler_candidate(row)
+            elif runtime_hint:
+                records[pid] = _unknown_runtime_owner_candidate(row)
             continue
         executable = os.fsdecode(path_buffer.raw[:path_size])
         if _is_cargo_executable(executable):
@@ -801,7 +1055,8 @@ def _darwin_processes(
                     argv = None
                     argv_error = str(error) if isinstance(error, CensusError) else f"argv-read:{type(error).__name__}"
         else:
-            executable = None
+            if not _is_rustc_executable(executable) and not _is_runtime_owner_executable(executable):
+                executable = None
             argv = None
             argv_error = None
         records[pid] = ProcessRecord(
@@ -861,10 +1116,11 @@ def _entry_json(entry: CargoEntry, records: Mapping[int, ProcessRecord], owner: 
         "pgid": record.pgid,
         "start_token": record.start_token,
         "identity_validated": record.identity_validated and record.start_token is not None,
-        "executable": record.executable,
+        "executable": pathlib.PurePath(record.executable).name if record.executable else None,
         "argv_verb": entry.verb,
         "classification": entry.classification,
         "classification_reason": entry.reason,
+        "requested_cargo_jobs": entry.requested_jobs,
         "argv": _safe_argv(record, entry.verb),
         "ancestry_complete": complete,
         "ancestry": [dataclasses.asdict(identity) for identity in ancestry],
@@ -876,10 +1132,68 @@ def _entry_json(entry: CargoEntry, records: Mapping[int, ProcessRecord], owner: 
     return value
 
 
+def _host_resource_snapshot() -> dict[str, Any]:
+    sampled_at = _datetime.datetime.now(_datetime.timezone.utc).isoformat()
+    if sys.platform.startswith("linux"):
+        text = pathlib.Path("/proc/meminfo").read_text(encoding="ascii")
+        matches = re.findall(r"^MemAvailable:\s+(\d+) kB$", text, re.MULTILINE)
+        if len(matches) != 1:
+            raise CensusError("linux-memavailable-missing-or-ambiguous")
+        available_bytes = int(matches[0]) * 1024
+        memory_source = "linux-proc-meminfo-MemAvailable"
+    elif sys.platform == "darwin":
+        try:
+            result = subprocess.run(
+                ["/usr/bin/vm_stat"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=True,
+                env={"LC_ALL": "C"},
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise CensusError(f"darwin-vm-stat-unavailable:{type(error).__name__}") from error
+        if len(result.stdout) > MAX_RESOURCE_OUTPUT_BYTES:
+            raise CensusError("darwin-vm-stat-output-limit")
+        text = result.stdout.decode("ascii", errors="strict")
+        page_sizes = re.findall(r"^Mach Virtual Memory Statistics: \(page size of (\d+) bytes\)$", text, re.MULTILINE)
+        if len(page_sizes) != 1:
+            raise CensusError("darwin-vm-stat-page-size-missing-or-ambiguous")
+        page_values: dict[str, int] = {}
+        for name, raw in re.findall(r"^(Pages free|Pages inactive|Pages speculative):\s+(\d+)\.$", text, re.MULTILINE):
+            if name in page_values:
+                raise CensusError("darwin-vm-stat-duplicate-page-count")
+            page_values[name] = int(raw)
+        if set(page_values) != {"Pages free", "Pages inactive", "Pages speculative"}:
+            raise CensusError("darwin-vm-stat-page-count-missing")
+        available_bytes = sum(page_values.values()) * int(page_sizes[0])
+        memory_source = "darwin-vm-stat-free-inactive-speculative"
+    else:
+        raise CensusError("unsupported-resource-api")
+    try:
+        disk = shutil.disk_usage(os.path.abspath(os.sep))
+    except OSError as error:
+        raise CensusError(f"root-disk-usage-unavailable:{type(error).__name__}") from error
+    return {
+        "sampled_at_utc": sampled_at,
+        "available_memory_bytes": available_bytes,
+        "available_memory_source": memory_source,
+        "root_disk_available_bytes": disk.free,
+        "root_disk_total_bytes": disk.total,
+        "root_disk_used_bytes": disk.used,
+    }
+
+
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--owner-pid", type=int)
     parser.add_argument("--owner-start-token")
+    parser.add_argument(
+        "--fleet-resources",
+        action="store_true",
+        help="include a bounded memory/disk sample for the fleet admission advisor",
+    )
     args = parser.parse_args(argv)
     if (args.owner_pid is None) != (args.owner_start_token is None):
         parser.error("--owner-pid and --owner-start-token must be provided together")
@@ -894,6 +1208,14 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"complete": False, "error": str(error)}, sort_keys=True))
         return 2
     entries = cargo_entries(snapshot)
+    groups = compiler_groups(snapshot, entries)
+    resource_snapshot = None
+    resource_error = None
+    if args.fleet_resources:
+        try:
+            resource_snapshot = _host_resource_snapshot()
+        except (CensusError, OSError, UnicodeError) as error:
+            resource_error = str(error) if isinstance(error, CensusError) else f"resource-snapshot:{type(error).__name__}"
     owner = (
         ProcessIdentity(args.owner_pid, args.owner_start_token)
         if args.owner_pid is not None and args.owner_start_token is not None
@@ -913,7 +1235,7 @@ def main(argv: list[str] | None = None) -> int:
         "captured_argv_bytes": snapshot.captured_argv_bytes,
         "captured_argv_processes": snapshot.captured_argv_processes,
         "argv_budget_exhausted": snapshot.argv_budget_exhausted,
-        "scope_note": "Only foreign rows with Cargo-looking command names are inspected; inaccessible candidates count as unknown. Other foreign rows and processes hidden by OS namespaces or permissions are not validated, so this advisory cannot guarantee whole-machine capacity.",
+        "scope_note": "Foreign Cargo, rustc, and locald/backend-locald/backend-desktop-looking rows are inspected; inaccessible candidates count as occupied unknown process groups. Same-UID process executable paths are inspected. Cargo argv is read through native process APIs and redacted. Other foreign rows and processes hidden by OS namespaces or permissions are not validated, so this advisory cannot guarantee whole-machine capacity.",
         "sample_started_at_utc": snapshot.started_at_utc,
         "sample_finished_at_utc": snapshot.finished_at_utc,
         "snapshot_atomic": False,
@@ -925,11 +1247,22 @@ def main(argv: list[str] | None = None) -> int:
             for entry in entries[:MAX_REPORTED_CARGO_ENTRIES]
         ],
         "entries_omitted_count": max(0, len(entries) - MAX_REPORTED_CARGO_ENTRIES),
+        "compiler_groups": groups[:MAX_REPORTED_CARGO_ENTRIES],
+        "compiler_groups_omitted_count": max(0, len(groups) - MAX_REPORTED_CARGO_ENTRIES),
         "capacity": decision,
         "slot_reserved": False,
         "processes_signaled": [],
     }
+    if args.fleet_resources:
+        output["resource_snapshot_complete"] = resource_snapshot is not None
+        output["resource_snapshot"] = resource_snapshot
+        if resource_error is not None:
+            output["resource_snapshot_error"] = resource_error
     print(json.dumps(output, ensure_ascii=True, indent=2, sort_keys=True))
+    if args.fleet_resources and resource_snapshot is None:
+        return 2
+    if args.fleet_resources:
+        return 0
     return 0 if decision["snapshot_allows_new_local_build"] else 75
 
 

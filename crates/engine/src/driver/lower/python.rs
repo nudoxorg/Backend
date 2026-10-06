@@ -5684,7 +5684,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                     None => Ok(None),
                 }
             }
-            InferredType::Any => Ok(None),
+            InferredType::Any | InferredType::Unavailable(_) => Ok(None),
         }
     }
 
@@ -5748,7 +5748,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                     None => Ok(None),
                 }
             }
-            InferredType::Any => Ok(None),
+            InferredType::Any | InferredType::Unavailable(_) => Ok(None),
         }
     }
 

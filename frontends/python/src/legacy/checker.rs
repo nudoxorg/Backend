@@ -38,8 +38,9 @@ mod project;
 mod project_native;
 pub use project::{
     DefinitionTarget, NativePythonProducerIdentity, NativePythonProjectAuthority,
-    PythonProjectControl, PythonProjectDiagnostic, PythonProjectFingerprint, PythonProjectReport,
-    PythonProjectSource, PythonProjectWitness, PythonTypeProjectionFault,
+    PythonProjectControl, PythonProjectCoverageGap, PythonProjectCoverageGapKind,
+    PythonProjectDiagnostic, PythonProjectFingerprint, PythonProjectReport, PythonProjectSource,
+    PythonProjectWitness, PythonTypeProjectionFault, is_ignored_python_source_directory,
 };
 
 use std::path::{Path, PathBuf};
@@ -74,7 +75,7 @@ const REVEAL_HEADER: &[u8] = b"from typing import reveal_type\n";
 const REVEAL_CALL: &[u8] = b"reveal_type(";
 /// Versioned identity of package-scoped Pyrefly env and working-directory policy.
 pub const PYTHON_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1: &str =
-    "pyrefly-native-project-state-30b5ca52.classdef-declaration+constructor-callee.mirror-only.v4";
+    "pyrefly-native-project-state-30b5ca52.classdef-declaration+constructor-callee.mirror-only.v5";
 
 /// Exact upstream revision of the compiled native Python State authority.
 pub const PYTHON_NATIVE_PROJECT_SOURCE_REVISION: &str = "30b5ca5250db9f2d9264d5e889662cf1224a75b7";
@@ -251,6 +252,115 @@ pub enum CheckerError {
 /// The narrowed key and value pair of one revealed mapping.
 type DictPair = Option<(Box<InferredType>, Box<InferredType>)>;
 
+/// Native type family retained when the projection cannot represent it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativePythonTypeConstructor {
+    /// Enum literal values require native nominal representation.
+    EnumLiteral,
+    /// Native `Type::Literal` constructor.
+    Literal,
+    /// Native `Type::LiteralString` constructor.
+    LiteralString,
+    /// Native `Type::Callable` constructor.
+    Callable,
+    /// Native `Type::CallableResidual` constructor.
+    CallableResidual,
+    /// Native `Type::Function` constructor.
+    Function,
+    /// Native `Type::BoundMethod` constructor.
+    BoundMethod,
+    /// Native `Type::Overload` constructor.
+    Overload,
+    /// Native `Type::Union` constructor.
+    Union,
+    /// Native `Type::Intersect` constructor.
+    Intersect,
+    /// Native `Type::ClassDef` constructor.
+    ClassDef,
+    /// Native `Type::ClassType` constructor.
+    ClassType,
+    /// Native `Type::TypedDict` constructor.
+    TypedDict,
+    /// Native `Type::PartialTypedDict` constructor.
+    PartialTypedDict,
+    /// Native `Type::ShapedArray` constructor.
+    ShapedArray,
+    /// Native `Type::NNModule` constructor.
+    NNModule,
+    /// Native `Type::Size` constructor.
+    Size,
+    /// Native `Type::Dim` constructor.
+    Dim,
+    /// Native `Type::Tuple` constructor.
+    Tuple,
+    /// Native `Type::Module` constructor.
+    Module,
+    /// Native `Type::Forall` constructor.
+    Forall,
+    /// Native `Type::Var` constructor.
+    Var,
+    /// Native `Type::Quantified` constructor.
+    Quantified,
+    /// Native `Type::QuantifiedValue` constructor.
+    QuantifiedValue,
+    /// Native `Type::ElementOfTypeVarTuple` constructor.
+    ElementOfTypeVarTuple,
+    /// Native `Type::TypeGuard` constructor.
+    TypeGuard,
+    /// Native `Type::TypeIs` constructor.
+    TypeIs,
+    /// Native `Type::Annotated` constructor.
+    Annotated,
+    /// Native `Type::Unpack` constructor.
+    Unpack,
+    /// Native `Type::TypeVar` constructor.
+    TypeVar,
+    /// Native `Type::ParamSpec` constructor.
+    ParamSpec,
+    /// Native `Type::TypeVarTuple` constructor.
+    TypeVarTuple,
+    /// Native `Type::SpecialForm` constructor.
+    SpecialForm,
+    /// Native `Type::Concatenate` constructor.
+    Concatenate,
+    /// Native `Type::ParamSpecValue` constructor.
+    ParamSpecValue,
+    /// Native `Type::Args` constructor.
+    Args,
+    /// Native `Type::Kwargs` constructor.
+    Kwargs,
+    /// Native `Type::ArgsValue` constructor.
+    ArgsValue,
+    /// Native `Type::KwargsValue` constructor.
+    KwargsValue,
+    /// Native `Type::Type` constructor.
+    Type,
+    /// Native `Type::TypeForm` constructor.
+    TypeForm,
+    /// Native `Type::Ellipsis` constructor.
+    Ellipsis,
+    /// Native `Type::Any` constructor.
+    Any,
+    /// Native `Type::Never` constructor.
+    Never,
+    /// Native `Type::TypeAlias` constructor.
+    TypeAlias,
+    /// Native `Type::UntypedAlias` constructor.
+    UntypedAlias,
+    /// Native `Type::Sentinel` constructor.
+    Sentinel,
+    /// Native `Type::SuperInstance` constructor.
+    SuperInstance,
+    /// Native `Type::SelfType` constructor.
+    SelfType,
+    /// Native `Type::KwCall` constructor.
+    KwCall,
+    /// Native `Type::Materialization` constructor.
+    Materialization,
+    /// Native `Type::None` constructor.
+    None,
+}
+
 /// One type the authority inferred for an unannotated binding or parameter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InferredType {
@@ -287,6 +397,8 @@ pub enum InferredType {
     },
     /// A named class or alias spelling the checker rendered.
     Named(Box<str>),
+    /// Native evidence is present but this constructor has no supported projection.
+    Unavailable(NativePythonTypeConstructor),
     /// The authority proved nothing usable (`Any`, `Unknown`).
     Any,
 }

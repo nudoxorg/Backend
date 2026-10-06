@@ -71,7 +71,8 @@ pub use self::embedding_provision::{
 };
 pub use self::host::{
     ClosedLocalHostEnvironmentSnapshot, ClosedLocalHostEnvironmentSnapshotError, LocalCompilerHost,
-    LocalCompilerHostError, LocalHostDirectory, LocalHostDiscovery, LocalHostEnvironment,
+    LocalCompilerHostError, LocalCompilerHostSelection, LocalCompilerHostSelectionIssue,
+    LocalCompilerHostSelectionSource, LocalHostDirectory, LocalHostDiscovery, LocalHostEnvironment,
     LocalHostPathKind, LocalHostPathRole, LocalHostVariable,
     MAX_CLOSED_LOCAL_HOST_ENVIRONMENT_BYTES, ProcessHostEnvironment, WorkspaceCompilerEnvironment,
 };

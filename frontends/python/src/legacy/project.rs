@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use backend_semantic::vocabulary::PythonVersion;
 
-use super::{CheckerError, CheckerReport, Pyrefly, Workspace};
+use super::{CheckerError, CheckerReport, Workspace};
 use crate::legacy::{DeclarationKind, Span, extract};
 
 const CONFIG_BYTES: u64 = 1024 * 1024;
@@ -119,10 +119,18 @@ pub struct PythonProjectControl<'control> {
 pub enum PythonTypeProjectionFault {
     /// Nested constructors exceed the retained output depth contract.
     #[error("type depth {observed} exceeds {limit}")]
-    Depth { observed: usize, limit: usize },
+    Depth {
+        /// Depth of the rejected borrowed constructor.
+        observed: usize,
+        /// Maximum admitted structural output depth.
+        limit: usize,
+    },
     /// The shared transaction projection work allowance is exhausted.
     #[error("type projection work exceeds {limit} nodes")]
-    Work { limit: usize },
+    Work {
+        /// Maximum scheduled native nodes shared by the transaction.
+        limit: usize,
+    },
     /// A borrowed native type refers to an active ancestor.
     #[error("native type graph contains a cycle")]
     Cycle,
@@ -153,6 +161,31 @@ pub struct PythonProjectReport {
     modules: BTreeMap<Box<str>, CheckerReport>,
     witness: std::sync::Arc<PythonProjectWitness>,
     diagnostics: Box<[PythonProjectDiagnostic]>,
+    coverage_gaps: Box<[PythonProjectCoverageGap]>,
+}
+
+/// A dependency operation that the finite native mirror does not certify.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PythonProjectCoverageGapKind {
+    /// A runtime import primitive may choose modules beyond syntactic imports.
+    DynamicImport,
+    /// A runtime enumeration primitive may inspect installed module membership.
+    ModuleEnumeration,
+    /// A wildcard import depends on the resolved module's exported names.
+    WildcardImport,
+    /// The native solver could not resolve this import binding.
+    UnavailableImport,
+}
+
+/// Typed partial dependency coverage with its original captured source range.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PythonProjectCoverageGap {
+    /// Original package-relative source module.
+    pub relative_path: Box<str>,
+    /// UTF-8 range of the dependency operation.
+    pub span: Span,
+    /// Exact unsupported or unavailable dependency operation family.
+    pub kind: PythonProjectCoverageGapKind,
 }
 
 /// An exact selected-source native diagnostic, retained independently of type facts.
@@ -171,6 +204,11 @@ pub struct PythonProjectDiagnostic {
 }
 
 impl PythonProjectReport {
+    /// Partial dependency coverage remains explicit even when native types exist.
+    #[must_use]
+    pub fn coverage_gaps(&self) -> &[PythonProjectCoverageGap] {
+        &self.coverage_gaps
+    }
     /// Retains native selected-source diagnostics, including unavailable imports.
     #[must_use]
     pub fn diagnostics(&self) -> &[PythonProjectDiagnostic] {
@@ -197,6 +235,7 @@ pub struct PythonProjectWitness {
     files: Vec<FileWitness>,
     fingerprint: PythonProjectFingerprint,
     candidates: Vec<CandidateWitness>,
+    frontier: Vec<SourceDirectoryWitness>,
 }
 
 /// Exact host-local transaction identity for source/configuration/producer facts.
@@ -219,6 +258,16 @@ struct FileWitness {
 
 impl FileWitness {
     fn capture(path: PathBuf) -> Result<Self, CheckerError> {
+        Self::capture_controlled(path, None)
+    }
+
+    fn capture_controlled(
+        path: PathBuf,
+        control: Option<PythonProjectControl<'_>>,
+    ) -> Result<Self, CheckerError> {
+        if let Some(control) = control {
+            checkpoint(control)?;
+        }
         let digest = match std::fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.is_file() || metadata.file_type().is_symlink() => {
                 let target = std::fs::metadata(&path).map_err(workspace_error)?;
@@ -233,6 +282,9 @@ impl FileWitness {
                 let mut bytes = [0u8; 65536];
                 let mut size = 0u64;
                 loop {
+                    if let Some(control) = control {
+                        checkpoint(control)?;
+                    }
                     let count =
                         std::io::Read::read(&mut file, &mut bytes).map_err(workspace_error)?;
                     if count == 0 {
@@ -258,7 +310,14 @@ impl FileWitness {
     }
 
     fn validate_current(&self) -> Result<(), CheckerError> {
-        let current = Self::capture(self.path.clone())?;
+        self.validate_controlled(None)
+    }
+
+    fn validate_controlled(
+        &self,
+        control: Option<PythonProjectControl<'_>>,
+    ) -> Result<(), CheckerError> {
+        let current = Self::capture_controlled(self.path.clone(), control)?;
         if self.digest != current.digest {
             return Err(project_error(
                 &self.path.to_string_lossy(),
@@ -313,7 +372,7 @@ impl CandidateWitness {
 }
 
 #[derive(Debug)]
-struct DirectoryWitness {
+pub(super) struct DirectoryWitness {
     path: PathBuf,
     children: Vec<(std::ffi::OsString, bool)>,
 }
@@ -339,10 +398,14 @@ impl DirectoryWitness {
         })
     }
 
-    fn capture_tree(root: &Path) -> Result<Vec<Self>, CheckerError> {
+    pub(super) fn capture_tree(
+        root: &Path,
+        control: PythonProjectControl<'_>,
+    ) -> Result<Vec<Self>, CheckerError> {
         let mut pending = vec![root.to_path_buf()];
         let mut result = Vec::new();
         while let Some(path) = pending.pop() {
+            checkpoint(control)?;
             let directory = Self::capture(&path)?;
             pending.extend(
                 directory
@@ -367,6 +430,158 @@ impl DirectoryWitness {
     }
 }
 
+/// Source-capture exclusions, matching the Python producer example and the
+/// discovery owner's generated/cache directory policy. An explicitly configured
+/// root is inspected even when its own name is excluded; exclusions affect its
+/// descendants only.
+#[must_use]
+pub fn is_ignored_python_source_directory(name: &std::ffi::OsStr) -> bool {
+    backend_discovery::is_hard_ignored_directory(name) || name == ".local"
+}
+
+/// Exact original directory membership for the configured finite module roots.
+/// Non-source files are not read; namespace directories and Python candidates
+/// are included so both omissions and later newly-present modules are detected.
+#[derive(Debug)]
+pub(super) struct SourceDirectoryWitness {
+    path: PathBuf,
+    children: Option<Vec<(std::ffi::OsString, bool)>>,
+}
+
+impl SourceDirectoryWitness {
+    fn capture(path: PathBuf, control: PythonProjectControl<'_>) -> Result<Self, CheckerError> {
+        checkpoint(control)?;
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(CheckerError::UncapturedDependency { path });
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self {
+                    path,
+                    children: None,
+                });
+            }
+            Err(error) => return Err(workspace_error(error)),
+        }
+        let directory = match std::fs::read_dir(&path) {
+            Ok(directory) => directory,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self {
+                    path,
+                    children: None,
+                });
+            }
+            Err(error) => return Err(workspace_error(error)),
+        };
+        let mut children = Vec::new();
+        for entry in directory {
+            checkpoint(control)?;
+            let entry = entry.map_err(workspace_error)?;
+            let name = entry.file_name();
+            if is_ignored_python_source_directory(&name) {
+                continue;
+            }
+            let kind = entry.file_type().map_err(workspace_error)?;
+            let python = entry
+                .path()
+                .extension()
+                .is_some_and(|ext| ext == "py" || ext == "pyi");
+            if kind.is_symlink() {
+                if python || std::fs::metadata(entry.path()).is_ok_and(|target| target.is_dir()) {
+                    return Err(CheckerError::UncapturedDependency { path: entry.path() });
+                }
+                continue;
+            }
+            if python && !kind.is_file() {
+                return Err(CheckerError::UncapturedDependency { path: entry.path() });
+            }
+            if kind.is_dir() || python {
+                children.push((name, kind.is_dir()));
+            }
+        }
+        children.sort();
+        Ok(Self {
+            path,
+            children: Some(children),
+        })
+    }
+
+    pub(super) fn capture_frontier(
+        roots: impl IntoIterator<Item = PathBuf>,
+        original: &Path,
+        mirror: &Path,
+        source_path: &str,
+        control: PythonProjectControl<'_>,
+    ) -> Result<Vec<Self>, CheckerError> {
+        let mut pending = roots.into_iter().collect::<Vec<_>>();
+        let mut captured = BTreeMap::new();
+        while let Some(path) = pending.pop() {
+            checkpoint(control)?;
+            if captured.contains_key(&path) {
+                continue;
+            }
+            let witness = Self::capture(path.clone(), control)?;
+            if let Some(children) = &witness.children {
+                let relative = path
+                    .strip_prefix(original)
+                    .map_err(|_| CheckerError::UncapturedDependency { path: path.clone() })?;
+                std::fs::create_dir_all(mirror.join(relative)).map_err(workspace_error)?;
+                for (name, directory) in children {
+                    checkpoint(control)?;
+                    let child = path.join(name);
+                    if *directory {
+                        pending.push(child);
+                    } else if !mirror.join(relative).join(name).is_file() {
+                        return Err(CheckerError::IncompleteSourceFrontier {
+                            source_path: source_path.into(),
+                            module: child
+                                .strip_prefix(original)
+                                .expect("captured root")
+                                .to_string_lossy()
+                                .into_owned()
+                                .into_boxed_str(),
+                            candidate: child,
+                        });
+                    }
+                }
+            }
+            captured.insert(path, witness);
+        }
+        Ok(captured.into_values().collect())
+    }
+
+    pub(super) fn validate_current(
+        &self,
+        control: PythonProjectControl<'_>,
+    ) -> Result<(), CheckerError> {
+        if Self::capture(self.path.clone(), control)?.children != self.children {
+            return Err(project_error(
+                &self.path.to_string_lossy(),
+                "configured Python source directory membership changed",
+            ));
+        }
+        Ok(())
+    }
+
+    fn fingerprint(&self, identity: &mut blake3::Hasher) {
+        hash_field(identity, self.path.as_os_str().as_encoded_bytes());
+        match &self.children {
+            None => {
+                identity.update(&[0]);
+            }
+            Some(children) => {
+                identity.update(&[1]);
+                identity.update(&(children.len() as u64).to_be_bytes());
+                for (name, directory) in children {
+                    hash_field(identity, name.as_encoded_bytes());
+                    identity.update(&[u8::from(*directory)]);
+                }
+            }
+        }
+    }
+}
+
 impl PythonProjectWitness {
     /// Binds exact source/configuration probes, effective scope, and producer bytes.
     #[must_use]
@@ -378,14 +593,20 @@ impl PythonProjectWitness {
     ///
     /// # Errors
     /// Refuses any changed selected source, configuration probe, or executable.
-    pub fn validate_current(&self) -> Result<(), CheckerError> {
+    pub fn validate_current(&self, control: PythonProjectControl<'_>) -> Result<(), CheckerError> {
+        checkpoint(control)?;
+        for directory in &self.frontier {
+            directory.validate_current(control)?;
+        }
         for candidate in &self.candidates {
+            checkpoint(control)?;
             candidate.validate_current()?;
         }
         for file in &self.files {
-            file.validate_current()?;
+            checkpoint(control)?;
+            file.validate_controlled(Some(control))?;
         }
-        Ok(())
+        checkpoint(control)
     }
 }
 
@@ -441,6 +662,7 @@ impl NativePythonProjectAuthority {
             files: vec![host_witness],
             fingerprint: PythonProjectFingerprint([0; 32]),
             candidates: Vec::new(),
+            frontier: Vec::new(),
         };
         let mut mirror_witness = Vec::new();
         for source in sources {
@@ -565,20 +787,18 @@ impl NativePythonProjectAuthority {
             .map_err(workspace_error)?;
             mirror_witness.push(FileWitness::capture(mirror.join("pyrefly.toml"))?);
         }
-        let private_tree = DirectoryWitness::capture_tree(&mirror)?;
-        let (modules, native_configuration) =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                super::project_native::analyze(
-                    &mirror,
-                    package_root,
-                    package_name,
-                    sources,
-                    &facts,
-                    profile,
-                    control,
-                )
-            }))
-            .map_err(|_| CheckerError::ProjectPanic)??;
+        let native = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            super::project_native::analyze(
+                &mirror,
+                package_root,
+                package_name,
+                sources,
+                &facts,
+                profile,
+                control,
+            )
+        }))
+        .map_err(|_| CheckerError::ProjectPanic)??;
         let mut identity = blake3::Hasher::new();
         identity.update(b"compiler.python.captured-project.v1\0");
         identity.update(&self.producer.as_bytes());
@@ -613,9 +833,14 @@ impl NativePythonProjectAuthority {
             identity.update(b"internal-candidate-membership\0");
             candidate.fingerprint(&mut identity);
         }
+        witness.frontier = native.frontier;
+        for directory in &witness.frontier {
+            identity.update(b"configured-source-directory-membership\0");
+            directory.fingerprint(&mut identity);
+        }
         witness.fingerprint = PythonProjectFingerprint(*identity.finalize().as_bytes());
-        witness.validate_current()?;
-        for directory in private_tree {
+        witness.validate_current(control)?;
+        for directory in native.mirror_tree {
             checkpoint(control)?;
             directory.validate_current()?;
         }
@@ -627,6 +852,7 @@ impl NativePythonProjectAuthority {
         Ok(PythonProjectReport {
             modules: native.modules,
             diagnostics: native.diagnostics.into_boxed_slice(),
+            coverage_gaps: native.coverage_gaps.into_boxed_slice(),
             witness: std::sync::Arc::new(witness),
         })
     }
@@ -656,24 +882,4 @@ pub(super) fn checkpoint(control: PythonProjectControl<'_>) -> Result<(), Checke
 fn hash_field(identity: &mut blake3::Hasher, bytes: &[u8]) {
     identity.update(&(bytes.len() as u64).to_be_bytes());
     identity.update(bytes);
-}
-
-impl Pyrefly {
-    /// Compatibility entry to the compiled native project producer. External
-    /// commands are used only by `analyze`/`analyze_in_package` per-file adapters.
-    ///
-    /// # Errors
-    /// Returns the typed native admission, capture, or State failure.
-    pub fn analyze_project(
-        &self,
-        package_root: &Path,
-        package_name: &str,
-        sources: &[PythonProjectSource<'_>],
-        profile: PythonVersion,
-        control: PythonProjectControl<'_>,
-    ) -> Result<PythonProjectReport, CheckerError> {
-        NativePythonProjectAuthority::admit()?
-            .with_timeout(self.timeout)
-            .analyze_project(package_root, package_name, sources, profile, control)
-    }
 }

@@ -125,6 +125,7 @@ pub(super) fn fixture_semantic_image_salted(path: &str, salt: u8) -> Result<Vec<
     let items = [
         TreeItemInput {
             name: b"Worker",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Record,
             visibility: Visibility::Public,
             authority: fixture_authority(ParentageAuthority::Root),
@@ -138,6 +139,7 @@ pub(super) fn fixture_semantic_image_salted(path: &str, salt: u8) -> Result<Vec<
         },
         TreeItemInput {
             name: b"name",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Field,
             visibility: Visibility::Public,
             authority: fixture_authority(fixture_identity(struct_byte)),
@@ -151,6 +153,7 @@ pub(super) fn fixture_semantic_image_salted(path: &str, salt: u8) -> Result<Vec<
         },
         TreeItemInput {
             name: b"Event",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Enum,
             visibility: Visibility::Public,
             authority: fixture_authority(ParentageAuthority::Root),
@@ -164,6 +167,7 @@ pub(super) fn fixture_semantic_image_salted(path: &str, salt: u8) -> Result<Vec<
         },
         TreeItemInput {
             name: b"Started",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Variant,
             visibility: Visibility::Public,
             authority: fixture_authority(fixture_identity(enum_byte)),

@@ -473,6 +473,28 @@ fn help_is_grouped_by_domain_and_names_every_domain() {
 }
 
 #[test]
+fn a_global_page_bound_is_not_silently_ignored_by_unpaged_commands() {
+    for command in [
+        "packages --limit 0",
+        "packages --limit 20",
+        "health --limit 5",
+    ] {
+        let fault = options::split(&words(command)).expect_err("reject unused global page bound");
+        assert_eq!(fault.slug(), FaultSlug::Usage);
+        assert_eq!(fault.operand().render(), "--limit");
+        assert!(
+            fault
+                .cause()
+                .sentence()
+                .contains("does not take a page bound")
+        );
+    }
+    let (options, _) = options::split(&words("search requests --limit 3"))
+        .expect("paged commands keep their global bound");
+    assert_eq!(options.limit(), Some("3"));
+}
+
+#[test]
 fn passive_connection_mode_is_limited_to_health_and_status() {
     let (options, command_words) =
         options::split(&words("--passive status")).expect("status accepts a passive connection");

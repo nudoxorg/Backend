@@ -114,6 +114,15 @@ fn passive_health_does_not_start_locald_or_create_state_when_owner_is_absent() {
     assert_eq!(fault["answer"], "fault");
     assert_eq!(fault["slug"], "endpoint");
     assert_eq!(fault["cause"], "unreachable");
+    let recovery = fault["shell"].as_str().expect("owner startup recovery command");
+    assert!(recovery.starts_with("backend health "), "{recovery}");
+    assert!(!recovery.contains("--passive"), "{recovery}");
+    for selected_path in [&project, &workspace, &endpoint] {
+        assert!(
+            recovery.contains(selected_path.to_str().expect("UTF-8 fixture path")),
+            "recovery must retain selected paths: {recovery}"
+        );
+    }
     assert!(
         fault["detail"]
             .as_str()

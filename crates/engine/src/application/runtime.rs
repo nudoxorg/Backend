@@ -291,6 +291,8 @@ pub enum LocalRuntimePythonCheckerProbeFailure {
     StreamRead,
     /// The child exceeded the admitted time limit.
     TimedOut,
+    /// The caller cancelled the admitted probe.
+    Cancelled,
     /// The child exceeded the admitted output limit.
     OutputLimit,
     /// The child exited unsuccessfully; only its bounded exit code is retained.
@@ -1750,6 +1752,7 @@ impl LocalRuntimeToolchain {
             },
             executable: Some(executable.into_boxed_path()),
             probe_failure: None,
+            probe_invocation: ToolchainProbeInvocation::Native,
         })
     }
 

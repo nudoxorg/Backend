@@ -1769,10 +1769,14 @@ pub(crate) struct StagedPackageCompilation {
         Option<std::sync::Arc<crate::application::typescript_host::TypeScriptProjectWitness>>,
     typescript_closure_witness:
         Option<crate::application::typescript_program::TypeScriptProgramClosureWitness>,
-    python_witness:
-        Option<std::sync::Arc<backend_frontend_python::legacy::checker::PythonProjectWitness>>,
+    python_witness: Option<StagedPythonProjectWitness>,
     embeddings: Option<StagedEmbeddingOutput>,
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
+}
+
+struct StagedPythonProjectWitness {
+    witness: std::sync::Arc<backend_frontend_python::legacy::checker::PythonProjectWitness>,
+    deadline: std::time::Instant,
 }
 
 struct StagedPackageArtifact {
@@ -2899,7 +2903,10 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             typescript_closure_witness,
             python_witness: python_project
                 .as_ref()
-                .map(|project| std::sync::Arc::clone(project.witness())),
+                .map(|project| StagedPythonProjectWitness {
+                    witness: std::sync::Arc::clone(project.witness()),
+                    deadline: control.deadline,
+                }),
             embeddings: embedding_identity.map(|identity| StagedEmbeddingOutput {
                 identity,
                 artifacts: if embedding_unavailable.is_some() {
@@ -3143,7 +3150,13 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
     ) -> Result<PublishedSemanticPackage, PackageSemanticError> {
         if let Some(witness) = staged.python_witness.as_ref() {
             witness
-                .validate_current()
+                .witness
+                .validate_current(
+                    backend_frontend_python::legacy::checker::PythonProjectControl {
+                        cancelled,
+                        deadline: witness.deadline,
+                    },
+                )
                 .map_err(PackageSemanticError::PythonProjectWitness)?;
         }
         if let Some(witness) = staged.typescript_witness.as_ref() {
@@ -3291,7 +3304,13 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
     ) -> Result<StagedSemanticPackage, PackageSemanticError> {
         if let Some(witness) = staged.python_witness.as_ref() {
             witness
-                .validate_current()
+                .witness
+                .validate_current(
+                    backend_frontend_python::legacy::checker::PythonProjectControl {
+                        cancelled,
+                        deadline: witness.deadline,
+                    },
+                )
                 .map_err(PackageSemanticError::PythonProjectWitness)?;
         }
         if let Some(witness) = staged.typescript_witness.as_ref() {

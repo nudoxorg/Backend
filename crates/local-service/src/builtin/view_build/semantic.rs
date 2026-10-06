@@ -1039,13 +1039,14 @@ fn semantic_sites<'a, Reader: backend_semantic::ir::SemanticReader + ?Sized>(
             continue;
         }
         let family = declaration_family(declaration_kind(entity.entity.kind));
-        semantic
-            .entry((entity.name.to_vec(), family))
-            .or_default()
-            .push((
-                entity.entity.source.map(|span| span.start()),
-                entity.entity.version.identity(),
-            ));
+        let Some(name) = entity.name.named_bytes() else {
+            // Structural declarations have no anonymous callable identifier.
+            continue;
+        };
+        semantic.entry((name.to_vec(), family)).or_default().push((
+            entity.entity.source.map(|span| span.start()),
+            entity.entity.version.identity(),
+        ));
     }
     for ((name, family), mut entities) in semantic {
         let Ok(name) = std::str::from_utf8(&name) else {
@@ -1107,8 +1108,7 @@ pub(super) fn project_image_rows(
     for entity in session.canonical_entities() {
         let entity = entity
             .map_err(|error| BuiltinModelError(format!("project semantic declaration: {error}")))?;
-        let name = std::str::from_utf8(entity.name)
-            .map_err(|_| BuiltinModelError("semantic declaration name is not UTF-8".to_owned()))?;
+        let name = super::semantic_display_name(entity.name)?;
         let identity = entity.entity.version.identity();
         let coordinate = semantic_coordinate(&project.label, identity, name);
         let symbol = semantic_symbol(project.package, identity);

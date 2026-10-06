@@ -105,7 +105,21 @@ fn run_words(words: &[String], options: &Options) -> Result<String, Fault> {
             FaultSlug::Endpoint,
             Operand::Path(workspace.endpoint().to_string_lossy().into_owned()),
             Cause::new(CauseSlug::Unreachable, message),
-            Affordance::Retry,
+            if options.passive() {
+                Affordance::UseCommand {
+                    name: "health",
+                    args: Box::new([
+                        "--project".to_owned(),
+                        project.clone(),
+                        "--workspace".to_owned(),
+                        workspace.data().to_string_lossy().into_owned(),
+                        "--endpoint".to_owned(),
+                        workspace.endpoint().to_string_lossy().into_owned(),
+                    ]),
+                }
+            } else {
+                Affordance::Retry
+            },
         )
     })?;
     let mut session = Session::connect(&endpoint).map_err(|error| {

@@ -1338,6 +1338,7 @@ name = "backend-frontend-python"
 version = "0.2.0"
 dependencies = [
  "backend-compile",
+ "backend-discovery",
  "backend-semantic",
  "blake3",
  "pyrefly",
