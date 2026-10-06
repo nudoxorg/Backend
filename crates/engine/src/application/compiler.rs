@@ -56,6 +56,7 @@ use backend_version::{
     ArtifactId, ContentId, IrFragmentDomain, IrFragmentEncoding, SourceFactDomain,
 };
 use std::{
+    collections::BTreeMap,
     error::Error as _,
     fmt::Write as _,
     io,
