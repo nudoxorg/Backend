@@ -1901,12 +1901,16 @@ impl CommandAdapter {
             indexing.request_id,
             indexing.requested_package,
             indexing.operation_key,
+            Arc::clone(&indexing.cancelled),
         ) {
             Ok(reply) => {
                 if indexing.legacy_add.is_some() {
                     *legacy_reply = Some(Self::encode(daemon, indexing.request_id, reply, None));
                 }
                 backend_library::IndexJobOutcome::Published
+            }
+            Err(_) if indexing.cancelled.load(Ordering::Acquire) => {
+                backend_library::IndexJobOutcome::Cancelled
             }
             Err(error) => backend_library::IndexJobOutcome::Failed(bounded_index_detail(error)),
         }
@@ -2627,6 +2631,7 @@ impl CommandAdapter {
         request_id: u64,
         requested_package: backend_engine::PackageKey,
         operation_key: Option<backend_library::IndexOperationKey>,
+        cancellation: Arc<AtomicBool>,
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let PreparedProductSelection {
             intent: prepared_intent,
@@ -2639,7 +2644,14 @@ impl CommandAdapter {
         };
         let prepared_intent = intent
             .as_ref()
-            .map(|intent| prepare_builtin_intent(daemon, intent))
+            .map(|intent| {
+                prepare_builtin_intent_at(
+                    daemon,
+                    intent,
+                    revision_fence.as_ref().map(|fence| fence.canonical_root()),
+                    Arc::clone(&cancellation),
+                )
+            })
             .transpose()?;
         let request_identity = prepared_intent
             .as_ref()
@@ -4346,6 +4358,15 @@ pub(in crate::builtin) fn prepare_builtin_intent(
     daemon: &ProductDaemon,
     intent: &BuiltinIntent,
 ) -> Result<PreparedBuiltinIntent, BuiltinModelError> {
+    prepare_builtin_intent_at(daemon, intent, None, Arc::new(AtomicBool::new(false)))
+}
+
+fn prepare_builtin_intent_at(
+    daemon: &ProductDaemon,
+    intent: &BuiltinIntent,
+    source_root: Option<&Path>,
+    cancellation: Arc<AtomicBool>,
+) -> Result<PreparedBuiltinIntent, BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let intent = if intent.has_capture_changes() && intent.capture_basis().is_none() {
         intent
@@ -4355,6 +4376,8 @@ pub(in crate::builtin) fn prepare_builtin_intent(
         intent.clone()
     };
     let request_identity = BuiltinModel.request_id(&intent);
+    let intent =
+        super::super::staged_transport::stage(intent, &snapshot, source_root, cancellation)?;
     Ok(PreparedBuiltinIntent {
         intent,
         request_identity,

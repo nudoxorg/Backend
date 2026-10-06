@@ -137,11 +137,13 @@ impl ClosureId {
 }
 
 mod manifest;
+mod membership;
 mod object;
 mod workspace;
 
 pub use manifest::ClosureManifest;
 pub use manifest::{ManifestChange, ManifestWork, PreparedManifestDelta};
+pub use membership::DurableClosureManifest;
 pub use object::TypedObject;
 pub use workspace::{CheckedRelationNode, WorkspaceBinding, WorkspaceClosure};
 

@@ -1,0 +1,14 @@
+{
+  "source_commit": "36a22d07d07e3624a624214203f8ee13d0d4ccb5",
+  "source_tree": "7279242c812fb8f86abe28349b5c4e0d031df477",
+  "host": "h16001mac",
+  "worktree": "/Users/rmccrar6/codex-worktrees/sol61-staged-ingest-20261006",
+  "jobs": 4,
+  "managed_cargo": "own .local/fcb-managed-runner/cargo",
+  "log": "docs/audits/staged-ingest-execution-20261006/raw/staged-compile-36a22d07.log",
+  "log_sha256": "27ec1a49413abb6cb227f4505ff29108184cd8d2905ad3cef2307d4119b95c3f",
+  "command": "cargo test -p backend-local-service --lib staged_ -j 4 -- --test-threads=1 --nocapture",
+  "exit": 101,
+  "tests_executed": 0,
+  "failures": "one pending catalog private constructor call; ten joined call-coordinate fixture import/helper/trait errors; successor source repairs 6a64059b and 8e3fe572"
+}

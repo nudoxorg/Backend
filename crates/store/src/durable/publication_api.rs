@@ -105,7 +105,10 @@ impl FileStore {
         }
         closure.admit_with_registry(&self.relation_registry)?;
         if let Some(workspace) = &workspace {
-            if workspace.manifest().id() != closure.id() {
+            if workspace.in_memory_manifest().is_none() {
+                return Err(StoreError::Corrupt);
+            }
+            if workspace.membership_id() != closure.id() {
                 return Err(StoreError::Corrupt);
             }
             workspace.binding().verify()?;
@@ -163,14 +166,14 @@ impl FileStore {
         let _process_lock = self.acquire_process_lock()?;
         if closure.is_root_only() {
             closure
-                .manifest()
+                .control_manifest()
                 .admit_objects_with_registry(&self.relation_registry)?;
         } else {
             closure
-                .manifest()
+                .control_manifest()
                 .admit_with_registry(&self.relation_registry)?;
         }
-        if closure.root() != target || closure.binding().closure() != closure.manifest().id() {
+        if closure.root() != target || closure.binding().closure() != closure.membership_id() {
             return Err(StoreError::Corrupt);
         }
         closure.binding().verify()?;
@@ -193,7 +196,7 @@ impl FileStore {
             target.to_bytes(),
             layout,
             pack,
-            closure.manifest().id(),
+            closure.membership_id(),
             Some(workspace_binding),
             base_generation,
             target_generation,

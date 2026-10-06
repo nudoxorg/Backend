@@ -922,7 +922,7 @@ fn typed_closure_round_trips_and_binds_workspace_root() {
         &workspace,
         bound_manifest,
     ));
-    assert_eq!(bound.manifest().id(), bound.binding().closure());
+    assert_eq!(bound.control_manifest().id(), bound.binding().closure());
     assert_eq!(bound.binding().root(), workspace.root().as_bytes());
 }
 
@@ -1034,9 +1034,17 @@ fn closure_extension_binds_checked_target_and_replaces_root_only_frontier() {
     ));
     assert_eq!(extended.root(), target_workspace.root());
     assert_ne!(extended.root(), base.root());
-    assert!(extended.manifest().contains_object_id(target_object.id()));
-    assert!(!extended.manifest().contains_object_id(old_object.id()));
-    assert_eq!(extended.manifest().objects().len(), 2);
+    assert!(
+        extended
+            .control_manifest()
+            .contains_object_id(target_object.id())
+    );
+    assert!(
+        !extended
+            .control_manifest()
+            .contains_object_id(old_object.id())
+    );
+    assert_eq!(extended.control_manifest().objects().len(), 2);
 
     // A capture-only or unchanged reindex has no newly copied relation nodes.
     // Its exact typed base root is supplied as an unchanged object; it must
@@ -1049,8 +1057,12 @@ fn closure_extension_binds_checked_target_and_replaces_root_only_frontier() {
         [authority_object.clone(), target_object.clone()],
     ));
     assert_eq!(unchanged.root(), extended.root());
-    assert_eq!(unchanged.manifest(), extended.manifest());
-    assert!(unchanged.manifest().contains_object_id(target_object.id()));
+    assert_eq!(unchanged.control_manifest(), extended.control_manifest());
+    assert!(
+        unchanged
+            .control_manifest()
+            .contains_object_id(target_object.id())
+    );
 
     // Empty work cannot introduce a different relation root merely because
     // its caller presents a separately checked target manifest.
@@ -1107,8 +1119,8 @@ fn closure_extension_binds_checked_target_and_replaces_root_only_frontier() {
             [state.root_handle()],
             [authority_object.clone()],
         ));
-        assert_eq!(current.manifest().objects().len(), 2);
-        assert!(!current.manifest().contains_object_id(previous.id()));
+        assert_eq!(current.control_manifest().objects().len(), 2);
+        assert!(!current.control_manifest().contains_object_id(previous.id()));
         previous = object;
     }
 }
@@ -1196,11 +1208,15 @@ fn root_only_extension_tracks_all_checked_relation_roots_by_binding() {
     assert_eq!(extended.root(), target_workspace.root());
     assert!(
         extended
-            .manifest()
+            .control_manifest()
             .contains_object_id(target_raw_object.id())
     );
-    assert!(!extended.manifest().contains_object_id(old_raw_object.id()));
-    assert_eq!(extended.manifest().objects().len(), 3);
+    assert!(
+        !extended
+            .control_manifest()
+            .contains_object_id(old_raw_object.id())
+    );
+    assert_eq!(extended.control_manifest().objects().len(), 3);
 }
 
 #[test]
@@ -1299,7 +1315,7 @@ fn root_only_extension_durably_writes_every_registered_relation_root() {
     let pack_id = must(store.write_pack(&pack));
     let publication = CheckedWorkspacePublication::new(
         &target_workspace,
-        extended.manifest().clone(),
+        extended.control_manifest().clone(),
         layout,
         pack_id,
         None,
@@ -1315,7 +1331,7 @@ fn root_only_extension_durably_writes_every_registered_relation_root() {
         8 * 1024 * 1024,
         must(RelationAdmissionRegistry::default().with_relation::<AuxiliaryRelation>()),
     ));
-    let closure = must(reopened.read_closure(extended.manifest().id()));
+    let closure = must(reopened.read_closure(extended.control_manifest().id()));
     assert!(closure.objects().iter().any(|object| {
         object.schema() == SchemaIdentity::of_relation::<AuxiliaryRelation>()
             && object.version() == auxiliary.root().as_bytes()
@@ -1805,6 +1821,100 @@ fn tree_cas_reopens_transitively_and_writes_one_edit_boundary() {
     let reopened = must(FileStore::open(&path, 8_192));
     assert!(matches!(reopened.recover(), Err(StoreError::Corrupt)));
     must(std::fs::remove_dir_all(path));
+}
+
+#[test]
+fn staged_workspace_missing_page_cannot_publish_or_repair_head() {
+    for remove_after_publish_frame in [false, true] {
+        let path = std::env::temp_dir().join(format!(
+            "backend-store-staged-missing-{}-{remove_after_publish_frame}",
+            std::process::id(),
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        let store = must(FileStore::open(&path, 8192));
+        let authority_version =
+            backend_version::ObjectVersion::<TestCoverageSchema>::from_value(&7);
+        let target = must(backend_version::CheckedWorkspaceManifest::from_versions(
+            1,
+            Vec::new(),
+            Vec::new(),
+            authority_version,
+            coverage(),
+        ));
+        let authority_object = TypedObject::from_value(
+            &backend_version::ObjectKey::<TestCoverageSchema>::from_value(&7),
+            &7,
+        );
+        let page = TypedObject::from_value(
+            &backend_version::ObjectKey::<TestCoverageSchema>::from_value(&8),
+            &8,
+        );
+        must(store.write_object(&authority_object));
+        must(store.write_object(&page));
+        let controls = must(
+            WorkspaceClosure::from_checked_manifest_root_only_with_registry(
+                &target,
+                must(ClosureManifest::new(vec![authority_object.clone()])),
+                &RelationAdmissionRegistry::default(),
+            ),
+        );
+        let budget = ClosureCompositionBudget::new(
+            2,
+            2,
+            8192,
+            must(ClosureCompositionBudget::metadata_bytes_for(2)),
+        );
+        let receipt = must(store.compose_workspace_closure_index(
+            None,
+            &[
+                ClosureMembershipChange::add(authority_object.id()),
+                ClosureMembershipChange::add(page.id()),
+            ],
+            budget,
+        ));
+        let membership = must(DurableClosureManifest::from_pinned(&store, receipt, budget));
+        let closure = must(controls.with_stored_membership(membership));
+        let layout = LayoutId::derive(b"staged-missing-page");
+        let pack = must(encode_pack(
+            &checked_map([(b"pack".to_vec(), v(1))]),
+            layout,
+            8192,
+        ));
+        let pack_id = must(store.write_pack(&pack));
+        let prepared = must(store.prepare_workspace_publication(
+            target.root(),
+            layout,
+            pack_id,
+            closure,
+            None,
+        ));
+        let durable = must(prepared.durable());
+        let publication_authority = must(store.acquire_publication_authority());
+        let page_path = path
+            .join("objects")
+            .join(format!("{}.object", test_hex(page.id().as_bytes())));
+        if !remove_after_publish_frame {
+            must(std::fs::remove_file(&page_path));
+        }
+        let result = durable.publish_with_authority_before_head(&publication_authority, || {
+            if remove_after_publish_frame {
+                std::fs::remove_file(&page_path)?;
+            }
+            Ok::<_, std::io::Error>(())
+        });
+        assert!(matches!(result, Err(StoreError::Corrupt)));
+        assert!(!path.join("HEAD").exists());
+        drop(publication_authority);
+        drop(store);
+        let reopened = FileStore::open(&path, 8192);
+        if remove_after_publish_frame {
+            assert!(matches!(reopened, Err(StoreError::Corrupt)));
+        } else {
+            assert!(must(must(reopened).head()).is_none());
+        }
+        assert!(!path.join("HEAD").exists());
+        must(std::fs::remove_dir_all(path));
+    }
 }
 
 #[test]

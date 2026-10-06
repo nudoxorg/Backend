@@ -48,13 +48,23 @@ fn parsed_file(
     (record, facts)
 }
 
-fn commit_files(
-    daemon: &mut super::super::ProductDaemon,
+fn prepare_files(
+    daemon: &super::super::ProductDaemon,
     package: PackageKey,
     label: &str,
     request: u64,
     files: &[(ProductSourceRecord, Option<ProductSourceFileFactsUpdate>)],
-) -> Vec<BuiltinSourceFactsChange> {
+) -> (BuiltinIntent, Vec<BuiltinSourceFactsChange>) {
+    prepare_files_at_source_version(daemon, package, label, [request as u8; 32], files)
+}
+
+fn prepare_files_at_source_version(
+    daemon: &super::super::ProductDaemon,
+    package: PackageKey,
+    label: &str,
+    source_version: [u8; 32],
+    files: &[(ProductSourceRecord, Option<ProductSourceFileFactsUpdate>)],
+) -> (BuiltinIntent, Vec<BuiltinSourceFactsChange>) {
     let base = daemon.engine().daemon().owner().snapshot();
     let sources = base
         .relation::<BuiltinWorkspaceRelation>()
@@ -96,7 +106,7 @@ fn commit_files(
     )
     .expect("production facts preparation");
     let keys = selected.iter().map(|(key, _)| *key).collect::<Vec<_>>();
-    let project = ProductSourceRecord::project(label, [request as u8; 32], keys.clone())
+    let project = ProductSourceRecord::project(label, source_version, keys.clone())
         .expect("real test project membership");
     let mut changes = vec![BuiltinSourceChange {
         key: package.to_bytes(),
@@ -124,6 +134,118 @@ fn commit_files(
         fact_changes.clone(),
     )
     .expect("atomic source/facts intent");
+    (intent, fact_changes)
+}
+
+#[test]
+#[ignore = "requires an explicitly acquired official archive in NUDOX_STAGED_CORPUS_SOURCE"]
+fn staged_official_archive_source_facts_use_real_queue_and_cold_replay() {
+    use backend_engine::QueueSized;
+    use std::sync::{Arc, atomic::AtomicBool};
+    let root = std::path::PathBuf::from(
+        std::env::var_os("NUDOX_STAGED_CORPUS_SOURCE").expect("explicit official source path"),
+    )
+    .canonicalize()
+    .expect("physical acquired source root");
+    let label = root.to_str().expect("UTF-8 acquired source path");
+    let package = PackageKey::from_value(label);
+    let scan = super::super::ingest::scan_project_for_unproven_authorities_cancellable(
+        label,
+        package.to_bytes(),
+        &std::collections::BTreeMap::new(),
+        &AtomicBool::new(false),
+    )
+    .expect("actual production source discovery and parser facts");
+    let mut facts = scan
+        .source_facts
+        .into_iter()
+        .map(|facts| (facts.manifest_key(), facts))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let files = scan
+        .files
+        .into_iter()
+        .map(|(key, record)| (record, facts.remove(&key)))
+        .collect::<Vec<_>>();
+    assert!(
+        facts.is_empty(),
+        "every facts manifest belongs to a scanned source file"
+    );
+    let workspace = TempWorkspace::new();
+    let mut daemon = open_daemon(workspace.0.path());
+    let (inline, expected_facts) =
+        prepare_files_at_source_version(&daemon, package, label, scan.source_version, &files);
+    eprintln!(
+        "official source={label} scanned files={} parser fact changes={} inline queue bytes={} source bytes read={}",
+        files.len(),
+        expected_facts.len(),
+        inline.queue_bytes(),
+        scan.source_bytes_read
+    );
+    assert!(
+        inline.queue_bytes() > 4 * 1024 * 1024,
+        "actual archive exceeds the unchanged inline gate"
+    );
+    let before = daemon.engine().daemon().owner().snapshot();
+    let request = BuiltinModel.request_id(&inline);
+    assert!(
+        daemon
+            .client()
+            .request(
+                1,
+                crate::Request::Commit {
+                    request,
+                    expected: daemon.engine().daemon().owner().head().expectation(),
+                    intent: inline.clone(),
+                }
+            )
+            .is_err()
+    );
+    let staged = super::super::staged_transport::stage(
+        inline,
+        &before,
+        Some(&root),
+        Arc::new(AtomicBool::new(false)),
+    )
+    .expect("actual captured archive bytes and full parser facts stage");
+    eprintln!(
+        "official staged queue bytes={} pointer bytes={}",
+        staged.queue_bytes(),
+        staged.encode().len()
+    );
+    assert_eq!(BuiltinModel.request_id(&staged), request);
+    assert!(staged.queue_bytes() < 4 * 1024 * 1024);
+    super::super::commands::commit_builtin_intent(&mut daemon, 2, &staged)
+        .expect("real queue and owner publish the exact acquired source facts");
+    let selected_root = daemon.engine().daemon().owner().snapshot().root();
+    let assert_exact = |daemon: &super::super::ProductDaemon| {
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        let relation = product_source_file_facts_relation(&snapshot)
+            .unwrap()
+            .unwrap();
+        for expected in &expected_facts {
+            assert_eq!(
+                relation.lookup(&expected.key).unwrap().as_ref(),
+                expected.after.as_ref()
+            );
+        }
+    };
+    assert_exact(&daemon);
+    drop(staged);
+    drop(before);
+    drop(daemon);
+    let cold = open_daemon(workspace.0.path());
+    assert_eq!(cold.engine().daemon().owner().head().root(), selected_root);
+    assert_exact(&cold);
+}
+
+fn commit_files(
+    daemon: &mut super::super::ProductDaemon,
+    package: PackageKey,
+    label: &str,
+    request: u64,
+    files: &[(ProductSourceRecord, Option<ProductSourceFileFactsUpdate>)],
+) -> Vec<BuiltinSourceFactsChange> {
+    let (intent, fact_changes) = prepare_files(daemon, package, label, request, files);
     super::super::commands::commit_builtin_intent(daemon, request, &intent)
         .expect("real owner commit");
     fact_changes
@@ -207,6 +329,235 @@ fn assert_complete(
         names, expected,
         "complete current source functions survive storage"
     );
+}
+
+#[test]
+fn staged_large_parser_facts_use_small_queue_exact_shared_cas_and_cold_replay() {
+    use backend_engine::QueueSized;
+    use std::sync::{Arc, atomic::AtomicBool};
+    let workspace = TempWorkspace::new();
+    let label = "pkg:npm/staged-large-parser-facts@1.0.0";
+    let package = PackageKey::from_value(label);
+    let count = 12_000;
+    let (left, left_facts) = parsed_file(package, "left.ts", count);
+    let (right, right_facts) = parsed_file(package, "right.ts", count);
+    let mut daemon = open_daemon(workspace.0.path());
+    let (inline, _) = prepare_files(
+        &daemon,
+        package,
+        label,
+        1,
+        &[(left, Some(left_facts)), (right, Some(right_facts))],
+    );
+    assert!(inline.queue_bytes() > 4 * 1024 * 1024);
+    eprintln!(
+        "actual parser facts inline queue bytes={}",
+        inline.queue_bytes()
+    );
+    let before = daemon.engine().daemon().owner().snapshot();
+    let request = BuiltinModel.request_id(&inline);
+    assert!(
+        daemon
+            .client()
+            .request(
+                1,
+                crate::Request::Commit {
+                    request,
+                    expected: daemon.engine().daemon().owner().head().expectation(),
+                    intent: inline.clone(),
+                }
+            )
+            .is_err(),
+        "the existing four MiB inline gate remains enforced"
+    );
+    let stage = |intent| {
+        super::super::staged_transport::stage(
+            intent,
+            &before,
+            None,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("real parser facts staged into immutable CAS")
+    };
+    let first = stage(inline.clone());
+    #[cfg(unix)]
+    let allocation = backend_store::PhysicalAllocationBudget::new(u64::MAX, 4096);
+    #[cfg(unix)]
+    let first_allocation = allocation.admit(before.durable_store().unwrap()).unwrap();
+    let second = stage(inline.clone());
+    #[cfg(unix)]
+    assert_eq!(
+        allocation.admit(before.durable_store().unwrap()).unwrap(),
+        first_allocation,
+        "the exact shared stage allocates no second immutable payload or index"
+    );
+    assert!(first.queue_bytes() < 4 * 1024 * 1024);
+    assert_eq!(BuiltinModel.request_id(&first), request);
+    assert_eq!(BuiltinModel.request_id(&second), request);
+    let first_evidence = first.staged().expect("first stage");
+    let second_evidence = second.staged().expect("shared stage");
+    assert_eq!(first_evidence.manifest, second_evidence.manifest);
+    assert_eq!(
+        first_evidence.membership.id(),
+        second_evidence.membership.id()
+    );
+    assert_eq!(
+        first_evidence.hydrate(Some(&before)).unwrap().encode(),
+        inline.encode()
+    );
+    assert_eq!(
+        second_evidence.hydrate(Some(&before)).unwrap().encode(),
+        inline.encode()
+    );
+    assert_eq!(first.encode().len(), 180);
+    #[cfg(unix)]
+    {
+        let orphan_label = "pkg:npm/staged-unselected-orphan@1.0.0";
+        let orphan_bytes = BuiltinIntent::add(PackageKey::from_value(orphan_label), orphan_label)
+            .unwrap()
+            .encode();
+        let orphan = backend_store::TypedObject::from_value(
+            &backend_version::ObjectKey::<BuiltinIntentSchema>::from_value(&orphan_bytes),
+            &orphan_bytes,
+        );
+        let store = before.durable_store().unwrap();
+        store.write_object(&orphan).unwrap();
+        let collector = backend_store::FileStore::open_with_registry(
+            store.root(),
+            64 * 1024 * 1024,
+            store.relation_registry().clone(),
+        )
+        .unwrap();
+        let (completed, result) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            completed
+                .send(collector.collect_garbage(
+                    &backend_store::GcRoots::new(),
+                    backend_store::GcLimits::default(),
+                ))
+                .unwrap();
+        });
+        result
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("live staged admission does not hold a global GC barrier")
+            .expect("independent normal GC retains exact leased stage pages");
+        worker.join().unwrap();
+        assert!(!store.contains_object(orphan.id()).unwrap());
+        assert_eq!(
+            first_evidence.hydrate(Some(&before)).unwrap().encode(),
+            inline.encode()
+        );
+    }
+    eprintln!(
+        "staged queue bytes={} pointer bytes={} exact members={}",
+        first.queue_bytes(),
+        first.encode().len(),
+        first_evidence.membership.object_count()
+    );
+    super::super::commands::commit_builtin_intent(&mut daemon, 2, &first)
+        .expect("small staged request passes the real owner queue and publication");
+    let selected = daemon.engine().daemon().owner().snapshot();
+    assert!(selected.closure().stored_membership().is_some());
+    assert!(selected.closure().control_manifest().objects().len() <= 128);
+    assert_eq!(selected.sequence(), 1);
+    assert_complete(&daemon, package, "left.ts", count);
+    assert_complete(&daemon, package, "right.ts", count);
+    assert!(
+        second_evidence.hydrate(Some(&selected)).is_err(),
+        "stale base refuses"
+    );
+    let mut swapped = first.encode();
+    swapped[40] ^= 1;
+    assert!(
+        super::super::staged_transport::StagedIntent::decode(
+            &swapped,
+            selected.durable_store().unwrap(),
+            selected.closure().membership_id(),
+        )
+        .is_err(),
+        "pointer fence cannot be swapped independently of the fixed manifest"
+    );
+    let selected_root = selected.root();
+    let previous_stage_manifest = first_evidence.manifest;
+    drop(selected);
+    drop(before);
+    drop(first);
+    drop(second);
+    drop(daemon);
+    let mut cold = open_daemon(workspace.0.path());
+    eprintln!("first selected staged closure reopened cold");
+    assert_eq!(cold.engine().daemon().owner().head().root(), selected_root);
+    assert_complete(&cold, package, "left.ts", count);
+    assert_complete(&cold, package, "right.ts", count);
+    let followup_label = "pkg:npm/staged-small-followup@1.0.0";
+    let followup = BuiltinIntent::add(PackageKey::from_value(followup_label), followup_label)
+        .expect("small followup intent");
+    assert!(followup.encode().len() < 1024 * 1024);
+    super::super::commands::commit_builtin_intent(&mut cold, 3, &followup)
+        .expect("small followup replaces the previous staged evidence scope");
+    let followup_snapshot = cold.engine().daemon().owner().snapshot();
+    assert_eq!(followup_snapshot.sequence(), 2);
+    assert!(
+        !followup_snapshot
+            .closure()
+            .contains(previous_stage_manifest)
+            .unwrap(),
+        "old staged auxiliary evidence does not accumulate in the new selection"
+    );
+    let followup_root = followup_snapshot.root();
+    drop(followup_snapshot);
+    drop(cold);
+    let next_cold = open_daemon(workspace.0.path());
+    eprintln!("replacement staged closure reopened cold");
+    assert_eq!(
+        next_cold.engine().daemon().owner().head().root(),
+        followup_root
+    );
+    assert_complete(&next_cold, package, "left.ts", count);
+    assert_complete(&next_cold, package, "right.ts", count);
+}
+
+#[test]
+fn staged_parser_facts_refuse_changed_source_and_cancel_before_queue() {
+    use std::sync::{Arc, atomic::AtomicBool};
+    let workspace = TempWorkspace::new();
+    let label = "pkg:npm/staged-changed-source-facts@1.0.0";
+    let package = PackageKey::from_value(label);
+    let (record, facts) = parsed_file(package, "changed.ts", 12_000);
+    let daemon = open_daemon(workspace.0.path());
+    let (inline, _) = prepare_files(&daemon, package, label, 1, &[(record, Some(facts))]);
+    let before = daemon.engine().daemon().owner().snapshot();
+    assert!(inline.encode().len() > 1024 * 1024);
+    std::fs::write(
+        workspace.0.path().join("changed.ts"),
+        b"export const changed = true;",
+    )
+    .unwrap();
+    assert!(
+        super::super::staged_transport::stage(
+            inline.clone(),
+            &before,
+            Some(workspace.0.path()),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .is_err(),
+        "captured digest differs from actual bytes at admission"
+    );
+    assert!(
+        super::super::staged_transport::stage(
+            inline,
+            &before,
+            None,
+            Arc::new(AtomicBool::new(true)),
+        )
+        .is_err(),
+        "cancelled admission does not retry an Interrupted read forever"
+    );
+    assert_eq!(
+        daemon.engine().daemon().owner().snapshot().root(),
+        before.root()
+    );
+    assert_eq!(daemon.engine().daemon().owner().snapshot().sequence(), 0);
 }
 
 #[test]

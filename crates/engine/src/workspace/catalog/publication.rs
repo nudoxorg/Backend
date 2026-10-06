@@ -90,7 +90,7 @@ pub(crate) fn append_to_closure_with_work(
     // path and do not materialize the complete source closure.
     let mut changes = Vec::with_capacity(4);
     for payload in [&output_object, &manifest_object] {
-        if !base.manifest().contains_object_id(payload.id()) {
+        if !base.control_manifest().contains_object_id(payload.id()) {
             changes.push(ManifestChange::insert(payload).map_err(WorkspaceError::store)?);
         }
     }
@@ -102,7 +102,7 @@ pub(crate) fn append_to_closure_with_work(
     changes.push(ManifestChange::insert(&descriptor_value)?);
     changes.sort_by_key(ManifestChange::key);
     let prepared_manifest = base
-        .manifest()
+        .control_manifest()
         .prepare_delta(&changes)
         .map_err(WorkspaceError::store)?;
     let manifest_work = prepared_manifest.work();
@@ -148,7 +148,7 @@ fn append_to_persisted_closure(
                 "conflicting derived output identity",
             ));
         }
-        return Ok((base.manifest().clone(), state.clone(), work));
+        return Ok((base.control_manifest().clone(), state.clone(), work));
     }
 
     let primary_update = prepare_lazy_insert::<PrimaryRelation>(
@@ -385,7 +385,7 @@ fn commit_catalog_descriptor(
 
     let mut changes = Vec::with_capacity(4 + commit.retired_payloads.len());
     for payload in [commit.output, commit.manifest] {
-        if !base.manifest().contains_object_id(payload.id()) {
+        if !base.control_manifest().contains_object_id(payload.id()) {
             changes.push(ManifestChange::insert(payload).map_err(WorkspaceError::store)?);
         }
     }
@@ -401,7 +401,7 @@ fn commit_catalog_descriptor(
     changes.push(ManifestChange::insert(&descriptor_value)?);
     changes.sort_by_key(ManifestChange::key);
     let prepared_manifest = base
-        .manifest()
+        .control_manifest()
         .prepare_delta(&changes)
         .map_err(WorkspaceError::store)?;
     let manifest_work = prepared_manifest.work();
@@ -425,7 +425,7 @@ fn store_payload_object(
     let object = store
         .read_object_claim(UntrustedObjectId::from_bytes(payload.0))
         .map_err(WorkspaceError::store)?;
-    if !base.manifest().contains_object_id(object.id()) {
+    if !base.control_manifest().contains_object_id(object.id()) {
         return Err(WorkspaceError::Corrupt(
             "catalog payload outside workspace closure",
         ));

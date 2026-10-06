@@ -1,0 +1,51 @@
+{
+  "schema": "nudox.staged-authentic-source-queue-cold.v1",
+  "source_commit": "9a380f7c73eca04ccc93c197ab1079ecc089fdd6",
+  "source_tree": "a7c9dc4e29293a3576cb8f6b961837a58b22eab2",
+  "host": "h16001mac",
+  "toolchain": "rust1.97.1 pinned fcb-native-environment; managed worktree+slot locks; Cargo jobs4",
+  "command": "cargo test -p backend-local-service --lib staged_official_archive -j4 -- --ignored --test-threads=1 --nocapture",
+  "raw_log": {
+    "path": "raw/zod-9a380f7c73.log",
+    "sha256": "1ea0e41469c9d4d91df61889f3bfe2706b2f5094981391492f9248625dec4569"
+  },
+  "fresh_fleet": {
+    "path": "raw/zod-9a380f7c73-fleet.json",
+    "sha256": "e6fc222bf52b6924edef68c2810a31bbe1269cda8b0098aeff0197b1f8165148"
+  },
+  "test_executable": {
+    "path": "/Users/rmccrar6/codex-worktrees/sol61-staged-ingest-20261006/.local/build/staged-ingest/.nudox-cargo/slot-0/debug/deps/backend_local_service-f546d251e4601c63",
+    "sha256_before": "3680cd25c7750555e1e31c35d8d08a1a2c069a21b5c4038f49e61d77d5209412",
+    "sha256_after": "3680cd25c7750555e1e31c35d8d08a1a2c069a21b5c4038f49e61d77d5209412"
+  },
+  "archive": {
+    "version": "zod3.25.76",
+    "sha256": "9e1f1a05f0dd0c1dab64ee91ceb9bf55cd44d35368c70edda80a2fdc70a88377",
+    "regular_files": 596,
+    "acquisition_path": "zod-3.25.76-acquisition.json",
+    "acquisition_sha256": "2edc9ab9811a62cc5665ea2e14873ff8c8a450a50933276fc29ea5eeadb7b14b"
+  },
+  "actual_producer": {
+    "scanned_files": 593,
+    "fact_changes": 624,
+    "source_bytes_read": 3583593,
+    "inline_queue_bytes": 8091684,
+    "unchanged_queue_limit_bytes": 4194304,
+    "inline_actual_owner_queue_refused": true,
+    "staged_queue_bytes": 357,
+    "pointer_bytes": 180
+  },
+  "result": {
+    "passed": 1,
+    "failed": 0,
+    "seconds": 24.55,
+    "selected_root_matches_cold": true,
+    "every_actual_expected_fact_record_matches_cold": true
+  },
+  "limits": [
+    "production unproven-authority parser/source facts storage and queue path only",
+    "no native/compiler semantic completeness credit",
+    "original8,092,105-byte driver not identical; current acquired real producer8,091,684 bytes",
+    "large live-stage GC suite on same9a source remains RED; no overall staged acceptance"
+  ]
+}

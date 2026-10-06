@@ -1,0 +1,54 @@
+{
+  "schema": "nudox.staged-prior-red-gates.v1",
+  "gates": [
+    {
+      "source_commit": "a5ef240418e92baf706fa95108a904ca32a25149",
+      "source_tree": "014040ab1338a2ece65403adfca98bda70aedd15",
+      "raw_log": {
+        "path": "raw/staged-a5ef2404.log",
+        "sha256": "b3aeb0aada82121d94274188723428a743c3e458ca4357b779bbebfd99c8676e"
+      },
+      "passed": 8,
+      "failed": 1,
+      "reason": "selected publication succeeded; cold physical workspace pack identity mismatch",
+      "test_binary_sha256": null
+    },
+    {
+      "source_commit": "53af86cfd1d23b495e9104170edd96dbc56f8d28",
+      "source_tree": "1b1f6c4fff846b04cbebff12cc30c167cef8b81d",
+      "raw_log": {
+        "path": "raw/staged-53af86cf.log",
+        "sha256": "841b0dc9764a7fae661308ab4bd23928e6d6c63121dc12b5b3b8a5e5c4bfaa83"
+      },
+      "passed": 8,
+      "failed": 1,
+      "reason": "cold ordinary control admission rejected relation node wire value",
+      "test_binary_sha256": null
+    },
+    {
+      "source_commit": "42d83eb186fbc5900867d481d0e11dfe231c436d",
+      "source_tree": "abf67048dbbafb84ca091f223c61b85e8db52d36",
+      "raw_log": {
+        "path": "raw/staged-42d83eb1.log",
+        "sha256": "4ab832e14ba78557512ecd41919cf51906a7bf31f5bce07b6405c58e96c4bcc8"
+      },
+      "passed": 8,
+      "failed": 1,
+      "reason": "new live-stage GC Bound before publication/cold; these not executed",
+      "test_binary_sha256": null
+    },
+    {
+      "source_commit": "9a380f7c73eca04ccc93c197ab1079ecc089fdd6",
+      "source_tree": "a7c9dc4e29293a3576cb8f6b961837a58b22eab2",
+      "raw_log": {
+        "path": "raw/staged-9a380f7c73.log",
+        "sha256": "b593c9f7e7a825236579d650ffc9d1244cf9e4d3be21813e921d329391a9cfac"
+      },
+      "passed": 9,
+      "failed": 1,
+      "reason": "live-stage GC Bound before publication/cold; complementary manifest continuation fix follows",
+      "test_binary_sha256": "3680cd25c7750555e1e31c35d8d08a1a2c069a21b5c4038f49e61d77d5209412"
+    }
+  ],
+  "note": "No source successor receives gate credit from earlier source. Earlier binaries not retained/hash captured; raw source-bound failed observations only."
+}

@@ -62,7 +62,7 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
             // genesis could be named by the new manifest but absent from the
             // object CAS after a cold-start crash.
             let seed = ClosureManifest::new_with_registry(
-                self.head.closure().manifest().objects().to_vec(),
+                self.head.closure().control_manifest().objects().to_vec(),
                 self.store.relation_registry(),
             )
             .map_err(|error| {
@@ -188,7 +188,7 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
         let descriptor = store_durable.descriptor();
         if descriptor.target() != transition.target().to_bytes()
             || descriptor.target_generation() != sequence
-            || descriptor.closure().as_bytes() != transition.closure().manifest().id().as_bytes()
+            || descriptor.closure().as_bytes() != transition.closure().membership_id().as_bytes()
         {
             return Err(WorkspaceError::ClosureMismatch);
         }

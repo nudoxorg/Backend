@@ -185,7 +185,7 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
         }
         let catalog = if let Some(descriptor_id) = head.catalog_descriptor() {
             let durable_manifest = store
-                .open_closure(head.closure().manifest().id())
+                .open_closure(head.closure().membership_id())
                 .map_err(WorkspaceError::store)?;
             state_from_durable_manifest(
                 &store,
@@ -245,7 +245,7 @@ fn seed_unselected_genesis(
     genesis: &WorkspaceHead,
 ) -> Result<(), WorkspaceError> {
     let manifest = ClosureManifest::new_with_registry(
-        genesis.closure().manifest().objects().to_vec(),
+        genesis.closure().control_manifest().objects().to_vec(),
         store.relation_registry(),
     )
     .map_err(WorkspaceError::store)?;

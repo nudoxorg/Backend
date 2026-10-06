@@ -2521,7 +2521,7 @@ impl ProductSourceSnapshot {
             retention: ProductSourceRetentionFacts {
                 relation_rows: relation_root.row_count(),
                 relation_level: relation_root.level(),
-                retained_objects: snapshot.closure().manifest().object_count(),
+                retained_objects: snapshot.closure().control_manifest().object_count(),
             },
         })
     }

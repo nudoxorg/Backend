@@ -270,6 +270,45 @@ impl fmt::Debug for PreparedTransition {
 }
 
 impl PreparedTransition {
+    /// Binds the checked small controls to exact admitted stored evidence.
+    pub fn with_stored_membership(
+        mut self,
+        membership: backend_store::DurableClosureManifest,
+    ) -> Result<Self, WorkspaceError> {
+        let auxiliary = self
+            .closure
+            .control_manifest()
+            .objects()
+            .iter()
+            .filter(|object| !self.payloads.contains(&object.id()))
+            .filter(|object| !membership.is_relation_schema(object.schema()))
+            .map(TypedObject::id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        self.closure = self
+            .closure
+            .with_stored_membership(membership)
+            .map_err(WorkspaceError::store)?;
+        // Stored membership separates a small typed control frontier from
+        // paged evidence. Keep every direct control pointer in the fixed
+        // recovery pack. Relation roots stay in typed relation CAS and are
+        // reopened through these pointers and the checked root grammar.
+        self.auxiliary = Arc::from(auxiliary);
+        let persisted = Arc::make_mut(&mut self.persisted);
+        persisted.membership = Some(self.closure.membership_id());
+        let mut encoded = Vec::from(&b"SCM1"[..]);
+        encoded.extend_from_slice(self.closure.membership_id().as_bytes());
+        encoded.extend_from_slice(
+            &self
+                .closure
+                .control_manifest()
+                .encode(MAX_RECORD_BYTES)
+                .map_err(WorkspaceError::store)?,
+        );
+        persisted.closure_bytes = Arc::from(encoded);
+        Ok(self)
+    }
     /// Binds checked version and store capabilities to one owner transaction.
     ///
     /// # Errors
@@ -436,10 +475,17 @@ impl PreparedTransition {
             &closure,
             registry,
         )?;
-        let closure_bytes = closure
-            .manifest()
+        let mut closure_bytes = closure
+            .control_manifest()
             .encode(MAX_RECORD_BYTES)
             .map_err(WorkspaceError::store)?;
+        let membership_id = closure.stored_membership().map(|_| closure.membership_id());
+        if let Some(id) = membership_id {
+            let mut compact = Vec::from(&b"SCM1"[..]);
+            compact.extend_from_slice(id.as_bytes());
+            compact.extend_from_slice(&closure_bytes);
+            closure_bytes = compact;
+        }
         // Retain only the manifest's non-relation roots in the fixed
         // recovery index. Relation nodes, including the selected root, are
         // reopened through the store's typed relation reference index;
@@ -457,30 +503,33 @@ impl PreparedTransition {
         );
         closure_refs.extend(commit.closure_refs());
         let mut auxiliary = closure
-            .manifest()
+            .control_manifest()
             .objects()
             .iter()
             .filter(|object| !payloads.contains(&object.id()))
             .filter(|object| {
-                closure_refs.iter().any(|reference| {
-                    reference.kind() != backend_version::ClosureKind::Relation
-                        && reference.schema() == object.schema()
-                        && reference.version() == *object.version()
-                })
+                (membership_id.is_some() && !registry.contains_schema(object.schema()))
+                    || closure_refs.iter().any(|reference| {
+                        reference.kind() != backend_version::ClosureKind::Relation
+                            && reference.schema() == object.schema()
+                            && reference.version() == *object.version()
+                    })
             })
             .map(TypedObject::id)
             .collect::<Vec<_>>();
         auxiliary.sort_unstable();
         auxiliary.dedup();
-        let persisted = Arc::new(PersistedTransition::from_parts(
+        let mut persisted = PersistedTransition::from_parts(
             request,
             transaction,
             manifest_bytes.into_boxed_slice(),
             delta_bytes.into_boxed_slice(),
             commit_bytes.into_boxed_slice(),
-            closure.manifest().clone(),
+            closure.control_manifest().clone(),
             closure_bytes.into_boxed_slice(),
-        ));
+        );
+        persisted.membership = membership_id;
+        let persisted = Arc::new(persisted);
         Ok(Self {
             request,
             transaction,
@@ -503,7 +552,11 @@ impl PreparedTransition {
     /// admitted into the target closure; this setter is crate-private so a
     /// caller cannot make an arbitrary catalog claim visible in the pack.
     pub(super) fn with_catalog_descriptor(mut self, descriptor: ObjectId) -> Self {
-        if self.closure.manifest().contains_object_id(descriptor) {
+        if self
+            .closure
+            .control_manifest()
+            .contains_object_id(descriptor)
+        {
             let mut auxiliary = self.auxiliary.to_vec();
             if !self.payloads.contains(&descriptor) && !auxiliary.contains(&descriptor) {
                 auxiliary.push(descriptor);
@@ -570,14 +623,18 @@ impl PreparedTransition {
         let retained_ids = objects.iter().map(TypedObject::id).collect::<Vec<_>>();
         let mut changes = Vec::new();
         if let Some(schema) = replace_schema {
-            for previous in self.closure.manifest().objects() {
+            for previous in self.closure.control_manifest().objects() {
                 if previous.schema() == schema && !retained_ids.contains(&previous.id()) {
                     changes.push(ManifestChange::delete(previous).map_err(WorkspaceError::store)?);
                 }
             }
         }
         for object in objects {
-            if !self.closure.manifest().contains_object_id(object.id()) {
+            if !self
+                .closure
+                .control_manifest()
+                .contains_object_id(object.id())
+            {
                 changes.push(ManifestChange::insert(object).map_err(WorkspaceError::store)?);
             }
         }
@@ -587,7 +644,7 @@ impl PreparedTransition {
             changes.sort_by_key(ManifestChange::key);
             let manifest = self
                 .closure
-                .manifest()
+                .control_manifest()
                 .prepare_delta(&changes)
                 .map_err(WorkspaceError::store)?
                 .commit();
@@ -615,19 +672,27 @@ impl PreparedTransition {
             rebuilt.work = self.work;
             rebuilt
         };
-        if rebuilt
-            .catalog_descriptor
-            .is_some_and(|descriptor| !rebuilt.closure.manifest().contains_object_id(descriptor))
-        {
+        if rebuilt.catalog_descriptor.is_some_and(|descriptor| {
+            !rebuilt
+                .closure
+                .control_manifest()
+                .contains_object_id(descriptor)
+        }) {
             rebuilt.catalog_descriptor = None;
         }
         let mut auxiliary = rebuilt
             .auxiliary
             .iter()
             .copied()
-            .filter(|id| rebuilt.closure.manifest().contains_object_id(*id))
+            .filter(|id| rebuilt.closure.control_manifest().contains_object_id(*id))
             .collect::<Vec<_>>();
         for object_id in retained_ids {
+            if objects
+                .iter()
+                .any(|object| object.id() == object_id && registry.contains_schema(object.schema()))
+            {
+                continue;
+            }
             if !rebuilt.payloads.contains(&object_id) && !auxiliary.contains(&object_id) {
                 auxiliary.push(object_id);
             }
@@ -752,7 +817,7 @@ impl PreparedTransition {
         for object_id in self.auxiliary_object_ids() {
             let object = self
                 .closure
-                .manifest()
+                .control_manifest()
                 .objects()
                 .iter()
                 .find(|object| object.id() == *object_id)
@@ -815,6 +880,7 @@ pub struct PersistedTransition {
     commit: Arc<[u8]>,
     closure: Arc<ClosureManifest>,
     closure_bytes: Arc<[u8]>,
+    membership: Option<backend_store::ClosureId>,
 }
 
 impl PersistedTransition {
@@ -835,7 +901,19 @@ impl PersistedTransition {
             commit: Arc::from(commit),
             closure: Arc::new(closure),
             closure_bytes: Arc::from(closure_bytes),
+            membership: None,
         }
+    }
+
+    pub(super) fn with_membership_id(mut self, id: backend_store::ClosureId) -> Self {
+        self.membership = Some(id);
+        self
+    }
+
+    /// Returns exact authenticated stored membership when supplied by recovery.
+    #[must_use]
+    pub const fn membership_id(&self) -> Option<backend_store::ClosureId> {
+        self.membership
     }
 
     /// Returns the request identity carried by the record.

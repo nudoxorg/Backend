@@ -175,7 +175,7 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
                 if descriptor.target() != self.head.root().to_bytes()
                     || descriptor.target_generation() != self.head.sequence()
                     || descriptor.closure().as_bytes()
-                        != self.head.closure().manifest().id().as_bytes()
+                        != self.head.closure().membership_id().as_bytes()
                 {
                     return Err(WorkspaceError::HeadConflict);
                 }
