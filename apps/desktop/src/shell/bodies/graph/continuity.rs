@@ -198,6 +198,28 @@ mod tests {
     }
 
     #[test]
+    fn same_layout_node_permutation_remaps_identity_and_keeps_camera_exact() {
+        let (old, _) = fixture(&["A", "B"], &["exact-A", "exact-B"]);
+        let (fresh, identities) = fixture(&["B", "A"], &["exact-B", "exact-A"]);
+        assert_eq!(
+            old.layout.key, fresh.layout.key,
+            "names are not geometric inputs"
+        );
+        let (packet, camera) = selected(&old);
+        let restored = packet
+            .restore(&visit(), &fresh, &identities)
+            .expect("same visit");
+        assert_eq!(
+            restored.start,
+            Start::Restore {
+                camera,
+                focus: Some(0)
+            }
+        );
+        assert_eq!(restored.status, None);
+    }
+
+    #[test]
     fn missing_or_ambiguous_identity_clears_selection_even_when_node_ids_exist() {
         let (old, _) = fixture(&["A", "B"], &["exact-A", "exact-B"]);
         for names in [["exact-A", "replacement"], ["exact-B", "exact-B"]] {
