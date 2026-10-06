@@ -1279,14 +1279,16 @@ fn stored_extension_installs_auxiliary_children_before_membership_rebind() {
         coverage(),
     ));
     let registry = must(RelationAdmissionRegistry::default().with_relation::<AuxiliaryRelation>());
+    let mut controls = vec![
+        must(TypedObject::from_relation_state(&old_raw)),
+        must(TypedObject::from_relation_state(&old_auxiliary)),
+        authority.clone(),
+    ];
+    controls.sort_by_key(|object| (object.schema(), *object.key(), *object.version()));
     let base = must(
         WorkspaceClosure::from_checked_manifest_root_only_with_registry(
             &base_manifest,
-            must(ClosureManifest::new(vec![
-                must(TypedObject::from_relation_state(&old_raw)),
-                must(TypedObject::from_relation_state(&old_auxiliary)),
-                authority.clone(),
-            ])),
+            must(ClosureManifest::new(controls)),
             &registry,
         ),
     );
