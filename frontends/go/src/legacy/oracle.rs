@@ -37,6 +37,15 @@ const UNSUPPORTED_CGO_SENTINEL: &str = "NUDOX_GO_UNSUPPORTED_CGO_CLOSURE";
 /// Versioned identity of the explicit Go package-authority child environment.
 pub const GO_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1: &str = "go-package-child-environment.v1";
 
+const GO_ORACLE_SOURCE_FILES: &[(&str, &[u8])] = &[
+    ("go.mod", include_bytes!("oracle/go.mod")),
+    ("go.sum", include_bytes!("oracle/go.sum")),
+    ("main.go", include_bytes!("oracle/main.go")),
+    ("docs.go", include_bytes!("oracle/docs.go")),
+    ("image.go", include_bytes!("oracle/image.go")),
+    ("serialize.go", include_bytes!("oracle/serialize.go")),
+];
+
 // ---------------------------------------------------------------------------
 // Root
 // ---------------------------------------------------------------------------
@@ -713,6 +722,68 @@ pub struct Term {
 }
 
 /// Typed failures at the subprocess and protocol boundary.
+struct EmbeddedGoOracleSource(tempfile::TempDir);
+
+impl EmbeddedGoOracleSource {
+    fn materialize() -> Result<Self, OracleError> {
+        let directory = tempfile::Builder::new()
+            .prefix("nudox-go-oracle-")
+            .tempdir()
+            .map_err(OracleError::GoOracleSourceDirectory)?;
+        for (name, contents) in GO_ORACLE_SOURCE_FILES {
+            let path = directory.path().join(name);
+            std::fs::write(&path, contents)
+                .map_err(|source| OracleError::GoOracleSourceFile { path, source })?;
+        }
+        Ok(Self(directory))
+    }
+
+    fn path(&self) -> &Path {
+        self.0.path()
+    }
+}
+
+struct GoOracleCommand {
+    command: std::process::Command,
+    _source: Option<EmbeddedGoOracleSource>,
+}
+
+impl GoOracleCommand {
+    fn binary(command: std::process::Command) -> Self {
+        Self {
+            command,
+            _source: None,
+        }
+    }
+
+    fn toolchain(
+        executable: impl AsRef<std::ffi::OsStr>,
+        args: impl IntoIterator<Item = std::ffi::OsString>,
+    ) -> Result<Self, OracleError> {
+        let source = EmbeddedGoOracleSource::materialize()?;
+        let mut command = std::process::Command::new(executable);
+        command.args(args).current_dir(source.path());
+        Ok(Self {
+            command,
+            _source: Some(source),
+        })
+    }
+}
+
+impl std::ops::Deref for GoOracleCommand {
+    type Target = std::process::Command;
+
+    fn deref(&self) -> &Self::Target {
+        &self.command
+    }
+}
+
+impl std::ops::DerefMut for GoOracleCommand {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.command
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum OracleError {
     /// The configured executable could not be started.
@@ -722,16 +793,25 @@ pub enum OracleError {
         #[source]
         source: std::io::Error,
     },
+    /// The private directory for the embedded Go oracle could not be created.
+    #[error("Go oracle source workspace could not be created: {0}")]
+    GoOracleSourceDirectory(#[source] std::io::Error),
+    /// An embedded Go oracle file could not be written to its private workspace.
+    #[error("Go oracle source file could not be materialized at {path}: {source}")]
+    GoOracleSourceFile {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     /// Package authority needs a selected Go toolchain, cache roots, and
     /// isolated child environment before it may start an oracle.
     #[error("Go package authority has no explicit isolated child environment")]
     MissingChildEnvironment,
-    /// A prebuilt oracle cannot attest that cgo-disabled package loading did
-    /// not omit cgo source files.
+    /// A prebuilt oracle cannot attest that cgo-disabled package loading uses
+    /// the admitted active source set.
     #[error("Go oracle binary cannot prove a complete cgo-disabled package closure")]
     UnsupportedCgoOracleBinary,
-    /// The selected package graph contains cgo sources, but no exact admitted
-    /// C toolchain was configured.
+    /// A helper reported a cgo source omission that cannot be admitted.
     #[error("Go package authority requires an admitted C toolchain for cgo: {detail}")]
     UnsupportedCgo { detail: String },
     /// The selected package root's nearest Go workspace could not be captured
@@ -896,8 +976,8 @@ pub enum GoOracleConfiguration {
 }
 
 /// Complete, explicit environment for the Go oracle and its `go/packages`
-/// subprocesses. The initial supported policy disables cgo; the vendored
-/// oracle detects cgo files omitted by that policy and fails closed.
+/// subprocesses. The selected build policy disables cgo; Go's active file set
+/// and excluded build-constraint declarations describe that exact configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoOracleChildEnvironment {
     go_executable: PathBuf,
@@ -908,11 +988,11 @@ pub struct GoOracleChildEnvironment {
     path: String,
 }
 
-/// Explicit cgo execution policy. `Disabled` is safe because package
-/// authority rejects any graph containing ignored cgo source.
+/// Explicit cgo execution policy. `Disabled` means the authority uses the
+/// package files selected by Go with cgo turned off and records excluded files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GoCgoPolicy {
-    /// Do not run cgo or use a C compiler; reject package graphs with cgo files.
+    /// Do not run cgo or use a C compiler; use the files selected with cgo disabled.
     Disabled,
 }
 
@@ -1131,25 +1211,25 @@ impl GoOracle {
         Ok(output)
     }
 
-    /// Runs the override executable, or `go run . <module>` in the vendored directory.
+    /// Runs the override executable, or `go run . <module>` from an embedded private helper workspace.
     pub fn run(&self, module: &Path) -> Result<Output, OracleError> {
-        let oracle_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/legacy/oracle");
-        let override_bin = std::env::var("NUDOX_GO_ORACLE_BIN");
-        let mut command = if let Ok(binary) = override_bin {
+        let mut command = if let Ok(binary) = std::env::var("NUDOX_GO_ORACLE_BIN") {
             let mut command = std::process::Command::new(binary);
             command.arg(module);
-            command
+            GoOracleCommand::binary(command)
         } else {
             let compiler = match std::env::var("COMPILER_GO_COMPILER") {
                 Ok(path) => path,
                 Err(_) => "go".to_owned(),
             };
-            let mut command = std::process::Command::new(compiler);
-            command
-                .args(["run", "."])
-                .arg(module)
-                .current_dir(oracle_dir);
-            command
+            GoOracleCommand::toolchain(
+                compiler,
+                [
+                    std::ffi::OsString::from("run"),
+                    std::ffi::OsString::from("."),
+                    module.as_os_str().to_owned(),
+                ],
+            )?
         };
         let stdout = self.execute(&mut command)?;
         self.decode(&stdout)
@@ -1159,8 +1239,8 @@ impl GoOracle {
     /// file, returning the exact binary image bytes bound to that source's
     /// SHA-256 digest. Uses the same override executable as [`GoOracle::run`]
     /// (invoked as `<bin> --authority-image <source> <module>`) or
-    /// `go run . --authority-image <source> <module>` in the vendored
-    /// directory.
+    /// `go run . --authority-image <source> <module>` from an embedded
+    /// private helper workspace.
     pub fn authority_image(&self, source: &Path, module: &Path) -> Result<Vec<u8>, OracleError> {
         self.authority_image_with_mode("--authority-image", source, module)
     }
@@ -1185,24 +1265,25 @@ impl GoOracle {
         source: &Path,
         module: &Path,
     ) -> Result<Vec<u8>, OracleError> {
-        let oracle_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/legacy/oracle");
-        let override_bin = std::env::var("NUDOX_GO_ORACLE_BIN");
-        let mut command = if let Ok(binary) = override_bin {
+        let mut command = if let Ok(binary) = std::env::var("NUDOX_GO_ORACLE_BIN") {
             let mut command = std::process::Command::new(binary);
             command.arg(mode).arg(source).arg(module);
-            command
+            GoOracleCommand::binary(command)
         } else {
             let compiler = match std::env::var("COMPILER_GO_COMPILER") {
                 Ok(path) => path,
                 Err(_) => "go".to_owned(),
             };
-            let mut command = std::process::Command::new(compiler);
-            command
-                .args(["run", ".", mode])
-                .arg(source)
-                .arg(module)
-                .current_dir(oracle_dir);
-            command
+            GoOracleCommand::toolchain(
+                compiler,
+                [
+                    std::ffi::OsString::from("run"),
+                    std::ffi::OsString::from("."),
+                    std::ffi::OsString::from(mode),
+                    source.as_os_str().to_owned(),
+                    module.as_os_str().to_owned(),
+                ],
+            )?
         };
         self.execute(&mut command)
     }
@@ -1211,7 +1292,7 @@ impl GoOracle {
         configuration: &GoOracleConfiguration,
         authority_source: Option<(&str, &Path)>,
         module: &Path,
-    ) -> std::process::Command {
+    ) -> Result<GoOracleCommand, OracleError> {
         match configuration {
             GoOracleConfiguration::OracleBinary(executable) => {
                 let mut command = std::process::Command::new(executable.as_ref());
@@ -1219,17 +1300,19 @@ impl GoOracle {
                     command.arg(mode).arg(source);
                 }
                 command.arg(module);
-                command
+                Ok(GoOracleCommand::binary(command))
             }
             GoOracleConfiguration::GoToolchain(executable) => {
-                let oracle_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/legacy/oracle");
-                let mut command = std::process::Command::new(executable.as_ref());
-                command.args(["run", "."]);
+                let mut args = vec![
+                    std::ffi::OsString::from("run"),
+                    std::ffi::OsString::from("."),
+                ];
                 if let Some((mode, source)) = authority_source {
-                    command.arg(mode).arg(source);
+                    args.push(std::ffi::OsString::from(mode));
+                    args.push(source.as_os_str().to_owned());
                 }
-                command.arg(module).current_dir(oracle_dir);
-                command
+                args.push(module.as_os_str().to_owned());
+                GoOracleCommand::toolchain(executable.as_ref(), args)
             }
         }
     }
@@ -1241,7 +1324,7 @@ impl GoOracle {
         work: Option<&GoWorkWitness>,
         module: &Path,
     ) -> Result<Output, OracleError> {
-        let mut command = Self::configured_command(configuration, None, module);
+        let mut command = Self::configured_command(configuration, None, module)?;
         if let (Some(environment), Some(work)) = (environment, work) {
             environment.apply_to(
                 &mut command,
@@ -1262,7 +1345,7 @@ impl GoOracle {
         module: &Path,
     ) -> Result<Vec<u8>, OracleError> {
         let mut command =
-            Self::configured_command(configuration, Some(("--authority-image", source)), module);
+            Self::configured_command(configuration, Some(("--authority-image", source)), module)?;
         environment.apply_to(
             &mut command,
             work,
@@ -1283,7 +1366,7 @@ impl GoOracle {
             configuration,
             Some(("--authority-image-package", source)),
             module,
-        );
+        )?;
         environment.apply_to(
             &mut command,
             work,
@@ -1492,14 +1575,7 @@ impl ConfiguredGoOracle {
             }
             GoOracleConfiguration::GoToolchain(_) => {
                 let mut digest = Sha256::new();
-                for source in [
-                    include_bytes!("oracle/go.mod").as_slice(),
-                    include_bytes!("oracle/go.sum").as_slice(),
-                    include_bytes!("oracle/main.go").as_slice(),
-                    include_bytes!("oracle/docs.go").as_slice(),
-                    include_bytes!("oracle/image.go").as_slice(),
-                    include_bytes!("oracle/serialize.go").as_slice(),
-                ] {
+                for (_, source) in GO_ORACLE_SOURCE_FILES {
                     digest.update((source.len() as u64).to_be_bytes());
                     digest.update(source);
                 }
@@ -1543,12 +1619,9 @@ impl ConfiguredGoOracle {
             GoOracleConfiguration::GoToolchain(executable) => {
                 digest.update([1]);
                 update_path_digest(&mut digest, executable.as_ref());
-                digest.update(include_bytes!("oracle/go.mod"));
-                digest.update(include_bytes!("oracle/go.sum"));
-                digest.update(include_bytes!("oracle/main.go"));
-                digest.update(include_bytes!("oracle/docs.go"));
-                digest.update(include_bytes!("oracle/image.go"));
-                digest.update(include_bytes!("oracle/serialize.go"));
+                for (_, source) in GO_ORACLE_SOURCE_FILES {
+                    digest.update(source);
+                }
             }
         }
         if let Some(environment) = &self.child_environment {
@@ -1679,7 +1752,7 @@ impl ConfiguredGoOracle {
             &self.configuration,
             Some(("--authority-image-package", source)),
             package_root,
-        );
+        )?;
         environment.apply_to(
             &mut command,
             witness.go_work_witness(),
@@ -2202,8 +2275,71 @@ mod read_tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
     #[test]
-    fn go_toolchain_rejects_cgo_in_root_and_import_dependency()
+    fn relocated_go_toolchain_uses_an_embedded_private_helper_workspace()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir()?;
+        let go = root.path().join("fake-go");
+        let helper_cwd = root.path().join("helper-cwd.txt");
+        let program = format!(
+            "#!/bin/sh\nset -eu\n[ \"$1\" = run ]\n[ \"$2\" = . ]\nfor file in go.mod go.sum main.go docs.go image.go serialize.go; do [ -f \"$file\" ]; done\nprintf '%s\\n' \"$PWD\" > '{}'\nprintf '{{\"schemaVersion\":4}}\n'\n",
+            helper_cwd.display()
+        );
+        std::fs::write(&go, program)?;
+        std::fs::set_permissions(&go, std::fs::Permissions::from_mode(0o700))?;
+
+        let goroot = root.path().join("goroot");
+        let module_cache = root.path().join("modules");
+        let module = root.path().join("target");
+        std::fs::create_dir_all(&goroot)?;
+        std::fs::create_dir_all(&module_cache)?;
+        std::fs::create_dir_all(&module)?;
+        std::fs::write(
+            module.join("go.mod"),
+            "module example.com/target\n\ngo 1.23\n",
+        )?;
+        std::fs::write(
+            module.join("target.go"),
+            "package target\nconst Value = 1\n",
+        )?;
+
+        let child_environment = GoOracleChildEnvironment::new(
+            go.clone(),
+            goroot,
+            module_cache,
+            root.path().join("native-work/go-oracle-cache"),
+        )?;
+        let oracle = GoOracle::default()
+            .with_configuration(GoOracleConfiguration::go_toolchain(go)?)
+            .with_child_environment(child_environment)?;
+        let source_directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/legacy/oracle");
+        let unavailable_directory =
+            source_directory.with_file_name(format!("oracle-unavailable-{}", std::process::id()));
+        assert!(!unavailable_directory.exists());
+        std::fs::rename(&source_directory, &unavailable_directory)?;
+        let output_result = oracle.run(&module);
+        std::fs::rename(&unavailable_directory, &source_directory)?;
+        let output = output_result?;
+        assert_eq!(
+            output.schema_version,
+            super::Output::REQUIRED_SCHEMA_VERSION
+        );
+
+        let helper_cwd = PathBuf::from(std::fs::read_to_string(&helper_cwd)?.trim());
+        assert!(helper_cwd.is_absolute());
+        assert!(!helper_cwd.starts_with(env!("CARGO_MANIFEST_DIR")));
+        assert!(
+            !helper_cwd.exists(),
+            "the private helper workspace is removed after the child exits"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn go_toolchain_accepts_the_selected_non_cgo_files_in_root_and_dependency()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = std::env::temp_dir().join(format!(
             "go-cgo-authority-{}-{}",
@@ -2226,30 +2362,30 @@ mod read_tests {
             module_cache,
             root.join("native-work/go-oracle-cache"),
         )?;
-        let oracle = GoOracle {
-            output_limit: 32 * 1024 * 1024,
-            timeout: std::time::Duration::from_secs(180),
-        }
-        .with_configuration(GoOracleConfiguration::go_toolchain(go)?)
-        .with_child_environment(child_environment)?;
+        let oracle = GoOracle::default()
+            .with_configuration(GoOracleConfiguration::go_toolchain(go)?)
+            .with_child_environment(child_environment)?;
 
-        let root_cgo_module = root.join("root-cgo-module");
-        std::fs::create_dir_all(&root_cgo_module)?;
+        let root_module = root.join("root-module");
+        std::fs::create_dir_all(&root_module)?;
         std::fs::write(
-            root_cgo_module.join("go.mod"),
+            root_module.join("go.mod"),
             "module example.com/rootcgo\n\ngo 1.23\n",
         )?;
         std::fs::write(
-            root_cgo_module.join("root.go"),
+            root_module.join("root.go"),
             "package rootcgo\nconst Value = 1\n",
         )?;
         std::fs::write(
-            root_cgo_module.join("cgo.go"),
-            "package rootcgo\nimport \"C\"\n",
+            root_module.join("cgo.go"),
+            r#"package rootcgo
+import "C"
+func CgoOnly() C.int { return 1 }
+"#,
         )?;
-        assert_cgo_rejected(&oracle, &root_cgo_module, &root_cgo_module.join("root.go"))?;
+        assert_go_authority_succeeds(&oracle, &root_module, &root_module.join("root.go"))?;
 
-        let dependency_module = root.join("dependency-cgo-module");
+        let dependency_module = root.join("dependency-module");
         let dependency_package = dependency_module.join("dep");
         std::fs::create_dir_all(&dependency_package)?;
         std::fs::write(
@@ -2258,7 +2394,10 @@ mod read_tests {
         )?;
         std::fs::write(
             dependency_module.join("root.go"),
-            "package dependencycgo\nimport \"example.com/dependencycgo/dep\"\nconst Value = dep.Value\n",
+            r#"package dependencycgo
+import "example.com/dependencycgo/dep"
+const Value = dep.Value
+"#,
         )?;
         std::fs::write(
             dependency_package.join("dep.go"),
@@ -2266,9 +2405,12 @@ mod read_tests {
         )?;
         std::fs::write(
             dependency_package.join("cgo.go"),
-            "package dep\nimport \"C\"\n",
+            r#"package dep
+import "C"
+func CgoOnly() C.int { return 1 }
+"#,
         )?;
-        assert_cgo_rejected(
+        assert_go_authority_succeeds(
             &oracle,
             &dependency_module,
             &dependency_module.join("root.go"),
@@ -2357,17 +2499,13 @@ mod read_tests {
         })
     }
 
-    fn assert_cgo_rejected(
+    fn assert_go_authority_succeeds(
         oracle: &super::ConfiguredGoOracle,
         module: &Path,
         source: &Path,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let witness = GoWorkWitness::capture(module)?;
-        let result = oracle.authority_image_for_package_with_witness(source, module, &witness);
-        assert!(matches!(
-            result,
-            Err(super::OracleError::UnsupportedCgo { .. })
-        ));
+        oracle.authority_image_for_package_with_witness(source, module, &witness)?;
         Ok(())
     }
 }

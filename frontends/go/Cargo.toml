@@ -12,6 +12,7 @@ backend-semantic = { path = "../../crates/semantic" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "=0.10.9"
+tempfile = { workspace = true }
 thiserror = { workspace = true }
 tree-sitter-go = "=0.25.0"
 
