@@ -440,6 +440,7 @@ pub(super) fn finish_index_scan(
         workspace_snapshot,
     } = result;
     let final_revision_fence = scan.revision_fence.clone();
+    let cancellation = work.cancellation.clone();
     let base_snapshot = daemon.engine().daemon().owner().snapshot();
     let relation = base_snapshot
         .relation::<BuiltinWorkspaceRelation>()
@@ -459,9 +460,26 @@ pub(super) fn finish_index_scan(
         reusable,
         ..
     } = work;
-    let source_root = source_root.as_path();
+    let requested_root = source_root.as_path();
     let coordinate = coordinate.as_ref();
     let revision_fence = &scan.revision_fence;
+    if cancellation.load(Ordering::Acquire) {
+        return Err(BuiltinModelError(ingest::INDEX_SCAN_CANCELLED.to_owned()));
+    }
+    if !ingest::compiler_revision_is_current_with_cancellation(
+        revision_fence,
+        Some(cancellation.as_ref()),
+    )
+    .map_err(BuiltinModelError)?
+    {
+        return Err(BuiltinModelError(
+            "project root or files changed after source admission; retry indexing".to_owned(),
+        ));
+    }
+    // Use the root pinned by the scan for configuration, compiler-input, and
+    // profile reads. Keep the original spelling only for alias-retarget checks
+    // at later admission fences.
+    let source_root = revision_fence.canonical_root();
     let inputs = compiler_input_admissions(source_root, &scan, compiler);
     let semantic_context = SemanticCompilationContext::admit(
         package,
@@ -646,7 +664,12 @@ pub(super) fn finish_index_scan(
                     scan.source_version,
                     operation_key,
                 )?;
-            if !ingest::compiler_revision_is_current(revision_fence).map_err(BuiltinModelError)? {
+            if !ingest::compiler_revision_is_current_with_cancellation(
+                revision_fence,
+                Some(cancellation.as_ref()),
+            )
+            .map_err(BuiltinModelError)?
+            {
                 return Err(BuiltinModelError(
                     "compiler source or configuration revision changed before source capture; retry indexing"
                         .to_owned(),
@@ -704,11 +727,13 @@ pub(super) fn finish_index_scan(
             file_keys = captured_file_keys.clone();
             let before_capture = Some(captured_project.clone());
 
-            let sources = ingest::admit_compiler_sources_with_policy(
-                source_root,
+            let sources = ingest::admit_compiler_sources_for_scan(
+                requested_root,
+                revision_fence,
                 fresh,
                 reused,
                 scan.source_admission_policy,
+                Some(cancellation.as_ref()),
             )
             .map_err(BuiltinModelError);
             let sources = match sources {
@@ -791,6 +816,19 @@ pub(super) fn finish_index_scan(
         },
         cargo_alias_observations,
     )?;
+    if cancellation.load(Ordering::Acquire) {
+        return Err(BuiltinModelError(ingest::INDEX_SCAN_CANCELLED.to_owned()));
+    }
+    if !ingest::compiler_revision_is_current_with_cancellation(
+        revision_fence,
+        Some(cancellation.as_ref()),
+    )
+    .map_err(BuiltinModelError)?
+    {
+        return Err(BuiltinModelError(
+            "project root or files changed before product selection; retry indexing".to_owned(),
+        ));
+    }
     let intent = if changes.is_empty()
         && semantic_changes.is_empty()
         && capture_changes.is_empty()

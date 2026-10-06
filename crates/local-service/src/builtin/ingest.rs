@@ -19,6 +19,7 @@ use backend_semantic::vocabulary::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read as _;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{OnceLock, mpsc};
@@ -43,13 +44,23 @@ const MAX_COMPILER_CONFIGURATION_FILES_PER_LANGUAGE: usize = 4_096;
 pub(super) const MAX_COMPILER_CONFIGURATION_FILE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_COMPILER_CONFIGURATION_BYTES_PER_LANGUAGE: usize = 32 * 1024 * 1024;
 const RESULT_QUEUE_PER_WORKER: usize = 1;
-const INDEX_SCAN_CANCELLED: &str = "index scan cancelled";
+pub(super) const INDEX_SCAN_CANCELLED: &str = "index scan cancelled";
 
 fn check_scan_cancellation(cancellation: Option<&AtomicBool>) -> Result<(), String> {
     if cancellation.is_some_and(|cancellation| cancellation.load(Ordering::Acquire)) {
         Err(INDEX_SCAN_CANCELLED.to_owned())
     } else {
         Ok(())
+    }
+}
+
+fn absolute_path_spelling(path: &Path) -> Result<PathBuf, String> {
+    if path.is_absolute() {
+        Ok(path.to_path_buf())
+    } else {
+        std::env::current_dir()
+            .map(|current| current.join(path))
+            .map_err(|error| format!("resolve project path spelling: {error}"))
     }
 }
 
@@ -78,9 +89,49 @@ pub(super) struct IndexSnapshot {
 /// separately re-admitted at the compiler boundary before native execution.
 #[derive(Clone)]
 pub(super) struct CompilerRevisionFence {
+    /// Absolute spelling supplied when this scan began, before symlink
+    /// resolution. Retaining it lets later fences notice a retargeted alias.
+    requested_root: PathBuf,
+    /// Canonical root pinned when the scan began.
     root: PathBuf,
     directories: Vec<(PathBuf, Option<FileSystemRevision>)>,
     pub(super) files: Vec<CompilerFileRevision>,
+}
+
+impl CompilerRevisionFence {
+    /// Canonical root pinned by this source scan. Filesystem reads that happen
+    /// after admission must use this path rather than resolving the caller's
+    /// original spelling again.
+    pub(super) fn canonical_root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Opens the exact root admitted by this scan after checking both the
+    /// original path spelling and the root directory's captured identity.
+    fn open_bound_root(&self, requested_root: &Path) -> Result<ProjectRoot, String> {
+        let requested_spelling = absolute_path_spelling(requested_root)?;
+        if requested_spelling != self.requested_root {
+            return Err("project root spelling changed after source admission".to_owned());
+        }
+        let resolved = self
+            .requested_root
+            .canonicalize()
+            .map_err(|error| format!("resolve admitted project root: {error}"))?;
+        if resolved != self.root {
+            return Err("project root alias now resolves to a different directory".to_owned());
+        }
+        let expected_revision = self
+            .directories
+            .iter()
+            .find(|(relative, _)| relative.as_os_str().is_empty())
+            .and_then(|(_, revision)| *revision)
+            .ok_or_else(|| "admitted project root has no captured revision".to_owned())?;
+        let capability = ProjectRoot::open(&self.root)?;
+        if capability.revision()? != expected_revision {
+            return Err("project root directory changed after source admission".to_owned());
+        }
+        Ok(capability)
+    }
 }
 
 #[derive(Clone)]
@@ -113,6 +164,7 @@ pub(super) struct CompilerWorkspaceEntry {
 /// A complete admissible workspace view with a confined read capability and
 /// an exact full-entry revalidation fence.
 pub(super) struct CompilerWorkspaceSnapshot {
+    requested_root: PathBuf,
     root: PathBuf,
     root_capability: ProjectRoot,
     policy: DiscoveryPolicy,
@@ -472,6 +524,22 @@ fn open_canonical_project_root(root: &Path) -> Result<(PathBuf, ProjectRoot), St
 }
 
 impl CompilerWorkspaceSnapshot {
+    fn root_binding_is_current(&self) -> bool {
+        let requested_resolves_to_root =
+            self.requested_root.canonicalize().ok().as_deref() == Some(self.root.as_path());
+        let expected_revision = self
+            .entries
+            .iter()
+            .find(|entry| entry.path.is_empty())
+            .map(|entry| entry.revision);
+        let opened_revision = ProjectRoot::open(&self.root)
+            .and_then(|root| root.revision())
+            .ok();
+        requested_resolves_to_root
+            && expected_revision.is_some()
+            && opened_revision == expected_revision
+    }
+
     /// Opens and inventories every path admitted by the versioned workspace
     /// policy. The root itself is represented by an empty relative path.
     pub(super) fn open(root: &Path) -> Result<Self, String> {
@@ -483,20 +551,28 @@ impl CompilerWorkspaceSnapshot {
         cancellation: Option<&AtomicBool>,
     ) -> Result<Self, String> {
         check_scan_cancellation(cancellation)?;
+        let requested_root = absolute_path_spelling(root)?;
         #[cfg(not(windows))]
         {
-            let requested_metadata = fs::symlink_metadata(root)
-                .map_err(|error| format!("stat compiler workspace {}: {error}", root.display()))?;
+            let requested_metadata = fs::symlink_metadata(&requested_root).map_err(|error| {
+                format!(
+                    "stat compiler workspace {}: {error}",
+                    requested_root.display()
+                )
+            })?;
             if requested_metadata.file_type().is_symlink() {
                 return Err("compiler workspace root cannot be a symlink".to_owned());
             }
         }
         #[cfg(windows)]
-        let (root, root_capability) = open_canonical_project_root(root)?;
+        let (root, root_capability) = open_canonical_project_root(&requested_root)?;
         #[cfg(not(windows))]
-        let root = root
-            .canonicalize()
-            .map_err(|error| format!("open compiler workspace {}: {error}", root.display()))?;
+        let root = requested_root.canonicalize().map_err(|error| {
+            format!(
+                "open compiler workspace {}: {error}",
+                requested_root.display()
+            )
+        })?;
         #[cfg(not(windows))]
         if !root.is_dir() {
             return Err(format!(
@@ -520,6 +596,7 @@ impl CompilerWorkspaceSnapshot {
         let fence_digest =
             compiler_workspace_fence_digest(&entries, COMPILER_WORKSPACE_POLICY_IDENTITY);
         Ok(Self {
+            requested_root,
             root,
             root_capability,
             policy,
@@ -541,12 +618,12 @@ impl CompilerWorkspaceSnapshot {
         &self.entries
     }
 
-    /// Canonical project root used to capture this complete workspace. Cold
-    /// owner recovery reopens this exact source location and recomputes the
-    /// inventory fence before reviving an offered assignment.
+    /// Absolute spelling supplied for this workspace. Durable compiler work
+    /// retains it so later recovery can detect if an alias resolves elsewhere;
+    /// filesystem reads still use the canonical root capability.
     #[must_use]
     pub(super) fn root_path(&self) -> &Path {
-        &self.root
+        &self.requested_root
     }
 
     /// Digest pairing compiler authority evidence with this captured complete
@@ -665,6 +742,9 @@ impl CompilerWorkspaceSnapshot {
         cancellation: Option<&AtomicBool>,
     ) -> Result<bool, String> {
         check_scan_cancellation(cancellation)?;
+        if !self.root_binding_is_current() {
+            return Ok(false);
+        }
         #[cfg(windows)]
         if open_canonical_project_root(&self.root)?.1.revision()?
             != self.root_capability.revision()?
@@ -687,7 +767,8 @@ impl CompilerWorkspaceSnapshot {
             && compiler_workspace_fence_digest(&current, self.policy_identity())
                 == self.fence_digest
             && current.first().map(|entry| entry.revision)
-                == Some(self.root_capability.revision()?))
+                == Some(self.root_capability.revision()?)
+            && self.root_binding_is_current())
     }
 }
 
@@ -1193,114 +1274,117 @@ fn scan_source_paths(
             .checked_mul(RESULT_QUEUE_PER_WORKER)
             .ok_or_else(|| "source result queue width overflow".to_owned())?;
         let (sender, receiver) = mpsc::sync_channel(queue);
+        let stop = AtomicBool::new(false);
         let mut handles = Vec::with_capacity(workers);
-        for group in paths.chunks(chunk.max(1)) {
+        let mut acknowledgements = Vec::with_capacity(workers);
+        let chunk_width = chunk.max(1);
+        for (worker_index, group) in paths.chunks(chunk_width).enumerate() {
             let root = root;
             let root_capability = root_capability;
             let sender = sender.clone();
             let cancellation = cancellation;
+            let stop = &stop;
+            let first_path_index = worker_index * chunk_width;
+            let (acknowledge, acknowledged) = mpsc::sync_channel::<bool>(1);
+            acknowledgements.push(acknowledge);
             handles.push(scope.spawn(move || {
-                for path in group {
-                    if let Err(error) = check_scan_cancellation(cancellation) {
-                        let _ = sender.send(Err(error));
+                for (offset, path) in group.iter().enumerate() {
+                    if stop.load(Ordering::Acquire) {
                         break;
                     }
-                    let result = if let Some(cached) = delta
-                        .filter(|delta| delta.is_current())
-                        .and_then(|delta| delta.unchanged.get(path))
-                    {
-                        let cached_length_admitted = usize::try_from(cached.revision.length)
-                            .ok()
-                            .is_some_and(|length| source_policy.admit_actual_file(length).is_ok());
-                        if !cached_length_admitted {
-                            scan_file(
-                                root,
-                                root_capability,
-                                path,
-                                project,
-                                reusable,
-                                frontends,
-                                source_policy,
-                            )
-                        } else {
-                            let Some(record) = reusable.get(&cached.key) else {
-                                let _ = sender
-                                    .send(Err("source frontier lost its exact CAS row".to_owned()));
-                                break;
-                            };
-                            let Some(source_fact_identity) = record
-                                .file_fields()
-                                .and_then(|fields| fields.source_identity)
-                            else {
-                                let _ = sender.send(Err(
-                                    "source frontier row lost its exact source-fact identity"
-                                        .to_owned(),
-                                ));
-                                break;
-                            };
-                            let profile = match profile_fault(frontends, path) {
-                                Ok(profile) => profile,
-                                Err(SourceFault::Unavailable(_))
-                                | Err(SourceFault::UnavailableRead(_, _))
-                                | Err(SourceFault::Vanished) => {
-                                    let _ = sender
-                                        .send(Err("source frontier profile changed".to_owned()));
-                                    break;
-                                }
-                                Err(SourceFault::Fatal(error)) => {
-                                    let _ = sender.send(Err(error));
-                                    break;
-                                }
-                            };
-                            let Ok(source_bytes) = usize::try_from(cached.revision.length) else {
-                                let _ = sender
-                                    .send(Err("source byte length exceeds this target".to_owned()));
-                                break;
-                            };
-                            reused_scanned_file(
-                                cached.relative_path.clone(),
-                                cached.key,
-                                record.clone(),
-                                source_bytes,
-                                0,
-                                cached.content,
-                                profile,
-                                source_fact_identity,
-                                Some(cached.encoded_record_bytes),
-                            )
-                            .map(Some)
-                        }
-                    } else {
-                        scan_file(
+                    let result = catch_unwind(AssertUnwindSafe(|| {
+                        scan_source_path(
                             root,
                             root_capability,
                             path,
                             project,
                             reusable,
                             frontends,
+                            delta,
                             source_policy,
+                            cancellation,
                         )
-                    };
+                    }))
+                    .unwrap_or_else(|_| Err("source analysis worker panicked".to_owned()));
                     let failed = result.is_err();
-                    if sender.send(result).is_err() || failed {
+                    if sender
+                        .send((first_path_index + offset, worker_index, result))
+                        .is_err()
+                    {
+                        break;
+                    }
+                    if !acknowledged.recv().unwrap_or(false) || failed {
                         break;
                     }
                 }
             }));
         }
         drop(sender);
-        let mut output = Vec::with_capacity(paths.len());
+        let mut output =
+            Vec::with_capacity(paths.len().min(source_policy.limits().max_project_records));
         let mut failure = None;
-        for result in receiver {
-            if failure.is_none() {
-                failure = check_scan_cancellation(cancellation).err();
+        let mut pending = BTreeMap::<usize, (usize, Result<Option<ScannedFile>, String>)>::new();
+        let mut next_path_index = 0_usize;
+        let mut budget = SourceAdmissionLedger::default();
+        for (path_index, worker_index, result) in receiver {
+            if failure.is_some() {
+                let _ = acknowledgements[worker_index].send(false);
+                continue;
             }
-            match result {
-                Ok(Some(file)) if failure.is_none() => {
-                    output.push(file);
+            if let Err(error) = check_scan_cancellation(cancellation) {
+                failure = Some(error);
+                stop.store(true, Ordering::Release);
+                let _ = acknowledgements[worker_index].send(false);
+                for (_, (pending_worker, _)) in std::mem::take(&mut pending) {
+                    let _ = acknowledgements[pending_worker].send(false);
                 }
-                Err(error) if failure.is_none() => failure = Some(error),
-                Ok(_) | Err(_) => {}
+                continue;
+            }
+            pending.insert(path_index, (worker_index, result));
+            loop {
+                let Some((pending_worker, result)) = pending.remove(&next_path_index) else {
+                    break;
+                };
+                match result {
+                    Ok(Some(file)) => {
+                        let charge = source_policy.admit_actual_file(file.source_bytes).and_then(
+                            |admitted| {
+                                budget.admit(
+                                    source_policy,
+                                    admitted,
+                                    file.encoded_record_bytes,
+                                    false,
+                                )
+                            },
+                        );
+                        match charge {
+                            Ok(()) => output.push(file),
+                            Err(refusal) => failure = Some(refusal.to_string()),
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => failure = Some(error),
+                }
+                if failure.is_some() {
+                    stop.store(true, Ordering::Release);
+                    let _ = acknowledgements[pending_worker].send(false);
+                    for (_, (waiting_worker, _)) in std::mem::take(&mut pending) {
+                        let _ = acknowledgements[waiting_worker].send(false);
+                    }
+                    break;
+                }
+                if acknowledgements[pending_worker].send(true).is_err() {
+                    failure =
+                        Some("source analysis worker stopped before acknowledgement".to_owned());
+                    stop.store(true, Ordering::Release);
+                    for (_, (waiting_worker, _)) in std::mem::take(&mut pending) {
+                        let _ = acknowledgements[waiting_worker].send(false);
+                    }
+                    break;
+                }
+                next_path_index = next_path_index
+                    .checked_add(1)
+                    .ok_or_else(|| "source path index overflow".to_owned())?;
             }
         }
         for handle in handles {
@@ -1308,21 +1392,77 @@ fn scan_source_paths(
                 failure = Some("source analysis worker panicked".to_owned());
             }
         }
+        if failure.is_none() && next_path_index != paths.len() {
+            failure = Some("source analysis workers did not account for every path".to_owned());
+        }
         if let Some(error) = failure {
             return Err(error);
         }
         output.sort_by(|left, right| left.relative.cmp(&right.relative));
-        let mut budget = SourceAdmissionLedger::default();
-        for file in &output {
-            let admitted = source_policy
-                .admit_actual_file(file.source_bytes)
-                .map_err(|refusal| refusal.to_string())?;
-            budget
-                .admit(source_policy, admitted, file.encoded_record_bytes, false)
-                .map_err(|refusal| refusal.to_string())?;
-        }
         Ok(output)
     })
+}
+
+fn scan_source_path(
+    root: &Path,
+    root_capability: &ProjectRoot,
+    path: &Path,
+    project: [u8; 32],
+    reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
+    frontends: &FrontendSet,
+    delta: Option<&source_frontier::SourceDelta>,
+    source_policy: SourceAdmissionPolicy,
+    cancellation: Option<&AtomicBool>,
+) -> Result<Option<ScannedFile>, String> {
+    check_scan_cancellation(cancellation)?;
+    if let Some(cached) = delta
+        .filter(|delta| delta.is_current())
+        .and_then(|delta| delta.unchanged.get(path))
+    {
+        let cached_length_admitted = usize::try_from(cached.revision.length)
+            .ok()
+            .is_some_and(|length| source_policy.admit_actual_file(length).is_ok());
+        if cached_length_admitted {
+            let record = reusable
+                .get(&cached.key)
+                .ok_or_else(|| "source frontier lost its exact CAS row".to_owned())?;
+            let source_fact_identity = record
+                .file_fields()
+                .and_then(|fields| fields.source_identity)
+                .ok_or_else(|| {
+                    "source frontier row lost its exact source-fact identity".to_owned()
+                })?;
+            let profile = profile_fault(frontends, path).map_err(|fault| match fault {
+                SourceFault::Unavailable(_)
+                | SourceFault::UnavailableRead(_, _)
+                | SourceFault::Vanished => "source frontier profile changed".to_owned(),
+                SourceFault::Fatal(error) => error,
+            })?;
+            let source_bytes = usize::try_from(cached.revision.length)
+                .map_err(|_| "source byte length exceeds this target".to_owned())?;
+            return reused_scanned_file(
+                cached.relative_path.clone(),
+                cached.key,
+                record.clone(),
+                source_bytes,
+                0,
+                cached.content,
+                profile,
+                source_fact_identity,
+                Some(cached.encoded_record_bytes),
+            )
+            .map(Some);
+        }
+    }
+    scan_file(
+        root,
+        root_capability,
+        path,
+        project,
+        reusable,
+        frontends,
+        source_policy,
+    )
 }
 
 /// Recovers one declaration excerpt from its already indexed source file.
@@ -1482,7 +1622,8 @@ fn scan_project_with_configuration_policy_attempt(
     source_policy: SourceAdmissionPolicy,
 ) -> Result<IndexSnapshot, String> {
     check_scan_cancellation(cancellation)?;
-    let root = Path::new(coordinate)
+    let requested_root = absolute_path_spelling(Path::new(coordinate))?;
+    let root = requested_root
         .canonicalize()
         .map_err(|error| format!("open project {coordinate}: {error}"))?;
     if !root.is_dir() {
@@ -1566,6 +1707,7 @@ fn scan_project_with_configuration_policy_attempt(
             });
     }
     let revision_fence = CompilerRevisionFence {
+        requested_root,
         root: root.clone(),
         directories: directories.clone(),
         files: file_revisions.values().cloned().collect(),
@@ -1762,6 +1904,9 @@ pub(super) fn compiler_revision_is_current_with_cancellation(
     fence: &CompilerRevisionFence,
     cancellation: Option<&AtomicBool>,
 ) -> Result<bool, String> {
+    if fence.open_bound_root(&fence.requested_root).is_err() {
+        return Ok(false);
+    }
     #[cfg(windows)]
     {
         let root_capability = match ProjectRoot::open(&fence.root) {
@@ -1782,7 +1927,7 @@ pub(super) fn compiler_revision_is_current_with_cancellation(
                 return Ok(false);
             }
         }
-        Ok(true)
+        Ok(fence.open_bound_root(&fence.requested_root).is_ok())
     }
     #[cfg(not(windows))]
     {
@@ -1804,7 +1949,7 @@ pub(super) fn compiler_revision_is_current_with_cancellation(
                 return Ok(false);
             }
         }
-        Ok(true)
+        Ok(fence.open_bound_root(&fence.requested_root).is_ok())
     }
 }
 
@@ -2513,6 +2658,34 @@ fn finish_scanned_file(
 /// UTF-8 strings are created for the compiler boundary. The immutable policy
 /// comes from the same scan that created these handles; it is never re-read
 /// from the environment midway through an index attempt.
+pub(super) fn admit_compiler_sources_for_scan(
+    root: &Path,
+    revision_fence: &CompilerRevisionFence,
+    fresh: Vec<CompilerSourceHandle>,
+    reused: Vec<ReusedCompilerFile>,
+    source_policy: SourceAdmissionPolicy,
+    cancellation: Option<&AtomicBool>,
+) -> Result<Vec<CompilerSource>, String> {
+    check_scan_cancellation(cancellation)?;
+    let capability = revision_fence.open_bound_root(root)?;
+    let admitted = materialize_compiler_sources(
+        &capability,
+        fresh,
+        reused,
+        source_policy,
+        cancellation,
+        |_| {},
+    )?;
+    if !compiler_revision_is_current_with_cancellation(revision_fence, cancellation)? {
+        return Err(
+            "project source root changed during compiler-source materialization".to_owned(),
+        );
+    }
+    check_scan_cancellation(cancellation)?;
+    Ok(admitted)
+}
+
+#[cfg(test)]
 pub(super) fn admit_compiler_sources_with_policy(
     root: &Path,
     fresh: Vec<CompilerSourceHandle>,
@@ -2529,6 +2702,17 @@ pub(super) fn admit_compiler_sources_with_policy(
         ));
     }
     let capability = ProjectRoot::open(&canonical)?;
+    materialize_compiler_sources(&capability, fresh, reused, source_policy, None, |_| {})
+}
+
+fn materialize_compiler_sources(
+    capability: &ProjectRoot,
+    fresh: Vec<CompilerSourceHandle>,
+    reused: Vec<ReusedCompilerFile>,
+    source_policy: SourceAdmissionPolicy,
+    cancellation: Option<&AtomicBool>,
+    mut after_source: impl FnMut(usize),
+) -> Result<Vec<CompilerSource>, String> {
     let mut pending = BTreeMap::<String, (LanguageProfile, [u8; 32], SourceFactIdentity)>::new();
     for source in fresh {
         let path = source.relative_path.clone();
@@ -2557,12 +2741,14 @@ pub(super) fn admit_compiler_sources_with_policy(
     let mut admitted = Vec::with_capacity(pending.len());
     let mut retained_bytes = 0_usize;
     for (path, (profile, expected_content, expected_source_fact_identity)) in pending {
+        check_scan_cancellation(cancellation)?;
         let bytes = capability
             .read(
                 Path::new(&path),
                 source_policy.limits().max_file_source_bytes,
             )
             .map_err(|error| reread_fault(&path, error))?;
+        check_scan_cancellation(cancellation)?;
         source_policy
             .admit_actual_file(bytes.len())
             .map_err(|refusal| refusal.to_string())?;
@@ -2581,6 +2767,7 @@ pub(super) fn admit_compiler_sources_with_policy(
         retained_bytes = source_policy
             .admit_retained_total(retained_bytes, bytes.len())
             .map_err(|refusal| refusal.to_string())?;
+        check_scan_cancellation(cancellation)?;
         let source =
             String::from_utf8(bytes).map_err(|_| format!("source {path} is no longer UTF-8"))?;
         admitted.push(CompilerSource {
@@ -2590,6 +2777,7 @@ pub(super) fn admit_compiler_sources_with_policy(
             content: expected_content,
             source_fact_identity,
         });
+        after_source(admitted.len());
     }
     Ok(admitted)
 }
@@ -3723,6 +3911,193 @@ mod tests {
         );
         assert_eq!(admitted[0].source, source);
         fs::remove_dir_all(&root).map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compiler_handoff_rejects_retargeted_root_alias_with_identical_source() -> Result<(), String>
+    {
+        use std::os::unix::fs::symlink;
+
+        let scratch = scratch_dir("root-alias-retarget")?;
+        let admitted_root = scratch.join("admitted");
+        let foreign_root = scratch.join("foreign");
+        let alias = scratch.join("project");
+        fs::create_dir_all(&admitted_root).map_err(|error| error.to_string())?;
+        fs::create_dir_all(&foreign_root).map_err(|error| error.to_string())?;
+        let source = b"pub fn same_bytes() {}\n";
+        fs::write(admitted_root.join("lib.rs"), source).map_err(|error| error.to_string())?;
+        fs::write(foreign_root.join("lib.rs"), source).map_err(|error| error.to_string())?;
+        symlink(&admitted_root, &alias).map_err(|error| error.to_string())?;
+
+        let policy = SourceAdmissionPolicy::new(SourceAdmissionLimits::default())
+            .map_err(|error| error.to_string())?;
+        let scan = scan_with_source_policy(&alias, [31; 32], &BTreeMap::new(), policy)?;
+        fs::remove_file(&alias).map_err(|error| error.to_string())?;
+        symlink(&foreign_root, &alias).map_err(|error| error.to_string())?;
+
+        let error = match admit_compiler_sources_for_scan(
+            &alias,
+            &scan.revision_fence,
+            scan.compiler_sources,
+            scan.reused_compiler_files,
+            scan.source_admission_policy,
+            None,
+        ) {
+            Err(error) => error,
+            Ok(_) => {
+                return Err("same-content foreign root crossed the admitted-root fence".to_owned());
+            }
+        };
+        assert!(
+            error.contains("alias now resolves to a different directory"),
+            "{error}"
+        );
+        let _ = fs::remove_dir_all(&scratch);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compiler_workspace_rejects_retargeted_ancestor_alias_with_identical_files()
+    -> Result<(), String> {
+        use std::os::unix::fs::symlink;
+
+        let scratch = scratch_dir("workspace-root-alias-retarget")?;
+        let admitted_parent = scratch.join("admitted-parent");
+        let foreign_parent = scratch.join("foreign-parent");
+        let alias = scratch.join("workspace-alias");
+        let requested_root = alias.join("project");
+        fs::create_dir_all(requested_root.as_path()).map_err(|error| error.to_string())?;
+        fs::create_dir_all(&admitted_parent).map_err(|error| error.to_string())?;
+        fs::create_dir_all(foreign_parent.join("project")).map_err(|error| error.to_string())?;
+        fs::write(requested_root.join("lib.rs"), b"pub fn same() {}\n")
+            .map_err(|error| error.to_string())?;
+        fs::write(foreign_parent.join("project/lib.rs"), b"pub fn same() {}\n")
+            .map_err(|error| error.to_string())?;
+        fs::rename(alias.join("project"), admitted_parent.join("project"))
+            .map_err(|error| error.to_string())?;
+        fs::remove_dir(&alias).map_err(|error| error.to_string())?;
+        symlink(&admitted_parent, &alias).map_err(|error| error.to_string())?;
+
+        let snapshot = CompilerWorkspaceSnapshot::open(&requested_root)?;
+        fs::remove_file(&alias).map_err(|error| error.to_string())?;
+        symlink(&foreign_parent, &alias).map_err(|error| error.to_string())?;
+        assert!(!snapshot.revalidate()?);
+        let _ = fs::remove_dir_all(&scratch);
+        Ok(())
+    }
+
+    #[test]
+    fn compiler_handoff_rejects_root_replacement_with_identical_source() -> Result<(), String> {
+        let scratch = scratch_dir("root-replacement")?;
+        let root = scratch.join("project");
+        let moved_root = scratch.join("moved-project");
+        fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+        let source = b"pub fn same_bytes() {}\n";
+        fs::write(root.join("lib.rs"), source).map_err(|error| error.to_string())?;
+        let policy = SourceAdmissionPolicy::new(SourceAdmissionLimits::default())
+            .map_err(|error| error.to_string())?;
+        let scan = scan_with_source_policy(&root, [32; 32], &BTreeMap::new(), policy)?;
+
+        fs::rename(&root, &moved_root).map_err(|error| error.to_string())?;
+        fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+        fs::write(root.join("lib.rs"), source).map_err(|error| error.to_string())?;
+        let error = match admit_compiler_sources_for_scan(
+            &root,
+            &scan.revision_fence,
+            scan.compiler_sources,
+            scan.reused_compiler_files,
+            scan.source_admission_policy,
+            None,
+        ) {
+            Err(error) => error,
+            Ok(_) => return Err("replacement root crossed the admitted-root fence".to_owned()),
+        };
+        assert!(error.contains("project root directory changed"), "{error}");
+        let _ = fs::remove_dir_all(&scratch);
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unchanged_tmp_alias_resolves_to_its_admitted_private_tmp_root() -> Result<(), String> {
+        let root = PathBuf::from("/tmp").join(format!(
+            "backend-tmp-alias-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|error| error.to_string())?
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+        let source = b"pub fn temporary_alias() {}\n";
+        fs::write(root.join("lib.rs"), source).map_err(|error| error.to_string())?;
+        let canonical = root.canonicalize().map_err(|error| error.to_string())?;
+        if canonical == root || !canonical.starts_with("/private/tmp") {
+            let _ = fs::remove_dir_all(&root);
+            return Err(format!(
+                "expected /tmp to resolve through /private/tmp: {canonical:?}"
+            ));
+        }
+        let policy = SourceAdmissionPolicy::new(SourceAdmissionLimits::default())
+            .map_err(|error| error.to_string())?;
+        let scan = scan_with_source_policy(&root, [33; 32], &BTreeMap::new(), policy)?;
+        let admitted = admit_compiler_sources_for_scan(
+            &root,
+            &scan.revision_fence,
+            scan.compiler_sources,
+            scan.reused_compiler_files,
+            scan.source_admission_policy,
+            None,
+        )?;
+        assert_eq!(admitted.len(), 1);
+        assert_eq!(admitted[0].source.as_bytes(), source);
+        let snapshot = CompilerWorkspaceSnapshot::open(&root)?;
+        assert!(snapshot.revalidate()?);
+        fs::remove_dir_all(&root).map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    #[test]
+    fn compiler_materialization_cancellation_stops_before_the_next_source_read()
+    -> Result<(), String> {
+        let root = scratch_dir("handoff-cancel")?;
+        let first = b"pub fn first() {}\n";
+        let second = b"pub fn second() {}\n";
+        fs::write(root.join("a.rs"), first).map_err(|error| error.to_string())?;
+        fs::write(root.join("b.rs"), second).map_err(|error| error.to_string())?;
+        let policy = SourceAdmissionPolicy::new(SourceAdmissionLimits::default())
+            .map_err(|error| error.to_string())?;
+        let scan = scan_with_source_policy(&root, [34; 32], &BTreeMap::new(), policy)?;
+        fs::write(root.join("b.rs"), b"changed after scan\n").map_err(|error| error.to_string())?;
+        let capability = scan.revision_fence.open_bound_root(&root)?;
+        let cancellation = AtomicBool::new(false);
+        let mut completed = 0;
+        let error = match materialize_compiler_sources(
+            &capability,
+            scan.compiler_sources,
+            scan.reused_compiler_files,
+            scan.source_admission_policy,
+            Some(&cancellation),
+            |count| {
+                completed = count;
+                if count == 1 {
+                    cancellation.store(true, Ordering::Release);
+                }
+            },
+        ) {
+            Err(error) => error,
+            Ok(_) => {
+                return Err(
+                    "cancellation after the first handle admitted the remaining source".to_owned(),
+                );
+            }
+        };
+        assert_eq!(completed, 1);
+        assert_eq!(error, INDEX_SCAN_CANCELLED);
+        let _ = fs::remove_dir_all(&root);
         Ok(())
     }
 
