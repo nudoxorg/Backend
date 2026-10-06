@@ -4120,7 +4120,7 @@ mod tests {
         let binding =
             CompilationBindingIdentity::from_encoded_bytes(b"freshness fixture generation");
         let generation = selected
-            .for_generation_bytes(binding.to_bytes())
+            .for_generation_bytes(*binding.as_ref())
             .expect("admit immutable generation key");
         assert_eq!(
             SelectedSemanticPublicationKey::new(&generation).err(),
