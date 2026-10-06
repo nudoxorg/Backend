@@ -7586,6 +7586,25 @@ impl<'a, 'source> FactRegistry<'a, 'source> {
                 .or_else(|| self.source_spelling_in(name, 0, source_end)),
         }
     }
+
+    /// Resolves a computed type name only from the declaration or explicit
+    /// source range that owns that type. The checker may report dependency
+    /// types whose binders and members do not occur in this file; an unrelated
+    /// homonym elsewhere in the file is not evidence that those names were
+    /// written here.
+    fn source_spelling_in_domain(
+        &self,
+        domain: SpellDomain,
+        name: &[u8],
+        owner: u32,
+    ) -> Option<&'source [u8]> {
+        match domain {
+            SpellDomain::Owner => self.source_spelling_owner(name, owner),
+            SpellDomain::Range(start, end) => self
+                .source_spelling_in(name, start, end)
+                .or_else(|| self.source_spelling_owner(name, owner)),
+        }
+    }
 }
 
 /// The source span that owns one computed tree's member spellings.
@@ -7703,6 +7722,15 @@ fn intern_computed_tree<'source>(
             readonly,
             optional,
         } => {
+            // A mapped binder from a dependency's computed type is not a
+            // source spelling merely because the same bytes occur elsewhere
+            // in the owner's file. Preserve a typed precision loss without
+            // partially interning the mapped type's children.
+            let Some(parameter_text) =
+                registry.source_spelling_in_domain(spell, parameter.as_bytes(), owner)
+            else {
+                return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
+            };
             let constraint =
                 intern_computed_tree(registry, facts, constraint, owner, depth, spell)?;
             let name_as = name_as
@@ -7719,7 +7747,7 @@ fn intern_computed_tree<'source>(
                 None => 2,
             };
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Mapped);
-            record.text = registry.source_spelling(spell, parameter.as_bytes(), owner);
+            record.text = Some(parameter_text);
             record.payload0 = checker_mapped_modifier(*readonly);
             record.payload1 = checker_mapped_modifier(*optional);
             intern_computed_row(registry, facts, record, owner, &children[..len])
@@ -7846,11 +7874,36 @@ fn intern_computed_tree<'source>(
             intern_computed_row(registry, facts, record, owner, &children[..len])
         }
         TypeTree::Object { members } => {
+            // Prove all non-synthetic member names before interning children.
+            // A dependency-computed anonymous object cannot be represented
+            // faithfully when even one member has no source spelling. Emit a
+            // single OracleGap leaf instead of rejecting the package or
+            // retaining a misleading partial record.
+            let mut spellings: Vec<Option<&'source [u8]>> = Vec::with_capacity(members.len());
+            for member in members {
+                match registry.source_spelling_in_domain(spell, member.name.as_bytes(), owner) {
+                    Some(spelling) => spellings.push(Some(spelling)),
+                    None if member.name.starts_with("__@") => spellings.push(None),
+                    None => {
+                        return intern_computed_leaf(
+                            facts,
+                            unknown_record(TypeReason::OracleGap),
+                            owner,
+                        );
+                    }
+                }
+            }
+
             // Members carry names and flags, so each member's row is
-            // interned first and then linked with its spelling-domain
-            // source spelling.
+            // interned first and then linked with its proven source spelling.
             let mut rows: Vec<(u32, Option<&'source [u8]>, u8)> = Vec::with_capacity(members.len());
-            for (position, member) in members.iter().enumerate() {
+            for (member, spelling) in members.iter().zip(spellings.into_iter()) {
+                let Some(spelling) = spelling else {
+                    // Checker-internal `__@` members have no source member
+                    // row and are intentionally absent from the anonymous
+                    // record projection.
+                    continue;
+                };
                 let row = intern_computed_tree(
                     registry,
                     facts,
@@ -7866,30 +7919,6 @@ fn intern_computed_tree<'source>(
                 if member.readonly {
                     flags |= SemanticTypeChild::FLAG_READONLY;
                 }
-                // A checker-synthesized member whose name carries its internal
-                // `__@` marker (`__@UNDEFINED_VOID_ONLY@9`, `__@iterator`, ...)
-                // is not a source declaration. The anonymous-record grammar
-                // requires a source-backed name, and fabricating one would
-                // mint a member the source never wrote, so the synthetic
-                // member is omitted while every spelled member stays. Any
-                // other unspelled name stays the exact typed rejection.
-                let Some(spelling) = registry.source_spelling(spell, member.name.as_bytes(), owner)
-                else {
-                    if member.name.starts_with("__@") {
-                        continue;
-                    }
-                    return Err(computed_fault(
-                        registry,
-                        owner,
-                        FactFault::TypeChild {
-                            position,
-                            fault: backend_semantic::ir::SemanticTypeFault::ChildNameRequired {
-                                tag: SemanticTypeTag::AnonymousRecord,
-                                position: position as u32,
-                            },
-                        },
-                    ));
-                };
                 rows.push((row, Some(spelling), flags));
             }
             // A checker-synthesized namespace type (`typeof Ns` for a module

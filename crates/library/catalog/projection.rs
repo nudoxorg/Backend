@@ -668,13 +668,30 @@ impl Library {
         symbol: SymbolKey,
         page: PageRequest,
     ) -> Result<ProjectionPage, LibraryError> {
+        self.graph_page_for_address(symbol, crate::SymbolAddress::canonical(symbol), page)
+    }
+
+    /// Pages a typed symbol recovered by an execution owner from an admitted address.
+    ///
+    /// The original address binds the continuation recipe, while the selected
+    /// symbol must exist in the exact page basis. This preserves canonical
+    /// coordinate requests whose compiler-owned row key differs from their text key.
+    ///
+    /// # Errors
+    /// Returns the same basis, membership, and continuation errors as `graph_page`.
+    pub fn graph_page_for_address(
+        &self,
+        symbol: SymbolKey,
+        address: crate::SymbolAddress,
+        page: PageRequest,
+    ) -> Result<ProjectionPage, LibraryError> {
         self.check_basis(page.basis())?;
         let root = self
             .view
             .row(RowId::Symbol(symbol))
             .ok_or(LibraryError::NotFound)?;
         let mut recipe_bytes = b"graph-page".to_vec();
-        recipe_bytes.extend_from_slice(symbol.as_bytes());
+        recipe_bytes.extend_from_slice(&address.claimed_bytes());
         let recipe = self.query_recipe(&recipe_bytes, None);
         let limit = usize::from(page.limit().get());
         let cursor = page.continuation().map(crate::PageContinuation::cursor);
@@ -683,6 +700,40 @@ impl Library {
         })?;
         let result = self.graph_page_ids(&root, symbol, start, limit);
         self.projection_page(&recipe_bytes, &result, start, limit)
+    }
+
+    /// Pages compiler-selected graph identities from this exact immutable view.
+    ///
+    /// # Errors
+    /// Refuses foreign bases or cursors, missing source/neighbor rows, duplicate
+    /// or reordered identities, and graphs exceeding the ordinary graph bound.
+    pub fn graph_page_from_ids(
+        &self,
+        symbol: SymbolKey,
+        address: crate::SymbolAddress,
+        page: PageRequest,
+        ids: &[RowId],
+    ) -> Result<ProjectionPage, LibraryError> {
+        self.check_basis(page.basis())?;
+        if ids.len() > 1 + usize::from(QueryLimit::MAX)
+            || ids.windows(2).any(|pair| pair[0] >= pair[1])
+            || ids.binary_search(&RowId::Symbol(symbol)).is_err()
+        {
+            return Err(LibraryError::InvalidQuery("graph page identities violate the selected neighborhood".to_owned()));
+        }
+        if ids.iter().any(|id| self.view.row(*id).is_none()) {
+            return Err(LibraryError::NotFound);
+        }
+        let mut recipe_bytes = b"graph-page".to_vec();
+        recipe_bytes.extend_from_slice(&address.claimed_bytes());
+        let recipe = self.query_recipe(&recipe_bytes, None);
+        let limit = usize::from(page.limit().get());
+        let select = |offset: usize| ArrangementPage {
+            ids: ids.iter().skip(offset).take(limit).copied().collect(),
+            has_more: offset.saturating_add(limit) < ids.len(),
+        };
+        let start = self.check_query_cursor(page.continuation().map(crate::PageContinuation::cursor), recipe, limit, select)?;
+        self.projection_page(&recipe_bytes, &select(start), start, limit)
     }
 
     fn graph_page_ids(

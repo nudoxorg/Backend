@@ -23,6 +23,8 @@ from runtime_build_receipt import (
     sha256_bytes,
     source_snapshot,
     stable_file,
+    stable_interpreter_file,
+    stable_tool_file,
     tool_version,
     execution_layout,
     verify_architecture_parser_fixtures,
@@ -167,8 +169,8 @@ def capture(args: argparse.Namespace) -> int:
     runner_before = stable_file(args.runner, "pinned Cargo runner")
     if not os.access(runner_before["path"], os.X_OK):
         fail("pinned Cargo runner is not executable")
-    cargo_before = stable_file(args.cargo, "Cargo", executable=True)
-    rustc_before = stable_file(args.rustc, "rustc", executable=True)
+    cargo_before = stable_tool_file(args.cargo, "Cargo", executable=True)
+    rustc_before = stable_tool_file(args.rustc, "rustc", executable=True)
     cargo_version_before = tool_version(args.cargo, "Cargo")
     rustc_version_before = tool_version(args.rustc, "rustc")
     command = list(args.command)
@@ -181,7 +183,7 @@ def capture(args: argparse.Namespace) -> int:
         fail("command must be a locked Cargo build of all three runtime executables")
     _, interpreter_path = layout
     interpreter_before = (
-        stable_file(Path(interpreter_path), "pinned runner interpreter", executable=True)
+        stable_interpreter_file(Path(interpreter_path))
         if interpreter_path is not None
         else None
     )
@@ -214,10 +216,10 @@ def capture(args: argparse.Namespace) -> int:
         fail("pinned Cargo runner stopped being executable")
     cargo_version_after = tool_version(args.cargo, "Cargo")
     rustc_version_after = tool_version(args.rustc, "rustc")
-    cargo_after = stable_file(args.cargo, "Cargo", executable=True)
-    rustc_after = stable_file(args.rustc, "rustc", executable=True)
+    cargo_after = stable_tool_file(args.cargo, "Cargo", executable=True)
+    rustc_after = stable_tool_file(args.rustc, "rustc", executable=True)
     interpreter_after = (
-        stable_file(Path(interpreter_path), "pinned runner interpreter", executable=True)
+        stable_interpreter_file(Path(interpreter_path))
         if interpreter_path is not None
         else None
     )

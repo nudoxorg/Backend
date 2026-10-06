@@ -22,6 +22,7 @@ MAX_COMMAND_ITEMS = 256
 MAX_COMMAND_ITEM_BYTES = 4096
 EXECUTABLE_NAMES = ("backend-locald", "backend-cli", "backend-mcp")
 SUPPORTED_INTERPRETER_NAMES = {"bash", "sh", "zsh"}
+NIX_STORE_PATH_COMPONENT = re.compile(r"[0123456789abcdfghijklmnpqrsvwxyz]{32}-.+")
 
 
 class ReceiptError(ValueError):
@@ -252,6 +253,36 @@ def verify_architecture_parser_fixtures() -> None:
 
 
 def stable_file(path: Path, label: str, *, executable: bool = False) -> dict[str, Any]:
+    """Admit a stable single-link file, including receipts, source, runners, and artifacts."""
+    return _stable_file(path, label, executable=executable, nix_executable_name=None)
+
+
+def stable_tool_file(path: Path, label: str, *, executable: bool = True) -> dict[str, Any]:
+    """Admit a tool, allowing only canonical immutable Nix hardlinks for Cargo/rustc."""
+    if label.lower() not in {"cargo", "rustc"} or not executable:
+        raise ReceiptError("the Nix hardlink exception is limited to executable Cargo and rustc")
+    return _stable_file(path, label, executable=True, nix_executable_name=label.lower())
+
+
+def stable_interpreter_file(path: Path) -> dict[str, Any]:
+    """Hash an admitted shell; immutable Nix hardlinks retain the full ancestry proof."""
+    if path.name not in SUPPORTED_INTERPRETER_NAMES:
+        raise ReceiptError("runner interpreter must be an admitted shell")
+    return _stable_file(
+        path,
+        "pinned runner interpreter",
+        executable=True,
+        nix_executable_name=path.name,
+    )
+
+
+def _stable_file(
+    path: Path,
+    label: str,
+    *,
+    executable: bool,
+    nix_executable_name: str | None,
+) -> dict[str, Any]:
     if not path.is_absolute() or path.is_symlink():
         raise ReceiptError(f"{label} must use an absolute non-symlink final path")
     try:
@@ -259,8 +290,21 @@ def stable_file(path: Path, label: str, *, executable: bool = False) -> dict[str
         before = resolved.lstat()
     except OSError as error:
         raise ReceiptError(f"{label} is unavailable") from error
-    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
-        raise ReceiptError(f"{label} must be a single-link regular file")
+    if not stat.S_ISREG(before.st_mode):
+        raise ReceiptError(f"{label} must be a regular file")
+    nix_parent_identity = None
+    if before.st_nlink < 1:
+        raise ReceiptError(f"{label} must have a valid link count")
+    if before.st_nlink != 1:
+        if nix_executable_name is None:
+            raise ReceiptError(f"{label} must be a single-link regular file")
+        nix_parent_identity = _immutable_nix_tool_parent_identity(
+            path, resolved, before, nix_executable_name
+        )
+        if nix_parent_identity is None:
+            raise ReceiptError(
+                f"{label} hardlinks are allowed only in a root-owned immutable Nix store path"
+            )
     if executable and not os.access(resolved, os.X_OK):
         raise ReceiptError(f"{label} is not executable")
     digest = hashlib.sha256()
@@ -277,17 +321,30 @@ def stable_file(path: Path, label: str, *, executable: bool = False) -> dict[str
     identity = lambda info: (
         info.st_dev,
         info.st_ino,
+        info.st_mode,
+        info.st_uid,
+        info.st_gid,
         info.st_size,
         info.st_mtime_ns,
         info.st_ctime_ns,
+        info.st_nlink,
     )
+    nix_parent_identity_after = None
+    if nix_executable_name is not None and after.st_nlink > 1:
+        nix_parent_identity_after = _immutable_nix_tool_parent_identity(
+            path, resolved_after, after, nix_executable_name
+        )
     if (
         identity(before) != identity(opened)
         or identity(opened) != identity(after_open)
         or identity(after_open) != identity(after)
         or resolved_after != resolved
         or not stat.S_ISREG(after.st_mode)
-        or after.st_nlink != 1
+        or (after.st_nlink != 1 and nix_parent_identity_after is None)
+        or (
+            nix_parent_identity is not None
+            and nix_parent_identity_after != nix_parent_identity
+        )
     ):
         raise ReceiptError(f"{label} changed while being hashed")
     with resolved.open("rb") as stream:
@@ -303,6 +360,59 @@ def stable_file(path: Path, label: str, *, executable: bool = False) -> dict[str
         "device": before.st_dev,
         "inode": before.st_ino,
     }
+
+
+def _immutable_nix_tool_parent_identity(
+    selected: Path,
+    resolved: Path,
+    file_info: os.stat_result,
+    tool_name: str,
+) -> tuple[tuple[int, ...], ...] | None:
+    """Prove the immutable ancestry required before admitting a Nix tool hardlink."""
+    if (
+        tool_name not in {"cargo", "rustc"} | SUPPORTED_INTERPRETER_NAMES
+        or selected != resolved
+        or resolved.name != tool_name
+        or len(resolved.parts) != 6
+        or resolved.parts[:3] != ("/", "nix", "store")
+        or resolved.parts[4] != "bin"
+        or NIX_STORE_PATH_COMPONENT.fullmatch(resolved.parts[3]) is None
+        or not stat.S_ISREG(file_info.st_mode)
+        or file_info.st_uid != 0
+        or stat.S_IMODE(file_info.st_mode) & 0o222
+    ):
+        return None
+
+    directories = (
+        Path("/"),
+        Path("/nix"),
+        Path("/nix/store"),
+        resolved.parents[1],
+        resolved.parent,
+    )
+    snapshots: list[tuple[int, ...]] = []
+    for index, directory in enumerate(directories):
+        try:
+            info = directory.lstat()
+        except OSError:
+            return None
+        mode = stat.S_IMODE(info.st_mode)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0:
+            return None
+        if index == 2:
+            # Nix uses a root-owned sticky store directory so users cannot replace
+            # another owner's immutable store path, even when the group can add entries.
+            if not (info.st_mode & stat.S_ISVTX) or mode & 0o002:
+                return None
+        elif index < 2:
+            # The trusted root-owned system ancestors can be writable by root,
+            # but never by group or other users.
+            if mode & 0o022:
+                return None
+        elif mode & 0o222:
+            return None
+        snapshots.append((info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid))
+    return tuple(snapshots)
 
 
 def git_output(source: Path, arguments: list[str], label: str) -> bytes:
@@ -356,7 +466,7 @@ def source_snapshot(source_input: Path) -> dict[str, Any]:
 
 
 def tool_version(path: Path, label: str) -> str:
-    identity = stable_file(path, label, executable=True)
+    identity = stable_tool_file(path, label, executable=True)
     try:
         completed = subprocess.run(
             [identity["path"], "--version"],
@@ -376,7 +486,7 @@ def tool_version(path: Path, label: str) -> str:
         raise ReceiptError(f"{label} returned a non-text version") from error
     if not version:
         raise ReceiptError(f"{label} returned an empty version")
-    identity_after = stable_file(path, label, executable=True)
+    identity_after = stable_tool_file(path, label, executable=True)
     if identity_after["sha256"] != identity["sha256"] or identity_after["path"] != identity["path"]:
         raise ReceiptError(f"{label} changed while its version was read")
     return version
@@ -563,9 +673,7 @@ def verify_runtime_build_receipt(receipt_path: Path, source_input: Path) -> dict
             "sha256",
         }:
             raise ReceiptError("Root receipt omits its explicit runner interpreter identity")
-        interpreter_identity = stable_file(
-            Path(interpreter_path), "pinned runner interpreter", executable=True
-        )
+        interpreter_identity = stable_interpreter_file(Path(interpreter_path))
         if (
             interpreter_identity["path"] != recorded_interpreter["path"]
             or interpreter_identity["sha256"] != recorded_interpreter["sha256"]
@@ -581,7 +689,7 @@ def verify_runtime_build_receipt(receipt_path: Path, source_input: Path) -> dict
         if not isinstance(item, dict) or set(item) != {"path", "version"}:
             raise ReceiptError(f"Root Cargo build receipt {name} identity is malformed")
         path = Path(item["path"]) if isinstance(item["path"], str) else Path()
-        identity = stable_file(path, name, executable=True)
+        identity = stable_tool_file(path, name, executable=True)
         version = tool_version(path, name)
         if identity["path"] != item["path"] or version != item["version"]:
             raise ReceiptError(f"current {name} path or version differs from the Root receipt")

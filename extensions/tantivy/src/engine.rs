@@ -855,7 +855,7 @@ impl TantivySource {
         fence.verify_for(namespace)?;
         touch_durable_root(selected)?;
         fence.verify_for(namespace)?;
-        prune_durable_roots(namespace.path(), selected, budget)?;
+        prune_durable_roots(namespace, selected, budget, fence)?;
         fence.verify_for(namespace)?;
         namespace.verify_path()?;
         Ok(source)
@@ -3360,9 +3360,39 @@ fn pin_durable_root(source: &mut TantivySource, path: &Path) -> Result<(), Tanti
 }
 
 fn prune_durable_roots(
+    namespace: &PrivateNamespace,
+    selected: &Path,
+    budget: DurableCacheBudget,
+    fence: &NamespaceFence,
+) -> Result<(), TantivySourceError> {
+    fence.verify_for(namespace)?;
+    let result = prune_durable_roots_entries(namespace.path(), selected, budget, |path| {
+        if fence.is_control_entry(path)? { return Ok(true); }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else { return Ok(false); };
+        // Concurrent builders publish outside the short namespace fence.
+        // Their typed lease proves an active stage; dead stages are swept,
+        // never mistaken for admitted immutable roots.
+        if is_projection_stage_name(name) {
+            let _ = namespace.sweep_stage(name, fence)?;
+            return Ok(true);
+        }
+        if let Some(stage) = name.strip_prefix(STAGE_LEASE_FILE_PREFIX)
+            && is_projection_stage_name(stage) {
+            let _ = namespace.sweep_stage(stage, fence)?;
+            let _ = namespace.sweep_orphan_stage_lease(name, stage, fence)?;
+            return Ok(true);
+        }
+        Ok(false)
+    });
+    fence.verify_for(namespace)?;
+    result
+}
+
+fn prune_durable_roots_entries(
     root: &Path,
     selected: &Path,
     budget: DurableCacheBudget,
+    is_control_entry: impl Fn(&Path) -> io::Result<bool>,
 ) -> Result<(), TantivySourceError> {
     struct Candidate {
         path: std::path::PathBuf,
@@ -3385,6 +3415,9 @@ fn prune_durable_roots(
             .into());
         }
         let entry = entry?;
+        if is_control_entry(&entry.path())? {
+            continue;
+        }
         let name = entry.file_name().into_string().map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidData, "invalid durable root name")
         })?;
@@ -3956,7 +3989,7 @@ pub(crate) mod test_support {
         selected: &std::path::Path,
         budget: super::DurableCacheBudget,
     ) -> Result<(), super::TantivySourceError> {
-        super::prune_durable_roots(root, selected, budget)
+        super::prune_durable_roots_entries(root, selected, budget, |_| Ok(false))
     }
 
     pub(crate) fn pin_durable_root_for_test(

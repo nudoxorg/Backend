@@ -33,8 +33,7 @@ use backend_engine::publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
 };
 use backend_semantic::vocabulary::{
-    LanguageProfile, LoweringUnsupported, ProjectionAdmissionFault, ProjectionSemanticTypeFault,
-    ProjectionSemanticTypeTag, Stage, TypeScriptSource,
+    LanguageProfile, LoweringUnsupported, ProjectionAdmissionFault, Stage, TypeScriptSource,
 };
 use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 
@@ -145,6 +144,15 @@ fn named(view: &FragmentView<'_>, name: &[u8]) -> TestResult<(u32, EntityKind)> 
 }
 fn facts<'a>(view: &'a FragmentView<'a>) -> Vec<DecodedTypeFact<'a>> {
     view.type_facts().into_iter().flatten().flatten().collect()
+}
+fn computed_facts<'a>(view: &'a FragmentView<'a>, owner: u32) -> Vec<DecodedTypeFact<'a>> {
+    facts(view)
+        .into_iter()
+        .filter(|fact| {
+            fact.owner.raw == owner
+                && fact.segment == backend_semantic::ir::TypeFactSegment::Computed
+        })
+        .collect()
 }
 fn fact<'a>(view: &'a FragmentView<'a>, owner: u32) -> TestResult<DecodedTypeFact<'a>> {
     facts(view)
@@ -3863,55 +3871,314 @@ fn computed_row_pool_bound_and_union_child_bound_are_typed_rejections() -> TestR
 }
 
 #[test]
-fn checker_object_member_without_source_spelling_retains_typed_child_cause() -> TestResult<()> {
-    const SOURCE: &[u8] = b"export const x = null;";
+fn dependency_mapped_binder_with_file_homonym_becomes_one_oracle_gap_leaf() -> TestResult<()> {
+    const SOURCE: &[u8] = b"const K = 1; export type T = null;";
     let mut checker = report(SOURCE);
+    let (name_start, name_end) = token_span(SOURCE, b"T")?;
     checker.declarations = Box::new([backend_frontend_typescript::legacy::Declaration {
-        name_start: 13,
-        name_end: 14,
+        name_start,
+        name_end,
         origin: backend_frontend_typescript::legacy::Origin::Computed,
         overload_index: None,
-        r#type: Some(backend_frontend_typescript::legacy::TypeTree::Object {
-            members: vec![backend_frontend_typescript::legacy::ObjectMember {
-                name: "not-spelled".into(),
-                optional: false,
-                readonly: false,
-                member_type: backend_frontend_typescript::legacy::TypeTree::Primitive {
-                    name: "number".into(),
+        r#type: Some(TypeTree::Mapped {
+            parameter: "K".into(),
+            constraint: Box::new(TypeTree::Primitive {
+                name: "string".into(),
+            }),
+            name_as: None,
+            value: Box::new(TypeTree::Primitive {
+                name: "number".into(),
+            }),
+            readonly: CheckerMappedModifier::Preserve,
+            optional: CheckerMappedModifier::Preserve,
+        }),
+    }]);
+    let first = StackLowered::compile_with_authority(SOURCE, Some(&checker))?;
+    let second = StackLowered::compile_with_authority(SOURCE, Some(&checker))?;
+    assert_eq!(
+        &first.output[..first.len],
+        &second.output[..second.len],
+        "OracleGap fallback must not depend on partial child interning or history"
+    );
+    let view = first.view()?;
+    let rows = computed_facts(&view, named(&view, b"T")?.0);
+    assert_eq!(rows.len(), 1, "fallback must not leave orphan mapped children");
+    assert_eq!(rows[0].record.tag, SemanticTypeTag::Unknown);
+    assert_eq!(rows[0].record.payload0, u32::from(TypeReason::OracleGap));
+
+    Ok(())
+}
+
+#[test]
+fn dependency_object_keeps_source_declared_member_and_marks_computed_gap() -> TestResult<()> {
+    const SOURCE: &[u8] =
+        b"const dependencyOnly = 1; export const x: { known: number } = { known: 1 };";
+    let mut checker = report(SOURCE);
+    let name_start = token_span(SOURCE, b"x:")?.0;
+    let name_end = name_start.saturating_add(1);
+    checker.declarations = Box::new([backend_frontend_typescript::legacy::Declaration {
+        name_start,
+        name_end,
+        origin: backend_frontend_typescript::legacy::Origin::Computed,
+        overload_index: None,
+        r#type: Some(TypeTree::Object {
+            members: vec![
+                backend_frontend_typescript::legacy::ObjectMember {
+                    name: "known".into(),
+                    optional: false,
+                    readonly: false,
+                    member_type: TypeTree::Primitive {
+                        name: "number".into(),
+                    },
                 },
-            }],
+                backend_frontend_typescript::legacy::ObjectMember {
+                    // This homonym is outside x's declaration and cannot
+                    // prove the member spelling in the computed object.
+                    name: "dependencyOnly".into(),
+                    optional: false,
+                    readonly: false,
+                    member_type: TypeTree::Primitive {
+                        name: "string".into(),
+                    },
+                },
+            ],
+        }),
+    }]);
+    let lowered = StackLowered::compile_with_authority(SOURCE, Some(&checker))?;
+    let view = lowered.view()?;
+    let owner = named(&view, b"x")?.0;
+    let computed = computed_facts(&view, owner);
+    assert_eq!(computed.len(), 1, "dependency members must not leave orphan rows");
+    assert_eq!(computed[0].record.tag, SemanticTypeTag::Unknown);
+    assert_eq!(computed[0].record.payload0, u32::from(TypeReason::OracleGap));
+
+    // The source-declared type remains queryable even though the separate
+    // checker-computed object has one dependency-only member.
+    let declared = facts(&view)
+        .into_iter()
+        .find(|fact| {
+            fact.owner.raw == owner
+                && fact.segment == backend_semantic::ir::TypeFactSegment::Declared
+                && fact.record.tag == SemanticTypeTag::AnonymousRecord
+        })
+        .ok_or_else(|| io::Error::other("source-declared object member type is missing"))?;
+    let child_end = declared
+        .record
+        .children
+        .start
+        .checked_add(declared.record.children.length)
+        .ok_or_else(|| io::Error::other("declared child span overflowed"))?;
+    let child_names: Vec<_> = view
+        .type_facts()
+        .ok_or_else(|| io::Error::other("type-fact lane is missing"))?
+        .children()?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|child| {
+            declared.record.children.start <= child.ordinal && child.ordinal < child_end
+        })
+        .filter_map(|child| child.child.name)
+        .collect();
+    assert!(
+        child_names.iter().any(|name| *name == b"known"),
+        "source-declared member lookup was lost: {child_names:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn dependency_object_with_only_foreign_names_becomes_one_oracle_gap_leaf() -> TestResult<()> {
+    const SOURCE: &[u8] = b"export const x = null;";
+    let mut checker = report(SOURCE);
+    let name_start = token_span(SOURCE, b"x =")?.0;
+    let name_end = name_start.saturating_add(1);
+    checker.declarations = Box::new([backend_frontend_typescript::legacy::Declaration {
+        name_start,
+        name_end,
+        origin: backend_frontend_typescript::legacy::Origin::Computed,
+        overload_index: None,
+        r#type: Some(TypeTree::Object {
+            members: vec![
+                backend_frontend_typescript::legacy::ObjectMember {
+                    name: "dependencyMember".into(),
+                    optional: true,
+                    readonly: false,
+                    member_type: TypeTree::Primitive {
+                        name: "number".into(),
+                    },
+                },
+                backend_frontend_typescript::legacy::ObjectMember {
+                    name: "__@iterator".into(),
+                    optional: false,
+                    readonly: false,
+                    member_type: TypeTree::Primitive {
+                        name: "symbol".into(),
+                    },
+                },
+            ],
+        }),
+    }]);
+    let lowered = StackLowered::compile_with_authority(SOURCE, Some(&checker))?;
+    let view = lowered.view()?;
+    let rows = computed_facts(&view, named(&view, b"x")?.0);
+    assert_eq!(rows.len(), 1, "fallback must not commit hidden member rows");
+    assert_eq!(rows[0].record.tag, SemanticTypeTag::Unknown);
+    assert_eq!(rows[0].record.payload0, u32::from(TypeReason::OracleGap));
+
+    Ok(())
+}
+
+#[test]
+fn computed_unicode_object_member_preserves_its_exact_optional_spelling() -> TestResult<()> {
+    const SOURCE: &[u8] =
+        "export const x: { café?: { inner: number } } = { café: { inner: 1 } };".as_bytes();
+    let mut checker = report(SOURCE);
+    let name_start = token_span(SOURCE, b"x:")?.0;
+    let name_end = name_start.saturating_add(1);
+    checker.declarations = Box::new([backend_frontend_typescript::legacy::Declaration {
+        name_start,
+        name_end,
+        origin: backend_frontend_typescript::legacy::Origin::Computed,
+        overload_index: None,
+        r#type: Some(TypeTree::Object {
+            members: vec![
+                backend_frontend_typescript::legacy::ObjectMember {
+                    name: "café".into(),
+                    optional: true,
+                    readonly: false,
+                    member_type: TypeTree::Object {
+                        members: vec![backend_frontend_typescript::legacy::ObjectMember {
+                            name: "inner".into(),
+                            optional: false,
+                            readonly: true,
+                            member_type: TypeTree::Primitive {
+                                name: "number".into(),
+                            },
+                        }],
+                    },
+                },
+                backend_frontend_typescript::legacy::ObjectMember {
+                    name: "__@iterator".into(),
+                    optional: false,
+                    readonly: false,
+                    member_type: TypeTree::Primitive {
+                        name: "symbol".into(),
+                    },
+                },
+            ],
+        }),
+    }]);
+    let lowered = StackLowered::compile_with_authority(SOURCE, Some(&checker))?;
+    let view = lowered.view()?;
+    let records: Vec<_> = computed_facts(&view, named(&view, b"x")?.0)
+        .into_iter()
+        .filter(|fact| fact.record.tag == SemanticTypeTag::AnonymousRecord)
+        .collect();
+    assert_eq!(records.len(), 2, "nested source record must stay represented");
+    let children: Vec<_> = view
+        .type_facts()
+        .ok_or_else(|| io::Error::other("type-fact lane is missing"))?
+        .children()?
+        .collect::<Result<Vec<_>, _>>()?
+        ;
+    let record_children = |record: &DecodedTypeFact<'_>| {
+        let end = record
+            .record
+            .children
+            .start
+            .saturating_add(record.record.children.length);
+        children
+            .iter()
+            .filter(|child| {
+                record.record.children.start <= child.ordinal && child.ordinal < end
+            })
+            .collect::<Vec<_>>()
+    };
+    let outer = records
+        .iter()
+        .find(|record| {
+            record_children(record)
+                .iter()
+                .any(|child| child.child.name == Some("café".as_bytes()))
+        })
+        .ok_or_else(|| io::Error::other("exact Unicode member spelling is missing"))?;
+    assert_eq!(outer.record.children.length, 1);
+    assert_eq!(
+        record_children(outer)[0].child.flags,
+        backend_semantic::ir::SemanticTypeChild::FLAG_OPTIONAL
+    );
+    assert!(records.iter().any(|record| {
+        record_children(record)
+            .iter()
+            .any(|child| child.child.name == Some(b"inner".as_slice()))
+    }));
+
+    Ok(())
+}
+
+#[test]
+fn malformed_checker_source_bounds_are_rejected_before_oracle_gap_fallback() -> TestResult<()> {
+    const SOURCE: &[u8] = b"export const x = null;";
+    let mut checker = report(SOURCE);
+    let beyond = u32::try_from(SOURCE.len())?.saturating_add(10);
+    checker.declarations = Box::new([backend_frontend_typescript::legacy::Declaration {
+        name_start: beyond,
+        name_end: beyond.saturating_add(1),
+        origin: backend_frontend_typescript::legacy::Origin::Computed,
+        overload_index: None,
+        r#type: Some(TypeTree::Mapped {
+            parameter: "dependencyBinder".into(),
+            constraint: Box::new(TypeTree::Primitive {
+                name: "string".into(),
+            }),
+            name_as: None,
+            value: Box::new(TypeTree::Primitive {
+                name: "number".into(),
+            }),
+            readonly: CheckerMappedModifier::Preserve,
+            optional: CheckerMappedModifier::Preserve,
         }),
     }]);
     let mut diagnostic = [0; 4096];
-    match try_lower_with_diagnostic(
+    let failure = match try_lower_with_diagnostic(
         SOURCE,
         Some(&checker),
         test_toolchain()?,
         &mut diagnostic,
     ) {
-        Err(CompileFailure::LoweringUnsupported {
-            cause:
-                LoweringUnsupported::FactRejected {
+        Err(failure) => failure,
+        Ok(_) => {
+            return Err(io::Error::other(
+                "malformed source bounds must not become a successful unknown fact",
+            )
+            .into());
+        }
+    };
+    match failure {
+        CompileFailure::Authority {
+            failure:
+                AuthorityFailure::TypeScript {
                     cause:
-                        ProjectionAdmissionFault::TypeChild {
-                            position: 0,
-                            cause:
-                                ProjectionSemanticTypeFault::ChildNameRequired {
-                                    tag: ProjectionSemanticTypeTag::AnonymousRecord,
-                                    position: 0,
-                                },
+                        AuthorityError::Checker {
+                            cause: backend_frontend_typescript::legacy::CheckerError::SpanBinding {
+                                start,
+                                end,
+                            },
                         },
                     ..
                 },
             ..
-        }) => {}
-        Err(error) => {
+        } => {
+            assert_eq!(start, beyond);
+            assert_eq!(end, beyond.saturating_add(1));
+        }
+        other => {
             return Err(io::Error::other(format!(
-                "expected a missing source-backed member-name rejection, received {error:?}"
+                "malformed checker range was not rejected as a span binding failure: {other:?}"
             ))
             .into());
         }
-        Ok(_) => return Err(io::Error::other("source-backed member spelling was admitted").into()),
     }
 
     Ok(())

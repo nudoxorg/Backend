@@ -504,6 +504,122 @@ class HarnessContractTests(unittest.TestCase):
             self.assertFalse(outside.exists())
 
 
+class RuntimeToolFileAdmissionTests(unittest.TestCase):
+    def test_installed_immutable_nix_shell_hardlink_is_admitted(self) -> None:
+        candidates = Path("/nix/store").glob("*-bash-*/bin/bash")
+        shell = next(
+            (path for path in candidates if not path.is_symlink() and path.stat().st_nlink > 1),
+            None,
+        )
+        if shell is None:
+            self.skipTest("no installed immutable hardlinked Nix shell is available")
+        identity = receipt.stable_interpreter_file(shell)
+        self.assertEqual(identity["path"], str(shell))
+        self.assertEqual(identity["sha256"], hashlib.sha256(shell.read_bytes()).hexdigest())
+        self.assertGreater(identity["bytes"], 0)
+        with self.assertRaises(receipt.ReceiptError):
+            receipt.stable_file(shell, "pinned runner interpreter", executable=True)
+        with self.assertRaises(receipt.ReceiptError):
+            receipt.stable_tool_file(shell, "bash")
+
+    def test_shell_admission_preserves_hardlink_path_and_name_rejections(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "shell-source"
+            source.write_bytes(b"not an immutable shell")
+            source.chmod(0o555)
+            owned = root / "bash"
+            os.link(source, owned)
+            fake_bin = root / "nix" / "store" / ("0" * 32 + "-bash-5.3") / "bin"
+            fake_bin.mkdir(parents=True)
+            fake = fake_bin / "bash"
+            os.link(source, fake)
+            alias = root / "sh"
+            alias.symlink_to(owned)
+            for path in (owned, fake, alias, root / "python3"):
+                with self.subTest(path=str(path)):
+                    with self.assertRaises(receipt.ReceiptError):
+                        receipt.stable_interpreter_file(path)
+
+    def test_installed_immutable_nix_cargo_and_rustc_hardlinks_are_admitted(self) -> None:
+        store = Path("/nix/store")
+        if not store.is_dir():
+            self.skipTest("this host has no Nix store")
+
+        hardlinked_pair = None
+        for cargo in store.glob("*-rust-*-with-components-*/bin/cargo"):
+            rustc = cargo.with_name("rustc")
+            try:
+                cargo_info = cargo.lstat()
+                rustc_info = rustc.lstat()
+            except OSError:
+                continue
+            if cargo_info.st_nlink > 1 and rustc_info.st_nlink > 1:
+                hardlinked_pair = (cargo, rustc)
+                break
+        if hardlinked_pair is None:
+            self.skipTest("no installed hardlinked Nix Cargo/rustc pair is available")
+
+        for path, label in zip(hardlinked_pair, ("Cargo", "rustc"), strict=True):
+            with self.subTest(tool=label, path=str(path)):
+                identity = receipt.stable_tool_file(path, label)
+                self.assertEqual(identity["path"], str(path))
+                self.assertEqual(len(identity["sha256"]), 64)
+                self.assertGreater(identity["bytes"], 0)
+                self.assertGreater(path.lstat().st_nlink, 1)
+                with self.assertRaises(receipt.ReceiptError):
+                    receipt.stable_file(path, label, executable=True)
+                with self.assertRaises(receipt.ReceiptError):
+                    receipt.stable_tool_file(path, "backend-cli")
+
+    def test_user_owned_hardlinked_tools_are_rejected_even_when_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for mode in (0o755, 0o555):
+                with self.subTest(mode=oct(mode)):
+                    source = root / f"cargo-{mode:o}"
+                    linked = root / f"cargo-linked-{mode:o}"
+                    source.write_bytes(b"executable fixture")
+                    source.chmod(mode)
+                    os.link(source, linked)
+                    self.assertEqual(source.lstat().st_uid, os.geteuid())
+                    self.assertEqual(source.lstat().st_nlink, 2)
+                    with self.assertRaises(receipt.ReceiptError):
+                        receipt.stable_tool_file(linked, "Cargo")
+
+    def test_fake_nix_shaped_path_does_not_gain_the_hardlink_exception(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fake_store = Path(directory) / "nix" / "store"
+            fake_package = fake_store / ("0" * 32 + "-rust-1.97.1")
+            fake_bin = fake_package / "bin"
+            fake_bin.mkdir(parents=True)
+            cargo = fake_bin / "cargo"
+            cargo.write_bytes(b"not a Nix store executable")
+            cargo.chmod(0o555)
+            linked = fake_bin / "cargo-copy"
+            os.link(cargo, linked)
+            for directory_path in (fake_store, fake_package, fake_bin):
+                directory_path.chmod(0o555)
+            with self.assertRaises(receipt.ReceiptError):
+                receipt.stable_tool_file(cargo, "Cargo")
+
+    def test_artifacts_receipts_and_source_lockfiles_keep_single_link_admission(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "backend-cli"
+            source.write_bytes(b"artifact fixture")
+            source.chmod(0o755)
+            linked = root / "backend-cli-linked"
+            os.link(source, linked)
+
+            with self.assertRaises(receipt.ReceiptError):
+                receipt.stable_file(linked, "backend-cli", executable=True)
+            with self.assertRaises(receipt.ReceiptError):
+                receipt.read_regular(linked, 1024, "build receipt")
+            with self.assertRaises(receipt.ReceiptError):
+                receipt.stable_file(linked, "Cargo.lock")
+
+
 class BoundedCaptureTests(unittest.TestCase):
     def test_owner_stream_capture_retains_bounded_head_tail_and_full_hash(self) -> None:
         payload = bytes(range(256)) * 80
