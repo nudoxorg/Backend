@@ -2318,7 +2318,7 @@ fn inactive_maintenance_reads_metadata_and_selected_admission_checks_payloads() 
 }
 
 #[test]
-fn foreign_private_projection_binding_refusal_does_not_create_a_lease() {
+fn unproven_private_projection_binding_retention_does_not_create_a_lease() {
     let root = std::env::temp_dir().join(format!(
         "backend-tantivy-foreign-binding-{}-{}",
         std::process::id(),
@@ -2339,6 +2339,9 @@ fn foreign_private_projection_binding_refusal_does_not_create_a_lease() {
         .expect("pin fixture namespace");
     let name = "e".repeat(64);
     let foreign = root.join(DURABLE_ROOTS_DIRECTORY).join(&name);
+    let selected_root = root
+        .join(DURABLE_ROOTS_DIRECTORY)
+        .join(hex_fingerprint(projection_fingerprint(state.binding())));
     let inventory = |path: &std::path::Path| {
         let mut entries: Vec<_> = std::fs::read_dir(path)
             .expect("enumerate foreign directory")
@@ -2372,20 +2375,35 @@ fn foreign_private_projection_binding_refusal_does_not_create_a_lease() {
                 .expect("mismatched foreign binding");
         }
         let before = inventory(&foreign);
-        assert!(
-            TantivySource::open_or_build_in_dir(&state, Limits::default(), &root).is_err(),
-            "missing or mismatching binding is refused"
-        );
+        let selected = TantivySource::open_or_build_in_dir(&state, Limits::default(), &root)
+            .expect("unproven inactive binding cannot supply or poison selected authority");
+        assert_eq!(term_hits(&selected, "selectedbinding"), vec![document(1)]);
+        drop(selected);
         assert_eq!(
             inventory(&foreign),
             before,
             "foreign directory's complete entry inventory and bytes are preserved"
         );
+        assert!(!foreign.join(DURABLE_ROOT_LEASE).exists(), "retention cannot mint an ownership lease");
+        let root_bytes = |path: &std::path::Path| {
+            std::fs::read_dir(path)
+                .expect("fixture entries")
+                .map(|entry| entry.expect("entry").metadata().expect("metadata").len())
+                .sum::<u64>()
+        };
+        let total = root_bytes(&selected_root) + root_bytes(&foreign);
+        let budget = DurableCacheBudget::new(total - 1).expect("nonzero fixture budget");
+        assert!(matches!(
+            TantivySource::open_or_build_in_dir_with_budget_and_action(&state, Limits::default(), &root, budget),
+            Err(TantivySourceError::BudgetExceeded { budget_bytes, required_bytes })
+                if budget_bytes == total - 1 && required_bytes == total
+        ), "unproven bytes remain charged exactly");
+        assert_eq!(inventory(&foreign), before, "budget refusal preserves unproven bytes");
         std::fs::remove_dir_all(&foreign).expect("remove fixture only");
     }
     drop(namespace);
     let selected = TantivySource::open_or_build_in_dir(&state, Limits::default(), &root)
-        .expect("selected projection survives foreign refusals");
+        .expect("selected projection survives unproven inactive roots");
     assert_eq!(term_hits(&selected, "selectedbinding"), vec![document(1)]);
     drop(selected);
     std::fs::remove_dir_all(root).expect("cleanup");
