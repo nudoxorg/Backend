@@ -55,6 +55,16 @@ fn prepare_files(
     request: u64,
     files: &[(ProductSourceRecord, Option<ProductSourceFileFactsUpdate>)],
 ) -> (BuiltinIntent, Vec<BuiltinSourceFactsChange>) {
+    prepare_files_at_source_version(daemon, package, label, [request as u8; 32], files)
+}
+
+fn prepare_files_at_source_version(
+    daemon: &super::super::ProductDaemon,
+    package: PackageKey,
+    label: &str,
+    source_version: [u8; 32],
+    files: &[(ProductSourceRecord, Option<ProductSourceFileFactsUpdate>)],
+) -> (BuiltinIntent, Vec<BuiltinSourceFactsChange>) {
     let base = daemon.engine().daemon().owner().snapshot();
     let sources = base
         .relation::<BuiltinWorkspaceRelation>()
@@ -96,7 +106,7 @@ fn prepare_files(
     )
     .expect("production facts preparation");
     let keys = selected.iter().map(|(key, _)| *key).collect::<Vec<_>>();
-    let project = ProductSourceRecord::project(label, [request as u8; 32], keys.clone())
+    let project = ProductSourceRecord::project(label, source_version, keys.clone())
         .expect("real test project membership");
     let mut changes = vec![BuiltinSourceChange {
         key: package.to_bytes(),
@@ -125,6 +135,107 @@ fn prepare_files(
     )
     .expect("atomic source/facts intent");
     (intent, fact_changes)
+}
+
+#[test]
+#[ignore = "requires an explicitly acquired official archive in NUDOX_STAGED_CORPUS_SOURCE"]
+fn staged_official_archive_source_facts_use_real_queue_and_cold_replay() {
+    use backend_engine::QueueSized;
+    use std::sync::{Arc, atomic::AtomicBool};
+    let root = std::path::PathBuf::from(
+        std::env::var_os("NUDOX_STAGED_CORPUS_SOURCE").expect("explicit official source path"),
+    )
+    .canonicalize()
+    .expect("physical acquired source root");
+    let label = root.to_str().expect("UTF-8 acquired source path");
+    let package = PackageKey::from_value(label);
+    let scan = super::super::ingest::scan_project_for_unproven_authorities_cancellable(
+        label,
+        package.to_bytes(),
+        &std::collections::BTreeMap::new(),
+        &AtomicBool::new(false),
+    )
+    .expect("actual production source discovery and parser facts");
+    let mut facts = scan
+        .source_facts
+        .into_iter()
+        .map(|facts| (facts.manifest_key(), facts))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let files = scan
+        .files
+        .into_iter()
+        .map(|(key, record)| (record, facts.remove(&key)))
+        .collect::<Vec<_>>();
+    assert!(
+        facts.is_empty(),
+        "every facts manifest belongs to a scanned source file"
+    );
+    let workspace = TempWorkspace::new();
+    let mut daemon = open_daemon(workspace.0.path());
+    let (inline, expected_facts) =
+        prepare_files_at_source_version(&daemon, package, label, scan.source_version, &files);
+    eprintln!(
+        "official source={label} scanned files={} parser fact changes={} inline queue bytes={} source bytes read={}",
+        files.len(),
+        expected_facts.len(),
+        inline.queue_bytes(),
+        scan.source_bytes_read
+    );
+    assert!(
+        inline.queue_bytes() > 4 * 1024 * 1024,
+        "actual archive exceeds the unchanged inline gate"
+    );
+    let before = daemon.engine().daemon().owner().snapshot();
+    let request = BuiltinModel.request_id(&inline);
+    assert!(
+        daemon
+            .client()
+            .request(
+                1,
+                crate::Request::Commit {
+                    request,
+                    expected: daemon.engine().daemon().owner().head().expectation(),
+                    intent: inline.clone(),
+                }
+            )
+            .is_err()
+    );
+    let staged = super::super::staged_transport::stage(
+        inline,
+        &before,
+        Some(&root),
+        Arc::new(AtomicBool::new(false)),
+    )
+    .expect("actual captured archive bytes and full parser facts stage");
+    eprintln!(
+        "official staged queue bytes={} pointer bytes={}",
+        staged.queue_bytes(),
+        staged.encode().len()
+    );
+    assert_eq!(BuiltinModel.request_id(&staged), request);
+    assert!(staged.queue_bytes() < 4 * 1024 * 1024);
+    super::super::commands::commit_builtin_intent(&mut daemon, 2, &staged)
+        .expect("real queue and owner publish the exact acquired source facts");
+    let selected_root = daemon.engine().daemon().owner().snapshot().root();
+    let assert_exact = |daemon: &super::super::ProductDaemon| {
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        let relation = product_source_file_facts_relation(&snapshot)
+            .unwrap()
+            .unwrap();
+        for expected in &expected_facts {
+            assert_eq!(
+                relation.lookup(&expected.key).unwrap().as_ref(),
+                expected.after.as_ref()
+            );
+        }
+    };
+    assert_exact(&daemon);
+    drop(staged);
+    drop(before);
+    drop(daemon);
+    let cold = open_daemon(workspace.0.path());
+    assert_eq!(cold.engine().daemon().owner().head().root(), selected_root);
+    assert_exact(&cold);
 }
 
 fn commit_files(
