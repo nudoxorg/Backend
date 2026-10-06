@@ -798,7 +798,11 @@ fn wait_for_published(
 ) -> Result<backend_library::IndexOperationStatus, PhaseError> {
     let deadline = Instant::now() + Duration::from_secs(660);
     let initial_status = known_status_for_key(observation.clone(), operation_key)?;
-    reject_failed_status(&initial_status)?;
+    let diagnostic_ticket = match &initial_status.state {
+        IndexOperationState::Active { ticket, .. } => Some(ticket.clone()),
+        _ => None,
+    };
+    reject_failed_status(session, &initial_status, diagnostic_ticket.as_ref())?;
 
     // Exercise the listener's real per-connection frame cap through the public
     // Session. Start consumes one frame, so these exact keyed reads guarantee
@@ -810,7 +814,7 @@ fn wait_for_published(
     for _ in 0..boundary_reads {
         observation = read_status_with_keyed_reconnect(session, operation_key, deadline)?;
         let status = status_for_exact_start(observation, &initial_status)?;
-        reject_failed_status(&status)?;
+        reject_failed_status(session, &status, diagnostic_ticket.as_ref())?;
         observation = IndexOperationObservation::Known(status);
     }
 
@@ -898,7 +902,11 @@ fn status_for_exact_start(
     }
 }
 
-fn reject_failed_status(status: &backend_library::IndexOperationStatus) -> Result<(), PhaseError> {
+fn reject_failed_status(
+    session: &mut Session,
+    status: &backend_library::IndexOperationStatus,
+    diagnostic_ticket: Option<&backend_library::IndexJobTicket>,
+) -> Result<(), PhaseError> {
     if matches!(
         &status.state,
         IndexOperationState::Failed { .. } | IndexOperationState::Unresolved { .. }
@@ -906,8 +914,9 @@ fn reject_failed_status(status: &backend_library::IndexOperationStatus) -> Resul
         return Err(PhaseError::message(
             "poll durable operation status while awaiting publication",
             format!(
-                "the real Cargo operation reached a non-published terminal state: {:?}",
-                status.state
+                "the real Cargo operation reached a non-published terminal state: {:?}; retained job terminal: {:?}",
+                status.state,
+                diagnostic_ticket.and_then(|ticket| session.await_index_job(ticket.clone()).ok())
             ),
         ));
     }
