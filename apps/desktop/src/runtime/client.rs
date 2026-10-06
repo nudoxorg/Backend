@@ -76,7 +76,13 @@ impl LocalEngineClient {
     }
 
     fn subscription(&mut self) -> Result<&mut LocalSubscriptionTransport, EngineFault> {
-        if self.subscription.is_none() {
+        // A stalled exchange retires its socket and interrupt together. The
+        // next request must authenticate a replacement before registering its
+        // cancellation wake; bootstrap's own reconnect happens too late.
+        if self.subscription.as_ref().is_none_or(|transport| {
+            transport.interrupt_handle().is_none()
+        }) {
+            self.subscription = None;
             self.subscription =
                 Some(LocalSubscriptionTransport::connect_timeout(&self.endpoint, DESKTOP_CONNECT_TIMEOUT)
                     .map_err(|error| self.client_fault(error))?);
@@ -197,7 +203,7 @@ impl LocalEngineClient {
             let category = match &error {
                 EngineFault::Cancelled => "cancelled".to_owned(),
                 EngineFault::Superseded => "attachment-or-root-superseded".to_owned(),
-                EngineFault::Failed(fault) => format!("fault:{:?}", fault.code()),
+                EngineFault::Failed(fault) => format!("fault:{:?}:{}", fault.code(), fault.message()),
                 _ => "unexpected-adapter-fault".to_owned(),
             };
             super::trace::mark("root.bootstrap-failed", category);
@@ -693,6 +699,129 @@ fn owner_fault(fault: OwnerFault) -> EngineFault {
 mod tests {
     use super::*;
     use crate::navigation::RequestId;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stalled_bootstrap_socket_is_reauthenticated_before_its_next_cancel_wake() {
+        use backend_replication::{
+            LocalControlExchangeDecision, LocalControlLimits, LocalControlRequest,
+            LocalControlResponse, LocalSubscriptionOperation, LocalSubscriptionRequest,
+            decode_request, encode_response, read_frame, write_frame,
+        };
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::os::unix::net::{UnixListener, UnixStream};
+        use std::time::Instant;
+
+        struct Endpoint(PathBuf);
+        impl Drop for Endpoint {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        fn accept(listener: &UnixListener) -> UnixStream {
+            let until = Instant::now() + Duration::from_secs(2);
+            loop {
+                match listener.accept() {
+                    Ok((stream, _)) => return stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < until, "replacement socket never connected");
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(error) => panic!("accept authenticated client: {error}"),
+                }
+            }
+        }
+
+        let endpoint = Endpoint(PathBuf::from(format!(
+            "/tmp/nudox-bootstrap-retry-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos(),
+        )));
+        let listener = UnixListener::bind(&endpoint.0).expect("private listener");
+        std::fs::set_permissions(&endpoint.0, std::fs::Permissions::from_mode(0o600))
+            .expect("private endpoint");
+        listener.set_nonblocking(true).expect("bounded accept");
+        let server = std::thread::spawn(move || {
+            let limits = LocalControlLimits::default();
+            let mut stalled = accept(&listener);
+            stalled
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .expect("bounded read");
+            let first = read_frame(&mut stalled, limits).expect("initial request reached owner");
+            assert!(matches!(
+                decode_request(&first, limits),
+                Ok(LocalControlRequest::Subscription(_))
+            ));
+            // Keep the first connection open without answering its header.
+            let mut recovered = accept(&listener);
+            recovered
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .expect("bounded read");
+            let next = read_frame(&mut recovered, limits).expect("new bootstrap reached owner");
+            let LocalControlRequest::Subscription(request) =
+                decode_request(&next, limits).expect("correlated bootstrap frame")
+            else {
+                panic!("bootstrap subscription");
+            };
+            let reply = encode_response(
+                &LocalControlResponse::Rejected {
+                    request_id: request.request_id,
+                    message: "recovery endpoint answered".to_owned(),
+                },
+                limits,
+            )
+            .expect("bounded reply");
+            write_frame(&mut recovered, &reply, limits).expect("answer replacement socket");
+        });
+        let mut transport = LocalSubscriptionTransport::connect_with_timeouts(
+            &endpoint.0,
+            Duration::from_secs(1),
+            Duration::from_millis(10),
+        )
+        .expect("initial authenticated connection");
+        let first = LocalControlRequest::Subscription(LocalSubscriptionRequest {
+            request_id: 1,
+            operation: LocalSubscriptionOperation::Open {
+                cursor: Box::new([]),
+                credit: 1,
+                lease_ms: 1_000,
+            },
+        });
+        assert!(
+            transport
+                .request_with_tick(&first, Instant::now() + Duration::from_millis(80), |_| {
+                    LocalControlExchangeDecision::Continue
+                })
+                .is_err()
+        );
+        assert!(
+            transport.interrupt_handle().is_none(),
+            "stall retired the interrupt"
+        );
+
+        let project = LocalProjectId::from_path(Path::new("/tmp")).expect("project");
+        let mut client = LocalEngineClient::new(&endpoint.0, project);
+        client.subscription = Some(transport);
+        client.active_cancel = Some(CancellationToken::new());
+        let result = client.bootstrap_root(false);
+        server.join().expect("bounded recovery owner");
+        assert!(
+            matches!(result, Err(EngineFault::Failed(error))
+            if error.code() == FaultCode::Protocol && error.message().contains("recovery endpoint answered")),
+            "the next bootstrap must reach the reauthenticated owner, rather than fail on a missing interrupt"
+        );
+        assert!(
+            client
+                .subscription
+                .as_ref()
+                .expect("replacement installed")
+                .interrupt_handle()
+                .is_some()
+        );
+    }
 
     #[test]
     fn production_observer_has_a_distinct_unopened_session() {
