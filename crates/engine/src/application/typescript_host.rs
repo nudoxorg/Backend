@@ -820,6 +820,7 @@ pub(crate) struct TypeScriptProjectWitness {
     home_root: Option<Box<Path>>,
     discovered_compiler: Box<Path>,
     discovered_module_root: Box<Path>,
+    discovered_package_root: Box<Path>,
     discovered_version: Box<str>,
     compiler: Box<Path>,
     node: Box<Path>,
@@ -883,6 +884,13 @@ impl TypeScriptProjectWitness {
                 source,
             }
         })?;
+        let discovered_package_root = fs::canonicalize(discovered.module_root.join("typescript"))
+            .map_err(|source| {
+            TypeScriptProjectHostError::PackagePath {
+                path: discovered.module_root.join("typescript").into_boxed_path(),
+                source,
+            }
+        })?;
         let mut canonical_workspace = workspace.cloned();
         if let Some(workspace) = canonical_workspace.as_mut() {
             workspace.root = canonical_directory(&workspace.root)?.into_boxed_path();
@@ -906,6 +914,22 @@ impl TypeScriptProjectWitness {
         );
         if !compiler.starts_with(&package_root) {
             files.push(capture_file_snapshot(compiler, MAX_NODE_EXECUTABLE_BYTES)?);
+        }
+        // Explicit selection may use another TypeScript installation. Keep
+        // the discovered project closure witnessed without exposing it as the
+        // selected compiler's inputs or expanding its source capability.
+        if discovered_package_root != package_root {
+            files.extend(
+                collect_module_inputs(&discovered_package_root)?
+                    .iter()
+                    .map(snapshot_from_input),
+            );
+            if !discovered.compiler.starts_with(&discovered_package_root) {
+                files.push(capture_file_snapshot(
+                    &discovered.compiler,
+                    MAX_NODE_EXECUTABLE_BYTES,
+                )?);
+            }
         }
         if let Some(workspace) = canonical_workspace.as_ref() {
             files.extend(workspace.files.iter().cloned());
@@ -938,6 +962,7 @@ impl TypeScriptProjectWitness {
             home_root: home_root.map(|root| root.to_path_buf().into_boxed_path()),
             discovered_compiler: discovered.compiler.to_path_buf().into_boxed_path(),
             discovered_module_root: discovered.module_root.to_path_buf().into_boxed_path(),
+            discovered_package_root: discovered_package_root.into_boxed_path(),
             discovered_version: discovered.version.clone().into_boxed_str(),
             compiler: compiler.to_path_buf().into_boxed_path(),
             node: node.to_path_buf().into_boxed_path(),
@@ -1059,11 +1084,24 @@ impl TypeScriptProjectWitness {
         if current_project.compiler.as_path() != self.discovered_compiler.as_ref()
             || current_project.module_root.as_path() != self.discovered_module_root.as_ref()
             || current_project.version.as_str() != self.discovered_version.as_ref()
-            || package_root.as_path() != self.package_root.as_ref()
+            || package_root.as_path() != self.discovered_package_root.as_ref()
             || current_project.workspace != self.workspace
         {
             return Err(TypeScriptProjectHostError::WitnessChanged {
                 path: self.project_root.to_path_buf().into_boxed_path(),
+            });
+        }
+
+        let selected_package_root =
+            fs::canonicalize(self.module_root.join("typescript")).map_err(|source| {
+                TypeScriptProjectHostError::PackagePath {
+                    path: self.module_root.join("typescript").into_boxed_path(),
+                    source,
+                }
+            })?;
+        if selected_package_root.as_path() != self.package_root.as_ref() {
+            return Err(TypeScriptProjectHostError::WitnessChanged {
+                path: self.module_root.join("typescript").into_boxed_path(),
             });
         }
 
@@ -3369,7 +3407,7 @@ mod tests {
                 NEXT.fetch_add(1, Ordering::Relaxed),
             ));
             fs::create_dir_all(&root).expect("create project fixture");
-            Self(root)
+            Self(fs::canonicalize(root).expect("canonical project fixture"))
         }
 
         fn install(&self, version: &str) -> PathBuf {
@@ -4113,49 +4151,89 @@ printf 'Version 5.9.3\n'
     fn explicit_compiler_uses_its_matching_module_root_ahead_of_project_installation() {
         use std::os::unix::fs::PermissionsExt;
 
-        let fixture = Fixture::new();
-        fixture.install("5.9.3");
-        let explicit_modules = fixture.0.join("explicit/node_modules");
-        install_at(&explicit_modules, "5.8.4");
-        let compiler = fs::canonicalize(explicit_modules.join("typescript/bin/tsc"))
-            .expect("canonical explicit compiler");
-        let node_directory = fixture.0.join("host runtime");
-        fs::create_dir_all(&node_directory).expect("create Node parent");
-        let node = node_directory.join("node");
-        fs::write(
-            &node,
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'v22.0.0\\n'; elif [ \"$2\" = \"--version\" ]; then printf 'Version 5.8.4\\n'; else exit 9; fi\n",
-        )
-        .expect("write deterministic Node probe fixture");
-        fs::set_permissions(&node, fs::Permissions::from_mode(0o755))
-            .expect("make Node probe executable");
+        for mutation in [
+            "unchanged",
+            "selected-content",
+            "discovered-content",
+            "selected-retarget",
+        ] {
+            let fixture = Fixture::new();
+            fixture.install("5.9.3");
+            let explicit_modules = fixture.0.join("explicit/node_modules");
+            install_at(&explicit_modules, "5.8.4");
+            let compiler = fs::canonicalize(explicit_modules.join("typescript/bin/tsc"))
+                .expect("canonical explicit compiler");
+            let node_directory = fixture.0.join("host runtime");
+            fs::create_dir_all(&node_directory).expect("create Node parent");
+            let node = node_directory.join("node");
+            fs::write(
+                &node,
+                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'v22.0.0\\n'; elif [ \"$2\" = \"--version\" ]; then printf 'Version 5.8.4\\n'; else exit 9; fi\n",
+            )
+            .expect("write deterministic Node probe fixture");
+            fs::set_permissions(&node, fs::Permissions::from_mode(0o755))
+                .expect("make Node probe executable");
 
-        let admitted = TypeScriptProjectHost::new(
-            Some(compiler.clone()),
-            Some(node.clone()),
-            None,
-            None,
-            Fixture::limits(),
-        )
-        .admit(&fixture.0)
-        .expect("admit explicit compiler and matching installation")
-        .expect("local project installation is present");
-        let expected_module_root =
-            fs::canonicalize(explicit_modules).expect("canonical selected module root");
-        assert_eq!(admitted.compiler.as_ref(), compiler);
-        assert_eq!(
-            admitted.compiler_origin,
-            TypeScriptSelectionOrigin::ExplicitConfiguration
-        );
-        assert_eq!(
-            admitted.inputs().typescript_module_root,
-            expected_module_root
-        );
-        assert_eq!(admitted.inputs().compiler_version, b"Version 5.8.4\n");
-        assert_eq!(
-            admitted.inputs().node_origin,
-            TypeScriptSelectionOrigin::ExplicitConfiguration
-        );
+            let admitted = TypeScriptProjectHost::new(
+                Some(compiler.clone()),
+                Some(node.clone()),
+                None,
+                None,
+                Fixture::limits(),
+            )
+            .admit(&fixture.0)
+            .expect("admit explicit compiler and matching installation")
+            .expect("local project installation is present");
+            let expected_module_root =
+                fs::canonicalize(&explicit_modules).expect("canonical selected module root");
+            assert_eq!(admitted.compiler.as_ref(), compiler);
+            assert_eq!(
+                admitted.compiler_origin,
+                TypeScriptSelectionOrigin::ExplicitConfiguration
+            );
+            assert_eq!(
+                admitted.inputs().typescript_module_root,
+                expected_module_root
+            );
+            assert_eq!(admitted.inputs().compiler_version, b"Version 5.8.4\n");
+            assert_eq!(
+                admitted.inputs().node_origin,
+                TypeScriptSelectionOrigin::ExplicitConfiguration
+            );
+            match mutation {
+                "unchanged" => admitted
+                    .witness
+                    .validate_current()
+                    .expect("unchanged separate authorities"),
+                "selected-content" | "discovered-content" => {
+                    let root = if mutation == "selected-content" {
+                        explicit_modules.clone()
+                    } else {
+                        fixture.0.join("node_modules")
+                    };
+                    fs::write(
+                        root.join("typescript/bin/tsc"),
+                        "#!/usr/bin/env node\n// changed\n",
+                    )
+                    .expect("change compiler closure without changing its version");
+                    assert!(matches!(
+                        admitted.witness.validate_current(),
+                        Err(TypeScriptProjectHostError::WitnessChanged { .. })
+                    ));
+                }
+                "selected-retarget" => {
+                    let package = explicit_modules.join("typescript");
+                    let target = explicit_modules.join("retargeted-typescript");
+                    fs::rename(&package, &target).expect("move selected installation");
+                    symlink(&target, &package).expect("retarget selected installation");
+                    assert!(matches!(
+                        admitted.witness.validate_current(),
+                        Err(TypeScriptProjectHostError::WitnessChanged { .. })
+                    ));
+                }
+                _ => unreachable!(),
+            }
+        }
     }
 
     fn install_at(modules: &Path, version: &str) {
