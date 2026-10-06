@@ -1,0 +1,51 @@
+{
+  "schema": "nudox.staged-authentic-source-queue-cold.v1",
+  "source_commit": "864d206396ec288697a349414713f9bca298b9ef",
+  "source_tree": "e2a2624229d401cf5a2e7a3f4ba7507555356a35",
+  "host": "h16001mac",
+  "toolchain": "rust1.97.1 pinned fcb-native-environment; managed worktree+slot locks; Cargo jobs4",
+  "command": "cargo test -p backend-local-service --lib staged_official_archive -j4 -- --ignored --test-threads=1 --nocapture",
+  "raw_log": {
+    "path": "raw/zod-864d206396.log",
+    "sha256": "f3faf57492504187d57c31807092826278457fd33f5e6da7fdda44960a9317b5"
+  },
+  "fresh_fleet": {
+    "path": "raw/zod-864d206396-fleet.json",
+    "sha256": "dc281ffb3fd43e4dd25ef5fbd234d767b57f17b0b6d6635d31651caaec9e7588"
+  },
+  "test_executable": {
+    "path": "/Users/rmccrar6/codex-worktrees/sol61-staged-ingest-20261006/.local/build/staged-ingest/.nudox-cargo/slot-0/debug/deps/backend_local_service-f546d251e4601c63",
+    "sha256_before": "e45232ed025177e1ac754a13ad0a40a8d310715b132fec5c25602b76d50d73db",
+    "sha256_after": "e45232ed025177e1ac754a13ad0a40a8d310715b132fec5c25602b76d50d73db"
+  },
+  "archive": {
+    "version": "zod3.25.76",
+    "sha256": "9e1f1a05f0dd0c1dab64ee91ceb9bf55cd44d35368c70edda80a2fdc70a88377",
+    "regular_files": 596,
+    "acquisition_path": "zod-3.25.76-acquisition.json",
+    "acquisition_sha256": "2edc9ab9811a62cc5665ea2e14873ff8c8a450a50933276fc29ea5eeadb7b14b"
+  },
+  "actual_producer": {
+    "scanned_files": 593,
+    "fact_changes": 624,
+    "source_bytes_read": 3583593,
+    "inline_queue_bytes": 8091684,
+    "unchanged_queue_limit_bytes": 4194304,
+    "inline_actual_owner_queue_refused": true,
+    "staged_queue_bytes": 357,
+    "pointer_bytes": 180
+  },
+  "result": {
+    "passed": 1,
+    "failed": 0,
+    "seconds": 26.02,
+    "selected_root_matches_cold": true,
+    "every_actual_expected_fact_record_matches_cold": true
+  },
+  "limits": [
+    "production unproven-authority parser/source facts storage and queue path only",
+    "no native/compiler semantic completeness credit",
+    "original 8,092,105-byte driver not identical; current acquired real producer is 8,091,684 bytes",
+    "persistent pending allocation excludes changed frontier/index nodes/descriptors"
+  ]
+}

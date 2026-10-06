@@ -1,0 +1,47 @@
+{
+  "schema": "nudox.staged-live-gc-two-cold.v1",
+  "source_commit": "864d206396ec288697a349414713f9bca298b9ef",
+  "source_tree": "e2a2624229d401cf5a2e7a3f4ba7507555356a35",
+  "host": "h16001mac",
+  "command": "cargo test -p backend-local-service --lib staged_ -j4 -- --test-threads=1 --nocapture",
+  "test_executable": {
+    "path": "/Users/rmccrar6/codex-worktrees/sol61-staged-ingest-20261006/.local/build/staged-ingest/.nudox-cargo/slot-0/debug/deps/backend_local_service-f546d251e4601c63",
+    "sha256": "e45232ed025177e1ac754a13ad0a40a8d310715b132fec5c25602b76d50d73db"
+  },
+  "result": {
+    "passed": 10,
+    "failed": 0,
+    "ignored": 1,
+    "seconds": 23.84
+  },
+  "checks": {
+    "inline_real_queue_bytes": 4291886,
+    "unchanged_queue_limit_bytes": 4194304,
+    "staged_queue_bytes": 279,
+    "pointer_bytes": 180,
+    "exact_stage_members": 68,
+    "twin_request_id_and_exact_original_body_preserved": true,
+    "twin_physical_allocation_unchanged": true,
+    "independent_gc_finishes_with_twins_live": true,
+    "unrelated_orphan_reclaimed": true,
+    "first_cold_exact_all_24000_function_facts": true,
+    "small_followup_replaces_old_stage_manifest": true,
+    "second_cold_exact_all_24000_function_facts": true,
+    "changed_source_and_cancel_before_queue_refused": true,
+    "swapped_manifest_and_stale_base_refused": true,
+    "crash_partial_stage_unselected_invisible": true
+  },
+  "limits": [
+    "Authentic archive is an explicitly ignored separate gate",
+    "No native/compiler semantic completeness credit",
+    "Persistent pending allocation currently excludes changed frontier/index nodes/descriptors"
+  ],
+  "raw_log": {
+    "path": "raw/staged-864d206396.log",
+    "sha256": "686ef1a5f410dd5390d90bbb6d58b8b8b3d84e401fb91212bd527b8cf28129a7"
+  },
+  "fresh_fleet": {
+    "path": "raw/staged-864d206396-fleet.json",
+    "sha256": "847221983d2db6ca0cab502d0fb9b4b958bc5e99ce2ea422ddb92401654e5a30"
+  }
+}

@@ -1,6 +1,6 @@
 # Required staged ingest source and remaining gates
 
-Frozen production/test source is `eab055240866e3ea278885aace37afab0464c275` in the private Sol6.1 worktree. Dependency join is Root `749b1c4218` through private merge `e2141340b79e5cf42e9a131a7f69d57fccd11f80`; reviewed fd1/4a370 shape dependencies are cc7afc381/df96d07. Root is sole integrator.
+Frozen production/test source is `864d206396ec288697a349414713f9bca298b9ef` in the private Sol6.1 worktree. Dependency join is Root `749b1c4218` through private merge `e2141340b79e5cf42e9a131a7f69d57fccd11f80`; reviewed fd1/4a370 shape dependencies are cc7afc381/df96d07. Root is sole integrator.
 
 The exact contiguous private history below includes atomic implementation, fixture, dependencies and evidence. Applying only early staged commits is unsafe: later corrections remove rejected global caps, release global GC barriers into exact per-closure leases, include every non-relation control in recovery packs, yield both direct and manifest GC work at existing byte caps, and reject missing members before publish/recovery. Inspect the final actual diff against the dependency base and preserve these gates.
 
@@ -36,6 +36,10 @@ bd1fc4d50c2fc3be7565507aa5d2f8423edff4fb Continue direct GC mark records within 
 1c6271a6bf4fe75e1ddc47d6397771e22e67d944 Refuse missing stored pages before published frames and interrupted HEAD repair
 f7ced0cae34c85a1623b0548c6c9de783b0ab331 Begin manifest GC continuation records with a fresh bounded mark allowance
 eab055240866e3ea278885aace37afab0464c275 Assert missing published evidence refusal at the eager cold store open gate
+a56882f79b5d4bcd0b7f39c7b1938f3ef2c569c8 Retain authentic Zod large queue cold replay proof and all prior red gate logs
+9b0cba3a904fa39e948b26adb182d694ba710915 Provide exact staged source history file list and explicit remaining acceptance gates
+55da6a6e1a826e904469a4daa53d64038c85c6b9 Lease the exact staged base closure through first publication and GC
+864d206396ec288697a349414713f9bca298b9ef test(staged): collect leased snapshots with registered product grammar
 ```
 
 Changed files against the joined Root base:
@@ -91,21 +95,31 @@ crates/store/src/durable/recovery.rs
 crates/store/src/durable/store_api.rs
 crates/store/src/lib.rs
 crates/store/src/tests.rs
+docs/audits/staged-ingest-execution-20261006/raw/staged-42d83eb1.log
+docs/audits/staged-ingest-execution-20261006/raw/staged-53af86cf.log
+docs/audits/staged-ingest-execution-20261006/raw/staged-9a380f7c73-fleet.json
+docs/audits/staged-ingest-execution-20261006/raw/staged-9a380f7c73.log
 docs/audits/staged-ingest-execution-20261006/raw/staged-a5ef2404-fleet.json
+docs/audits/staged-ingest-execution-20261006/raw/staged-a5ef2404.log
 docs/audits/staged-ingest-execution-20261006/raw/staged-compile-36a22d07.log
 docs/audits/staged-ingest-execution-20261006/raw/store-composer-6a64059b-fleet.json
 docs/audits/staged-ingest-execution-20261006/raw/store-composer-6a64059b.log
+docs/audits/staged-ingest-execution-20261006/raw/zod-9a380f7c73-fleet.json
+docs/audits/staged-ingest-execution-20261006/raw/zod-9a380f7c73.log
 docs/audits/staged-ingest-execution-20261006/staged-compile-receipt.json
+docs/audits/staged-ingest-execution-20261006/staged-prior-runtime-failures.json
 docs/audits/staged-ingest-execution-20261006/store-composer-receipt.json
 docs/audits/staged-ingest-execution-20261006/zod-3.25.76-acquisition.json
+docs/audits/staged-ingest-execution-20261006/zod-parser-queue-cold-receipt.json
 docs/audits/staged-ingest-membership-api-20261006.md
 docs/audits/staged-ingest-physical-allocation-20261006.md
 docs/audits/staged-ingest-queue-checkpoint-20261006.md
 docs/audits/staged-ingest-reader-leases-20261006.md
+docs/audits/staged-ingest-required-source-20261006.md
 ```
 
 Current evidence: actual authenticated Zod3.25.76 archive (596 regular files) scanned through production unproven-authority source discovery; queue8,091,684 bytes exceeds unchanged4MiB and refuses inline, staged queue357/pointer180 publishes and cold-reopens with every expected facts record exact on9a380f7c73. No native/compiler completeness credit or identical original8,092,105-byte driver claim. See staged-ingest-execution-20261006/zod-parser-queue-cold-receipt.json.
 
-Store source eab0552408 passes new GC direct/manifest byte continuation and both missing-page pre-publish/pre-HEAD cold repair tests. App source eab0552408 is still being validated; its earlier9a large GC integration was RED before publication/cold and cannot be credited.
+Store source eab0552408 passes both new GC direct/manifest byte continuation and missing-page pre-publish/pre-HEAD cold repair tests. App source 864d206396 passes 10 tests with no failures (one authentic archive gate explicitly ignored): real 4,291,886-byte queue refusal, exact shared twins without duplicate physical allocation, independent orphan GC with both twins live, publication and two exact cold reopens, old staged auxiliary retirement, cancellation, changed source, stale base, swapped manifest and crash checks. See staged-live-gc-two-cold-receipt.json. This follows production 55da6a6e1a retaining the exact base membership through first publication and fixture 864d206396 using the product decoder registry for its independent collector. Prior RED logs remain retained and are not acceptance. Current authentic Zod rerun on exact 864d206396 passes 1/1 in 26.02 seconds under its own fresh fleet admission, with unchanged test executable SHA256 before/after. See zod-parser-queue-cold-current-receipt.json.
 
 Pending allocation is explicitly open: persistent actual-block accounting currently covers staged payload/manifest CAS objects, not all changed frontier/index nodes/descriptors. A future scoped immutable-install admission must catalogue these even if composition is interrupted. No whole-CAS staging cap is attached in production; optional PhysicalAllocationBudget is only an explicit total-store primitive/test helper. Source limits derive from validated existing SourceAdmissionPolicy, and changing configuration preserves the affine live reservation ledger.
