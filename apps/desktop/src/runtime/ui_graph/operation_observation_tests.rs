@@ -167,6 +167,16 @@ fn terminal_receipt_updates_live_root_and_store_before_held_hydration_returns(
         )
     });
     let _release = _release; // release worker before the graph can drop
+    let publications = Arc::new(AtomicUsize::new(0));
+    let announced = publications.clone();
+    let _publication = cx.update(|cx| {
+        cx.subscribe(&graph.store, move |_, event: &super::super::store::StoreEvent, _| {
+            if let super::super::store::StoreEvent::PackagesPublished(authority) = event {
+                assert_eq!(*authority, basis().authority());
+                announced.fetch_add(1, Ordering::SeqCst);
+            }
+        })
+    });
     cx.run_until_parked();
     entered
         .recv_timeout(Duration::from_secs(1))
@@ -182,6 +192,8 @@ fn terminal_receipt_updates_live_root_and_store_before_held_hydration_returns(
         })
     });
     assert_eq!(observations.load(Ordering::SeqCst), 1);
+    assert_eq!(publications.load(Ordering::SeqCst), 1,
+        "the exact durable receipt announces publication while hydration is still held");
     assert_eq!(
         graph
             .store
@@ -211,6 +223,30 @@ fn terminal_receipt_updates_live_root_and_store_before_held_hydration_returns(
         None,
         "the entered root retains its original context after another receipt lands"
     );
+}
+
+#[test]
+fn local_publication_requires_a_new_exact_terminal_receipt() {
+    let project = LocalProjectId::new("/fixture/operation-publication").expect("project");
+    let before = active_snapshot(&project);
+    let mut workspace = before.workspace().clone();
+    let mut rows = workspace.projects.to_vec();
+    rows[0].phase = ProjectPhase::Ready;
+    let claim = rows[0].operation.as_mut().expect("claim");
+    claim.observation = Some(crate::model::index_operation::tests::published(claim));
+    workspace.projects = rows.into();
+    let published = before.with_workspace(workspace);
+    assert_eq!(newly_published_local_projects(&before, &published), BTreeSet::from([project]));
+    assert!(newly_published_local_projects(&published, &published).is_empty(),
+        "replaying the same durable observation causes no new cache withdrawal");
+
+    let mut workspace = published.workspace().clone();
+    let mut rows = workspace.projects.to_vec();
+    rows[0].operation = None;
+    workspace.projects = rows.into();
+    let ready_without_receipt = published.with_workspace(workspace);
+    assert!(newly_published_local_projects(&before, &ready_without_receipt).is_empty(),
+        "a display phase cannot stand in for the owner's terminal receipt");
 }
 
 #[gpui::test]

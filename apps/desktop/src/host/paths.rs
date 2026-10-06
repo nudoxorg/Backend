@@ -11,7 +11,7 @@
 use backend_runtime::{
     AUTHORITY_SECRET_ENV, DATA_ENV, ENDPOINT_ENV, PROJECT_ENV, RuntimeError, WorkspacePaths,
 };
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -212,16 +212,20 @@ fn has_msbuild_marker(path: &Path) -> bool {
         if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
             return false;
         }
-        let name = entry.file_name();
-        Path::new(&name)
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| {
-                ["csproj", "sln", "slnx"]
-                    .into_iter()
-                    .any(|suffix| extension.eq_ignore_ascii_case(suffix))
-            })
+        msbuild_marker_name(&entry.file_name())
     })
+}
+
+/// Classifies the ASCII suffix without requiring the native basename to be UTF-8.
+fn msbuild_marker_name(name: &OsStr) -> bool {
+    Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            ["csproj", "sln", "slnx"]
+                .into_iter()
+                .any(|suffix| extension.eq_ignore_ascii_case(suffix))
+        })
 }
 
 /// Returns the per-user data root without adding a runtime dependency just to

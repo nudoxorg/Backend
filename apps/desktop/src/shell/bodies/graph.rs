@@ -236,6 +236,15 @@ impl Map {
                     // the newly admitted projection without route re-entry.
                     cx.notify();
                 }
+                if let StoreEvent::PackagesPublished(authority) = event
+                    && map.world_key.as_ref().is_some_and(|key| key.at_authority(map.links.snapshot(cx).key()))
+                    && *authority == map.links.snapshot(cx).key().authority()
+                {
+                    map.invalidate_open();
+                    map.reset_indexed_world();
+                    map.publish_focus(cx);
+                    cx.notify();
+                }
                 if matches!(event, StoreEvent::Resource(_)) {
                     map.resolve_open(window, cx);
                     map.publish_focus(cx);
