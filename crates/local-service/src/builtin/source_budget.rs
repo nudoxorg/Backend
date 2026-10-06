@@ -2,7 +2,8 @@
 //!
 //! Project admission, retained compiler text, and concurrent source bytes are
 //! separate budgets. The source-byte budgets do not bound frontend/parser
-//! allocation expansion or the aggregate in-memory source-record projection.
+//! allocation expansion or the heap expansion of decoded records and facts.
+//! Encoded row accounting includes compact source rows and complete fact pages.
 //! A larger project quota must not silently enlarge the number of concurrent
 //! source reads.
 //!
@@ -16,7 +17,7 @@
 
 use std::fmt;
 
-const POLICY_VERSION: &[u8] = b"nudox.local-source-admission.v2\0";
+const POLICY_VERSION: &[u8] = b"nudox.local-source-admission.v3\0";
 const MAX_CONFIGURED_SOURCE_BYTES: usize = 4 * 1024 * 1024 * 1024;
 const MAX_CONFIGURED_RECORDS: usize = 500_000;
 const MAX_SCAN_WORKERS: usize = 8;
@@ -253,11 +254,33 @@ impl SourceAdmissionLedger {
     /// Charges one real row, including valid zero-byte files. The caller must
     /// feed files in normalized path order so a refusal always names the same
     /// boundary file regardless of worker completion order.
+    #[cfg(test)]
     pub(super) fn admit(
         &mut self,
         policy: SourceAdmissionPolicy,
         file: AdmittedFile,
         encoded_record_bytes: usize,
+        retain_compiler_source: bool,
+    ) -> Result<(), Refusal> {
+        self.admit_with_fact_pages(
+            policy,
+            file,
+            encoded_record_bytes,
+            0,
+            retain_compiler_source,
+        )
+    }
+
+    /// Charges a compact file row and all manifest/directory/declaration pages
+    /// before the coordinator retains the worker result. Each fact page has
+    /// already passed the storage row bound; their aggregate is deliberately
+    /// charged only against the project budget.
+    pub(super) fn admit_with_fact_pages(
+        &mut self,
+        policy: SourceAdmissionPolicy,
+        file: AdmittedFile,
+        encoded_record_bytes: usize,
+        fact_page_bytes: usize,
         retain_compiler_source: bool,
     ) -> Result<(), Refusal> {
         if file.policy_identity != policy.identity {
@@ -281,9 +304,14 @@ impl SourceAdmissionLedger {
             },
             "retained compiler source bytes",
         )?;
+        let file_record_bytes = checked_sum(
+            encoded_record_bytes,
+            fact_page_bytes,
+            "project record bytes",
+        )?;
         let encoded_record_bytes_total = checked_sum(
             self.encoded_record_bytes,
-            encoded_record_bytes,
+            file_record_bytes,
             "project record bytes",
         )?;
         let records = checked_sum(self.records, 1, "project source records")?;
@@ -544,5 +572,76 @@ mod tests {
                 .contains("retained compiler source bytes")
         );
         assert_eq!(ledger.source_bytes(), 40, "a refused row is not charged");
+    }
+    #[test]
+    fn paged_file_facts_use_the_project_bound_and_charge_every_encoded_row() {
+        let mut limits = SourceAdmissionLimits::default();
+        limits.max_project_record_bytes = 4 * limits.max_encoded_record_bytes;
+        let policy = SourceAdmissionPolicy::new(limits).unwrap();
+        let mut ledger = SourceAdmissionLedger::default();
+        let pages = 2 * limits.max_encoded_record_bytes;
+        ledger
+            .admit_with_fact_pages(
+                policy,
+                policy.admit_actual_file(20).unwrap(),
+                128,
+                pages,
+                false,
+            )
+            .unwrap();
+        assert_eq!(ledger.encoded_record_bytes(), 128 + pages);
+        assert_eq!(ledger.records(), 1);
+        assert_eq!(ledger.source_bytes(), 20);
+        assert_eq!(ledger.retained_compiler_bytes(), 0);
+
+        let before = ledger;
+        let error = ledger
+            .admit_with_fact_pages(
+                policy,
+                policy.admit_actual_file(30).unwrap(),
+                128,
+                pages,
+                true,
+            )
+            .unwrap_err();
+        assert_eq!(error.resource, "project record bytes");
+        assert_eq!(
+            ledger, before,
+            "refusal cannot partially advance any ledger"
+        );
+        assert!(
+            ledger
+                .admit_with_fact_pages(
+                    policy,
+                    policy.admit_actual_file(0).unwrap(),
+                    limits.max_encoded_record_bytes + 1,
+                    0,
+                    false,
+                )
+                .is_err(),
+            "a compact row still has its individual format bound"
+        );
+        assert_eq!(ledger, before);
+    }
+
+    #[test]
+    fn overflowing_fact_page_charge_is_atomic() {
+        let policy = SourceAdmissionPolicy::new(SourceAdmissionLimits::default()).unwrap();
+        let mut ledger = SourceAdmissionLedger::default();
+        ledger
+            .admit(policy, policy.admit_actual_file(0).unwrap(), 128, false)
+            .unwrap();
+        let before = ledger;
+        let error = ledger
+            .admit_with_fact_pages(
+                policy,
+                policy.admit_actual_file(1).unwrap(),
+                1,
+                usize::MAX,
+                true,
+            )
+            .unwrap_err();
+        assert_eq!(error.resource, "project record bytes");
+        assert_eq!(ledger, before);
     }
 }

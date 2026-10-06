@@ -1268,7 +1268,6 @@ fn scan_source_paths(
         thread::available_parallelism().map_or(1, usize::from),
         paths.len(),
     );
-    let chunk = paths.len().div_ceil(workers);
     thread::scope(|scope| {
         let queue = workers
             .checked_mul(RESULT_QUEUE_PER_WORKER)
@@ -1277,18 +1276,22 @@ fn scan_source_paths(
         let stop = AtomicBool::new(false);
         let mut handles = Vec::with_capacity(workers);
         let mut acknowledgements = Vec::with_capacity(workers);
-        let chunk_width = chunk.max(1);
-        for (worker_index, group) in paths.chunks(chunk_width).enumerate() {
+        // Stride adjacent path positions across workers. Contiguous chunks
+        // plus ordered acknowledgements would leave all but the first chunk
+        // idle; this bounded window permits each worker to progress while
+        // retaining at most one unacknowledged result per worker.
+        for worker_index in 0..workers {
             let root = root;
             let root_capability = root_capability;
             let sender = sender.clone();
             let cancellation = cancellation;
             let stop = &stop;
-            let first_path_index = worker_index * chunk_width;
             let (acknowledge, acknowledged) = mpsc::sync_channel::<bool>(1);
             acknowledgements.push(acknowledge);
             handles.push(scope.spawn(move || {
-                for (offset, path) in group.iter().enumerate() {
+                for (path_index, path) in
+                    paths.iter().enumerate().skip(worker_index).step_by(workers)
+                {
                     if stop.load(Ordering::Acquire) {
                         break;
                     }
@@ -1307,10 +1310,7 @@ fn scan_source_paths(
                     }))
                     .unwrap_or_else(|_| Err("source analysis worker panicked".to_owned()));
                     let failed = result.is_err();
-                    if sender
-                        .send((first_path_index + offset, worker_index, result))
-                        .is_err()
-                    {
+                    if sender.send((path_index, worker_index, result)).is_err() {
                         break;
                     }
                     if !acknowledged.recv().unwrap_or(false) || failed {
@@ -1349,10 +1349,13 @@ fn scan_source_paths(
                     Ok(Some(file)) => {
                         let charge = source_policy.admit_actual_file(file.source_bytes).and_then(
                             |admitted| {
-                                budget.admit(
+                                budget.admit_with_fact_pages(
                                     source_policy,
                                     admitted,
                                     file.encoded_record_bytes,
+                                    file.source_facts
+                                        .as_ref()
+                                        .map_or(0, ProductSourceFileFactsUpdate::encoded_bytes),
                                     false,
                                 )
                             },
@@ -3799,6 +3802,54 @@ mod tests {
             backend_engine::DeclarationRetention::Unavailable(SourceUnavailableReason::TooLarge),
             "the tightened quota must refuse the cached file as too large"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn complete_fact_pages_exceeding_the_project_quota_refuse_before_retention()
+    -> Result<(), String> {
+        let root = scratch_dir("source-fact-page-budget")?;
+        let mut source = String::new();
+        for index in 0..1_000 {
+            source.push_str(&format!(
+                "export function declaration_{index:04}(): number {{ return {index}; }}\n"
+            ));
+        }
+        fs::write(root.join("a_many.ts"), source).map_err(|error| error.to_string())?;
+        fs::write(root.join("z_small.ts"), "export const small = 1;\n")
+            .map_err(|error| error.to_string())?;
+        let default = SourceAdmissionPolicy::new(SourceAdmissionLimits::default())
+            .map_err(|error| error.to_string())?;
+        let admitted = scan_with_source_policy(&root, [29; 32], &BTreeMap::new(), default)?;
+        assert_eq!(admitted.files.len(), 2);
+        let fact_bytes = admitted
+            .source_facts
+            .iter()
+            .map(ProductSourceFileFactsUpdate::encoded_bytes)
+            .sum::<usize>();
+        assert!(
+            fact_bytes > ProductSourceRecord::ROW_VALUE_CAPACITY,
+            "the real parser must produce multiple complete fact pages"
+        );
+        let mut compact_bytes = 0;
+        for (_, row) in &admitted.files {
+            let mut encoded = Vec::new();
+            ProductSourceRelation::encode_value(row, &mut encoded);
+            assert!(encoded.len() <= ProductSourceRecord::ROW_VALUE_CAPACITY);
+            compact_bytes += encoded.len();
+        }
+        let mut limits = default.limits();
+        limits.max_project_record_bytes = compact_bytes.max(limits.max_encoded_record_bytes);
+        let tight = SourceAdmissionPolicy::new(limits).map_err(|error| error.to_string())?;
+        let error = scan_with_source_policy(&root, [29; 32], &BTreeMap::new(), tight)
+            .err()
+            .ok_or("the complete fact pages escaped the project quota")?;
+        assert!(error.contains("project record bytes"), "{error}");
+        // The refusing scan drains its workers. A subsequent scan can admit
+        // the same exact sources without a poisoned cancellation or channel.
+        let retried = scan_with_source_policy(&root, [29; 32], &BTreeMap::new(), default)?;
+        assert_eq!(retried.source_version, admitted.source_version);
+        assert_eq!(retried.files, admitted.files);
         Ok(())
     }
 
