@@ -8,7 +8,6 @@ use crate::query_boundaries::common::{callable_shape_for_type, unique_symbol_ref
 use crate::state::CheckerState;
 use crate::statements::StatementChecker;
 use rustc_hash::FxHashSet;
-use tsz_solver::construction::TypeExecutionCheckpoint;
 use tracing::{Level, span};
 use tsz_parser::parser::NodeIndex;
 use tsz_parser::parser::syntax_kind_ext;

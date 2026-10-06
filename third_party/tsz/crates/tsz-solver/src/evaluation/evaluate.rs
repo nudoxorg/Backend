@@ -19,7 +19,6 @@ mod array_methods;
 
 use crate::caches::db::QueryDatabase;
 use crate::construction::TypeDatabase;
-use crate::construction::TypeExecutionCheckpoint;
 use crate::construction::UnionComplexityCheckpoint;
 use crate::def::{DefId, DefKind};
 use crate::diagnostics::display_provenance::{

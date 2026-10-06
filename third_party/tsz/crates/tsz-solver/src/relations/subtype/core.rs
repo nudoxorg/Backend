@@ -14,7 +14,6 @@ use std::sync::Arc;
 
 use crate::caches::db::QueryDatabase;
 use crate::construction::TypeDatabase;
-use crate::construction::TypeExecutionCheckpoint;
 use crate::def::DefId;
 #[cfg(test)]
 use crate::diagnostics::SubtypeFailureReason;

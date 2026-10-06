@@ -1057,7 +1057,7 @@ impl<'a> ParallelCheckPlan<'a> {
             arena_to_file_idx.insert(Arc::as_ptr(arena) as usize, idx);
         }
         let mut symbol_file_targets = Vec::with_capacity(program.symbol_arenas.len());
-        for (sym_id, arena) in &program.symbol_arenas {
+        for (sym_id, arena) in program.symbol_arenas.iter() {
             if !project_plan_checkpoint(execution_checkpoint, 1) {
                 break;
             }
@@ -1692,7 +1692,8 @@ mod project_module_resolution_tests {
         let actual = fresh_session
             .with_file_checker(file_index, |checker, binder, _file| {
                 let alias = binder.file_locals.get("Alias48").unwrap();
-                checker.resolve_lazy_type(checker.get_type_of_symbol(alias))
+                let alias_type = checker.get_type_of_symbol(alias);
+                checker.resolve_lazy_type(alias_type)
             })
             .unwrap();
         assert_eq!(actual, TypeId::STRING);

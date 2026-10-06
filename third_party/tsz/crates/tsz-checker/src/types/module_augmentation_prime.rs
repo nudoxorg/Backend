@@ -10,7 +10,6 @@ use crate::query_boundaries::state::type_environment;
 use crate::state::CheckerState;
 use rustc_hash::FxHashSet;
 use tsz_solver::TypeId;
-use tsz_solver::construction::TypeExecutionCheckpoint;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct ModuleAugmentationPrimeTask {

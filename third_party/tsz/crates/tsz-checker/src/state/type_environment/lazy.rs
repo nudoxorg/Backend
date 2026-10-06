@@ -10,7 +10,6 @@ use crate::query_boundaries::type_predicates::contains_conditional_with_applicat
 use crate::state::CheckerState;
 use tsz_binder::{SymbolId, symbol_flags};
 use tsz_solver::TypeId;
-use tsz_solver::construction::TypeExecutionCheckpoint;
 
 use super::lazy_guard_state::{
     ApplicationResolutionEntryState, ApplicationResolutionWorkState,

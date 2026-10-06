@@ -7,7 +7,6 @@
 use crate::caches::db::QueryDatabase;
 use crate::classes::inheritance::InheritanceGraph;
 use crate::construction::TypeDatabase;
-use crate::construction::TypeExecutionCheckpoint;
 use crate::evaluation::session::EvaluationSession;
 use crate::operations::AssignabilityChecker;
 use crate::relations::compat::{

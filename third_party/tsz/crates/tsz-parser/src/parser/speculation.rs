@@ -16,7 +16,7 @@ use tsz_scanner::SyntaxKind;
 use tsz_scanner::scanner_impl::ScannerSnapshot;
 
 use crate::parser::node::NodeArenaPoolLengths;
-use crate::parser::state::{ParserState, ParserStateCore};
+use crate::parser::state::ParserStateCore;
 
 /// Snapshot of every parser-state field that a speculative `parse_*` call is
 /// allowed to mutate. See the module docs for the field set.

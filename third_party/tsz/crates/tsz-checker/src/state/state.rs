@@ -31,7 +31,6 @@ use tsz_parser::parser::NodeIndex;
 use tsz_parser::parser::node::NodeArena;
 use tsz_parser::parser::syntax_kind_ext;
 use tsz_solver::TypeId;
-use tsz_solver::construction::TypeExecutionCheckpoint;
 
 thread_local! {
     /// Shared depth counter for all cross-arena delegation points.
