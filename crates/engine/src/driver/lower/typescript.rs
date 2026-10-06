@@ -10997,6 +10997,156 @@ mod lane_tests {
         Ok(())
     }
 
+    /// Replays one acquired, fully installed TypeScript project through the
+    /// production compiler-API closure, shared checkpoint, and borrowed query
+    /// session. The corpus is external because it includes its original npm
+    /// installation; paths and installed tool identities are supplied by the
+    /// receipt-producing runner.
+    #[test]
+    #[ignore = "requires a fully installed configured TypeScript corpus and admitted Node path"]
+    fn native_tsz_compiles_configured_project_alias_with_real_libraries() -> Result<(), LaneError> {
+        use std::{
+            path::PathBuf,
+            sync::atomic::AtomicBool,
+            time::{Duration, Instant},
+        };
+
+        use crate::application::{
+            PackageSource, ToolchainProbeLimits, TypeScriptProjectHost,
+            typescript_program::build_native_inputs,
+        };
+        use backend_frontend_typescript::TszProjectExecutionBudget;
+        use std::num::NonZeroUsize;
+
+        let root = std::env::var_os("TSZ_CONFIGURED_CORPUS_ROOT")
+            .map(PathBuf::from)
+            .ok_or(LaneError::Missing("TSZ_CONFIGURED_CORPUS_ROOT"))?;
+        let node = std::env::var_os("TSZ_CONFIGURED_NODE")
+            .map(PathBuf::from)
+            .ok_or(LaneError::Missing("TSZ_CONFIGURED_NODE"))?;
+        let source_paths = [
+            "src/app/api/route.ts",
+            "src/app/page.tsx",
+            "src/app/tutorial/page.tsx",
+            "src/components/NavBar.tsx",
+            "src/lib/scheduler.ts",
+        ];
+        let source_texts = source_paths
+            .iter()
+            .map(|path| std::fs::read_to_string(root.join(path)))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| LaneError::Missing("configured project source bytes"))?;
+        let package_sources = source_paths
+            .iter()
+            .zip(&source_texts)
+            .map(|(path, source)| {
+                PackageSource::new(path, source)
+                    .map_err(|_| LaneError::Missing("normalized configured source path"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let limits = ToolchainProbeLimits::new(
+            Duration::from_secs(600),
+            NonZeroUsize::new(16 * 1024 * 1024)
+                .ok_or(LaneError::Missing("nonzero compiler API stream limit"))?,
+        )
+        .map_err(|_| LaneError::Missing("bounded compiler API probe limits"))?;
+        let host = TypeScriptProjectHost::new(None, Some(node), None, None, limits);
+        let admitted = host
+            .admit(&root)
+            .map_err(|_| LaneError::Missing("installed project TypeScript authority"))?
+            .ok_or(LaneError::Missing("project-local TypeScript installation"))?;
+        let inputs = admitted.inputs();
+        let mut resolver = inputs.resolver();
+        let cancelled = AtomicBool::new(false);
+        let deadline = Instant::now() + Duration::from_secs(900);
+        let native = build_native_inputs(
+            &inputs,
+            &mut resolver,
+            &package_sources,
+            deadline,
+            &cancelled,
+        )
+        .map_err(|_| LaneError::Missing("compiler-API-resolved configured program"))?;
+        resolver
+            .validate_current()
+            .map_err(|_| LaneError::Missing("unchanged compiler resolver witness"))?;
+        let route_path = native
+            .package_paths
+            .get("src/app/api/route.ts")
+            .ok_or(LaneError::Missing("exact alias importer TSZ path"))?;
+        let scheduler_path = native
+            .package_paths
+            .get("src/lib/scheduler.ts")
+            .ok_or(LaneError::Missing("exact aliased target TSZ path"))?;
+        assert!(
+            !native.options.checker.no_lib,
+            "configured ambient libraries are admitted"
+        );
+        assert!(native.sources.len() > source_paths.len());
+        assert!(
+            native.libraries.len() > 1,
+            "TypeScript default libraries are retained"
+        );
+        assert!(
+            native.options.module_resolutions.iter().any(|resolution| {
+                resolution.importer_path == route_path.as_ref()
+                    && resolution.specifier == "@/lib/scheduler"
+                    && matches!(
+                        &resolution.target,
+                        TszProjectModuleResolutionTarget::File { path }
+                            if path == scheduler_path.as_ref()
+                    )
+            }),
+            "the compiler's paths alias resolves to its exact source file"
+        );
+
+        let work_units = native.work_units;
+        let package_path_map = native.package_paths;
+        let budget = TszProjectExecutionBudget::new(deadline, &cancelled, work_units);
+        let mut authority = TszProjectAuthority::new();
+        authority
+            .update_with_execution_checkpoint(
+                native.sources,
+                native.options,
+                &native.libraries,
+                &budget,
+            )
+            .map_err(|_| LaneError::Missing("checked full configured TSZ project"))?;
+        let project = authority
+            .project()
+            .ok_or(LaneError::Missing("published configured TSZ project"))?;
+        let session = project
+            .checked_query_session(&budget)
+            .map_err(|_| LaneError::Missing("shared configured project query session"))?;
+        let route_index = source_paths
+            .iter()
+            .position(|path| *path == "src/app/api/route.ts")
+            .ok_or(LaneError::Missing("alias importer source"))?;
+        let route_path = package_path_map
+            .get(source_paths[route_index])
+            .ok_or(LaneError::Missing("exact alias importer TSZ path"))?;
+        let mut route_facts = FactSet::new();
+        collect_with_tsz(
+            TypeScriptSource::TypeScript,
+            source_texts[route_index].as_bytes(),
+            project,
+            route_path,
+            &session,
+            &mut route_facts,
+        )?;
+        let targets = staged_tsz_coordinates(&route_facts)?;
+        let scheduler_name = source_texts[4]
+            .find("generateSchedule")
+            .ok_or(LaneError::Missing("aliased source declaration name"))?;
+        assert!(
+            targets.iter().any(|(_, path, _, _, name_start, _)| {
+                path == scheduler_path.as_ref() && *name_start == scheduler_name as u32
+            }),
+            "aliased use must point to the exact dependency declaration: {targets:?}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn native_tsz_wide_non_associative_tuple_fails_with_exact_bounded_cause() {
         let elements = std::iter::repeat_n("unknown", super::MAX_TYPE_CHILDREN + 1)
