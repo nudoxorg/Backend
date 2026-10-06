@@ -259,7 +259,7 @@ fn prepare_index_project_at(
         Arc::new(AtomicBool::new(false)),
     )?;
     let mut committed_captures = BTreeMap::new();
-    finish_index_scan(
+    let result = finish_index_scan(
         daemon,
         run_index_scan(work).map_err(IndexScanFailure::into_model_error)?,
         compiler,
@@ -270,7 +270,19 @@ fn prepare_index_project_at(
         None,
         &mut committed_captures,
         None,
-    )
+    );
+    if result.is_err() && !committed_captures.is_empty() {
+        let _ = commit_pending_capture_failure(
+            daemon,
+            package,
+            label,
+            request_id,
+            &committed_captures,
+            backend_engine::builtin::SemanticUnavailableReason::Rejected,
+            None,
+        );
+    }
+    result
 }
 
 /// Captures the owner-backed source frontier and workspace root before an
@@ -696,8 +708,13 @@ pub(super) fn finish_index_scan(
             };
             let capture_request = super::adapter::prepare_builtin_intent(daemon, &capture_intent)?;
             let capture_request_identity = capture_request.request_identity();
+            let daemon_for_commit = &mut *daemon;
             semantic_authority.commit_product_selection_transaction(Vec::new(), move || {
-                super::adapter::commit_prepared_builtin_intent(daemon, request_id, capture_request)
+                super::adapter::commit_prepared_builtin_intent(
+                    daemon_for_commit,
+                    request_id,
+                    capture_request,
+                )
             })?;
             *committed_captures = captures.clone();
             if let (Some(operation_key), Some(index_operations)) =
