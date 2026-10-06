@@ -862,10 +862,10 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
     .expect("independent product transition");
     super::super::commands::commit_builtin_intent(&mut daemon, 2, &unrelated_intent)
         .expect("commit unrelated product change while capture is pending");
-    assert_ne!(
+    assert_eq!(
         daemon.engine().daemon().owner().head().root(),
         source_capture_root,
-        "the intervening product transition advances the workspace root"
+        "the capture-only transition preserves the workspace manifest root"
     );
     let basis_after_unrelated =
         capture_basis_for_snapshot(&daemon.engine().daemon().owner().snapshot())
@@ -1015,6 +1015,10 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
         stale_snapshot.selected_base_publication().is_err(),
         "a snapshot that is no longer selected cannot resolve the current base publication"
     );
+    assert!(
+        stale_snapshot.with_persisted_transition(|_, _| ()).is_err(),
+        "a stale snapshot cannot lend a persisted transition with the current store"
+    );
     let terminal_snapshot = daemon.engine().daemon().owner().snapshot();
     let selected_base = terminal_snapshot
         .selected_base_publication()
@@ -1053,6 +1057,79 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
         "same-manifest/current-sequence basis rejects an old authenticated closure: {hybrid_error}"
     );
     let selected_root = daemon.engine().daemon().owner().head().root();
+    let base_source = stale_snapshot
+        .relation::<BuiltinWorkspaceRelation>()
+        .expect("open exact pre-terminal source relation");
+    let target_source = terminal_snapshot
+        .relation::<BuiltinWorkspaceRelation>()
+        .expect("open selected terminal source relation");
+    let base_semantic = stale_snapshot
+        .relation::<BuiltinSemanticRelation>()
+        .expect("open exact pre-terminal semantic relation");
+    let target_semantic = terminal_snapshot
+        .relation::<BuiltinSemanticRelation>()
+        .expect("open selected terminal semantic relation");
+    let persisted_hybrid_error = terminal_snapshot
+        .with_persisted_transition(|persisted, store| {
+            let selected = store
+                .head()
+                .expect("read actual persisted selected head")
+                .expect("actual persisted selected head exists");
+            let persisted_objects = store
+                .read_workspace_root_closure(selected.descriptor().closure())
+                .expect("read exact selected persisted closure");
+            let actual_intent =
+                super::admit_persisted_intent(persisted.closure_manifest().objects())
+                    .expect("decode the intent from the actual selected transition");
+            assert_eq!(
+                actual_intent.capture_basis(),
+                Some(basis_after_unrelated),
+                "the selected transition carries its actual authenticated predecessor"
+            );
+            assert_eq!(BuiltinModel.request_id(&actual_intent), persisted.request());
+            let old_capture = persisted
+                .relation::<ProductSemanticCaptureRelation>(
+                    store,
+                    basis_before_unrelated.capture_root(),
+                )
+                .expect("open the valid earlier capture relation root");
+            assert_eq!(
+                old_capture
+                    .lookup(&capture_key)
+                    .expect("read expected row from earlier capture root"),
+                Some(pending_capture.clone()),
+                "the expected pending receipt is valid in the substituted earlier root"
+            );
+            let forged_intent = terminal_intent
+                .clone()
+                .with_capture_basis(hybrid_basis)
+                .expect("construct the same-manifest/current-sequence hybrid BPI9 intent");
+            super::validate_persisted_capture_changes(
+                persisted,
+                store,
+                &forged_intent,
+                &base_source,
+                &target_source,
+                &base_semantic,
+                &target_semantic,
+                terminal_snapshot.sequence(),
+                terminal_snapshot.commit().id().as_bytes(),
+                persisted_objects.objects(),
+            )
+            .expect_err("top-level persisted admission rejects the hybrid basis");
+        })
+        .expect("pair the actual persisted transition with its selected store");
+    assert!(
+        persisted_hybrid_error
+            .to_string()
+            .contains("authenticated selected base descriptor"),
+        "top-level cold admission rejects the earlier valid closure: {persisted_hybrid_error}"
+    );
+    assert_eq!(
+        daemon.engine().daemon().owner().head().root(),
+        selected_root,
+        "persisted hybrid validation is read-only and leaves the selected head unchanged"
+    );
     drop(daemon);
 
     let daemon = open_daemon(temp.0.path());

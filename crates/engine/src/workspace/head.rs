@@ -2,7 +2,7 @@
 
 use super::lazy::{WorkspaceRelationError, WorkspaceRelationHandle};
 use super::owner::WorkspaceError;
-use super::transition::{PreparedTransition, TransactionId, TransitionWork};
+use super::transition::{PersistedTransition, PreparedTransition, TransactionId, TransitionWork};
 use crate::journal::ChainHash;
 use crate::schema::{RecordId, WorkspaceLog};
 use backend_store::{
@@ -158,6 +158,43 @@ impl WorkspaceSnapshot {
         store
             .workspace_base_publication(*self.root().as_bytes(), self.sequence())
             .map_err(WorkspaceError::store)
+    }
+
+    /// Runs a read-only inspection with this snapshot's canonical persisted
+    /// transition and its paired store capability, but only while this exact
+    /// snapshot remains the selected durable head.
+    ///
+    /// The snapshot's transition and store are lent together so callers do
+    /// not accidentally combine persisted bytes with a different store. The
+    /// selected root, sequence, and closure are checked again immediately
+    /// before invoking the callback.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if this snapshot has no attached durable store, is no
+    /// longer selected, or its selected publication is malformed.
+    pub fn with_persisted_transition<T>(
+        &self,
+        inspect: impl FnOnce(&PersistedTransition, &FileStore) -> T,
+    ) -> Result<T, WorkspaceError> {
+        let store = self
+            .store
+            .as_ref()
+            .ok_or(WorkspaceError::Corrupt("snapshot has no durable store"))?;
+        let selected = store
+            .head()
+            .map_err(WorkspaceError::store)?
+            .ok_or(WorkspaceError::Corrupt("store has no selected publication"))?;
+        let descriptor = selected.descriptor();
+        if descriptor.target() != *self.root().as_bytes()
+            || descriptor.target_generation() != self.sequence()
+            || descriptor.closure() != self.state.transition.closure().manifest().id()
+        {
+            return Err(WorkspaceError::Corrupt(
+                "snapshot is no longer the selected durable head",
+            ));
+        }
+        Ok(inspect(self.state.transition.persisted(), store))
     }
 
     /// Returns the owner epoch that selected this snapshot.
