@@ -3384,7 +3384,9 @@ mod tests {
         let ir = owned(&fix, source)?;
         let named = |name: &[u8]| {
             ir.canonical_entities()
-                .find(|entity| ir.atom(entity.name) == Some(name))
+                .find(|entity| {
+                    entity.name.named_atom().and_then(|atom| ir.atom(atom)) == Some(name)
+                })
                 .ok_or(TestError::Missing("declaration"))
         };
         let annotations =
@@ -3463,7 +3465,8 @@ mod tests {
             symbol: Some(1),
             span: None,
         });
-        let source = b"class C { String brew(int value) { return null; } int brew() { return 0; } }";
+        let source =
+            b"class C { String brew(int value) { return null; } int brew() { return 0; } }";
         let bytes = lower(&fix, source)?;
         let view = FragmentView::validate(&bytes)?;
         // Facts: 0 class, 1 int parameter carrier, 2 String result carrier,
@@ -3595,9 +3598,8 @@ mod tests {
                 item.name() == b"C" && item.kind() == backend_semantic::ir::ItemKind::Function
             })
             .ok_or(TestError::Missing("owned Java constructor"))?;
-        let Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(
-            mut bindings,
-        )) = owned.signature_carrier_bindings(constructor.id())
+        let Some(backend_semantic::ir::SignatureCarrierBindingsObservation::Captured(mut bindings)) =
+            owned.signature_carrier_bindings(constructor.id())
         else {
             return Err(TestError::Missing(
                 "Java constructor's captured empty signature",
@@ -3979,7 +3981,7 @@ mod tests {
         // The owner's provenance span is its whole declaration extent.
         let mut owner_span = None;
         for entity in ir.canonical_entities() {
-            if ir.atom(entity.name) == Some(&b"bump"[..])
+            if entity.name.named_atom().and_then(|atom| ir.atom(atom)) == Some(&b"bump"[..])
                 && let Some(span) = entity.source
             {
                 owner_span = Some((usize::try_from(span.start())?, usize::try_from(span.end())?));
@@ -4027,7 +4029,7 @@ mod tests {
                     let Some(entity) = ir.entity(target) else {
                         return Err(TestError::Missing("target entity"));
                     };
-                    if ir.atom(entity.name) != Some(bytes) {
+                    if entity.name.named_atom().and_then(|atom| ir.atom(atom)) != Some(bytes) {
                         return Err(TestError::Missing("local field name"));
                     }
                     if bytes == b"count" {
@@ -4055,8 +4057,10 @@ mod tests {
                     };
                     // The class fact keeps its qualified name; the
                     // constructor fact keeps the written simple name.
-                    if ir.atom(entity.name) != Some(&b"demo.Counter"[..])
-                        && ir.atom(entity.name) != Some(&b"Counter"[..])
+                    if entity.name.named_atom().and_then(|atom| ir.atom(atom))
+                        != Some(&b"demo.Counter"[..])
+                        && entity.name.named_atom().and_then(|atom| ir.atom(atom))
+                            != Some(&b"Counter"[..])
                     {
                         return Err(TestError::Missing("Counter target name"));
                     }

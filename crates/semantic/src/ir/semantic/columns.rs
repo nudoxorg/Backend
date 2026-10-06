@@ -12,18 +12,17 @@ use super::language_facts::{
     TypeScriptExtension, TypeScriptFacts,
 };
 use super::packed_types::{
-    FreePredicate, ObjectMember, TemplatePart, TupleElement, TypeParameter,
-    TypeParameterBound,
+    FreePredicate, ObjectMember, TemplatePart, TupleElement, TypeParameter, TypeParameterBound,
 };
 use super::relations::{
-    Confidence, DeclarationLinkTarget, DocFragment, EntityVersion, ExternalTarget, Item, Link,
-    LinkKind, LinkOccurrence, LinkTarget, SourceSpan,
+    Confidence, DeclarationLinkTarget, DocFragment, EntityVersion, ExternalTarget, Item, ItemName,
+    Link, LinkKind, LinkOccurrence, LinkTarget, SourceSpan,
 };
 use super::type_model::TypeColumns;
 use super::type_model::Visibility;
 use crate::ir::{
-    AtomId, AtomInterner, AtomTableView, CapacityError, DenseId, EntityAuthorityColumns,
-    EntityId, ImageProvenance, Interner, ListTableView, OccurrenceAuthorityColumns, Type, TypeId,
+    AtomId, AtomInterner, AtomTableView, CapacityError, DenseId, EntityAuthorityColumns, EntityId,
+    ImageProvenance, Interner, ListTableView, OccurrenceAuthorityColumns, Type, TypeId,
     columnar::{RawColumn, Slab, SlabPlan},
 };
 use crate::vocabulary::Language;
@@ -534,7 +533,7 @@ impl LanguageExtensionCounts {
 /// Hot entity columns. Scans touch only the lanes required by a query.
 pub(super) struct ItemColumns {
     pub(super) _slab: Slab,
-    pub(super) names: RawColumn<AtomId>,
+    pub(super) names: RawColumn<ItemName>,
     pub(super) kinds: RawColumn<ItemKind>,
     pub(super) visibility: RawColumn<Visibility>,
     pub(super) parents: RawColumn<OptionalId<crate::ir::Entity>>,
@@ -554,7 +553,7 @@ impl Default for ItemColumns {
 impl ItemColumns {
     pub(super) fn with_capacity(capacity: usize) -> Self {
         let mut plan = SlabPlan::default();
-        let names = plan.column::<AtomId>(capacity);
+        let names = plan.column::<ItemName>(capacity);
         let kinds = plan.column::<ItemKind>(capacity);
         let visibility = plan.column::<Visibility>(capacity);
         let parents = plan.column::<OptionalId<crate::ir::Entity>>(capacity);
@@ -730,7 +729,9 @@ impl IrIndices {
             let id = EntityId::new(raw);
             indices.instances.push(id);
             indices.kind.push(id);
-            indices.name.push(id);
+            if items.names[id.index()].named_atom().is_some() {
+                indices.name.push(id);
+            }
         }
         for raw in 0..link_count {
             let raw = u32::try_from(raw).map_err(|_| CapacityError {
@@ -783,8 +784,14 @@ impl IrIndices {
         prefix_sum(&mut kind_offsets);
 
         indices.name.as_mut_slice().sort_unstable_by(|left, right| {
-            let left_name = atoms.get(items.names[left.index()]).unwrap_or(&[]);
-            let right_name = atoms.get(items.names[right.index()]).unwrap_or(&[]);
+            let left_name = items.names[left.index()]
+                .named_atom()
+                .and_then(|atom| atoms.get(atom))
+                .unwrap_or(&[]);
+            let right_name = items.names[right.index()]
+                .named_atom()
+                .and_then(|atom| atoms.get(atom))
+                .unwrap_or(&[]);
             (left_name, versions[left.index()].identity())
                 .cmp(&(right_name, versions[right.index()].identity()))
         });
@@ -846,8 +853,8 @@ impl IrIndices {
 /// [`EntityId`] as its direct array coordinate.
 #[derive(Clone, Copy, Debug)]
 pub struct EntityColumns<'ir> {
-    /// Interned name atom for each entity row.
-    pub names: &'ir [AtomId],
+    /// Tagged source name or anonymous callable anchor for each entity row.
+    pub names: &'ir [ItemName],
     /// Declaration kind for each entity row.
     pub kinds: &'ir [ItemKind],
     /// Language-independent visibility for each entity row.

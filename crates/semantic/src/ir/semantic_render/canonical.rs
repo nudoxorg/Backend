@@ -642,8 +642,16 @@ fn emit_entity_reference<Reader: SemanticReader + ?Sized>(
     emit_bytes(root, row.version.family.as_bytes(), output)?;
     write_text(root, output, ",variant=")?;
     emit_bytes(root, row.version.variant.as_bytes(), output)?;
-    write_text(root, output, ",name=")?;
-    emit_atom(reader, root, owner, row.name, output)?;
+    match row.name {
+        crate::ir::ItemName::Named(name) => {
+            write_text(root, output, ",name=")?;
+            emit_atom(reader, root, owner, name, output)?;
+        }
+        crate::ir::ItemName::AnonymousCallable(anchor) => {
+            write_text(root, output, ",anonymous-callable-anchor=")?;
+            emit_atom(reader, root, owner, anchor, output)?;
+        }
+    }
     write_text(root, output, ")")
 }
 

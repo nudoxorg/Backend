@@ -27,8 +27,9 @@ use backend_semantic::ir::{
     ExtensionRefList, ExtensionSectionInput, ExtensionSectionPlane, ExtensionTypeParameter,
     ExtensionTypeParameterRange, ForeignKey, ForeignOrigin, Occurrence, OccurrenceConfidence,
     OccurrenceInput, OccurrenceLane, OccurrenceTarget, PackageLineage, PrepareError,
-    PreparedFragment, RecipeFact, ReferenceKind, RelSpan, SourceIdentity, TypeFactInput,
-    TypeFactLane, TypeNode, WriteError, canonicalize_data_with_budget,
+    PreparedFragment, RecipeFact, ReferenceKind, RelSpan, SourceIdentity,
+    TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM, TypeFactInput, TypeFactLane, TypeNode, WriteError,
+    canonicalize_data_with_budget,
 };
 use backend_semantic::vocabulary::ProjectionFactLane;
 use core::mem::size_of;
@@ -74,6 +75,8 @@ const _: () = assert!(MAX_FACT_CHILDREN <= u8::MAX as usize);
 /// [`TYPE_CHILD_POOL_STRIDE`] on average: raising this constant must not
 /// multiply `protocol_maximum` by 255.
 pub(super) const MAX_TYPE_CHILDREN: usize = 255;
+/// Total owned encoded structural-name bytes admitted in one fragment.
+const MAX_ANONYMOUS_CALLABLE_ANCHOR_POOL_BYTES: usize = 16 * 1024 * 1024;
 /// Average child slots reserved per type row in the pooled lanes.
 ///
 /// One row may still use [`MAX_TYPE_CHILDREN`]. The pool product stays at
@@ -306,6 +309,7 @@ pub(super) struct FactChild {
 pub(super) struct SemanticFact<'source> {
     kind: EntityKind,
     name: &'source [u8],
+    anonymous_callable: Option<AnonymousCallableFact<'source>>,
     type_record: SemanticTypeRecord<'source>,
     type_children: [FactTypeChild<'source>; MAX_TYPE_CHILDREN],
     type_child_count: u8,
@@ -331,6 +335,50 @@ pub(super) struct SemanticFact<'source> {
     /// the type graph. It enters declaration identity only when present, so
     /// every other declaration's frames remain byte-identical.
     identity_discriminator: Option<[u8; 16]>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AnonymousCallableFact<'source> {
+    anchor: AnonymousCallableAnchorInput<'source>,
+    multiplicity: backend_semantic::ir::AnonymousCallableFamilyMultiplicity,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AnonymousCallableAnchorInput<'source> {
+    Single(backend_semantic::ir::CallableAnchorStep<'source>),
+}
+
+impl AnonymousCallableAnchorInput<'_> {
+    fn validate(self) -> Result<(), backend_semantic::ir::TypedDeclarationKeyFault> {
+        match self {
+            Self::Single(step) => backend_semantic::ir::AnonymousCallableAnchor {
+                steps: core::slice::from_ref(&step),
+            }
+            .validate(),
+        }
+    }
+
+    fn storage_len(self) -> Result<usize, backend_semantic::ir::PreimageOverflow> {
+        match self {
+            Self::Single(step) => backend_semantic::ir::AnonymousCallableAnchor {
+                steps: core::slice::from_ref(&step),
+            }
+            .storage_len(),
+        }
+    }
+
+    fn write_storage(
+        self,
+        multiplicity: backend_semantic::ir::AnonymousCallableFamilyMultiplicity,
+        out: &mut [u8],
+    ) -> Result<usize, backend_semantic::ir::PreimageOverflow> {
+        match self {
+            Self::Single(step) => backend_semantic::ir::AnonymousCallableAnchor {
+                steps: core::slice::from_ref(&step),
+            }
+            .write_storage(multiplicity, out),
+        }
+    }
 }
 
 /// One per-language extension fact committed beside a declaration.
@@ -444,6 +492,7 @@ impl<'source> SemanticFact<'source> {
         Self {
             kind,
             name,
+            anonymous_callable: None,
             type_record: opaque_record(),
             type_children: [FactTypeChild {
                 target: 0,
@@ -465,6 +514,21 @@ impl<'source> SemanticFact<'source> {
             static_member: false,
             identity_discriminator: None,
         }
+    }
+
+    /// Marks a fact anonymous with one source-backed structural parent step.
+    #[must_use]
+    pub(super) const fn anonymous_callable_step(
+        mut self,
+        step: backend_semantic::ir::CallableAnchorStep<'source>,
+        multiplicity: backend_semantic::ir::AnonymousCallableFamilyMultiplicity,
+    ) -> Self {
+        self.name = &[];
+        self.anonymous_callable = Some(AnonymousCallableFact {
+            anchor: AnonymousCallableAnchorInput::Single(step),
+            multiplicity,
+        });
+        self
     }
 
     /// Marks this declaration as a static class member so its identity cannot
@@ -649,6 +713,12 @@ pub(super) struct FactSet<'source> {
     total_children: usize,
     kinds: Box<[EntityKind]>,
     names: Box<[&'source [u8]]>,
+    anonymous_callables: Box<[Option<backend_semantic::ir::AnonymousCallableFamilyMultiplicity>]>,
+    anonymous_callable_names: Box<[Option<u32>]>,
+    anonymous_callable_anchor_pool: Vec<Box<[u8]>>,
+    anonymous_callable_anchor_pool_bytes: usize,
+    tsz_program_identity: Option<[u8; 32]>,
+    tsz_source_identity: Option<[u8; 32]>,
     type_records: Box<[SemanticTypeRecord<'source>]>,
     type_child_targets: Box<[u32]>,
     type_child_names: Box<[Option<&'source [u8]>]>,
@@ -720,6 +790,10 @@ pub(super) struct FactSet<'source> {
     computed_child_pending: u8,
     foreign_text: Vec<Box<str>>,
     occurrence_package_slot: Box<[Option<u32>]>,
+    /// Owned, versioned TSZ source-coordinate paths for exact cross-file
+    /// reference joins. Ordinary occurrence paths continue to borrow source.
+    foreign_source_coordinate_text: Vec<Box<str>>,
+    occurrence_source_coordinate_slot: Box<[Option<u32>]>,
 }
 
 /// One documentation fragment that may borrow selected source or own RA-expanded text.
@@ -1024,6 +1098,12 @@ impl<'source> FactSet<'source> {
             total_children: 0,
             kinds: vec![EntityKind::Function; plan.facts].into_boxed_slice(),
             names: vec![empty_name; plan.facts].into_boxed_slice(),
+            anonymous_callables: vec![None; plan.facts].into_boxed_slice(),
+            anonymous_callable_names: vec![None; plan.facts].into_boxed_slice(),
+            anonymous_callable_anchor_pool: Vec::new(),
+            anonymous_callable_anchor_pool_bytes: 0,
+            tsz_program_identity: None,
+            tsz_source_identity: None,
             type_records: vec![opaque_record(); plan.facts].into_boxed_slice(),
             type_child_targets: vec![0; plan.declared_type_children].into_boxed_slice(),
             type_child_names: vec![None; plan.declared_type_children].into_boxed_slice(),
@@ -1134,12 +1214,47 @@ impl<'source> FactSet<'source> {
             computed_child_pending: 0,
             foreign_text: Vec::new(),
             occurrence_package_slot: vec![None; plan.occurrences].into_boxed_slice(),
+            foreign_source_coordinate_text: Vec::new(),
+            occurrence_source_coordinate_slot: vec![None; plan.occurrences].into_boxed_slice(),
         }
     }
 
     /// Number of admitted facts.
     pub(super) const fn len(&self) -> usize {
         self.len
+    }
+
+    /// Binds the exact native TSZ program and current source identities used
+    /// to admit anonymous callable sites in this transaction.
+    pub(super) fn set_native_tsz_identity(&mut self, program: Option<[u8; 32]>, source: [u8; 32]) {
+        self.tsz_program_identity = program;
+        self.tsz_source_identity = Some(source);
+    }
+
+    fn anonymous_callable_anchor_bytes(
+        &self,
+        ordinal: usize,
+    ) -> Result<Option<&[u8]>, backend_semantic::ir::BuildError> {
+        let Some(raw) = self
+            .anonymous_callable_names
+            .get(ordinal)
+            .copied()
+            .flatten()
+        else {
+            return Ok(None);
+        };
+        let index =
+            usize::try_from(raw).map_err(|_| backend_semantic::ir::BuildError::Dangling {
+                space: backend_semantic::ir::SemanticSpace::Atom,
+                raw,
+            })?;
+        self.anonymous_callable_anchor_pool
+            .get(index)
+            .map(|bytes| Some(bytes.as_ref()))
+            .ok_or(backend_semantic::ir::BuildError::Dangling {
+                space: backend_semantic::ir::SemanticSpace::Atom,
+                raw,
+            })
     }
 
     /// Projects one admitted staging row's authority truth directly into the
@@ -2286,6 +2401,129 @@ impl<'source> FactSet<'source> {
         Ok(())
     }
 
+    /// Replaces one occurrence already recorded at an exact source site.
+    /// The typed producer can upgrade a syntax/import placeholder without
+    /// duplicating the same site in the canonical occurrence lane.
+    pub(super) fn replace_occurrence(
+        &mut self,
+        index: usize,
+        owner: u32,
+        occurrence: Occurrence<'source>,
+    ) -> Result<(), FactFault> {
+        if index >= self.occurrence_len {
+            return Err(FactFault::OccurrenceCapacity);
+        }
+        if owner >= self.len as u32 {
+            return Err(FactFault::OccurrenceOwner {
+                owner,
+                fact_count: self.len,
+            });
+        }
+        self.occurrence_owners[index] = owner;
+        self.occurrences[index] = occurrence;
+        self.occurrence_package_slot[index] = None;
+        self.occurrence_source_coordinate_slot[index] = None;
+        Ok(())
+    }
+
+    /// Appends an exact TSZ-owned source-coordinate occurrence. The existing
+    /// typed foreign-key lane carries the source path and declaration-name
+    /// byte coordinate; query joins may resolve it only against that exact
+    /// project source site.
+    pub(super) fn push_owned_tsz_source_occurrence(
+        &mut self,
+        owner: u32,
+        coordinate: String,
+        display: &'source str,
+        entity_kind: EntityKind,
+        kind: ReferenceKind,
+        confidence: OccurrenceConfidence,
+        span: RelSpan,
+    ) -> Result<(), FactFault> {
+        if self.occurrence_len == self.plan.occurrences
+            || self.foreign_source_coordinate_text.len() >= self.plan.occurrences
+        {
+            return Err(FactFault::OccurrenceCapacity);
+        }
+        let path_slot = u32::try_from(self.foreign_source_coordinate_text.len())
+            .map_err(|_| FactFault::OccurrenceCapacity)?;
+        let key = ForeignKey::new(
+            ForeignOrigin::Universe {
+                ecosystem: TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM,
+            },
+            "tsz-source-coordinate-pending",
+            display,
+            Some(entity_kind),
+        )
+        .map_err(|_| FactFault::EmptyName)?;
+        self.foreign_source_coordinate_text
+            .push(coordinate.into_boxed_str());
+        if let Err(fault) = self.push_occurrence(
+            owner,
+            Occurrence {
+                target: OccurrenceTarget::Foreign(key),
+                kind,
+                confidence,
+                span,
+            },
+        ) {
+            self.foreign_source_coordinate_text.pop();
+            return Err(fault);
+        }
+        let index = self.occurrence_len - 1;
+        self.occurrence_package_slot[index] = None;
+        self.occurrence_source_coordinate_slot[index] = Some(path_slot);
+        Ok(())
+    }
+
+    /// Replaces one source-span occurrence with a TSZ-proven exact target.
+    /// This upgrades the older syntax-only placeholder in place, preserving
+    /// one occurrence per source site.
+    pub(super) fn replace_with_owned_tsz_source_occurrence(
+        &mut self,
+        index: usize,
+        owner: u32,
+        coordinate: String,
+        display: &'source str,
+        entity_kind: EntityKind,
+        kind: ReferenceKind,
+        confidence: OccurrenceConfidence,
+        span: RelSpan,
+    ) -> Result<(), FactFault> {
+        if index >= self.occurrence_len || owner >= self.len as u32 {
+            return Err(FactFault::OccurrenceOwner {
+                owner,
+                fact_count: self.len,
+            });
+        }
+        if self.foreign_source_coordinate_text.len() >= self.plan.occurrences {
+            return Err(FactFault::OccurrenceCapacity);
+        }
+        let path_slot = u32::try_from(self.foreign_source_coordinate_text.len())
+            .map_err(|_| FactFault::OccurrenceCapacity)?;
+        let key = ForeignKey::new(
+            ForeignOrigin::Universe {
+                ecosystem: TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM,
+            },
+            "tsz-source-coordinate-pending",
+            display,
+            Some(entity_kind),
+        )
+        .map_err(|_| FactFault::EmptyName)?;
+        self.foreign_source_coordinate_text
+            .push(coordinate.into_boxed_str());
+        self.occurrence_owners[index] = owner;
+        self.occurrences[index] = Occurrence {
+            target: OccurrenceTarget::Foreign(key),
+            kind,
+            confidence,
+            span,
+        };
+        self.occurrence_package_slot[index] = None;
+        self.occurrence_source_coordinate_slot[index] = Some(path_slot);
+        Ok(())
+    }
+
     /// Appends one occurrence whose cargo package name is owned until admit.
     pub(super) fn push_owned_package_occurrence(
         &mut self,
@@ -2348,32 +2586,50 @@ impl<'source> FactSet<'source> {
         if index >= self.occurrence_len {
             return Err((0, self.foreign_text.len()));
         }
-        let Some(slot) = self.occurrence_package_slot[index] else {
-            return Ok(self.occurrences[index]);
+        let package_slot = self.occurrence_package_slot[index];
+        let source_coordinate_slot = self.occurrence_source_coordinate_slot[index];
+        let path_slot_count = if source_coordinate_slot.is_some() {
+            self.foreign_source_coordinate_text.len()
+        } else {
+            self.foreign_text.len()
         };
+        if package_slot.is_none() && source_coordinate_slot.is_none() {
+            return Ok(self.occurrences[index]);
+        }
         let stored = self.occurrences[index];
         let OccurrenceTarget::Foreign(stored_key) = stored.target else {
-            return Err((slot, self.foreign_text.len()));
+            return Err((
+                package_slot.or(source_coordinate_slot).unwrap_or(0),
+                path_slot_count,
+            ));
         };
-        let ForeignOrigin::Package(staging_lineage) = stored_key.origin else {
-            return Err((slot, self.foreign_text.len()));
+        let origin = if let Some(slot) = package_slot {
+            let ForeignOrigin::Package(staging_lineage) = stored_key.origin else {
+                return Err((slot, self.foreign_text.len()));
+            };
+            let package_text = match self.foreign_text.get(slot as usize) {
+                Some(text) => text.as_ref(),
+                None => return Err((slot, self.foreign_text.len())),
+            };
+            let lineage = match PackageLineage::new(staging_lineage.ecosystem, package_text) {
+                Ok(lineage) => lineage,
+                Err(_) => return Err((slot, self.foreign_text.len())),
+            };
+            ForeignOrigin::Package(lineage)
+        } else {
+            stored_key.origin
         };
-        let package_text = match self.foreign_text.get(slot as usize) {
-            Some(text) => text.as_ref(),
-            None => return Err((slot, self.foreign_text.len())),
+        let path = if let Some(slot) = source_coordinate_slot {
+            match self.foreign_source_coordinate_text.get(slot as usize) {
+                Some(path) => path.as_ref(),
+                None => return Err((slot, self.foreign_source_coordinate_text.len())),
+            }
+        } else {
+            stored_key.path
         };
-        let lineage = match PackageLineage::new(staging_lineage.ecosystem, package_text) {
-            Ok(lineage) => lineage,
-            Err(_) => return Err((slot, self.foreign_text.len())),
-        };
-        let key = match ForeignKey::new(
-            ForeignOrigin::Package(lineage),
-            stored_key.path,
-            stored_key.display,
-            stored_key.kind,
-        ) {
+        let key = match ForeignKey::new(origin, path, stored_key.display, stored_key.kind) {
             Ok(key) => key,
-            Err(_) => return Err((slot, self.foreign_text.len())),
+            Err(_) => return Err((0, path_slot_count)),
         };
         Ok(Occurrence {
             target: OccurrenceTarget::Foreign(key),
@@ -2875,6 +3131,7 @@ impl<'source> FactSet<'source> {
         }
         let empty_item = TreeItemInput {
             name: b"",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Unknown,
             authority: EntityAuthorityFacts::default(),
@@ -2949,6 +3206,7 @@ impl<'source> FactSet<'source> {
             };
             *item = TreeItemInput {
                 name: self.names[ordinal],
+                anonymous_callable_anchor: self.anonymous_callable_anchor_bytes(ordinal)?,
                 kind: self.kinds[ordinal],
                 visibility: self.visibility[ordinal],
                 authority: self.entity_authority(ordinal, &versions[..fact_count])?,
@@ -3285,9 +3543,76 @@ impl<'source> FactSet<'source> {
             name: fact.name,
             cause,
         };
-        if fact.name.is_empty() {
-            return Err(rejected(FactFault::EmptyName));
-        }
+        let encoded_anonymous_anchor = match fact.anonymous_callable {
+            Some(anonymous) => {
+                if fact.name.len() != 0 || fact.kind != EntityKind::Function {
+                    return Err(rejected(FactFault::AnonymousCallableAnchor {
+                        cause:
+                            backend_semantic::ir::TypedDeclarationKeyFault::AnonymousCallableKind(
+                                fact.kind,
+                            ),
+                    }));
+                }
+                anonymous
+                    .anchor
+                    .validate()
+                    .map_err(|cause| rejected(FactFault::AnonymousCallableAnchor { cause }))?;
+                let encoded_len = anonymous.anchor.storage_len().map_err(|cause| {
+                    rejected(FactFault::AnonymousCallableAnchorEncoding { cause })
+                })?;
+                if encoded_len > backend_semantic::ir::MAX_ANONYMOUS_CALLABLE_ANCHOR_BYTES {
+                    return Err(rejected(FactFault::AnonymousCallableAnchorPoolCapacity {
+                        used: 0,
+                        requested: encoded_len,
+                        capacity: backend_semantic::ir::MAX_ANONYMOUS_CALLABLE_ANCHOR_BYTES,
+                    }));
+                }
+                let total = self
+                    .anonymous_callable_anchor_pool_bytes
+                    .checked_add(encoded_len)
+                    .unwrap_or(usize::MAX);
+                if total > MAX_ANONYMOUS_CALLABLE_ANCHOR_POOL_BYTES {
+                    return Err(rejected(FactFault::AnonymousCallableAnchorPoolCapacity {
+                        used: self.anonymous_callable_anchor_pool_bytes,
+                        requested: encoded_len,
+                        capacity: MAX_ANONYMOUS_CALLABLE_ANCHOR_POOL_BYTES,
+                    }));
+                }
+                if self.anonymous_callable_anchor_pool.len() == self.plan.facts {
+                    return Err(rejected(FactFault::AnonymousCallableAnchorEntryCapacity {
+                        used: self.anonymous_callable_anchor_pool.len(),
+                        capacity: self.plan.facts,
+                    }));
+                }
+                let mut encoded = vec![0_u8; encoded_len];
+                let written = anonymous
+                    .anchor
+                    .write_storage(anonymous.multiplicity, &mut encoded)
+                    .map_err(|cause| {
+                        rejected(FactFault::AnonymousCallableAnchorEncoding { cause })
+                    })?;
+                if written != encoded_len {
+                    return Err(rejected(FactFault::AnonymousCallableAnchorEncoding {
+                        cause: backend_semantic::ir::PreimageOverflow::AggregateTooLong {
+                            accumulated: written,
+                            additional: encoded_len.saturating_sub(written),
+                        },
+                    }));
+                }
+                let used_entries = self.anonymous_callable_anchor_pool.len();
+                self.anonymous_callable_anchor_pool
+                    .try_reserve(1)
+                    .map_err(|_| {
+                        rejected(FactFault::AnonymousCallableAnchorEntryCapacity {
+                            used: used_entries,
+                            capacity: self.plan.facts,
+                        })
+                    })?;
+                Some(encoded.into_boxed_slice())
+            }
+            None if fact.name.is_empty() => return Err(rejected(FactFault::EmptyName)),
+            None => None,
+        };
         if fact_ordinal == self.plan.facts {
             return Err(rejected(FactFault::Capacity));
         }
@@ -3420,6 +3745,21 @@ impl<'source> FactSet<'source> {
 
         self.kinds[fact_ordinal] = fact.kind;
         self.names[fact_ordinal] = fact.name;
+        self.anonymous_callables[fact_ordinal] = fact
+            .anonymous_callable
+            .map(|anonymous| anonymous.multiplicity);
+        if let Some(encoded) = encoded_anonymous_anchor {
+            let anchor_index =
+                u32::try_from(self.anonymous_callable_anchor_pool.len()).map_err(|_| {
+                    rejected(FactFault::AnonymousCallableAnchorEntryCapacity {
+                        used: self.anonymous_callable_anchor_pool.len(),
+                        capacity: self.plan.facts,
+                    })
+                })?;
+            self.anonymous_callable_anchor_pool_bytes += encoded.len();
+            self.anonymous_callable_anchor_pool.push(encoded);
+            self.anonymous_callable_names[fact_ordinal] = Some(anchor_index);
+        }
         self.type_records[fact_ordinal] = fact.type_record;
         for (offset, child) in fact
             .type_children
@@ -4505,6 +4845,29 @@ fn live_type<'source>(
         SemanticTypeTag::Any => tree
             .intern_concrete(ConcreteType::Builtin(BuiltinType::Any))?
             .erase(),
+        SemanticTypeTag::KeyOf if child_count == 1 => tree
+            .intern_computed(ComputedType::KeyOf(child_type(0)?))?
+            .erase(),
+        SemanticTypeTag::IndexedAccess if child_count == 2 => tree
+            .intern_computed(ComputedType::IndexedAccess {
+                object: child_type(0)?,
+                index: child_type(1)?,
+            })?
+            .erase(),
+        // The TSZ source pass stages a same-file entity fact ordinal, never a
+        // guessed type-query path. Fact ordinals become IR entity IDs in this
+        // lowering transaction, and the lane validity check keeps the target
+        // inside that exact file's admitted declarations.
+        SemanticTypeTag::TypeOf
+            if child_count == 0 && record.payload1 == 0 && record.payload0 < facts.len as u32 =>
+        {
+            tree.intern_computed(ComputedType::TypeOf(
+                backend_semantic::ir::TypeQuery::Entity(backend_semantic::ir::EntityId::new(
+                    record.payload0,
+                )),
+            ))?
+            .erase()
+        }
         SemanticTypeTag::Conditional if child_count == 4 => tree
             .intern_computed(ComputedType::Conditional {
                 check: child_type(0)?,

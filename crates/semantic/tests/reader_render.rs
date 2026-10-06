@@ -49,6 +49,7 @@ fn owned_ir_reads_through_static_rows_and_preserves_empty_authority()
     let items = [
         TreeItemInput {
             name: b"captured-empty",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Module,
             visibility: Visibility::Private,
             authority: EntityAuthorityFacts {
@@ -69,6 +70,7 @@ fn owned_ir_reads_through_static_rows_and_preserves_empty_authority()
         },
         TreeItemInput {
             name: b"unavailable-empty",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Module,
             visibility: Visibility::Unknown,
             authority: authority(FactAvailability::Unavailable),
@@ -104,6 +106,7 @@ fn neutral_writer_is_all_or_nothing_and_visibility_is_not_collapsed()
     let items = [
         TreeItemInput {
             name: b"unknown",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Module,
             visibility: Visibility::Unknown,
             authority: authority(FactAvailability::Unavailable),
@@ -117,6 +120,7 @@ fn neutral_writer_is_all_or_nothing_and_visibility_is_not_collapsed()
         },
         TreeItemInput {
             name: b"private",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Module,
             visibility: Visibility::Private,
             authority: authority(FactAvailability::Captured),
@@ -168,6 +172,7 @@ fn neutral_output_uses_canonical_reader_order_not_authority_input_order()
 -> Result<(), backend_semantic::ir::BuildError> {
     let alpha = TreeItemInput {
         name: b"alpha",
+        anonymous_callable_anchor: None,
         kind: ItemKind::Module,
         visibility: Visibility::Unknown,
         authority: authority(FactAvailability::Unavailable),
@@ -181,6 +186,7 @@ fn neutral_output_uses_canonical_reader_order_not_authority_input_order()
     };
     let beta = TreeItemInput {
         name: b"beta",
+        anonymous_callable_anchor: None,
         kind: ItemKind::Module,
         visibility: Visibility::Unknown,
         authority: authority(FactAvailability::Unavailable),
@@ -204,7 +210,7 @@ fn neutral_output_uses_canonical_reader_order_not_authority_input_order()
             .canonical_entities()
             .map(|entity| {
                 let name = reader
-                    .atom(entity.name)
+                    .atom(entity.name.named_atom().expect("named fixture entity"))
                     .expect("resolved canonical atom")
                     .to_vec();
                 let prepared = prepare_neutral(reader, entity.id).expect("neutral row");
@@ -299,6 +305,7 @@ fn typed_extension_cursor_resolves_shared_interned_facts_per_entity()
     let items = [
         TreeItemInput {
             name: b"first",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: EntityAuthorityFacts {
@@ -316,6 +323,7 @@ fn typed_extension_cursor_resolves_shared_interned_facts_per_entity()
         },
         TreeItemInput {
             name: b"second",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: EntityAuthorityFacts {

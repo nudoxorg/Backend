@@ -164,9 +164,7 @@ fn observed_scope_atom<R: SemanticReader + ?Sized>(
 
 /// Observes canonical image facts through one reader, resolving scope atoms
 /// to their exact bytes.
-fn observe_image_facts<R: SemanticReader + ?Sized>(
-    reader: &R,
-) -> ObservedImageFacts {
+fn observe_image_facts<R: SemanticReader + ?Sized>(reader: &R) -> ObservedImageFacts {
     let facts = reader.image_facts();
     let provenance = match facts.provenance {
         ImageProvenance::Unavailable => ObservedImageProvenance::Unavailable,
@@ -878,11 +876,7 @@ impl<'reader, R: SemanticReader + ?Sized> CanonicalScope<'reader, R> {
         }
     }
 
-    fn hash_source(
-        &self,
-        hasher: &mut StableHasher,
-        source: Option<SourceSpan>,
-    ) {
+    fn hash_source(&self, hasher: &mut StableHasher, source: Option<SourceSpan>) {
         match source {
             Some(span) => {
                 1_u8.hash(hasher);
@@ -1000,12 +994,7 @@ impl<'reader, R: SemanticReader + ?Sized> CanonicalScope<'reader, R> {
         self.types.insert(id, digest);
         digest
     }
-    fn hash_concrete_type(
-        &mut self,
-        hasher: &mut StableHasher,
-        node: ConcreteType,
-        depth: u32,
-    ) {
+    fn hash_concrete_type(&mut self, hasher: &mut StableHasher, node: ConcreteType, depth: u32) {
         node.tag().hash(hasher);
         match node {
             ConcreteType::Builtin(shape) => {
@@ -1724,9 +1713,7 @@ fn sorted_multiset(mut rows: Vec<Digest>) -> Digest {
     hasher.digest()
 }
 
-fn semantic_entities_digest<R: SemanticReader + ?Sized>(
-    reader: &R,
-) -> Digest {
+fn semantic_entities_digest<R: SemanticReader + ?Sized>(reader: &R) -> Digest {
     let mut scope = CanonicalScope::new(reader);
     let mut rows = Vec::new();
     for entity in reader.canonical_entities() {
@@ -1797,9 +1784,7 @@ pub(super) fn digest_source_span_rows(mut spans: Vec<(Vec<u8>, u32, u32)>) -> Di
     hasher.digest()
 }
 
-fn semantic_source_spans_digest<R: SemanticReader + ?Sized>(
-    reader: &R,
-) -> Digest {
+fn semantic_source_spans_digest<R: SemanticReader + ?Sized>(reader: &R) -> Digest {
     let spans = reader
         .canonical_entities()
         .filter_map(|entity| entity.source)
@@ -2243,9 +2228,7 @@ fn canonical_clang_extensions<R: SemanticReader + ?Sized>(
     sorted_multiset(rows)
 }
 
-fn semantic_externals_digest<R: SemanticReader + ?Sized>(
-    reader: &R,
-) -> Digest {
+fn semantic_externals_digest<R: SemanticReader + ?Sized>(reader: &R) -> Digest {
     let mut scope = CanonicalScope::new(reader);
     let mut rows = Vec::new();
     for (id, _) in reader.canonical_externals() {
@@ -2263,9 +2246,7 @@ fn semantic_links_digest<R: SemanticReader + ?Sized>(reader: &R) -> Digest {
     sorted_multiset(rows)
 }
 
-fn semantic_occurrences_digest<R: SemanticReader + ?Sized>(
-    reader: &R,
-) -> Digest {
+fn semantic_occurrences_digest<R: SemanticReader + ?Sized>(reader: &R) -> Digest {
     let mut scope = CanonicalScope::new(reader);
     let mut rows = Vec::new();
     for (id, occurrence) in reader.link_occurrences() {
@@ -2350,8 +2331,7 @@ fn owned_image_identity(ir: &Ir) -> Option<SemanticImageIdentity> {
     let length = backend_semantic::ir::full_semantic_image_len(ir).ok()?;
     let mut bytes = vec![0_u8; length];
     let written = backend_semantic::ir::encode_full_semantic_image(ir, &mut bytes).ok()?;
-    (written == length)
-        .then(|| SemanticImageIdentity::from_encoded_bytes(&bytes))
+    (written == length).then(|| SemanticImageIdentity::from_encoded_bytes(&bytes))
 }
 
 pub(super) fn observe_owned_semantic(ir: &Ir, primary: Option<EntityId>) -> SemanticObservation {
@@ -2388,8 +2368,10 @@ pub(super) fn observe_entity_at_source<R: SemanticReader + ?Sized>(
         .canonical_entities()
         .filter(|entity| {
             entity.kind == expected_kind
-                && reader
-                    .atom(entity.name)
+                && entity
+                    .name
+                    .named_atom()
+                    .and_then(|name| reader.atom(name))
                     .is_some_and(|name| name == expected_name)
                 && entity.source.is_some_and(|span| {
                     span.start() <= expected_name_start
@@ -2414,7 +2396,8 @@ pub(super) fn observe_entity_at_source<R: SemanticReader + ?Sized>(
         .entity_list(entity.members)
         .and_then(|mut members| members.next())
         .and_then(|id| reader.entity(id))
-        .and_then(|member| reader.atom(member.name))
+        .and_then(|member| member.name.named_atom())
+        .and_then(|name| reader.atom(name))
         .map(digest_bytes);
     let mut child_rows: Vec<_> = reader
         .canonical_entities()
@@ -2423,7 +2406,13 @@ pub(super) fn observe_entity_at_source<R: SemanticReader + ?Sized>(
             (
                 child.source.map(|span| span.start()),
                 child.kind,
-                digest_bytes(reader.atom(child.name).unwrap_or_default()),
+                digest_bytes(
+                    child
+                        .name
+                        .named_atom()
+                        .and_then(|name| reader.atom(name))
+                        .unwrap_or_default(),
+                ),
             )
         })
         .collect();
@@ -2449,7 +2438,13 @@ pub(super) fn observe_entity_at_source<R: SemanticReader + ?Sized>(
     let observed = EntityObservation {
         id: entity.id,
         kind: entity.kind,
-        name: digest_bytes(reader.atom(entity.name).unwrap_or_default()),
+        name: digest_bytes(
+            entity
+                .name
+                .named_atom()
+                .and_then(|name| reader.atom(name))
+                .unwrap_or_default(),
+        ),
         visibility: entity.visibility,
         parent: entity.parent,
         authority: Some(entity.authority),
@@ -2571,8 +2566,10 @@ fn member_order_digest_reader<R: SemanticReader + ?Sized>(
         member_id.raw.hash(&mut hasher);
         if let Some(member) = reader.entity(member_id) {
             member.kind.hash(&mut hasher);
-            reader
-                .atom(member.name)
+            member
+                .name
+                .named_atom()
+                .and_then(|name| reader.atom(name))
                 .unwrap_or_default()
                 .hash(&mut hasher);
         }
@@ -3296,10 +3293,9 @@ mod reopened_digest_pins {
 
     use backend_semantic::ir::{
         CSharpFacts, CSharpMemberEffects, CSharpNullability, CSharpPartialRole,
-        CSharpReferenceKind, CSharpVersion,
-        ConcreteType, CorePayloadHash, DeclarationFamilyId, EntityVersion, FreePredicate,
-        IrBuilder, ItemKind, LanguageExtensionInput, LanguageProfile, ParentageAuthority,
-        RustFacts, RustOwnership, TypeExpr, TypeParameter, TypeParameterBound,
+        CSharpReferenceKind, CSharpVersion, ConcreteType, CorePayloadHash, DeclarationFamilyId,
+        EntityVersion, FreePredicate, IrBuilder, ItemKind, LanguageExtensionInput, LanguageProfile,
+        ParentageAuthority, RustFacts, RustOwnership, TypeExpr, TypeParameter, TypeParameterBound,
         TypeParameterInference, TypeParameterKind, TypeParameterPrimaryRequirement,
         TypeParameterRequirements, Variance, VariantFingerprint, Visibility,
     };
@@ -3343,8 +3339,7 @@ mod reopened_digest_pins {
         }
     }
 
-    fn pinned_parameter_image() -> Result<Ir, backend_semantic::ir::BuildError>
-    {
+    fn pinned_parameter_image() -> Result<Ir, backend_semantic::ir::BuildError> {
         let mut builder = IrBuilder::new();
         builder
             .set_language_profile(LanguageProfile::CSharp(CSharpVersion::CSharp14))
@@ -3356,9 +3351,8 @@ mod reopened_digest_pins {
         let bound_target = builder.intern_type(TypeExpr::Concrete(ConcreteType::Builtin(
             BuiltinType::String,
         )))?;
-        let value_type = builder.intern_type(TypeExpr::Concrete(ConcreteType::Builtin(
-            BuiltinType::U32,
-        )))?;
+        let value_type =
+            builder.intern_type(TypeExpr::Concrete(ConcreteType::Builtin(BuiltinType::U32)))?;
         let default_type = builder.intern_type(TypeExpr::Concrete(ConcreteType::CPointer {
             target: bound_target,
         }))?;
@@ -3476,13 +3470,10 @@ mod reopened_digest_pins {
         builder.finish()
     }
 
-    fn pinned_free_predicate_image()
-    -> Result<Ir, backend_semantic::ir::BuildError> {
+    fn pinned_free_predicate_image() -> Result<Ir, backend_semantic::ir::BuildError> {
         let mut builder = IrBuilder::new();
         builder
-            .set_language_profile(LanguageProfile::Rust(
-                RustEdition::Rust2024,
-            ))
+            .set_language_profile(LanguageProfile::Rust(RustEdition::Rust2024))
             .expect("rust profile admitted");
         let name_t = builder.intern_atom(b"T")?;
         let lifetime = builder.intern_atom(b"'a")?;
@@ -3531,9 +3522,7 @@ mod reopened_digest_pins {
         builder.finish()
     }
 
-    fn reopened_observation(
-        ir: &Ir,
-    ) -> Option<(SemanticObservation, [u8; 32])> {
+    fn reopened_observation(ir: &Ir) -> Option<(SemanticObservation, [u8; 32])> {
         let length = backend_semantic::ir::full_semantic_image_len(ir).ok()?;
         let mut bytes = std::vec![0_u8; length];
         let written = backend_semantic::ir::encode_full_semantic_image(ir, &mut bytes).ok()?;

@@ -82,6 +82,35 @@ impl SourceSpanFact {
 pub enum FactFault {
     /// The emitted declaration name is empty.
     EmptyName,
+    /// An anonymous callable route is malformed or cannot fit its bounded
+    /// typed name encoding.
+    AnonymousCallableAnchor {
+        /// Exact typed anchor validation or encoding failure.
+        cause: backend_semantic::ir::TypedDeclarationKeyFault,
+    },
+    /// The bounded anchor writer could not measure or encode this route.
+    AnonymousCallableAnchorEncoding {
+        /// Exact typed byte-width failure.
+        cause: backend_semantic::ir::PreimageOverflow,
+    },
+    /// The bounded aggregate storage for anonymous callable name anchors is full.
+    AnonymousCallableAnchorPoolCapacity {
+        /// Encoded anchor bytes already admitted.
+        used: usize,
+        /// Encoded bytes required by this callable.
+        requested: usize,
+        /// Maximum bounded anchor-pool bytes.
+        capacity: usize,
+    },
+    /// The number of retained anonymous anchor rows exceeded its bound.
+    AnonymousCallableAnchorEntryCapacity {
+        /// Anchor rows already admitted.
+        used: usize,
+        /// Maximum retained anchor rows.
+        capacity: usize,
+    },
+    /// The anonymous callable owner requires exact native TSZ source identities.
+    AnonymousCallableSourceUnavailable,
     /// The bounded fact lane is full.
     Capacity,
     /// The fact's product child lane is full.
@@ -150,6 +179,14 @@ pub enum FactFault {
     TypeRowCapacity,
     /// The computed type-row lane is full.
     ComputedRowCapacity,
+    /// Native checker type projection crossed the configured recursion bound.
+    TypeProjectionDepthLimit { depth: u8, maximum: u8 },
+    /// A native interned type handle was revisited on the active descent path.
+    TypeProjectionCycle { type_id: u32 },
+    /// TSZ exposed a recursive back-reference that has no exact local-row encoding.
+    TypeProjectionRecursiveReference { distance: u32 },
+    /// A non-associative native type constructor exceeds the row's child bound.
+    TypeProjectionWidth { actual: usize, maximum: usize },
     /// An occurrence names an owner outside the pushed prefix.
     OccurrenceOwner {
         /// Owner ordinal the occurrence named.

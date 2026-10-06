@@ -16,7 +16,10 @@ mod runtime;
 mod terminal;
 mod toolchain_probe;
 mod typescript_host;
+mod typescript_program;
 mod unit_authority_v2;
+
+pub(crate) use self::typescript_program::build_native_inputs;
 
 pub use self::cluster_coordinator::{
     AdmittedRemoteCompilerCandidate, AdmittedSemanticInputWitnessV2, CheckedRemoteCompilerArtifact,
@@ -87,20 +90,26 @@ pub use self::runtime::{
     LocalCompilerRuntimeConfiguration, LocalCompilerRuntimeConfigurationError,
     LocalCompilerRuntimeOpenError, LocalCompilerRuntimePaths, LocalRuntimeCSharpAuthority,
     LocalRuntimeJavaAuthority, LocalRuntimePackageAuthority, LocalRuntimePackageRoot,
-    LocalRuntimePackageRootFacts, LocalRuntimePythonCheckerState, LocalRuntimeRustAuthority,
-    LocalRuntimeToolchain, LocalRuntimeToolchainFacts, LocalRuntimeToolchainState,
-    OwnedPackageSource, OwnedPackageSourceSet, PackageSemanticRuntimeError,
-    PyreflyToolchainIdentity,
+    LocalRuntimePackageRootFacts, LocalRuntimePythonCheckerAdmission,
+    LocalRuntimePythonCheckerProbeFailure, LocalRuntimeRustAuthority, LocalRuntimeToolchain,
+    LocalRuntimeToolchainFacts, LocalRuntimeToolchainState, OwnedPackageSource,
+    OwnedPackageSourceSet, PackageSemanticRuntimeError, PyreflyToolchainIdentity,
 };
 pub use self::terminal::{LocalCompilerOpenError, LocalCompilerPath};
+#[cfg(test)]
+pub(crate) use self::toolchain_probe::executable_content_hash_bytes_for_test;
 pub(crate) use self::toolchain_probe::{
     NATIVE_COMPILER_ENVIRONMENT_POLICY_ID, NativeCompilerEnvironment,
+    admit_typescript_script_invocation, compiler_directory_object_identity,
+    executable_content_digest, executable_object_identity, typescript_module_closure_digest,
+    typescript_module_files_digest,
 };
 pub use self::toolchain_probe::{
     ToolchainProbeCleanupAction, ToolchainProbeError, ToolchainProbeLimitError,
     ToolchainProbeLimits, ToolchainProbeLimitsView, ToolchainProbePrimary,
     ToolchainProbeStreamError,
 };
+pub(crate) use self::typescript_host::TypeScriptProjectInvocationLease;
 pub use self::typescript_host::{TypeScriptProjectHost, TypeScriptProjectHostError};
 pub use self::unit_authority_v2::{
     AdmittedCompilationUnitV2, CapturedUnitMemberV2, CompilationUnitKindV2, CompilationUnitPlanV2,

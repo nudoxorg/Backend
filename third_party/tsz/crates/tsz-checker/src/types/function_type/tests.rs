@@ -1,0 +1,537 @@
+use crate::diagnostics::diagnostic_codes;
+
+fn diagnostics_for_source(source: &str) -> Vec<u32> {
+    crate::test_utils::check_source_codes(source)
+}
+
+fn diagnostics_with_spans(source: &str) -> Vec<crate::diagnostics::Diagnostic> {
+    crate::test_utils::check_source_diagnostics(source)
+}
+
+#[test]
+fn expression_body_arrow_with_return_annotation_reports_type_mismatch() {
+    let diagnostics = diagnostics_for_source("const f = (): number => \"str\";");
+    let target = diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE;
+
+    assert!(
+        diagnostics.contains(&target),
+        "expected TS2322, got diagnostics: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn ts2741_anchor_skips_paren_and_satisfies_wrappers_in_arrow_concise_body() {
+    // `((): { a: true } => ({}) satisfies unknown)();`
+    // tsc anchors TS2741 at `{` of `{}` (the innermost expression),
+    // not at `(` of `({})` or the outer satisfies wrapper.
+    let src = "((): { a: true } => ({}) satisfies unknown)();";
+    let diags = diagnostics_with_spans(src);
+    let diag = diags
+        .iter()
+        .find(|d| d.code == diagnostic_codes::PROPERTY_IS_MISSING_IN_TYPE_BUT_REQUIRED_IN_TYPE)
+        .expect("expected TS2741");
+    let expected_start = src.find("{}").expect("expected `{}` literal in source") as u32;
+    assert_eq!(
+        diag.start, expected_start,
+        "TS2741 should anchor at the inner `{{}}` literal, not the paren/satisfies wrapper: {diag:?}"
+    );
+}
+
+#[test]
+fn ts2741_anchor_skips_nested_paren_satisfies_in_arrow_concise_body() {
+    // Nested wrappers: `(({}) satisfies unknown) satisfies unknown`.
+    let src = "((): { a: true } => (({}) satisfies unknown) satisfies unknown)();";
+    let diags = diagnostics_with_spans(src);
+    let diag = diags
+        .iter()
+        .find(|d| d.code == diagnostic_codes::PROPERTY_IS_MISSING_IN_TYPE_BUT_REQUIRED_IN_TYPE)
+        .expect("expected TS2741");
+    let expected_start = src.find("{}").expect("expected `{}` literal in source") as u32;
+    assert_eq!(
+        diag.start, expected_start,
+        "TS2741 should anchor at the inner `{{}}` literal through nested wrappers: {diag:?}"
+    );
+}
+
+#[test]
+fn block_body_arrow_return_type_mismatch_anchors_return_statement() {
+    let source = "const f = <T>(x: T): T => { return null; };";
+    let diagnostics = diagnostics_with_spans(source);
+    let diag = diagnostics
+        .iter()
+        .find(|d| d.code == diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE)
+        .expect("expected TS2322");
+    let return_start = source.find("return").expect("expected return keyword") as u32;
+    assert_eq!(
+        diag.start, return_start,
+        "TS2322 for block-body arrow return mismatch should anchor at `return`: {diag:?}"
+    );
+}
+
+#[test]
+fn generic_indexed_conditional_return_mismatch_anchors_return_statement() {
+    let source = r#"
+interface Array<T> { length: number; }
+type PrependNextNum<A extends Array<unknown>> = A["length"] extends infer L
+    ? [L, ...A] extends [...infer X]
+        ? X
+        : never
+    : never;
+type EnumerateInternal<A extends Array<unknown>, N extends number> = N extends A["length"]
+    ? A
+    : EnumerateInternal<PrependNextNum<A>, N> & number;
+type Enumerate<N extends number> = number extends N
+    ? number
+    : EnumerateInternal<[], N> extends (infer E)[]
+    ? E
+    : never;
+function f<T extends unknown[]>(value: T): Enumerate<T["length"]> {
+    return value.length;
+}
+"#;
+    let diagnostics = diagnostics_with_spans(source);
+    let diag = diagnostics
+        .iter()
+        .find(|d| d.code == diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE)
+        .expect("expected TS2322");
+    let return_start = source.find("return").expect("expected return keyword") as u32;
+    assert_eq!(
+        diag.start, return_start,
+        "TS2322 for a primitive returned to a generic indexed conditional alias should anchor at `return`: {diag:?}"
+    );
+}
+
+#[test]
+fn renamed_generic_indexed_conditional_return_mismatch_anchors_return_statement() {
+    let source = r#"
+type AliasForLength<L extends number> = L extends 2 ? 2 : 3;
+function g<Row extends readonly unknown[]>(items: Row): AliasForLength<Row["length"]> {
+    return items.length;
+}
+"#;
+    let diagnostics = diagnostics_with_spans(source);
+    let diag = diagnostics
+        .iter()
+        .find(|d| d.code == diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE)
+        .expect("expected TS2322");
+    let return_start = source.find("return").expect("expected return keyword") as u32;
+    assert_eq!(
+        diag.start, return_start,
+        "TS2322 should keep the return-statement anchor across renamed aliases and binders: {diag:?}"
+    );
+}
+
+fn ts2322_target_display(source: &str) -> String {
+    let diagnostics = diagnostics_with_spans(source);
+    let diag = diagnostics
+        .iter()
+        .find(|d| d.code == diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE)
+        .unwrap_or_else(|| panic!("expected TS2322 for source: {source}\ngot: {diagnostics:?}"));
+    diag.message_text
+        .rsplit_once("' is not assignable to type '")
+        .and_then(|(_, rest)| rest.strip_suffix("'."))
+        .unwrap_or_else(|| panic!("unexpected TS2322 message: {}", diag.message_text))
+        .to_string()
+}
+
+#[test]
+fn deferred_conditional_target_renders_branches_verbatim() {
+    // A deferred conditional type (check side is an unresolved generic) renders
+    // verbatim in tsc diagnostics — exact `C extends E ? X : Y` with literal
+    // branches intact. tsz must not widen the false branch to its primitive nor
+    // collapse the conditional into a union of branches.
+    assert_eq!(
+        ts2322_target_display("function f<A, B>(x: number): A extends B ? 1 : 2 { return x; }"),
+        "A extends B ? 1 : 2",
+        "numeric literal false branch must not widen to `number`",
+    );
+    assert_eq!(
+        ts2322_target_display(
+            "function f<A, B>(x: number): A extends B ? true : false { return x; }"
+        ),
+        "A extends B ? true : false",
+        "boolean literal false branch must not widen to `boolean`",
+    );
+    assert_eq!(
+        ts2322_target_display(
+            "function f<A, B>(x: number): A extends B ? \"yes\" : \"no\" { return x; }"
+        ),
+        "A extends B ? \"yes\" : \"no\"",
+        "string literal branches must not collapse/reorder into a union",
+    );
+}
+
+#[test]
+fn deferred_conditional_target_display_is_rename_invariant() {
+    // The rule is structural, not keyed on the spelling of the type parameters.
+    assert_eq!(
+        ts2322_target_display("function f<P, Q>(x: number): P extends Q ? 1 : 2 { return x; }"),
+        "P extends Q ? 1 : 2",
+    );
+    assert_eq!(
+        ts2322_target_display(
+            "function f<P, Q>(x: number): P extends Q ? \"a\" | \"b\" : \"c\" { return x; }"
+        ),
+        "P extends Q ? \"a\" | \"b\" : \"c\"",
+    );
+}
+
+#[test]
+fn deferred_conditional_target_preserves_object_branch_literals() {
+    // Object-literal branches keep their literal property types verbatim.
+    assert_eq!(
+        ts2322_target_display(
+            "function f<A, B>(x: number): A extends B ? { a: 1 } : { b: 2 } { return x; }"
+        ),
+        "A extends B ? { a: 1; } : { b: 2; }",
+    );
+}
+
+#[test]
+fn resolved_conditional_target_still_reduces_to_branch() {
+    // Control: a *resolved* conditional reduces to the taken branch in both
+    // compilers — this path must not be affected by the deferred-display fix.
+    assert_eq!(
+        ts2322_target_display("type Cond = string extends number ? 1 : 2;\nconst r: Cond = \"x\";"),
+        "2",
+    );
+}
+
+/// Minimal Promise definitions so async tests can resolve promise-like values
+/// without loading the default libraries.
+const PROMISE_DEF: &str = r#"
+interface Promise<T> { then<U>(cb: (val: T) => U): Promise<U>; }
+interface PromiseLike<T> { then<U>(cb: (val: T) => U): PromiseLike<U>; }
+"#;
+
+fn async_diagnostics(body: &str) -> Vec<u32> {
+    diagnostics_for_source(&format!("{PROMISE_DEF}\n{body}"))
+}
+
+#[test]
+fn async_arrow_expression_body_promise_return_no_false_error() {
+    let diags = async_diagnostics("const f = async (): Promise<number> => 42;");
+    assert!(
+        !diags.contains(&diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE),
+        "should not emit TS2322 for async arrow expression body, got: {diags:?}"
+    );
+}
+
+#[test]
+fn async_arrow_block_body_promise_return_no_false_error() {
+    let diags = async_diagnostics("const f = async (): Promise<number> => { return 42; };");
+    assert!(
+        !diags.contains(&diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE),
+        "should not emit TS2322 for async arrow block body, got: {diags:?}"
+    );
+}
+
+#[test]
+fn async_block_body_return_literal_uses_unwrapped_promise_context() {
+    let diags = async_diagnostics(
+        "interface ErrorResult { error: true }
+         async function load(): Promise<{ success: true } | ErrorResult> {
+             return { success: true };
+         }",
+    );
+    assert!(
+        !diags.contains(&diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE),
+        "async block return should preserve object literal discriminants from Promise<T> context: {diags:?}"
+    );
+}
+
+#[test]
+fn async_function_expression_promise_return_no_false_error() {
+    let diags = async_diagnostics("const f = async function(): Promise<number> { return 42; };");
+    assert!(
+        !diags.contains(&diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE),
+        "should not emit TS2322 for async function expression, got: {diags:?}"
+    );
+}
+
+#[test]
+fn async_arrow_generic_promise_return_no_false_error() {
+    let diags = async_diagnostics("const f = async <T>(x: T): Promise<T> => x;");
+    assert!(
+        !diags.contains(&diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE),
+        "should not emit TS2322 for async generic arrow, got: {diags:?}"
+    );
+}
+
+#[test]
+fn async_inferred_return_unwraps_promise() {
+    let diags = async_diagnostics(
+        "declare function load(): Promise<boolean>;
+         const cb: () => Promise<boolean> = async () => load();",
+    );
+    assert!(
+        !diags.contains(&diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE),
+        "async returning Promise<T> should infer Promise<T>, not Promise<Promise<T>>: {diags:?}"
+    );
+}
+
+#[test]
+fn async_inferred_return_unwraps_promise_then_chain() {
+    let diags = async_diagnostics(
+        "declare function load(): Promise<boolean>;
+         const cb: () => Promise<boolean> = async () => load().then(m => m);",
+    );
+    assert!(
+        !diags.contains(&diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE),
+        "async returning .then() chain should infer correct Promise type: {diags:?}"
+    );
+}
+
+#[test]
+fn async_inferred_return_non_promise_wraps_once() {
+    let diags = async_diagnostics("const cb: () => Promise<number> = async () => 42;");
+    assert!(
+        !diags.contains(&diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE),
+        "async returning non-Promise should wrap once: {diags:?}"
+    );
+}
+
+#[test]
+fn async_inferred_return_union_with_promise() {
+    let diags = async_diagnostics(
+        "declare function load(): Promise<boolean>;
+         type LoadCallback = () => Promise<boolean> | string;
+         const cb: LoadCallback = async () => load();",
+    );
+    assert!(
+        !diags.contains(&diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE),
+        "async returning Promise in union context should not double-wrap: {diags:?}"
+    );
+}
+
+#[test]
+fn async_inferred_return_recursively_awaits_nested_promise() {
+    let diags = async_diagnostics(
+        "declare function load<Payload>(): Promise<Promise<Payload>>;
+         const cb: () => Promise<boolean> = async () => load<boolean>();",
+    );
+    assert!(
+        !diags.contains(&diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE),
+        "nested Promise layers should flatten before the inferred return is wrapped: {diags:?}"
+    );
+}
+
+#[test]
+fn async_inferred_return_awaits_promiselike_with_renamed_binder() {
+    let diags = async_diagnostics(
+        "declare function load<Item>(): PromiseLike<Item>;
+         const cb: () => Promise<number> = async () => load<number>();",
+    );
+    assert!(
+        !diags.contains(&diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE),
+        "PromiseLike payloads should use the same awaited return path across binder names: {diags:?}"
+    );
+}
+
+#[test]
+fn async_inferred_return_distributes_awaited_union() {
+    let diags = async_diagnostics(
+        "declare const pick: boolean;
+         declare function load<Value>(): PromiseLike<Value>;
+         const cb: () => Promise<number> = async () => pick ? 1 : load<number>();",
+    );
+    assert!(
+        !diags.contains(&diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE),
+        "mixed value/PromiseLike unions should be awaited member-wise before wrapping: {diags:?}"
+    );
+}
+
+#[test]
+fn async_inferred_return_awaits_alias_wrapped_promiselike() {
+    let diags = async_diagnostics(
+        "type Later<Payload> = PromiseLike<Payload>;
+         declare function load<Result>(): Later<Result>;
+         const cb: () => Promise<string> = async () => load<string>();",
+    );
+    assert!(
+        !diags.contains(&diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE),
+        "alias-wrapped PromiseLike values should resolve through the awaited query: {diags:?}"
+    );
+}
+
+#[test]
+fn async_inferred_return_preserves_non_thenable_generic_application() {
+    let diags = async_diagnostics(
+        "interface Box<Payload> { value: Payload; }
+         declare function make<Item>(): Box<Item>;
+         const cb: () => Promise<Box<string>> = async () => make<string>();",
+    );
+    assert!(
+        !diags.contains(&diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE),
+        "non-thenable generic applications should be wrapped without structural evaluation: {diags:?}"
+    );
+}
+
+#[test]
+fn async_inferred_return_keeps_bare_constrained_parameter() {
+    let diags = async_diagnostics(
+        "const keep = async <P extends PromiseLike<number>>(value: P) => value;
+         const check: <Q extends PromiseLike<number>>(value: Q) => Promise<Q> = keep;",
+    );
+    assert!(
+        !diags.contains(&diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE),
+        "a bare constrained parameter should stay Promise<P>, not unwrap its constraint: {diags:?}"
+    );
+}
+
+#[test]
+fn async_inferred_return_still_reports_incompatible_payload() {
+    let diags = async_diagnostics("const cb: () => Promise<string> = async () => 42;");
+    assert!(
+        diags.contains(&diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE),
+        "canonical Promise wrapping must not suppress a genuine payload mismatch: {diags:?}"
+    );
+}
+
+/// When a parameter has a binding pattern and an initializer, tsc uses the
+/// binding pattern's implied type (`[any, any, any]`) as the contextual type
+/// for the initializer. That preserves the tuple shape of the initializer
+/// (`[undefined, null, undefined]`) instead of widening to an array
+/// (`(null | undefined)[]`).
+///
+/// Mirrors tsc's behavior at
+/// `TypeScript/src/compiler/checker.ts :: getContextualTypeForInitializerExpression`
+/// where a binding-pattern declaration's pattern type is used as contextual.
+#[test]
+fn destructuring_param_initializer_preserves_tuple_shape() {
+    // When the tuple is preserved, calling with arguments that violate the
+    // per-position element types surfaces TS2322 errors referencing the
+    // element types (`undefined`, `null`).  If instead the param were
+    // inferred as an array `(null | undefined)[]`, the error message would
+    // mention the union and/or an array target.
+    let source = "function b6([a, z, y] = [undefined, null, undefined]) { }
+                  b6([\"string\", 1, 2]);";
+    let diags = diagnostics_with_spans(source);
+
+    // We must see a TS2322 with target `null` (only present when the
+    // per-position tuple element is preserved — position 1 = null).
+    let has_null_target = diags
+        .iter()
+        .filter(|d| d.code == diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE)
+        .any(|d| d.message_text.contains("'null'"));
+    assert!(
+        has_null_target,
+        "expected TS2322 mentioning target 'null' (tuple element 1), diags: {diags:#?}"
+    );
+
+    // And we must NOT mention an array target like `undefined[]` or
+    // `(null | undefined)[]` which would indicate the initializer was
+    // widened to an array type.
+    let mentions_array_target = diags.iter().any(|d| {
+        d.code == diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE
+            && (d.message_text.contains("undefined[]")
+                || d.message_text.contains("null | undefined)[]"))
+    });
+    assert!(
+        !mentions_array_target,
+        "TS2322 should not mention array target — tuple shape should be preserved, diags: {diags:#?}"
+    );
+}
+
+#[test]
+fn async_generic_return_call_does_not_get_promise_union_context() {
+    let diags = async_diagnostics(
+        "class Api<D = {}> {
+            async post<T = D>() { return this.request<T>(); }
+            async request<D>(): Promise<D> { throw new Error(); }
+         }
+         declare const api: Api;
+         interface Obj { x: number }
+         async function fn<T>(): Promise<T extends object ? { [K in keyof T]: Obj } : Obj> {
+             return api.post();
+         }",
+    );
+    assert!(
+        !diags.contains(&diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE),
+        "async generic return call should not be over-constrained by PromiseLike contextual unions: {diags:?}"
+    );
+}
+
+/// A block-bodied function/arrow value assigned to a function-typed variable
+/// whose body's return type does not match anchors `TS2322` at the variable
+/// **binding name** with the function-level message — `tsc`'s
+/// `elaborateArrowFunction` never drills into a block body, so the error is
+/// reported at the original declaration error node (whose span is its name),
+/// not at the function expression. Binder names are varied to keep the gate
+/// structural (anti-hardcoding contract).
+#[test]
+fn block_body_function_initializer_return_mismatch_anchors_at_binding_name() {
+    let cases = [
+        (
+            "const handler: () => number = () => { return \"x\"; };",
+            "handler",
+        ),
+        (
+            "const makeCount: () => number = function () { return \"x\"; };",
+            "makeCount",
+        ),
+        (
+            "const run: () => number = () => { if (1) return \"x\"; return 1; };",
+            "run",
+        ),
+        // Parenthesized initializer is looked through to the same binding.
+        ("const cb: () => number = (() => { return \"x\"; });", "cb"),
+        // Object-literal block return still reports the single function-level
+        // mismatch at the binding (no per-property drill).
+        (
+            "const build: () => { a: number } = () => { return { a: \"x\" }; };",
+            "build",
+        ),
+    ];
+    for (source, name) in cases {
+        let diagnostics = diagnostics_with_spans(source);
+        let diag = diagnostics
+            .iter()
+            .find(|d| d.code == diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE)
+            .unwrap_or_else(|| panic!("expected TS2322 for `{source}`, got: {diagnostics:?}"));
+        let name_offset = source
+            .find(name)
+            .expect("binding name must appear in source") as u32;
+        assert_eq!(
+            diag.start, name_offset,
+            "TS2322 for a block-bodied function initializer must anchor at the \
+             binding name `{name}` for `{source}`: {diag:?}"
+        );
+        assert!(
+            diag.message_text.contains("is not assignable to type"),
+            "expected the function-level assignability message for `{source}`: {diag:?}"
+        );
+    }
+}
+
+/// The same rule applies when the block-bodied function value is the expression
+/// of a `return` statement: the function-level `TS2322` anchors at the enclosing
+/// `return` statement, not at the inner function expression.
+#[test]
+fn block_body_returned_function_return_mismatch_anchors_at_return_statement() {
+    let source = "function outer(): () => number { return () => { return \"x\"; }; }";
+    let diagnostics = diagnostics_with_spans(source);
+    let diag = diagnostics
+        .iter()
+        .find(|d| d.code == diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE)
+        .expect("expected TS2322");
+    let return_offset = source.find("return () =>").expect("outer return statement") as u32;
+    assert_eq!(
+        diag.start, return_offset,
+        "TS2322 for a returned block-bodied function must anchor at the enclosing \
+         `return` statement: {diag:?}"
+    );
+}
+
+/// Negative control: a block-bodied function initializer whose body return type
+/// matches the declared function type must not emit `TS2322`.
+#[test]
+fn block_body_function_initializer_matching_return_no_ts2322() {
+    let diagnostics = diagnostics_with_spans("const ok: () => number = () => { return 1; };");
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|d| d.code == diagnostic_codes::TYPE_IS_NOT_ASSIGNABLE_TO_TYPE),
+        "a matching block-body return must not emit TS2322: {diagnostics:?}"
+    );
+}

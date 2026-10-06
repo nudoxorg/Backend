@@ -4,8 +4,8 @@ use alloc::{boxed::Box, vec::Vec};
 use std::io::{self, Write};
 
 use super::wire::{
-    Cursor, encode_identity, put_bytes, put_u32, read_checked_jumbo_descriptor,
-    read_identity, validate_jumbo_row_size,
+    Cursor, encode_identity, put_bytes, put_u32, read_checked_jumbo_descriptor, read_identity,
+    validate_jumbo_row_size,
 };
 use crate::ir::{
     CanonicalPlaneRowEncoder, CanonicalSemanticPlaneKeySink, CheckedJumboValueDescriptor,
@@ -16,6 +16,7 @@ use crate::ir::{
 };
 
 const CORE_TAG: u8 = 1;
+const CORE_ANONYMOUS_CALLABLE_TAG: u8 = 2;
 pub(super) const DOCS_TAG: u8 = 2;
 pub(super) const DOCS_JUMBO_TAG: u8 = 3;
 
@@ -315,8 +316,7 @@ impl CanonicalPlaneRowEncoder for CoreDeclarationRows {
         let row = reader
             .entity_by_identity(identity)
             .ok_or(SemanticPlaneRecordError::ReaderReference)?;
-        encode_core_row(reader, row, out)?;
-        Ok(CORE_TAG)
+        encode_core_row(reader, row, out)
     }
 }
 
@@ -611,10 +611,18 @@ pub(super) fn validate_record_with_row_limit(
 ) -> Result<(), SemanticPlaneRecordError> {
     let mut cursor = Cursor::new(payload);
     let identity = match (kind, tag) {
-        (SemanticPlaneKind::Ir(crate::ir::SemanticIrPlane::Core), CORE_TAG) => {
+        (
+            SemanticPlaneKind::Ir(crate::ir::SemanticIrPlane::Core),
+            CORE_TAG | CORE_ANONYMOUS_CALLABLE_TAG,
+        ) => {
             let identity = read_identity(&mut cursor)?;
-            let _ = cursor.bytes32()?; // Name bytes are not promised UTF-8.
-            if !crate::ir::ItemKind::try_from(cursor.u16()?).is_ok() {
+            let name = cursor.bytes32()?; // Name bytes are not promised UTF-8.
+            let kind = crate::ir::ItemKind::try_from(cursor.u16()?)
+                .map_err(|_| SemanticPlaneRecordError::RowGrammar)?;
+            if tag == CORE_ANONYMOUS_CALLABLE_TAG
+                && (kind != crate::ir::ItemKind::Function
+                    || !crate::ir::AnonymousCallableAnchorView::new(name).is_well_formed())
+            {
                 return Err(SemanticPlaneRecordError::RowGrammar);
             }
             if cursor.u8()? > 4 {
@@ -767,13 +775,17 @@ fn encode_core_row<Reader: SemanticReader + ?Sized>(
     reader: &Reader,
     row: SemanticEntity,
     out: &mut Vec<u8>,
-) -> Result<(), SemanticPlaneRecordError> {
+) -> Result<u8, SemanticPlaneRecordError> {
     let identity = row.version.identity();
     encode_identity(identity, out);
+    let (name_atom, tag) = match row.name {
+        crate::ir::ItemName::Named(atom) => (atom, CORE_TAG),
+        crate::ir::ItemName::AnonymousCallable(atom) => (atom, CORE_ANONYMOUS_CALLABLE_TAG),
+    };
     put_bytes(
         out,
         reader
-            .atom(row.name)
+            .atom(name_atom)
             .ok_or(SemanticPlaneRecordError::ReaderReference)?,
     )?;
     out.extend_from_slice(&u16::from(row.kind).to_be_bytes());
@@ -823,7 +835,7 @@ fn encode_core_row<Reader: SemanticReader + ?Sized>(
                 .ok_or(SemanticPlaneRecordError::ReaderReference)?,
         )?;
     }
-    Ok(())
+    Ok(tag)
 }
 
 fn encode_authority(authority: EntityAuthorityFacts, out: &mut Vec<u8>) {

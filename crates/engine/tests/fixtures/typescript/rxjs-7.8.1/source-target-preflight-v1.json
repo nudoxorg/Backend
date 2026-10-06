@@ -1,0 +1,87 @@
+{
+  "schema": "nudox.official-module-target-source-proof.v1",
+  "observer_sha256": "491f4ab662812bb98a2c29af31382c34e9b7ab189645b56f408aad63070250f2",
+  "targets": [
+    {
+      "target_label": "pydantic-v1-legacy-model",
+      "target_root": "/root/nudox-corpus-20261006/artifacts/stratified-framework-dossiers-20261006T1030Z/pypi-pydantic/source/pydantic/v1",
+      "proof": {
+        "verification": "verified-source-inventory-v1",
+        "package": {
+          "ecosystem": "pypi",
+          "id": "pydantic",
+          "version": "2.13.5"
+        },
+        "target_package": {
+          "ecosystem": "pypi",
+          "id": "pydantic",
+          "version": "2.13.5"
+        },
+        "origin_verification": "verified-registry-artifact-v1",
+        "source_tree_sha256": "739f52410447f8258a81bd5eac6485559c7495b535aaaee5c117fc780d2d0bc2",
+        "acquired_inventory_sha256": "de5f9a1eaeb56a2ddfcb72cd98c9c61e9ec690b5fa6226a80efda94316768541",
+        "target_subdir": "pydantic/v1",
+        "target_root_identity_sha256": "cf63aacbdcb54deddf848d71fb34b5f458f499cfeec86418a265f68895c47453",
+        "corpus_manifest_sha256": "5760fb86c5fae6c3db7fc28ecf579f9e77027dda579947738bfbbfa7bc766d2a",
+        "declared": {
+          "ecosystem": "pypi",
+          "id": "pydantic",
+          "version": "2.13.5",
+          "provenance": {
+            "kind": "source-tree-sha256",
+            "sha256": "739f52410447f8258a81bd5eac6485559c7495b535aaaee5c117fc780d2d0bc2"
+          }
+        },
+        "origin_evidence": {
+          "metadata_sha256": "f2ede3cd4c36dc1d3051195cd5eb088b1f3db646473e0508fbe2c76e2131b405",
+          "archive_sha256": "51a9c5f7b2f8e636f04c6cada605d9b6a3bf1348fdf945a3d8869b19bba0ee08",
+          "archive_membership_sha256": "739f52410447f8258a81bd5eac6485559c7495b535aaaee5c117fc780d2d0bc2",
+          "receipt_sha256": "5b114bc413387d12410433f865a718958074d46376f0d0504428cde1a88d0169",
+          "verification_source": "retained official metadata, archive identity and exact acquired-file membership"
+        }
+      },
+      "note": "Genuine shipped public module subtree; whole upstream archive is bound separately. No synthetic project/configuration files."
+    },
+    {
+      "target_label": "rxjs-observable-module",
+      "target_root": "/root/nudox-corpus-20261006/artifacts/stratified-framework-dossiers-20261006T1030Z/npm-rxjs/source/src",
+      "proof": {
+        "verification": "verified-source-inventory-v1",
+        "package": {
+          "ecosystem": "npm",
+          "id": "rxjs",
+          "version": "7.8.1"
+        },
+        "target_package": {
+          "ecosystem": "npm",
+          "id": "rxjs",
+          "version": "7.8.1"
+        },
+        "origin_verification": "verified-registry-artifact-v1",
+        "source_tree_sha256": "ba544117ec897e9a28e11cb467d955b5c9abc003fdbd81bd51042e03b8b869c7",
+        "acquired_inventory_sha256": "eb6fa6ee265c6b75ca1a28e8c6449ef08996c0bb39abe6500873a743ff2bdc0d",
+        "target_subdir": "src",
+        "target_root_identity_sha256": "b7689942ff0106a7c720b02bfcce7ab03fb483decc48cfc1fbc251ca0e5e1c3e",
+        "corpus_manifest_sha256": "5760fb86c5fae6c3db7fc28ecf579f9e77027dda579947738bfbbfa7bc766d2a",
+        "declared": {
+          "ecosystem": "npm",
+          "id": "rxjs",
+          "version": "7.8.1",
+          "provenance": {
+            "kind": "source-tree-sha256",
+            "sha256": "ba544117ec897e9a28e11cb467d955b5c9abc003fdbd81bd51042e03b8b869c7"
+          }
+        },
+        "origin_evidence": {
+          "metadata_sha256": "2ff2063f24fa083bb273dccadd943f0c4a52ff648357e148ea477d84f6df7a5b",
+          "archive_sha256": "c532167725ab7d085123209156c93cef22f2479cb9c8527060f1cd903aa9d149",
+          "archive_membership_sha256": "ba544117ec897e9a28e11cb467d955b5c9abc003fdbd81bd51042e03b8b869c7",
+          "receipt_sha256": "910076f2d7265beab1c8655522c200156450217984f6ae740e8e7a6df6891576",
+          "verification_source": "retained official metadata, archive identity and exact acquired-file membership"
+        }
+      },
+      "note": "Genuine shipped public module subtree; whole upstream archive is bound separately. No synthetic project/configuration files."
+    }
+  ],
+  "runtime_passes": 0
+}

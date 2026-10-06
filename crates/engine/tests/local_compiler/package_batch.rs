@@ -217,7 +217,12 @@ fn two_sources_publish_as_one_reopened_package_generation() -> Result<(), Box<dy
         let view = SemanticImageView::reopen(image.as_ref())?;
         let session = DocumentationSession::new(&view);
         for entity in session.canonical_entities() {
-            names.push(entity?.name.to_vec());
+            let entity = entity?;
+            let name = entity
+                .name
+                .named_bytes()
+                .ok_or("the named C package fixture published an anonymous entity")?;
+            names.push(name.to_vec());
         }
     }
     assert!(names.iter().any(|name| name.as_slice() == b"alpha"));

@@ -18,7 +18,7 @@ use blake3::Hasher;
 use thiserror::Error;
 
 use crate::application::{ToolchainProbeError, ToolchainProbeLimits};
-use crate::driver::ToolchainResolutionError;
+use crate::driver::{ResolvedToolchain, ToolchainResolutionError};
 
 const MAX_PROJECT_ANCESTORS: usize = 32;
 const MAX_PACKAGE_MANIFEST_BYTES: usize = 64 * 1024;
@@ -53,6 +53,100 @@ struct FileSnapshot {
     identity: FileIdentity,
     length: u64,
     digest: [u8; 32],
+}
+
+/// Private package-scoped proof that binds a selected compiler launch to the host's full
+/// TypeScript project witness. Content is revalidated at package boundaries; each child launch
+/// uses this token only for cheap same-object checks.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TypeScriptProjectInvocationLease {
+    compiler_path: Box<Path>,
+    compiler_identity: FileIdentity,
+    compiler_digest: [u8; 32],
+    node_path: Box<Path>,
+    node_identity: FileIdentity,
+    node_digest: [u8; 32],
+    module_root: Box<Path>,
+    package_root: Box<Path>,
+    package_identity: FileIdentity,
+    module_closure_digest: [u8; 32],
+}
+
+impl TypeScriptProjectInvocationLease {
+    pub(crate) fn matches_invocation(
+        &self,
+        compiler: &Path,
+        node: &Path,
+        module_root: &Path,
+    ) -> bool {
+        self.compiler_path.as_ref() == compiler
+            && self.node_path.as_ref() == node
+            && self.module_root.as_ref() == module_root
+            && self.package_root.parent() == Some(module_root)
+    }
+
+    pub(crate) const fn compiler_digest(&self) -> [u8; 32] {
+        self.compiler_digest
+    }
+
+    pub(crate) const fn node_digest(&self) -> [u8; 32] {
+        self.node_digest
+    }
+
+    pub(crate) const fn module_closure_digest(&self) -> [u8; 32] {
+        self.module_closure_digest
+    }
+
+    pub(crate) fn validate_launch_objects(
+        &self,
+    ) -> Result<(), crate::driver::NativeInvocationError> {
+        for (role, path, expected) in [
+            (
+                crate::driver::NativeInvocationFileRole::Script,
+                self.compiler_path.as_ref(),
+                self.compiler_identity,
+            ),
+            (
+                crate::driver::NativeInvocationFileRole::Interpreter,
+                self.node_path.as_ref(),
+                self.node_identity,
+            ),
+        ] {
+            let observed =
+                crate::application::executable_object_identity(path).map_err(|source| {
+                    crate::driver::NativeInvocationError::Inspect {
+                        role,
+                        path: path.to_path_buf().into_boxed_path(),
+                        source,
+                    }
+                })?;
+            if observed != (expected.first, expected.second) {
+                return Err(crate::driver::NativeInvocationError::Changed {
+                    role,
+                    path: path.to_path_buf().into_boxed_path(),
+                });
+            }
+        }
+        if self.package_root.parent() != Some(self.module_root.as_ref()) {
+            return Err(crate::driver::NativeInvocationError::Changed {
+                role: crate::driver::NativeInvocationFileRole::CompilerModule,
+                path: self.package_root.clone(),
+            });
+        }
+        let observed = crate::application::compiler_directory_object_identity(&self.package_root)
+            .map_err(|source| crate::driver::NativeInvocationError::Inspect {
+            role: crate::driver::NativeInvocationFileRole::CompilerModule,
+            path: self.package_root.clone(),
+            source,
+        })?;
+        if observed != (self.package_identity.first, self.package_identity.second) {
+            return Err(crate::driver::NativeInvocationError::Changed {
+                role: crate::driver::NativeInvocationFileRole::CompilerModule,
+                path: self.package_root.clone(),
+            });
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -139,6 +233,9 @@ pub(crate) struct TypeScriptDirectoryEntry {
     pub(crate) path: Box<Path>,
     pub(crate) canonical_path: Option<Box<Path>>,
     pub(crate) kind: TypeScriptDirectoryEntryKind,
+    /// Kind observed through `stat`, which follows a symbolic link like Node's
+    /// TypeScript system adapter does while enumerating a directory.
+    pub(crate) effective_kind: Option<TypeScriptDirectoryEntryKind>,
     pub(crate) identity: FileIdentity,
 }
 
@@ -446,6 +543,56 @@ impl TypeScriptResolverCapability<'_> {
         Ok(output)
     }
 
+    /// Admits one exact directory enumeration observed by the TypeScript system
+    /// adapter and returns its canonical directory key. No recursive walk or
+    /// extension filtering is performed here.
+    pub(crate) fn observe_program_directory(
+        &mut self,
+        path: &Path,
+    ) -> Result<Option<PathBuf>, TypeScriptProjectHostError> {
+        let lexical = self.witness.admit_lexical_path(path)?;
+        let Some((canonical, identity)) = self.capture_realpath(&lexical)? else {
+            self.record_missing(lexical, None)?;
+            return Ok(None);
+        };
+        if !self.witness.path_is_admitted(&canonical) {
+            return Err(TypeScriptProjectHostError::SourceOutsideCapability {
+                path: canonical.into_boxed_path(),
+            });
+        }
+        let metadata =
+            fs::metadata(&canonical).map_err(|source| TypeScriptProjectHostError::PackagePath {
+                path: canonical.clone().into_boxed_path(),
+                source,
+            })?;
+        self.record_realpath(lexical, Some(canonical.clone()), identity)?;
+        if !metadata.is_dir() {
+            return Ok(None);
+        }
+        self.observe_directory(&canonical)?;
+        Ok(Some(canonical))
+    }
+
+    pub(crate) fn observed_program_directory_entries(
+        &self,
+        canonical_path: &Path,
+    ) -> Option<&[TypeScriptDirectoryEntry]> {
+        self.observations
+            .directories
+            .get(canonical_path)
+            .map(|snapshot| snapshot.entries.as_ref())
+    }
+
+    pub(crate) fn program_directory_entry_is_admitted(
+        &self,
+        entry: &TypeScriptDirectoryEntry,
+    ) -> bool {
+        entry
+            .canonical_path
+            .as_deref()
+            .is_none_or(|path| self.witness.path_is_admitted(path))
+    }
+
     pub(crate) fn loaded_sources(
         &self,
     ) -> &std::collections::BTreeMap<PathBuf, TypeScriptFileInput> {
@@ -520,6 +667,13 @@ impl TypeScriptResolverCapability<'_> {
                     TypeScriptDirectoryEntryKind::Directory => 2,
                     TypeScriptDirectoryEntryKind::Symlink => 3,
                     TypeScriptDirectoryEntryKind::Other => 4,
+                }]);
+                digest.update(&[match entry.effective_kind {
+                    Some(TypeScriptDirectoryEntryKind::RegularFile) => 1,
+                    Some(TypeScriptDirectoryEntryKind::Directory) => 2,
+                    Some(TypeScriptDirectoryEntryKind::Symlink) => 3,
+                    Some(TypeScriptDirectoryEntryKind::Other) => 4,
+                    None => 0,
                 }]);
                 match entry.canonical_path.as_deref() {
                     Some(path) => {
@@ -837,9 +991,14 @@ pub(crate) struct TypeScriptProjectWitness {
     config_paths: Box<[Box<Path>]>,
     loaded_source_files: std::sync::Mutex<std::collections::BTreeMap<PathBuf, FileSnapshot>>,
     fingerprint: [u8; 32],
+    invocation_lease: TypeScriptProjectInvocationLease,
 }
 
 impl TypeScriptProjectWitness {
+    fn invocation_lease(&self) -> &TypeScriptProjectInvocationLease {
+        &self.invocation_lease
+    }
+
     fn capture(
         project_root: &Path,
         home_root: Option<&Path>,
@@ -959,6 +1118,47 @@ impl TypeScriptProjectWitness {
         files.sort_unstable_by(|left, right| left.path.cmp(&right.path));
         files.dedup_by(|left, right| left.path == right.path);
         let fingerprint = witness_fingerprint(&files);
+        let selected_snapshot = |path: &Path| {
+            files
+                .iter()
+                .find(|snapshot| snapshot.path.as_ref() == path)
+                .cloned()
+                .ok_or_else(|| TypeScriptProjectHostError::WitnessChanged {
+                    path: path.to_path_buf().into_boxed_path(),
+                })
+        };
+        let compiler_snapshot = selected_snapshot(compiler)?;
+        let node_snapshot = selected_snapshot(node)?;
+        let package_metadata = fs::metadata(&package_root).map_err(|source| {
+            TypeScriptProjectHostError::PackagePath {
+                path: package_root.clone().into_boxed_path(),
+                source,
+            }
+        })?;
+        if !package_metadata.is_dir() {
+            return Err(TypeScriptProjectHostError::RegularDirectoryRequired {
+                path: package_root.clone().into_boxed_path(),
+            });
+        }
+        let package_identity = file_identity(&package_metadata).map_err(|source| {
+            TypeScriptProjectHostError::PackagePath {
+                path: package_root.clone().into_boxed_path(),
+                source,
+            }
+        })?;
+        let module_closure_digest = module_files_digest(&typescript_files, &package_root)?;
+        let invocation_lease = TypeScriptProjectInvocationLease {
+            compiler_path: compiler.to_path_buf().into_boxed_path(),
+            compiler_identity: compiler_snapshot.identity,
+            compiler_digest: compiler_snapshot.digest,
+            node_path: node.to_path_buf().into_boxed_path(),
+            node_identity: node_snapshot.identity,
+            node_digest: node_snapshot.digest,
+            module_root: module_root.to_path_buf().into_boxed_path(),
+            package_root: package_root.clone().into_boxed_path(),
+            package_identity,
+            module_closure_digest,
+        };
         Ok(Self {
             project_root: project_root.into_boxed_path(),
             home_root: home_root.map(|root| root.to_path_buf().into_boxed_path()),
@@ -987,6 +1187,7 @@ impl TypeScriptProjectWitness {
             config_candidates: config_candidates.into_boxed_slice(),
             loaded_source_files: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             fingerprint,
+            invocation_lease,
         })
     }
 
@@ -1292,10 +1493,29 @@ fn capture_directory_snapshot(
                 });
             }
         };
+        let effective_kind = match canonical_path.as_deref() {
+            Some(path) => {
+                let metadata = fs::metadata(path).map_err(|source| {
+                    TypeScriptProjectHostError::PackagePath {
+                        path: path.to_path_buf().into_boxed_path(),
+                        source,
+                    }
+                })?;
+                Some(if metadata.is_dir() {
+                    TypeScriptDirectoryEntryKind::Directory
+                } else if metadata.is_file() {
+                    TypeScriptDirectoryEntryKind::RegularFile
+                } else {
+                    TypeScriptDirectoryEntryKind::Other
+                })
+            }
+            None => None,
+        };
         entries.push(TypeScriptDirectoryEntry {
             path: entry_path.into_boxed_path(),
             canonical_path,
             kind,
+            effective_kind,
             identity: entry_identity,
         });
     }
@@ -1409,6 +1629,33 @@ fn first_changed_snapshot(expected: &[FileSnapshot], observed: &[FileSnapshot]) 
         .get(observed.len())
         .or_else(|| observed.get(expected.len()))
         .map(|snapshot| snapshot.path.to_path_buf())
+}
+
+fn module_files_digest(
+    inputs: &[TypeScriptFileInput],
+    package_root: &Path,
+) -> Result<[u8; 32], TypeScriptProjectHostError> {
+    let mut files = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        let relative = input.path.strip_prefix(package_root).map_err(|_| {
+            TypeScriptProjectHostError::WitnessChanged {
+                path: input.path.clone(),
+            }
+        })?;
+        files.push((
+            relative.to_path_buf(),
+            u64::try_from(input.bytes.len()).unwrap_or(u64::MAX),
+            *blake3::hash(&input.bytes).as_bytes(),
+        ));
+    }
+    crate::application::typescript_module_files_digest(
+        files
+            .iter()
+            .map(|(path, length, digest)| (path.as_path(), *length, *digest)),
+    )
+    .map_err(|_| TypeScriptProjectHostError::WitnessChanged {
+        path: package_root.to_path_buf().into_boxed_path(),
+    })
 }
 
 fn witness_fingerprint(files: &[FileSnapshot]) -> [u8; 32] {
@@ -2642,6 +2889,30 @@ pub(crate) struct AdmittedTypeScriptProject {
 }
 
 impl AdmittedTypeScriptProject {
+    pub(crate) fn resolved_toolchain(
+        &self,
+    ) -> Result<ResolvedToolchain<'_>, TypeScriptProjectHostError> {
+        if is_module_tsc_script(&self.compiler, &self.module_root) {
+            ResolvedToolchain::from_project_invocation(
+                NativeTool::TypeScriptCompiler,
+                &self.node,
+                &self.compiler,
+                &self.module_root,
+                &self.compiler_version,
+                &self.node_version,
+                self.witness.invocation_lease(),
+            )
+            .map_err(|source| TypeScriptProjectHostError::ToolchainResolution { source })
+        } else {
+            ResolvedToolchain::from_version(
+                NativeTool::TypeScriptCompiler,
+                &self.compiler,
+                &self.compiler_version,
+            )
+            .map_err(|source| TypeScriptProjectHostError::ToolchainResolution { source })
+        }
+    }
+
     pub(crate) fn inputs(&self) -> TypeScriptProjectInputs<'_> {
         TypeScriptProjectInputs {
             package_root: &self.witness.project_root,
@@ -3281,6 +3552,12 @@ pub enum TypeScriptProjectHostError {
     },
     #[error("TypeScript configuration {config:?} does not exist")]
     ConfigMissing { config: Box<Path> },
+    #[error("the admitted TypeScript compiler API rejected its program input: {message}")]
+    CompilerApiBridge { message: Box<str> },
+    #[error("TypeScript compiler I/O closure exceeded its {phase} budget: {detail}")]
+    CompilerIoClosureLimit { phase: Box<str>, detail: Box<str> },
+    #[error("TypeScript compiler I/O closure did not match admitted directory state: {detail}")]
+    CompilerIoClosureMismatch { detail: Box<str> },
     #[error("TypeScript configuration graph contains a cycle at {config:?}")]
     ConfigCycle { config: Box<Path> },
     #[error("TypeScript configuration {config:?} escapes workspace boundary {boundary:?}")]
@@ -4107,6 +4384,140 @@ printf 'Version 5.9.3\n'
         fs::write(&missing, b"declare const missing: string;")
             .expect("materialize formerly missing candidate");
         assert!(matches!(
+            closure.validate_current(&witness),
+            Err(TypeScriptProjectHostError::WitnessChanged { .. })
+        ));
+    }
+
+    #[test]
+    fn resolver_deduplicates_symlinked_source_bytes_but_binds_each_alias() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        let source_dir = fixture.0.join("src");
+        fs::create_dir_all(&source_dir).expect("create source directory");
+        let source = source_dir.join("shared.d.ts");
+        fs::write(&source, b"export interface Shared {}").expect("write shared source");
+        let first_alias = source_dir.join("first.d.ts");
+        let second_alias = source_dir.join("second.d.ts");
+        symlink(&source, &first_alias).expect("create first source alias");
+        symlink(&source, &second_alias).expect("create second source alias");
+
+        let ProjectTypeScriptSearch::Found(project) =
+            find_project_typescript(&fixture.0).expect("discover project TypeScript")
+        else {
+            panic!("local TypeScript package should be found");
+        };
+        let node = fixture.0.join("node");
+        fs::write(&node, b"node witness").expect("write fake Node bytes");
+        let node = fs::canonicalize(node).expect("canonical Node");
+        let package_root = fs::canonicalize(modules.join("typescript"))
+            .expect("canonical TypeScript package root");
+        let witness = TypeScriptProjectWitness::capture(
+            &fixture.0,
+            None,
+            &project,
+            &project.compiler,
+            &node,
+            &project.module_root,
+            &package_root,
+            project.workspace.as_ref(),
+        )
+        .expect("capture project witness");
+        let mut capability = TypeScriptResolverCapability {
+            witness: &witness,
+            observations: ResolverObservationLedger::default(),
+        };
+
+        let admitted = capability
+            .try_load_source(&source)
+            .expect("load canonical source")
+            .expect("canonical source exists");
+        let content_id = admitted.content_id;
+        for alias in [&first_alias, &second_alias] {
+            let aliased = capability
+                .try_load_source(alias)
+                .expect("load symlinked source")
+                .expect("alias resolves to source");
+            assert_eq!(aliased.content_id, content_id);
+            assert_eq!(aliased.path.as_ref(), fs::canonicalize(&source).unwrap());
+            assert!(capability.observations.realpaths.contains_key(alias));
+        }
+        assert_eq!(
+            capability.loaded_sources().len(),
+            1,
+            "canonical source bytes enter the project closure only once"
+        );
+        assert_eq!(
+            capability.observations.realpaths.len(),
+            3,
+            "canonical path and both lexical aliases remain separately witnessed"
+        );
+        capability
+            .seal()
+            .expect("seal exact canonical source plus lexical alias observations")
+            .validate_current(&witness)
+            .expect("the deduplicated source closure revalidates");
+    }
+
+    #[test]
+    fn resolver_capability_witnesses_only_absent_ancestor_node_modules_candidates() {
+        let outer = Fixture::new();
+        let project_root = outer.0.join("workspace/app");
+        fs::create_dir_all(&project_root).expect("create project root");
+        let package_fixture = Fixture(project_root.clone());
+        package_fixture.install("5.9.3");
+        let modules = fs::canonicalize(project_root.join("node_modules"))
+            .expect("canonical local module root");
+        let ProjectTypeScriptSearch::Found(project) =
+            find_project_typescript(&project_root).expect("discover local compiler")
+        else {
+            panic!("local compiler should be selected");
+        };
+        let node = project_root.join("node");
+        fs::write(&node, b"node witness").expect("write Node witness");
+        let node = fs::canonicalize(node).expect("canonical Node");
+        let package_root = fs::canonicalize(modules.join("typescript"))
+            .expect("canonical TypeScript package root");
+        let witness = TypeScriptProjectWitness::capture(
+            &project_root,
+            None,
+            &project,
+            &project.compiler,
+            &node,
+            &modules,
+            &package_root,
+            project.workspace.as_ref(),
+        )
+        .expect("capture project witness");
+        let mut capability = TypeScriptResolverCapability {
+            witness: &witness,
+            observations: ResolverObservationLedger::default(),
+        };
+        let ancestor_modules = outer.0.join("workspace/node_modules");
+        assert!(
+            !capability
+                .directory_exists(&ancestor_modules)
+                .expect("observe bounded absent ancestor module root")
+        );
+        assert!(
+            capability
+                .read_directory(&ancestor_modules, &[".d.ts"], true, 8, 64)
+                .expect("enumerate absent ancestor candidate")
+                .is_empty()
+        );
+        assert!(
+            capability
+                .resolver_witness()
+                .expect("fingerprint negative candidate")
+                != [0; 32]
+        );
+        capability
+            .validate_current()
+            .expect("negative ancestor candidate remains absent");
+
+        fs::create_dir_all(&ancestor_modules).expect("materialize ancestor module root");
+        assert!(matches!(
+
             capability.validate_current(),
             Err(TypeScriptProjectHostError::WitnessChanged { .. })
         ));
@@ -4158,6 +4569,7 @@ printf 'Version 5.9.3\n'
             "selected-content",
             "discovered-content",
             "selected-retarget",
+            "node-replaced",
         ] {
             let fixture = Fixture::new();
             fixture.install("5.9.3");
@@ -4203,21 +4615,46 @@ printf 'Version 5.9.3\n'
                 TypeScriptSelectionOrigin::ExplicitConfiguration
             );
             match mutation {
-                "unchanged" => admitted
-                    .witness
-                    .validate_current()
-                    .expect("unchanged separate authorities"),
+                "unchanged" => {
+                    let toolchain = admitted
+                        .resolved_toolchain()
+                        .expect("bind selected compiler package lease");
+                    let hash_bytes_before =
+                        crate::application::executable_content_hash_bytes_for_test();
+                    for _ in 0..3 {
+                        toolchain
+                            .validate_invocation()
+                            .expect("package lease checks only the same selected objects");
+                    }
+                    assert_eq!(
+                        crate::application::executable_content_hash_bytes_for_test(),
+                        hash_bytes_before,
+                        "three source launches must not hash Node or the TypeScript package again",
+                    );
+                    admitted
+                        .witness
+                        .validate_current()
+                        .expect("unchanged separate authorities");
+                }
                 "selected-content" | "discovered-content" => {
                     let root = if mutation == "selected-content" {
                         explicit_modules.clone()
                     } else {
                         fixture.0.join("node_modules")
                     };
-                    fs::write(
-                        root.join("typescript/bin/tsc"),
-                        "#!/usr/bin/env node\n// changed\n",
-                    )
-                    .expect("change compiler closure without changing its version");
+                    let compiler_path = root.join("typescript/bin/tsc");
+                    let mut changed_bytes = fs::read(&compiler_path).expect("read compiler bytes");
+                    changed_bytes[0] ^= 1;
+                    fs::write(&compiler_path, changed_bytes)
+                        .expect("change compiler closure without replacing its file object");
+                    if mutation == "selected-content" {
+                        let toolchain = admitted
+                            .resolved_toolchain()
+                            .expect("bind selected compiler package lease");
+                        toolchain.validate_invocation().expect(
+                            "per-spawn lease checks the same object without a duplicate full hash",
+                        );
+                    }
                     assert!(matches!(
                         admitted.witness.validate_current(),
                         Err(TypeScriptProjectHostError::WitnessChanged { .. })
@@ -4228,6 +4665,25 @@ printf 'Version 5.9.3\n'
                     let target = explicit_modules.join("retargeted-typescript");
                     fs::rename(&package, &target).expect("move selected installation");
                     symlink(&target, &package).expect("retarget selected installation");
+                    assert!(matches!(
+                        admitted.witness.validate_current(),
+                        Err(TypeScriptProjectHostError::WitnessChanged { .. })
+                    ));
+                }
+                "node-replaced" => {
+                    let toolchain = admitted
+                        .resolved_toolchain()
+                        .expect("bind selected compiler package lease");
+                    let moved = node.with_extension("replaced");
+                    fs::rename(&node, &moved).expect("move admitted Node");
+                    fs::write(&node, b"replacement Node object").expect("install replacement Node");
+                    assert!(matches!(
+                        toolchain.validate_invocation(),
+                        Err(crate::driver::NativeInvocationError::Changed {
+                            role: crate::driver::NativeInvocationFileRole::Interpreter,
+                            ..
+                        })
+                    ));
                     assert!(matches!(
                         admitted.witness.validate_current(),
                         Err(TypeScriptProjectHostError::WitnessChanged { .. })

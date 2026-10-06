@@ -38,6 +38,7 @@ fn typed_image(reverse: bool) -> Result<Ir, crate::ir::BuildError> {
     };
     let item = TreeItemInput {
         name: b"typed",
+        anonymous_callable_anchor: None,
         kind: ItemKind::TypeAlias,
         visibility: Visibility::Private,
         authority,

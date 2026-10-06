@@ -10,7 +10,7 @@ use crate::driver::{
         frontend::NativeFrontend,
         work::{create_artifact_directory, remove_directory_if_present, write_artifact},
     },
-    types::{NativeArtifactRole, NativeWorkError, ResolvedToolchain},
+    types::{NativeArtifactRole, NativeInvocation, NativeWorkError, ResolvedToolchain},
 };
 
 const TYPESCRIPT_SOURCE_FILE: &str = "compiler-probe.ts";
@@ -42,7 +42,17 @@ impl NativeFrontend for TypeScriptFrontend {
         toolchain: ResolvedToolchain<'_>,
         native_work: &Path,
     ) -> Command {
-        let mut command = Command::new(toolchain.executable());
+        let mut command = match toolchain.invocation() {
+            NativeInvocation::NativeExecutable { executable } => Command::new(executable),
+            NativeInvocation::InterpretedScript {
+                interpreter,
+                script,
+            } => {
+                let mut command = Command::new(interpreter);
+                command.arg(script);
+                command
+            }
+        };
         command
             .args([
                 "--noEmit", "--pretty", "false", "--target", "ES2022", "--module", "ESNext",

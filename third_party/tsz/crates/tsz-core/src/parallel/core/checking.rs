@@ -1,0 +1,2220 @@
+fn extract_skeletons_for_merge(results: &[&BindResult]) -> Vec<FileSkeleton> {
+    const PARALLEL_SKELETON_FILE_THRESHOLD: usize = 128;
+
+    if results.len() < PARALLEL_SKELETON_FILE_THRESHOLD {
+        return results.iter().map(|r| extract_skeleton(r)).collect();
+    }
+
+    extract_skeletons_for_merge_large(results)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn extract_skeletons_for_merge_large(results: &[&BindResult]) -> Vec<FileSkeleton> {
+    ensure_rayon_global_pool();
+    results.par_iter().map(|r| extract_skeleton(r)).collect()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn extract_skeletons_for_merge_large(results: &[&BindResult]) -> Vec<FileSkeleton> {
+    results.iter().map(|r| extract_skeleton(r)).collect()
+}
+
+/// Full pipeline: Parse → Bind (parallel) → Merge (sequential)
+///
+/// This is the main entry point for multi-file compilation.
+/// Lib files are automatically loaded and merged during binding.
+pub fn compile_files(files: Vec<(String, String)>) -> MergedProgram {
+    let lib_files = resolve_default_lib_files(ScriptTarget::ESNext)
+        .unwrap_or_else(|err| panic!("failed to resolve default lib files: {err}"));
+    compile_files_with_libs(files, &lib_files)
+}
+
+/// Full pipeline with explicit lib files.
+///
+/// Callers are responsible for providing the resolved lib file paths.
+pub fn compile_files_with_libs(
+    files: Vec<(String, String)>,
+    lib_files: &[PathBuf],
+) -> MergedProgram {
+    let lib_paths: Vec<&Path> = lib_files.iter().map(PathBuf::as_path).collect();
+    let bind_results = parse_and_bind_parallel_with_lib_files(files, &lib_paths);
+    merge_bind_results(bind_results)
+}
+
+// =============================================================================
+// Parallel Type Checking
+// =============================================================================
+
+use crate::checker::context::{CheckerOptions, LibContext};
+use crate::checker::diagnostics::Diagnostic;
+use crate::checker::state::CheckerState;
+use crate::lib_loader::LibFile;
+use crate::parser::syntax_kind_ext;
+use crate::tsz_solver::TypeId;
+use tsz_common::ProjectSemanticOptions;
+
+/// Syntactic form of a TypeScript module request supplied by an admitted
+/// compiler program.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ProjectModuleRequestKind {
+    EsmImport,
+    DynamicImport,
+    CjsRequire,
+    EsmReExport,
+    /// The compiler bridge saw a request kind TSZ does not model. Keeping it
+    /// explicit makes the unsupported case fail closed instead of falling
+    /// through to heuristic filename resolution.
+    Unsupported {
+        syntax_kind: String,
+    },
+}
+
+/// Exact result for one importer/specifier/request-kind/mode tuple.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ProjectModuleResolutionTarget {
+    /// Resolved to another file in this TSZ program. `path` uses the same
+    /// normalized virtual path as the corresponding `MergedProgram` file.
+    File { path: String },
+    /// Resolved successfully outside this program. `identity` is a stable,
+    /// compiler-derived external target identity, not merely a guessed path.
+    External { identity: String },
+    /// The compiler resolver authoritatively found no target.
+    Unresolved,
+}
+
+/// A compiler-owned module-resolution observation for one program request.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ProjectModuleResolution {
+    pub importer_path: String,
+    pub specifier: String,
+    pub request_kind: ProjectModuleRequestKind,
+    pub resolution_mode: Option<crate::checker::context::ResolutionModeOverride>,
+    pub target: ProjectModuleResolutionTarget,
+}
+
+/// A project-resolution input could not be applied without weakening its
+/// authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProjectModuleResolutionError {
+    InvalidVirtualPath {
+        path: String,
+    },
+    DuplicateProgramPath {
+        path: String,
+    },
+    ImporterNotInProgram {
+        path: String,
+    },
+    TargetNotInProgram {
+        path: String,
+    },
+    EmptySpecifier,
+    EmptyExternalIdentity,
+    UnsupportedRequestKind {
+        syntax_kind: String,
+    },
+    DuplicateRequest {
+        importer_path: String,
+        specifier: String,
+    },
+}
+
+impl std::fmt::Display for ProjectModuleResolutionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidVirtualPath { path } => {
+                write!(formatter, "invalid normalized project path: {path:?}")
+            }
+            Self::DuplicateProgramPath { path } => {
+                write!(formatter, "duplicate project program path: {path:?}")
+            }
+            Self::ImporterNotInProgram { path } => {
+                write!(
+                    formatter,
+                    "module importer is not in the project program: {path:?}"
+                )
+            }
+            Self::TargetNotInProgram { path } => {
+                write!(
+                    formatter,
+                    "module target is not in the project program: {path:?}"
+                )
+            }
+            Self::EmptySpecifier => formatter.write_str("module specifier must not be empty"),
+            Self::EmptyExternalIdentity => {
+                formatter.write_str("external module identity must not be empty")
+            }
+            Self::UnsupportedRequestKind { syntax_kind } => write!(
+                formatter,
+                "unsupported TypeScript module request kind: {syntax_kind}"
+            ),
+            Self::DuplicateRequest {
+                importer_path,
+                specifier,
+            } => write!(
+                formatter,
+                "duplicate module resolution request from {importer_path:?} for {specifier:?}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ProjectModuleResolutionError {}
+
+fn validate_project_virtual_path(path: &str) -> Result<(), ProjectModuleResolutionError> {
+    let components: Vec<&str> = path.split('/').collect();
+    if path.is_empty()
+        || path.starts_with('/')
+        || path.contains('\\')
+        || path.contains('\0')
+        || components
+            .iter()
+            .any(|component| component.is_empty() || *component == "." || *component == "..")
+    {
+        return Err(ProjectModuleResolutionError::InvalidVirtualPath {
+            path: path.to_owned(),
+        });
+    }
+    Ok(())
+}
+
+/// Result of type checking a single function body
+#[derive(Debug)]
+pub struct FunctionCheckResult {
+    /// Function node index within its file
+    pub function_idx: NodeIndex,
+    /// File index in the program
+    pub file_idx: usize,
+    /// Inferred return type
+    pub return_type: TypeId,
+    /// Diagnostics produced
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Result of type checking all function bodies in a file
+#[derive(Debug)]
+pub struct FileCheckResult {
+    /// File index
+    pub file_idx: usize,
+    /// File name
+    pub file_name: String,
+    /// Function check results
+    pub function_results: Vec<FunctionCheckResult>,
+    /// File-level diagnostics
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+use super::diagnostics::{
+    add_parallel_global_augmentation_member_conflict_diagnostics,
+    add_reexported_module_augmentation_enum_conflict_diagnostics,
+    affected_lib_extension_interface_names, affected_lib_interface_names,
+    build_lib_bound_file_for_interface_checks, lib_file_contains_affected_interface,
+    suppress_parallel_import_shadowing_namespace_type_diagnostics,
+    suppress_parallel_ts2339_cascade_diagnostics,
+};
+
+/// Result of parallel type checking
+#[derive(Debug)]
+pub struct CheckResult {
+    /// Per-file check results
+    pub file_results: Vec<FileCheckResult>,
+    /// Total functions checked
+    pub function_count: usize,
+    /// Total diagnostics
+    pub diagnostic_count: usize,
+}
+
+/// Why a reusable project checker session could not be created or queried.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProjectCheckerSessionError {
+    /// The merged program has not been bound to compiler-owned module
+    /// resolution outcomes, so queries could otherwise guess by filename.
+    MissingProjectModuleResolutions,
+    /// The requested file index is outside the exact merged program.
+    FileIndexOutOfRange { file_index: usize, file_count: usize },
+    /// The one shared cancellation/deadline/work budget stopped this session.
+    ExecutionStopped(tsz_common::ProjectExecutionStop),
+}
+
+impl std::fmt::Display for ProjectCheckerSessionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingProjectModuleResolutions => {
+                formatter.write_str("project checker session requires exact module resolutions")
+            }
+            Self::FileIndexOutOfRange {
+                file_index,
+                file_count,
+            } => write!(
+                formatter,
+                "project checker file index {file_index} is outside {file_count} files"
+            ),
+            Self::ExecutionStopped(reason) => {
+                write!(formatter, "project checker session stopped: {reason:?}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ProjectCheckerSessionError {}
+
+/// Reusable, read-only project checking context for exact semantic queries.
+///
+/// The session owns one `ParallelCheckPlan`, so binders, arenas, module
+/// resolution outcomes, library contexts, and shared query caches are built
+/// once. Per-file checker state is lent only for the callback duration.
+/// `TypeId` is a copyable arena-local handle rather than a branded value, so
+/// callers must also keep any returned IDs tied to the exact `MergedProgram`
+/// used to create this session.
+pub struct ProjectCheckerSession<'a> {
+    plan: ParallelCheckPlan<'a>,
+    execution_checkpoint: &'a dyn tsz_common::ExecutionCheckpoint,
+}
+
+impl<'a> ProjectCheckerSession<'a> {
+    /// Build the shared project context for a program with exact compiler
+    /// module-resolution outcomes attached.
+    pub fn new(
+        program: &'a MergedProgram,
+        checker_options: &'a CheckerOptions,
+        lib_files: &[Arc<LibFile>],
+        project_semantic_options: ProjectSemanticOptions,
+        execution_checkpoint: &'a dyn tsz_common::ExecutionCheckpoint,
+    ) -> Result<Self, ProjectCheckerSessionError> {
+        execution_checkpoint
+            .checkpoint(0)
+            .map_err(ProjectCheckerSessionError::ExecutionStopped)?;
+        let project_module_resolution_outcomes = program
+            .project_module_resolution_outcomes
+            .clone()
+            .ok_or(ProjectCheckerSessionError::MissingProjectModuleResolutions)?;
+        let plan = ParallelCheckPlan::build(
+            program,
+            checker_options,
+            lib_files,
+            project_semantic_options,
+            Some(project_module_resolution_outcomes),
+            Some(execution_checkpoint),
+        );
+        execution_checkpoint
+            .checkpoint(0)
+            .map_err(ProjectCheckerSessionError::ExecutionStopped)?;
+        plan.prime_module_augmentation_bodies();
+        execution_checkpoint
+            .checkpoint(0)
+            .map_err(ProjectCheckerSessionError::ExecutionStopped)?;
+        Ok(Self {
+            plan,
+            execution_checkpoint,
+        })
+    }
+
+    /// Lend the exact configured checker for one file and its type database.
+    ///
+    /// The higher-ranked callback and owned `Output` prevent checker state,
+    /// binders, or type-database borrows from escaping this session call.
+    pub fn with_file_checker_and_types<Output>(
+        &self,
+        file_index: usize,
+        consume: impl for<'checker> FnOnce(
+            &mut CheckerState<'checker>,
+            &BinderState,
+            &BoundFile,
+            &dyn tsz_solver::construction::TypeDatabase,
+        ) -> Output,
+    ) -> Result<Output, ProjectCheckerSessionError> {
+        let file = self
+            .plan
+            .program
+            .files
+            .get(file_index)
+            .ok_or(ProjectCheckerSessionError::FileIndexOutOfRange {
+                file_index,
+                file_count: self.plan.program.files.len(),
+            })?;
+        self.execution_checkpoint
+            .checkpoint(0)
+            .map_err(ProjectCheckerSessionError::ExecutionStopped)?;
+        let output = self
+            .plan
+            .with_bound_file_checker_and_types(file_index, file, consume);
+        self.execution_checkpoint
+            .checkpoint(0)
+            .map_err(ProjectCheckerSessionError::ExecutionStopped)?;
+        Ok(output)
+    }
+
+    /// Lend the checker and bound file when the caller does not need the
+    /// underlying type database directly.
+    pub fn with_file_checker<Output>(
+        &self,
+        file_index: usize,
+        consume: impl for<'checker> FnOnce(
+            &mut CheckerState<'checker>,
+            &BinderState,
+            &BoundFile,
+        ) -> Output,
+    ) -> Result<Output, ProjectCheckerSessionError> {
+        self.with_file_checker_and_types(file_index, |checker, binder, file, _types| {
+            consume(checker, binder, file)
+        })
+    }
+}
+
+/// Collect all function declarations from a source file
+fn collect_functions(arena: &NodeArena, source_file: NodeIndex) -> Vec<NodeIndex> {
+    let mut functions = Vec::new();
+
+    let Some(sf) = arena.get_source_file_at(source_file) else {
+        return functions;
+    };
+
+    for &stmt_idx in &sf.statements.nodes {
+        collect_functions_from_node(arena, stmt_idx, &mut functions);
+    }
+
+    functions
+}
+
+/// Recursively collect functions from a node
+fn collect_functions_from_node(
+    arena: &NodeArena,
+    node_idx: NodeIndex,
+    functions: &mut Vec<NodeIndex>,
+) {
+    let Some(node) = arena.get(node_idx) else {
+        return;
+    };
+
+    match node.kind {
+        k if k == syntax_kind_ext::FUNCTION_DECLARATION
+            || k == syntax_kind_ext::FUNCTION_EXPRESSION
+            || k == syntax_kind_ext::ARROW_FUNCTION =>
+        {
+            functions.push(node_idx);
+            // Also collect nested functions in the body
+            if let Some(func) = arena.get_function(node)
+                && func.body.is_some()
+            {
+                collect_functions_from_node(arena, func.body, functions);
+            }
+        }
+        k if k == syntax_kind_ext::METHOD_DECLARATION => {
+            functions.push(node_idx);
+            // Also collect nested functions in the body
+            if let Some(method) = arena.get_method_decl(node)
+                && method.body.is_some()
+            {
+                collect_functions_from_node(arena, method.body, functions);
+            }
+        }
+        k if k == syntax_kind_ext::CLASS_DECLARATION => {
+            if let Some(class) = arena.get_class(node) {
+                for &member_idx in &class.members.nodes {
+                    collect_functions_from_node(arena, member_idx, functions);
+                }
+            }
+        }
+        k if k == syntax_kind_ext::BLOCK => {
+            if let Some(block) = arena.get_block(node) {
+                for &stmt_idx in &block.statements.nodes {
+                    collect_functions_from_node(arena, stmt_idx, &mut *functions);
+                }
+            }
+        }
+        k if k == syntax_kind_ext::VARIABLE_STATEMENT => {
+            // Variable statement contains a declaration list which contains declarations
+            if let Some(var_stmt) = arena.get_variable(node) {
+                // var_stmt.declarations contains the VARIABLE_DECLARATION_LIST node(s)
+                for &decl_list_idx in &var_stmt.declarations.nodes {
+                    if let Some(decl_list_node) = arena.get(decl_list_idx) {
+                        // The declaration list also uses VariableData
+                        if let Some(decl_list) = arena.get_variable(decl_list_node) {
+                            // Now decl_list.declarations contains the actual VARIABLE_DECLARATION nodes
+                            for &decl_idx in &decl_list.declarations.nodes {
+                                if let Some(decl_node) = arena.get(decl_idx)
+                                    && let Some(decl) = arena.get_variable_declaration(decl_node)
+                                    && decl.initializer.is_some()
+                                {
+                                    collect_functions_from_node(arena, decl.initializer, functions);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        k if k == syntax_kind_ext::EXPORT_DECLARATION => {
+            // Export declarations may contain function/class declarations
+            if let Some(export) = arena.get_export_decl(node)
+                && export.export_clause.is_some()
+            {
+                collect_functions_from_node(arena, export.export_clause, functions);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Type check function bodies in parallel
+///
+/// After binding is complete and symbols are merged, function bodies
+/// can be type-checked in parallel because:
+/// 1. Each function body only uses local variables and global symbols
+/// 2. Local type inference doesn't modify global state
+/// 3. Each function is independent
+///
+/// # Arguments
+/// * `program` - The merged program with global symbols
+///
+/// # Returns
+/// `CheckResult` with diagnostics from all functions
+///
+/// This is a reusable core/test-harness entry point, not the production CLI
+/// diagnostic scheduler. CLI semantic-diagnostic behavior is owned by
+/// `crates/tsz-cli/src/driver/check.rs::collect_diagnostics`, which also owns
+/// file scheduling, cache/watch invalidation, checker reuse, and diagnostic
+/// ordering.
+pub fn check_functions_parallel(program: &MergedProgram) -> CheckResult {
+    check_functions_parallel_with_project_semantic_options(
+        program,
+        ProjectSemanticOptions::structural(),
+    )
+}
+
+/// Check function bodies with immutable semantic policies for this project.
+/// Every Rayon worker receives a `QueryCache` carrying the same policy value.
+pub fn check_functions_parallel_with_project_semantic_options(
+    program: &MergedProgram,
+    project_semantic_options: ProjectSemanticOptions,
+) -> CheckResult {
+    ensure_rayon_global_pool();
+
+    let file_names: Vec<String> = program
+        .files
+        .iter()
+        .map(|file| file.file_name.clone())
+        .collect();
+    let (resolved_module_paths, resolved_modules) =
+        if let Some(outcomes) = program.project_module_resolution_outcomes.as_ref() {
+            (
+                unambiguous_project_file_path_map(outcomes),
+                FxHashSet::default(),
+            )
+        } else {
+            crate::checker::module_resolution::build_module_resolution_maps(&file_names)
+        };
+    let resolved_module_paths = Arc::new(resolved_module_paths);
+
+    let shared_binders: Vec<Arc<BinderState>> = program
+        .files
+        .iter()
+        .enumerate()
+        .map(|(file_idx, file)| Arc::new(create_binder_from_bound_file(file, program, file_idx)))
+        .collect();
+    let all_binders = Arc::new(shared_binders.clone());
+    let all_arenas = Arc::new(
+        program
+            .files
+            .iter()
+            .map(|file| Arc::clone(&file.arena))
+            .collect::<Vec<_>>(),
+    );
+    // PERF: Build arena-pointer -> file-index reverse lookup map first (O(F)),
+    // then map each symbol to its file index in O(1) per symbol.
+    // Total: O(S + F) instead of the previous O(S * F) nested iteration.
+    let arena_to_file_idx: FxHashMap<usize, usize> = all_arenas
+        .iter()
+        .enumerate()
+        .map(|(idx, arena)| (Arc::as_ptr(arena) as usize, idx))
+        .collect();
+    let symbol_file_targets: Vec<(tsz_binder::SymbolId, usize)> = program
+        .symbol_arenas
+        .iter()
+        .filter_map(|(sym_id, arena)| {
+            arena_to_file_idx
+                .get(&(Arc::as_ptr(arena) as usize))
+                .map(|&file_idx| (*sym_id, file_idx))
+        })
+        .collect();
+
+    // Pre-compute the symbol->file index as a shared read-only map.
+    // Each checker gets an Arc clone (O(1)) instead of O(N) per-checker insertion.
+    let global_symbol_file_index: Arc<FxHashMap<tsz_binder::SymbolId, usize>> = Arc::new(
+        symbol_file_targets
+            .iter()
+            .copied()
+            .collect::<FxHashMap<_, _>>(),
+    );
+
+    // First, collect all functions from all files (sequential)
+    let mut all_functions: Vec<(usize, NodeIndex)> = Vec::new();
+
+    for (file_idx, file) in program.files.iter().enumerate() {
+        let functions = collect_functions(&file.arena, file.source_file);
+        for func_idx in functions {
+            all_functions.push((file_idx, func_idx));
+        }
+    }
+
+    let function_count = all_functions.len();
+
+    // Check functions in parallel
+    // Note: We need to be careful here - CheckerState holds mutable references
+    // For now, we group by file and check each file's functions together
+    let file_results: Vec<FileCheckResult> = maybe_parallel_iter!(program.files)
+        .enumerate()
+        .map(|(file_idx, file)| {
+            let functions = collect_functions(&file.arena, file.source_file);
+
+            let binder = Arc::clone(&shared_binders[file_idx]);
+
+            // Create a per-thread QueryCache for memoized evaluate_type/is_subtype_of calls.
+            // Each thread gets its own cache using RefCell/Cell (no atomic overhead).
+            // Attach the shared DefinitionStore so generic-call inference can resolve
+            // cross-arena declaration identity (issue #14344, `TSZ_XARENA_BASE_DECL`).
+            let query_cache = tsz_solver::construction::QueryCache::new(&program.type_interner)
+                .with_project_semantic_options(project_semantic_options)
+                .with_definition_store(&program.definition_store);
+
+            // Create checker for this file, using the shared type interner
+            let compiler_options = crate::checker::context::CheckerOptions::default();
+            let mut checker = CheckerState::new_with_shared_def_store(
+                &file.arena,
+                binder.as_ref(),
+                &query_cache,
+                file.file_name.clone(),
+                compiler_options, // default options for internal operations
+                std::sync::Arc::clone(&program.definition_store),
+            );
+            checker.ctx.set_all_arenas(Arc::clone(&all_arenas));
+            checker.ctx.set_all_binders(Arc::clone(&all_binders));
+            checker.ctx.set_current_file_idx(file_idx);
+            checker
+                .ctx
+                .set_resolved_module_paths(Arc::clone(&resolved_module_paths));
+            checker.ctx.set_resolved_modules(resolved_modules.clone());
+            if let Some(outcomes) = program.project_module_resolution_outcomes.as_ref() {
+                checker
+                    .ctx
+                    .set_project_module_resolution_outcomes(Arc::clone(outcomes));
+            }
+            checker
+                .ctx
+                .set_global_symbol_file_index(Arc::clone(&global_symbol_file_index));
+
+            let mut function_results = Vec::new();
+
+            for func_idx in functions {
+                // Check the function
+                let return_type = checker.get_type_of_node(func_idx);
+
+                function_results.push(FunctionCheckResult {
+                    function_idx: func_idx,
+                    file_idx,
+                    return_type,
+                    diagnostics: Vec::new(), // Diagnostics are collected at file level
+                });
+            }
+
+            // Collect diagnostics from checker
+            let diagnostics = std::mem::take(&mut checker.ctx.diagnostics);
+
+            FileCheckResult {
+                file_idx,
+                file_name: file.file_name.clone(),
+                function_results,
+                diagnostics,
+            }
+        })
+        .collect();
+
+    let diagnostic_count: usize = file_results.iter().map(|r| r.diagnostics.len()).sum();
+
+    CheckResult {
+        file_results,
+        function_count,
+        diagnostic_count,
+    }
+}
+
+/// Type check full source files in parallel using Rayon.
+///
+/// Each file gets its own `CheckerState` with file-local mutable state, sharing
+/// only thread-safe structures (`Arc`-wrapped arenas/binders, `DashMap`-backed
+/// `TypeInterner` and `DefinitionStore`). Per-thread `QueryCache` instances use
+/// `RefCell`/`Cell` for zero-overhead single-threaded caching within each file.
+///
+/// Diagnostics are sorted by `(start, code)` within each file and deduplicated
+/// by `(start, code)` after collection, ensuring deterministic output regardless
+/// of thread scheduling.
+///
+/// This helper remains lower-level reusable infrastructure. Production CLI
+/// diagnostics flow through `collect_diagnostics` in `tsz-cli` so the driver can
+/// preserve CLI diagnostics, cache invalidation, and file-session reuse policy.
+/// Feature and fidelity fixes for CLI checking should usually start in that
+/// scheduler before changing this helper.
+///
+/// The body is intentionally thin: [`ParallelCheckPlan::build`] computes the
+/// shared scheduling inputs once, [`ParallelCheckPlan::run_file_checks`] and
+/// [`ParallelCheckPlan::run_lib_checks`] perform the per-file/per-lib work, and
+/// [`ParallelCheckPlan::aggregate`] folds the results into the final
+/// `CheckResult`.
+pub fn check_files_parallel(
+    program: &MergedProgram,
+    checker_options: &CheckerOptions,
+    lib_files: &[Arc<LibFile>],
+) -> CheckResult {
+    check_files_parallel_with_project_semantic_options(
+        program,
+        checker_options,
+        lib_files,
+        ProjectSemanticOptions::structural(),
+    )
+}
+
+/// Check a complete program while carrying one immutable semantic policy into
+/// every file, module-augmentation, and library query cache created by Rayon.
+pub fn check_files_parallel_with_project_semantic_options(
+    program: &MergedProgram,
+    checker_options: &CheckerOptions,
+    lib_files: &[Arc<LibFile>],
+    project_semantic_options: ProjectSemanticOptions,
+) -> CheckResult {
+    check_files_parallel_with_optional_project_inputs(
+        program,
+        checker_options,
+        lib_files,
+        project_semantic_options,
+        program.project_module_resolution_outcomes.clone(),
+        None,
+    )
+}
+
+/// Check a complete program using exact compiler-owned module resolutions.
+///
+/// Supplying this map puts the checker in authoritative project mode: every
+/// request is resolved only by its importer/specifier/kind/mode tuple. Missing
+/// entries and `Unresolved` entries remain unresolved; `External` entries are
+/// known successful resolutions without an in-program file. No filename or
+/// basename guessing is allowed in this mode.
+pub fn check_files_parallel_with_project_inputs(
+    program: &MergedProgram,
+    checker_options: &CheckerOptions,
+    lib_files: &[Arc<LibFile>],
+    project_semantic_options: ProjectSemanticOptions,
+    resolutions: &[ProjectModuleResolution],
+) -> Result<CheckResult, ProjectModuleResolutionError> {
+    let outcomes = build_project_module_resolution_outcomes(program, resolutions)?;
+    Ok(check_files_parallel_with_optional_project_inputs(
+        program,
+        checker_options,
+        lib_files,
+        project_semantic_options,
+        Some(Arc::new(outcomes)),
+        None,
+    ))
+}
+
+/// Check a complete project under exact compiler-owned resolutions and the
+/// caller's shared cooperative work checkpoint.
+pub fn check_files_parallel_with_project_inputs_and_execution_checkpoint(
+    program: &MergedProgram,
+    checker_options: &CheckerOptions,
+    lib_files: &[Arc<LibFile>],
+    project_semantic_options: ProjectSemanticOptions,
+    resolutions: &[ProjectModuleResolution],
+    execution_checkpoint: &dyn tsz_common::ExecutionCheckpoint,
+) -> Result<CheckResult, ProjectProgramCheckError> {
+    let outcomes = build_project_module_resolution_outcomes(program, resolutions)
+        .map_err(ProjectProgramCheckError::ModuleResolution)?;
+    execution_checkpoint
+        .checkpoint(0)
+        .map_err(ProjectProgramCheckError::ExecutionStopped)?;
+    let result = check_files_parallel_with_optional_project_inputs(
+        program,
+        checker_options,
+        lib_files,
+        project_semantic_options,
+        Some(Arc::new(outcomes)),
+        Some(execution_checkpoint),
+    );
+    execution_checkpoint
+        .checkpoint(0)
+        .map_err(ProjectProgramCheckError::ExecutionStopped)?;
+    Ok(result)
+}
+
+/// Typed failure while checking an admitted project program.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProjectProgramCheckError {
+    /// The compiler-owned resolution closure could not be applied to this program.
+    ModuleResolution(ProjectModuleResolutionError),
+    /// The caller's cooperative execution control stopped checking.
+    ExecutionStopped(tsz_common::ProjectExecutionStop),
+}
+
+impl std::fmt::Display for ProjectProgramCheckError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ModuleResolution(error) => write!(formatter, "{error}"),
+            Self::ExecutionStopped(reason) => write!(formatter, "project check stopped: {reason:?}"),
+        }
+    }
+}
+
+impl std::error::Error for ProjectProgramCheckError {}
+
+fn build_project_module_resolution_outcomes(
+    program: &MergedProgram,
+    resolutions: &[ProjectModuleResolution],
+) -> Result<crate::checker::context::ResolvedModuleRequestOutcomeMap, ProjectModuleResolutionError>
+{
+    use crate::checker::context::{
+        ResolutionRequestKind, ResolvedModuleRequestOutcome, ResolvedModuleRequestOutcomeMap,
+    };
+
+    let mut file_indices = FxHashMap::default();
+    for (file_idx, file) in program.files.iter().enumerate() {
+        validate_project_virtual_path(&file.file_name)?;
+        if file_indices
+            .insert(file.file_name.as_str(), file_idx)
+            .is_some()
+        {
+            return Err(ProjectModuleResolutionError::DuplicateProgramPath {
+                path: file.file_name.clone(),
+            });
+        }
+    }
+
+    let mut outcomes = ResolvedModuleRequestOutcomeMap::default();
+    for resolution in resolutions {
+        validate_project_virtual_path(&resolution.importer_path)?;
+        let importer_idx = *file_indices
+            .get(resolution.importer_path.as_str())
+            .ok_or_else(|| ProjectModuleResolutionError::ImporterNotInProgram {
+                path: resolution.importer_path.clone(),
+            })?;
+        if resolution.specifier.is_empty() {
+            return Err(ProjectModuleResolutionError::EmptySpecifier);
+        }
+
+        let request_kind = match &resolution.request_kind {
+            ProjectModuleRequestKind::EsmImport => ResolutionRequestKind::EsmImport,
+            ProjectModuleRequestKind::DynamicImport => ResolutionRequestKind::DynamicImport,
+            ProjectModuleRequestKind::CjsRequire => ResolutionRequestKind::CjsRequire,
+            ProjectModuleRequestKind::EsmReExport => ResolutionRequestKind::EsmReExport,
+            ProjectModuleRequestKind::Unsupported { syntax_kind } => {
+                return Err(ProjectModuleResolutionError::UnsupportedRequestKind {
+                    syntax_kind: syntax_kind.clone(),
+                });
+            }
+        };
+        let outcome = match &resolution.target {
+            ProjectModuleResolutionTarget::File { path } => {
+                validate_project_virtual_path(path)?;
+                let target_idx = *file_indices.get(path.as_str()).ok_or_else(|| {
+                    ProjectModuleResolutionError::TargetNotInProgram { path: path.clone() }
+                })?;
+                ResolvedModuleRequestOutcome::File(target_idx)
+            }
+            ProjectModuleResolutionTarget::External { identity } => {
+                if identity.trim().is_empty() {
+                    return Err(ProjectModuleResolutionError::EmptyExternalIdentity);
+                }
+                ResolvedModuleRequestOutcome::External {
+                    identity: identity.clone(),
+                }
+            }
+            ProjectModuleResolutionTarget::Unresolved => ResolvedModuleRequestOutcome::Unresolved,
+        };
+        let key = (
+            importer_idx,
+            resolution.specifier.clone(),
+            resolution.resolution_mode,
+            request_kind,
+        );
+        if outcomes.insert(key, outcome).is_some() {
+            return Err(ProjectModuleResolutionError::DuplicateRequest {
+                importer_path: resolution.importer_path.clone(),
+                specifier: resolution.specifier.clone(),
+            });
+        }
+    }
+
+    Ok(outcomes)
+}
+
+/// Project legacy post-processing's `(file, specifier)` view only from exact
+/// compiler outcomes that agree across every request mode/kind. Conflicting,
+/// external, and unresolved requests are deliberately omitted.
+fn unambiguous_project_file_path_map(
+    outcomes: &crate::checker::context::ResolvedModuleRequestOutcomeMap,
+) -> FxHashMap<(usize, String), usize> {
+    let mut by_specifier: FxHashMap<(usize, String), Option<usize>> = FxHashMap::default();
+    let mut conflicts = FxHashSet::default();
+    for ((file_idx, specifier, _, _), outcome) in outcomes {
+        let key = (*file_idx, specifier.clone());
+        let target = match outcome {
+            crate::checker::context::ResolvedModuleRequestOutcome::File(target_idx) => {
+                Some(*target_idx)
+            }
+            crate::checker::context::ResolvedModuleRequestOutcome::External { .. }
+            | crate::checker::context::ResolvedModuleRequestOutcome::Unresolved => None,
+        };
+        if let Some(existing) = by_specifier.get(&key) {
+            if *existing != target {
+                conflicts.insert(key);
+            }
+        } else {
+            by_specifier.insert(key, target);
+        }
+    }
+    by_specifier
+        .into_iter()
+        .filter_map(|(key, target)| {
+            (!conflicts.contains(&key))
+                .then_some(target.map(|target_idx| (key, target_idx)))
+                .flatten()
+        })
+        .collect()
+}
+
+fn check_files_parallel_with_optional_project_inputs<'a>(
+    program: &'a MergedProgram,
+    checker_options: &'a CheckerOptions,
+    lib_files: &[Arc<LibFile>],
+    project_semantic_options: ProjectSemanticOptions,
+    project_module_resolution_outcomes: Option<
+        Arc<crate::checker::context::ResolvedModuleRequestOutcomeMap>,
+    >,
+    execution_checkpoint: Option<&'a dyn tsz_common::ExecutionCheckpoint>,
+) -> CheckResult {
+    // Ensure Rayon global pool has adequate stack size for deep type-checking recursion.
+    ensure_rayon_global_pool();
+
+    let plan = ParallelCheckPlan::build(
+        program,
+        checker_options,
+        lib_files,
+        project_semantic_options,
+        project_module_resolution_outcomes,
+        execution_checkpoint,
+    );
+    plan.prime_module_augmentation_bodies();
+    let mut file_results = plan.run_file_checks();
+    plan.run_lib_checks(&mut file_results);
+    plan.aggregate(file_results)
+}
+
+/// Stable key for matching a lib diagnostic against the baseline lib run.
+///
+/// Lib files are checked twice (once standalone for the baseline, once with
+/// user augmentations applied); diagnostics that appear in both runs are
+/// pre-existing lib noise and are filtered out. The fingerprint
+/// `(file_name, start, code, message_text)` identifies "the same diagnostic"
+/// across the two runs.
+fn lib_diagnostic_fingerprint(file_name: &str, diag: &Diagnostic) -> (String, u32, u32, String) {
+    (
+        file_name.to_owned(),
+        diag.start,
+        diag.code,
+        diag.message_text.clone(),
+    )
+}
+
+/// Shared, read-only scheduling inputs for one parallel file check.
+///
+/// `ParallelCheckPlan` captures everything the per-file and per-lib workers
+/// need — resolved module maps, shared binders/arenas, lib contexts, the shared
+/// query cache, and the affected-lib interface sets — computed once from the
+/// `MergedProgram` and `CheckerOptions`. Holding these as named fields keeps
+/// [`check_files_parallel`] a thin orchestrator and makes the
+/// scheduling/diagnostics boundary explicit: `build` produces the plan, the
+/// `check_one_*` workers consume it, and [`ParallelCheckPlan::aggregate`] folds
+/// the per-file results into the final [`CheckResult`].
+fn project_plan_checkpoint(
+    checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+    work_units: u64,
+) -> bool {
+    checkpoint.is_none_or(|checkpoint| checkpoint.checkpoint(work_units).is_ok())
+}
+
+struct ParallelCheckPlan<'a> {
+    program: &'a MergedProgram,
+    checker_options: &'a CheckerOptions,
+    project_semantic_options: ProjectSemanticOptions,
+    project_module_resolution_outcomes:
+        Option<Arc<crate::checker::context::ResolvedModuleRequestOutcomeMap>>,
+    execution_checkpoint: Option<&'a dyn tsz_common::ExecutionCheckpoint>,
+    resolved_module_paths: Arc<FxHashMap<(usize, String), usize>>,
+    resolved_modules: Arc<FxHashSet<String>>,
+    checker_lib_files: Vec<Arc<LibFile>>,
+    lib_contexts: Arc<Vec<LibContext>>,
+    /// Prebuilt union of lib `file_locals` names, shared (`Arc`) into every
+    /// per-file checker so identifier resolution can skip the `O(num_lib_files)`
+    /// `file_locals` scan for names no lib declares. Built once here rather than
+    /// per file (it is `O(total lib symbols)`).
+    lib_file_local_names: Option<Arc<FxHashSet<String>>>,
+    all_binders: Arc<Vec<Arc<BinderState>>>,
+    all_arenas: Arc<Vec<Arc<NodeArena>>>,
+    global_symbol_file_index: Arc<FxHashMap<tsz_binder::SymbolId, usize>>,
+    shared_declared_modules: Option<Arc<crate::checker::context::GlobalDeclaredModules>>,
+    shared_query_cache: Option<tsz_solver::construction::SharedQueryCache>,
+    affected_lib_interfaces: FxHashSet<String>,
+    affected_lib_extension_interfaces: FxHashSet<String>,
+}
+
+impl<'a> ParallelCheckPlan<'a> {
+    /// Compute every shared input the parallel workers need, exactly once.
+    fn build(
+        program: &'a MergedProgram,
+        checker_options: &'a CheckerOptions,
+        lib_files: &[Arc<LibFile>],
+        project_semantic_options: ProjectSemanticOptions,
+        project_module_resolution_outcomes: Option<
+            Arc<crate::checker::context::ResolvedModuleRequestOutcomeMap>,
+        >,
+        execution_checkpoint: Option<&'a dyn tsz_common::ExecutionCheckpoint>,
+    ) -> Self {
+        let mut file_names = Vec::with_capacity(program.files.len());
+        for file in &program.files {
+            if !project_plan_checkpoint(execution_checkpoint, 1) {
+                break;
+            }
+            file_names.push(file.file_name.clone());
+        }
+        let (resolved_module_paths, resolved_modules) =
+            if let Some(outcomes) = project_module_resolution_outcomes.as_ref() {
+                (
+                    unambiguous_project_file_path_map(outcomes),
+                    FxHashSet::default(),
+                )
+            } else {
+                crate::checker::module_resolution::build_module_resolution_maps(&file_names)
+            };
+        let resolved_module_paths = Arc::new(resolved_module_paths);
+        let resolved_modules = Arc::new(resolved_modules);
+
+        let should_clone_libs_in_parallel = program.files.len() > 1;
+        let checker_lib_files =
+            clone_lib_files_for_checker(lib_files, should_clone_libs_in_parallel);
+
+        // Create fresh checker lib contexts from cloned lib files (contains both arena and binder).
+        // Wrapped in Arc so that per-file checkers and child delegations share
+        // the same Vec with O(1) clone cost (single atomic refcount increment).
+        let mut lib_contexts_vec = Vec::with_capacity(checker_lib_files.len());
+        for lib in &checker_lib_files {
+            if !project_plan_checkpoint(execution_checkpoint, 1) {
+                break;
+            }
+            lib_contexts_vec.push(LibContext {
+                arena: Arc::clone(&lib.arena),
+                binder: Arc::clone(&lib.binder),
+            });
+        }
+        let lib_contexts = Arc::new(lib_contexts_vec);
+
+        // Build the lib `file_locals` name index once and share it (Arc) into
+        // every per-file checker, so type/value-position identifier resolution
+        // can skip the per-identifier `O(num_lib_files)` lib scan for names no
+        // lib declares (the common case for a project's own symbols).
+        let lib_file_local_names = tsz_checker::context::build_lib_file_local_names(&lib_contexts);
+
+        // PERF: Pre-compute merged augmentation data ONCE instead of per-file.
+        // This reduces augmentation merging from O(N_files^2) to O(N_files).
+        let shared_binder_data = SharedBinderData::from_program(&program.files);
+
+        let mut all_binders_vec = Vec::with_capacity(program.files.len());
+        for (file_idx, file) in program.files.iter().enumerate() {
+            if !project_plan_checkpoint(execution_checkpoint, 1) {
+                break;
+            }
+            all_binders_vec.push(Arc::new(create_binder_from_bound_file_with_shared(
+                file,
+                program,
+                file_idx,
+                &shared_binder_data,
+            )));
+        }
+        let all_binders = Arc::new(all_binders_vec);
+        let mut all_arenas_vec = Vec::with_capacity(program.files.len());
+        for file in &program.files {
+            if !project_plan_checkpoint(execution_checkpoint, 1) {
+                break;
+            }
+            all_arenas_vec.push(Arc::clone(&file.arena));
+        }
+        let all_arenas = Arc::new(all_arenas_vec);
+        // PERF: Build arena-pointer -> file-index reverse lookup map first (O(F)),
+        // then map each symbol to its file index in O(1) per symbol.
+        // Total: O(S + F) instead of the previous O(S * F) nested iteration.
+        let mut arena_to_file_idx = FxHashMap::default();
+        for (idx, arena) in all_arenas.iter().enumerate() {
+            if !project_plan_checkpoint(execution_checkpoint, 1) {
+                break;
+            }
+            arena_to_file_idx.insert(Arc::as_ptr(arena) as usize, idx);
+        }
+        let mut symbol_file_targets = Vec::with_capacity(program.symbol_arenas.len());
+        for (sym_id, arena) in program.symbol_arenas.iter() {
+            if !project_plan_checkpoint(execution_checkpoint, 1) {
+                break;
+            }
+            if let Some(&file_idx) = arena_to_file_idx.get(&(Arc::as_ptr(arena) as usize)) {
+                symbol_file_targets.push((*sym_id, file_idx));
+            }
+        }
+
+        // Pre-compute the symbol->file index as a shared read-only map.
+        // Each checker gets an Arc clone (O(1)) instead of O(N) per-checker insertion.
+        let global_symbol_file_index: Arc<FxHashMap<tsz_binder::SymbolId, usize>> = Arc::new(
+            symbol_file_targets
+                .iter()
+                .copied()
+                .collect::<FxHashMap<_, _>>(),
+        );
+
+        // Pre-compute skeleton-derived declared modules ONCE and share via Arc.
+        // Previously this was computed per-file inside the closure, rebuilding the
+        // same FxHashSet/Vec on every file (O(N_files * N_modules) total work).
+        let shared_declared_modules: Option<Arc<crate::checker::context::GlobalDeclaredModules>> =
+            program.skeleton_index.as_ref().map(|skel| {
+                let (exact, patterns) = skel.build_declared_module_sets();
+                Arc::new(
+                    crate::checker::context::GlobalDeclaredModules::from_skeleton(exact, patterns),
+                )
+            });
+
+        // Initialize per-file delegation locks for parallel correctness.
+        program
+            .definition_store
+            .init_file_locks(program.files.len());
+
+        // Create a shared cross-file query cache for multi-file projects.
+        // In projects like ts-toolbelt (242 files), the same type evaluations and
+        // subtype checks are performed across many files. The shared cache uses
+        // DashMap for thread-safe concurrent access and eliminates redundant
+        // computation across parallel file checkers.
+        let shared_query_cache = if program.files.len() > 1 {
+            Some(tsz_solver::construction::SharedQueryCache::new())
+        } else {
+            None
+        };
+
+        let affected_lib_interfaces = affected_lib_interface_names(program, &checker_lib_files);
+        let affected_lib_extension_interfaces = if affected_lib_interfaces.is_empty() {
+            FxHashSet::default()
+        } else {
+            affected_lib_extension_interface_names(
+                program,
+                &checker_lib_files,
+                &affected_lib_interfaces,
+            )
+        };
+
+        Self {
+            program,
+            checker_options,
+            project_semantic_options,
+            project_module_resolution_outcomes,
+            execution_checkpoint,
+            resolved_module_paths,
+            resolved_modules,
+            checker_lib_files,
+            lib_contexts,
+            lib_file_local_names,
+            all_binders,
+            all_arenas,
+            global_symbol_file_index,
+            shared_declared_modules,
+            shared_query_cache,
+            affected_lib_interfaces,
+            affected_lib_extension_interfaces,
+        }
+    }
+
+    /// Build a per-worker `QueryCache`, attaching the shared cross-file cache
+    /// (L2) when this is a multi-file project.
+    ///
+    /// Each thread gets its own `RefCell`/`Cell`-backed cache (no atomic
+    /// overhead) for memoized `evaluate_type` / `is_subtype_of` calls.
+    fn make_query_cache(&self) -> tsz_solver::construction::QueryCache<'_> {
+        let cache = if let Some(ref shared) = self.shared_query_cache {
+            tsz_solver::construction::QueryCache::new_with_shared(
+                &self.program.type_interner,
+                shared,
+            )
+        } else {
+            tsz_solver::construction::QueryCache::new(&self.program.type_interner)
+        };
+        // Attach the shared DefinitionStore so generic-call inference can resolve
+        // cross-arena declaration identity (issue #14344, `TSZ_XARENA_BASE_DECL`).
+        let cache = cache
+            .with_project_semantic_options(self.project_semantic_options)
+            .with_definition_store(&self.program.definition_store);
+        match self.execution_checkpoint {
+            Some(checkpoint) => cache.with_execution_checkpoint(checkpoint),
+            None => cache,
+        }
+    }
+
+    fn prime_module_augmentation_bodies(&self) {
+        if self.program.files.is_empty() {
+            return;
+        }
+
+        let file = &self.program.files[0];
+        if self
+            .execution_checkpoint
+            .is_some_and(|checkpoint| checkpoint.checkpoint(1).is_err())
+        {
+            return;
+        }
+        self.with_bound_file_checker_and_types(0, file, |checker, _binder, _file, _types| {
+            checker.prime_module_augmentation_bodies();
+        });
+        if let Some(checkpoint) = self.execution_checkpoint {
+            let _ = checkpoint.checkpoint(0);
+        }
+    }
+
+    /// Build a `FileCheckResult` for a lib file at `lib_idx` with the given
+    /// diagnostics. Lib results are indexed after the user files.
+    fn lib_file_result(
+        &self,
+        lib_idx: usize,
+        lib_file: &Arc<LibFile>,
+        diagnostics: Vec<Diagnostic>,
+    ) -> FileCheckResult {
+        FileCheckResult {
+            file_idx: self.program.files.len() + lib_idx,
+            file_name: lib_file.file_name.clone(),
+            function_results: Vec::new(),
+            diagnostics,
+        }
+    }
+
+    /// Sort by position then deduplicate by `(start, code)` for deterministic
+    /// output regardless of thread scheduling.
+    fn sort_and_dedup(diagnostics: &mut Vec<Diagnostic>) {
+        diagnostics.sort_by(|a, b| a.compare(b));
+        diagnostics.dedup_by(|a, b| a.start == b.start && a.code == b.code);
+    }
+
+    /// Lend a project-configured checker with all shared program context.
+    fn with_bound_file_checker_and_types<Output>(
+        &self,
+        file_idx: usize,
+        file: &BoundFile,
+        consume: impl for<'checker> FnOnce(
+            &mut CheckerState<'checker>,
+            &BinderState,
+            &BoundFile,
+            &dyn tsz_solver::construction::TypeDatabase,
+        ) -> Output,
+    ) -> Output {
+        let binder = Arc::clone(&self.all_binders[file_idx]);
+        let query_cache = self.make_query_cache();
+        let mut checker = CheckerState::with_options_and_shared_def_store(
+            &file.arena,
+            binder.as_ref(),
+            &query_cache,
+            file.file_name.clone(),
+            self.checker_options,
+            std::sync::Arc::clone(&self.program.definition_store),
+        );
+        checker.ctx.set_all_arenas(Arc::clone(&self.all_arenas));
+
+        // Use pre-computed skeleton-derived declared modules (shared via Arc::clone).
+        if let Some(ref modules) = self.shared_declared_modules {
+            checker
+                .ctx
+                .set_declared_modules_from_skeleton(Arc::clone(modules));
+        }
+
+        checker.ctx.set_all_binders(Arc::clone(&self.all_binders));
+        checker.ctx.set_current_file_idx(file_idx);
+        checker
+            .ctx
+            .set_resolved_module_paths(Arc::clone(&self.resolved_module_paths));
+        checker
+            .ctx
+            .set_resolved_modules(Arc::clone(&self.resolved_modules));
+        if let Some(outcomes) = self.project_module_resolution_outcomes.as_ref() {
+            checker
+                .ctx
+                .set_project_module_resolution_outcomes(Arc::clone(outcomes));
+        }
+        checker
+            .ctx
+            .set_global_symbol_file_index(Arc::clone(&self.global_symbol_file_index));
+
+        if !self.lib_contexts.is_empty() {
+            checker
+                .ctx
+                .set_lib_contexts_shared(Arc::clone(&self.lib_contexts));
+            checker
+                .ctx
+                .set_lib_file_local_names(self.lib_file_local_names.clone());
+            checker
+                .ctx
+                .set_actual_lib_file_count(self.lib_contexts.len());
+        }
+
+        consume(&mut checker, binder.as_ref(), file, &query_cache)
+    }
+
+    /// Check a single user file, returning its sorted, deduplicated diagnostics.
+    fn check_one_file(&self, file_idx: usize, file: &BoundFile) -> FileCheckResult {
+        let mut diagnostics = self.with_bound_file_checker_and_types(
+            file_idx,
+            file,
+            |checker, _binder, file, _types| {
+                checker.check_source_file(file.source_file);
+                std::mem::take(&mut checker.ctx.diagnostics)
+            },
+        );
+
+        // Sort diagnostics by position for deterministic output within each file.
+        diagnostics.sort_by(|a, b| a.compare(b));
+
+        suppress_parallel_ts2339_cascade_diagnostics(file.arena.as_ref(), &mut diagnostics);
+
+        // Deduplicate within each file: same (start, code) = same diagnostic.
+        diagnostics.dedup_by(|a, b| a.start == b.start && a.code == b.code);
+
+        FileCheckResult {
+            file_idx,
+            file_name: file.file_name.clone(),
+            function_results: Vec::new(),
+            diagnostics,
+        }
+    }
+
+    /// Check a single lib file against the merged program's affected interfaces.
+    fn check_one_lib(&self, lib_idx: usize, lib_file: &Arc<LibFile>) -> FileCheckResult {
+        if !lib_file_contains_affected_interface(lib_file.as_ref(), &self.affected_lib_interfaces) {
+            return self.lib_file_result(lib_idx, lib_file, Vec::new());
+        }
+
+        let query_cache = self.make_query_cache();
+
+        let lib_bound_file = build_lib_bound_file_for_interface_checks(
+            self.program,
+            lib_file,
+            &self.affected_lib_interfaces,
+        );
+        let mut binder =
+            create_binder_from_bound_file(&lib_bound_file, self.program, self.program.files.len());
+        // PERF: `build_lib_bound_file_for_interface_checks` always seeds
+        // `lib_bound_file.semantic_defs` as empty, so the previous
+        // clone-then-overlay collapsed to a deep clone of `program.semantic_defs`
+        // and Arc-wrapping the result. With `program.semantic_defs` now
+        // `Arc`-shared, the fast path is one atomic refcount bump plus a
+        // potential `Arc::make_mut` only when the per-lib map actually
+        // contributes entries (currently never).
+        if lib_bound_file.semantic_defs.is_empty() {
+            binder.semantic_defs = Arc::clone(&self.program.semantic_defs);
+        } else {
+            let mut composed_semantic_defs = (*self.program.semantic_defs).clone();
+            for (sym_id, entry) in lib_bound_file.semantic_defs.iter() {
+                composed_semantic_defs.insert(*sym_id, entry.clone());
+            }
+            binder.semantic_defs = Arc::new(composed_semantic_defs);
+        }
+
+        let mut checker = CheckerState::with_options(
+            &lib_bound_file.arena,
+            &binder,
+            &query_cache,
+            lib_bound_file.file_name.clone(),
+            self.checker_options,
+        );
+        checker.ctx.set_all_arenas(Arc::clone(&self.all_arenas));
+        if let Some(ref modules) = self.shared_declared_modules {
+            checker
+                .ctx
+                .set_declared_modules_from_skeleton(Arc::clone(modules));
+        }
+        checker.ctx.set_all_binders(Arc::clone(&self.all_binders));
+        checker
+            .ctx
+            .set_resolved_module_paths(Arc::clone(&self.resolved_module_paths));
+        checker
+            .ctx
+            .set_resolved_modules(Arc::clone(&self.resolved_modules));
+        if let Some(outcomes) = self.project_module_resolution_outcomes.as_ref() {
+            checker
+                .ctx
+                .set_project_module_resolution_outcomes(Arc::clone(outcomes));
+        }
+        checker
+            .ctx
+            .set_global_symbol_file_index(Arc::clone(&self.global_symbol_file_index));
+
+        let other_lib_contexts: Vec<LibContext> = self
+            .lib_contexts
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| *idx != lib_idx)
+            .map(|(_, ctx)| ctx.clone())
+            .collect();
+        checker.ctx.set_lib_contexts(other_lib_contexts);
+        checker
+            .ctx
+            .set_actual_lib_file_count(self.lib_contexts.len());
+        checker.prime_boxed_types();
+
+        checker.check_source_file_interfaces_only_filtered_post_merge(
+            lib_bound_file.source_file,
+            &self.affected_lib_interfaces,
+            &self.affected_lib_extension_interfaces,
+        );
+
+        let mut diagnostics = std::mem::take(&mut checker.ctx.diagnostics);
+        Self::sort_and_dedup(&mut diagnostics);
+
+        self.lib_file_result(lib_idx, lib_file, diagnostics)
+    }
+
+    /// Check a lib file in isolation to capture its pre-existing diagnostics.
+    ///
+    /// The resulting diagnostics form the baseline that [`check_one_lib`] output
+    /// is filtered against, so only diagnostics introduced by user augmentations
+    /// survive.
+    fn check_one_lib_baseline(&self, lib_idx: usize, lib_file: &Arc<LibFile>) -> FileCheckResult {
+        if !lib_file_contains_affected_interface(lib_file.as_ref(), &self.affected_lib_interfaces) {
+            return self.lib_file_result(lib_idx, lib_file, Vec::new());
+        }
+
+        let query_cache = tsz_solver::construction::QueryCache::new(&self.program.type_interner)
+            .with_project_semantic_options(self.project_semantic_options)
+            .with_definition_store(&self.program.definition_store);
+
+        let mut checker = CheckerState::with_options(
+            &lib_file.arena,
+            lib_file.binder.as_ref(),
+            &query_cache,
+            lib_file.file_name.clone(),
+            self.checker_options,
+        );
+        let other_lib_contexts: Vec<LibContext> = self
+            .lib_contexts
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| *idx != lib_idx)
+            .map(|(_, ctx)| ctx.clone())
+            .collect();
+        checker.ctx.set_lib_contexts(other_lib_contexts);
+        checker
+            .ctx
+            .set_actual_lib_file_count(self.lib_contexts.len());
+        checker.prime_boxed_types();
+        checker.check_source_file_interfaces_only_filtered_post_merge(
+            lib_file.root_index,
+            &self.affected_lib_interfaces,
+            &self.affected_lib_extension_interfaces,
+        );
+
+        let mut diagnostics = std::mem::take(&mut checker.ctx.diagnostics);
+        Self::sort_and_dedup(&mut diagnostics);
+
+        self.lib_file_result(lib_idx, lib_file, diagnostics)
+    }
+
+    /// Run the per-user-file checks, sequentially for a single file and in
+    /// parallel (preserving `file_idx` order) otherwise.
+    fn run_file_checks(&self) -> Vec<FileCheckResult> {
+        // Single-file optimization: skip Rayon overhead when there's only one file.
+        // For multi-file projects, use parallel iteration via Rayon's work-stealing
+        // scheduler. `par_iter().enumerate()` preserves input ordering (file_idx) so
+        // results are deterministic regardless of which thread completes first.
+        if self.program.files.len() <= 1 {
+            self.program
+                .files
+                .iter()
+                .enumerate()
+                .map(|(file_idx, file)| self.check_one_file(file_idx, file))
+                .collect()
+        } else {
+            maybe_parallel_iter!(self.program.files)
+                .enumerate()
+                .map(|(file_idx, file)| self.check_one_file(file_idx, file))
+                .collect()
+        }
+    }
+
+    /// Append the per-lib-file check results to `file_results`.
+    ///
+    /// When no user code touches a lib interface, the lib results are empty
+    /// placeholders. Otherwise each affected lib is checked twice — once for the
+    /// baseline and once with augmentations — and only the augmentation-induced
+    /// diagnostics are retained.
+    fn run_lib_checks(&self, file_results: &mut Vec<FileCheckResult>) {
+        if self.affected_lib_interfaces.is_empty() {
+            file_results.extend(
+                self.checker_lib_files
+                    .iter()
+                    .enumerate()
+                    .map(|(lib_idx, lib_file)| self.lib_file_result(lib_idx, lib_file, Vec::new())),
+            );
+        } else {
+            let baseline_lib_diagnostics: FxHashSet<(String, u32, u32, String)> = self
+                .checker_lib_files
+                .iter()
+                .enumerate()
+                .flat_map(|(lib_idx, lib_file)| {
+                    let file_result = self.check_one_lib_baseline(lib_idx, lib_file);
+                    let file_name = file_result.file_name.clone();
+                    file_result
+                        .diagnostics
+                        .into_iter()
+                        .map(move |diag| lib_diagnostic_fingerprint(&file_name, &diag))
+                })
+                .collect();
+
+            file_results.extend(self.checker_lib_files.iter().enumerate().map(
+                |(lib_idx, lib_file)| {
+                    let mut file_result = self.check_one_lib(lib_idx, lib_file);
+                    let file_name = file_result.file_name.clone();
+                    file_result.diagnostics.retain(|diag| {
+                        !baseline_lib_diagnostics
+                            .contains(&lib_diagnostic_fingerprint(&file_name, diag))
+                    });
+                    file_result
+                },
+            ));
+        }
+    }
+
+    /// Apply cross-file augmentation diagnostics and fold per-file results into
+    /// the final [`CheckResult`].
+    fn aggregate(&self, mut file_results: Vec<FileCheckResult>) -> CheckResult {
+        add_reexported_module_augmentation_enum_conflict_diagnostics(
+            self.program,
+            self.resolved_module_paths.as_ref(),
+            &mut file_results,
+        );
+        suppress_parallel_import_shadowing_namespace_type_diagnostics(
+            self.program,
+            self.resolved_module_paths.as_ref(),
+            &mut file_results,
+        );
+        add_parallel_global_augmentation_member_conflict_diagnostics(
+            self.program,
+            &mut file_results,
+        );
+
+        let diagnostic_count: usize = file_results.iter().map(|r| r.diagnostics.len()).sum();
+
+        CheckResult {
+            file_results,
+            function_count: 0,
+            diagnostic_count,
+        }
+    }
+}
+
+#[cfg(test)]
+mod project_module_resolution_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use crate::checker::context::{
+        ResolutionModeOverride, ResolutionRequestKind, ResolvedModuleRequestOutcome,
+        ResolvedModuleRequestOutcomeMap,
+    };
+
+    struct ArmedExecutionStop {
+        armed: AtomicBool,
+        remaining: AtomicU64,
+        stopped: AtomicBool,
+    }
+
+    impl ArmedExecutionStop {
+        fn new() -> Self {
+            Self {
+                armed: AtomicBool::new(false),
+                remaining: AtomicU64::new(u64::MAX),
+                stopped: AtomicBool::new(false),
+            }
+        }
+
+        fn arm_after(&self, successful_units: u64) {
+            self.remaining.store(successful_units, Ordering::Release);
+            self.armed.store(true, Ordering::Release);
+        }
+    }
+
+    impl tsz_common::ExecutionCheckpoint for ArmedExecutionStop {
+        fn checkpoint(
+            &self,
+            work_units: u64,
+        ) -> Result<(), tsz_common::ProjectExecutionStop> {
+            use tsz_common::ProjectExecutionStop;
+            if self.stopped.load(Ordering::Acquire) {
+                return Err(ProjectExecutionStop::WorkBudgetExhausted);
+            }
+            if !self.armed.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            if self
+                .remaining
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                    remaining.checked_sub(work_units)
+                })
+                .is_err()
+            {
+                self.stopped.store(true, Ordering::Release);
+                return Err(ProjectExecutionStop::WorkBudgetExhausted);
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn project_checker_session_resolves_imported_members_in_full_program_context() {
+        let mut program = compile_files_with_libs(
+            vec![
+                (
+                    "src/app.service.ts".to_owned(),
+                    "export class AppService { value = 42; }".to_owned(),
+                ),
+                (
+                    "src/app.controller.ts".to_owned(),
+                    "import { AppService } from './app.service'; const appService = new AppService(); export const result = appService.value;".to_owned(),
+                ),
+            ],
+            &[],
+        );
+        let importer_index = program
+            .files
+            .iter()
+            .position(|file| file.file_name == "src/app.controller.ts")
+            .unwrap();
+        program
+            .set_project_module_resolutions(&[ProjectModuleResolution {
+                importer_path: "src/app.controller.ts".to_owned(),
+                specifier: "./app.service".to_owned(),
+                request_kind: ProjectModuleRequestKind::EsmImport,
+                resolution_mode: None,
+                target: ProjectModuleResolutionTarget::File {
+                    path: "src/app.service.ts".to_owned(),
+                },
+            }])
+            .unwrap();
+
+        let file = &program.files[importer_index];
+        let access_index = (0..file.arena.len())
+            .map(|index| NodeIndex(index as u32))
+            .find(|&index| {
+                file.arena
+                    .get(index)
+                    .is_some_and(|node| node.kind == syntax_kind_ext::PROPERTY_ACCESS_EXPRESSION)
+            })
+            .expect("fixture should contain the imported member access");
+        let checker_options = CheckerOptions::default();
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let execution_budget = tsz_common::ProjectExecutionBudget::new(
+            std::time::Instant::now() + std::time::Duration::from_secs(30),
+            &cancelled,
+            10_000,
+        );
+        let session = ProjectCheckerSession::new(
+            &program,
+            &checker_options,
+            &[],
+            ProjectSemanticOptions::structural(),
+            &execution_budget,
+        )
+        .unwrap();
+        let actual = session
+            .with_file_checker(importer_index, |checker, _binder, _file| {
+                checker.get_type_of_node(access_index)
+            })
+            .unwrap();
+
+        assert_eq!(actual, TypeId::NUMBER);
+    }
+
+    #[test]
+    fn stopped_lazy_alias_walk_does_not_poison_a_fresh_project_session() {
+        let mut source = String::from("type Alias0 = string;\n");
+        for index in 1..=48 {
+            source.push_str(&format!("type Alias{index} = Alias{};\n", index - 1));
+        }
+        source.push_str("export const value: Alias48 = 'ok';\n");
+        let mut program = compile_files_with_libs(vec![("src/main.ts".to_owned(), source)], &[]);
+        program.set_project_module_resolutions(&[]).unwrap();
+        let file_index = program
+            .files
+            .iter()
+            .position(|file| file.file_name == "src/main.ts")
+            .unwrap();
+        let checker_options = CheckerOptions::default();
+        let stop = ArmedExecutionStop::new();
+        let stopped_session = ProjectCheckerSession::new(
+            &program,
+            &checker_options,
+            &[],
+            ProjectSemanticOptions::structural(),
+            &stop,
+        )
+        .unwrap();
+
+        let stopped = stopped_session.with_file_checker(file_index, |checker, binder, _file| {
+            let alias = binder.file_locals.get("Alias48").unwrap();
+            let alias_type = checker.get_type_of_symbol(alias);
+            stop.arm_after(5);
+            checker.resolve_lazy_type(alias_type)
+        });
+        assert!(matches!(
+            stopped,
+            Err(ProjectCheckerSessionError::ExecutionStopped(
+                tsz_common::ProjectExecutionStop::WorkBudgetExhausted
+            ))
+        ));
+
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let fresh_budget = tsz_common::ProjectExecutionBudget::new(
+            std::time::Instant::now() + std::time::Duration::from_secs(30),
+            &cancelled,
+            10_000,
+        );
+        let fresh_session = ProjectCheckerSession::new(
+            &program,
+            &checker_options,
+            &[],
+            ProjectSemanticOptions::structural(),
+            &fresh_budget,
+        )
+        .unwrap();
+        let actual = fresh_session
+            .with_file_checker(file_index, |checker, binder, _file| {
+                let alias = binder.file_locals.get("Alias48").unwrap();
+                let alias_type = checker.get_type_of_symbol(alias);
+                checker.resolve_lazy_type(alias_type)
+            })
+            .unwrap();
+        assert_eq!(actual, TypeId::STRING);
+    }
+
+    #[test]
+    fn explicit_project_resolution_preserves_outcomes_and_disables_filename_guessing() {
+        let mut program = compile_files_with_libs(
+            vec![
+                (
+                    "src/main.ts".to_owned(),
+                    "import { value } from './dep'; export const result = value;".to_owned(),
+                ),
+                (
+                    "src/dep.ts".to_owned(),
+                    "export const value = 1;".to_owned(),
+                ),
+            ],
+            &[],
+        );
+        let importer_idx = program
+            .files
+            .iter()
+            .position(|file| file.file_name == "src/main.ts")
+            .unwrap();
+        let target_idx = program
+            .files
+            .iter()
+            .position(|file| file.file_name == "src/dep.ts")
+            .unwrap();
+        let binders: Arc<Vec<Arc<BinderState>>> = Arc::new(
+            program
+                .files
+                .iter()
+                .enumerate()
+                .map(|(file_idx, file)| {
+                    Arc::new(create_binder_from_bound_file(file, &program, file_idx))
+                })
+                .collect(),
+        );
+        let arenas = Arc::new(
+            program
+                .files
+                .iter()
+                .map(|file| Arc::clone(&file.arena))
+                .collect::<Vec<_>>(),
+        );
+        let mut checker = CheckerState::new(
+            &program.files[importer_idx].arena,
+            &binders[importer_idx],
+            &program.type_interner,
+            "src/main.ts".to_owned(),
+            CheckerOptions::default(),
+        );
+        checker.ctx.set_all_arenas(Arc::clone(&arenas));
+        checker.ctx.set_all_binders(Arc::clone(&binders));
+        checker.ctx.set_current_file_idx(importer_idx);
+
+        assert_eq!(
+            checker
+                .ctx
+                .resolve_import_target_from_file(importer_idx, "./dep"),
+            Some(target_idx),
+            "the standalone checker fixture should demonstrate its filename fallback"
+        );
+        drop(checker);
+
+        program
+            .set_project_module_resolutions(&[ProjectModuleResolution {
+                importer_path: "src/main.ts".to_owned(),
+                specifier: "./dep".to_owned(),
+                request_kind: ProjectModuleRequestKind::EsmImport,
+                resolution_mode: None,
+                target: ProjectModuleResolutionTarget::Unresolved,
+            }])
+            .unwrap();
+        let mut checker = CheckerState::new(
+            &program.files[importer_idx].arena,
+            &binders[importer_idx],
+            &program.type_interner,
+            "src/main.ts".to_owned(),
+            CheckerOptions::default(),
+        );
+        checker.ctx.set_all_arenas(Arc::clone(&arenas));
+        checker.ctx.set_all_binders(Arc::clone(&binders));
+        checker.ctx.set_current_file_idx(importer_idx);
+        let outcomes = Arc::clone(program.project_module_resolution_outcomes.as_ref().unwrap());
+        checker.ctx.set_project_module_resolution_outcomes(outcomes);
+        assert_eq!(
+            checker
+                .ctx
+                .resolve_import_target_from_file(importer_idx, "./dep"),
+            None,
+            "an explicit unresolved result must not guess the same-directory file"
+        );
+        assert!(
+            !checker
+                .ctx
+                .module_resolved_without_program_file_for_request(
+                    "./dep",
+                    None,
+                    ResolutionRequestKind::EsmImport,
+                )
+        );
+
+        let mut file_outcomes = ResolvedModuleRequestOutcomeMap::default();
+        file_outcomes.insert(
+            (
+                importer_idx,
+                "./dep".to_owned(),
+                None,
+                ResolutionRequestKind::EsmImport,
+            ),
+            ResolvedModuleRequestOutcome::File(target_idx),
+        );
+        checker
+            .ctx
+            .set_project_module_resolution_outcomes(Arc::new(file_outcomes));
+        assert_eq!(
+            checker.ctx.resolve_import_target_from_file_for_request(
+                importer_idx,
+                "./dep",
+                None,
+                ResolutionRequestKind::EsmImport,
+            ),
+            Some(target_idx),
+            "the exact compiler-owned file target must be used"
+        );
+
+        let mut exact_outcomes = ResolvedModuleRequestOutcomeMap::default();
+        exact_outcomes.insert(
+            (
+                importer_idx,
+                "./dep".to_owned(),
+                Some(ResolutionModeOverride::Import),
+                ResolutionRequestKind::DynamicImport,
+            ),
+            ResolvedModuleRequestOutcome::External {
+                identity: "workspace-ambient:./dep".to_owned(),
+            },
+        );
+        checker
+            .ctx
+            .set_project_module_resolution_outcomes(Arc::new(exact_outcomes));
+        assert!(
+            checker
+                .ctx
+                .module_resolved_without_program_file_for_request(
+                    "./dep",
+                    Some(ResolutionModeOverride::Import),
+                    ResolutionRequestKind::DynamicImport,
+                )
+        );
+        assert!(
+            !checker
+                .ctx
+                .module_resolved_without_program_file_for_request(
+                    "./dep",
+                    None,
+                    ResolutionRequestKind::EsmImport,
+                )
+        );
+        assert_eq!(
+            checker.ctx.resolve_import_target_from_file_for_request(
+                importer_idx,
+                "./dep",
+                Some(ResolutionModeOverride::Import),
+                ResolutionRequestKind::DynamicImport,
+            ),
+            None,
+            "external is not an in-program file target"
+        );
+    }
+
+    #[test]
+    fn explicit_project_resolution_rejects_unsupported_and_conflicting_requests() {
+        let program = compile_files_with_libs(
+            vec![("src/main.ts".to_owned(), "export {};".to_owned())],
+            &[],
+        );
+        let unsupported = ProjectModuleResolution {
+            importer_path: "src/main.ts".to_owned(),
+            specifier: "pkg".to_owned(),
+            request_kind: ProjectModuleRequestKind::Unsupported {
+                syntax_kind: "ImportType".to_owned(),
+            },
+            resolution_mode: None,
+            target: ProjectModuleResolutionTarget::Unresolved,
+        };
+        assert!(matches!(
+            build_project_module_resolution_outcomes(&program, &[unsupported.clone()]),
+            Err(ProjectModuleResolutionError::UnsupportedRequestKind { .. })
+        ));
+        assert!(matches!(
+            build_project_module_resolution_outcomes(&program, &[unsupported.clone(), unsupported]),
+            Err(ProjectModuleResolutionError::UnsupportedRequestKind { .. })
+        ));
+
+        let exact = ProjectModuleResolution {
+            importer_path: "src/main.ts".to_owned(),
+            specifier: "pkg".to_owned(),
+            request_kind: ProjectModuleRequestKind::EsmImport,
+            resolution_mode: None,
+            target: ProjectModuleResolutionTarget::Unresolved,
+        };
+        assert!(matches!(
+            build_project_module_resolution_outcomes(&program, &[exact.clone(), exact]),
+            Err(ProjectModuleResolutionError::DuplicateRequest { .. })
+        ));
+    }
+}
+
+/// Pre-computed data shared across all file binders in a parallel check.
+///
+/// These are computed ONCE from the program's files and shared via Arc,
+/// eliminating `O(N_files^2)` redundant iteration in `create_binder_from_bound_file()`.
+pub struct SharedBinderData {
+    /// Merged module augmentations from all files.
+    pub merged_module_augmentations:
+        rustc_hash::FxHashMap<String, Vec<crate::binder::ModuleAugmentation>>,
+    /// Merged augmentation target modules from all files.
+    pub merged_augmentation_target_modules: rustc_hash::FxHashMap<crate::binder::SymbolId, String>,
+    /// Merged global augmentations from all files.
+    pub merged_global_augmentations:
+        rustc_hash::FxHashMap<String, Vec<crate::binder::GlobalAugmentation>>,
+}
+
+impl SharedBinderData {
+    /// Build shared binder data from all files in one pass.
+    pub fn from_program(files: &[BoundFile]) -> Self {
+        let module_augmentation_keys = files
+            .iter()
+            .map(|file| file.module_augmentations.len())
+            .sum();
+        let augmentation_target_count = files
+            .iter()
+            .map(|file| file.augmentation_target_modules.len())
+            .sum();
+        let global_augmentation_keys = files
+            .iter()
+            .map(|file| file.global_augmentations.len())
+            .sum();
+
+        let mut merged_module_augmentations = rustc_hash::FxHashMap::with_capacity_and_hasher(
+            module_augmentation_keys,
+            Default::default(),
+        );
+        let mut merged_augmentation_target_modules =
+            rustc_hash::FxHashMap::with_capacity_and_hasher(
+                augmentation_target_count,
+                Default::default(),
+            );
+        let mut merged_global_augmentations = rustc_hash::FxHashMap::with_capacity_and_hasher(
+            global_augmentation_keys,
+            Default::default(),
+        );
+
+        for file in files {
+            for (spec, augs) in file.module_augmentations.iter() {
+                merged_module_augmentations
+                    .entry(spec.clone())
+                    .or_insert_with(|| Vec::with_capacity(augs.len()))
+                    .extend(augs.iter().map(|aug| {
+                        crate::binder::ModuleAugmentation::with_arena(
+                            aug.name.clone(),
+                            aug.node,
+                            Arc::clone(&file.arena),
+                        )
+                    }));
+            }
+            for (&sym_id, module_spec) in file.augmentation_target_modules.iter() {
+                merged_augmentation_target_modules.insert(sym_id, module_spec.clone());
+            }
+            for (name, decls) in file.global_augmentations.iter() {
+                merged_global_augmentations
+                    .entry(name.clone())
+                    .or_insert_with(|| Vec::with_capacity(decls.len()))
+                    .extend(decls.iter().map(|aug| {
+                        crate::binder::GlobalAugmentation::with_arena(
+                            aug.node,
+                            Arc::clone(&file.arena),
+                            aug.flags,
+                        )
+                    }));
+            }
+        }
+
+        Self {
+            merged_module_augmentations,
+            merged_augmentation_target_modules,
+            merged_global_augmentations,
+        }
+    }
+}
+
+/// Create a `BinderState` from a `BoundFile` for type checking.
+///
+/// This path is retained for tsz-core callers that want the legacy per-file
+/// subset of `declaration_arenas` (only non-local, non-lib-originated entries,
+/// as captured in `BoundFile.declaration_arenas`). The CLI driver uses its own
+/// path (`create_binder_from_bound_file_with_augmentations`) which shares the
+/// program-wide map via `Arc::clone` — see the perf follow-up doc §3.2.
+pub fn create_binder_from_bound_file(
+    file: &BoundFile,
+    program: &MergedProgram,
+    file_idx: usize,
+) -> BinderState {
+    let declaration_arenas = Arc::clone(&file.declaration_arenas);
+    let sym_to_decl_indices = Arc::clone(&file.sym_to_decl_indices);
+    let symbol_arenas = Arc::clone(&file.symbol_arenas);
+
+    // Merge per-file locals with program globals via the shared helper,
+    // which short-circuits to an O(1) `Arc::clone` when one side is empty.
+    let file_locals = program.build_merged_file_locals(file_idx);
+
+    let mut binder = BinderState::from_bound_state_with_scopes_and_augmentations(
+        BinderOptions::default(),
+        program.symbols.clone(),
+        file_locals,
+        // Arc::clone is O(1); cross-file lookup binders share the per-file
+        // map by reference instead of deep-cloning it.
+        Arc::clone(&file.node_symbols),
+        BinderStateScopeInputs {
+            scopes: file.scopes.clone(),
+            node_scope_ids: file.node_scope_ids.clone(),
+            global_augmentations: Arc::clone(&file.global_augmentations),
+            module_augmentations: Arc::clone(&file.module_augmentations),
+            augmentation_target_modules: Arc::clone(&file.augmentation_target_modules),
+            module_exports: program.module_exports.clone(),
+            module_declaration_exports_publicly: file.module_declaration_exports_publicly.clone(),
+            reexports: program.reexports.clone(),
+            wildcard_reexports: program.wildcard_reexports.clone(),
+            symbol_arenas,
+            declaration_arenas,
+            sym_to_decl_indices,
+            cross_file_node_symbols: Arc::clone(&program.cross_file_node_symbols),
+            shorthand_ambient_modules: program.shorthand_ambient_modules.clone(),
+            flow_nodes: file.flow_nodes.clone(),
+            // Arc::clone is O(1); cross-file lookup binders share the per-file
+            // node_flow map by reference instead of deep-cloning it.
+            node_flow: Arc::clone(&file.node_flow),
+            switch_clause_to_switch: file.switch_clause_to_switch.clone(),
+            expando_properties: file.expando_properties.clone(),
+            alias_partners: program.alias_partners.clone(),
+        },
+    );
+
+    binder.is_external_module = file.is_external_module;
+    binder.file_features = file.file_features;
+    binder.lib_symbol_reverse_remap = file.lib_symbol_reverse_remap.clone();
+    binder.lib_binders = program.lib_binders.clone();
+    binder.lib_symbol_ids = program.lib_symbol_ids.clone();
+    binder.lib_type_namespace = Arc::new(program.build_lib_type_namespace(file_idx));
+
+    // Compose semantic_defs: start with the global map (cross-file + lib entries)
+    // then overlay the file's own entries. Per-file entries take precedence for
+    // symbols declared in this file, ensuring file-scoped identity is authoritative.
+    //
+    // PERF: When the shared DefinitionStore is fully populated (parallel path),
+    // semantic_defs are never read by the checker (warm_local_caches_from_shared_store
+    // and resolve_cross_batch_heritage both skip when fully_populated=true).
+    // Skip the expensive clone+overlay to avoid O(files * total_defs) work.
+    if !program.definition_store.is_fully_populated() {
+        if file.semantic_defs.is_empty() {
+            binder.semantic_defs = Arc::clone(&program.semantic_defs);
+        } else {
+            let mut composed_semantic_defs = (*program.semantic_defs).clone();
+            for (sym_id, entry) in file.semantic_defs.iter() {
+                composed_semantic_defs.insert(*sym_id, entry.clone());
+            }
+            binder.semantic_defs = Arc::new(composed_semantic_defs);
+        }
+    }
+    if !binder.scopes.is_empty() {
+        binder.current_scope_id = crate::binder::ScopeId(0);
+    }
+
+    binder.declared_modules = program.declared_modules.clone();
+
+    // Mark lib symbols as merged since the MergedProgram's symbol arena
+    // contains all remapped lib symbols with unique global IDs.
+    // This enables the fast path in get_symbol() that avoids cross-binder lookups.
+    binder.set_lib_symbols_merged(true);
+
+    binder
+}
+
+/// Create a `BinderState` from a `BoundFile` using pre-computed shared augmentation data.
+///
+/// This avoids the `O(N_files)` augmentation merge per file by reusing data computed once
+/// via `SharedBinderData::from_program`. For ts-toolbelt (242 files), this eliminates
+/// ~242 * 242 = 58,564 redundant augmentation iterations.
+pub fn create_binder_from_bound_file_with_shared(
+    file: &BoundFile,
+    program: &MergedProgram,
+    file_idx: usize,
+    _shared: &SharedBinderData,
+) -> BinderState {
+    // Keep the legacy per-file subset behavior here (see `create_binder_from_bound_file`):
+    // these paths are used by `check_files_parallel` and tests that expect the
+    // binder's `declaration_arenas` to exclude lib-originated symbols.
+    let declaration_arenas = Arc::clone(&file.declaration_arenas);
+    let sym_to_decl_indices = Arc::clone(&file.sym_to_decl_indices);
+    let symbol_arenas = Arc::clone(&file.symbol_arenas);
+
+    // Merge per-file locals with program globals via the shared helper,
+    // which short-circuits to an O(1) `Arc::clone` when one side is empty.
+    let file_locals = program.build_merged_file_locals(file_idx);
+
+    let mut binder = BinderState::from_bound_state_with_scopes_and_augmentations(
+        BinderOptions::default(),
+        program.symbols.clone(),
+        file_locals,
+        // Arc::clone is O(1); cross-file lookup binders share the per-file
+        // map by reference instead of deep-cloning it.
+        Arc::clone(&file.node_symbols),
+        BinderStateScopeInputs {
+            scopes: file.scopes.clone(),
+            node_scope_ids: file.node_scope_ids.clone(),
+            global_augmentations: Arc::clone(&file.global_augmentations),
+            module_augmentations: Arc::clone(&file.module_augmentations),
+            augmentation_target_modules: Arc::clone(&file.augmentation_target_modules),
+            module_exports: program.module_exports.clone(),
+            module_declaration_exports_publicly: file.module_declaration_exports_publicly.clone(),
+            reexports: program.reexports.clone(),
+            wildcard_reexports: program.wildcard_reexports.clone(),
+            symbol_arenas,
+            declaration_arenas,
+            sym_to_decl_indices,
+            cross_file_node_symbols: Arc::clone(&program.cross_file_node_symbols),
+            shorthand_ambient_modules: program.shorthand_ambient_modules.clone(),
+            flow_nodes: file.flow_nodes.clone(),
+            // Arc::clone is O(1); cross-file lookup binders share the per-file
+            // node_flow map by reference instead of deep-cloning it.
+            node_flow: Arc::clone(&file.node_flow),
+            switch_clause_to_switch: file.switch_clause_to_switch.clone(),
+            expando_properties: file.expando_properties.clone(),
+            alias_partners: program.alias_partners.clone(),
+        },
+    );
+
+    binder.is_external_module = file.is_external_module;
+    binder.file_features = file.file_features;
+    binder.lib_symbol_reverse_remap = file.lib_symbol_reverse_remap.clone();
+    binder.lib_binders = program.lib_binders.clone();
+    binder.lib_symbol_ids = program.lib_symbol_ids.clone();
+    binder.lib_type_namespace = Arc::new(program.build_lib_type_namespace(file_idx));
+
+    if !program.definition_store.is_fully_populated() {
+        if file.semantic_defs.is_empty() {
+            binder.semantic_defs = Arc::clone(&program.semantic_defs);
+        } else {
+            let mut composed_semantic_defs = (*program.semantic_defs).clone();
+            for (sym_id, entry) in file.semantic_defs.iter() {
+                composed_semantic_defs.insert(*sym_id, entry.clone());
+            }
+            binder.semantic_defs = Arc::new(composed_semantic_defs);
+        }
+    }
+    if !binder.scopes.is_empty() {
+        binder.current_scope_id = crate::binder::ScopeId(0);
+    }
+
+    binder.declared_modules = program.declared_modules.clone();
+    binder.set_lib_symbols_merged(true);
+
+    binder
+}
+
+/// Check function bodies with statistics
+pub fn check_functions_with_stats(program: &MergedProgram) -> (CheckResult, CheckStats) {
+    let result = check_functions_parallel(program);
+
+    let stats = CheckStats {
+        file_count: result.file_results.len(),
+        function_count: result.function_count,
+        diagnostic_count: result.diagnostic_count,
+    };
+
+    (result, stats)
+}
+
+/// Statistics about parallel type checking
+#[derive(Debug, Clone)]
+pub struct CheckStats {
+    /// Number of files checked
+    pub file_count: usize,
+    /// Number of functions checked
+    pub function_count: usize,
+    /// Number of diagnostics produced
+    pub diagnostic_count: usize,
+}
+
+/// Parse files and collect statistics
+pub fn parse_files_with_stats(files: Vec<(String, String)>) -> (Vec<ParseResult>, ParallelStats) {
+    let total_bytes: usize = files.iter().map(|(_, src)| src.len()).sum();
+    let file_count = files.len();
+
+    let results = parse_files_parallel(files);
+
+    let total_nodes: usize = results.iter().map(|r| r.arena.len()).sum();
+    let error_count: usize = results.iter().map(|r| r.parse_diagnostics.len()).sum();
+
+    let stats = ParallelStats {
+        file_count,
+        total_bytes,
+        total_nodes,
+        error_count,
+    };
+
+    (results, stats)
+}
+
+#[cfg(test)]
+#[path = "../../../tests/parallel_tests.rs"]
+mod tests;
+
+#[cfg(test)]
+#[path = "../../../tests/cross_file_interface_merge_ts2717_driver_tests.rs"]
+mod cross_file_interface_merge_ts2717_driver_tests;
+
+#[cfg(test)]
+#[path = "../../../tests/cross_file_class_decl_owner_driver_tests.rs"]
+mod cross_file_class_decl_owner_driver_tests;

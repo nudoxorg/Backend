@@ -7,6 +7,7 @@
 
 use std::{
     collections::TryReserveError,
+    ffi::OsString,
     fmt,
     io::{self, Read},
     num::NonZeroUsize,
@@ -21,6 +22,16 @@ use std::{
 use crate::driver::ToolchainResolutionError;
 use backend_semantic::vocabulary::{NativeTool, NativeWorker, NativeWorkerPanic};
 use thiserror::Error;
+
+#[cfg(test)]
+std::thread_local! {
+    static EXECUTABLE_CONTENT_HASH_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn executable_content_hash_bytes_for_test() -> u64 {
+    EXECUTABLE_CONTENT_HASH_BYTES.with(std::cell::Cell::get)
+}
 
 /// Stable identity for the direct compiler and version-probe environment contract.
 ///
@@ -52,6 +63,368 @@ impl NativeCompilerEnvironment {
 
 const READ_CHUNK_BYTES: usize = 4096;
 const PROBE_POLL_INTERVAL: Duration = Duration::from_millis(2);
+pub(crate) const MAX_INVOCATION_EXECUTABLE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_TYPESCRIPT_MODULE_FILES: usize = 256;
+const MAX_TYPESCRIPT_MODULE_ENTRIES: usize = 512;
+const MAX_TYPESCRIPT_MODULE_BYTES: u64 = 96 * 1024 * 1024;
+const MAX_TYPESCRIPT_MODULE_DEPTH: usize = 32;
+
+/// Hashes one already-selected executable without allocating its full image.
+///
+/// Callers admit only canonical absolute paths. The digest is over the bytes read from one open
+/// regular-file handle. Before returning, this checks that the handle's identity and length stayed
+/// stable and that the selected pathname still resolves to that same file object. This detects
+/// ordinary pathname replacement and concurrent writes; it cannot eliminate the race between the
+/// final pathname check and a later process opening the path.
+pub(crate) fn executable_content_digest(path: &Path) -> io::Result<[u8; 32]> {
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "selected executable path is not absolute",
+        ));
+    }
+    let canonical = std::fs::canonicalize(path)?;
+    if canonical != path {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "selected executable path is not canonical",
+        ));
+    }
+    let mut file = std::fs::File::open(path)?;
+    let before = file.metadata()?;
+    if !before.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "selected executable is not a regular file",
+        ));
+    }
+    if before.len() > MAX_INVOCATION_EXECUTABLE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "selected executable exceeds the admitted snapshot bound",
+        ));
+    }
+    let before_identity = invocation_file_identity(&before)?;
+    let before_modified = before.modified().ok();
+    let mut hasher = blake3::Hasher::new();
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; READ_CHUNK_BYTES];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        total = total.checked_add(count as u64).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "executable length overflow")
+        })?;
+        if total > MAX_INVOCATION_EXECUTABLE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "selected executable exceeds the admitted snapshot bound",
+            ));
+        }
+        hasher.update(&buffer[..count]);
+        #[cfg(test)]
+        EXECUTABLE_CONTENT_HASH_BYTES.with(|bytes| {
+            bytes.set(bytes.get().saturating_add(count as u64));
+        });
+    }
+    let after = file.metadata()?;
+    let path_metadata = std::fs::metadata(path)?;
+    if total != before.len()
+        || after.len() != before.len()
+        || invocation_file_identity(&after)? != before_identity
+        || invocation_file_identity(&path_metadata)? != before_identity
+        || before_modified != after.modified().ok()
+        || std::fs::canonicalize(path)? != path
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "selected executable changed while it was being witnessed",
+        ));
+    }
+    Ok(*hasher.finalize().as_bytes())
+}
+
+/// Digests the complete selected `typescript` package under a canonical `node_modules` root.
+///
+/// The inventory is bounded by file count, total bytes, and directory depth. Symlinks and special
+/// files are refused, so the package tree cannot redirect module loads outside this selected root.
+pub(crate) fn typescript_module_closure_digest(module_root: &Path) -> io::Result<[u8; 32]> {
+    if !module_root.is_absolute() || std::fs::canonicalize(module_root)? != module_root {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "selected TypeScript module root is not canonical and absolute",
+        ));
+    }
+    let package_root = module_root.join("typescript");
+    let canonical_package = std::fs::canonicalize(&package_root)?;
+    if canonical_package != package_root || !canonical_package.starts_with(module_root) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "selected TypeScript package escapes its admitted module root",
+        ));
+    }
+    let mut entries = Vec::new();
+    let mut file_count = 0_usize;
+    let mut total_bytes = 0_u64;
+    collect_typescript_module_entries(
+        &package_root,
+        &package_root,
+        0,
+        &mut entries,
+        &mut file_count,
+        &mut total_bytes,
+    )?;
+    entries.retain(|entry| entry.kind == b'f');
+    entries.sort_unstable_by(|left, right| left.relative_path.cmp(&right.relative_path));
+
+    typescript_module_files_digest(entries.iter().map(|entry| {
+        (
+            entry.relative_path.as_path(),
+            entry.length,
+            entry.digest.unwrap_or([0; 32]),
+        )
+    }))
+}
+
+/// Hashes ordered file-content facts for one captured TypeScript package.
+pub(crate) fn typescript_module_files_digest<'path>(
+    files: impl IntoIterator<Item = (&'path Path, u64, [u8; 32])>,
+) -> io::Result<[u8; 32]> {
+    let mut files = files
+        .into_iter()
+        .map(|(path, length, digest)| {
+            if path.is_absolute()
+                || path
+                    .components()
+                    .any(|component| !matches!(component, std::path::Component::Normal(_)))
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "TypeScript package file path is not normalized and relative",
+                ));
+            }
+            Ok((path.to_path_buf(), length, digest))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    files.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    if files.len() > MAX_TYPESCRIPT_MODULE_FILES
+        || files.windows(2).any(|pair| pair[0].0 == pair[1].0)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "selected TypeScript package has duplicate or excessive file inputs",
+        ));
+    }
+    let mut total_bytes = 0_u64;
+    let mut digest = blake3::Hasher::new();
+    digest.update(b"backend.typescript.module-closure.v1\0");
+    digest.update(&(files.len() as u64).to_be_bytes());
+    for (relative, length, content_digest) in files {
+        total_bytes = total_bytes.checked_add(length).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "module package size overflow")
+        })?;
+        if total_bytes > MAX_TYPESCRIPT_MODULE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "selected TypeScript package exceeds the admitted byte bound",
+            ));
+        }
+        let path = relative.as_os_str().as_encoded_bytes();
+        digest.update(&(path.len() as u64).to_be_bytes());
+        digest.update(path);
+        digest.update(&length.to_be_bytes());
+        digest.update(&content_digest);
+    }
+    Ok(*digest.finalize().as_bytes())
+}
+
+struct TypeScriptModuleEntry {
+    relative_path: PathBuf,
+    kind: u8,
+    length: u64,
+    digest: Option<[u8; 32]>,
+}
+
+fn collect_typescript_module_entries(
+    package_root: &Path,
+    directory: &Path,
+    depth: usize,
+    entries: &mut Vec<TypeScriptModuleEntry>,
+    file_count: &mut usize,
+    total_bytes: &mut u64,
+) -> io::Result<()> {
+    if depth > MAX_TYPESCRIPT_MODULE_DEPTH {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "selected TypeScript package exceeds the admitted directory depth",
+        ));
+    }
+    let before = std::fs::symlink_metadata(directory)?;
+    if !before.is_dir() || before.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "selected TypeScript package contains a non-regular directory",
+        ));
+    }
+    let before_identity = invocation_file_identity(&before)?;
+    let mut children = std::fs::read_dir(directory)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<io::Result<Vec<_>>>()?;
+    children.sort_unstable();
+    for path in children {
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "selected TypeScript package contains a symlink",
+            ));
+        }
+        if metadata.is_dir() {
+            entries.push(TypeScriptModuleEntry {
+                relative_path: path
+                    .strip_prefix(package_root)
+                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "module path escape"))?
+                    .to_path_buf(),
+                kind: b'd',
+                length: 0,
+                digest: None,
+            });
+            if entries.len() > MAX_TYPESCRIPT_MODULE_ENTRIES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "selected TypeScript package exceeds the admitted entry count",
+                ));
+            }
+            collect_typescript_module_entries(
+                package_root,
+                &path,
+                depth + 1,
+                entries,
+                file_count,
+                total_bytes,
+            )?;
+        } else if metadata.is_file() {
+            *file_count = file_count.checked_add(1).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "module file count overflow")
+            })?;
+            if *file_count > MAX_TYPESCRIPT_MODULE_FILES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "selected TypeScript package exceeds the admitted file count",
+                ));
+            }
+            *total_bytes = total_bytes.checked_add(metadata.len()).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "module package size overflow")
+            })?;
+            if *total_bytes > MAX_TYPESCRIPT_MODULE_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "selected TypeScript package exceeds the admitted byte bound",
+                ));
+            }
+            let file_digest = executable_content_digest(&path)?;
+            entries.push(TypeScriptModuleEntry {
+                relative_path: path
+                    .strip_prefix(package_root)
+                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "module path escape"))?
+                    .to_path_buf(),
+                kind: b'f',
+                length: metadata.len(),
+                digest: Some(file_digest),
+            });
+            if entries.len() > MAX_TYPESCRIPT_MODULE_ENTRIES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "selected TypeScript package exceeds the admitted entry count",
+                ));
+            }
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "selected TypeScript package contains a special file",
+            ));
+        }
+    }
+    let after = std::fs::symlink_metadata(directory)?;
+    if invocation_file_identity(&after)? != before_identity
+        || std::fs::canonicalize(directory)? != directory
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "selected TypeScript package directory changed while witnessed",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn invocation_file_identity(metadata: &std::fs::Metadata) -> io::Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+/// Returns the identity of one already-selected regular file without rereading its contents.
+/// Callers use this only inside a package lease whose full content witness is revalidated at
+/// package boundaries.
+pub(crate) fn executable_object_identity(path: &Path) -> io::Result<(u64, u64)> {
+    if !path.is_absolute() || std::fs::canonicalize(path)? != path {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "selected executable path is no longer canonical and absolute",
+        ));
+    }
+    let metadata = std::fs::metadata(path)?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "selected executable is no longer a regular file",
+        ));
+    }
+    invocation_file_identity(&metadata)
+}
+
+/// Returns the identity of one already-selected compiler package directory.
+pub(crate) fn compiler_directory_object_identity(path: &Path) -> io::Result<(u64, u64)> {
+    if !path.is_absolute() || std::fs::canonicalize(path)? != path {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "selected compiler directory is no longer canonical and absolute",
+        ));
+    }
+    let metadata = std::fs::metadata(path)?;
+    if !metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "selected compiler package is no longer a directory",
+        ));
+    }
+    invocation_file_identity(&metadata)
+}
+
+#[cfg(windows)]
+fn invocation_file_identity(metadata: &std::fs::Metadata) -> io::Result<(u64, u64)> {
+    use std::os::windows::fs::MetadataExt;
+    let volume = metadata.volume_serial_number().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            "file volume identity is unavailable",
+        )
+    })?;
+    let index = metadata
+        .file_index()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "file index is unavailable"))?;
+    Ok((u64::from(volume), index))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn invocation_file_identity(_metadata: &std::fs::Metadata) -> io::Result<(u64, u64)> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "stable file identity is unavailable on this platform",
+    ))
+}
 
 /// Immutable validated bounds for one native version probe.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -119,6 +492,8 @@ pub enum ToolchainProbePrimary {
         /// Exact configured interval.
         timeout: Duration,
     },
+    /// The caller's cancellation flag stopped the child transaction.
+    Cancelled,
 }
 
 /// Closed cleanup operation that failed after a probe had already reached a terminal.
@@ -206,6 +581,26 @@ pub enum ToolchainProbeStreamError {
 /// Exact terminal while establishing one explicit native-tool version identity.
 #[derive(Debug, Error)]
 pub enum ToolchainProbeError {
+    /// A global TypeScript script was selected without an admitted Node runtime.
+    #[error("TypeScript compiler script {compiler:?} has no admitted Node interpreter")]
+    TypeScriptInterpreterUnavailable {
+        /// Exact TypeScript script selected by the host.
+        compiler: PathBuf,
+    },
+    /// The selected TypeScript script has no admitted TypeScript module package root.
+    #[error("TypeScript compiler script {compiler:?} has no admitted module package root")]
+    TypeScriptModuleRootUnavailable {
+        /// Exact TypeScript script selected by the host.
+        compiler: PathBuf,
+    },
+    /// The selected compiler entry does not belong to the selected TypeScript module root.
+    #[error("TypeScript compiler script {compiler:?} does not match module root {module_root:?}")]
+    TypeScriptModuleEntryMismatch {
+        /// Exact TypeScript script selected by the host.
+        compiler: PathBuf,
+        /// Exact module root selected by the host.
+        module_root: PathBuf,
+    },
     /// Relative execution would consult ambient process state.
     #[error("{tool:?} version probe executable is relative: {executable:?}")]
     RelativeExecutable {
@@ -213,6 +608,25 @@ pub enum ToolchainProbeError {
         tool: NativeTool,
         /// Rejected caller path.
         executable: PathBuf,
+    },
+    /// An invocation file could not be captured under the executable snapshot bound.
+    #[error("could not witness selected TypeScript {role:?} at {path:?}")]
+    ExecutableWitness {
+        /// Which exact invocation input could not be witnessed.
+        role: ToolchainProbeFileRole,
+        /// Exact absolute invocation path.
+        path: PathBuf,
+        /// Original filesystem or bound failure.
+        #[source]
+        source: io::Error,
+    },
+    /// An invocation file changed between version admission and snapshot completion.
+    #[error("selected TypeScript {role:?} changed during admission at {path:?}")]
+    ExecutableChanged {
+        /// Which exact invocation input changed.
+        role: ToolchainProbeFileRole,
+        /// Exact absolute invocation path.
+        path: PathBuf,
     },
     /// The absolute executable could not be started.
     #[error("could not start {tool:?} version probe at {executable:?}")]
@@ -347,6 +761,17 @@ pub enum ToolchainProbeError {
     },
 }
 
+/// Exact files and module closure that authorize an interpreted TypeScript launch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ToolchainProbeFileRole {
+    /// TypeScript compiler JavaScript source.
+    Script,
+    /// Node executable used to interpret that source.
+    Interpreter,
+    /// Compiler package's bounded module and declaration tree.
+    CompilerModule,
+}
+
 pub(crate) fn probe_version(
     tool: NativeTool,
     executable: &Path,
@@ -370,7 +795,7 @@ pub(crate) fn probe_command(
     let mut command = Command::new(executable);
     NativeCompilerEnvironment::apply(&mut command, tool);
     command.args(arguments);
-    probe_prepared_command(tool, executable, command, limits)
+    probe_prepared_command(tool, executable, command, limits, None)
 }
 
 /// Probes the package-owned TypeScript JavaScript entry through one exact Node executable.
@@ -399,7 +824,128 @@ pub(crate) fn probe_typescript_script_with_node(
         command.env("PATH", node_directory);
     }
     command.arg(compiler_script).arg("--version");
-    probe_prepared_command(tool, node, command, limits)
+    probe_prepared_command(tool, node, command, limits, None)
+}
+
+/// Runs the admitted TypeScript compiler API bridge through the exact Node
+/// executable under bounded output, deadline, and caller cancellation.
+pub(crate) fn run_typescript_program_bridge(
+    node: &Path,
+    script: &str,
+    arguments: &[OsString],
+    working_directory: &Path,
+    limits: ToolchainProbeLimits,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> Result<Box<[u8]>, ToolchainProbeError> {
+    let tool = NativeTool::TypeScriptCompiler;
+    if !node.is_absolute() {
+        return Err(ToolchainProbeError::RelativeExecutable {
+            tool,
+            executable: node.to_path_buf(),
+        });
+    }
+    let mut command = Command::new(node);
+    NativeCompilerEnvironment::apply(&mut command, tool);
+    if let Some(node_directory) = node.parent() {
+        command.env("PATH", node_directory);
+    }
+    command
+        .arg("-e")
+        .arg(script)
+        .args(arguments)
+        .current_dir(working_directory);
+    probe_prepared_command(tool, node, command, limits, Some(cancelled))
+}
+
+/// Admits a TypeScript JavaScript entry, the exact Node interpreter, and the bounded package tree
+/// that supplies the compiler modules.
+///
+/// The selected files and complete package closure are snapshotted before probing and rechecked
+/// after both version commands finish. The returned identities remain distinct: callers can report
+/// the compiler's version while binding the interpreter and module package into the invocation
+/// recipe.
+pub(crate) fn admit_typescript_script_invocation(
+    compiler_script: &Path,
+    node: &Path,
+    module_root: &Path,
+    limits: ToolchainProbeLimits,
+) -> Result<(Box<[u8]>, Box<[u8]>, [u8; 32], [u8; 32], [u8; 32]), ToolchainProbeError> {
+    let tool = NativeTool::TypeScriptCompiler;
+    if compiler_script != module_root.join("typescript/bin/tsc") {
+        return Err(ToolchainProbeError::TypeScriptModuleEntryMismatch {
+            compiler: compiler_script.to_path_buf(),
+            module_root: module_root.to_path_buf(),
+        });
+    }
+    let module_before = typescript_module_closure_digest(module_root).map_err(|source| {
+        ToolchainProbeError::ExecutableWitness {
+            role: ToolchainProbeFileRole::CompilerModule,
+            path: module_root.join("typescript"),
+            source,
+        }
+    })?;
+    let script_before = executable_content_digest(compiler_script).map_err(|source| {
+        ToolchainProbeError::ExecutableWitness {
+            role: ToolchainProbeFileRole::Script,
+            path: compiler_script.to_path_buf(),
+            source,
+        }
+    })?;
+    let interpreter_before = executable_content_digest(node).map_err(|source| {
+        ToolchainProbeError::ExecutableWitness {
+            role: ToolchainProbeFileRole::Interpreter,
+            path: node.to_path_buf(),
+            source,
+        }
+    })?;
+    let interpreter_version = probe_version(tool, node, limits)?;
+    let script_version = probe_typescript_script_with_node(compiler_script, node, limits)?;
+    let script_after = executable_content_digest(compiler_script).map_err(|source| {
+        ToolchainProbeError::ExecutableWitness {
+            role: ToolchainProbeFileRole::Script,
+            path: compiler_script.to_path_buf(),
+            source,
+        }
+    })?;
+    let interpreter_after = executable_content_digest(node).map_err(|source| {
+        ToolchainProbeError::ExecutableWitness {
+            role: ToolchainProbeFileRole::Interpreter,
+            path: node.to_path_buf(),
+            source,
+        }
+    })?;
+    let module_after = typescript_module_closure_digest(module_root).map_err(|source| {
+        ToolchainProbeError::ExecutableWitness {
+            role: ToolchainProbeFileRole::CompilerModule,
+            path: module_root.join("typescript"),
+            source,
+        }
+    })?;
+    if script_before != script_after {
+        return Err(ToolchainProbeError::ExecutableChanged {
+            role: ToolchainProbeFileRole::Script,
+            path: compiler_script.to_path_buf(),
+        });
+    }
+    if interpreter_before != interpreter_after {
+        return Err(ToolchainProbeError::ExecutableChanged {
+            role: ToolchainProbeFileRole::Interpreter,
+            path: node.to_path_buf(),
+        });
+    }
+    if module_before != module_after {
+        return Err(ToolchainProbeError::ExecutableChanged {
+            role: ToolchainProbeFileRole::CompilerModule,
+            path: module_root.join("typescript"),
+        });
+    }
+    Ok((
+        script_version,
+        interpreter_version,
+        script_after,
+        interpreter_after,
+        module_after,
+    ))
 }
 
 fn probe_prepared_command(
@@ -407,6 +953,7 @@ fn probe_prepared_command(
     executable: &Path,
     mut command: Command,
     limits: ToolchainProbeLimits,
+    cancelled: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<Box<[u8]>, ToolchainProbeError> {
     command
         .stdin(Stdio::null())
@@ -509,6 +1056,17 @@ fn probe_prepared_command(
                 ));
                 break;
             }
+        }
+        if cancelled.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
+            preceding = Some(terminate_and_reap(
+                tool,
+                &mut child,
+                ToolchainProbeError::Bounded {
+                    tool,
+                    primary: ToolchainProbePrimary::Cancelled,
+                },
+            ));
+            break;
         }
         if started.elapsed() >= limits.timeout {
             let primary = ToolchainProbePrimary::Deadline {

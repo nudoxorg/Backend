@@ -190,6 +190,14 @@ pub enum FullSemanticImageFault {
         /// Encoded entity-kind code.
         observed: u16,
     },
+    #[error("full semantic image entity {row} has declaration-name tag {observed}")]
+    /// Tagged declaration-name lane does not identify a supported name form.
+    EntityNameTag {
+        /// Zero-based entity row ordinal.
+        row: u32,
+        /// Encoded name discriminant.
+        observed: u8,
+    },
     #[error("full semantic image signature-role lane has {observed} rows, expected {expected}")]
     /// Packed role lane does not have one role cell per entity row.
     SignatureCarrierRoleCount {

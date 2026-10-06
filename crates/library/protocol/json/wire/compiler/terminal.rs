@@ -1379,7 +1379,10 @@ remote_unit_enum!(
         ArrayFixed,
         ArrayConstExpression,
         ArrayIncomplete,
-        CQualified
+        CQualified,
+        KeyOf,
+        IndexedAccess,
+        TypeOf
     ]
 );
 remote_unit_enum!(
@@ -1540,6 +1543,17 @@ struct ProjectionSpanWire {
 )]
 enum ProjectionAdmissionFaultWire {
     EmptyName,
+    AnonymousCallableAnchor {
+        #[serde(with = "ProjectionAnonymousCallableAnchorFaultWire")]
+        cause: backend_semantic::vocabulary::ProjectionAnonymousCallableAnchorFault,
+    },
+    AnonymousCallableAnchorPoolCapacity {
+        #[serde(with = "ProjectionAnonymousCallableAnchorPoolWire")]
+        pool: backend_semantic::vocabulary::ProjectionAnonymousCallableAnchorPool,
+        used: u64,
+        requested: u64,
+        capacity: u64,
+    },
     Capacity,
     ChildCapacity,
     ProductChildPoolCapacity {
@@ -1587,6 +1601,20 @@ enum ProjectionAdmissionFaultWire {
     },
     TypeRowCapacity,
     ComputedRowCapacity,
+    TypeProjectionDepthLimit {
+        depth: u64,
+        maximum: u64,
+    },
+    TypeProjectionCycle {
+        type_id: u32,
+    },
+    TypeProjectionRecursiveReference {
+        distance: u32,
+    },
+    TypeProjectionWidth {
+        actual: u64,
+        maximum: u64,
+    },
     OccurrenceOwner {
         owner: u32,
         fact_count: u64,
@@ -1640,6 +1668,17 @@ enum ProjectionAdmissionFaultWire {
         requested_member: Option<u32>,
     },
 }
+
+remote_unit_enum!(
+    ProjectionAnonymousCallableAnchorFaultWire,
+    "backend_semantic::vocabulary::ProjectionAnonymousCallableAnchorFault",
+    [InvalidRoute, Encoding, SourceIdentityUnavailable]
+);
+remote_unit_enum!(
+    ProjectionAnonymousCallableAnchorPoolWire,
+    "backend_semantic::vocabulary::ProjectionAnonymousCallableAnchorPool",
+    [Entries, Bytes]
+);
 remote_unit_enum!(
     ClangProjectionTypeKindWire,
     "backend_semantic::vocabulary::ClangProjectionTypeKind",

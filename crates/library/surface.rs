@@ -24,7 +24,8 @@ use std::{fmt, str::FromStr};
 mod package_compiler_failure;
 pub use package_compiler_failure::{
     AuthorityClassFact, AuthorityPhaseFact, CompilerAuthorityDiagnosticFacts, CompilerLanguageFact,
-    CompilerNativeToolFact, CompilerStageFact, PackageCompilerFailureCause,
+    CompilerNativeToolFact, CompilerStageFact, PackageAnonymousCallableAnchorFaultFacts,
+    PackageAnonymousCallableAnchorPoolFact, PackageCompilerFailureCause,
     PackageCompilerFailurePhase, PackageCompilerFragmentFaultFacts, PackageForeignKeyFaultFacts,
     PackageLanguageProjectionFault, PackageLineageFaultFacts, PackageLoweringFaultFacts,
     PackageParentageFact, PackageProjectionAdmissionFaultFacts,

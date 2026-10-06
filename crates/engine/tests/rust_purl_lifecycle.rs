@@ -5,17 +5,17 @@ use backend_engine::driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
-use backend_semantic::ir::FragmentView;
-use backend_frontend_rust::legacy::{RustPackageUrl, RustPurlError, RustToolchain};
-use backend_engine::publication::immutable::ImmutableArtifactStore;
-use backend_engine::publication::{
-    OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
-};
-use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 use backend_engine::index_build::{IndexBuildScratch, build};
 use backend_engine::index_publish::{
     CompilationIndexScratch, encode_index_pack, plan_index_pack, seal_compilation_index,
 };
+use backend_engine::publication::immutable::ImmutableArtifactStore;
+use backend_engine::publication::{
+    OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
+};
+use backend_frontend_rust::legacy::{RustPackageUrl, RustPurlError, RustToolchain};
+use backend_semantic::ir::FragmentView;
+use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
 use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use sha2::{Digest, Sha256};
 use std::{
@@ -317,13 +317,11 @@ fn rust_workspace_member_lifecycle_chains_two_generations() -> Result<(), TestEr
     let source_path = located.project().source_path.clone();
     let first_source = fs::read(&source_path).map_err(|source| io("read first source", source))?;
     let first_ir = compile_ir_one(&first_source, located.project(), &resolved)?;
-    if !first_ir
-        .ir
-        .entity_columns()
-        .names
-        .iter()
-        .any(|id| first_ir.ir.atom(*id).is_some_and(|atom| atom == b"first"))
-    {
+    if !first_ir.ir.entity_columns().names.iter().any(|name| {
+        name.named_atom()
+            .and_then(|atom| first_ir.ir.atom(atom))
+            .is_some_and(|atom| atom == b"first")
+    }) {
         return Err(TestError::Fact("compile_ir omitted first"));
     }
     let mut first_output = vec![0_u8; 1 << 20];
@@ -354,10 +352,9 @@ fn rust_workspace_member_lifecycle_chains_two_generations() -> Result<(), TestEr
         .locate(&root, &authority_tool, None, &cancelled)
         .map_err(|error| TestError::Purl(error.to_string()))?;
     let second_ir = compile_ir_one(&second_source, located_second.project(), &resolved)?;
-    if !second_ir.ir.entity_columns().names.iter().any(|id| {
-        second_ir
-            .ir
-            .atom(*id)
+    if !second_ir.ir.entity_columns().names.iter().any(|name| {
+        name.named_atom()
+            .and_then(|atom| second_ir.ir.atom(atom))
             .is_some_and(|atom| atom == b"second_generation")
     }) {
         return Err(TestError::Fact("second compile_ir omitted added function"));
@@ -430,9 +427,9 @@ fn rust_registry_cache_locate_compiles_end_to_end() -> Result<(), TestError> {
         ));
     }
     let ir = compile_ir_one(source, located.project(), &resolved)?;
-    if !ir.ir.entity_columns().names.iter().any(|id| {
-        ir.ir
-            .atom(*id)
+    if !ir.ir.entity_columns().names.iter().any(|name| {
+        name.named_atom()
+            .and_then(|atom| ir.ir.atom(atom))
             .is_some_and(|atom| atom == b"cached_declaration")
     }) {
         return Err(TestError::Fact(

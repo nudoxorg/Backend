@@ -101,6 +101,7 @@ impl CompilerFragmentFailure {
     pub const fn kind(&self) -> CompilerFragmentFaultKind {
         match &self.fault {
             CompilerFragmentFault::Build(error) => CompilerFragmentFaultKind::Build(match error {
+                BuildError::AnonymousCallableName => BuildFaultKind::AnonymousCallableName,
                 BuildError::Capacity(_) => BuildFaultKind::Capacity,
                 BuildError::InvalidTreeEntity { .. } => BuildFaultKind::InvalidTreeEntity,
                 BuildError::Dangling { .. } => BuildFaultKind::Dangling,
@@ -165,6 +166,19 @@ impl CompilerFragmentFailure {
                 }
                 BuildError::ParentCycle { .. } => BuildFaultKind::ParentCycle,
                 BuildError::DeclarationKey { .. } => BuildFaultKind::DeclarationKey,
+                BuildError::TypedDeclarationKey { .. } => BuildFaultKind::TypedDeclarationKey,
+                BuildError::AnonymousCallableSourceUnavailable { .. } => {
+                    BuildFaultKind::AnonymousCallableSourceUnavailable
+                }
+                BuildError::AnonymousCallableAnchorInvalid { .. } => {
+                    BuildFaultKind::AnonymousCallableAnchorInvalid
+                }
+                BuildError::AnonymousCallableSourceCoordinate { .. } => {
+                    BuildFaultKind::AnonymousCallableSourceCoordinate
+                }
+                BuildError::AnonymousCallableInstance { .. } => {
+                    BuildFaultKind::AnonymousCallableInstance
+                }
                 BuildError::ScopedDeclarationPreimage { .. } => {
                     BuildFaultKind::ScopedDeclarationPreimage
                 }
@@ -494,6 +508,12 @@ impl CompilerFragmentFailure {
                 | BuildError::SignatureCarrierBindingsAlreadyCaptured
                 | BuildError::ParentCycle { .. }
                 | BuildError::DeclarationKey { .. }
+                | BuildError::TypedDeclarationKey { .. }
+                | BuildError::AnonymousCallableName
+                | BuildError::AnonymousCallableSourceUnavailable { .. }
+                | BuildError::AnonymousCallableAnchorInvalid { .. }
+                | BuildError::AnonymousCallableSourceCoordinate { .. }
+                | BuildError::AnonymousCallableInstance { .. }
                 | BuildError::ScopedDeclarationPreimage { .. }
                 | BuildError::ForeignKeyPreimage { .. }
                 | BuildError::DuplicateDeclarationIdentity { .. }
@@ -696,6 +716,7 @@ pub enum CompilerFragmentFaultKind {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BuildFaultKind {
+    AnonymousCallableName,
     Capacity,
     InvalidTreeEntity,
     Dangling,
@@ -724,6 +745,11 @@ pub enum BuildFaultKind {
     SignatureCarrierBindingEdgeMismatch,
     ParentCycle,
     DeclarationKey,
+    TypedDeclarationKey,
+    AnonymousCallableSourceUnavailable,
+    AnonymousCallableAnchorInvalid,
+    AnonymousCallableSourceCoordinate,
+    AnonymousCallableInstance,
     ScopedDeclarationPreimage,
     ForeignKeyPreimage,
     DuplicateDeclarationIdentity,
@@ -939,6 +965,7 @@ impl BuildFaultKind {
     #[must_use]
     pub const fn tag(self) -> &'static str {
         match self {
+            Self::AnonymousCallableName => "build_anonymous_callable_name",
             Self::Capacity => "build_capacity",
             Self::InvalidTreeEntity => "build_invalid_tree_entity",
             Self::Dangling => "build_dangling",
@@ -977,6 +1004,13 @@ impl BuildFaultKind {
             }
             Self::ParentCycle => "build_parent_cycle",
             Self::DeclarationKey => "build_declaration_key",
+            Self::TypedDeclarationKey => "build_typed_declaration_key",
+            Self::AnonymousCallableSourceUnavailable => {
+                "build_anonymous_callable_source_unavailable"
+            }
+            Self::AnonymousCallableAnchorInvalid => "build_anonymous_callable_anchor_invalid",
+            Self::AnonymousCallableSourceCoordinate => "build_anonymous_callable_source_coordinate",
+            Self::AnonymousCallableInstance => "build_anonymous_callable_instance",
             Self::ScopedDeclarationPreimage => "build_scoped_declaration_preimage",
             Self::ForeignKeyPreimage => "build_foreign_key_preimage",
             Self::DuplicateDeclarationIdentity => "build_duplicate_declaration_identity",
@@ -1113,6 +1147,64 @@ impl BoundedCompilerFragmentDetail {
         Self {
             text,
             truncated: !reserved,
+        }
+    }
+}
+
+#[cfg(test)]
+mod typed_declaration_failure_tests {
+    use super::{
+        BuildFaultKind, CompilerFragmentFailure, CompilerFragmentFaultFacts,
+        CompilerFragmentFaultKind,
+    };
+    use backend_semantic::ir::{
+        AnonymousCallableInstanceFault, BuildError, EntityId, TypeScriptCallableCoordinateFault,
+        TypedDeclarationKeyFault,
+    };
+
+    #[test]
+    fn typed_declaration_build_failures_have_closed_fragment_kinds() {
+        let entity = EntityId::new(7);
+        let cases = [
+            (
+                BuildError::AnonymousCallableName,
+                BuildFaultKind::AnonymousCallableName,
+            ),
+            (
+                BuildError::TypedDeclarationKey {
+                    entity,
+                    cause: TypedDeclarationKeyFault::EmptyAnchor,
+                },
+                BuildFaultKind::TypedDeclarationKey,
+            ),
+            (
+                BuildError::AnonymousCallableSourceUnavailable { entity },
+                BuildFaultKind::AnonymousCallableSourceUnavailable,
+            ),
+            (
+                BuildError::AnonymousCallableAnchorInvalid { entity },
+                BuildFaultKind::AnonymousCallableAnchorInvalid,
+            ),
+            (
+                BuildError::AnonymousCallableSourceCoordinate {
+                    entity,
+                    cause: TypeScriptCallableCoordinateFault::EmptyPath,
+                },
+                BuildFaultKind::AnonymousCallableSourceCoordinate,
+            ),
+            (
+                BuildError::AnonymousCallableInstance {
+                    entity,
+                    cause: AnonymousCallableInstanceFault::NotAnonymousCallable,
+                },
+                BuildFaultKind::AnonymousCallableInstance,
+            ),
+        ];
+
+        for (error, expected) in cases {
+            let failure = CompilerFragmentFailure::build(error);
+            assert_eq!(failure.kind(), CompilerFragmentFaultKind::Build(expected));
+            assert_eq!(failure.facts(), CompilerFragmentFaultFacts::None);
         }
     }
 }

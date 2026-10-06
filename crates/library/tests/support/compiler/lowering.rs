@@ -138,6 +138,9 @@ pub(crate) enum GoldenProjectionSemanticTypeTag {
     ArrayConstExpression,
     ArrayIncomplete,
     CQualified,
+    KeyOf,
+    IndexedAccess,
+    TypeOf,
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
@@ -253,6 +256,15 @@ pub(crate) struct GoldenProjectionSpan {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum GoldenProjectionAdmissionFault {
     EmptyName,
+    AnonymousCallableAnchor {
+        cause: GoldenAnonymousCallableAnchorFault,
+    },
+    AnonymousCallableAnchorPoolCapacity {
+        pool: GoldenAnonymousCallableAnchorPool,
+        used: u64,
+        requested: u64,
+        capacity: u64,
+    },
     Capacity,
     ChildCapacity,
     ProductChildPoolCapacity {
@@ -294,6 +306,10 @@ pub(crate) enum GoldenProjectionAdmissionFault {
     },
     TypeRowCapacity,
     ComputedRowCapacity,
+    TypeProjectionDepthLimit { depth: u64, maximum: u64 },
+    TypeProjectionCycle { type_id: u32 },
+    TypeProjectionRecursiveReference { distance: u32 },
+    TypeProjectionWidth { actual: u64, maximum: u64 },
     OccurrenceOwner {
         owner: u32,
         fact_count: u64,
@@ -341,6 +357,21 @@ pub(crate) enum GoldenProjectionAdmissionFault {
         existing_member: Option<u32>,
         requested_member: Option<u32>,
     },
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum GoldenAnonymousCallableAnchorFault {
+    InvalidRoute,
+    Encoding,
+    SourceIdentityUnavailable,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum GoldenAnonymousCallableAnchorPool {
+    Entries,
+    Bytes,
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
@@ -1590,7 +1621,7 @@ impl From<backend_semantic::vocabulary::ProjectionPackageLineageFault> for Golde
 
 impl_unit_conversion!(ProjectionConstructorTag => GoldenProjectionConstructorTag [Function, Generic, Tuple, Array, Union, Intersection, Product]);
 impl_unit_conversion!(ProjectionChildRole => GoldenProjectionChildRole [FunctionParameter, FunctionResult, GenericArgument, TupleElement, ArrayElement, UnionMember, IntersectionMember, ProductMember]);
-impl_unit_conversion!(ProjectionSemanticTypeTag => GoldenProjectionSemanticTypeTag [SelfType, Primitive, Tuple, Slice, Array, Union, Intersection, Never, Any, Unknown, Nominal, Apply, TypeVar, Wildcard, FunctionPointer, Annotated, Conditional, Mapped, TemplateLiteral, AnonymousRecord, ImplTrait, DynTrait, Inferred, QualifiedPath, Map, Channel, ArraySequence, ArrayRectangular, ArrayFixed, ArrayConstExpression, ArrayIncomplete, CQualified]);
+impl_unit_conversion!(ProjectionSemanticTypeTag => GoldenProjectionSemanticTypeTag [SelfType, Primitive, Tuple, Slice, Array, Union, Intersection, Never, Any, Unknown, Nominal, Apply, TypeVar, Wildcard, FunctionPointer, Annotated, Conditional, Mapped, TemplateLiteral, AnonymousRecord, ImplTrait, DynTrait, Inferred, QualifiedPath, Map, Channel, ArraySequence, ArrayRectangular, ArrayFixed, ArrayConstExpression, ArrayIncomplete, CQualified, KeyOf, IndexedAccess, TypeOf]);
 impl_unit_conversion!(ProjectionTypeCell => GoldenProjectionTypeCell [Payload0, Payload1, Text, Text2, Nominal]);
 impl_unit_conversion!(ProjectionTypeChildLane => GoldenProjectionTypeChildLane [Declared, Anonymous, Computed]);
 impl_unit_conversion!(ProjectionFactLane => GoldenProjectionFactLane [TypeRows, ReservedTypeRows, ComputedOwners, Extensions, ReplacementTypeParameterRange, TypeParameterRanges, CapturedTypeParameterRange, EntityMembers, EntityParentage, EntityParents, EntitySourceSpans, TypeParameters, TypeLists, EntityLists, AtomLists]);
@@ -1725,6 +1756,29 @@ impl From<backend_semantic::vocabulary::ProjectionAdmissionFault> for GoldenProj
         use backend_semantic::vocabulary::ProjectionAdmissionFault;
         match fault {
             ProjectionAdmissionFault::EmptyName => Self::EmptyName,
+            ProjectionAdmissionFault::AnonymousCallableAnchor { cause } => {
+                Self::AnonymousCallableAnchor {
+                    cause: match cause {
+                        backend_semantic::vocabulary::ProjectionAnonymousCallableAnchorFault::InvalidRoute => GoldenAnonymousCallableAnchorFault::InvalidRoute,
+                        backend_semantic::vocabulary::ProjectionAnonymousCallableAnchorFault::Encoding => GoldenAnonymousCallableAnchorFault::Encoding,
+                        backend_semantic::vocabulary::ProjectionAnonymousCallableAnchorFault::SourceIdentityUnavailable => GoldenAnonymousCallableAnchorFault::SourceIdentityUnavailable,
+                    },
+                }
+            }
+            ProjectionAdmissionFault::AnonymousCallableAnchorPoolCapacity {
+                pool,
+                used,
+                requested,
+                capacity,
+            } => Self::AnonymousCallableAnchorPoolCapacity {
+                pool: match pool {
+                    backend_semantic::vocabulary::ProjectionAnonymousCallableAnchorPool::Entries => GoldenAnonymousCallableAnchorPool::Entries,
+                    backend_semantic::vocabulary::ProjectionAnonymousCallableAnchorPool::Bytes => GoldenAnonymousCallableAnchorPool::Bytes,
+                },
+                used,
+                requested,
+                capacity,
+            },
             ProjectionAdmissionFault::Capacity => Self::Capacity,
             ProjectionAdmissionFault::ChildCapacity => Self::ChildCapacity,
             ProjectionAdmissionFault::ProductChildPoolCapacity {
@@ -1787,6 +1841,18 @@ impl From<backend_semantic::vocabulary::ProjectionAdmissionFault> for GoldenProj
             },
             ProjectionAdmissionFault::TypeRowCapacity => Self::TypeRowCapacity,
             ProjectionAdmissionFault::ComputedRowCapacity => Self::ComputedRowCapacity,
+            ProjectionAdmissionFault::TypeProjectionDepthLimit { depth, maximum } => {
+                Self::TypeProjectionDepthLimit { depth, maximum }
+            }
+            ProjectionAdmissionFault::TypeProjectionCycle { type_id } => {
+                Self::TypeProjectionCycle { type_id }
+            }
+            ProjectionAdmissionFault::TypeProjectionRecursiveReference { distance } => {
+                Self::TypeProjectionRecursiveReference { distance }
+            }
+            ProjectionAdmissionFault::TypeProjectionWidth { actual, maximum } => {
+                Self::TypeProjectionWidth { actual, maximum }
+            }
             ProjectionAdmissionFault::OccurrenceOwner { owner, fact_count } => {
                 Self::OccurrenceOwner { owner, fact_count }
             }

@@ -9,10 +9,10 @@
 use core::{iter::FusedIterator, ops::Deref};
 
 use backend_semantic::ir::{
-    AtomId, CanonicalTypeRenderError, CanonicalTypeRenderLimits, DeclarationIdentity, DocFragment,
-    DocId, EntityId, EntityListId, ExternalId, ExternalTarget, Link, LinkId, LinkTarget,
-    PreparedCanonicalType, SemanticEntity, SemanticImageFacts, SemanticReader, TextId, TypeExpr,
-    TypeId, prepare_canonical_type,
+    AnonymousCallableAnchorView, AtomId, CanonicalTypeRenderError, CanonicalTypeRenderLimits,
+    DeclarationIdentity, DocFragment, DocId, EntityId, EntityListId, ExternalId, ExternalTarget,
+    ItemName, ItemNameView, Link, LinkId, LinkTarget, PreparedCanonicalType, SemanticEntity,
+    SemanticImageFacts, SemanticReader, TextId, TypeExpr, TypeId, prepare_canonical_type,
 };
 use thiserror::Error;
 
@@ -101,15 +101,14 @@ impl<'image, Reader: SemanticReader + ?Sized> DocumentationSession<'image, Reade
 
 /// Immutable declaration facts suitable for a documentation page.
 ///
-/// Names intentionally remain raw bytes.  Semantic atoms may be binary, and
-/// callers that need a textual policy must make that policy explicit rather
-/// than having this projection silently replace or discard bytes.
+/// Names retain their tagged source-name or anonymous-anchor form. Semantic
+/// atoms may be binary, so callers choose how to display each variant.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DocumentationEntityView<'image> {
     /// Exact finalized declaration row.
     pub entity: SemanticEntity,
-    /// Exact declaration-name atom bytes.
-    pub name: &'image [u8],
+    /// Exact typed name view; anonymous anchors are never exposed as names.
+    pub name: ItemNameView<'image>,
 }
 
 /// One documentation declaration page backed by a semantic reader.
@@ -465,6 +464,12 @@ pub enum DocumentationProjectionError {
         /// Exact absent atom coordinate.
         name: AtomId,
     },
+    /// A declaration's anonymous-callable anchor was malformed.
+    #[error("documentation declaration {entity:?} has a malformed anonymous callable anchor")]
+    InvalidAnonymousCallableAnchor {
+        /// Declaration which carried the malformed anchor.
+        entity: EntityId,
+    },
     /// A declaration named an absent pooled member list.
     #[error("documentation declaration {entity:?} names missing members list {members:?}")]
     MissingMembers {
@@ -622,12 +627,26 @@ fn documentation_entity<'image, Reader: SemanticReader + ?Sized>(
     reader: &'image Reader,
     entity: SemanticEntity,
 ) -> Result<DocumentationEntity<'image, Reader>, DocumentationProjectionError> {
-    let name = reader
-        .atom(entity.name)
-        .ok_or(DocumentationProjectionError::MissingName {
-            entity: entity.id,
-            name: entity.name,
-        })?;
+    let name = match entity.name {
+        ItemName::Named(atom) => ItemNameView::Named(reader.atom(atom).ok_or(
+            DocumentationProjectionError::MissingName {
+                entity: entity.id,
+                name: atom,
+            },
+        )?),
+        ItemName::AnonymousCallable(atom) => {
+            let bytes = reader
+                .atom(atom)
+                .ok_or(DocumentationProjectionError::MissingName {
+                    entity: entity.id,
+                    name: atom,
+                })?;
+            let anchor = AnonymousCallableAnchorView::try_from_encoded(bytes).ok_or(
+                DocumentationProjectionError::InvalidAnonymousCallableAnchor { entity: entity.id },
+            )?;
+            ItemNameView::AnonymousCallable { anchor }
+        }
+    };
     Ok(DocumentationEntity {
         reader,
         view: DocumentationEntityView { entity, name },
@@ -842,6 +861,7 @@ mod tests {
         let items = [
             TreeItemInput {
                 name: b"crate",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Module,
                 visibility: Visibility::Public,
                 authority: root_authority(),
@@ -855,6 +875,7 @@ mod tests {
             },
             TreeItemInput {
                 name: b"member",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: child_authority(versions[0].identity()),
@@ -893,7 +914,13 @@ mod tests {
             .canonical_entities()
             .map(|page| {
                 let page = page.expect("canonical declaration has a name atom");
-                (page.entity.version.identity(), page.name.to_vec())
+                (
+                    page.entity.version.identity(),
+                    page.name
+                        .named_bytes()
+                        .expect("fixture declaration is named")
+                        .to_vec(),
+                )
             })
             .collect();
 

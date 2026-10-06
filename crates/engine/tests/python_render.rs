@@ -107,7 +107,9 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
         CompileFailure::AuthorityInputRequired { .. } => "authority-input-required",
         CompileFailure::AuthorityInputProfileMismatch { .. } => "authority-profile-mismatch",
         CompileFailure::LoweringUnsupported { cause, .. } => match cause {
-            backend_semantic::vocabulary::LoweringUnsupported::FactRejected { .. } => "fact-rejected",
+            backend_semantic::vocabulary::LoweringUnsupported::FactRejected { .. } => {
+                "fact-rejected"
+            }
             backend_semantic::vocabulary::LoweringUnsupported::CSharpProjection { .. } => {
                 "csharp-projection"
             }
@@ -336,8 +338,18 @@ fn python_lane_renders_exact_declarations_and_docs() -> Result<(), TestError> {
         ItemKind::Function,
         "fn calls(value: integer, enabled: bool) -> str",
     )?;
-    exact_signature(&ir, "answer", ItemKind::Static, "static answer: integer | None")?;
-    exact_signature(&ir, "items", ItemKind::Static, "static items: list<integer>")?;
+    exact_signature(
+        &ir,
+        "answer",
+        ItemKind::Static,
+        "static answer: integer | None",
+    )?;
+    exact_signature(
+        &ir,
+        "items",
+        ItemKind::Static,
+        "static items: list<integer>",
+    )?;
     exact_signature(
         &ir,
         "lookup",
@@ -350,7 +362,12 @@ fn python_lane_renders_exact_declarations_and_docs() -> Result<(), TestError> {
         ItemKind::Static,
         "static callback: fn(integer) -> str",
     )?;
-    exact_signature(&ir, "maybe", ItemKind::Static, "static maybe: integer | None")?;
+    exact_signature(
+        &ir,
+        "maybe",
+        ItemKind::Static,
+        "static maybe: integer | None",
+    )?;
     exact_signature(&ir, "choice", ItemKind::Static, "static choice: str")?;
     let plain = entity(&ir, "Plain", ItemKind::Record)?;
     let docs = ir
@@ -365,7 +382,10 @@ fn python_lane_renders_exact_declarations_and_docs() -> Result<(), TestError> {
         });
     }
     let embedding = ir
-        .embedding_text(plain, backend_semantic::ir::semantic_render::EmbeddingProfile::DOCUMENTED)
+        .embedding_text(
+            plain,
+            backend_semantic::ir::semantic_render::EmbeddingProfile::DOCUMENTED,
+        )
         .ok_or(TestError::Falsified("embedding unavailable"))?
         .to_string();
     if embedding != "struct Plain\n\nPlain documentation." {
@@ -387,14 +407,20 @@ fn python_lane_renders_compound_types_and_is_deterministic() -> Result<(), TestE
     for item in first.items() {
         if let Some(ty) = item.semantic_type() {
             if let Some(display) = first.display_type(ty) {
-                first_text.push((item.name().to_vec(), display.to_string()));
+                first_text.push((
+                    item.name().named_bytes().expect("named item").to_vec(),
+                    display.to_string(),
+                ));
             }
         }
     }
     for item in second.items() {
         if let Some(ty) = item.semantic_type() {
             if let Some(display) = second.display_type(ty) {
-                second_text.push((item.name().to_vec(), display.to_string()));
+                second_text.push((
+                    item.name().named_bytes().expect("named item").to_vec(),
+                    display.to_string(),
+                ));
             }
         }
     }
@@ -438,7 +464,10 @@ fn python_fragment_planes_carry_what_the_ir_tree_omits() -> Result<(), TestError
         .duration_since(UNIX_EPOCH)
         .map_err(TestError::Clock)?
         .as_nanos();
-    let work = std::env::temp_dir().join(format!("nudox-python-fragment-{nonce}-{}", std::process::id()));
+    let work = std::env::temp_dir().join(format!(
+        "nudox-python-fragment-{nonce}-{}",
+        std::process::id()
+    ));
     fs::create_dir_all(&work).map_err(TestError::Io)?;
     let cancelled = AtomicBool::new(false);
     let mut diagnostic = [0_u8; 4096];
@@ -750,11 +779,16 @@ fn result_slot_is_its_own_row_even_when_a_parameter_shares_its_shape() -> Result
     // the function is the result slot's own declaration; a same-shaped
     // parameter under another name must not absorb the result.
     let ir = compile_source(b"def same(value: int) -> int: ...\n")?;
-    exact_signature(&ir, "same", ItemKind::Function, "fn same(value: integer) -> integer")?;
+    exact_signature(
+        &ir,
+        "same",
+        ItemKind::Function,
+        "fn same(value: integer) -> integer",
+    )?;
     let parameters: Vec<Vec<u8>> = ir
         .items()
         .filter(|item| item.kind() == ItemKind::Parameter)
-        .map(|item| item.name().to_vec())
+        .map(|item| item.name().named_bytes().expect("named item").to_vec())
         .collect();
     if parameters != vec![b"value".to_vec(), b"same".to_vec()] {
         return Err(TestError::Falsified(
