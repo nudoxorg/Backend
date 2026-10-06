@@ -1,0 +1,11 @@
+{
+  "pid": 34198,
+  "started_utc": "2026-10-06T21:33:54.461156+00:00",
+  "pre_signal_identity": "34198 Tue Oct  6 21:28:44 2026     /Users/mileswirht/.local/lib/nudox/versions/checkpoint-20261006-a659d5d181-macos-arm64/bin/backend-locald --endpoint /tmp/backend-v2-3cef1ffb1004a8d826d89c90.sock --workspace /Users/mileswirht/Library/Application Support/nudox/projects/1ac90752b48a92bee8f4a08e6f71a5648cd68452fc6dedb696f7dc2b4e52c279 --authority-secret-file /Users/mileswirht/Library/Application Support/nudox/projects/1ac90752b48a92bee8f4a08e6f71a5648cd68452fc6dedb696f7dc2b4e52c279/authority.secret",
+  "signal": "SIGTERM",
+  "reason": "intentional same-state cold restart of Root-launched HTTPie test daemon; no state reset",
+  "native_generation": "0612a0798c67039f68665440876b63a85ab84f59b5c0a2f0e498b69227d854cd",
+  "native_artifacts": 133,
+  "history_state": "pending",
+  "history_completion_claimed": false
+}

@@ -1,0 +1,284 @@
+[
+  {
+    "label": "reads-versions-cold",
+    "command": [
+      "/Users/mileswirht/.local/bin/nudox",
+      "--json",
+      "--detail",
+      "full",
+      "semantic-versions",
+      "/Users/mileswirht/Downloads/nudox-demo-httpie"
+    ],
+    "exit_code": 0,
+    "seconds": 0.071,
+    "stdout_bytes": 2639,
+    "stderr_bytes": 0,
+    "stdout_sha256": "b47b90ada15d4370734414c954a4b962f20493f260d16ab5ee5a059901b228d1",
+    "json_root_keys": [
+      "heading",
+      "records",
+      "selected_source_frontier",
+      "semantic_data",
+      "answer",
+      "detail",
+      "budget"
+    ]
+  },
+  {
+    "label": "reads-health",
+    "command": [
+      "/Users/mileswirht/.local/bin/nudox",
+      "--json",
+      "health"
+    ],
+    "exit_code": 0,
+    "seconds": 0.165,
+    "stdout_bytes": 695,
+    "stderr_bytes": 0,
+    "stdout_sha256": "7d1f6fb7f04c008270a35175cb342e17b6f06c73b35c7290adbd73d10f81c9b4",
+    "json_root_keys": [
+      "readiness",
+      "revision",
+      "revision_tag",
+      "rows",
+      "coverage",
+      "capabilities",
+      "answer",
+      "detail",
+      "budget"
+    ]
+  },
+  {
+    "label": "reads-packages",
+    "command": [
+      "/Users/mileswirht/.local/bin/nudox",
+      "--json",
+      "packages"
+    ],
+    "exit_code": 0,
+    "seconds": 0.039,
+    "stdout_bytes": 410,
+    "stderr_bytes": 0,
+    "stdout_sha256": "ef464144a7bf44f9fe5a42ab9896b4c1a7dcc6612d4483e64f87209611062f94",
+    "json_root_keys": [
+      "revision",
+      "projects",
+      "answer",
+      "detail",
+      "budget"
+    ]
+  },
+  {
+    "label": "reads-search",
+    "command": [
+      "/Users/mileswirht/.local/bin/nudox",
+      "--json",
+      "search",
+      "HTTPieArgumentParser"
+    ],
+    "exit_code": 0,
+    "seconds": 0.053,
+    "stdout_bytes": 2639,
+    "stderr_bytes": 0,
+    "stdout_sha256": "a103fdd8d5f8f6421b71d493f0135644c7489351070fddc129c128deaf57b67b",
+    "json_root_keys": [
+      "query",
+      "coverage",
+      "readiness",
+      "records",
+      "more",
+      "answer",
+      "detail",
+      "budget"
+    ]
+  },
+  {
+    "label": "reads-resolve-name",
+    "command": [
+      "/Users/mileswirht/.local/bin/nudox",
+      "--json",
+      "resolve",
+      "HTTPieArgumentParser"
+    ],
+    "exit_code": 0,
+    "seconds": 0.058,
+    "stdout_bytes": 2482,
+    "stderr_bytes": 0,
+    "stdout_sha256": "803787e2486d6b70cc0d8c5e07ff13bc5073923396de6941c7f238f1495a526d",
+    "json_root_keys": [
+      "query",
+      "coverage",
+      "readiness",
+      "records",
+      "more",
+      "answer",
+      "detail",
+      "budget"
+    ]
+  },
+  {
+    "label": "reads-outline",
+    "command": [
+      "/Users/mileswirht/.local/bin/nudox",
+      "--json",
+      "outline",
+      "/Users/mileswirht/Downloads/nudox-demo-httpie"
+    ],
+    "exit_code": 0,
+    "seconds": 0.081,
+    "stdout_bytes": 22760,
+    "stderr_bytes": 0,
+    "stdout_sha256": "947286066a3abe98067632e01b9f0044377d596f6b44227bbaaa9326403b4f81",
+    "json_root_keys": [
+      "package",
+      "roots",
+      "extent",
+      "declarations",
+      "unnamed",
+      "answer",
+      "detail",
+      "budget"
+    ]
+  },
+  {
+    "label": "reads-show",
+    "command": [
+      "/Users/mileswirht/.local/bin/nudox",
+      "--json",
+      "show",
+      "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::a30ebc39e5b44c9fe03d484267ae0f48fe91b603c6b00e69d1ae5be808baedcf::HTTPieArgumentParser"
+    ],
+    "exit_code": 0,
+    "seconds": 1.902,
+    "stdout_bytes": 13295,
+    "stderr_bytes": 0,
+    "stdout_sha256": "4bdee613c3c2f184c577d705c4d21b40e4861cb75996cb710b80e93773f3fdd3",
+    "json_root_keys": [
+      "identity",
+      "language",
+      "signature",
+      "tokens",
+      "prose",
+      "relations",
+      "source",
+      "answer",
+      "detail",
+      "budget"
+    ]
+  },
+  {
+    "label": "reads-source",
+    "command": [
+      "/Users/mileswirht/.local/bin/nudox",
+      "--json",
+      "source",
+      "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::a30ebc39e5b44c9fe03d484267ae0f48fe91b603c6b00e69d1ae5be808baedcf::HTTPieArgumentParser"
+    ],
+    "exit_code": 0,
+    "seconds": 0.051,
+    "stdout_bytes": 12049,
+    "stderr_bytes": 0,
+    "stdout_sha256": "817ef9b74d54b16ed297cf8b697dad40a802c743d4faa3fb85eb035fb3920c58",
+    "json_root_keys": [
+      "identity",
+      "language",
+      "signature",
+      "tokens",
+      "prose",
+      "source",
+      "answer",
+      "detail",
+      "budget"
+    ]
+  },
+  {
+    "label": "reads-references",
+    "command": [
+      "/Users/mileswirht/.local/bin/nudox",
+      "--json",
+      "references",
+      "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::a30ebc39e5b44c9fe03d484267ae0f48fe91b603c6b00e69d1ae5be808baedcf::HTTPieArgumentParser"
+    ],
+    "exit_code": 0,
+    "seconds": 1.653,
+    "stdout_bytes": 652,
+    "stderr_bytes": 0,
+    "stdout_sha256": "273daa23c23c893ba4dfee9ca3631adefd97bbf31845e979e900d6f93e1c2dd9",
+    "json_root_keys": [
+      "heading",
+      "records",
+      "answer",
+      "detail",
+      "budget"
+    ]
+  },
+  {
+    "label": "reads-graph",
+    "command": [
+      "/Users/mileswirht/.local/bin/nudox",
+      "--json",
+      "graph",
+      "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::a30ebc39e5b44c9fe03d484267ae0f48fe91b603c6b00e69d1ae5be808baedcf::HTTPieArgumentParser"
+    ],
+    "exit_code": 0,
+    "seconds": 1.836,
+    "stdout_bytes": 1240,
+    "stderr_bytes": 0,
+    "stdout_sha256": "5fa0fd6be52dcffde2891b07c2ecd0d1740369b6fcf8d48ea238043281ba20cf",
+    "json_root_keys": [
+      "query",
+      "coverage",
+      "readiness",
+      "records",
+      "more",
+      "answer",
+      "detail",
+      "budget"
+    ]
+  },
+  {
+    "label": "reads-read",
+    "command": [
+      "/Users/mileswirht/.local/bin/nudox",
+      "--json",
+      "read",
+      "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::a30ebc39e5b44c9fe03d484267ae0f48fe91b603c6b00e69d1ae5be808baedcf::HTTPieArgumentParser"
+    ],
+    "exit_code": 0,
+    "seconds": 1.619,
+    "stdout_bytes": 4526,
+    "stderr_bytes": 0,
+    "stdout_sha256": "e46c68af15dc6badad8888700ba7036618e9071e9cadf400c3f49b6b9ef3962c",
+    "json_root_keys": [
+      "heading",
+      "records",
+      "answer",
+      "detail",
+      "budget"
+    ]
+  },
+  {
+    "label": "reads-related",
+    "command": [
+      "/Users/mileswirht/.local/bin/nudox",
+      "--json",
+      "related",
+      "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::a30ebc39e5b44c9fe03d484267ae0f48fe91b603c6b00e69d1ae5be808baedcf::HTTPieArgumentParser"
+    ],
+    "exit_code": 0,
+    "seconds": 1.801,
+    "stdout_bytes": 1883,
+    "stderr_bytes": 0,
+    "stdout_sha256": "5fd8ac0bca5c655d2c412265afe62d07a5e39307e8bb22435141b1aadae5f40f",
+    "json_root_keys": [
+      "query",
+      "coverage",
+      "readiness",
+      "records",
+      "more",
+      "answer",
+      "detail",
+      "budget"
+    ]
+  }
+]

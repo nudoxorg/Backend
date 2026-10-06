@@ -1,0 +1,102 @@
+{
+  "jsonrpc": "2.0",
+  "id": 12,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "~lanes exact\u27131 names\u27131 graph\u27131 semantic\u2717 unconfigured\nnudox-demo-httpie \u203a httpie/cli/argparser.py:138 \u203a HTTPieArgumentParser  \u00b7  struct \u00b7 python\n`/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::a30ebc39e5b44c9fe03d484267ae0f48fe91b603c6b00e69d1ae5be808baedcf::HTTPieArgumentParser`  class HTTPieArgumentParser(BaseHTTPieArgumentParser):\n    \"\"\"Adds additional logic to `argparse.ArgumentParser`.\n\n    Handles all input (CLI args, file args, stdin), applies defaults,\n    and performs extra validation.\n\n    \"\"\"\n\n    def __init__(self, *args, formatter_class=HTTPieHelpFormatter, **kwargs):\n        kwargs.setdefault('add_help', False)\n        super().__init__(*args, formatter_class=formatter_class, **kwargs)\n\n    # noinspection PyMethodOverriding\n    def parse_args(\n        self,\n        env: Environment,\n        args=None,\n        namespace=None\n    ) -> argparse.Namespace:\n        self.env = env\n        self.env.args = namespace = namespace or argparse.Namespace()\n        self.args, no_options = super().parse_known_args(args, namespace)\n        if self.args.debug:\n            self.args.traceback = True\n        self.has_stdin_data = (\n            self.env.stdin\n            and not self.args.ignore_stdin\n            and not self.env.stdin_isatty\n        )\n        self.has_input_data = self.has_stdin_data or self.args.raw is not None\n        # Arguments processing and environment setup.\n        self._apply_no_options(no_options)\n        self._process_request_type()\n        self._process_download_options()\n        self._setup_standard_streams()\n        self._process_output_options()\n        self._process_pretty_options()\n        self._process_format_options()\n        self._guess_method()\n        self._parse_items()\n        self._process_url()\n        self._process_auth()\n        self._process_ssl_cert()\n\n        if self.args.raw is not None:\n            self._body_from_input(self.args.raw)\n        elif self.has_stdin_data:\n            self._body_from_file(self.env.stdin)\n\n        if self.args.compress:\n            # TODO: allow --compress with --chunked / --multipart\n            if self.args.chunked:\n                self.error('cannot combine --compress and --chunked')\n            if self.args.multipart:\n                self.error('cannot combine --compress and --multipart')\n\n        return self.args\n\n    def _process_request_type(self):\n        request_type = self.args.request_type\n        self.args.json = request_type is RequestType.JSON\n        self.args.multipart = request_type is RequestType.MULTIPART\n        self.args.form = request_type in\n"
+      }
+    ],
+    "structuredContent": {
+      "query": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::a30ebc39e5b44c9fe03d484267ae0f48fe91b603c6b00e69d1ae5be808baedcf::HTTPieArgumentParser",
+      "coverage": [
+        {
+          "lane": "exact",
+          "state": "complete"
+        },
+        {
+          "lane": "names",
+          "state": "complete"
+        },
+        {
+          "lane": "graph",
+          "state": "complete"
+        },
+        {
+          "lane": "semantic",
+          "state": "unavailable",
+          "reason": "unconfigured"
+        }
+      ],
+      "readiness": "ready",
+      "records": [
+        {
+          "identity": {
+            "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::a30ebc39e5b44c9fe03d484267ae0f48fe91b603c6b00e69d1ae5be808baedcf::HTTPieArgumentParser",
+            "trail": "nudox-demo-httpie \u203a httpie/cli/argparser.py:138 \u203a HTTPieArgumentParser",
+            "name": "HTTPieArgumentParser",
+            "shape": "semantic",
+            "project": "/Users/mileswirht/Downloads/nudox-demo-httpie",
+            "path": "httpie/cli/argparser.py",
+            "line": 138,
+            "segments": [
+              "HTTPieArgumentParser"
+            ],
+            "key": "8d9e744f",
+            "semantic_data": {
+              "kind": "selected-symbol-id",
+              "value": [
+                141,
+                158,
+                116,
+                79,
+                191,
+                110,
+                56,
+                27,
+                116,
+                137,
+                89,
+                75,
+                35,
+                53,
+                245,
+                246,
+                69,
+                143,
+                212,
+                216,
+                95,
+                157,
+                125,
+                205,
+                22,
+                61,
+                204,
+                52,
+                112,
+                162,
+                238,
+                126
+              ]
+            }
+          },
+          "kind": "struct",
+          "language": "python",
+          "state": "ready",
+          "summary": "Adds additional logic to `argparse.ArgumentParser`."
+        }
+      ],
+      "more": false,
+      "answer": "records",
+      "detail": "summary",
+      "budget": {
+        "bytes": 1240,
+        "estimatedTokens": 310,
+        "bytesPerToken": 4
+      }
+    },
+    "isError": false
+  }
+}

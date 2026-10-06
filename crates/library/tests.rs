@@ -1141,6 +1141,420 @@ fn bounded_query_continuation_is_bound_to_the_snapshot_view() {
     assert_eq!(decoded.request_id, 1);
 }
 
+fn name_page_ids(page: &ViewSnapshot) -> Vec<RowId> {
+    page.root.row_refs().map(|row| row.id).collect()
+}
+
+#[test]
+fn exact_address_names_selects_the_admitted_compiler_key_and_captured_site() {
+    let (root, object) = source();
+    let basis = Basis::new(root, object);
+    let project = "/project/httpie";
+    let package = package_key(project);
+    let semantic = "/project/httpie::semantic::native-declaration::HTTPieArgumentParser";
+    let id = RowId::Symbol(symbol_key("compiler-owned-HTTPieArgumentParser"));
+    assert_ne!(id, RowId::Symbol(symbol_key(semantic)));
+    let row = Row::in_package(id, basis, package, semantic)
+        .try_with_identity_preimage("compiler-owned-HTTPieArgumentParser")
+        .expect("admitted compiler identity")
+        .with_source(SourceLocation::new("httpie/cli/argparser.py", 138).expect("site"));
+    let foreign_project = "/project/foreign";
+    let foreign_package = package_key(foreign_project);
+    let foreign = Row::in_package(
+        RowId::Symbol(symbol_key("foreign-compiler-owned")),
+        basis,
+        foreign_package,
+        "/project/foreign::semantic::other::HTTPieArgumentParser",
+    )
+    .with_source(SourceLocation::new("httpie/cli/argparser.py", 138).expect("foreign site"));
+    let library = projection(vec![
+        Row::new(RowId::Package(package), basis, project),
+        Row::new(RowId::Package(foreign_package), basis, foreign_project),
+        row,
+        foreign,
+    ]);
+    let readable = "/project/httpie::httpie/cli/argparser.py:138::HTTPieArgumentParser";
+    for address in [semantic, readable] {
+        let result = library
+            .names(&NameQuery::new(
+                address,
+                library.revision_root(),
+                QueryLimit::default(),
+            ))
+            .expect("exact admitted address");
+        assert_eq!(name_page_ids(&result), [id]);
+        assert_eq!(result.root.rows()[0].label, semantic);
+        assert!(result.next.is_none());
+    }
+    for address in [
+        "/project/httpie::semantic::forged::HTTPieArgumentParser",
+        "/project/httpie::httpie/cli/argparser.py:139::HTTPieArgumentParser",
+        "/project/httpie::httpie/cli/argparser.py:0138::HTTPieArgumentParser",
+        "/project/httpie::httpie/cli/options.py:138::HTTPieArgumentParser",
+        "/project/absent::httpie/cli/argparser.py:138::HTTPieArgumentParser",
+        "/project/httpie::httpie/cli/argparser.py:138::httpieargumentparser",
+    ] {
+        assert!(
+            library
+                .names(&NameQuery::new(
+                    address,
+                    library.revision_root(),
+                    QueryLimit::default(),
+                ))
+                .expect("negative exact address")
+                .root
+                .row_count()
+                == 0,
+            "{address}"
+        );
+    }
+    assert_eq!(
+        library
+            .names(&NameQuery::new(
+                "httpieargumentparser",
+                library.revision_root(),
+                QueryLimit::default(),
+            ))
+            .expect("ambiguous case-insensitive name")
+            .root
+            .row_count(),
+        2
+    );
+    assert!(!library.view().compatibility_rows_are_materialized());
+    assert_eq!(library.work_counters().scan_rows, 0);
+}
+
+#[test]
+fn exact_address_names_preserves_ambiguity_and_snapshot_bound_continuations() {
+    let (root, object) = source();
+    let basis = Basis::new(root, object);
+    let project = "/project/httpie";
+    let package = package_key(project);
+    let address = "/project/httpie::semantic::shared::Parser";
+    let ids = [
+        RowId::Symbol(symbol_key("native-a")),
+        RowId::Symbol(symbol_key("native-b")),
+    ];
+    let mut rows = vec![Row::new(RowId::Package(package), basis, project)];
+    for id in ids {
+        rows.push(
+            Row::in_package(id, basis, package, address)
+                .with_source(SourceLocation::new("parser.py", 8).expect("site")),
+        );
+    }
+    let library = projection(rows);
+    let revision = library.revision_root();
+    let limit = QueryLimit::new(1).expect("limit");
+    let query = NameQuery::new(address, revision, limit);
+    let first = library.names(&query).expect("first exact-address page");
+    let cursor = first.next.expect("ambiguous address continuation");
+    let second = library
+        .names(&query.clone().with_cursor(cursor))
+        .expect("second exact-address page");
+    assert_eq!(name_page_ids(&first).len(), 1);
+    assert_eq!(name_page_ids(&second).len(), 1);
+    assert_ne!(name_page_ids(&first), name_page_ids(&second));
+    assert!(second.next.is_none());
+    let mut seen = [name_page_ids(&first)[0], name_page_ids(&second)[0]];
+    seen.sort_unstable();
+    let mut expected = ids;
+    expected.sort_unstable();
+    assert_eq!(seen, expected);
+    assert!(matches!(
+        library.names(
+            &NameQuery::new("/project/httpie::parser.py:8::Parser", revision, limit,)
+                .with_cursor(cursor)
+        ),
+        Err(LibraryError::CursorMismatch)
+    ));
+    assert!(matches!(
+        library.names(&NameQuery::new(address, view_state_root(&[]), limit,)),
+        Err(LibraryError::WrongBasis { .. })
+    ));
+    let reply = ReplyDto::new(9, CommandReply::Names(first));
+    let bytes = serde_json::to_vec(&reply).expect("wire page");
+    ReplyDto::decode_against(&bytes, &reply).expect("admitted exact-address page");
+    let (updated, _) = advance(
+        library,
+        ViewDelta::Remove { id: ids[0] },
+        capability(object),
+    );
+    assert!(matches!(
+        updated
+            .names(&NameQuery::new(address, updated.revision_root(), limit,).with_cursor(cursor)),
+        Err(LibraryError::CursorMismatch)
+    ));
+}
+
+#[test]
+fn exact_address_names_retains_relative_qualified_ambiguity_without_scope_fallback() {
+    let (root, object) = source();
+    let basis = Basis::new(root, object);
+    let package = package_key("pkg");
+    let other_package = package_key("other");
+    let first = RowId::Symbol(symbol_key("compiler-pkg-method"));
+    let second = RowId::Symbol(symbol_key("compiler-other-method"));
+    let unrelated = RowId::Symbol(symbol_key("compiler-bar-method"));
+    let address = "pkg::semantic::aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa::Foo::method";
+    let library = projection(vec![
+        Row::new(RowId::Package(package), basis, "pkg"),
+        Row::new(RowId::Package(other_package), basis, "other"),
+        Row::in_package(first, basis, package, address)
+            .with_source(SourceLocation::new("src/foo.py", 4).expect("site")),
+        Row::in_package(
+            second,
+            basis,
+            other_package,
+            "other::semantic::aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa::Foo::method",
+        )
+        .with_source(SourceLocation::new("src/foo.py", 4).expect("other site")),
+        Row::in_package(
+            unrelated,
+            basis,
+            package,
+            "pkg::semantic::bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb::Bar::method",
+        )
+        .with_source(SourceLocation::new("src/bar.py", 8).expect("unrelated site")),
+    ]);
+    let names = |text| {
+        library
+            .names(&NameQuery::new(
+                text,
+                library.revision_root(),
+                QueryLimit::default(),
+            ))
+            .expect("qualified selection")
+    };
+    let mut expected = vec![first, second];
+    expected.sort_unstable();
+    for relative in ["Foo::method", "fOO::mETHod", "Foo::met"] {
+        assert_eq!(name_page_ids(&names(relative)), expected, "{relative}");
+    }
+    for exact in [
+        address,
+        "pkg::src/foo.py:4::method",
+        "pkg::src/foo.py:4::Foo::method",
+    ] {
+        assert_eq!(name_page_ids(&names(exact)), [first], "{exact}");
+    }
+    for foreign in [
+        "forged::semantic::aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa::Foo::method",
+        "pkg::semantic::cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc::Foo::method",
+        "pkg::semantic::aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa::Foo::Method",
+        "forged::src/foo.py:4::Foo::method",
+        "pkg::src/Foo.py:4::Foo::method",
+        "pkg::src/foo.py:5::Foo::method",
+        "pkg::src/foo.py:04::Foo::method",
+        "pkg::src/foo.py:+4::Foo::method",
+        "pkg::src/foo.py:4294967296::Foo::method",
+        "pkg::src/foo.py:4::foo::method",
+    ] {
+        assert_eq!(names(foreign).root.row_count(), 0, "{foreign}");
+    }
+    let page = library
+        .names(&NameQuery::new(
+            "Foo::method",
+            library.revision_root(),
+            QueryLimit::new(1).expect("limit"),
+        ))
+        .expect("qualified first page");
+    let next = page.next.expect("ambiguous relative qualification");
+    let second_page = library
+        .names(
+            &NameQuery::new(
+                "Foo::method",
+                library.revision_root(),
+                QueryLimit::new(1).expect("limit"),
+            )
+            .with_cursor(next),
+        )
+        .expect("qualified continuation");
+    assert_ne!(name_page_ids(&page), name_page_ids(&second_page));
+    assert!(second_page.next.is_none());
+    assert!(!library.view().compatibility_rows_are_materialized());
+    assert_eq!(library.work_counters().scan_rows, 0);
+}
+
+#[test]
+fn qualified_semantic_namespaces_remain_names_and_producer_addresses_stay_exact() {
+    let (root, object) = source();
+    let basis = Basis::new(root, object);
+    let first = RowId::Symbol(symbol_key("namespace-thing-a"));
+    let second = RowId::Symbol(symbol_key("namespace-thing-b"));
+    let method = RowId::Symbol(symbol_key("namespace-method"));
+    let native = RowId::Symbol(symbol_key("compiler-addressed-thing"));
+    let address =
+        "pkg::semantic::aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa::Thing";
+    let library = projection(vec![
+        Row::new(first, basis, "one::crate::semantic::model::Thing"),
+        Row::new(second, basis, "two::crate::semantic::model::Thing"),
+        Row::new(method, basis, "scope::Foo::semantic::method"),
+        Row::new(native, basis, address),
+    ]);
+    let names = |text, limit| {
+        library
+            .names(&NameQuery::new(text, library.revision_root(), limit))
+            .expect("closed semantic namespace selector")
+    };
+    let mut expected = vec![first, second];
+    expected.sort_unstable();
+    for text in [
+        "crate::semantic::model::Thing",
+        "CRATE::SEMANTIC::MODEL::THING",
+        "crate::semantic::model::Thi",
+    ] {
+        assert_eq!(
+            name_page_ids(&names(text, QueryLimit::default())),
+            expected,
+            "{text}"
+        );
+    }
+    for text in [
+        "Foo::semantic::method",
+        "fOO::SEMANTIC::mETHod",
+        "Foo::semantic::met",
+    ] {
+        assert_eq!(
+            name_page_ids(&names(text, QueryLimit::default())),
+            [method],
+            "{text}"
+        );
+    }
+    assert_eq!(
+        name_page_ids(&names(address, QueryLimit::default())),
+        [native]
+    );
+    for text in [
+        "pkg::semantic::aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa::thing",
+        "PKG::semantic::aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa::Thing",
+        "pkg::semantic::bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb::Thing",
+        "/forged::crate::semantic::model::Thing",
+        "pkg:npm/forged@1.0.0::crate::semantic::model::Thing",
+        "C:\\forged::crate::semantic::model::Thing",
+        "pkg::src/model.py:4::crate::semantic::model::Thing",
+    ] {
+        assert_eq!(
+            names(text, QueryLimit::default()).root.row_count(),
+            0,
+            "{text}"
+        );
+    }
+    let query = NameQuery::new(
+        "crate::semantic::model::Thing",
+        library.revision_root(),
+        QueryLimit::new(1).expect("limit"),
+    );
+    let first_page = library.names(&query).expect("first namespace page");
+    let second_page = library
+        .names(&query.with_cursor(first_page.next.expect("ambiguity cursor")))
+        .expect("second namespace page");
+    assert_ne!(name_page_ids(&first_page), name_page_ids(&second_page));
+    assert!(second_page.next.is_none());
+    assert!(!library.view().compatibility_rows_are_materialized());
+    assert_eq!(library.work_counters().scan_rows, 0);
+}
+
+#[test]
+fn empty_address_leaf_never_enumerates_names_but_literal_empty_name_still_pages() {
+    let (root, object) = source();
+    let basis = Basis::new(root, object);
+    let first = RowId::Symbol(symbol_key("compiler-first"));
+    let second = RowId::Symbol(symbol_key("compiler-second"));
+    let library = projection(vec![
+        Row::new(
+            first,
+            basis,
+            "pkg::semantic::aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa::Foo::method",
+        ),
+        Row::new(
+            second,
+            basis,
+            "pkg::semantic::bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb::Bar::method",
+        ),
+    ]);
+    let limit = QueryLimit::new(1).expect("bound");
+    for text in [
+        "/project::semantic::forged::",
+        "pkg::semantic::aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa::",
+        "pkg::src/foo.py:4::",
+        "pkg::src/foo.py:0::",
+        "/project::",
+        "pkg:npm/example@1.0.0::",
+        "C:\\project::",
+        "Foo::",
+        "::",
+    ] {
+        let page = library
+            .names(&NameQuery::new(text, library.revision_root(), limit))
+            .expect("bounded malformed selector");
+        assert_eq!(page.root.row_count(), 0, "{text}");
+        assert!(page.next.is_none(), "{text}");
+    }
+    let page = library
+        .names(&NameQuery::new("", library.revision_root(), limit))
+        .expect("literal empty name");
+    assert_eq!(page.root.row_count(), 1);
+    let next = page.next.expect("global name continuation");
+    let second_page = library
+        .names(&NameQuery::new("", library.revision_root(), limit).with_cursor(next))
+        .expect("second global name page");
+    assert_eq!(second_page.root.row_count(), 1);
+    assert_ne!(name_page_ids(&page), name_page_ids(&second_page));
+    assert!(second_page.next.is_none());
+    assert!(!library.view().compatibility_rows_are_materialized());
+    assert_eq!(library.work_counters().scan_rows, 0);
+}
+
+#[test]
+fn exact_address_names_and_leaf_postings_agree_after_incremental_replacement() {
+    let (root, object) = source();
+    let basis = Basis::new(root, object);
+    let project = "/project/httpie";
+    let package = package_key(project);
+    let id = RowId::Symbol(symbol_key("native-parser"));
+    let row = Row::in_package(id, basis, package, "/project/httpie::semantic::old::Parser")
+        .with_source(SourceLocation::new("parser.py", 8).expect("old site"));
+    let library = projection(vec![Row::new(RowId::Package(package), basis, project), row]);
+    let old_query = NameQuery::new(
+        "/project/httpie::parser.py:8::Parser",
+        library.revision_root(),
+        QueryLimit::default(),
+    );
+    assert_eq!(
+        name_page_ids(&library.names(&old_query).expect("old address")),
+        [id]
+    );
+    let replacement = Row::in_package(id, basis, package, "/project/httpie::semantic::new::Parser")
+        .with_source(SourceLocation::new("parser.py", 9).expect("new site"));
+    let (updated, _) = advance(
+        library,
+        ViewDelta::Upsert { row: replacement },
+        capability(object),
+    );
+    let rebuilt =
+        Library::from_view(updated.view().clone(), updated.cursor()).expect("cold arrangement");
+    for (text, expected) in [
+        ("Parser", vec![id]),
+        ("semantic", vec![]),
+        ("/project/httpie::semantic::new::Parser", vec![id]),
+        ("/project/httpie::semantic::old::Parser", vec![]),
+        ("/project/httpie::parser.py:9::Parser", vec![id]),
+        ("/project/httpie::parser.py:8::Parser", vec![]),
+    ] {
+        let query = NameQuery::new(text, updated.revision_root(), QueryLimit::default());
+        let incremental = updated.names(&query).expect("incremental address");
+        let cold = rebuilt.names(&query).expect("cold address");
+        assert_eq!(name_page_ids(&incremental), expected, "{text}");
+        assert_eq!(incremental, cold, "{text}");
+    }
+    assert!(matches!(
+        updated.names(&old_query),
+        Err(LibraryError::WrongBasis { .. })
+    ));
+    assert!(!updated.view().compatibility_rows_are_materialized());
+    assert!(!rebuilt.view().compatibility_rows_are_materialized());
+}
+
 #[test]
 fn repeated_queries_seek_prebuilt_arrangements_and_sort_only_the_bounded_page() {
     let (basis, object) = source();

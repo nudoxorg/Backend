@@ -411,7 +411,7 @@ fn update_name_postings(
 ) -> Result<NamePostingTree, ArrangementError> {
     let mut changes = BTreeMap::new();
     if let Some(old) = old {
-        let normalized = old.label.to_lowercase();
+        let normalized = name_key(old).normalized;
         for gram in search_grams(&normalized) {
             changes.insert(
                 NamePostingKey {
@@ -423,7 +423,7 @@ fn update_name_postings(
         }
     }
     if let Some(new) = new {
-        let normalized = new.label.to_lowercase();
+        let normalized = name_key(new).normalized;
         for gram in search_grams(&normalized) {
             changes.insert(
                 NamePostingKey {

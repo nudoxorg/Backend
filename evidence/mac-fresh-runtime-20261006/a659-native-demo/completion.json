@@ -1,0 +1,10 @@
+{
+  "exit_code": 0,
+  "guard_reason": null,
+  "receipt_sha256": "de0a4f3464c47264c2f30600ecb4047a525edb78d9b6586b940ee6635cbc9ddc",
+  "resources_after": {
+    "utc": "2026-10-06T21:26:01Z",
+    "available_memory_bytes": 62936023040,
+    "free_disk_bytes": 1395145715712
+  }
+}

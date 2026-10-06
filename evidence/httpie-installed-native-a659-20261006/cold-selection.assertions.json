@@ -1,0 +1,13 @@
+{
+  "same_state_reopen": true,
+  "retired_pid": 34198,
+  "reopened_pid": 98009,
+  "generation": "0612a0798c67039f68665440876b63a85ab84f59b5c0a2f0e498b69227d854cd",
+  "native_artifacts": 133,
+  "complete": true,
+  "selected": true,
+  "current": true,
+  "frontier_files": 133,
+  "history": "pending",
+  "state_reset": false
+}

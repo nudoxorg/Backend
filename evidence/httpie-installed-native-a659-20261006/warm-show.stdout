@@ -1,0 +1,7 @@
+{
+  "slug": "protocol",
+  "operand": "/Users/mileswirht/Downloads/nudox-demo-httpie::httpie/cli/argparser.py:138::HTTPieArgumentParser",
+  "cause": "unproven",
+  "detail": "a frame, DTO, or identity proof failed admission: library record not found",
+  "answer": "fault"
+}

@@ -5,6 +5,7 @@ use super::{
     ProjectionArrangement, SearchPostingKey, SearchPostingTree, WorkCounters, search_grams,
     searchable_text, update,
 };
+use crate::command::{AddressSelection, NameSelection};
 use crate::{PackageKey, Row, RowId, SymbolKey};
 use backend_flow::MaterializedIndex;
 use std::cmp::Ordering;
@@ -165,18 +166,27 @@ impl ProjectionArrangement {
         ArrangementPage { ids, has_more }
     }
 
-    pub(crate) fn names_page<F>(
+    pub(crate) fn names_page<F, A>(
         &self,
-        text: &str,
+        selection: NameSelection<'_>,
         start: usize,
         limit: usize,
         row_for_id: F,
+        address_matches: A,
         work: &WorkCounters,
     ) -> ArrangementPage
     where
         F: Fn(RowId) -> Option<Row>,
+        A: Fn(RowId, AddressSelection<'_>) -> bool,
     {
+        let text = selection.posting_text();
         if text.is_empty() {
+            if !selection.is_global() {
+                return ArrangementPage {
+                    ids: Vec::new(),
+                    has_more: false,
+                };
+            }
             let mut ids = self
                 .names
                 .as_ref()
@@ -193,11 +203,12 @@ impl ProjectionArrangement {
             return ArrangementPage { ids, has_more };
         }
         select_name_matches_page(
-            text,
+            selection,
             start,
             limit,
             self.name_postings.as_ref(),
             row_for_id,
+            address_matches,
             work,
         )
     }
@@ -321,14 +332,19 @@ impl ProjectionArrangement {
     }
 }
 fn select_name_matches_page(
-    text: &str,
+    selection: NameSelection<'_>,
     start: usize,
     limit: usize,
     postings: Option<&NamePostingTree>,
     row_for_id: impl Fn(RowId) -> Option<Row>,
+    address_matches: impl Fn(RowId, AddressSelection<'_>) -> bool,
     work: &WorkCounters,
 ) -> ArrangementPage {
-    let normalized = text.to_lowercase();
+    let normalized = selection.posting_text().to_lowercase();
+    let name_text = match selection {
+        NameSelection::Name { text, .. } => Some(text.to_lowercase()),
+        NameSelection::Address(_) => None,
+    };
     let grams = search_grams(&normalized);
     let Some(postings) = postings else {
         return ArrangementPage {
@@ -352,9 +368,17 @@ fn select_name_matches_page(
             .range((std::ops::Bound::Included(lower), std::ops::Bound::Unbounded))
             .take_while(|(key, ())| key.gram.as_slice() == gram.as_slice())
             .filter_map(|(key, ())| key.id)
+            .filter(|&id| match selection {
+                NameSelection::Name { .. } => true,
+                NameSelection::Address(address) => address_matches(id, address),
+            })
             .filter_map(row_for_id)
             .map(RankedRow::new)
-            .filter(|row| row.normalized_label.contains(&normalized)),
+            .filter(|row| {
+                name_text
+                    .as_ref()
+                    .is_none_or(|text| row.normalized_label.contains(text))
+            }),
         capacity,
     );
     work.record_sort(rows.len());

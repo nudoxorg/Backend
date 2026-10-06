@@ -1,0 +1,108 @@
+{
+  "schema": "nudox.native-address-gate.v1",
+  "source_commit": "4901da2be10edd15018c24b4426ef3b629e967bd",
+  "source_tree": "86690117a43756945ea53d67c1c017fc320e9961",
+  "source_clean_at_launch": true,
+  "cargo_lock_blob": "49e3cc50cc3424d6d0eee338eca0863cfb176819",
+  "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268",
+  "baseline_a659": "a659d5d1819078b3c0046937191a9b54a76b1dfb",
+  "baseline_mapping": {
+    "crates/library/arrangement/query.rs": {
+      "a659_blob": "b02f27d22133e18b712a5f1e863d32c7b7fa94c2",
+      "tested_blob": "8fb0bebb7ae5bb470c7c848cb3c21a13ad45ec46"
+    },
+    "crates/library/arrangement/update.rs": {
+      "a659_blob": "f1e094990bf5c09ec065eed169f48ef5dbe1be8d",
+      "tested_blob": "7216f73ca78b957a1955e89d2e98fed5a6f444f2"
+    },
+    "crates/library/catalog/projection.rs": {
+      "a659_blob": "083af7625129b1f8a9085f356bec1b3481605a74",
+      "tested_blob": "5bc8da99734f02a554cf96c6ca7c82cd2ef030c5"
+    },
+    "crates/library/command.rs": {
+      "a659_blob": "9478062dcebd3f6a4842d70efe12639c9c3c2cbc",
+      "tested_blob": "0ada529a809a681f411e49d32ef61f9a51ce0f23"
+    },
+    "crates/library/tests.rs": {
+      "a659_blob": "17486a668056099a7404bf8cd5de03dd7aaf06ec",
+      "tested_blob": "c258d5cfec29a1374da933cb834b1a88ec12d629"
+    }
+  },
+  "code_changes_outside_these_five_library_files": false,
+  "dto_version": 21,
+  "gate": {
+    "passed": 302,
+    "failed": 0,
+    "ignored": 1,
+    "seconds": 3.2,
+    "host": "h16001mac",
+    "command": [
+      "managed-cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "-j4",
+      "-p",
+      "backend-library",
+      "--lib",
+      "--",
+      "--nocapture"
+    ]
+  },
+  "launch_and_terminal": {
+    "permit_pid": 90195,
+    "launcher_pid": 90197,
+    "source_commit": "4901da2be10edd15018c24b4426ef3b629e967bd",
+    "started": "2026-10-06T22:36:33.215572+00:00",
+    "lock": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/compiler-index.lock",
+    "admission": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/semantic-namespace-4901-library-fresh-admission.json",
+    "admission_age_seconds": 5.995381,
+    "argv": [
+      "/bin/bash",
+      "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/run-semantic-namespace-4901-library.sh"
+    ],
+    "exit": 0,
+    "ended": "2026-10-06T22:37:46.080590+00:00"
+  },
+  "raw_files": {
+    "admit-semantic-namespace-4901-library.py": {
+      "bytes": 1294,
+      "sha256": "bc888ebbe8f9e4dcaf5b6a63d297ba358f00a3dbaa44a9cf754f50d6957f591a"
+    },
+    "locked-semantic-namespace-4901-library.py": {
+      "bytes": 1384,
+      "sha256": "51863987373bc41366e0a855f72a9c11321d0e9c6e9a15742f67ca2fe0ccfdf3"
+    },
+    "run-semantic-namespace-4901-library.sh": {
+      "bytes": 846,
+      "sha256": "2fdfbc55ccb3e4ec577110d740ce5e03b5a8c7413137855b7adf929775bec401"
+    },
+    "semantic-namespace-4901-library-fresh-admission.json": {
+      "bytes": 27233,
+      "sha256": "7ddfb906afba9f7ea7761849c19886c54af3aac824e2632e80cc3c622a431ad6"
+    },
+    "semantic-namespace-4901-library.complete.json": {
+      "bytes": 647,
+      "sha256": "a7f1dd61b9a3020b21886c40a6fc7dd37b2e30d4fea8e675e47ebcdbfc77cb0d"
+    },
+    "semantic-namespace-4901-library.launch.json": {
+      "bytes": 587,
+      "sha256": "00d5c2020ea27ccd57b53dbd9d9db1f32ac148f71282d8f619ec1d20c4420f87"
+    },
+    "semantic-namespace-4901-library.stderr": {
+      "bytes": 136484,
+      "sha256": "38e2a8f3a1366fbf10ebdb3754afc84e0b52ba46b510bb7ba7ecd5ece8dc037b"
+    },
+    "semantic-namespace-4901-library.stdout": {
+      "bytes": 28130,
+      "sha256": "b97cdca766048a0d30a8269be28b79306d832277e7d4b8ad4296d816688d4706"
+    }
+  },
+  "archive": {
+    "bytes": 26444,
+    "sha256": "328a97a01e8fdd71d428eaf2ef615377027a2a43da87498c8a3cc4055e9aad48"
+  },
+  "actual_cli_mcp_binary_for_prior_public_proof": "d82926eefd6fe8ce3b5c93be7ae56d009c04c8c3",
+  "actual_cli_mcp_4901_trio_tested": false,
+  "prior_public_evidence": "evidence/exact-address-selector-d829-20261006"
+}

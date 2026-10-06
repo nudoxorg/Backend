@@ -1,0 +1,9 @@
+{
+  "event": "verified",
+  "path": "/Users/mileswirht/Downloads/nudox-active-20261005/sol-fresh-remote-runtime/artifacts/mac-diagnostic-preview-a659/source-f88b841030699ae277afe697b6c92e98dfbb09a815f40388e3d2fbee0661e110.tar.gz",
+  "sha256": "f88b841030699ae277afe697b6c92e98dfbb09a815f40388e3d2fbee0661e110",
+  "bytes": 70309994,
+  "seconds": 74.04633784294128,
+  "remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/cli-demo-a659-macos-arm64-v1/nudox-macos-arm64-a659d5d181.tar.gz",
+  "host": "h16001mac"
+}

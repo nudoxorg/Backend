@@ -1,0 +1,1084 @@
+{
+  "jsonrpc": "2.0",
+  "id": 8,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "# nudox-demo-httpie\n`/Users/mileswirht/Downloads/nudox-demo-httpie`\n\n\u03c4 subprocess  `subprocess`\n\u25ab JSON_FILE_PATH_ARG  `JSON_FILE_PATH_ARG`\n\u03c4 HTTPHeadersDict  `HTTPHeadersDict`\n\u25ab session_name_validator  `session_name_validator`\n\u03c4 ClassNotFound  `ClassNotFound`\n\u25ab UNICODE  `UNICODE`\n\u03c4 SKIPPABLE_HEADERS  `SKIPPABLE_HEADERS`\n\u03c4 is_version_greater  `is_version_greater`\n\u0192 test_assert_output_matches_response_headers  `test_assert_output_matches_response_headers`\n  \u00b7 \u20393d3acafd\u203a\n\u25a3 TestQuietFlag  `TestQuietFlag`\n  \u00b7 \u20390fc6262d\u203a\n    \u25ab quiet_flags  `quiet_flags`\n    \u25ab httpbin  `httpbin`\n    \u00b7 \u20398d89c2a7\u203a\n    \u00b7 \u20399aa2b1c6\u203a\n  \u00b7 \u20391886e35f\u203a\n    \u00b7 \u20396ef2b753\u203a\n    \u00b7 \u2039dca8f14e\u203a\n  \u00b7 \u203921bd0c57\u203a\n    \u25ab test_quiet_quiet_with_check_status_non_zero_pipe  `test_quiet_quiet_with_check_status_non_zero_pipe`\n    \u00b7 \u2039163fc79a\u203a\n  \u00b7 \u2039325f4218\u203a\n    \u00b7 \u2039269ed047\u203a\n    \u00b7 \u203933bebab2\u203a\n    \u00b7 \u2039cdcab7b6\u203a\n  \u00b7 \u2039448f6cae\u203a\n  \u00b7 \u20394b4e5d4f\u203a\n    \u00b7 \u20392c45da15\u203a\n    \u00b7 \u2039412c10de\u203a\n    \u00b7 \u20395040859f\u203a\n    \u00b7 \u203962a8b2da\u203a\n    \u00b7 \u203985f0d3f7\u203a\n      \u00b7 \u203975812a8c\u203a\n      \u00b7 \u2039a266f68b\u203a\n      \u00b7 \u2039aeff5639\u203a\n  \u00b7 \u2039753982e8\u203a\n    \u00b7 \u203922816d44\u203a\n    \u00b7 \u20393acb7679\u203a\n  \u00b7 \u20397cedf21e\u203a\n    \u00b7 \u20390d9b8b02\u203a\n    \u00b7 \u203925a063e5\u203a\n  \u00b7 \u20399a8efbfe\u203a\n    \u00b7 \u20390ccf0bf1\u203a\n    \u00b7 \u2039d3401716\u203a\n  \u00b7 \u2039abc1d1e5\u203a\n    \u00b7 \u2039123fa55d\u203a\n    \u00b7 \u2039bcf3e0fa\u203a\n  \u00b7 \u2039f2ccc0f1\u203a\n    \u00b7 \u2039c5d11097\u203a\n    \u00b7 \u2039dd9c3cda\u203a\n\u25a3 EncodedStream  `EncodedStream`\n  \u00b7 \u203924e17140\u203a\n    \u00b7 \u203917070f0a\u203a\n    \u00b7 \u20392804f3df\u203a\n    \u00b7 \u2039740ccc13\u203a\n    \u00b7 \u2039c2ca646f\u203a\n    \u00b7 \u2039e38e270b\u203a\n  \u00b7 \u2039403b7808\u203a\n  \u00b7 \u2039553d7aa8\u203a\n    \u00b7 \u2039869b7432\u203a\n    \u00b7 \u2039c28138c1\u203a\n  \u00b7 \u203958af8cc8\u203a\n    \u00b7 \u203977b58618\u203a\n    \u00b7 \u203987e7e413\u203a\n  \u00b7 \u203962a9e631\u203a\n    \u00b7 \u2039e9a3095b\u203a\n  \u00b7 \u2039e89fec32\u203a\n    \u00b7 \u20392676bb7a\u203a\n    \u00b7 \u2039f7d4afa1\u203a\n\u25ab OLD_HEADER_STORE_WARNING_FOR_NAMED_SESSIONS  `OLD_HEADER_STORE_WARNING_FOR_NAMED_SESSIONS`\n\u0192 test_cookie_security_warnings_on_raw_cookies  `test_cookie_security_warnings_on_raw_cookies`\n  \u00b7 \u203929d53f82\u203a\n  \u00b7 \u203938f219e6\u203a\n  \u00b7 \u2039bdd9f9ae\u203a\n  \u00b7 \u2039ff2bde62\u203a\n\u03c4 BUILD_CHANNEL  `BUILD_CHANNEL`\n\u25ab SPECIAL_CHARS  `SPECIAL_CHARS`\n\u25ab COLOR_PALETTE  `COLOR_PALETTE`\n\u03c4 Thread  `Thread`\n\u25ab ASCII_FILE_CONTENT  `ASCII_FILE_CONTENT`\n\u0192 parse_declaration  `parse_declaration`\n  \u00b7 \u20398f1db244\u203a\n  \u00b7 \u2039d67830e8\u203a\n\u03c4 Environment  `Environment`\n\u03c4 OUTPUT_OPTIONS  `OUTPUT_OPTIONS`\n\u25a3 DigestAuthPlugin  `DigestAuthPlugin`\n  \u00b7 \u20392ef15e5f\u203a\n  \u00b7 \u20393b7987c7\u203a\n  \u00b7 \u2039b834ae6a\u203a\n  \u00b7 \u2039e861f8dd\u203a\n    \u00b7 \u203922bf7e0e\u203a\n    \u00b7 \u20399de527d5\u203a\n    \u00b7 \u2039e6403e12\u203a\n\u0192 test_offline  `test_offline`\n  \u00b7 \u20395fda4cc6\u203a\n\u25a3 RequestItems  `RequestItems`\n  \u00b7 \u203924154373\u203a\n    \u00b7 \u20396dbe88c3\u203a\n    \u00b7 \u203978dcbe84\u203a\n  \u00b7 \u20399c3b403f\u203a\n    \u25ab request_item_args  `request_item_args`\n    \u00b7 \u203964f55ca9\u203a\n    \u00b7 \u2039db1d14cd\u203a\n\u0192 http_status_to_exit_status  `http_status_to_exit_status`\n  \u00b7 \u20398c780c1a\u203a\n  \u00b7 \u2039cc80ca05\u203a\n  \u00b7 \u2039ddc6967d\u203a\n\u25ab PWD_TESTS_ROOT  `PWD_TESTS_ROOT`\n\u25ab MSG_COMMAND_CONFUSION  `MSG_COMMAND_CONFUSION`\n\u03c4 SORTED_FORMAT_OPTIONS_STRING  `SORTED_FORMAT_OPTIONS_STRING`\n\u0192 hook  `hook`\n  \u00b7 \u2039783e406a\u203a\n  \u00b7 \u2039e3d22d4e\u203a\n\u03c4 ExitStatus  `ExitStatus`\n\u0192 get_filename_max_length  `get_filename_max_length`\n  \u00b7 \u20394f8ef0ac\u203a\n  \u00b7 \u2039abcfaf6a\u203a\n\u0192 cli_upgrade_all_sessions  `cli_upgrade_all_sessions`\n  \u00b7 \u203926c95dee\u203a\n  \u00b7 \u20392b2bfb11\u203a\n  \u00b7 \u20396b26fcfe\u203a\n\u03c4 ASCII_FILE_CONTENT  `ASCII_FILE_CONTENT`\n\u0192 materialize_headers  `materialize_headers`\n  \u00b7 \u20392d503df0\u203a\n  \u00b7 \u203961971fc1\u203a\n\u03c4 repr_dict  `repr_dict`\n\u25ab TESTS_ROOT  `TESTS_ROOT`\n\u03c4 Expect  `Expect`\n\u03c4 RequestsMessage  `RequestsMessage`\n\u03c4 ExitStatus  `ExitStatus`\n\u03c4 urlopen  `urlopen`\n\u03c4 AuthBase  `AuthBase`\n\u03c4 BasePlugin  `BasePlugin`\n\u0192 new_person  `new_person`\n  \u25ab kwargs  `kwargs`\n  \u00b7 \u20395591572f\u203a\n\u0192 test_options_content_length_preservation  `test_options_content_length_preservation`\n  \u00b7 \u20393ddc0d2a\u203a\n  \u00b7 \u203988ac07e0\u203a\n  \u00b7 \u2039c905c4a5\u203a\n\u0192 unwrap_context  `unwrap_context`\n  \u00b7 \u2039a3111386\u203a\n  \u00b7 \u2039b68a9d4e\u203a\n\u03c4 Popen  `Popen`\n\u03c4 Tuple  `Tuple`\n\u25ab troubleshooting  `troubleshooting`\n\u0192 test_encoded_stream  `test_encoded_stream`\n  \u00b7 \u2039545279de\u203a\n  \u00b7 \u2039b0c5d39b\u203a\n\u03c4 RawDescriptionHelpFormatter  `RawDescriptionHelpFormatter`\n\u25a3 HeadersFormatter  `HeadersFormatter`\n  \u00b7 \u203927df6e27\u203a\n    \u00b7 \u20391e40a254\u203a\n    \u00b7 \u2039cac2f63f\u203a\n  \u00b7 \u20396377d9ac\u203a\n    \u25ab __init__  `__init__`\n    \u00b7 \u203916df5b5d\u203a\n\u25ab PRETTY_STDOUT_TTY_ONLY  `PRETTY_STDOUT_TTY_ONLY`\n\u0192 collect_messages  `collect_messages`\n  \u00b7 \u20391916efd3\u203a\n  \u00b7 \u203936243d15\u203a\n  \u00b7 \u20397d2d3ab7\u203a\n  \u00b7 \u203985cc675d\u203a\n\u03c4 os  `os`\n\u03c4 JsonLexer  `JsonLexer`\n\u03c4 ParseError  `ParseError`\n\u03c4 Qualifiers  `Qualifiers`\n\u0192 parser_to_parser_spec  `parser_to_parser_spec`\n  \u00b7 \u20390e17f237\u203a\n  \u00b7 \u203975d5e508\u203a\n  \u00b7 \u2039bbb91ee5\u203a\n\u0192 _max_age_to_expires  `_max_age_to_expires`\n  \u00b7 \u203913b6c324\u203a\n  \u00b7 \u20398e033794\u203a\n  \u00b7 \u2039b8b8aab8\u203a\n\u03c4 JSON_WITH_DUPE_KEYS_FILE_PATH  `JSON_WITH_DUPE_KEYS_FILE_PATH`\n\u25ab CA_BUNDLE  `CA_BUNDLE`\n\u03c4 COLOR  `COLOR`\n\u25ab BIN_FILE_PATH  `BIN_FILE_PATH`\n\u03c4 Enum  `Enum`\n\u25ab COMMANDS  `COMMANDS`\n\u03c4 os  `os`\n\u03c4 UTF8  `UTF8`\n\u03c4 warnings  `warnings`\n\u03c4 Union  `Union`\n\u03c4 requests  `requests`\n\u25a3 Config  `Config`\n  \u00b7 \u203935efd18d\u203a\n    \u00b7 \u2039437f1086\u203a\n    \u00b7 \u2039b6d1ea42\u203a\n  \u00b7 \u2039383f450f\u203a\n    \u00b7 \u20398fe7a6a2\u203a\n    \u00b7 \u2039a3b1fbfe\u203a\n  \u00b7 \u20394537ce3f\u203a\n    \u00b7 \u20396e464db5\u203a\n    \u00b7 \u2039ac824177\u203a\n  \u00b7 \u20394b93455d\u203a\n    \u00b7 \u20392da5d527\u203a\n    \u00b7 \u2039ef1c6b85\u203a\n200 declaration(s) \u00b7 truncated \u00b7 123 unnamed\n"
+      }
+    ],
+    "structuredContent": {
+      "package": {
+        "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie",
+        "trail": "nudox-demo-httpie",
+        "name": "nudox-demo-httpie",
+        "shape": "package",
+        "project": "/Users/mileswirht/Downloads/nudox-demo-httpie",
+        "segments": [],
+        "key": "47262d6c"
+      },
+      "roots": [
+        {
+          "name": "subprocess",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::bb96a43f529953621db57210930d16a1e9cc3d1c3c28b06b7edb9358f1232b16::subprocess",
+          "key": "002a9536"
+        },
+        {
+          "name": "JSON_FILE_PATH_ARG",
+          "kind": "variable",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::ed333086ed944b851a50aee6fb639dc51ef6db0423ecaee3ac1689d5b559f3db::JSON_FILE_PATH_ARG",
+          "key": "002caf67"
+        },
+        {
+          "name": "HTTPHeadersDict",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::9533ca8e215bb63bdfcd3700db6ba6f1802fcaf1ad185c35ff97a8123ffa4d62::HTTPHeadersDict",
+          "key": "003c553b"
+        },
+        {
+          "name": "session_name_validator",
+          "kind": "variable",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::b5f20bb43c4be3c0d13c4827ed5c2048ba3409f3cbf090360a01f66014ea0f9f::session_name_validator",
+          "key": "00a832cc"
+        },
+        {
+          "name": "ClassNotFound",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::c3d5c809f77e02df4cdcbdda84720db0f9f4076919b298acbe3a12e29eca93e1::ClassNotFound",
+          "key": "00dbaa28"
+        },
+        {
+          "name": "UNICODE",
+          "kind": "variable",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::d6017c80fdf1e449017abf6523d56f64312f5bd58a94ac6891e52251d4bfcd94::UNICODE",
+          "key": "00faf789"
+        },
+        {
+          "name": "SKIPPABLE_HEADERS",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::8a68df692293409ca3e83e548aee8b2f9349de330edc9f8752f88df722dc3afe::SKIPPABLE_HEADERS",
+          "key": "01152080"
+        },
+        {
+          "name": "is_version_greater",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::0f2d764d2edf20a21131216c207971002f24abe3725ef36d169e9c8a84d912db::is_version_greater",
+          "key": "0128dce5"
+        },
+        {
+          "name": "test_assert_output_matches_response_headers",
+          "kind": "function",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::93ca9e6a0603ab7b724aad73ec3add13436af2718297e2795df6e729b9dddef9::test_assert_output_matches_response_headers",
+          "key": "0133a9b9",
+          "children": [
+            {
+              "name": "\u20393d3acafd\u203a",
+              "key": "3d3acafd"
+            }
+          ]
+        },
+        {
+          "name": "TestQuietFlag",
+          "kind": "struct",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::e78b69e2bec23a151b25d0405ce43270b562d760e7b73f3cb9d24a9ecd9c83e9::TestQuietFlag",
+          "key": "01425ea1",
+          "children": [
+            {
+              "name": "\u20390fc6262d\u203a",
+              "key": "0fc6262d",
+              "children": [
+                {
+                  "name": "quiet_flags",
+                  "kind": "variable",
+                  "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::7d085b78020ff374d11d8c9203703d7f3041fb7ee4e8d15f312a26a72d5a8631::quiet_flags",
+                  "key": "059079c4"
+                },
+                {
+                  "name": "httpbin",
+                  "kind": "variable",
+                  "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::3890542c912c9828da31086de6e0a0726bf5f6ed897b980cc817679c8aa5f848::httpbin",
+                  "key": "07e15156"
+                },
+                {
+                  "name": "\u20398d89c2a7\u203a",
+                  "key": "8d89c2a7"
+                },
+                {
+                  "name": "\u20399aa2b1c6\u203a",
+                  "key": "9aa2b1c6"
+                }
+              ]
+            },
+            {
+              "name": "\u20391886e35f\u203a",
+              "key": "1886e35f",
+              "children": [
+                {
+                  "name": "\u20396ef2b753\u203a",
+                  "key": "6ef2b753"
+                },
+                {
+                  "name": "\u2039dca8f14e\u203a",
+                  "key": "dca8f14e"
+                }
+              ]
+            },
+            {
+              "name": "\u203921bd0c57\u203a",
+              "key": "21bd0c57",
+              "children": [
+                {
+                  "name": "test_quiet_quiet_with_check_status_non_zero_pipe",
+                  "kind": "variable",
+                  "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::4a161cc356ed0d1772c3a92c443f1868a2f4950a6e6155726d7d95feaedb25be::test_quiet_quiet_with_check_status_non_zero_pipe",
+                  "key": "012e4dfd"
+                },
+                {
+                  "name": "\u2039163fc79a\u203a",
+                  "key": "163fc79a"
+                }
+              ]
+            },
+            {
+              "name": "\u2039325f4218\u203a",
+              "key": "325f4218",
+              "children": [
+                {
+                  "name": "\u2039269ed047\u203a",
+                  "key": "269ed047"
+                },
+                {
+                  "name": "\u203933bebab2\u203a",
+                  "key": "33bebab2"
+                },
+                {
+                  "name": "\u2039cdcab7b6\u203a",
+                  "key": "cdcab7b6"
+                }
+              ]
+            },
+            {
+              "name": "\u2039448f6cae\u203a",
+              "key": "448f6cae"
+            },
+            {
+              "name": "\u20394b4e5d4f\u203a",
+              "key": "4b4e5d4f",
+              "children": [
+                {
+                  "name": "\u20392c45da15\u203a",
+                  "key": "2c45da15"
+                },
+                {
+                  "name": "\u2039412c10de\u203a",
+                  "key": "412c10de"
+                },
+                {
+                  "name": "\u20395040859f\u203a",
+                  "key": "5040859f"
+                },
+                {
+                  "name": "\u203962a8b2da\u203a",
+                  "key": "62a8b2da"
+                },
+                {
+                  "name": "\u203985f0d3f7\u203a",
+                  "key": "85f0d3f7",
+                  "children": [
+                    {
+                      "name": "\u203975812a8c\u203a",
+                      "key": "75812a8c"
+                    },
+                    {
+                      "name": "\u2039a266f68b\u203a",
+                      "key": "a266f68b"
+                    },
+                    {
+                      "name": "\u2039aeff5639\u203a",
+                      "key": "aeff5639"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "\u2039753982e8\u203a",
+              "key": "753982e8",
+              "children": [
+                {
+                  "name": "\u203922816d44\u203a",
+                  "key": "22816d44"
+                },
+                {
+                  "name": "\u20393acb7679\u203a",
+                  "key": "3acb7679"
+                }
+              ]
+            },
+            {
+              "name": "\u20397cedf21e\u203a",
+              "key": "7cedf21e",
+              "children": [
+                {
+                  "name": "\u20390d9b8b02\u203a",
+                  "key": "0d9b8b02"
+                },
+                {
+                  "name": "\u203925a063e5\u203a",
+                  "key": "25a063e5"
+                }
+              ]
+            },
+            {
+              "name": "\u20399a8efbfe\u203a",
+              "key": "9a8efbfe",
+              "children": [
+                {
+                  "name": "\u20390ccf0bf1\u203a",
+                  "key": "0ccf0bf1"
+                },
+                {
+                  "name": "\u2039d3401716\u203a",
+                  "key": "d3401716"
+                }
+              ]
+            },
+            {
+              "name": "\u2039abc1d1e5\u203a",
+              "key": "abc1d1e5",
+              "children": [
+                {
+                  "name": "\u2039123fa55d\u203a",
+                  "key": "123fa55d"
+                },
+                {
+                  "name": "\u2039bcf3e0fa\u203a",
+                  "key": "bcf3e0fa"
+                }
+              ]
+            },
+            {
+              "name": "\u2039f2ccc0f1\u203a",
+              "key": "f2ccc0f1",
+              "children": [
+                {
+                  "name": "\u2039c5d11097\u203a",
+                  "key": "c5d11097"
+                },
+                {
+                  "name": "\u2039dd9c3cda\u203a",
+                  "key": "dd9c3cda"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "EncodedStream",
+          "kind": "struct",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::ea7abb4cb935fa7b8a12754da42571232ec8432f9e92cde0437568747210718b::EncodedStream",
+          "key": "01512397",
+          "children": [
+            {
+              "name": "\u203924e17140\u203a",
+              "key": "24e17140",
+              "children": [
+                {
+                  "name": "\u203917070f0a\u203a",
+                  "key": "17070f0a"
+                },
+                {
+                  "name": "\u20392804f3df\u203a",
+                  "key": "2804f3df"
+                },
+                {
+                  "name": "\u2039740ccc13\u203a",
+                  "key": "740ccc13"
+                },
+                {
+                  "name": "\u2039c2ca646f\u203a",
+                  "key": "c2ca646f"
+                },
+                {
+                  "name": "\u2039e38e270b\u203a",
+                  "key": "e38e270b"
+                }
+              ]
+            },
+            {
+              "name": "\u2039403b7808\u203a",
+              "key": "403b7808"
+            },
+            {
+              "name": "\u2039553d7aa8\u203a",
+              "key": "553d7aa8",
+              "children": [
+                {
+                  "name": "\u2039869b7432\u203a",
+                  "key": "869b7432"
+                },
+                {
+                  "name": "\u2039c28138c1\u203a",
+                  "key": "c28138c1"
+                }
+              ]
+            },
+            {
+              "name": "\u203958af8cc8\u203a",
+              "key": "58af8cc8",
+              "children": [
+                {
+                  "name": "\u203977b58618\u203a",
+                  "key": "77b58618"
+                },
+                {
+                  "name": "\u203987e7e413\u203a",
+                  "key": "87e7e413"
+                }
+              ]
+            },
+            {
+              "name": "\u203962a9e631\u203a",
+              "key": "62a9e631",
+              "children": [
+                {
+                  "name": "\u2039e9a3095b\u203a",
+                  "key": "e9a3095b"
+                }
+              ]
+            },
+            {
+              "name": "\u2039e89fec32\u203a",
+              "key": "e89fec32",
+              "children": [
+                {
+                  "name": "\u20392676bb7a\u203a",
+                  "key": "2676bb7a"
+                },
+                {
+                  "name": "\u2039f7d4afa1\u203a",
+                  "key": "f7d4afa1"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "OLD_HEADER_STORE_WARNING_FOR_NAMED_SESSIONS",
+          "kind": "variable",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::0cef07bd5b53b1192e65817b7db06a6ff26af6f1acdd86388c835deb5ca42f98::OLD_HEADER_STORE_WARNING_FOR_NAMED_SESSIONS",
+          "key": "0181fbc9"
+        },
+        {
+          "name": "test_cookie_security_warnings_on_raw_cookies",
+          "kind": "function",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::79720a8a4dafc49087e63ef5644c871fd59edc13cb04dbf5e08c3509a40a992a::test_cookie_security_warnings_on_raw_cookies",
+          "key": "0182809b",
+          "children": [
+            {
+              "name": "\u203929d53f82\u203a",
+              "key": "29d53f82"
+            },
+            {
+              "name": "\u203938f219e6\u203a",
+              "key": "38f219e6"
+            },
+            {
+              "name": "\u2039bdd9f9ae\u203a",
+              "key": "bdd9f9ae"
+            },
+            {
+              "name": "\u2039ff2bde62\u203a",
+              "key": "ff2bde62"
+            }
+          ]
+        },
+        {
+          "name": "BUILD_CHANNEL",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::b86b4c7cbc4618bdb2509eb8489ffa58a1359402a5c36262f3830e2dbd1d4743::BUILD_CHANNEL",
+          "key": "01862373"
+        },
+        {
+          "name": "SPECIAL_CHARS",
+          "kind": "variable",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::53a5f1b813a3d6d635eff6eae99f9886e24f893fb21e911ad7b2abc47463f187::SPECIAL_CHARS",
+          "key": "018f719a"
+        },
+        {
+          "name": "COLOR_PALETTE",
+          "kind": "variable",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::27f17cc7218b3f5211ee6526104e64fa921776edcad26aa1681aa3fd4d0682d3::COLOR_PALETTE",
+          "key": "01a6616c"
+        },
+        {
+          "name": "Thread",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::b66a762eaeef9435f03c565715b5054a161051ca609e372d147f4bc3b51939d4::Thread",
+          "key": "01e81020"
+        },
+        {
+          "name": "ASCII_FILE_CONTENT",
+          "kind": "variable",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::9a0ca104a39ecb30af6e8592d974e95d4f93e53edd63bdefc4b2979593b31ea9::ASCII_FILE_CONTENT",
+          "key": "01fd16bd"
+        },
+        {
+          "name": "parse_declaration",
+          "kind": "function",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::74bd3d2db2aa0d7e1faa3baa415cb2354c2ad8b14dbdb93bea4906af9a5671f2::parse_declaration",
+          "key": "029bff57",
+          "children": [
+            {
+              "name": "\u20398f1db244\u203a",
+              "key": "8f1db244"
+            },
+            {
+              "name": "\u2039d67830e8\u203a",
+              "key": "d67830e8"
+            }
+          ]
+        },
+        {
+          "name": "Environment",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::d1021cd059a9b3de271d38b02b3371ad7c2dcec33b356c7ceb802e071348cfc8::Environment",
+          "key": "02a6d05c"
+        },
+        {
+          "name": "OUTPUT_OPTIONS",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::8b063d4b2f8bf5eebe84c46eba8f60f4ee985618637384a2014362c41db52586::OUTPUT_OPTIONS",
+          "key": "0306f5c6"
+        },
+        {
+          "name": "DigestAuthPlugin",
+          "kind": "struct",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::475afd93413ba9cefc92bce51a986414d90b987297de7db2c84a10930d3735ed::DigestAuthPlugin",
+          "key": "0307316c",
+          "children": [
+            {
+              "name": "\u20392ef15e5f\u203a",
+              "key": "2ef15e5f"
+            },
+            {
+              "name": "\u20393b7987c7\u203a",
+              "key": "3b7987c7"
+            },
+            {
+              "name": "\u2039b834ae6a\u203a",
+              "key": "b834ae6a"
+            },
+            {
+              "name": "\u2039e861f8dd\u203a",
+              "key": "e861f8dd",
+              "children": [
+                {
+                  "name": "\u203922bf7e0e\u203a",
+                  "key": "22bf7e0e"
+                },
+                {
+                  "name": "\u20399de527d5\u203a",
+                  "key": "9de527d5"
+                },
+                {
+                  "name": "\u2039e6403e12\u203a",
+                  "key": "e6403e12"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "test_offline",
+          "kind": "function",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::649b6066863833927ddc3b5cb3c42e7e54c6ea61710045465de4f8063e9991ae::test_offline",
+          "key": "032cb38d",
+          "children": [
+            {
+              "name": "\u20395fda4cc6\u203a",
+              "key": "5fda4cc6"
+            }
+          ]
+        },
+        {
+          "name": "RequestItems",
+          "kind": "struct",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::900fe7329419bb652edf74bbc63d973717bc05444fce2cd25586217111185434::RequestItems",
+          "key": "033de836",
+          "children": [
+            {
+              "name": "\u203924154373\u203a",
+              "key": "24154373",
+              "children": [
+                {
+                  "name": "\u20396dbe88c3\u203a",
+                  "key": "6dbe88c3"
+                },
+                {
+                  "name": "\u203978dcbe84\u203a",
+                  "key": "78dcbe84"
+                }
+              ]
+            },
+            {
+              "name": "\u20399c3b403f\u203a",
+              "key": "9c3b403f",
+              "children": [
+                {
+                  "name": "request_item_args",
+                  "kind": "variable",
+                  "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::3234a9d519ba1c3fd3d8367fb8da684c92edb092f4ce7bae436382d944cab45e::request_item_args",
+                  "key": "040dd816"
+                },
+                {
+                  "name": "\u203964f55ca9\u203a",
+                  "key": "64f55ca9"
+                },
+                {
+                  "name": "\u2039db1d14cd\u203a",
+                  "key": "db1d14cd"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "http_status_to_exit_status",
+          "kind": "function",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::76d633a4067364853d3cf9dc4c098218636bb5b92a81d57706012d27defdea7e::http_status_to_exit_status",
+          "key": "035406da",
+          "children": [
+            {
+              "name": "\u20398c780c1a\u203a",
+              "key": "8c780c1a"
+            },
+            {
+              "name": "\u2039cc80ca05\u203a",
+              "key": "cc80ca05"
+            },
+            {
+              "name": "\u2039ddc6967d\u203a",
+              "key": "ddc6967d"
+            }
+          ]
+        },
+        {
+          "name": "PWD_TESTS_ROOT",
+          "kind": "variable",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::220cce9e2b49e8ec61a9188bf383bbe931539ac3a113b6f08f33aab027917988::PWD_TESTS_ROOT",
+          "key": "0354996d"
+        },
+        {
+          "name": "MSG_COMMAND_CONFUSION",
+          "kind": "variable",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::8c9c711243d0bf1b25912157b41fb28c663004ef38f7a290569c0c9b4d90a136::MSG_COMMAND_CONFUSION",
+          "key": "0378e534"
+        },
+        {
+          "name": "SORTED_FORMAT_OPTIONS_STRING",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::ddc08bfc7d7b7c5909fff6b5140a3ec3e23315f811fc93b0ed1c52f65d51b151::SORTED_FORMAT_OPTIONS_STRING",
+          "key": "038a0210"
+        },
+        {
+          "name": "hook",
+          "kind": "function",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::d4ec07a696666344addedab25b1c7c1bae3a64ca387e27d931b665126148ac59::hook",
+          "key": "038f4162",
+          "children": [
+            {
+              "name": "\u2039783e406a\u203a",
+              "key": "783e406a"
+            },
+            {
+              "name": "\u2039e3d22d4e\u203a",
+              "key": "e3d22d4e"
+            }
+          ]
+        },
+        {
+          "name": "ExitStatus",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::59c68fb1980740e6a80b3ccbf3c29c1c3f49d1a0f91545b36433c33275070a04::ExitStatus",
+          "key": "0394ace1"
+        },
+        {
+          "name": "get_filename_max_length",
+          "kind": "function",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::abb82079d733f76997a1daf8dbb85afb9920b64762fefdf81ef3832de33ea969::get_filename_max_length",
+          "key": "03b3135f",
+          "children": [
+            {
+              "name": "\u20394f8ef0ac\u203a",
+              "key": "4f8ef0ac"
+            },
+            {
+              "name": "\u2039abcfaf6a\u203a",
+              "key": "abcfaf6a"
+            }
+          ]
+        },
+        {
+          "name": "cli_upgrade_all_sessions",
+          "kind": "function",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::40843914de5887a8124ce9f4c86b8c2688c2cfde22773257a338130498163008::cli_upgrade_all_sessions",
+          "key": "0413071a",
+          "children": [
+            {
+              "name": "\u203926c95dee\u203a",
+              "key": "26c95dee"
+            },
+            {
+              "name": "\u20392b2bfb11\u203a",
+              "key": "2b2bfb11"
+            },
+            {
+              "name": "\u20396b26fcfe\u203a",
+              "key": "6b26fcfe"
+            }
+          ]
+        },
+        {
+          "name": "ASCII_FILE_CONTENT",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::f4be7a8cf9b70606a0497ee6f642c97c371530e76c192a0784eaf38583d86b58::ASCII_FILE_CONTENT",
+          "key": "041ab9a2"
+        },
+        {
+          "name": "materialize_headers",
+          "kind": "function",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::fe8d98525ef6c9c9126a578f07e2ed709ca9d9d0129bc9248256a9e1b4bb562b::materialize_headers",
+          "key": "041c5225",
+          "children": [
+            {
+              "name": "\u20392d503df0\u203a",
+              "key": "2d503df0"
+            },
+            {
+              "name": "\u203961971fc1\u203a",
+              "key": "61971fc1"
+            }
+          ]
+        },
+        {
+          "name": "repr_dict",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::720bafa7cc1e7bcac8e9fa50b7adedbce6da3fb645ed7a76a134c86d7c2b6327::repr_dict",
+          "key": "04682567"
+        },
+        {
+          "name": "TESTS_ROOT",
+          "kind": "variable",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::5b60360447dadb1b32dbd3259eb7709ce683ec5356cd0945c464ec0eefb2e2ff::TESTS_ROOT",
+          "key": "04682c8b"
+        },
+        {
+          "name": "Expect",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::aaf0c5b591e7d70f4f90b1ef660b72992e1bd09bb9cfbace0616b81460f7a027::Expect",
+          "key": "0472c3be"
+        },
+        {
+          "name": "RequestsMessage",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::d42fa62b76992c7989d7545d7cfcd587d48a47970b1efd7351093b0044fb7648::RequestsMessage",
+          "key": "049071cf"
+        },
+        {
+          "name": "ExitStatus",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::3f0ea367e3f169061954b69d5f80ffd33f49d1a0f91545b36433c33275070a04::ExitStatus",
+          "key": "049a9a97"
+        },
+        {
+          "name": "urlopen",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::9fde8509845db5aff8ba10681cc59e4c86bd0be11faae297897e336d06bb878b::urlopen",
+          "key": "04a99038"
+        },
+        {
+          "name": "AuthBase",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::8870bd7b10241cf7899ec74338a5817def06d201d153a47749c83f38faf597b3::AuthBase",
+          "key": "04c5df6f"
+        },
+        {
+          "name": "BasePlugin",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::85b9516de7dd8c44250cddb00ceee5585ce20bc8cfe0ae5d6c743fac1cb01d8b::BasePlugin",
+          "key": "04ddf3b6"
+        },
+        {
+          "name": "new_person",
+          "kind": "function",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::96e9e019b5c33559cf1c9a1362ca0bc32d7f62cc5631402a52e3ac9b1d5031b9::new_person",
+          "key": "04f0cd39",
+          "children": [
+            {
+              "name": "kwargs",
+              "kind": "variable",
+              "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::fdf29e169c404697285fa31c366f24e7bc1f5ca868df8a9103805b9efb808acd::kwargs",
+              "key": "067b6455"
+            },
+            {
+              "name": "\u20395591572f\u203a",
+              "key": "5591572f"
+            }
+          ]
+        },
+        {
+          "name": "test_options_content_length_preservation",
+          "kind": "function",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::0542ccd66c6a17a6dad7a0cc4ac18b8394b41ed92b058d6bcff8646918e9eb8b::test_options_content_length_preservation",
+          "key": "051e7277",
+          "children": [
+            {
+              "name": "\u20393ddc0d2a\u203a",
+              "key": "3ddc0d2a"
+            },
+            {
+              "name": "\u203988ac07e0\u203a",
+              "key": "88ac07e0"
+            },
+            {
+              "name": "\u2039c905c4a5\u203a",
+              "key": "c905c4a5"
+            }
+          ]
+        },
+        {
+          "name": "unwrap_context",
+          "kind": "function",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::7014ae8b3c1b77e9e1d33a5f70591b1d4add5c30fe1bb9a96ea9ab940d76d611::unwrap_context",
+          "key": "051e734f",
+          "children": [
+            {
+              "name": "\u2039a3111386\u203a",
+              "key": "a3111386"
+            },
+            {
+              "name": "\u2039b68a9d4e\u203a",
+              "key": "b68a9d4e"
+            }
+          ]
+        },
+        {
+          "name": "Popen",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::26f148c0c83f273e7a6d079aeaf48728c30ab9519d91d022aa7f20220df33281::Popen",
+          "key": "05527f6e"
+        },
+        {
+          "name": "Tuple",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::4c73528f251289379f49d6e9b1228f869d5c651742426b3f05d7cd37ccdee075::Tuple",
+          "key": "0562a133"
+        },
+        {
+          "name": "troubleshooting",
+          "kind": "variable",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::272eb400114df36d457c24cf05e9e1b95022cf9f979da469e67d3c1560049556::troubleshooting",
+          "key": "0575b363"
+        },
+        {
+          "name": "test_encoded_stream",
+          "kind": "function",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::1a70df4237386c508ff0b19ce9f7701f2b5a3548b65bd388680507c3450770b4::test_encoded_stream",
+          "key": "05a3d673",
+          "children": [
+            {
+              "name": "\u2039545279de\u203a",
+              "key": "545279de"
+            },
+            {
+              "name": "\u2039b0c5d39b\u203a",
+              "key": "b0c5d39b"
+            }
+          ]
+        },
+        {
+          "name": "RawDescriptionHelpFormatter",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::83af83bc34b9e9e9d1a436624ea10023b8bfbce747592c37d04e666211d9f28d::RawDescriptionHelpFormatter",
+          "key": "05d3ca7a"
+        },
+        {
+          "name": "HeadersFormatter",
+          "kind": "struct",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::b11de058f6c2bb305963e5cd2bec89b67f121b6fa879ffbd0c1d7882c2cfdb77::HeadersFormatter",
+          "key": "05d4d485",
+          "children": [
+            {
+              "name": "\u203927df6e27\u203a",
+              "key": "27df6e27",
+              "children": [
+                {
+                  "name": "\u20391e40a254\u203a",
+                  "key": "1e40a254"
+                },
+                {
+                  "name": "\u2039cac2f63f\u203a",
+                  "key": "cac2f63f"
+                }
+              ]
+            },
+            {
+              "name": "\u20396377d9ac\u203a",
+              "key": "6377d9ac",
+              "children": [
+                {
+                  "name": "__init__",
+                  "kind": "variable",
+                  "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::19b1b2f300982f6450804ec1c459f23eb644bae667f01332266b7ec1b1db428e::__init__",
+                  "key": "000a5f9b"
+                },
+                {
+                  "name": "\u203916df5b5d\u203a",
+                  "key": "16df5b5d"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "PRETTY_STDOUT_TTY_ONLY",
+          "kind": "variable",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::1bc78179fc55b9b4bcd7f056c8ce188710d141a0a033f4f8ae1434ad87411a6a::PRETTY_STDOUT_TTY_ONLY",
+          "key": "0602657d"
+        },
+        {
+          "name": "collect_messages",
+          "kind": "function",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::4c4d2501b499116618f351fa87d5ff4cc95624b670bdfc5fe5a4bd6c78f04c77::collect_messages",
+          "key": "061c8bec",
+          "children": [
+            {
+              "name": "\u20391916efd3\u203a",
+              "key": "1916efd3"
+            },
+            {
+              "name": "\u203936243d15\u203a",
+              "key": "36243d15"
+            },
+            {
+              "name": "\u20397d2d3ab7\u203a",
+              "key": "7d2d3ab7"
+            },
+            {
+              "name": "\u203985cc675d\u203a",
+              "key": "85cc675d"
+            }
+          ]
+        },
+        {
+          "name": "os",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::97567c92594f32ca6b4938e07de57518a3a8ac272097e49eeb0fcebf0945963f::os",
+          "key": "06319894"
+        },
+        {
+          "name": "JsonLexer",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::fd24bdebbeb28dd1d99d7e359f27b86574d5e5bf526d32f0375ab3fc3d60ab96::JsonLexer",
+          "key": "063aed0b"
+        },
+        {
+          "name": "ParseError",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::10310ec70e65a7f14c0536c3c6e1c4ddeba7cd3a64c7c242ab5bba1d22fb0fd7::ParseError",
+          "key": "063e1b4e"
+        },
+        {
+          "name": "Qualifiers",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::fe416c23fab8071ab7e6ed9c47bfab0223dca38a90f88932a24a35c0bd57886d::Qualifiers",
+          "key": "0647a80c"
+        },
+        {
+          "name": "parser_to_parser_spec",
+          "kind": "function",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::66d4ebd41f11054957f4dfae3c9bc7d549d352d7b17e2da4b3d564d49631f9b4::parser_to_parser_spec",
+          "key": "065aa1b3",
+          "children": [
+            {
+              "name": "\u20390e17f237\u203a",
+              "key": "0e17f237"
+            },
+            {
+              "name": "\u203975d5e508\u203a",
+              "key": "75d5e508"
+            },
+            {
+              "name": "\u2039bbb91ee5\u203a",
+              "key": "bbb91ee5"
+            }
+          ]
+        },
+        {
+          "name": "_max_age_to_expires",
+          "kind": "function",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::e608094290ef73292d10c0eeb999369016614460b51513cc725450daf5750d19::_max_age_to_expires",
+          "key": "0660273a",
+          "children": [
+            {
+              "name": "\u203913b6c324\u203a",
+              "key": "13b6c324"
+            },
+            {
+              "name": "\u20398e033794\u203a",
+              "key": "8e033794"
+            },
+            {
+              "name": "\u2039b8b8aab8\u203a",
+              "key": "b8b8aab8"
+            }
+          ]
+        },
+        {
+          "name": "JSON_WITH_DUPE_KEYS_FILE_PATH",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::ec22076a9c5c452e9592f7bcc59791b12695aba8bcd7612ff51194abf5eaa437::JSON_WITH_DUPE_KEYS_FILE_PATH",
+          "key": "06ab206e"
+        },
+        {
+          "name": "CA_BUNDLE",
+          "kind": "variable",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::0c1d5dbfc401d620c8ce0b62c980151efad61975d34ae87ca03c0c85f18713c3::CA_BUNDLE",
+          "key": "06c0aab5"
+        },
+        {
+          "name": "COLOR",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::e7bb712977726fe1f812821ec6b5c993a957726fdf727518953fa5c1313f1456::COLOR",
+          "key": "06c65193"
+        },
+        {
+          "name": "BIN_FILE_PATH",
+          "kind": "variable",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::b23b8b2639a3c1edf67eaf4f39a941e6a05c7de7ba6a96fe0de4b525829ca6ca::BIN_FILE_PATH",
+          "key": "06caaa63"
+        },
+        {
+          "name": "Enum",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::fd727c15427835a536e5d4738e2983849d600bd6bebcb849810b0a160bacd4aa::Enum",
+          "key": "06cc15a2"
+        },
+        {
+          "name": "COMMANDS",
+          "kind": "variable",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::c248fc52853bf25d05623286ccf0fc96365ec5064c09bce5ef21de13eef349b5::COMMANDS",
+          "key": "06eb622f"
+        },
+        {
+          "name": "os",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::413ebac7554aaae670e021bff2659b9aa3a8ac272097e49eeb0fcebf0945963f::os",
+          "key": "06feaecc"
+        },
+        {
+          "name": "UTF8",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::c0b99d98c459ef24f1c2c416f8b70a45a141aa71e906a4ed3df79642b55cdf0f::UTF8",
+          "key": "070d4613"
+        },
+        {
+          "name": "warnings",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::b6a1fc8de7ddd2c27a04739c60c64efe989c5cef0d767eec32201de048a6a4c6::warnings",
+          "key": "070ffbd1"
+        },
+        {
+          "name": "Union",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::a259361c6bd22f5e4a8c3a26206063c133460f44c44a0528703e37871a9749aa::Union",
+          "key": "0720c02e"
+        },
+        {
+          "name": "requests",
+          "kind": "type",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::ac9c0cf42e2f435831f26b1d723a303710adccc9b162447923782703db845c4a::requests",
+          "key": "0751086c"
+        },
+        {
+          "name": "Config",
+          "kind": "struct",
+          "coordinate": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::407ae7afa564f4d10aaec9e7b9a58f62cb5e77db92fcc5a507bcb3e32a350c29::Config",
+          "key": "075e1401",
+          "children": [
+            {
+              "name": "\u203935efd18d\u203a",
+              "key": "35efd18d",
+              "children": [
+                {
+                  "name": "\u2039437f1086\u203a",
+                  "key": "437f1086"
+                },
+                {
+                  "name": "\u2039b6d1ea42\u203a",
+                  "key": "b6d1ea42"
+                }
+              ]
+            },
+            {
+              "name": "\u2039383f450f\u203a",
+              "key": "383f450f",
+              "children": [
+                {
+                  "name": "\u20398fe7a6a2\u203a",
+                  "key": "8fe7a6a2"
+                },
+                {
+                  "name": "\u2039a3b1fbfe\u203a",
+                  "key": "a3b1fbfe"
+                }
+              ]
+            },
+            {
+              "name": "\u20394537ce3f\u203a",
+              "key": "4537ce3f",
+              "children": [
+                {
+                  "name": "\u20396e464db5\u203a",
+                  "key": "6e464db5"
+                },
+                {
+                  "name": "\u2039ac824177\u203a",
+                  "key": "ac824177"
+                }
+              ]
+            },
+            {
+              "name": "\u20394b93455d\u203a",
+              "key": "4b93455d",
+              "children": [
+                {
+                  "name": "\u20392da5d527\u203a",
+                  "key": "2da5d527"
+                },
+                {
+                  "name": "\u2039ef1c6b85\u203a",
+                  "key": "ef1c6b85"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "extent": "truncated",
+      "declarations": 200,
+      "unnamed": 123,
+      "answer": "outline",
+      "detail": "summary",
+      "budget": {
+        "bytes": 22760,
+        "estimatedTokens": 5690,
+        "bytesPerToken": 4
+      }
+    },
+    "isError": false
+  }
+}

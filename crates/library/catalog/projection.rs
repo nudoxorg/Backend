@@ -225,10 +225,15 @@ impl Library {
         let limit = usize::from(query.limit.get());
         let fetch = |offset| {
             self.arrangement.names_page(
-                query.text(),
+                query.selection(),
                 offset,
                 limit,
                 |id| self.view.row(id),
+                |id, address| {
+                    self.view
+                        .row_ref(id)
+                        .is_some_and(|row| self.row_matches_address(row, address))
+                },
                 &self.work,
             )
         };
@@ -262,6 +267,41 @@ impl Library {
             },
             Some(start.saturating_add(limit)),
         )
+    }
+
+    /// Matches only producer-admitted address evidence. A readable source
+    /// address selects the same compiler-owned row as its semantic address;
+    /// the package prefix and captured site are read from this exact view.
+    fn row_matches_address(
+        &self,
+        row: &Row,
+        address: crate::command::AddressSelection<'_>,
+    ) -> bool {
+        if row.label == address.text {
+            return true;
+        }
+        let Some(site) = address.source else {
+            return false;
+        };
+        if !row
+            .label
+            .strip_suffix(site.name)
+            .is_some_and(|prefix| prefix.ends_with("::"))
+        {
+            return false;
+        }
+        let Some(location) = row.source.captured() else {
+            return false;
+        };
+        let Some(package) = row.package else {
+            return false;
+        };
+        let Some(package_row) = self.view.row_ref(RowId::Package(package)) else {
+            return false;
+        };
+        site.package == package_row.label
+            && site.path == location.path()
+            && site.line == location.start_line()
     }
 
     /// Looks up one package outline under an exact source basis.

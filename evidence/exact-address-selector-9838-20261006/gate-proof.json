@@ -1,0 +1,481 @@
+{
+  "source_commit": "9838eae447545fb2adf8611e1e4b61ed0031e8bb",
+  "native_summary": "test result: ok. 300 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 2.92s",
+  "checks": {
+    "cli_exact_semantic": true,
+    "mcp_exact_semantic": true,
+    "cli_exact_source": true,
+    "mcp_exact_source": true,
+    "cli_rejects_foreign": true,
+    "cli_rejects_wrong-line": true,
+    "three_exactly_once_pages": true,
+    "same_current_complete_133": true,
+    "native_300_pass": true,
+    "native_exit_0": true,
+    "build_exit_0": true,
+    "fresh_admission_owned_kernel_retirement": true
+  },
+  "selected_identity": {
+    "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/public-httpie-a659-20261006-attempt02/project::semantic::894465dd306c785083f6c74e601f635efe91b603c6b00e69d1ae5be808baedcf::HTTPieArgumentParser",
+    "trail": "project \u203a httpie/cli/argparser.py:138 \u203a HTTPieArgumentParser",
+    "name": "HTTPieArgumentParser",
+    "shape": "semantic",
+    "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/public-httpie-a659-20261006-attempt02/project",
+    "path": "httpie/cli/argparser.py",
+    "line": 138,
+    "segments": [
+      "HTTPieArgumentParser"
+    ],
+    "key": "45723573",
+    "semantic_data": {
+      "kind": "selected-symbol-id",
+      "value": [
+        69,
+        114,
+        53,
+        115,
+        25,
+        182,
+        85,
+        40,
+        167,
+        187,
+        135,
+        133,
+        69,
+        103,
+        166,
+        176,
+        231,
+        203,
+        75,
+        111,
+        123,
+        206,
+        173,
+        121,
+        27,
+        105,
+        149,
+        221,
+        230,
+        136,
+        84,
+        76
+      ]
+    }
+  },
+  "owner_launch": {
+    "phase": "address-selector-9838",
+    "observer_pid": 91981,
+    "owner_pid": 92054,
+    "argv": [
+      "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/images-address-selector-9838-debug/backend-locald",
+      "--workspace",
+      "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/public-httpie-a659-20261006-attempt02/workspace",
+      "--endpoint",
+      "/tmp/ndx-httpie-a659-attempt02-sol61-address-selector-9838.sock",
+      "--registry-offline",
+      "--registry-discovery-offline",
+      "--advisory-offline",
+      "--forge-offline"
+    ],
+    "started": "2026-10-06T22:00:49.941905+00:00",
+    "admission": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/httpie-public-a659-attempt02-address-selector-9838-fresh-admission.json",
+    "admission_age_seconds": 8.588282,
+    "lock": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/runtime-index.lock",
+    "manifest": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/address-selector-9838-debug-runtime-build-manifest.json",
+    "source_commit": "9838eae447545fb2adf8611e1e4b61ed0031e8bb",
+    "profile": "debug",
+    "manifest_sha256": "cdab34895dbac08955bff2d9ac313c275aa289191fdfaafe00e24ca319c44511",
+    "private_home": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/public-httpie-a659-20261006-attempt02/home",
+    "workspace": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/public-httpie-a659-20261006-attempt02/workspace",
+    "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/public-httpie-a659-20261006-attempt02/project",
+    "endpoint": "/tmp/ndx-httpie-a659-attempt02-sol61-address-selector-9838.sock"
+  },
+  "owner_retired": {
+    "phase": "address-selector-9838",
+    "observer_pid": 91981,
+    "owner_pid": 92054,
+    "argv": [
+      "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/images-address-selector-9838-debug/backend-locald",
+      "--workspace",
+      "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/public-httpie-a659-20261006-attempt02/workspace",
+      "--endpoint",
+      "/tmp/ndx-httpie-a659-attempt02-sol61-address-selector-9838.sock",
+      "--registry-offline",
+      "--registry-discovery-offline",
+      "--advisory-offline",
+      "--forge-offline"
+    ],
+    "started": "2026-10-06T22:00:49.941905+00:00",
+    "admission": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/httpie-public-a659-attempt02-address-selector-9838-fresh-admission.json",
+    "admission_age_seconds": 8.588282,
+    "lock": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/runtime-index.lock",
+    "manifest": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/address-selector-9838-debug-runtime-build-manifest.json",
+    "source_commit": "9838eae447545fb2adf8611e1e4b61ed0031e8bb",
+    "profile": "debug",
+    "manifest_sha256": "cdab34895dbac08955bff2d9ac313c275aa289191fdfaafe00e24ca319c44511",
+    "private_home": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/public-httpie-a659-20261006-attempt02/home",
+    "workspace": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/public-httpie-a659-20261006-attempt02/workspace",
+    "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/public-httpie-a659-20261006-attempt02/project",
+    "endpoint": "/tmp/ndx-httpie-a659-attempt02-sol61-address-selector-9838.sock",
+    "kernel_wait": -15,
+    "ended": "2026-10-06T22:01:20.459621+00:00"
+  },
+  "runtime_manifest_sha256": "cdab34895dbac08955bff2d9ac313c275aa289191fdfaafe00e24ca319c44511",
+  "archive_sha256": "5fe382fd7523cefb34671f67ab426f5a12d35b8d7d287b8bc2618bafeb57e4e1",
+  "archive_bytes": 133120,
+  "files": [
+    {
+      "file": "address-selector-9838-debug-runtime-build-manifest.json",
+      "bytes": 3713,
+      "sha256": "cdab34895dbac08955bff2d9ac313c275aa289191fdfaafe00e24ca319c44511"
+    },
+    {
+      "file": "address-selector-9838-debug-trio-build.complete.json",
+      "bytes": 644,
+      "sha256": "7d059317d2edac60eef3ed933a0db5bc21ca075e2743a6fd82431fb6fae1d290"
+    },
+    {
+      "file": "address-selector-9838-debug-trio-build.launch.json",
+      "bytes": 584,
+      "sha256": "1753de303cac4e443d812eeac3104a27177fd8d1b26634d225c7b99eca5e81c5"
+    },
+    {
+      "file": "address-selector-9838-debug-trio-build.stderr",
+      "bytes": 1565,
+      "sha256": "c7a0c90ce186c049218e97bdafafeac90d86f17c8e5273e7caeb7971ff19ee43"
+    },
+    {
+      "file": "address-selector-9838-debug-trio-fresh-admission.json",
+      "bytes": 24576,
+      "sha256": "85e1af5b845fc3990f09b279922116c4dc447fb7bbf90a6a34a566d8200996c1"
+    },
+    {
+      "file": "address-selector-9838-library-fresh-admission.json",
+      "bytes": 28558,
+      "sha256": "0de30bf5ba63405d322bec371e3ce81bf6a26c854c62dacf40e457e7f3cbc1bf"
+    },
+    {
+      "file": "address-selector-9838-library.complete.json",
+      "bytes": 638,
+      "sha256": "eb5d6335ee711f15de8593283b6338ea270ebedad3d9cc19b2f924721b79a735"
+    },
+    {
+      "file": "address-selector-9838-library.launch.json",
+      "bytes": 578,
+      "sha256": "67326b0699a3b53df11504136870d6234060f7e41c3451aab3d2a5d13c187405"
+    },
+    {
+      "file": "address-selector-9838-library.stderr",
+      "bytes": 136485,
+      "sha256": "4cca53d224b1079699d64ee2c8179ef82de1b91a91542f9ad7f8d322818b166f"
+    },
+    {
+      "file": "address-selector-9838-library.stdout",
+      "bytes": 27938,
+      "sha256": "fb46636ef69936495014b130559f9f18fdf1fb5801599f484bb4b6324dd466dc"
+    },
+    {
+      "file": "httpie-address-selector-9838.py",
+      "bytes": 10984,
+      "sha256": "69a1dd1d534cdb74dfdd2c4214eb7289dd0506b30c5a25e4f8b10fdc751d687c"
+    },
+    {
+      "file": "httpie-public-a659-attempt02-address-selector-9838-fresh-admission.json",
+      "bytes": 19944,
+      "sha256": "18a24f40261015ede8ecd5ee6a95fbb29cde6c61bdda3d5e6685cec3f0cfc870"
+    },
+    {
+      "file": "locked-address-selector-debug-trio.py",
+      "bytes": 1391,
+      "sha256": "beb731f47883a5ffa92f33188f543a96978c9b0ab7a70faed22a7c08ab38752e"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/backend.document.json",
+      "bytes": 28850,
+      "sha256": "7d0916466223060cbffe5737b94457dbff79043dc221c9a5a07b2cc5a17a4630"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/backend.graph.json",
+      "bytes": 5549,
+      "sha256": "fb4d100fc787fdfc2dea4d8c4093a75475f84a98e3b683160a39d65d29300cba"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/backend.outline.json",
+      "bytes": 52236,
+      "sha256": "ac556b28a526a3bf872c7c705b0dfd28e4c937754ff1f3b565ede746ce5f4805"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/backend.references.json",
+      "bytes": 1965,
+      "sha256": "5b183d5669afbacc20acf36c5c2a0c00170d6b9e9ebebf761e2c9503eb579c8a"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/backend.resolve-exact-semantic.json",
+      "bytes": 5579,
+      "sha256": "221dd79668a27582b22afcb3e9d87b525236cea9d09838e17731a4e4a6ece113"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/backend.resolve-exact-source.json",
+      "bytes": 5532,
+      "sha256": "af44bdeff05c565dec52d5a47e2cf34c61ecbd8d9712da544ef551f4007108c6"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/backend.resolve-page-0.json",
+      "bytes": 10100,
+      "sha256": "a2fa213459e27ee4a48a69b27c3eab15c9a86bb9c3e0b232e654c1998bb85bfb"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/backend.resolve-page-1.json",
+      "bytes": 13734,
+      "sha256": "6f4fc8f4810289f901ff6ada98513e6218f9df6d30d1da272f7c639426e436a9"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/backend.resolve-page-2.json",
+      "bytes": 2817,
+      "sha256": "94d7e98e8be4640eb5e76c7bfe538ca37e6e93dbf02f9d8cfafd8130b854bfe2"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/backend.resolve.json",
+      "bytes": 10525,
+      "sha256": "703dba4c8d0b240b3246a9176f26ff921d72cad3d1777d38db4151100f2a6aa2"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/backend.search.json",
+      "bytes": 9925,
+      "sha256": "4c71e7d7d44c701b84171526a1d839cfbdf90f960308a2e35ac53753ee7e50ad"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/backend.semantic_versions.json",
+      "bytes": 9933,
+      "sha256": "807d139a31fcffc78bf50e0dbfb825a18445eb23b8a15d9a442f0f6ccaa14c14"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/backend.source.json",
+      "bytes": 24916,
+      "sha256": "ca9dae23cc6613af5c17aa420da0b58554f3565f6f1c3a4ef71575157917a8a1"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/backend.status.json",
+      "bytes": 1603,
+      "sha256": "3084456d4b221d42291402610e093a4240e65baa729c5321538004ec28cc646a"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/commands.json",
+      "bytes": 96151,
+      "sha256": "fd953de660b4c315004ef679892bf0d943eea03d587b82ff229559c9a2c4e727"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/final-health.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/final-health.stdout",
+      "bytes": 695,
+      "sha256": "dfd6dbec2cd69d44bcb54cc0c644337181dcfdb6f2069eb586c551095f731997"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/graph-default.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/graph-default.stdout",
+      "bytes": 1436,
+      "sha256": "ca6b4ea46d5f0ac0514e3251de5a9ee05e15ec907cee211fb270118508e1b564"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/locald.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/locald.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/mcp.retired.json",
+      "bytes": 33,
+      "sha256": "d218a4d6922ded2c6f15ff954a3eeecf6b1f35a2b9c96f2aca48f59652857853"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/mcp.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/mcp.tools.json",
+      "bytes": 39267,
+      "sha256": "e0c1e33f637d052d505950716aee65fb21495af758c80b651de3acab37ed4566"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/mcp.wire.jsonl",
+      "bytes": 174290,
+      "sha256": "7c8b126c59de62ebf23e9cebe4b67c1cb7bf9fa991a35045cf15022a1738dd1d"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/owner.launch.json",
+      "bytes": 1705,
+      "sha256": "5ddfc8d3b71d6e45dbb666e6f4f4872bada8f72533eb8b91cf7a6369d086eeae"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/owner.retired.json",
+      "bytes": 1774,
+      "sha256": "50be71acdc3476e4085db0cbad0f3278186e8008a0229cb8dc35e87e46987ec3"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/ownerless-passive-health.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/ownerless-passive-health.stdout",
+      "bytes": 834,
+      "sha256": "b6489c08e100d3e10cdc615ef21297dce9919691714a14ad8d97a516542ad342"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/packages.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/packages.stdout",
+      "bytes": 526,
+      "sha256": "b866a8c593bfe434d09580fd6689939b771d4b7ee8234e706fcde5bf3a1eecd5"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/references-default.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/references-default.stdout",
+      "bytes": 856,
+      "sha256": "cba6aeeb3b0300ab83918e37017dde7300fff3c0a201de7cea8d24b113641037"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/resolve-exact-semantic.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/resolve-exact-semantic.stdout",
+      "bytes": 1455,
+      "sha256": "856de041301436b60e26f77afa98c5f06940d396e62a70da6dd2da3342488712"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/resolve-exact-source.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/resolve-exact-source.stdout",
+      "bytes": 1408,
+      "sha256": "df41a9b3a23e1de7d24582bf04b08934d8381269f9702ae8a3f95cbc1af7fa8a"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/resolve-negative-foreign.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/resolve-negative-foreign.stdout",
+      "bytes": 516,
+      "sha256": "0b6cdaa97e757673b921e980bf45c0129d65f524063301994983ce7a6b144985"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/resolve-negative-wrong-line.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/resolve-negative-wrong-line.stdout",
+      "bytes": 510,
+      "sha256": "b5fb32ef40488fd1b13ab364ffdf1ecc8833d72955d6d41769979788703df68a"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/resolve-page-union.json",
+      "bytes": 1510,
+      "sha256": "7f7edf1232631317aac0c1b562485839bfd18413f635d301cf25b129cf7d5260"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/resolve.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/resolve.stdout",
+      "bytes": 2863,
+      "sha256": "f478d1b9bc0767958d1d67a04d3e398bd627c75e1bc9e4c8592ad78943da6a8a"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/search-default.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/search-default.stdout",
+      "bytes": 2890,
+      "sha256": "b7fe555f8d50d04be2edbecaa07b1224247a953c79a34f5024e495c9c297c5da"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/search-full.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/search-full.stdout",
+      "bytes": 5372,
+      "sha256": "669675c35dc46046e93fca5fd514ffc1816ebf78a57d7612bbee2422dab8f6c5"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/semantic-current-cold.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/semantic-current-cold.stdout",
+      "bytes": 2830,
+      "sha256": "322f7280c50bdcc650700b974ea8af8998cbcb31cc38980cd14d5dc69d0d47df"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/show-default.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/show-default.stdout",
+      "bytes": 13686,
+      "sha256": "fe5446f3e7eede525e6146cf723dd980db7ce15fd0d0b0ee3f9867ae02054a19"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/source-default.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/source-default.stdout",
+      "bytes": 12182,
+      "sha256": "56f693825700f20be0654eecef69540c98156ac7a5a2e2bbb668a92e2e3dc3f0"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/startup-health-54.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "public-httpie-a659-20261006-attempt02/address-selector-9838/startup-health-54.stdout",
+      "bytes": 695,
+      "sha256": "dfd6dbec2cd69d44bcb54cc0c644337181dcfdb6f2069eb586c551095f731997"
+    },
+    {
+      "file": "run-address-selector-debug-trio.sh",
+      "bytes": 877,
+      "sha256": "a91e39ef497a83e2ca8bb9a14b0c2a60ab16d15bfa91cc108a205964dc8c172d"
+    }
+  ]
+}

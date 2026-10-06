@@ -1,0 +1,11 @@
+{
+  "artifacts": 133,
+  "complete": true,
+  "selected": true,
+  "freshness": "current",
+  "frontier_files": 133,
+  "unchanged_retry_same_generation": true,
+  "generation": "0612a0798c67039f68665440876b63a85ab84f59b5c0a2f0e498b69227d854cd",
+  "history_initial": "pending",
+  "history_after_retry": "pending"
+}

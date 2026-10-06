@@ -1,0 +1,100 @@
+{
+  "backend-mcp": {
+    "reason": "compiler-artifact",
+    "package_id": "path+file:///Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/apps/mcp#backend-mcp@0.2.0",
+    "manifest_path": "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/apps/mcp/Cargo.toml",
+    "target": {
+      "kind": [
+        "bin"
+      ],
+      "crate_types": [
+        "bin"
+      ],
+      "name": "backend-mcp",
+      "src_path": "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/apps/mcp/src/main.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": false,
+      "test": true
+    },
+    "profile": {
+      "opt_level": "3",
+      "debuginfo": 0,
+      "debug_assertions": false,
+      "overflow_checks": false,
+      "test": false
+    },
+    "features": [
+      "default"
+    ],
+    "filenames": [
+      "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/.local/target/release/backend-mcp"
+    ],
+    "executable": "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/.local/target/release/backend-mcp",
+    "fresh": false
+  },
+  "backend-locald": {
+    "reason": "compiler-artifact",
+    "package_id": "path+file:///Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/apps/locald#backend-locald@0.2.0",
+    "manifest_path": "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/apps/locald/Cargo.toml",
+    "target": {
+      "kind": [
+        "bin"
+      ],
+      "crate_types": [
+        "bin"
+      ],
+      "name": "backend-locald",
+      "src_path": "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/apps/locald/src/main.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": false,
+      "test": true
+    },
+    "profile": {
+      "opt_level": "3",
+      "debuginfo": 0,
+      "debug_assertions": false,
+      "overflow_checks": false,
+      "test": false
+    },
+    "features": [],
+    "filenames": [
+      "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/.local/target/release/backend-locald"
+    ],
+    "executable": "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/.local/target/release/backend-locald",
+    "fresh": false
+  },
+  "backend-cli": {
+    "reason": "compiler-artifact",
+    "package_id": "path+file:///Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/apps/cli#backend-cli@0.2.0",
+    "manifest_path": "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/apps/cli/Cargo.toml",
+    "target": {
+      "kind": [
+        "bin"
+      ],
+      "crate_types": [
+        "bin"
+      ],
+      "name": "backend-cli",
+      "src_path": "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/apps/cli/src/main.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": false,
+      "test": true
+    },
+    "profile": {
+      "opt_level": "3",
+      "debuginfo": 0,
+      "debug_assertions": false,
+      "overflow_checks": false,
+      "test": false
+    },
+    "features": [],
+    "filenames": [
+      "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/.local/target/release/backend-cli"
+    ],
+    "executable": "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/.local/target/release/backend-cli",
+    "fresh": false
+  }
+}

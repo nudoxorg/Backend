@@ -1,0 +1,45 @@
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "~lanes exact\u27130 names\u27130 graph\u27130 semantic\u2717 unconfigured\nno rows, and at least one lane answered nothing \u2014 read the marks above\n"
+      }
+    ],
+    "structuredContent": {
+      "query": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::a30ebc39e5b44c9fe03d484267ae0f48fe91b603c6b00e69d1ae5be808baedcf::HTTPieArgumentParser",
+      "coverage": [
+        {
+          "lane": "exact",
+          "state": "complete"
+        },
+        {
+          "lane": "names",
+          "state": "complete"
+        },
+        {
+          "lane": "graph",
+          "state": "complete"
+        },
+        {
+          "lane": "semantic",
+          "state": "unavailable",
+          "reason": "unconfigured"
+        }
+      ],
+      "readiness": "ready",
+      "records": [],
+      "more": false,
+      "answer": "records",
+      "detail": "summary",
+      "budget": {
+        "bytes": 489,
+        "estimatedTokens": 123,
+        "bytesPerToken": 4
+      }
+    },
+    "isError": false
+  }
+}

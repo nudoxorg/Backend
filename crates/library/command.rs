@@ -637,7 +637,96 @@ impl DocumentQuery {
     }
 }
 
-/// Name lookup pinned to a source root.
+/// Closed selection used by a name lookup under one admitted source root.
+///
+/// An address remains caller text until it matches an existing row. Parsing
+/// its final name only chooses a posting; it does not mint a symbol identity.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum NameSelection<'a> {
+    Name { text: &'a str, name: &'a str },
+    Address(AddressSelection<'a>),
+}
+
+/// Caller address syntax, which still needs membership in the selected view.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AddressSelection<'a> {
+    pub(crate) text: &'a str,
+    name: &'a str,
+    pub(crate) source: Option<SourceAddress<'a>>,
+}
+
+/// Borrowed source-site spelling with one strictly canonical decimal line.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SourceAddress<'a> {
+    pub(crate) package: &'a str,
+    pub(crate) path: &'a str,
+    pub(crate) line: u32,
+    pub(crate) name: &'a str,
+}
+
+impl<'a> NameSelection<'a> {
+    pub(crate) const fn is_global(self) -> bool {
+        match self {
+            Self::Name { text, .. } => text.is_empty(),
+            Self::Address(_) => false,
+        }
+    }
+
+    pub(crate) const fn posting_text(self) -> &'a str {
+        match self {
+            Self::Name { name, .. } | Self::Address(AddressSelection { name, .. }) => name,
+        }
+    }
+}
+
+fn source_address(text: &str) -> (bool, Option<SourceAddress<'_>>) {
+    // A declaration's qualified name can itself contain `::`. Look for the
+    // rightmost source-site segment, retaining every borrowed name segment.
+    for (at, _) in text.rmatch_indices("::") {
+        let package = &text[..at];
+        let Some((site, name)) = text[at + 2..].split_once("::") else {
+            continue;
+        };
+        let Some((path, line)) = site.rsplit_once(':') else {
+            continue;
+        };
+        if package.is_empty() || path.is_empty() || name.is_empty() {
+            continue;
+        }
+        let parsed = if line.is_empty()
+            || line.starts_with('0')
+            || !line.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            None
+        } else {
+            line.parse::<u32>().ok()
+        };
+        return (
+            true,
+            parsed.map(|line| SourceAddress {
+                package,
+                path,
+                line,
+                name,
+            }),
+        );
+    }
+    (false, None)
+}
+
+fn semantic_address(text: &str) -> bool {
+    let Some((package, declaration)) = text.split_once("::semantic::") else {
+        return false;
+    };
+    let Some((identity, _)) = declaration.split_once("::") else {
+        return false;
+    };
+    !package.is_empty()
+        && identity.len() == 64
+        && identity.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Name or exact declaration-address lookup pinned to a source root.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NameQuery {
     /// Canonical name text or prefix.
@@ -670,6 +759,26 @@ impl NameQuery {
     #[must_use]
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    pub(crate) fn selection(&self) -> NameSelection<'_> {
+        let text = self.text.as_str();
+        let name = text.rsplit("::").next().unwrap_or(text);
+        let (source_syntax, source) = source_address(text);
+        let windows_root = text.as_bytes().get(1) == Some(&b':')
+            && matches!(text.as_bytes().get(2), Some(b'/' | b'\\'));
+        if source_syntax
+            || semantic_address(text)
+            || text.starts_with('/')
+            || text.starts_with("pkg:")
+            || windows_root
+        {
+            NameSelection::Address(AddressSelection { text, name, source })
+        } else {
+            // Relative qualifications are ordinary case-insensitive names.
+            // Only their leaf selects the posting; the full text verifies a hit.
+            NameSelection::Name { text, name }
+        }
     }
 
     /// Returns the bounded page size.

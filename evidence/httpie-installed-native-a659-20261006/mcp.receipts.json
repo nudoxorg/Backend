@@ -1,0 +1,93 @@
+[
+  {
+    "label": "initialize",
+    "seconds": 0.054,
+    "wire_bytes": 1768,
+    "rpc_error": false,
+    "tool_error": false
+  },
+  {
+    "label": "tools",
+    "seconds": 0.023,
+    "wire_bytes": 21197,
+    "rpc_error": false,
+    "tool_error": false
+  },
+  {
+    "label": "mcp-status",
+    "seconds": 0.25,
+    "wire_bytes": 1040,
+    "rpc_error": false,
+    "tool_error": false
+  },
+  {
+    "label": "mcp-packages",
+    "seconds": 0.02,
+    "wire_bytes": 638,
+    "rpc_error": false,
+    "tool_error": false
+  },
+  {
+    "label": "mcp-search",
+    "seconds": 0.035,
+    "wire_bytes": 5837,
+    "rpc_error": false,
+    "tool_error": false
+  },
+  {
+    "label": "mcp-resolve-exact",
+    "seconds": 0.049,
+    "wire_bytes": 736,
+    "rpc_error": false,
+    "tool_error": false
+  },
+  {
+    "label": "mcp-resolve-name",
+    "seconds": 0.04,
+    "wire_bytes": 6962,
+    "rpc_error": false,
+    "tool_error": false
+  },
+  {
+    "label": "mcp-outline",
+    "seconds": 0.086,
+    "wire_bytes": 28715,
+    "rpc_error": false,
+    "tool_error": false
+  },
+  {
+    "label": "mcp-document",
+    "seconds": 2.623,
+    "wire_bytes": 21464,
+    "rpc_error": false,
+    "tool_error": false
+  },
+  {
+    "label": "mcp-source",
+    "seconds": 0.019,
+    "wire_bytes": 19802,
+    "rpc_error": false,
+    "tool_error": false
+  },
+  {
+    "label": "mcp-references",
+    "seconds": 1.959,
+    "wire_bytes": 1278,
+    "rpc_error": false,
+    "tool_error": false
+  },
+  {
+    "label": "mcp-graph",
+    "seconds": 1.922,
+    "wire_bytes": 4028,
+    "rpc_error": false,
+    "tool_error": false
+  },
+  {
+    "label": "mcp-read",
+    "seconds": 2.611,
+    "wire_bytes": 9022,
+    "rpc_error": false,
+    "tool_error": false
+  }
+]

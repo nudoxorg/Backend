@@ -1,0 +1,1 @@
+{"heading":"index","records":[{"title":"index request accepted","operand":".","tags":["intent 3c6a57ad","pending","read `backend health` for readiness"]}],"answer":"product","detail":"summary","budget":{"bytes":255,"estimatedTokens":64,"bytesPerToken":4}}

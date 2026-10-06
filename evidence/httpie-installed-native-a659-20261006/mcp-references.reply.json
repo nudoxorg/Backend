@@ -1,0 +1,34 @@
+{
+  "jsonrpc": "2.0",
+  "id": 11,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "# references to /Users/mileswirht/Downloads/nudox-demo-httpie::semantic::a30ebc39e5b44c9fe03d484267ae0f48fe91b603c6b00e69d1ae5be808baedcf::HTTPieArgumentParser\n/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::590f5e6de3f795950ecb0afe065038c9506425ccf75a9e6f562a564d6865fcf0::setup_method  \u00b7  method call \u00b7 compiler \u00b7 tests/test_cli.py [bytes8802..8822)\n`/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::590f5e6de3f795950ecb0afe065038c9506425ccf75a9e6f562a564d6865fcf0::setup_method`\n1 row(s)\n"
+      }
+    ],
+    "structuredContent": {
+      "heading": "references to /Users/mileswirht/Downloads/nudox-demo-httpie::semantic::a30ebc39e5b44c9fe03d484267ae0f48fe91b603c6b00e69d1ae5be808baedcf::HTTPieArgumentParser",
+      "records": [
+        {
+          "title": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::590f5e6de3f795950ecb0afe065038c9506425ccf75a9e6f562a564d6865fcf0::setup_method",
+          "operand": "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::590f5e6de3f795950ecb0afe065038c9506425ccf75a9e6f562a564d6865fcf0::setup_method",
+          "tags": [
+            "method call",
+            "compiler",
+            "tests/test_cli.py [bytes8802..8822)"
+          ]
+        }
+      ],
+      "answer": "product",
+      "detail": "summary",
+      "budget": {
+        "bytes": 652,
+        "estimatedTokens": 163,
+        "bytesPerToken": 4
+      }
+    },
+    "isError": false
+  }
+}

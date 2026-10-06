@@ -1,0 +1,63 @@
+{
+  "schema": "nudox.runtime-artifact-build-receipt.v1",
+  "source": {
+    "commit": "a659d5d1819078b3c0046937191a9b54a76b1dfb",
+    "tree": "d76c5ea835ff0b326c24e7e9d3a2cc9ece277dbb",
+    "clean_before": true,
+    "clean_after": true,
+    "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+  },
+  "command": [
+    "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/.local/fcb-managed-runner/cargo",
+    "build",
+    "--release",
+    "--locked",
+    "--offline",
+    "--message-format=json",
+    "-p",
+    "backend-cli",
+    "-p",
+    "backend-mcp",
+    "-p",
+    "backend-locald"
+  ],
+  "runner": {
+    "path": "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/.local/fcb-managed-runner/cargo",
+    "sha256": "5903ebebc554d60410570fc4abce21d86e1d757981ec01cddb78e00fad6cd62e"
+  },
+  "toolchain": {
+    "cargo": {
+      "path": "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+      "version": "cargo 1.97.1 (c980f4866 2026-06-30)"
+    },
+    "rustc": {
+      "path": "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/rustc",
+      "version": "rustc 1.97.1 (8bab26f4f 2026-07-14)"
+    },
+    "unchanged": true
+  },
+  "started_utc": "2026-10-06T21:16:54Z",
+  "finished_utc": "2026-10-06T21:26:01Z",
+  "exit_code": 0,
+  "check_only": false,
+  "artifacts": {
+    "backend-mcp": {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/images-demo-native-a659d5d181-attempt01/backend-mcp",
+      "sha256": "d9f4be4edd60ffdf0c1bc1c2a9b52a83bdb1e4ed3eb060485a7e4b4bde87b350",
+      "bytes": 26593248,
+      "architecture": "aarch64"
+    },
+    "backend-locald": {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/images-demo-native-a659d5d181-attempt01/backend-locald",
+      "sha256": "d5d5fdb6de536d217da5f3007c33831720663953bab8ea367f86973e4aa68713",
+      "bytes": 117128768,
+      "architecture": "aarch64"
+    },
+    "backend-cli": {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/images-demo-native-a659d5d181-attempt01/backend-cli",
+      "sha256": "49a50347f3e7baca793d213e0fd9c9362fdaadaad4576ae623c7eb0735ea9c91",
+      "bytes": 34580976,
+      "architecture": "aarch64"
+    }
+  }
+}
