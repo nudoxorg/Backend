@@ -243,6 +243,10 @@ fn run_public_index_operation_lifecycle(fixture: &FailureFixture) -> Result<(), 
         .find(|record| record.selected && record.complete && record.profile.name() == Some("rust"))
         .ok_or_else(|| io::Error::other("fixture has no selected complete Rust semantic image"))?;
     assert!(
+        selected_source.selected_source_frontier.is_some(),
+        "selected Rust semantics must expose their exact source frontier"
+    );
+    assert!(
         matches!(
             &selected_source.freshness,
             backend_library::SemanticVersionFreshness::Current { .. }
