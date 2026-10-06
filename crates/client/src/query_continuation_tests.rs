@@ -553,3 +553,99 @@ fn portable_query_terminal_reply_cannot_bypass_a_scope_rebind_between_rpcs() {
         "same root/new scope terminal page must refuse"
     );
 }
+
+#[test]
+fn portable_query_coherently_rederived_authorized_prefix_is_content_proof_not_issue_receipt() {
+    let (owner, requests) = fixture();
+    let mut issuing = session(&owner, &requests);
+    let first = issuing
+        .names_page("Thing", 3, None)
+        .expect("issued original query");
+    let original = issuing
+        .encode_query_continuation(PageContinuation::from_cursor(
+            page(&first).next.expect("successor"),
+        ))
+        .expect("original token");
+    let mut body: serde_json::Value = serde_json::from_slice(
+        &decode_hex(original.strip_prefix("pc2-").expect("version")).expect("hex"),
+    )
+    .expect("existing DTO");
+    let projected = &page(&first).root;
+    let selected_root = owner.lock().expect("owner").revision_root();
+    let new_query = NameQuery::new("thing", selected_root, QueryLimit::new(3).expect("credit"));
+    let recipe = QueryPageRecipe::names(selected_root, &new_query);
+    // No second query page is requested from the owner. These are public,
+    // unkeyed canonical content preimages for the same authorized prefix.
+    let rederived = ViewRoot::new_checked(
+        recipe.identity(),
+        projected.basis(),
+        projected.frontier(),
+        projected.rows().to_vec(),
+        projected.coverage().to_vec(),
+        projected.capability().expect("owned fixture scope"),
+    )
+    .expect("canonical rederived projection");
+    assert_eq!(
+        rederived.root(),
+        projected.root(),
+        "case-folded name query selects identical rows"
+    );
+    body["command"]["data"]["text"] = serde_json::json!("thing");
+    body["command"]["data"]["cursor"]["recipe"] =
+        serde_json::json!(encode_id(recipe.identity().as_bytes()));
+    body["command"]["data"]["cursor"]["version"] =
+        serde_json::json!(encode_id(rederived.version().as_bytes()));
+    for claim in body["certificate"]["claims"]
+        .as_array_mut()
+        .expect("claims")
+    {
+        if claim["kind"] == "key_bytes" && claim["data"]["schema"] == "view_recipe" {
+            claim["data"]["id"] = serde_json::json!(encode_id(recipe.identity().as_bytes()));
+            claim["data"]["value"] = serde_json::json!(recipe.canonical_preimage());
+        }
+        if claim["kind"] == "version" && claim["data"]["schema"] == "view_version" {
+            claim["data"]["id"] = serde_json::json!(encode_id(rederived.version().as_bytes()));
+            claim["data"]["value"] = serde_json::json!(view_version_preimage(
+                rederived.recipe(),
+                rederived.basis(),
+                rederived.frontier(),
+                rederived.root(),
+                rederived.coverage()
+            ));
+        }
+    }
+    let before = requests.lock().expect("requests").len();
+    let mut fresh = session(&owner, &requests);
+    let cursor = fresh
+        .decode_page_continuation(&token(&body))
+        .expect("fresh authority admits canonical content proof");
+    let reply = fresh
+        .names_page("thing", 3, Some(cursor))
+        .expect("owner reconstructs exact new-query predecessor");
+    assert_eq!(requests.lock().expect("requests").len() - before, 2);
+    let expected = owner
+        .lock()
+        .expect("owner")
+        .names(&NameQuery::new(
+            "thing",
+            selected_root,
+            QueryLimit::new(200).expect("reference"),
+        ))
+        .expect("independent current view")
+        .root
+        .rows()
+        .iter()
+        .skip(3)
+        .take(3)
+        .map(|row| row.id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        page(&reply)
+            .root
+            .rows()
+            .iter()
+            .map(|row| row.id)
+            .collect::<Vec<_>>(),
+        expected
+    );
+}

@@ -1,7 +1,7 @@
 {
   "source_checkpoint": "3add765160877acb9516527528d5edd980421011",
   "focused_query_tests": {
-    "pass": 10,
+    "pass": 11,
     "fail": 0
   },
   "nonquery_graph_regression": {
@@ -15,8 +15,8 @@
   },
   "archive": {
     "path": "validation-receipts.tar.gz",
-    "bytes": 181644,
-    "sha256": "432b24b27137d345a2e3d3f80cc81e804808878b52c8de4d8d6926f60e00ef4d"
+    "bytes": 199271,
+    "sha256": "6aeb5d33af493e638efeb684b30b0050044c131a2de4704b92241d1d7065c767"
   },
   "files": [
     {
@@ -58,6 +58,12 @@
       "path": "surface-checkpoint.log",
       "bytes": 255926,
       "sha256": "bcfa1e140e8a321041b686d5663dec5dfa76fd7dab3194c69d632b27ebd7e03b"
+    },
+    {
+      "path": "focused-11-pass.log",
+      "bytes": 163999,
+      "sha256": "2613fa50391e7d223a3c10fbb4a3dbd11c0a040a7375cba12400184f7dabcf32"
     }
-  ]
+  ],
+  "coherent_canonical_rehash_control": "PASS authorized equivalent current prefix; no historical issuance assertion"
 }
