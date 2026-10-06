@@ -42,11 +42,11 @@ struct BindResultReducer<'checkpoint> {
 }
 
 macro_rules! tick_or_return {
-    () => {
+    ($this:ident) => {
         if !Self::tick_fields(
-            &mut self.pending_work_units,
-            &mut self.stopped,
-            self.execution_checkpoint,
+            &mut $this.pending_work_units,
+            &mut $this.stopped,
+            $this.execution_checkpoint,
         ) {
             return;
         }
@@ -251,7 +251,7 @@ impl<'checkpoint> BindResultReducer<'checkpoint> {
         // Iterate by index to avoid holding a borrow on `self.lib_binders` while the
         // loop body mutates other fields of `self` through the stable NLL split-borrow.
         for lib_binder_idx in 0..self.lib_binders.len() {
-            tick_or_return!();
+            tick_or_return!(self);
             let lib_binder = Arc::clone(&self.lib_binders[lib_binder_idx]);
             let lib_binder_ptr = Arc::as_ptr(&lib_binder) as usize;
 
@@ -279,7 +279,7 @@ impl<'checkpoint> BindResultReducer<'checkpoint> {
 
             // Process all symbols in this lib binder
             for i in 0..lib_binder.symbols.len() {
-                tick_or_return!();
+                tick_or_return!(self);
                 let local_id = SymbolId(i as u32);
                 if let Some(lib_sym) = lib_binder.symbols.get(local_id) {
                     // Determine if this is a top-level symbol by checking file_locals.
@@ -418,7 +418,7 @@ impl<'checkpoint> BindResultReducer<'checkpoint> {
         // hashing overhead of a set; setting to None twice is idempotent so dedup is unnecessary.
         let lib_global_ids: Vec<SymbolId> = self.lib_symbol_remap.values().copied().collect();
         for global_id in lib_global_ids {
-            tick_or_return!();
+            tick_or_return!(self);
             if let Some(sym) = self.global_symbols.get_mut(global_id) {
                 sym.exports = None;
                 sym.members = None;
@@ -450,7 +450,7 @@ impl<'checkpoint> BindResultReducer<'checkpoint> {
                 sym.members.as_ref()
             };
             for (name, &local_id) in local_table.iter() {
-                tick_or_return!();
+                tick_or_return!(self);
                 if let Some(&new_id) = self.lib_symbol_remap.get(&(lib_binder_ptr, local_id)) {
                     let prev = existing.and_then(|t| t.get(name));
                     if let Some(prev_id) = prev {
@@ -465,7 +465,7 @@ impl<'checkpoint> BindResultReducer<'checkpoint> {
         }
 
         for (dst_id, src_id) in merge_targets {
-            tick_or_return!();
+            tick_or_return!(self);
             // Extract data from src before taking a mutable borrow for dst.
             let src_data = self
                 .global_symbols
@@ -525,12 +525,12 @@ impl<'checkpoint> BindResultReducer<'checkpoint> {
     // (This mirrors Phase 2 in state.rs merge_lib_contexts_into_binder.)
     fn remap_lib_references(&mut self) {
         for lib_binder_idx in 0..self.lib_binders.len() {
-            tick_or_return!();
+            tick_or_return!(self);
             let lib_binder = Arc::clone(&self.lib_binders[lib_binder_idx]);
             let lib_binder_ptr = Arc::as_ptr(&lib_binder) as usize;
 
             for i in 0..lib_binder.symbols.len() {
-                tick_or_return!();
+                tick_or_return!(self);
                 let local_id = SymbolId(i as u32);
                 let Some(&global_id) = self.lib_symbol_remap.get(&(lib_binder_ptr, local_id))
                 else {
@@ -566,11 +566,11 @@ impl<'checkpoint> BindResultReducer<'checkpoint> {
         // Also remap lib file_locals entries that reference symbols by name
         // (for exported lib symbols like Array, Object, console)
         for lib_binder_idx in 0..self.lib_binders.len() {
-            tick_or_return!();
+            tick_or_return!(self);
             let lib_binder = Arc::clone(&self.lib_binders[lib_binder_idx]);
             let lib_binder_ptr = Arc::as_ptr(&lib_binder) as usize;
             for (name, &local_id) in lib_binder.file_locals.iter() {
-                tick_or_return!();
+                tick_or_return!(self);
                 // When a lib file is an external module (has `export {}`), its
                 // file_locals contain module-scoped declarations that must NOT
                 // pollute the global scope. Only include symbols that originate
@@ -613,11 +613,11 @@ impl<'checkpoint> BindResultReducer<'checkpoint> {
     // self-contained and deterministic.
     fn propagate_lib_semantic_defs(&mut self) {
         for lib_binder_idx in 0..self.lib_binders.len() {
-            tick_or_return!();
+            tick_or_return!(self);
             let lib_binder = Arc::clone(&self.lib_binders[lib_binder_idx]);
             let lib_binder_ptr = Arc::as_ptr(&lib_binder) as usize;
             for (&old_sym_id, entry) in lib_binder.semantic_defs.iter() {
-                tick_or_return!();
+                tick_or_return!(self);
                 if let Some(&global_id) = self.lib_symbol_remap.get(&(lib_binder_ptr, old_sym_id)) {
                     // Keep first occurrence (declaration merging keeps first identity).
                     self.semantic_defs.entry(global_id).or_insert_with(|| {
@@ -648,7 +648,7 @@ impl<'checkpoint> BindResultReducer<'checkpoint> {
     // ==========================================================================
     fn merge_user_files(&mut self, results: &mut impl BindResultsSource) {
         for file_idx in 0..results.len() {
-            tick_or_return!();
+            tick_or_return!(self);
             {
                 let result = results.get(file_idx);
                 self.declared_modules
@@ -658,10 +658,10 @@ impl<'checkpoint> BindResultReducer<'checkpoint> {
 
                 // Merge reexports from this file
                 for (file_name, file_reexports) in result.reexports.iter() {
-                    tick_or_return!();
+                    tick_or_return!(self);
                     let entry = self.reexports.entry(file_name.clone()).or_default();
                     for (export_name, mapping) in file_reexports {
-                        tick_or_return!();
+                        tick_or_return!(self);
                         entry.insert(export_name.clone(), mapping.clone());
                     }
                 }
@@ -670,7 +670,7 @@ impl<'checkpoint> BindResultReducer<'checkpoint> {
                 // Each entry is (source_module, is_type_only). Value re-export
                 // (is_type_only=false) takes priority over type-only re-export.
                 for (file_name, source_entries) in result.wildcard_reexports.iter() {
-                    tick_or_return!();
+                    tick_or_return!(self);
                     let entry = self
                         .wildcard_reexports
                         .entry(file_name.clone())
@@ -678,7 +678,7 @@ impl<'checkpoint> BindResultReducer<'checkpoint> {
 
                     if entry.len() + source_entries.len() <= 16 {
                         for (source_module, source_is_type_only) in source_entries {
-                            tick_or_return!();
+                            tick_or_return!(self);
                             if let Some(pos) = entry.iter().position(|(m, _)| m == source_module) {
                                 // Already have this source — if this path is non-type-only,
                                 // override the existing flag (value re-export takes priority).
@@ -693,7 +693,7 @@ impl<'checkpoint> BindResultReducer<'checkpoint> {
                         let mut seen: FxHashMap<String, usize> =
                             entry.iter().map(|(m, _)| m.clone()).zip(0..).collect();
                         for (source_module, source_is_type_only) in source_entries {
-                            tick_or_return!();
+                            tick_or_return!(self);
                             if let Some(&pos) = seen.get(source_module) {
                                 if !*source_is_type_only {
                                     entry[pos].1 = false;
@@ -718,7 +718,7 @@ impl<'checkpoint> BindResultReducer<'checkpoint> {
                 // `(global_id, this-file lib SymbolId)` pairs.
                 let mut deferred_lib_export_merges: Vec<(SymbolId, SymbolId)> = Vec::new();
                 for i in 0..result.symbols.len() {
-                    tick_or_return!();
+                    tick_or_return!(self);
                     let old_id = SymbolId(i as u32);
                     if let Some(sym) = result.symbols.get(old_id) {
                         // For lib-originated symbols, reuse the Phase 1 global IDs rather than
