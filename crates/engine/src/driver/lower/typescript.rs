@@ -8865,32 +8865,57 @@ fn intern_native_tsz_object<'source>(
         rows.push((child, Some(spelling), flags));
     }
 
-    // Wide checker objects are folded without losing a property or creating
-    // unnamed AnonymousRecord children; each folded row is named by the exact
-    // source-backed member that closes its chunk.
-    while rows.len() > MAX_TYPE_CHILDREN {
-        let mut next = Vec::with_capacity(rows.len().div_ceil(MAX_TYPE_CHILDREN));
+    // Each anonymous-record row keeps the original member labels. If a
+    // checker object exceeds the row bound, use associative intersections
+    // between complete record chunks. Naming a folded record after one of its
+    // fields would silently change the shape and lose top-level members.
+    if !rows.is_empty() {
+        let mut record_parts = Vec::with_capacity(rows.len().div_ceil(MAX_TYPE_CHILDREN));
         for chunk in rows.chunks(MAX_TYPE_CHILDREN) {
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::AnonymousRecord);
             record.payload0 = u32::from(AnonRecordForm::Interface);
-            let folded = intern_native_tsz_row(registry, facts, record, owner, chunk)?;
-            let Some((_, Some(name), _)) = chunk.last() else {
-                return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
-            };
-            next.push((folded, Some(*name), 0));
+            record_parts.push(intern_native_tsz_row(
+                registry, facts, record, owner, chunk,
+            )?);
         }
-        rows = next;
-    }
-    if !rows.is_empty()
-        || (shape.string_index.is_none()
-            && shape.number_index.is_none()
-            && shape.symbol_index.is_none())
+        while record_parts.len() > MAX_TYPE_CHILDREN {
+            let mut next = Vec::with_capacity(record_parts.len().div_ceil(MAX_TYPE_CHILDREN));
+            for chunk in record_parts.chunks(MAX_TYPE_CHILDREN) {
+                let children = chunk
+                    .iter()
+                    .map(|part| (*part, None, 0))
+                    .collect::<Vec<_>>();
+                next.push(intern_native_tsz_row(
+                    registry,
+                    facts,
+                    SemanticTypeRecord::leaf(SemanticTypeTag::Intersection),
+                    owner,
+                    &children,
+                )?);
+            }
+            record_parts = next;
+        }
+        let named = match record_parts.as_slice() {
+            [only] => *only,
+            many => {
+                let children = many.iter().map(|part| (*part, None, 0)).collect::<Vec<_>>();
+                intern_native_tsz_row(
+                    registry,
+                    facts,
+                    SemanticTypeRecord::leaf(SemanticTypeTag::Intersection),
+                    owner,
+                    &children,
+                )?
+            }
+        };
+        parts.push(named);
+    } else if shape.string_index.is_none()
+        && shape.number_index.is_none()
+        && shape.symbol_index.is_none()
     {
         let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::AnonymousRecord);
         record.payload0 = u32::from(AnonRecordForm::Interface);
-        parts.push(intern_native_tsz_row(
-            registry, facts, record, owner, &rows,
-        )?);
+        parts.push(intern_native_tsz_row(registry, facts, record, owner, &[])?);
     }
 
     for signature in [shape.string_index, shape.number_index, shape.symbol_index]
