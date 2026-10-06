@@ -79,6 +79,29 @@ impl Work {
     }
 }
 
+struct TypeScriptModuleFixture(PathBuf);
+
+impl TypeScriptModuleFixture {
+    fn copy_script(source: &Path) -> (Self, PathBuf, PathBuf) {
+        let root = unique("typescript-module-fixture");
+        let module_root = root.join("node_modules");
+        let package = module_root.join("typescript");
+        let script = package.join("bin/tsc");
+        fs::create_dir_all(script.parent().expect("fixture script parent"))
+            .expect("create fixture TypeScript package");
+        fs::copy(source, &script).expect("copy TypeScript script into selected package");
+        let module_root = fs::canonicalize(module_root).expect("canonical fixture module root");
+        let script = fs::canonicalize(script).expect("canonical fixture TypeScript script");
+        (Self(root), module_root, script)
+    }
+}
+
+impl Drop for TypeScriptModuleFixture {
+    fn drop(&mut self) {
+        let _removed = fs::remove_dir_all(&self.0);
+    }
+}
+
 impl Drop for Work {
     fn drop(&mut self) {
         let _removed = fs::remove_dir_all(&self.0);
@@ -137,17 +160,22 @@ fn run_typescript_with_interpreter<'diagnostic>(
     native_work: &Path,
 ) -> Result<(), CompileFailure<'diagnostic>> {
     let compiler_script = fs::canonicalize(compiler_script).expect("canonical compiler script");
+    let (_fixture, module_root, compiler_script) =
+        TypeScriptModuleFixture::copy_script(&compiler_script);
     let interpreter = fs::canonicalize(interpreter).expect("canonical selected interpreter");
     let toolchain = ResolvedToolchain::from_interpreted_script(
         NativeTool::TypeScriptCompiler,
         &interpreter,
         &compiler_script,
+        &module_root,
         b"typescript-version-fixture",
         b"node-version-fixture",
         crate::application::executable_content_digest(&compiler_script)
             .expect("snapshot compiler script"),
         crate::application::executable_content_digest(&interpreter)
             .expect("snapshot selected interpreter"),
+        crate::application::typescript_module_closure_digest(&module_root)
+            .expect("snapshot selected TypeScript package"),
     )
     .expect("bind exact interpreted script selection");
     run_typescript_with_toolchain(
@@ -326,15 +354,28 @@ fn admitted_global_typescript_script_compiles_through_node_with_env_cleared() {
     );
     let interpreter = fs::canonicalize(interpreter).expect("canonical Node executable");
     let compiler_script = fs::canonicalize(compiler_script).expect("canonical global tsc script");
+    let module_root = compiler_script
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .expect("global TypeScript script has node_modules/typescript/bin/tsc layout")
+        .to_path_buf();
     let limits = crate::application::ToolchainProbeLimits::new(
         Duration::from_secs(8),
         std::num::NonZeroUsize::new(16 * 1024).expect("nonzero version-output bound"),
     )
     .expect("bounded TypeScript invocation admission");
-    let (script_version, interpreter_version, script_digest, interpreter_digest) =
+    let (
+        script_version,
+        interpreter_version,
+        script_digest,
+        interpreter_digest,
+        module_digest,
+    ) =
         crate::application::admit_typescript_script_invocation(
             &compiler_script,
             &interpreter,
+            &module_root,
             limits,
         )
         .expect("admit exact global tsc script and Node interpreter");
@@ -342,10 +383,12 @@ fn admitted_global_typescript_script_compiles_through_node_with_env_cleared() {
         NativeTool::TypeScriptCompiler,
         &interpreter,
         &compiler_script,
+        &module_root,
         &script_version,
         &interpreter_version,
         script_digest,
         interpreter_digest,
+        module_digest,
     )
     .expect("bind admitted compiler and interpreter");
     assert_ne!(toolchain.identity, toolchain.invocation_identity());

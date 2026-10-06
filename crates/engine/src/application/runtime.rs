@@ -1530,9 +1530,11 @@ enum ToolchainProbeInvocation {
     Native,
     TypeScriptScript {
         node: Box<Path>,
+        module_root: Box<Path>,
         interpreter_identity: Option<ContentId<ToolchainDomain>>,
         script_file_digest: Option<[u8; 32]>,
         interpreter_file_digest: Option<[u8; 32]>,
+        module_closure_digest: Option<[u8; 32]>,
     },
 }
 
@@ -1545,6 +1547,7 @@ enum PendingToolchainProbe {
     TypeScriptScript {
         compiler: PathBuf,
         node: Box<Path>,
+        module_root: Box<Path>,
     },
 }
 
@@ -1566,16 +1569,27 @@ impl PendingToolchainProbe {
                 LocalRuntimeToolchain::resolved(tool, executable, &version)
                     .map_err(|source| ToolchainProbeError::Resolution { tool, source })
             }
-            Self::TypeScriptScript { compiler, node } => {
-                let (script_version, interpreter_version, script_digest, interpreter_digest) =
-                    admit_typescript_script_invocation(&compiler, &node, limits)?;
+            Self::TypeScriptScript {
+                compiler,
+                node,
+                module_root,
+            } => {
+                let (
+                    script_version,
+                    interpreter_version,
+                    script_digest,
+                    interpreter_digest,
+                    module_closure_digest,
+                ) = admit_typescript_script_invocation(&compiler, &node, &module_root, limits)?;
                 LocalRuntimeToolchain::resolved_typescript_script(
                     compiler,
                     node,
+                    module_root,
                     &script_version,
                     &interpreter_version,
                     script_digest,
                     interpreter_digest,
+                    module_closure_digest,
                 )
                 .map_err(|source| ToolchainProbeError::Resolution {
                     tool: NativeTool::TypeScriptCompiler,
@@ -1656,14 +1670,20 @@ impl LocalRuntimeToolchain {
         }
     }
 
-    pub(crate) fn probing_typescript_script(compiler: PathBuf, node: PathBuf) -> Self {
-        debug_assert!(compiler.is_absolute() && node.is_absolute());
+    pub(crate) fn probing_typescript_script(
+        compiler: PathBuf,
+        node: PathBuf,
+        module_root: PathBuf,
+    ) -> Self {
+        debug_assert!(compiler.is_absolute() && node.is_absolute() && module_root.is_absolute());
         let mut row = Self::probing(NativeTool::TypeScriptCompiler, compiler);
         row.probe_invocation = ToolchainProbeInvocation::TypeScriptScript {
             node: node.into_boxed_path(),
+            module_root: module_root.into_boxed_path(),
             interpreter_identity: None,
             script_file_digest: None,
             interpreter_file_digest: None,
+            module_closure_digest: None,
         };
         row
     }
@@ -1671,20 +1691,24 @@ impl LocalRuntimeToolchain {
     fn resolved_typescript_script(
         compiler: PathBuf,
         node: Box<Path>,
+        module_root: Box<Path>,
         script_version: &[u8],
         interpreter_version: &[u8],
         script_file_digest: [u8; 32],
         interpreter_file_digest: [u8; 32],
+        module_closure_digest: [u8; 32],
     ) -> Result<Self, ToolchainResolutionError> {
         let (compiler_identity, interpreter_identity) = {
             let resolved = ResolvedToolchain::from_interpreted_script(
                 NativeTool::TypeScriptCompiler,
                 &node,
                 &compiler,
+                &module_root,
                 script_version,
                 interpreter_version,
                 script_file_digest,
                 interpreter_file_digest,
+                module_closure_digest,
             )?;
             (resolved.identity, resolved.interpreter_identity())
         };
@@ -1698,9 +1722,11 @@ impl LocalRuntimeToolchain {
             probe_failure: None,
             probe_invocation: ToolchainProbeInvocation::TypeScriptScript {
                 node,
+                module_root,
                 interpreter_identity,
                 script_file_digest: Some(script_file_digest),
                 interpreter_file_digest: Some(interpreter_file_digest),
+                module_closure_digest: Some(module_closure_digest),
             },
         })
     }
@@ -1767,10 +1793,15 @@ impl LocalRuntimeToolchain {
                     tool: self.facts.tool,
                     executable,
                 },
-                ToolchainProbeInvocation::TypeScriptScript { node, .. } => {
+                ToolchainProbeInvocation::TypeScriptScript {
+                    node,
+                    module_root,
+                    ..
+                } => {
                     PendingToolchainProbe::TypeScriptScript {
                         compiler: executable,
                         node: node.clone(),
+                        module_root: module_root.clone(),
                     }
                 }
             }
@@ -1790,17 +1821,21 @@ impl LocalRuntimeToolchain {
                     }
                     ToolchainProbeInvocation::TypeScriptScript {
                         node,
+                        module_root,
                         interpreter_identity: Some(interpreter_identity),
                         script_file_digest: Some(script_file_digest),
                         interpreter_file_digest: Some(interpreter_file_digest),
+                        module_closure_digest: Some(module_closure_digest),
                     } => ResolvedToolchain::from_interpreted_identities(
                         self.facts.tool,
                         node,
                         executable,
+                        module_root,
                         identity,
                         *interpreter_identity,
                         *script_file_digest,
                         *interpreter_file_digest,
+                        *module_closure_digest,
                     )?,
                     ToolchainProbeInvocation::TypeScriptScript { .. } => unreachable!(
                         "ready interpreted toolchain retains all admitted invocation facts"
@@ -1854,20 +1889,39 @@ mod global_typescript_probe_tests {
         std::fs::canonicalize(node).expect("canonical fake Node path")
     }
 
+    fn fake_typescript_module(directory: &Path, contents: &str) -> (PathBuf, PathBuf) {
+        let module_root = directory.join("node_modules");
+        let package_root = module_root.join("typescript");
+        let script = package_root.join("bin/tsc");
+        std::fs::create_dir_all(script.parent().expect("compiler script directory"))
+            .expect("create compiler script directory");
+        std::fs::create_dir_all(package_root.join("lib")).expect("create TypeScript lib dir");
+        std::fs::write(&script, contents).expect("write fake TypeScript entry");
+        std::fs::write(package_root.join("lib/tsc.js"), "module.exports=require('./_tsc.js');\n")
+            .expect("write fake compiler launcher");
+        std::fs::write(package_root.join("lib/_tsc.js"), "module.exports={version:'5.9.3'};\n")
+            .expect("write fake compiler body");
+        (
+            std::fs::canonicalize(module_root).expect("canonical TypeScript module root"),
+            std::fs::canonicalize(script).expect("canonical TypeScript script"),
+        )
+    }
+
     #[test]
     fn global_typescript_probe_keeps_its_admitted_interpreter_through_async_handoff() {
         let directory = crate::test_support::private_directory("global-ts-async-probe");
-        let script_path = directory.join("compiler-script");
         let node = fake_node(&directory);
         // Deliberately not executable: the admitted interpreter must own the
         // launch, as it does for npm's package entry on every host platform.
-        std::fs::write(
-            &script_path,
+        let (module_root, script) = fake_typescript_module(
+            &directory,
             "if [ \"$1\" = '--version' ]; then printf 'Version 5.9.3\\n'; exit 0; fi\nexit 0\n",
-        )
-        .expect("compiler version script");
-        let script = std::fs::canonicalize(script_path).expect("canonical compiler script");
-        let row = LocalRuntimeToolchain::probing_typescript_script(script.clone(), node.clone());
+        );
+        let row = LocalRuntimeToolchain::probing_typescript_script(
+            script.clone(),
+            node.clone(),
+            module_root.clone(),
+        );
         let request = row.probe_request().expect("pending script invocation");
         let (send, receive) = channel();
         start_toolchain_probes(vec![request], send);
@@ -1915,6 +1969,18 @@ mod global_typescript_probe_tests {
             })
         ));
         std::fs::write(&script, original_script).expect("restore compiler script bytes");
+        let compiler_body = module_root.join("typescript/lib/_tsc.js");
+        std::fs::write(&compiler_body, "module.exports={version:'changed'};\n")
+            .expect("mutate selected compiler body");
+        assert!(matches!(
+            invocation.validate_invocation(),
+            Err(crate::driver::NativeInvocationError::Changed {
+                role: crate::driver::NativeInvocationFileRole::CompilerModule,
+                ..
+            })
+        ));
+        std::fs::write(&compiler_body, "module.exports={version:'5.9.3'};\n")
+            .expect("restore selected compiler body");
         let mut changed_node = std::fs::read(&node).expect("read selected Node");
         changed_node.extend_from_slice(b"# changed after admission\n");
         std::fs::write(&node, changed_node).expect("mutate selected Node");
@@ -1931,14 +1997,12 @@ mod global_typescript_probe_tests {
     #[test]
     fn global_typescript_probe_cannot_fall_back_after_its_selected_interpreter_fails() {
         let directory = crate::test_support::private_directory("global-ts-failed-probe");
-        let script_path = directory.join("compiler-script");
-        std::fs::write(&script_path, "printf 'Version 5.9.3\\n'\n")
-            .expect("compiler version script");
-        let script = std::fs::canonicalize(script_path).expect("canonical compiler script");
+        let (module_root, script) =
+            fake_typescript_module(&directory, "printf 'Version 5.9.3\\n'\n");
         let node_path = directory.join("bad-node");
         executable_script(&node_path, "#!/bin/sh\nexit 42\n");
         let node = std::fs::canonicalize(node_path).expect("canonical bad Node path");
-        let row = LocalRuntimeToolchain::probing_typescript_script(script, node);
+        let row = LocalRuntimeToolchain::probing_typescript_script(script, node, module_root);
         let limits = ToolchainProbeLimits::new(
             Duration::from_secs(2),
             NonZeroUsize::new(1024).expect("stream bound"),

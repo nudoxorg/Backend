@@ -314,22 +314,32 @@ impl NativeExecutables {
     pub(super) fn toolchain_rows(
         &self,
         typescript_node: Option<&Path>,
+        typescript_module_root: Option<&Path>,
     ) -> Box<[LocalRuntimeToolchain]> {
         self.toolchain_executables()
             .map(|(tool, executable)| match executable {
-                Some(executable) => match (tool, typescript_node) {
-                    (NativeTool::TypeScriptCompiler, Some(node)) => {
+                Some(executable) => match (tool, typescript_node, typescript_module_root) {
+                    (NativeTool::TypeScriptCompiler, Some(node), Some(module_root)) => {
                         LocalRuntimeToolchain::probing_typescript_script(
                             executable.to_path_buf(),
                             node.to_path_buf(),
+                            module_root.to_path_buf(),
                         )
                     }
-                    (NativeTool::TypeScriptCompiler, None) => LocalRuntimeToolchain::probe_failed(
+                    (NativeTool::TypeScriptCompiler, None, _) => LocalRuntimeToolchain::probe_failed(
                         tool,
                         crate::application::ToolchainProbeError::TypeScriptInterpreterUnavailable {
                             compiler: executable.to_path_buf(),
                         },
                     ),
+                    (NativeTool::TypeScriptCompiler, Some(_), None) => {
+                        LocalRuntimeToolchain::probe_failed(
+                            tool,
+                            crate::application::ToolchainProbeError::TypeScriptModuleRootUnavailable {
+                                compiler: executable.to_path_buf(),
+                            },
+                        )
+                    }
                     _ => LocalRuntimeToolchain::probing(tool, executable.to_path_buf()),
                 },
                 None => LocalRuntimeToolchain::unavailable(tool),
@@ -341,9 +351,10 @@ impl NativeExecutables {
     pub(super) fn admitted_toolchain_rows(
         &self,
         typescript_node: Option<&Path>,
+        typescript_module_root: Option<&Path>,
         limits: ToolchainProbeLimits,
     ) -> Box<[LocalRuntimeToolchain]> {
-        self.toolchain_rows(typescript_node)
+        self.toolchain_rows(typescript_node, typescript_module_root)
             .into_vec()
             .into_iter()
             .map(|row| {
@@ -393,7 +404,7 @@ mod invocation_selection_tests {
     #[test]
     fn global_typescript_script_without_node_is_a_typed_refusal() {
         let compiler = PathBuf::from("/selected/typescript/bin/tsc");
-        let rows = only_typescript(Some(compiler.clone())).toolchain_rows(None);
+        let rows = only_typescript(Some(compiler.clone())).toolchain_rows(None, None);
         let typescript = rows
             .iter()
             .find(|row| row.tool == NativeTool::TypeScriptCompiler)
@@ -412,7 +423,9 @@ mod invocation_selection_tests {
     fn selected_node_keeps_global_typescript_in_pending_script_form() {
         let compiler = PathBuf::from("/selected/typescript/bin/tsc");
         let node = PathBuf::from("/selected/node/bin/node");
-        let rows = only_typescript(Some(compiler.clone())).toolchain_rows(Some(&node));
+        let module_root = PathBuf::from("/selected/node_modules");
+        let rows = only_typescript(Some(compiler.clone()))
+            .toolchain_rows(Some(&node), Some(&module_root));
         let typescript = rows
             .iter()
             .find(|row| row.tool == NativeTool::TypeScriptCompiler)

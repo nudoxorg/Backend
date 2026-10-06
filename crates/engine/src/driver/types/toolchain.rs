@@ -30,6 +30,21 @@ struct InterpretedScriptWitness {
     interpreter_identity: ContentId<ToolchainDomain>,
     interpreter_file_digest: [u8; 32],
     script_file_digest: [u8; 32],
+    module_closure_digest: [u8; 32],
+}
+
+/// Resolved launch state whose witness cannot be detached from its script paths.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResolvedInvocation<'path> {
+    NativeExecutable {
+        executable: &'path Path,
+    },
+    InterpretedScript {
+        interpreter: &'path Path,
+        script: &'path Path,
+        module_root: &'path Path,
+        witness: InterpretedScriptWitness,
+    },
 }
 
 /// Immutable, caller-resolved native executable facts.
@@ -45,8 +60,7 @@ pub struct ResolvedToolchainView {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ResolvedToolchain<'path> {
     view: ResolvedToolchainView,
-    invocation: NativeInvocation<'path>,
-    interpreted_script_witness: Option<InterpretedScriptWitness>,
+    invocation: ResolvedInvocation<'path>,
 }
 
 impl<'path> Deref for ResolvedToolchain<'path> {
@@ -74,6 +88,9 @@ pub enum ToolchainResolutionError {
     /// An interpreted launch is missing one of its exact absolute paths.
     #[error("resolved interpreter or script path is not absolute")]
     RelativeInvocationPath,
+    /// The script is not the TypeScript package entry under the selected module root.
+    #[error("selected TypeScript script does not match its admitted module root")]
+    CompilerModuleMismatch,
 }
 
 /// Exact selected executable that could not be verified before native launch.
@@ -83,6 +100,8 @@ pub enum NativeInvocationFileRole {
     Script,
     /// The interpreter executable itself.
     Interpreter,
+    /// Selected TypeScript package source and declaration closure.
+    CompilerModule,
 }
 
 /// Failure while confirming that an interpreted native launch still matches admission.
@@ -137,8 +156,7 @@ impl<'path> ResolvedToolchain<'path> {
         }
         Ok(Self {
             view: ResolvedToolchainView { tool, identity },
-            invocation: NativeInvocation::NativeExecutable { executable },
-            interpreted_script_witness: None,
+            invocation: ResolvedInvocation::NativeExecutable { executable },
         })
     }
 
@@ -147,19 +165,23 @@ impl<'path> ResolvedToolchain<'path> {
         tool: NativeTool,
         interpreter: &'path Path,
         script: &'path Path,
+        module_root: &'path Path,
         script_version_bytes: &[u8],
         interpreter_version_bytes: &[u8],
         script_file_digest: [u8; 32],
         interpreter_file_digest: [u8; 32],
+        module_closure_digest: [u8; 32],
     ) -> Result<Self, ToolchainResolutionError> {
         Self::from_interpreted_identities(
             tool,
             interpreter,
             script,
+            module_root,
             ContentId::<ToolchainDomain>::from_canonical_bytes(script_version_bytes),
             ContentId::<ToolchainDomain>::from_canonical_bytes(interpreter_version_bytes),
             script_file_digest,
             interpreter_file_digest,
+            module_closure_digest,
         )
     }
 
@@ -168,34 +190,43 @@ impl<'path> ResolvedToolchain<'path> {
         tool: NativeTool,
         interpreter: &'path Path,
         script: &'path Path,
+        module_root: &'path Path,
         script_identity: ContentId<ToolchainDomain>,
         interpreter_identity: ContentId<ToolchainDomain>,
         script_file_digest: [u8; 32],
         interpreter_file_digest: [u8; 32],
+        module_closure_digest: [u8; 32],
     ) -> Result<Self, ToolchainResolutionError> {
-        if !interpreter.is_absolute() || !script.is_absolute() {
+        if !interpreter.is_absolute() || !script.is_absolute() || !module_root.is_absolute() {
             return Err(ToolchainResolutionError::RelativeInvocationPath);
+        }
+        if tool != NativeTool::TypeScriptCompiler
+            || script != module_root.join("typescript/bin/tsc")
+        {
+            return Err(ToolchainResolutionError::CompilerModuleMismatch);
         }
         Ok(Self {
             view: ResolvedToolchainView {
                 tool,
                 identity: script_identity,
             },
-            invocation: NativeInvocation::InterpretedScript {
+            invocation: ResolvedInvocation::InterpretedScript {
                 interpreter,
                 script,
+                module_root,
+                witness: InterpretedScriptWitness {
+                    interpreter_identity,
+                    interpreter_file_digest,
+                    script_file_digest,
+                    module_closure_digest,
+                },
             },
-            interpreted_script_witness: Some(InterpretedScriptWitness {
-                interpreter_identity,
-                interpreter_file_digest,
-                script_file_digest,
-            }),
         })
     }
 
     /// Identity bound to the exact executable(s) that will perform this compile.
     pub(crate) fn invocation_identity(self) -> ContentId<ToolchainDomain> {
-        let Some(witness) = self.interpreted_script_witness else {
+        let ResolvedInvocation::InterpretedScript { witness, .. } = self.invocation else {
             return self.identity;
         };
         let mut identity = blake3::Hasher::new();
@@ -204,21 +235,24 @@ impl<'path> ResolvedToolchain<'path> {
         identity.update(witness.interpreter_identity.as_ref());
         identity.update(&witness.script_file_digest);
         identity.update(&witness.interpreter_file_digest);
+        identity.update(&witness.module_closure_digest);
         ContentId::<ToolchainDomain>::from_canonical_bytes(identity.finalize().as_bytes())
     }
 
     /// Host-local identity of the exact paths selected for an interpreted invocation.
     pub(crate) fn invocation_location_identity(self) -> Option<[u8; 32]> {
-        let NativeInvocation::InterpretedScript {
+        let ResolvedInvocation::InterpretedScript {
             interpreter,
             script,
+            module_root,
+            ..
         } = self.invocation
         else {
             return None;
         };
         let mut identity = blake3::Hasher::new();
         identity.update(b"backend.native.interpreted-script-location.v1\0");
-        for path in [script, interpreter] {
+        for path in [script, interpreter, module_root] {
             let bytes = path.as_os_str().as_encoded_bytes();
             identity.update(&(bytes.len() as u64).to_be_bytes());
             identity.update(bytes);
@@ -227,28 +261,41 @@ impl<'path> ResolvedToolchain<'path> {
     }
 
     pub(crate) const fn invocation(self) -> NativeInvocation<'path> {
-        self.invocation
+        match self.invocation {
+            ResolvedInvocation::NativeExecutable { executable } => {
+                NativeInvocation::NativeExecutable { executable }
+            }
+            ResolvedInvocation::InterpretedScript {
+                interpreter,
+                script,
+                ..
+            } => NativeInvocation::InterpretedScript {
+                interpreter,
+                script,
+            },
+        }
     }
 
     pub(crate) const fn interpreter_identity(self) -> Option<ContentId<ToolchainDomain>> {
-        match self.interpreted_script_witness {
-            Some(witness) => Some(witness.interpreter_identity),
-            None => None,
+        match self.invocation {
+            ResolvedInvocation::NativeExecutable { .. } => None,
+            ResolvedInvocation::InterpretedScript { witness, .. } => {
+                Some(witness.interpreter_identity)
+            }
         }
     }
 
     /// Rechecks every file in an interpreted launch against its admission digest.
     pub(crate) fn validate_invocation(self) -> Result<(), NativeInvocationError> {
-        let NativeInvocation::InterpretedScript {
+        let ResolvedInvocation::InterpretedScript {
             interpreter,
             script,
+            module_root,
+            witness,
         } = self.invocation
         else {
             return Ok(());
         };
-        let witness = self
-            .interpreted_script_witness
-            .expect("interpreted launch carries its admitted file digests");
         for (role, path, expected) in [
             (
                 NativeInvocationFileRole::Script,
@@ -276,13 +323,26 @@ impl<'path> ResolvedToolchain<'path> {
                 });
             }
         }
+        let observed = crate::application::typescript_module_closure_digest(module_root).map_err(
+            |source| NativeInvocationError::Inspect {
+                role: NativeInvocationFileRole::CompilerModule,
+                path: module_root.join("typescript").into_boxed_path(),
+                source,
+            },
+        )?;
+        if observed != witness.module_closure_digest {
+            return Err(NativeInvocationError::Changed {
+                role: NativeInvocationFileRole::CompilerModule,
+                path: module_root.join("typescript").into_boxed_path(),
+            });
+        }
         Ok(())
     }
 
     pub(crate) fn executable(self) -> &'path Path {
         match self.invocation {
-            NativeInvocation::NativeExecutable { executable } => executable,
-            NativeInvocation::InterpretedScript { script, .. } => script,
+            ResolvedInvocation::NativeExecutable { executable } => executable,
+            ResolvedInvocation::InterpretedScript { script, .. } => script,
         }
     }
 }

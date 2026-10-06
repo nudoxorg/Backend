@@ -847,6 +847,29 @@ impl TypeScriptProjectWitness {
             .map(|snapshot| snapshot.digest)
     }
 
+    fn module_closure_digest(&self) -> Result<[u8; 32], TypeScriptProjectHostError> {
+        let mut files = Vec::with_capacity(self.typescript_files.len());
+        for input in self.typescript_files.iter() {
+            let relative = input
+                .path
+                .strip_prefix(self.package_root.as_ref())
+                .map_err(|_| TypeScriptProjectHostError::WitnessChanged {
+                    path: input.path.clone(),
+                })?;
+            files.push((
+                relative.to_path_buf(),
+                u64::try_from(input.bytes.len()).unwrap_or(u64::MAX),
+                *blake3::hash(&input.bytes).as_bytes(),
+            ));
+        }
+        crate::application::typescript_module_files_digest(files.iter().map(
+            |(path, length, digest)| (path.as_path(), *length, *digest),
+        ))
+        .map_err(|_| TypeScriptProjectHostError::WitnessChanged {
+            path: self.package_root.clone(),
+        })
+    }
+
     fn capture(
         project_root: &Path,
         home_root: Option<&Path>,
@@ -2663,14 +2686,17 @@ impl AdmittedTypeScriptProject {
                     path: self.node.clone(),
                 }
             })?;
+            let module_closure_digest = self.witness.module_closure_digest()?;
             ResolvedToolchain::from_interpreted_script(
                 NativeTool::TypeScriptCompiler,
                 &self.node,
                 &self.compiler,
+                &self.module_root,
                 &self.compiler_version,
                 &self.node_version,
                 script_digest,
                 interpreter_digest,
+                module_closure_digest,
             )
             .map_err(|source| TypeScriptProjectHostError::ToolchainResolution { source })
         } else {
