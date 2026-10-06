@@ -1896,7 +1896,7 @@ mod measured_layout_tests {
 
     #[gpui::test]
     fn first_deep_reveal_and_sticky_chain_share_nonmultiple_frame_geometry(cx: &mut gpui::TestAppContext) {
-        use gpui::{AppContext as _, Context, IntoElement as _, Render, Styled as _, Window, div, list, size};
+        use gpui::{VisualContext as _, Context, IntoElement as _, Render, Styled as _, Window, div, list, size};
         use std::cell::RefCell;
 
         let cx = cx.add_empty_window();
@@ -1980,7 +1980,7 @@ mod measured_layout_tests {
 
     #[gpui::test]
     fn freshly_shrunk_viewport_clips_an_old_five_row_sticky_chain(cx: &mut gpui::TestAppContext) {
-        use gpui::{AppContext as _, Context, IntoElement as _, Render, Styled as _, Window, div, list, size};
+        use gpui::{VisualContext as _, Context, IntoElement as _, Render, Styled as _, Window, div, list, size};
         use std::cell::RefCell;
         use std::rc::Rc;
 
