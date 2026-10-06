@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use backend_frontend_python::legacy::checker::{
     CheckerError, InferenceSite, InferredType, NativePythonProjectAuthority, PythonProjectControl,
-    PythonProjectSource, SymbolOutcome,
+    PythonProjectCoverageGapKind, PythonProjectSource, SymbolOutcome,
 };
 use backend_semantic::vocabulary::PythonVersion;
 
@@ -318,4 +318,133 @@ fn native_project_cannot_bind_uncaptured_files_or_external_configured_roots() {
         "external resolver roots are a typed refusal"
     );
     std::fs::remove_dir_all(root).expect("remove fixture root");
+}
+
+#[test]
+fn namespace_and_wildcard_frontiers_refuse_unselected_internal_children() {
+    let root = std::env::temp_dir().join(format!(
+        "nudox-python-namespace-test-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(root.join("namespace")).expect("namespace directory");
+    std::fs::write(root.join("namespace/omitted.pyi"), "value: int\n")
+        .expect("omitted namespace child");
+    let checker = NativePythonProjectAuthority::admit().expect("compiled native producer");
+    let cancelled = AtomicBool::new(false);
+    for source in [
+        "from namespace import *\n",
+        "__import__('namespace.omitted')\n",
+    ] {
+        let sources = [
+            PythonProjectSource {
+                relative_path: "core.py",
+                source,
+            },
+            PythonProjectSource {
+                relative_path: "namespace/selected.py",
+                source: "value = 1\n",
+            },
+        ];
+        assert!(
+            matches!(checker.analyze_project(&root, "pkg", &sources, PythonVersion::Python314,
+            PythonProjectControl { cancelled: &cancelled, deadline: Instant::now() + Duration::from_secs(30) }),
+            Err(CheckerError::IncompleteSourceFrontier { candidate, .. }) if candidate == root.join("namespace/omitted.pyi"))
+        );
+    }
+    std::fs::remove_file(root.join("namespace/omitted.pyi")).expect("restore frontier");
+    let sources = [
+        PythonProjectSource {
+            relative_path: "core.py",
+            source: "from importlib import import_module as load\nfrom pkgutil import iter_modules as enumerate_modules\n__import__('external_absent')\nload('external_absent')\nenumerate_modules()\nfrom namespace import *\n",
+        },
+        PythonProjectSource {
+            relative_path: "namespace/selected.py",
+            source: "value = 1\n",
+        },
+    ];
+    let report = checker
+        .analyze_project(
+            &root,
+            "pkg",
+            &sources,
+            PythonVersion::Python314,
+            PythonProjectControl {
+                cancelled: &cancelled,
+                deadline: Instant::now() + Duration::from_secs(30),
+            },
+        )
+        .expect("explicit partial dynamic coverage");
+    assert_eq!(
+        report
+            .coverage_gaps()
+            .iter()
+            .filter(|gap| gap.kind == PythonProjectCoverageGapKind::DynamicImport)
+            .count(),
+        2
+    );
+    assert!(
+        report
+            .coverage_gaps()
+            .iter()
+            .any(|gap| gap.kind == PythonProjectCoverageGapKind::ModuleEnumeration)
+    );
+    assert!(
+        report
+            .coverage_gaps()
+            .iter()
+            .any(|gap| gap.kind == PythonProjectCoverageGapKind::WildcardImport)
+    );
+    std::fs::write(root.join("namespace/new_module.py"), "value = 42\n")
+        .expect("new namespace member");
+    assert!(
+        report.witness().validate_current().is_err(),
+        "namespace membership absence is revalidated"
+    );
+    std::fs::remove_dir_all(root).expect("remove namespace fixture");
+}
+
+#[test]
+fn native_unsupported_projection_keeps_its_constructor_and_original_range() {
+    let root = std::env::temp_dir().join(format!(
+        "nudox-python-unavailable-test-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).expect("fixture root");
+    let checker = NativePythonProjectAuthority::admit().expect("compiled native producer");
+    let cancelled = AtomicBool::new(false);
+    let sources = [PythonProjectSource {
+        relative_path: "core.py",
+        source: "# 🐍\nunknown = ...\n",
+    }];
+    let report = checker
+        .analyze_project(
+            &root,
+            "pkg",
+            &sources,
+            PythonVersion::Python314,
+            PythonProjectControl {
+                cancelled: &cancelled,
+                deadline: Instant::now() + Duration::from_secs(30),
+            },
+        )
+        .expect("typed projection gap");
+    let unavailable = report
+        .module("core.py")
+        .expect("module")
+        .inferences
+        .iter()
+        .find(|inference| matches!(inference.observed, InferredType::Unavailable(_)))
+        .expect("native unavailable constructor");
+    let diagnostic = report
+        .diagnostics()
+        .iter()
+        .find(|diagnostic| diagnostic.kind.as_ref() == "unavailable-type-projection")
+        .expect("projection diagnostic");
+    assert_eq!(diagnostic.span, unavailable.site);
+    assert!(diagnostic.message.contains("Ellipsis"));
+    assert_eq!(
+        &sources[0].source[diagnostic.span.start as usize..diagnostic.span.end as usize],
+        "unknown"
+    );
+    std::fs::remove_dir_all(root).expect("remove fixture");
 }

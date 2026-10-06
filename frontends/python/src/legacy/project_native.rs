@@ -22,16 +22,18 @@ use pyrefly_types::types::{BoundMethodType, Forallable, Type};
 use pyrefly_util::arc_id::ArcId;
 use pyrefly_util::thread_pool::ThreadCount;
 use ruff_native_text_size::{Ranged, TextSize};
-use ruff_python_ast::visitor::{Visitor, walk_stmt};
+use ruff_python_ast::visitor::{Visitor, walk_expr, walk_stmt};
 use ruff_text_size::Ranged as SyntaxRanged;
 
 use super::project::{
-    CandidateWitness, DefinitionTarget, PythonProjectControl, PythonProjectDiagnostic,
-    PythonProjectSource, PythonTypeProjectionFault, checkpoint, project_error,
+    CandidateWitness, DefinitionTarget, DirectoryWitness, PythonProjectControl,
+    PythonProjectCoverageGap, PythonProjectCoverageGapKind, PythonProjectDiagnostic,
+    PythonProjectSource, PythonTypeProjectionFault, SourceDirectoryWitness, checkpoint,
+    project_error,
 };
 use super::{
     CheckerError, CheckerReport, ImportResolution, Inference, InferenceSite, InferredType,
-    SymbolOutcome, SymbolResolution,
+    NativePythonTypeConstructor, SymbolOutcome, SymbolResolution,
 };
 use crate::legacy::{AnnotationPosition, DeclarationKind, ModuleFacts, Span};
 
@@ -40,6 +42,9 @@ pub(super) struct NativeProjectResult {
     pub(super) configuration_fingerprint: [u8; 32],
     pub(super) candidates: Vec<CandidateWitness>,
     pub(super) diagnostics: Vec<PythonProjectDiagnostic>,
+    pub(super) coverage_gaps: Vec<PythonProjectCoverageGap>,
+    pub(super) frontier: Vec<SourceDirectoryWitness>,
+    pub(super) mirror_tree: Vec<DirectoryWitness>,
 }
 
 pub(super) fn analyze(
@@ -75,6 +80,24 @@ pub(super) fn analyze(
         .collect::<Vec<_>>();
     let mut imports = BTreeMap::new();
     let mut candidates = BTreeMap::new();
+    let mut roots = BTreeSet::new();
+    for handle in &handles {
+        let config = finder.python_file(handle.module_kind(), handle.path());
+        for root in config.search_path().chain(config.site_package_path()) {
+            let relative = root
+                .strip_prefix(mirror)
+                .map_err(|_| CheckerError::UncapturedDependency { path: root.clone() })?;
+            roots.insert(original_root.join(relative));
+        }
+    }
+    let frontier = SourceDirectoryWitness::capture_frontier(
+        roots,
+        original_root,
+        mirror,
+        sources[0].relative_path,
+        control,
+    )?;
+    let mut coverage_gaps = Vec::new();
     for (source, handle) in sources.iter().zip(&handles) {
         checkpoint(control)?;
         let parsed =
@@ -91,10 +114,25 @@ pub(super) fn analyze(
                 || source.relative_path == "__init__.py"
                 || source.relative_path == "__init__.pyi",
             imports: Vec::new(),
+            gaps: Vec::new(),
+            load_aliases: BTreeMap::new(),
+            collect_imports: true,
         };
         if let ruff_python_ast::Mod::Module(module) = parsed.syntax() {
             collector.visit_body(&module.body);
+            collector.collect_imports = false;
+            collector.visit_body(&module.body);
         }
+        coverage_gaps.extend(
+            collector
+                .gaps
+                .iter()
+                .map(|(span, kind)| PythonProjectCoverageGap {
+                    relative_path: source.relative_path.into(),
+                    span: *span,
+                    kind: *kind,
+                }),
+        );
         let config = finder.python_file(handle.module_kind(), handle.path());
         for import in &collector.imports {
             for root in config.search_path().chain(config.site_package_path()) {
@@ -142,6 +180,10 @@ pub(super) fn analyze(
         }
         imports.insert(source.relative_path, collector.imports);
     }
+    for directory in &frontier {
+        directory.validate_current(control)?;
+    }
+    let mirror_tree = DirectoryWitness::capture_tree(mirror, control)?;
     let state = State::new(finder, ThreadCount::NumThreads(std::num::NonZeroUsize::MIN));
     let mut transaction = state.new_committable_transaction(Require::Everything, None);
     let cancellation = transaction.as_mut().get_cancellation_handle();
@@ -189,6 +231,7 @@ pub(super) fn analyze(
         .map(|source| (source.relative_path, source.source))
         .collect::<BTreeMap<_, _>>();
     let mut modules = BTreeMap::new();
+    let mut diagnostics = Vec::new();
     let mut projection = TypeProjection::new(control);
     for (source, handle) in sources.iter().zip(&handles) {
         checkpoint(control)?;
@@ -290,6 +333,37 @@ pub(super) fn analyze(
                         declaration.name_span,
                     )?,
                 });
+            }
+        }
+        for inference in &inferences {
+            let mut pending = vec![&inference.observed];
+            while let Some(ty) = pending.pop() {
+                checkpoint(control)?;
+                match ty {
+                    InferredType::Unavailable(constructor) => {
+                        diagnostics.push(PythonProjectDiagnostic {
+                            relative_path: source.relative_path.into(),
+                            span: inference.site,
+                            kind: "unavailable-type-projection".into(),
+                            severity: "info".into(),
+                            message: format!(
+                                "native {constructor:?} type has no admitted structural projection"
+                            )
+                            .into_boxed_str(),
+                        })
+                    }
+                    InferredType::Tuple(children) | InferredType::Union(children) => {
+                        pending.extend(children.iter())
+                    }
+                    InferredType::List(Some(child)) | InferredType::Set(Some(child)) => {
+                        pending.push(child)
+                    }
+                    InferredType::Dict(Some((key, value))) => {
+                        pending.push(key);
+                        pending.push(value);
+                    }
+                    _ => {}
+                }
             }
         }
         let mut symbols = Vec::new();
@@ -448,28 +522,40 @@ pub(super) fn analyze(
                 outcome,
             });
         }
+        let import_resolutions = imports[source.relative_path]
+            .iter()
+            .map(|import| {
+                let resolved = read
+                    .get_type_at_preserving_declaration(
+                        handle,
+                        TextSize::new(import.binding_span.start),
+                    )
+                    .is_some_and(|ty| !matches!(ty, Type::Any(_)));
+                if !resolved {
+                    coverage_gaps.push(PythonProjectCoverageGap {
+                        relative_path: source.relative_path.into(),
+                        span: import.span,
+                        kind: PythonProjectCoverageGapKind::UnavailableImport,
+                    });
+                }
+                ImportResolution {
+                    binding: import.binding.clone(),
+                    module: import.module.as_str().to_owned(),
+                    module_span: import.span,
+                    resolved,
+                }
+            })
+            .collect();
         modules.insert(
             source.relative_path.into(),
             CheckerReport {
                 inferences: inferences.into_boxed_slice(),
-                imports: imports[source.relative_path]
-                    .iter()
-                    .map(|import| ImportResolution {
-                        binding: import.binding.clone(),
-                        module: import.module.as_str().to_owned(),
-                        module_span: import.span,
-                        resolved: read
-                            .import_handle(handle, import.module, None)
-                            .finding()
-                            .is_some(),
-                    })
-                    .collect(),
+                imports: import_resolutions,
                 symbols: symbols.into_boxed_slice(),
             },
         );
     }
     checkpoint(control)?;
-    let mut diagnostics = Vec::new();
     for error in read.get_errors(&handles).collect_display_errors() {
         checkpoint(control)?;
         let Ok(path) = error.path().as_path().strip_prefix(mirror) else {
@@ -494,6 +580,9 @@ pub(super) fn analyze(
         configuration_fingerprint,
         candidates: candidates.into_values().collect(),
         diagnostics,
+        coverage_gaps,
+        frontier,
+        mirror_tree,
     })
 }
 
@@ -501,6 +590,7 @@ struct ImportProbe {
     binding: String,
     module: ModuleName,
     span: Span,
+    binding_span: Span,
     candidates: Vec<ModuleName>,
 }
 
@@ -508,10 +598,47 @@ struct ImportCollector {
     module: ModuleName,
     is_init: bool,
     imports: Vec<ImportProbe>,
+    gaps: Vec<(Span, PythonProjectCoverageGapKind)>,
+    load_aliases: BTreeMap<String, PythonProjectCoverageGapKind>,
+    collect_imports: bool,
 }
 
 impl<'syntax> Visitor<'syntax> for ImportCollector {
+    fn visit_expr(&mut self, expression: &'syntax ruff_python_ast::Expr) {
+        if !self.collect_imports
+            && let ruff_python_ast::Expr::Call(call) = expression
+        {
+            let name = match call.func.as_ref() {
+                ruff_python_ast::Expr::Name(name) => Some(name.id.as_str()),
+                ruff_python_ast::Expr::Attribute(attribute) => Some(attribute.attr.as_str()),
+                _ => None,
+            };
+            let kind = match name {
+                Some("__import__" | "import_module") => {
+                    Some(PythonProjectCoverageGapKind::DynamicImport)
+                }
+                Some("iter_modules" | "walk_packages") => {
+                    Some(PythonProjectCoverageGapKind::ModuleEnumeration)
+                }
+                name => name.and_then(|name| self.load_aliases.get(name).copied()),
+            };
+            if let Some(kind) = kind {
+                self.gaps.push((
+                    Span {
+                        start: expression.range().start().to_u32(),
+                        end: expression.range().end().to_u32(),
+                    },
+                    kind,
+                ));
+            }
+        }
+        walk_expr(self, expression);
+    }
     fn visit_stmt(&mut self, statement: &'syntax ruff_python_ast::Stmt) {
+        if !self.collect_imports {
+            walk_stmt(self, statement);
+            return;
+        }
         match statement {
             ruff_python_ast::Stmt::Import(import) => {
                 for alias in &import.names {
@@ -534,6 +661,22 @@ impl<'syntax> Visitor<'syntax> for ImportCollector {
                             start: alias.name.range().start().to_u32(),
                             end: alias.name.range().end().to_u32(),
                         },
+                        binding_span: Span {
+                            start: alias
+                                .asname
+                                .as_ref()
+                                .unwrap_or(&alias.name)
+                                .range()
+                                .start()
+                                .to_u32(),
+                            end: alias
+                                .asname
+                                .as_ref()
+                                .unwrap_or(&alias.name)
+                                .range()
+                                .end()
+                                .to_u32(),
+                        },
                         candidates: vec![module],
                     });
                 }
@@ -555,6 +698,35 @@ impl<'syntax> Visitor<'syntax> for ImportCollector {
                 }
                 let module = ModuleName::from_parts(&base);
                 for alias in &import.names {
+                    let primitive = match (module.as_str(), alias.name.as_str()) {
+                        ("importlib", "import_module") | ("builtins", "__import__") => {
+                            Some(PythonProjectCoverageGapKind::DynamicImport)
+                        }
+                        ("pkgutil", "iter_modules" | "walk_packages") => {
+                            Some(PythonProjectCoverageGapKind::ModuleEnumeration)
+                        }
+                        _ => None,
+                    };
+                    if let Some(kind) = primitive {
+                        self.load_aliases.insert(
+                            alias
+                                .asname
+                                .as_ref()
+                                .unwrap_or(&alias.name)
+                                .as_str()
+                                .to_owned(),
+                            kind,
+                        );
+                    }
+                    if alias.name.as_str() == "*" {
+                        self.gaps.push((
+                            Span {
+                                start: alias.name.range().start().to_u32(),
+                                end: alias.name.range().end().to_u32(),
+                            },
+                            PythonProjectCoverageGapKind::WildcardImport,
+                        ));
+                    }
                     let mut candidates = vec![module];
                     if alias.name.as_str() != "*" {
                         let mut child = base.clone();
@@ -576,6 +748,22 @@ impl<'syntax> Visitor<'syntax> for ImportCollector {
                         span: Span {
                             start: module_range.start().to_u32(),
                             end: module_range.end().to_u32(),
+                        },
+                        binding_span: Span {
+                            start: alias
+                                .asname
+                                .as_ref()
+                                .unwrap_or(&alias.name)
+                                .range()
+                                .start()
+                                .to_u32(),
+                            end: alias
+                                .asname
+                                .as_ref()
+                                .unwrap_or(&alias.name)
+                                .range()
+                                .end()
+                                .to_u32(),
                         },
                         candidates,
                     });
@@ -842,7 +1030,7 @@ const TYPE_WORK: usize = 262_144;
 /// traversal borrows native nodes and keeps recursion off the thread stack.
 struct TypeProjection<'control> {
     control: PythonProjectControl<'control>,
-    visited: usize,
+    remaining: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -865,11 +1053,12 @@ fn queue_children<'type_>(
     container: TypeContainer,
     children: &'type_ [Type],
     depth: usize,
-    remaining: usize,
+    remaining: &mut usize,
 ) -> Result<(), PythonTypeProjectionFault> {
-    if children.len() > remaining {
+    if children.len() > *remaining {
         return Err(PythonTypeProjectionFault::Work { limit: TYPE_WORK });
     }
+    *remaining -= children.len();
     pending.push(TypeStep::Build(container, children.len()));
     pending.extend(
         children
@@ -884,7 +1073,7 @@ impl<'control> TypeProjection<'control> {
     fn new(control: PythonProjectControl<'control>) -> Self {
         Self {
             control,
-            visited: 0,
+            remaining: TYPE_WORK,
         }
     }
 
@@ -894,6 +1083,13 @@ impl<'control> TypeProjection<'control> {
             site,
             cause,
         };
+        checkpoint(self.control)?;
+        if self.remaining == 0 {
+            return Err(refusal(PythonTypeProjectionFault::Work {
+                limit: TYPE_WORK,
+            }));
+        }
+        self.remaining -= 1;
         let mut pending = vec![TypeStep::Visit(ty, 0)];
         let mut active = BTreeSet::new();
         let mut values = Vec::new();
@@ -906,8 +1102,8 @@ impl<'control> TypeProjection<'control> {
                 TypeStep::Build(container, count) => {
                     let children = values.split_off(values.len() - count);
                     let value = match container {
-                        TypeContainer::Union => InferredType::Union(children),
-                        TypeContainer::Tuple => InferredType::Tuple(children),
+                        TypeContainer::Union => InferredType::Union(children.into_boxed_slice()),
+                        TypeContainer::Tuple => InferredType::Tuple(children.into_boxed_slice()),
                         TypeContainer::List => {
                             InferredType::List(children.into_iter().next().map(Box::new))
                         }
@@ -931,12 +1127,6 @@ impl<'control> TypeProjection<'control> {
                             limit: TYPE_DEPTH,
                         }));
                     }
-                    if self.visited == TYPE_WORK {
-                        return Err(refusal(PythonTypeProjectionFault::Work {
-                            limit: TYPE_WORK,
-                        }));
-                    }
-                    self.visited += 1;
                     let identity = std::ptr::from_ref(ty) as usize;
                     if !active.insert(identity) {
                         return Err(refusal(PythonTypeProjectionFault::Cycle));
@@ -949,7 +1139,9 @@ impl<'control> TypeProjection<'control> {
                             Lit::Int(_) => InferredType::Integer,
                             Lit::Bool(_) => InferredType::Boolean,
                             Lit::Bytes(_) => InferredType::Bytes,
-                            Lit::Enum(_) => InferredType::Any,
+                            Lit::Enum(_) => {
+                                InferredType::Unavailable(NativePythonTypeConstructor::EnumLiteral)
+                            }
                         }),
                         Type::LiteralString(_) => Some(InferredType::Str),
                         Type::Union(union) => {
@@ -958,7 +1150,7 @@ impl<'control> TypeProjection<'control> {
                                 TypeContainer::Union,
                                 &union.members,
                                 depth,
-                                TYPE_WORK - self.visited,
+                                &mut self.remaining,
                             )
                             .map_err(refusal)?;
                             None
@@ -969,12 +1161,18 @@ impl<'control> TypeProjection<'control> {
                                 TypeContainer::Tuple,
                                 elements,
                                 depth,
-                                TYPE_WORK - self.visited,
+                                &mut self.remaining,
                             )
                             .map_err(refusal)?;
                             None
                         }
                         Type::Annotated(inner, _) | Type::Unpack(inner) => {
+                            if self.remaining == 0 {
+                                return Err(refusal(PythonTypeProjectionFault::Work {
+                                    limit: TYPE_WORK,
+                                }));
+                            }
+                            self.remaining -= 1;
                             pending.push(TypeStep::Visit(inner, depth + 1));
                             None
                         }
@@ -1005,7 +1203,7 @@ impl<'control> TypeProjection<'control> {
                                     container,
                                     &class.targs().as_slice()[..class.targs().len().min(1)],
                                     depth,
-                                    TYPE_WORK - self.visited,
+                                    &mut self.remaining,
                                 )
                                 .map_err(refusal)?;
                                 None
@@ -1015,19 +1213,26 @@ impl<'control> TypeProjection<'control> {
                                     TypeContainer::Dict,
                                     class.targs().as_slice(),
                                     depth,
-                                    TYPE_WORK - self.visited,
+                                    &mut self.remaining,
                                 )
                                 .map_err(refusal)?;
                                 None
                             } else if class.is_builtin("dict") {
                                 Some(InferredType::Dict(None))
                             } else {
-                                Some(InferredType::Named(
-                                    class.qname().module_qualified_name().into_boxed_str(),
-                                ))
+                                Some(if class.targs().is_empty() {
+                                    InferredType::Named(
+                                        class.qname().module_qualified_name().into_boxed_str(),
+                                    )
+                                } else {
+                                    InferredType::Unavailable(
+                                        NativePythonTypeConstructor::ClassType,
+                                    )
+                                })
                             }
                         }
-                        _ => Some(InferredType::Any),
+                        Type::Any(_) => Some(InferredType::Any),
+                        _ => Some(InferredType::Unavailable(native_constructor(ty))),
                     };
                     if let Some(leaf) = leaf {
                         values.push(leaf);
@@ -1039,10 +1244,120 @@ impl<'control> TypeProjection<'control> {
     }
 }
 
+fn native_constructor(ty: &Type) -> NativePythonTypeConstructor {
+    match ty {
+        Type::Literal(_) => NativePythonTypeConstructor::Literal,
+        Type::LiteralString(_) => NativePythonTypeConstructor::LiteralString,
+        Type::Callable(_) => NativePythonTypeConstructor::Callable,
+        Type::CallableResidual(_) => NativePythonTypeConstructor::CallableResidual,
+        Type::TypeLevelDslCall(_) => NativePythonTypeConstructor::TypeLevelDslCall,
+        Type::Function(_) => NativePythonTypeConstructor::Function,
+        Type::BoundMethod(_) => NativePythonTypeConstructor::BoundMethod,
+        Type::Overload(_) => NativePythonTypeConstructor::Overload,
+        Type::Union(_) => NativePythonTypeConstructor::Union,
+        Type::Intersect(_) => NativePythonTypeConstructor::Intersect,
+        Type::ClassDef(_) => NativePythonTypeConstructor::ClassDef,
+        Type::ClassType(_) => NativePythonTypeConstructor::ClassType,
+        Type::TypedDict(_) => NativePythonTypeConstructor::TypedDict,
+        Type::PartialTypedDict(_) => NativePythonTypeConstructor::PartialTypedDict,
+        Type::ShapedArray(_) => NativePythonTypeConstructor::ShapedArray,
+        Type::IntTuple(_) => NativePythonTypeConstructor::IntTuple,
+        Type::NNModule(_) => NativePythonTypeConstructor::NNModule,
+        Type::DataFrame(_) => NativePythonTypeConstructor::DataFrame,
+        Type::Series(_) => NativePythonTypeConstructor::Series,
+        Type::Int(_) => NativePythonTypeConstructor::Int,
+        Type::Tuple(_) => NativePythonTypeConstructor::Tuple,
+        Type::Module(_) => NativePythonTypeConstructor::Module,
+        Type::Forall(_) => NativePythonTypeConstructor::Forall,
+        Type::Var(_) => NativePythonTypeConstructor::Var,
+        Type::Quantified(_) => NativePythonTypeConstructor::Quantified,
+        Type::QuantifiedValue(_) => NativePythonTypeConstructor::QuantifiedValue,
+        Type::ElementOfTypeVarTuple(_) => NativePythonTypeConstructor::ElementOfTypeVarTuple,
+        Type::TypeGuard(_) => NativePythonTypeConstructor::TypeGuard,
+        Type::TypeIs(_) => NativePythonTypeConstructor::TypeIs,
+        Type::Annotated(_, _) => NativePythonTypeConstructor::Annotated,
+        Type::Unpack(_) => NativePythonTypeConstructor::Unpack,
+        Type::TypeVar(_) => NativePythonTypeConstructor::TypeVar,
+        Type::ParamSpec(_) => NativePythonTypeConstructor::ParamSpec,
+        Type::TypeVarTuple(_) => NativePythonTypeConstructor::TypeVarTuple,
+        Type::SpecialForm(_) => NativePythonTypeConstructor::SpecialForm,
+        Type::Concatenate(_, _) => NativePythonTypeConstructor::Concatenate,
+        Type::ParamSpecValue(_) => NativePythonTypeConstructor::ParamSpecValue,
+        Type::Args(_) => NativePythonTypeConstructor::Args,
+        Type::Kwargs(_) => NativePythonTypeConstructor::Kwargs,
+        Type::ArgsValue(_) => NativePythonTypeConstructor::ArgsValue,
+        Type::KwargsValue(_) => NativePythonTypeConstructor::KwargsValue,
+        Type::Type(_) => NativePythonTypeConstructor::Type,
+        Type::TypeForm(_) => NativePythonTypeConstructor::TypeForm,
+        Type::Ellipsis => NativePythonTypeConstructor::Ellipsis,
+        Type::Any(_) => NativePythonTypeConstructor::Any,
+        Type::Never(_) => NativePythonTypeConstructor::Never,
+        Type::TypeAlias(_) => NativePythonTypeConstructor::TypeAlias,
+        Type::UntypedAlias(_) => NativePythonTypeConstructor::UntypedAlias,
+        Type::Sentinel(_) => NativePythonTypeConstructor::Sentinel,
+        Type::SuperInstance(_) => NativePythonTypeConstructor::SuperInstance,
+        Type::SelfType(_) => NativePythonTypeConstructor::SelfType,
+        Type::KwCall(_) => NativePythonTypeConstructor::KwCall,
+        Type::Materialization => NativePythonTypeConstructor::Materialization,
+        Type::None => NativePythonTypeConstructor::None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    #[test]
+    fn scheduled_type_nodes_reserve_work_before_growing_pending_queue() {
+        let children = vec![Type::None, Type::None];
+        let mut pending = vec![TypeStep::Visit(&children[0], 0)];
+        let mut remaining = 2;
+        queue_children(
+            &mut pending,
+            TypeContainer::Tuple,
+            &children,
+            0,
+            &mut remaining,
+        )
+        .expect("reserve two nodes");
+        assert_eq!(remaining, 0);
+        let queued = pending.len();
+        assert_eq!(
+            queue_children(
+                &mut pending,
+                TypeContainer::Tuple,
+                &children,
+                1,
+                &mut remaining
+            ),
+            Err(PythonTypeProjectionFault::Work { limit: TYPE_WORK })
+        );
+        assert_eq!(pending.len(), queued, "rejection precedes queue allocation");
+    }
+
+    #[test]
+    fn unsupported_constructor_is_distinct_from_native_any() {
+        let cancelled = AtomicBool::new(false);
+        let control = PythonProjectControl {
+            cancelled: &cancelled,
+            deadline: Instant::now() + Duration::from_secs(5),
+        };
+        let site = Span { start: 0, end: 1 };
+        let mut projection = TypeProjection::new(control);
+        assert_eq!(
+            projection
+                .convert(&Type::Ellipsis, "type.py", site)
+                .expect("typed unavailable"),
+            InferredType::Unavailable(NativePythonTypeConstructor::Ellipsis)
+        );
+        assert_eq!(
+            projection
+                .convert(&Type::any_implicit(), "type.py", site)
+                .expect("native Any"),
+            InferredType::Any
+        );
+    }
 
     #[test]
     fn native_projection_refuses_depth_and_shared_work_with_typed_operands() {
@@ -1067,7 +1382,7 @@ mod tests {
             })
         ));
         let mut projection = TypeProjection::new(control);
-        projection.visited = TYPE_WORK - 1;
+        projection.remaining = 1;
         assert_eq!(
             projection
                 .convert(&Type::None, "plain.py", site)
@@ -1099,10 +1414,13 @@ mod tests {
             TypeProjection::new(control)
                 .convert(&ty, "tuple.py", site)
                 .expect("bounded type"),
-            InferredType::Tuple(vec![
-                InferredType::NoneType,
-                InferredType::Tuple(vec![InferredType::NoneType])
-            ])
+            InferredType::Tuple(
+                vec![
+                    InferredType::NoneType,
+                    InferredType::Tuple(vec![InferredType::NoneType].into_boxed_slice())
+                ]
+                .into_boxed_slice()
+            )
         );
         cancelled.store(true, Ordering::Release);
         assert!(matches!(
