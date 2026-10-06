@@ -3,6 +3,8 @@
 //! and symbol coordinates; no prototype world supplies product data.
 
 pub(crate) mod identity;
+mod continuity;
+use continuity::{PresentationVisit, RetainedPresentation};
 use identity::{IdentityAdapter, MatchFailure, ResolvedSymbol};
 
 use crate::core::{Activity, ProducerAuthority, Resource, ResourceTerminal, VersionedRoot};
@@ -87,7 +89,11 @@ pub(crate) struct Map {
     focus_on_mount: Option<GraphMountFocus>,
     mounted_focus: Option<GraphMountFocus>,
     route: Option<Route>,
-    routed_focus: Option<NodeId>,
+    /// Route entry has already been consumed; independent of scene node ids.
+    route_consumed: bool,
+    presentation_visit: u64,
+    retained_presentation: Option<RetainedPresentation>,
+    presented_visit: Option<PresentationVisit>,
     semantic_focus: Option<NodeId>,
     revealed_focus: Option<NodeId>,
     resolved: BTreeMap<NodeId, ResolvedSymbol>,
@@ -236,8 +242,12 @@ impl Map {
                 {
                     map.invalidate_open();
                     map.error = None;
+                    if event.is_branch(Branch::Route) {
+                        map.cancel_presentation();
+                        map.route_consumed = false;
+                    }
                     if event.is_branch(Branch::Root) {
-                        map.reset_indexed_world();
+                        map.reset_indexed_world(cx);
                     }
                     map.publish_focus(cx);
                     // The map is retained behind the Reader's cached body.
@@ -251,7 +261,7 @@ impl Map {
                     && *authority == map.links.snapshot(cx).key().authority()
                 {
                     map.invalidate_open();
-                    map.reset_indexed_world();
+                    map.reset_indexed_world(cx);
                     map.publish_focus(cx);
                     cx.notify();
                 }
@@ -318,7 +328,10 @@ impl Map {
             focus_on_mount: None,
             mounted_focus: None,
             route: None,
-            routed_focus: None,
+            route_consumed: false,
+            presentation_visit: 0,
+            retained_presentation: None,
+            presented_visit: None,
             semantic_focus: None,
             revealed_focus: None,
             resolved: BTreeMap::new(),
@@ -331,8 +344,25 @@ impl Map {
         }
     }
 
-    fn reset_indexed_world(&mut self) {
+    fn cancel_presentation(&mut self) {
+        self.presentation_visit = self.presentation_visit.wrapping_add(1);
+        self.retained_presentation = None;
+    }
+
+    fn retain_presentation(&mut self, cx: &App) {
+        if let Some(graph) = &self.graph
+            && let Some(identities) = &self.identities
+            && let Some(visit) = &self.presented_visit
+            && visit.sequence == self.presentation_visit
+        {
+            self.retained_presentation = RetainedPresentation::capture(graph.read(cx), identities, visit.clone());
+        }
+    }
+
+    fn reset_indexed_world(&mut self, cx: &App) {
+        self.retain_presentation(cx);
         self.graph = None;
+        self.presented_visit = None;
         self.ready_scene = None;
         self.world_key = None;
         self.painted_scene = None;
@@ -341,7 +371,6 @@ impl Map {
         self.coverage = None;
         self.identities = None;
         self.resolved.clear();
-        self.routed_focus = None;
         self.semantic_focus = None;
         self.revealed_focus = None;
         self.painted_focus = None;
@@ -355,7 +384,6 @@ impl Map {
         }
         self._graph_events = None;
         self.load_error = None;
-        self.toured = 0;
     }
 
     fn request_world(&mut self, cx: &mut Context<Self>) {
@@ -370,25 +398,13 @@ impl Map {
             .or(snapshot.workspace().host.as_ref())
             .and_then(|project| PackageRef::parse(project.as_str()).ok());
         let Some(key) = indexed_world::key(snapshot.key(), preferred, cx) else {
-            self.reset_indexed_world();
+            self.reset_indexed_world(cx);
             self.load_error = Some("Waiting for the local index connection.".into());
             return;
         };
         if self.world_key.as_ref() != Some(&key) {
-            if self.world_key.is_some() {
-                self.entry_origin = None;
-            }
-            self.painted_focus = None;
-            self.graph = None;
-            self.painted_scene = None;
-            self.ready_scene = None;
-            self.coverage = None;
-            self.identities = None;
-            self.projection_origin = None;
-            self.resolved.clear();
+            self.reset_indexed_world(cx);
             self.world_key = Some(key.clone());
-            self.projection_waiting = false;
-            self.load_error = None;
         }
         // Keep the latest diagnostic observation even when the canonical
         // producer authority (and therefore the scene cache key) is stable.
@@ -578,6 +594,7 @@ impl Map {
     }
 
     pub(crate) fn suspend(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_presentation();
         if self.visible {
             self.invalidate_open();
             if let Some(graph) = &self.graph {
@@ -613,7 +630,8 @@ impl Map {
             });
             self.route = Some(route.clone());
             if changed_route {
-                self.routed_focus = None;
+                self.cancel_presentation();
+                self.route_consumed = false;
             }
             self.invalidate_open();
             self.error = None;
@@ -625,6 +643,11 @@ impl Map {
         let Some(graph) = self.graph.clone() else {
             return;
         };
+        self.presented_visit = Some(PresentationVisit {
+            sequence: self.presentation_visit,
+            route: route.clone(),
+            preferred: self.world_key.as_ref().and_then(|key| key.preferred().cloned()),
+        });
         if changed_route && matches!(route, Route::World) && self.revealed_focus.is_none() {
             graph.update(cx, |graph, cx| graph.show_world(cx));
             self.painted_focus = None;
@@ -651,14 +674,14 @@ impl Map {
             return;
         }
         if let Some(node) = self.revealed_focus.take() {
-            self.routed_focus = Some(node);
+            self.route_consumed = true;
             graph.update(cx, |graph, cx| graph.enter(node, cx));
             return;
         }
         let Some(symbol) = route_symbol(route) else {
             return;
         };
-        if self.routed_focus.is_some() {
+        if self.route_consumed {
             return;
         }
         let resource = self.links.store.read(cx).symbol(&symbol);
@@ -681,7 +704,7 @@ impl Map {
         let Some(package) = package else { return };
         let candidates = identities.candidates(&page.identity, &package);
         if let [id] = candidates.as_slice() {
-            self.routed_focus = Some(*id);
+            self.route_consumed = true;
             self.resolved.insert(
                 *id,
                 ResolvedSymbol {
@@ -706,7 +729,8 @@ impl Map {
     /// history entry whose route has the same value.
     pub(crate) fn reset_world(&mut self, cx: &mut Context<Self>) {
         self.invalidate_open();
-        self.routed_focus = None;
+        self.cancel_presentation();
+        self.route_consumed = true;
         self.revealed_focus = None;
         self.painted_focus = None;
         self.entry_origin = None;
@@ -952,7 +976,7 @@ impl Map {
             facet::graph::peek::Action::Focus => {
                 self.invalidate_open();
                 self.error = None;
-                self.routed_focus = Some(node);
+                self.route_consumed = true;
                 if self.visible && is_graph(snapshot.route()) {
                     graph.update(cx, |graph, cx| graph.enter(node, cx));
                 } else {
@@ -1506,12 +1530,22 @@ impl Render for Map {
         // invalidated the receipt, so this cannot manufacture a fresh claim.
         self.park_retired_focus(window, cx);
         if let Some((scene, identities, coverage)) = self.ready_scene.take() {
+            let snapshot = self.links.snapshot(cx);
+            let visit = PresentationVisit {
+                sequence: self.presentation_visit,
+                route: snapshot.route().clone(),
+                preferred: self.world_key.as_ref().and_then(|key| key.preferred().cloned()),
+            };
+            let restored = self.retained_presentation.take().and_then(|packet| packet.restore(&visit, &scene, &identities));
+            self.presented_visit = Some(visit);
+            let start = restored.as_ref().map_or(Start::World, |restored| restored.start);
+            if let Some(restored) = restored { self.error = restored.status.map(str::to_owned); }
             self.identities = Some(identities);
             self.coverage = Some(coverage);
             let owner = cx.entity().downgrade();
             let peek_owner = owner.clone();
             self.graph = Some(cx.new(|cx| {
-                let mut graph = GraphView::with_scene(scene, Start::World, window, cx);
+                let mut graph = GraphView::with_scene(scene, start, window, cx);
                 graph.on_open(Rc::new(move |node, window, cx| {
                     let Some(map) = owner.upgrade() else {
                         return;
@@ -1545,6 +1579,8 @@ impl Render for Map {
                 graph
             }));
             if let Some(graph) = &self.graph {
+                self.semantic_focus = graph.read(cx).focused();
+                self.publish_focus(cx);
                 self._graph_events =
                     Some(cx.observe(graph, |map, graph, cx| {
                         if map.pending.as_ref().is_some_and(|request| {

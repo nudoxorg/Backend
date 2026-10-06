@@ -106,6 +106,14 @@ pub enum Start {
     Cam(Camera),
     /// A symbol at reading scale with its prism gathered (`focus=`).
     Focus(NodeId),
+    /// Fresh semantic selection/prism at an independently retained camera.
+    /// Carries no input, search, exploration or callback state from another view.
+    Restore {
+        /// The actual camera placement to retain.
+        camera: Camera,
+        /// A selection remapped and checked by the embedding owner.
+        focus: Option<NodeId>,
+    },
 }
 
 /// Background work that keeps a mounted graph from being ready.
@@ -207,6 +215,9 @@ pub struct GraphView {
     scene: Option<Arc<Scene>>,
     _loading: Option<Task<()>>,
     start: Start,
+    /// A restored placement remains independent of measured reading chrome
+    /// until a new semantic navigation explicitly asks for framing.
+    retained_placement: bool,
     pending_enter: Option<NodeId>,
     rig: Option<Rig>,
     view: Option<View>,
@@ -345,11 +356,12 @@ impl GraphView {
     fn empty(world: Arc<World>, start: Start, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (find, subscription) = Self::find_field(window, cx);
         let search = empty_search();
-        Self {
+        let mut this = Self {
             world,
             scene: None,
             _loading: None,
             start,
+            retained_placement: matches!(start, Start::Restore { .. }),
             pending_enter: None,
             rig: None,
             view: None,
@@ -418,7 +430,9 @@ impl GraphView {
             status_focus: cx.focus_handle().tab_stop(true),
             on_peek_action: None,
             _subscriptions: vec![subscription],
-        }
+        };
+        if let Start::Restore { focus: Some(node), .. } = start { this.restore_selection(node); }
+        this
     }
 
     /// Native provenance participates in the same measured graph chrome as
@@ -601,6 +615,12 @@ impl GraphView {
         self.rig.as_ref().map(|r| r.cam)
     }
 
+    /// Immutable geometry only; the embedding owner remaps semantic identity.
+    #[must_use]
+    pub fn presentation(&self) -> Option<super::presentation::Geometry> {
+        Some(super::presentation::Geometry::capture(self.scene.as_ref()?, self.camera()?, self.focused()))
+    }
+
     /// The focused symbol.
     #[must_use]
     pub const fn focused(&self) -> Option<NodeId> {
@@ -708,6 +728,7 @@ impl GraphView {
     /// Focuses `i` (None releases): the camera flies to it at reading scale
     /// and the prism gathers on arrival (app.js `setFocus`).
     pub fn set_focus(&mut self, i: Option<NodeId>, fly: bool, cx: &mut Context<Self>) {
+        self.retained_placement = false;
         // Capture semantic endpoints before Focus retires the selected row.
         let route = i.and_then(|target| self.scene.as_ref().zip(self.view).map(|(scene, view)| {
             let follow = self.state.selected.is_some_and(|key| key.node == target);
@@ -732,15 +753,27 @@ impl GraphView {
                 rig.fly_with(focus_camera(scene, view, i, self.card_bounds), Some(Landing::Gather(i)), route.map_or(Travel::Focus(package_context(scene, view, i)), Travel::Reading));
             } else {
                 rig.set(focus_camera(scene, view, i, self.card_bounds));
-                let mut prism = Prism::of(&self.world, i);
-                prism.g = 1.0;
-                self.prism = Some(prism);
-                self.motion.set(PRISM_KEY, 1.0);
+                self.gather_prism(i);
             }
         } else if let Some(p) = &mut self.prism {
             p.target = 0.0;
         }
         cx.notify();
+    }
+
+    /// Initialize semantic presentation without a camera command or new visit.
+    fn restore_selection(&mut self, i: NodeId) {
+        self.state.focus = Some(i);
+        self.reading_a = 1.0;
+        self.motion.set(READING_KEY, 1.0);
+        self.gather_prism(i);
+    }
+
+    fn gather_prism(&mut self, i: NodeId) {
+        let mut prism = Prism::of(&self.world, i);
+        prism.g = 1.0;
+        self.prism = Some(prism);
+        self.motion.set(PRISM_KEY, 1.0);
     }
 
     /// Page → graph (G): from wherever the map was left, or the first time
@@ -795,6 +828,7 @@ impl GraphView {
             self.set_focus(Some(source), true, cx);
             return;
         }
+        self.retained_placement = false;
         let reach = Arc::new(Reach::of(&self.world, source));
         if let Some(prism) = &mut self.prism { prism.target = 0.0; }
         if !reach.all.is_empty()
@@ -874,6 +908,7 @@ impl GraphView {
     }
 
     fn fly_stop(&mut self, i: NodeId, cx: &mut Context<Self>) {
+        self.retained_placement = false;
         self.tour_scroll.set_offset(point(px(0.0), px(0.0)));
         self.set_hover(None, None);
         self.state.prism_sel = None;
@@ -1540,17 +1575,14 @@ impl GraphView {
                 Start::Frame(b, pad) => view.frame(b, pad),
                 Start::Cam(cam) => cam,
                 Start::Focus(i) => focus_camera(&scene, &view, i, self.card_bounds),
+                Start::Restore { camera, .. } => camera,
             };
             self.rig = Some(Rig::new(cam));
-            if let Start::Focus(i) = self.start && matches!(self.state.exploration, Exploration::Free) {
-                self.state.focus = Some(i);
-                self.reading_a = 1.0;
-                self.motion.set(READING_KEY, 1.0);
-                self.visit(i);
-                let mut p = Prism::of(&self.world, i);
-                p.g = 1.0;
-                self.prism = Some(p);
-                self.motion.set(PRISM_KEY, 1.0);
+            if matches!(self.state.exploration, Exploration::Free) {
+                match self.start {
+                    Start::Focus(i) => { self.visit(i); self.restore_selection(i); }
+                    _ => {}
+                }
             }
         }
         if let Some(i) = self.pending_enter.take() {
@@ -1686,6 +1718,7 @@ impl GraphView {
         if self.reading_frame == Some(key) { return occupied; }
         let first = self.reading_frame.is_none();
         self.reading_frame = Some(key);
+        if self.retained_placement { return occupied; }
         let room = Scene::free_view(&prepared.view, occupied);
         let to = match &self.state.exploration {
             Exploration::Free | Exploration::PreparingTour(_) | Exploration::TourUnavailable { .. } => focus_camera(&prepared.scene, &prepared.view, self.state.focus.expect("focused reading"), occupied),

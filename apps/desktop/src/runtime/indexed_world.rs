@@ -150,6 +150,8 @@ pub(crate) struct Key {
 }
 
 impl Key {
+    pub(crate) fn preferred(&self) -> Option<&PackageRef> { self.preferred.as_ref() }
+
     pub(crate) fn at_authority(&self, root: VersionedRoot) -> bool { self.authority == root.authority() }
 }
 
