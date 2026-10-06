@@ -63,6 +63,29 @@ fn msbuild_suffixes_ignore_ascii_case_and_keep_native_names() -> TestResult {
 
 #[cfg(unix)]
 #[test]
+fn msbuild_suffix_classification_preserves_non_utf8_native_basenames() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt as _;
+
+    for (bytes, admitted) in [
+        (b"reader-\xff.CSPROJ".as_slice(), true),
+        (b"reader-\xff.SlN".as_slice(), true),
+        (b"reader-\xff.slnx".as_slice(), true),
+        (b"reader-\xff.csproj.bak".as_slice(), false),
+        (b"reader.\xff".as_slice(), false),
+        (b".csproj".as_slice(), false),
+    ] {
+        assert_eq!(
+            super::msbuild_marker_name(&OsString::from_vec(bytes.to_vec())),
+            admitted
+        );
+    }
+}
+
+// Darwin filesystems reject malformed UTF-8 names at file creation. The
+// platform-independent classifier above still covers its native path boundary.
+#[cfg(target_os = "linux")]
+#[test]
 fn a_non_utf8_native_basename_can_have_an_msbuild_suffix() -> TestResult {
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt as _;
