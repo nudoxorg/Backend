@@ -2384,7 +2384,7 @@ fn unproven_private_projection_binding_retention_does_not_create_a_lease() {
             before,
             "foreign directory's complete entry inventory and bytes are preserved"
         );
-        assert!(!foreign.join(DURABLE_ROOT_LEASE).exists(), "retention cannot mint an ownership lease");
+        assert!(!foreign.join(".backend-root-reader.lock").exists(), "retention cannot mint an ownership lease");
         let root_bytes = |path: &std::path::Path| {
             std::fs::read_dir(path)
                 .expect("fixture entries")
