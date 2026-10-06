@@ -607,7 +607,7 @@ mod macos {
     const FAT_CIGAM_64: u32 = 0xbfba_feca;
     const CPU_SUBTYPE_MASK: u32 = 0xff00_0000;
     const MAX_FAT_ARCHES: u32 = 128;
-    const MAX_LOAD_COMMANDS: u32 = 16_384;
+    const MAX_LOAD_COMMANDS: usize = 16_384;
     const MAX_LOAD_COMMAND_BYTES: usize = 1 << 20;
 
     #[repr(C)]
@@ -671,11 +671,11 @@ mod macos {
             symbol_name: ptr::null(),
             symbol_address: ptr::null_mut(),
         };
-        let address = anchor as *const () as *const c_void;
+        let address = (anchor as *const ()).cast::<c_void>();
         // SAFETY: `address` is a live function pointer supplied by the caller;
         // `info` is a valid writable `DlInfo`. The returned image base is used
         // only to read the Mach-O header dyld mapped for that address.
-        if unsafe { dladdr(address, &mut info) } == 0 || info.file_base.is_null() {
+        if unsafe { dladdr(address, ptr::from_mut(&mut info)) } == 0 || info.file_base.is_null() {
             return Err(invalid("dyld could not identify the main-image anchor"));
         }
         // SAFETY: `dladdr` returned the mapped Mach-O image base containing
@@ -695,7 +695,9 @@ mod macos {
         }
         let command_bytes = usize::try_from(header.command_bytes)
             .map_err(|_| invalid("loaded Mach-O command size overflow"))?;
-        if command_bytes > MAX_LOAD_COMMAND_BYTES {
+        let command_count = usize::try_from(header.command_count)
+            .map_err(|_| invalid("loaded Mach-O command count overflow"))?;
+        if command_bytes > MAX_LOAD_COMMAND_BYTES || command_count > MAX_LOAD_COMMANDS {
             return Err(invalid("loaded Mach-O command table exceeds its bound"));
         }
         // SAFETY: `base` is dyld's loaded main-image header, and the header's
@@ -705,10 +707,10 @@ mod macos {
             std::slice::from_raw_parts(base.add(size_of::<MachHeader64>()), command_bytes)
         };
         parse_load_commands(
-            header.cpu_type as u32,
-            header.cpu_subtype as u32,
+            header.cpu_type.cast_unsigned(),
+            header.cpu_subtype.cast_unsigned(),
             header.file_type,
-            header.command_count,
+            command_count,
             commands,
         )
     }
@@ -739,11 +741,13 @@ mod macos {
     ) -> io::Result<ImageIdentity> {
         let mut header = [0_u8; 8];
         read_exact_at(file, &mut header, 0)?;
-        let architecture_count = word(&header[4..8], big_endian);
+        let architecture_count = word(&header[4..8], big_endian)?;
         if architecture_count == 0 || architecture_count > MAX_FAT_ARCHES {
             return Err(invalid("fat Mach-O architecture count exceeds its bound"));
         }
         let entry_size = if wide { 32_u64 } else { 20_u64 };
+        let entry_bytes =
+            usize::try_from(entry_size).map_err(|_| invalid("fat Mach-O entry size overflow"))?;
         let table_end = 8_u64
             .checked_add(
                 u64::from(architecture_count)
@@ -758,19 +762,19 @@ mod macos {
         let mut entry = [0_u8; 32];
         for index in 0..architecture_count {
             let offset = 8 + u64::from(index) * entry_size;
-            let bytes = &mut entry[..entry_size as usize];
+            let bytes = &mut entry[..entry_bytes];
             read_exact_at(file, bytes, offset)?;
-            let cpu_type = word(&bytes[..4], big_endian);
-            let cpu_subtype = word(&bytes[4..8], big_endian);
+            let cpu_type = word(&bytes[..4], big_endian)?;
+            let cpu_subtype = word(&bytes[4..8], big_endian)?;
             let (slice_offset, slice_length) = if wide {
                 (
-                    quad(&bytes[8..16], big_endian),
-                    quad(&bytes[16..24], big_endian),
+                    quad(&bytes[8..16], big_endian)?,
+                    quad(&bytes[16..24], big_endian)?,
                 )
             } else {
                 (
-                    u64::from(word(&bytes[8..12], big_endian)),
-                    u64::from(word(&bytes[12..16], big_endian)),
+                    u64::from(word(&bytes[8..12], big_endian)?),
+                    u64::from(word(&bytes[12..16], big_endian)?),
                 )
             };
             let end = slice_offset
@@ -798,17 +802,20 @@ mod macos {
     ) -> io::Result<ImageIdentity> {
         let mut header = [0_u8; 32];
         read_exact_at(file, &mut header, offset)?;
-        if u32::from_le_bytes(header[..4].try_into().expect("four-byte word")) != MH_MAGIC_64 {
+        if word(&header[..4], false)? != MH_MAGIC_64 {
             return Err(invalid(
                 "loaded executable slice is not little-endian 64-bit Mach-O",
             ));
         }
-        let cpu_type = u32::from_le_bytes(header[4..8].try_into().expect("four-byte word"));
-        let cpu_subtype = u32::from_le_bytes(header[8..12].try_into().expect("four-byte word"));
-        let file_type = u32::from_le_bytes(header[12..16].try_into().expect("four-byte word"));
-        let command_count = u32::from_le_bytes(header[16..20].try_into().expect("four-byte word"));
-        let command_bytes =
-            u32::from_le_bytes(header[20..24].try_into().expect("four-byte word")) as usize;
+        let cpu_type = word(&header[4..8], false)?;
+        let cpu_subtype = word(&header[8..12], false)?;
+        let file_type = word(&header[12..16], false)?;
+        let command_count = usize::try_from(word(&header[16..20], false)?)
+            .map_err(|_| invalid("Mach-O command count overflow"))?;
+        let command_bytes = usize::try_from(word(&header[20..24], false)?)
+            .map_err(|_| invalid("Mach-O command size overflow"))?;
+        let command_bytes_u64 =
+            u64::try_from(command_bytes).map_err(|_| invalid("Mach-O command size overflow"))?;
         if file_type != MH_EXECUTE
             || !same_cpu(cpu_type, cpu_subtype, loaded.cpu_type, loaded.cpu_subtype)
         {
@@ -818,8 +825,8 @@ mod macos {
         }
         if command_bytes > MAX_LOAD_COMMAND_BYTES
             || command_count > MAX_LOAD_COMMANDS
-            || command_count as usize > command_bytes / 8
-            || 32_u64 + command_bytes as u64 > slice_length
+            || command_count > command_bytes / 8
+            || 32_u64 + command_bytes_u64 > slice_length
         {
             return Err(invalid("on-disk Mach-O command table exceeds its bound"));
         }
@@ -832,13 +839,13 @@ mod macos {
         cpu_type: u32,
         cpu_subtype: u32,
         file_type: u32,
-        command_count: u32,
+        command_count: usize,
         commands: &[u8],
     ) -> io::Result<ImageIdentity> {
         if file_type != MH_EXECUTE
             || commands.len() > MAX_LOAD_COMMAND_BYTES
             || command_count > MAX_LOAD_COMMANDS
-            || command_count as usize > commands.len() / 8
+            || command_count > commands.len() / 8
         {
             return Err(invalid("Mach-O command table exceeds its bound"));
         }
@@ -848,9 +855,9 @@ mod macos {
             let prefix = commands
                 .get(cursor..cursor.saturating_add(8))
                 .ok_or_else(|| invalid("truncated Mach-O load command"))?;
-            let command = u32::from_le_bytes(prefix[..4].try_into().expect("four-byte word"));
-            let size =
-                u32::from_le_bytes(prefix[4..8].try_into().expect("four-byte word")) as usize;
+            let command = word(&prefix[..4], false)?;
+            let size = usize::try_from(word(&prefix[4..8], false)?)
+                .map_err(|_| invalid("Mach-O command size overflow"))?;
             let end = cursor
                 .checked_add(size)
                 .ok_or_else(|| invalid("Mach-O command range overflow"))?;
@@ -882,22 +889,26 @@ mod macos {
             && (left_subtype & !CPU_SUBTYPE_MASK) == (right_subtype & !CPU_SUBTYPE_MASK)
     }
 
-    fn word(bytes: &[u8], big_endian: bool) -> u32 {
-        let bytes: [u8; 4] = bytes.try_into().expect("four-byte word");
-        if big_endian {
+    fn word(bytes: &[u8], big_endian: bool) -> io::Result<u32> {
+        let bytes: [u8; 4] = bytes
+            .try_into()
+            .map_err(|_| invalid("Mach-O word does not contain four bytes"))?;
+        Ok(if big_endian {
             u32::from_be_bytes(bytes)
         } else {
             u32::from_le_bytes(bytes)
-        }
+        })
     }
 
-    fn quad(bytes: &[u8], big_endian: bool) -> u64 {
-        let bytes: [u8; 8] = bytes.try_into().expect("eight-byte word");
-        if big_endian {
+    fn quad(bytes: &[u8], big_endian: bool) -> io::Result<u64> {
+        let bytes: [u8; 8] = bytes
+            .try_into()
+            .map_err(|_| invalid("Mach-O word does not contain eight bytes"))?;
+        Ok(if big_endian {
             u64::from_be_bytes(bytes)
         } else {
             u64::from_le_bytes(bytes)
-        }
+        })
     }
 
     fn read_exact_at(file: &File, mut destination: &mut [u8], mut offset: u64) -> io::Result<()> {
@@ -927,6 +938,16 @@ mod macos {
         fn test_main_image_anchor() {}
 
         const CHILD_MODE: &str = "NUDOX_TEST_REPLACEMENT_AFTER_EXEC";
+
+        #[test]
+        fn mach_o_word_readers_reject_truncated_fields() {
+            assert!(
+                matches!(word(&[0; 3], false), Err(error) if error.kind() == io::ErrorKind::InvalidData)
+            );
+            assert!(
+                matches!(quad(&[0; 7], false), Err(error) if error.kind() == io::ErrorKind::InvalidData)
+            );
+        }
 
         #[test]
         fn current_executable_file_matches_the_loaded_main_image() {

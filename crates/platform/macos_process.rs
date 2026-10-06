@@ -215,6 +215,7 @@ fn process_identity(
     pid: libc::pid_t,
     expected_pgid: u32,
 ) -> Result<Option<ProcessIdentity>, GroupRetirementError> {
+    let expected_pid = u32::try_from(pid).map_err(|_| GroupRetirementError::ProcessInfo)?;
     let mut info = MaybeUninit::<ProcBsdInfoWithUniqId>::zeroed();
     let expected_size = libc::c_int::try_from(size_of::<ProcBsdInfoWithUniqId>())
         .map_err(|_| GroupRetirementError::ProcessInfo)?;
@@ -246,7 +247,7 @@ fn process_identity(
     // SAFETY: the exact struct size was returned for the initialized buffer
     // above, and the kernel ABI defines this flavor as this layout.
     let info = unsafe { info.assume_init() };
-    if info.bsd.pbi_pid != pid as u32 || info.bsd.pbi_pgid != expected_pgid {
+    if info.bsd.pbi_pid != expected_pid || info.bsd.pbi_pgid != expected_pgid {
         return Ok(None);
     }
     if info.unique.unique_id == 0 {
@@ -284,6 +285,8 @@ fn group_snapshot(
     // buffer fails closed.
     let count = checked_process_count(returned_count, MAX_GROUP_MEMBERS)?;
     pids.truncate(count);
+    let expected_pgid =
+        u32::try_from(leader.as_raw_pid()).map_err(|_| GroupRetirementError::ProcessInfo)?;
     if Instant::now() >= deadline {
         return Err(GroupRetirementError::Deadline);
     }
@@ -296,7 +299,7 @@ fn group_snapshot(
         if pid <= 0 {
             return Err(GroupRetirementError::ProcessInfo);
         }
-        let Some(identity) = process_identity(pid, leader.as_raw_pid() as u32)? else {
+        let Some(identity) = process_identity(pid, expected_pgid)? else {
             return Ok(None);
         };
         if pid == leader.as_raw_pid() && identity.status != SZOMB {
