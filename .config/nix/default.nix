@@ -215,6 +215,7 @@ in
       value = perSystem system;
     in
     {
+      cargo-bundle = (import inputs.bundle-nixpkgs { inherit system; }).cargo-bundle;
       default = value.commands.backend;
       backend = value.commands.backend;
       backend-verifier = value.commands.backendVerifier;
