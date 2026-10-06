@@ -3,8 +3,8 @@
 use super::lazy::{WorkspaceRelationError, WorkspaceRelationHandle};
 use super::owner::WorkspaceError;
 use backend_store::{
-    ClosureManifest, FileStore, ManifestChange, ObjectId, RelationAdmissionRegistry, StoreError,
-    TypedObject, WorkspaceClosure,
+    ClosureManifest, FileStore, ManifestChange, ObjectId, RelationAdmissionRegistry, TypedObject,
+    WorkspaceClosure,
 };
 use backend_version::{
     CheckedCommit, CheckedWorkspaceTransition, Commit, CommitProvenance, LazyTreeWork,
@@ -742,7 +742,7 @@ impl PreparedTransition {
         &self,
         store: &FileStore,
         base: Option<backend_store::PublicationBase>,
-    ) -> Result<backend_store::WorkspaceFilePrepared, StoreError> {
+    ) -> Result<backend_store::WorkspaceFilePrepared, WorkspaceError> {
         // The recovery pack names this bounded non-relation frontier
         // directly. Persist those exact objects before publishing the pack,
         // including retained catalog descriptors that are unchanged from the
@@ -756,28 +756,44 @@ impl PreparedTransition {
                 .objects()
                 .iter()
                 .find(|object| object.id() == *object_id)
-                .ok_or(StoreError::Corrupt)?;
-            store.write_object(object)?;
+                .ok_or_else(|| {
+                    WorkspaceError::Store(format!(
+                        "workspace auxiliary object {object_id:?} is absent from the checked target closure"
+                    ))
+                })?;
+            store.write_object(object).map_err(|error| {
+                WorkspaceError::Store(format!(
+                    "write workspace auxiliary object {object_id:?}: {error:?}"
+                ))
+            })?;
         }
         // The physical pack is an authenticated index of the checked closure.
         // Object bytes are written once by the store's closure typestate;
         // `verify_workspace_pack` repeats the fixed index derivation on every
         // recovery and publication ambiguity check.
         let (layout, pack) = super::pack::workspace_pack(self, MAX_RECORD_BYTES)?;
-        let pack_id = store.write_pack(&pack)?;
+        let pack_id = store.write_pack(&pack).map_err(|error| {
+            WorkspaceError::Store(format!("write workspace recovery pack: {error:?}"))
+        })?;
         // Pass the checked closure capability intact. Reconstructing it from
         // its logical manifest would discard the private path-copy frontier
         // needed to publish newly split relation children with their parent.
         // `PreparedTransition` already bound this closure to the exact
         // manifest, delta, and commit; the store re-admits its object grammar
         // and root/closure binding before preparing the durable write.
-        store.prepare_workspace_publication(
-            self.manifest.root(),
-            layout,
-            pack_id,
-            self.closure.clone(),
-            base,
-        )
+        store
+            .prepare_workspace_publication(
+                self.manifest.root(),
+                layout,
+                pack_id,
+                self.closure.clone(),
+                base,
+            )
+            .map_err(|error| {
+                WorkspaceError::Store(format!(
+                    "admit checked workspace closure publication: {error:?}"
+                ))
+            })
     }
 }
 

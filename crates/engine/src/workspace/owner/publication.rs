@@ -34,7 +34,9 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
         let store_base = self
             .store
             .head()
-            .map_err(WorkspaceError::store)?
+            .map_err(|error| {
+                WorkspaceError::Store(format!("read selected store publication head: {error:?}"))
+            })?
             .map(backend_store::SelectedHead::as_base);
         if let Some(base) = store_base
             && (base.target() != self.head.root().to_bytes()
@@ -63,15 +65,19 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
                 self.head.closure().manifest().objects().to_vec(),
                 self.store.relation_registry(),
             )
-            .map_err(WorkspaceError::store)?;
-            self.store
-                .write_closure(&seed)
-                .map_err(WorkspaceError::store)?;
+            .map_err(|error| {
+                WorkspaceError::Store(format!("admit initial genesis closure: {error:?}"))
+            })?;
+            self.store.write_closure(&seed).map_err(|error| {
+                WorkspaceError::Store(format!("seed initial genesis closure: {error:?}"))
+            })?;
         }
-        let store_prepared = transition
-            .store_publication(&self.store, store_base)
-            .map_err(WorkspaceError::store)?;
-        let store_durable = store_prepared.durable().map_err(WorkspaceError::store)?;
+        let store_prepared = transition.store_publication(&self.store, store_base)?;
+        let store_durable = store_prepared.durable().map_err(|error| {
+            WorkspaceError::Store(format!(
+                "durably prepare workspace store publication: {error:?}"
+            ))
+        })?;
         data.store_durable = Some(store_durable);
         self.faults
             .trip(Boundary::Transfer)
