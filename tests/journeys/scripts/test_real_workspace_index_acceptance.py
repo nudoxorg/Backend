@@ -972,6 +972,14 @@ class PairedSurfaceObligationTests(unittest.TestCase):
 
 
 class AcquiredSourceInventoryTests(unittest.TestCase):
+    def test_inventory_hash_domain_is_independent_of_object_field_insertion_order(self) -> None:
+        left = [{"path": "é.py", "bytes": 3, "sha256": "a" * 64}]
+        right = [{"sha256": "a" * 64, "path": "é.py", "bytes": 3}]
+        expected = hashlib.sha256(json.dumps(left, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+        self.assertEqual(runner.source_inventory_sha256(left), expected)
+        self.assertEqual(runner.source_inventory_sha256(right), expected)
+        self.assertNotEqual(runner.canonical_json(left), runner.canonical_json(right))
+
     def fixture(self, root: Path, *, subdir: str = ".") -> tuple:
         source = root / "acquired"
         target = source if subdir == "." else source / subdir
@@ -986,7 +994,7 @@ class AcquiredSourceInventoryTests(unittest.TestCase):
                      "source_root": str(source), "files": files}
         inventory_path = root / "inventory.json"
         inventory_path.write_bytes(runner.canonical_json(inventory))
-        tree_sha = hashlib.sha256(runner.canonical_json(files)).hexdigest()
+        tree_sha = hashlib.sha256(json.dumps(files, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
         package = {**inventory["package"], "provenance": {"kind": "source-tree-sha256", "sha256": tree_sha}}
         case = runner.ProjectCase("requests", target, False, 0, (), package, {
             "inventory_path": str(inventory_path),
@@ -1105,7 +1113,7 @@ class RegistryArtifactOriginTests(unittest.TestCase):
                 package, files, binding, _, _ = self.fixture(Path(directory).resolve(), ecosystem)
                 proof = runner.verify_registry_origin(binding, package, files, runner.Deadline(1))
                 self.assertEqual(proof["origin_verification"], "verified-registry-artifact-v1")
-                self.assertEqual(proof["origin_evidence"]["archive_membership_sha256"], hashlib.sha256(runner.canonical_json(files)).hexdigest())
+                self.assertEqual(proof["origin_evidence"]["archive_membership_sha256"], hashlib.sha256(json.dumps(files, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest())
                 files.pop()
                 with self.assertRaisesRegex(runner.AcceptanceError, "actual acquired source tree"):
                     runner.verify_registry_origin(binding, package, files, runner.Deadline(1))

@@ -525,6 +525,12 @@ def canonical_json(value: Any) -> bytes:
     ).encode("utf-8")
 
 
+def source_inventory_sha256(files: list[dict[str, Any]]) -> str:
+    """Inventory-v1 domain: sorted paths and sorted object keys, unlike wire JSON."""
+    return sha256_bytes(json.dumps(files, sort_keys=True, ensure_ascii=False,
+                                  separators=(",", ":")).encode("utf-8"))
+
+
 def bounded_client_payload_evidence(payload: bytes) -> dict[str, Any]:
     prefix = payload[:MAX_CLIENT_CAPTURE_PREFIX_BYTES]
     tail = (
@@ -1667,7 +1673,7 @@ def verify_acquired_source_inventory(case: ProjectCase, manifest_sha: str, deadl
     observed.sort(key=lambda row: row["path"])
     if observed != files:
         raise AcceptanceError("acquired package source inventory has missing, extra, or changed files")
-    tree_sha = sha256_bytes(canonical_json(observed))
+    tree_sha = source_inventory_sha256(observed)
     if case.package["provenance"]["kind"] == "source-tree-sha256" and case.package["provenance"]["sha256"] != tree_sha:
         raise AcceptanceError("declared source-tree hash differs from the independently verified inventory")
     proof = {"verification": "verified-source-inventory-v1", "package": package,
@@ -1719,7 +1725,7 @@ def verify_registry_origin(binding: dict[str, Any], package: dict[str, Any], fil
     return {"origin_verification": "verified-registry-artifact-v1", "origin_evidence": {
         "metadata_sha256": sha256_bytes(payloads["registry_metadata"]),
         "archive_sha256": sha256_bytes(payloads["archive"]),
-        "archive_membership_sha256": sha256_bytes(canonical_json(members)),
+        "archive_membership_sha256": source_inventory_sha256(members),
         "receipt_sha256": sha256_bytes(raw),
         "verification_source": "retained official metadata, archive identity and exact acquired-file membership",
     }}
