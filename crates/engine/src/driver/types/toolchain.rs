@@ -300,12 +300,7 @@ impl<'path> ResolvedToolchain<'path> {
 
     /// Identity bound to the exact executable(s) that will perform this compile.
     pub(crate) fn invocation_identity(self) -> ContentId<ToolchainDomain> {
-        let ResolvedInvocation::InterpretedScript {
-            witness,
-            validation,
-            ..
-        } = self.invocation
-        else {
+        let ResolvedInvocation::InterpretedScript { witness, .. } = self.invocation else {
             return self.identity;
         };
         let mut identity = blake3::Hasher::new();

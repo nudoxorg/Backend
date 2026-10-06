@@ -334,7 +334,12 @@ fn python_checker_probe_failure(
             }
         }
         ToolchainProbeError::Empty { .. } => LocalRuntimePythonCheckerProbeFailure::EmptyVersion,
-        ToolchainProbeError::Resolution { .. } => {
+        ToolchainProbeError::Resolution { .. }
+        | ToolchainProbeError::TypeScriptInterpreterUnavailable { .. }
+        | ToolchainProbeError::TypeScriptModuleRootUnavailable { .. }
+        | ToolchainProbeError::TypeScriptModuleEntryMismatch { .. }
+        | ToolchainProbeError::ExecutableWitness { .. }
+        | ToolchainProbeError::ExecutableChanged { .. } => {
             LocalRuntimePythonCheckerProbeFailure::IdentityResolution
         }
     }
@@ -505,8 +510,8 @@ mod invocation_selection_tests {
         let compiler = PathBuf::from("/selected/typescript/bin/tsc");
         let node = PathBuf::from("/selected/node/bin/node");
         let module_root = PathBuf::from("/selected/node_modules");
-        let rows = only_typescript(Some(compiler.clone()))
-            .toolchain_rows(Some(&node), Some(&module_root));
+        let rows =
+            only_typescript(Some(compiler.clone())).toolchain_rows(Some(&node), Some(&module_root));
         let typescript = rows
             .iter()
             .find(|row| row.tool == NativeTool::TypeScriptCompiler)
