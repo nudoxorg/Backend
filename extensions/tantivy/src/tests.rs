@@ -3307,3 +3307,72 @@ fn workspace_alt() -> WorkspaceRoot {
     .expect("alternate workspace")
     .root()
 }
+
+#[test]
+fn damaged_inactive_binding_remains_charged_without_poisoning_selected_search() {
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-inactive-binding-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let old = state_for(
+        vec![(document(1), vec![("name".into(), "previousbinding".into())])],
+        [91; 32],
+    );
+    let old_source = TantivySource::open_or_build_in_dir(&old, Limits::default(), &root)
+        .expect("owned previous root");
+    let old_root = root
+        .join(DURABLE_ROOTS_DIRECTORY)
+        .join(hex_fingerprint(projection_fingerprint(old.binding())));
+    let binding_path = old_root.join(BINDING_FILE);
+    let original = std::fs::read(&binding_path).expect("binding bytes");
+    let selected = state_for(
+        vec![(document(2), vec![("name".into(), "selectedbinding".into())])],
+        [92; 32],
+    );
+    for bytes in [vec![], vec![0; 7], vec![0; 32]] {
+        std::fs::write(&binding_path, &bytes).expect("damage owned inactive binding");
+        let current = TantivySource::open_or_build_in_dir(&selected, Limits::default(), &root)
+            .expect("inactive active-reader binding does not supply current authority");
+        assert_eq!(term_hits(&current, "selectedbinding"), vec![document(2)]);
+        assert_eq!(term_hits(&old_source, "previousbinding"), vec![document(1)]);
+        assert_eq!(
+            std::fs::read(&binding_path).expect("preserved unknown binding"),
+            bytes
+        );
+        drop(current);
+    }
+    drop(old_source);
+    let current = TantivySource::open_or_build_in_dir(&selected, Limits::default(), &root)
+        .expect("unprovable inactive binding is retained rather than deleted");
+    assert_eq!(term_hits(&current, "selectedbinding"), vec![document(2)]);
+    assert!(old_root.exists());
+    drop(current);
+    // Conservative retention remains inside the same byte quota.
+    let selected_root = root
+        .join(DURABLE_ROOTS_DIRECTORY)
+        .join(hex_fingerprint(projection_fingerprint(selected.binding())));
+    let root_bytes = |path: &std::path::Path| {
+        std::fs::read_dir(path)
+            .expect("owned files")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .metadata()
+                    .expect("regular metadata")
+                    .len()
+            })
+            .sum::<u64>()
+    };
+    let total = root_bytes(&selected_root) + root_bytes(&old_root);
+    let budget = DurableCacheBudget::new(total - 1).expect("nonzero budget");
+    assert!(
+        matches!(TantivySource::open_or_build_in_dir_with_budget_and_action(&selected, Limits::default(), &root, budget), Err(TantivySourceError::BudgetExceeded { budget_bytes, required_bytes }) if budget_bytes == total - 1 && required_bytes == total)
+    );
+    assert!(old_root.exists());
+    std::fs::write(&binding_path, original).expect("restore private fixture");
+    std::fs::remove_dir_all(root).expect("cleanup");
+}
