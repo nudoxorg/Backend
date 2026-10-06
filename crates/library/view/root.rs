@@ -841,21 +841,28 @@ mod tests {
     use crate::{AuthorityScopeClaim, ScopeRoot};
 
     fn capability(object: crate::SemanticObject) -> CoverageCapability {
+        capability_for_context(object, object.to_bytes())
+    }
+
+    fn capability_for_context(
+        object: crate::SemanticObject,
+        context: [u8; 32],
+    ) -> CoverageCapability {
         let declared = AuthorityScopeClaim::from_object_version(object);
         let scope = ScopeRoot::from_bytes(object.to_bytes());
         let observation = crate::admit_producer_observation(
             crate::UntrustedProducerObservation::new(
                 *scope.as_bytes(),
                 scope,
-                *scope.as_bytes(),
-                scope.as_bytes().to_vec(),
+                context,
+                context.to_vec(),
             ),
             &TestCoverageVerifier,
         )
         .expect("producer observation");
         CoverageCapability::from_authorized_with_evidence(
             crate::admit_complete_scope(declared, observation).expect("coverage capability"),
-            scope.as_bytes().to_vec(),
+            context.to_vec(),
         )
         .expect("coverage evidence")
     }
@@ -870,8 +877,7 @@ mod tests {
             observation: &crate::UntrustedProducerObservation,
         ) -> Result<crate::ProducerObservationClaims, Self::Error> {
             if observation.producer_identity() == *observation.scope_root().as_bytes()
-                && observation.context() == *observation.scope_root().as_bytes()
-                && observation.evidence() == observation.scope_root().as_bytes()
+                && observation.evidence() == observation.context()
             {
                 Ok(crate::ProducerObservationClaims::new(
                     observation.producer_identity(),
@@ -905,6 +911,52 @@ mod tests {
             capability(object),
         )
         .expect("paged view root")
+    }
+
+    #[test]
+    fn capability_only_patch_rebinds_metadata_without_copying_unchanged_rows() {
+        let base = root_with_rows(4096);
+        let row_id = RowId::Symbol(symbol_key("pkg::00004095"));
+        let old_row = base.row_ref(row_id).expect("retained last row");
+        let old_capability = base.capability().expect("admitted base capability");
+        assert_eq!(
+            base.prepare(
+                ViewDelta::Patch {
+                    changes: Arc::from([])
+                },
+                old_capability
+            ),
+            Err(ViewError::Unbounded),
+            "an empty patch cannot mint a meaningless new frontier",
+        );
+        let next_capability = capability_for_context(base.basis().object, [42; 32]);
+        let prepared = base
+            .prepare(
+                ViewDelta::Patch {
+                    changes: Arc::from([]),
+                },
+                next_capability.clone(),
+            )
+            .expect("changed producer context admits a metadata-only patch");
+        let (next, committed) = base.clone().commit(prepared).expect("checked rebind");
+        assert_eq!(next.row_count(), base.row_count());
+        assert_eq!(next.basis(), base.basis());
+        assert_eq!(next.coverage(), base.coverage());
+        assert_eq!(next.capability(), Some(next_capability));
+        assert_eq!(next.frontier().sequence, base.frontier().sequence + 1);
+        assert_ne!(next.version(), base.version());
+        assert!(std::ptr::eq(
+            old_row,
+            next.row_ref(row_id).expect("shared last row")
+        ));
+        assert!(base.rows_cache.get().is_none());
+        assert!(next.rows_cache.get().is_none());
+        assert!(matches!(committed.delta(), ViewDelta::Patch { changes } if changes.is_empty()));
+        assert_eq!(committed.apply_to(&base).expect("exact replay"), next);
+        assert_eq!(
+            base.row_refs().collect::<Vec<_>>(),
+            next.row_refs().collect::<Vec<_>>()
+        );
     }
 
     #[test]

@@ -1047,7 +1047,7 @@ fn publish_builtin_view(
             BuiltinModelError("reused publication is missing its witness".to_owned())
         })?;
         return Ok(view_publish::PublicationOutcome {
-            deltas: Vec::new(),
+            deltas: rebind_published_view(daemon)?,
             roots: prior.clone(),
             path: view_publish::PublicationPath::Reused,
         });
@@ -1137,7 +1137,7 @@ fn publish_package_view(
                 let same_basis = current.basis() == initial.basis();
                 if changes.is_empty() && same_coverage && same_basis {
                     return Ok(Some(package_publication(
-                        Vec::new(),
+                        rebind_published_view(daemon)?,
                         prior,
                         source_target,
                         semantic_target,
@@ -1214,7 +1214,7 @@ fn publish_package_view(
         ) {
             Ok(changes) if changes.is_empty() => {
                 return Ok(Some(package_publication(
-                    Vec::new(),
+                    rebind_published_view(daemon)?,
                     prior,
                     source_target,
                     semantic_target,
@@ -1285,7 +1285,12 @@ fn try_commit_row_patch(
     current: ViewRoot,
     changes: Vec<backend_engine::RowChange>,
 ) -> Result<Option<Vec<backend_engine::CommittedViewDelta>>, BuiltinModelError> {
-    let _admitted = admitted_bytes_after_row_changes(current.row_refs(), &changes)?;
+    // A capability-only rebind retains the already admitted canonical rows;
+    // scanning their documents again would turn metadata publication into a
+    // full-corpus operation.
+    if !changes.is_empty() {
+        admitted_bytes_after_row_changes(current.row_refs(), &changes)?;
+    }
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let workspace_root = snapshot.root();
     let capability = builtin_view_capability_for_workspace(&snapshot)?;
@@ -1320,6 +1325,22 @@ fn try_commit_row_patch(
         )
         .map_err(|error| BuiltinModelError(format!("{error:?}")))?;
     Ok(Some(vec![committed]))
+}
+
+fn rebind_published_view(
+    daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+) -> Result<Vec<backend_engine::CommittedViewDelta>, BuiltinModelError> {
+    let current = daemon.engine().daemon().library().view().clone();
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let capability = builtin_view_capability_for_workspace(&snapshot)?;
+    if current.capability().as_ref() == Some(&capability) {
+        return Ok(Vec::new());
+    }
+    try_commit_row_patch(daemon, current, Vec::new())?.ok_or_else(|| {
+        BuiltinModelError(
+            "the retained view could not admit its current workspace capability".to_owned(),
+        )
+    })
 }
 
 fn admit_spliced_package(
@@ -1367,7 +1388,7 @@ fn commit_published_target(
         && current.row_count() == target.row_count()
         && current.row_refs().eq(target.row_refs())
     {
-        return Ok(Vec::new());
+        return rebind_published_view(daemon);
     }
     let changes = changed_rows(&current, &target);
     let deltas = if current.row_count() == 0

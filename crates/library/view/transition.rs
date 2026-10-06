@@ -54,6 +54,8 @@ pub enum ViewDelta {
         id: RowId,
     },
     /// Atomically apply a sorted, duplicate-free set of independent row changes.
+    /// An empty patch is admitted only with a changed producer capability: it
+    /// advances the checked metadata frontier while retaining every row.
     Patch {
         /// Row changes in stable identity order.
         changes: Arc<[RowChange]>,
@@ -625,7 +627,7 @@ pub(super) fn validate_delta(
         }
         ViewDelta::Remove { .. } => base.coverage.clone(),
         ViewDelta::Patch { changes } => {
-            if changes.is_empty()
+            if (changes.is_empty() && base.capability.as_ref() == Some(capability))
                 || changes.len() > MAX_VIEW_PATCH_ROWS
                 || changes.windows(2).any(|pair| pair[0].id() >= pair[1].id())
             {
