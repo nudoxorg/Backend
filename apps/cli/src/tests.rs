@@ -723,7 +723,63 @@ fn cli_resolve_selector_round_trips_into_the_shared_shape_request() {
     struct Owner(Library);
     impl CommandTransport for Owner {
         fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
-            admit_reply(&request, self.0.execute_dto(request.clone()))
+            let mut reply = self.0.execute_dto(request.clone());
+            if let (Command::Name(query), CommandReply::Names(page)) =
+                (&request.command, &reply.reply)
+            {
+                // Match the real producer query proof: revision scope plus the
+                // exact bounded page preimages and retained symbol commitments.
+                let recipe = backend_library::QueryPageRecipe::names(self.0.revision_root(), query);
+                let mut proof = self
+                    .0
+                    .execute_dto(CommandDto::new(1, Command::Revision))
+                    .certificate()
+                    .expect("owned revision proof")
+                    .clone();
+                let root = &page.root;
+                for claim in [
+                    WireClaim::KeyBytes {
+                        schema: WireSchema::ViewRecipe,
+                        id: encode_id(root.recipe().as_bytes()),
+                        value: recipe.canonical_preimage().into(),
+                    },
+                    WireClaim::Version {
+                        schema: WireSchema::ViewVersion,
+                        id: encode_id(root.version().as_bytes()),
+                        value: backend_library::view_version_preimage(
+                            root.recipe(),
+                            root.basis(),
+                            root.frontier(),
+                            root.root(),
+                            root.coverage(),
+                        )
+                        .into_boxed_slice(),
+                    },
+                    WireClaim::Root {
+                        schema: WireSchema::ViewRelation,
+                        id: encode_id(root.root().as_bytes()),
+                        canonical: root
+                            .canonical_relation_bytes()
+                            .expect("owned page relation")
+                            .into_boxed_slice(),
+                    },
+                ] {
+                    proof = proof.with_claim_once(claim);
+                }
+                for row in root.rows() {
+                    if let RowId::Symbol(symbol) = row.id {
+                        proof = proof.with_claim_once(WireClaim::KeyCommitment {
+                            schema: WireSchema::Symbol,
+                            id: encode_id(symbol.as_bytes()),
+                        });
+                    }
+                }
+                reply = reply.with_certificate(proof);
+            }
+            let bytes = serde_json::to_vec(&reply).expect("producer wire");
+            let reply = ReplyDto::decode_with_certificate(&bytes, self.0.view().capability())
+                .map_err(ClientError::Protocol)?;
+            admit_reply(&request, reply)
         }
     }
     let key = symbol_key("retained-selected-row");
