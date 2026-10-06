@@ -1367,7 +1367,10 @@ remote_unit_enum!(
         ArrayFixed,
         ArrayConstExpression,
         ArrayIncomplete,
-        CQualified
+        CQualified,
+        KeyOf,
+        IndexedAccess,
+        TypeOf
     ]
 );
 remote_unit_enum!(
