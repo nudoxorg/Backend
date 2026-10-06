@@ -188,7 +188,7 @@ pub enum PublicationExchangeError {
     },
     /// A complete response or local proof failed publication admission.
     Invalid(ClientError),
-    /// Cancellation arrived between complete frames.
+    /// Cancellation arrived between I/O attempts, possibly inside a frame.
     Cancelled,
     /// The fixed publication budget expired during local validation/work.
     BudgetExpired(PublicationExchangeBudget),
@@ -742,8 +742,9 @@ impl LocalSubscriptionTransport {
     }
 
     /// Terminal best-effort release without opening a replacement socket.
-    /// Read and write each have a 50ms socket timeout; this does not promise
-    /// preemption of native syscalls, scheduling, or decoding.
+    /// Any abandoned response drain and this Cancel share one real 50ms
+    /// deadline. Per-attempt timeouts use the remaining allowance; this does
+    /// not promise preemption of native syscalls, scheduling, or decoding.
     /// # Errors
     /// Returns an I/O or protocol error when this exact socket cannot release
     /// the lease; the caller must not assume successful producer cleanup.

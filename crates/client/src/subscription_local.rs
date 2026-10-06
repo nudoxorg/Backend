@@ -36,6 +36,18 @@ use std::{
 #[cfg(any(unix, windows))]
 const CONNECTION_FRAME_BUDGET: usize = 240;
 
+#[cfg(any(unix, windows))]
+const TERMINAL_CLEANUP_ALLOWANCE: Duration = Duration::from_millis(50);
+
+/// Private, affine permission to spend only the remaining teardown allowance
+/// on the exact held lease/socket after its abandoned response was discarded.
+#[cfg(any(unix, windows))]
+struct TerminalCleanup {
+    lease: LocalSubscriptionId,
+    connection: ConnectionId,
+    deadline: Instant,
+}
+
 /// Identity for one physical connection, including each replacement after a
 /// frame budget or interrupted exchange. A retained clone prevents allocator
 /// reuse from making a stale socket appear current.
@@ -167,6 +179,7 @@ pub struct LocalSubscriptionTransport {
     io_timeout: Duration,
     frames_on_connection: usize,
     next_request_id: u64,
+    terminal_cleanup: Option<TerminalCleanup>,
 }
 
 #[cfg(any(unix, windows))]
@@ -222,6 +235,7 @@ impl LocalSubscriptionTransport {
             io_timeout,
             frames_on_connection: 0,
             next_request_id: 1,
+            terminal_cleanup: None,
         })
     }
 
@@ -245,6 +259,7 @@ impl LocalSubscriptionTransport {
             io_timeout: timeout,
             frames_on_connection: 0,
             next_request_id: 1,
+            terminal_cleanup: None,
         }
     }
 
@@ -606,9 +621,10 @@ impl LocalSubscriptionTransport {
     /// The stream's configured I/O timeout controls tick granularity. The
     /// callback runs before each potentially blocking socket operation and
     /// after readiness timeouts; keep it short and nonblocking. A stalled,
-    /// cancelled, closed, or malformed exchange retires this socket unless
+    /// cancelled, closed, or malformed raw exchange retires this socket unless
     /// typed progress proves it stopped before any request or response bytes
-    /// touched the stream. A stall after any I/O does not prove the producer
+    /// touched the stream. Held-lease operations may privately discard the
+    /// exact pending response before drop solely for terminal cancellation. A stall after any I/O does not prove the producer
     /// rejected the request; subscription callers must resume their exact
     /// retained lease or reacquire and fully admit a root.
     ///
@@ -622,6 +638,22 @@ impl LocalSubscriptionTransport {
         deadline: Instant,
         tick: impl FnMut(LocalControlExchangeProgress) -> LocalControlExchangeDecision,
     ) -> Result<LocalControlResponse, LocalSubscriptionExchangeError> {
+        self.request_with_tick_cleanup(request, deadline, tick, None)
+    }
+
+    fn request_with_tick_cleanup(
+        &mut self,
+        request: &LocalControlRequest,
+        deadline: Instant,
+        tick: impl FnMut(LocalControlExchangeProgress) -> LocalControlExchangeDecision,
+        held_lease: Option<LocalSubscriptionId>,
+    ) -> Result<LocalControlResponse, LocalSubscriptionExchangeError> {
+        if self.terminal_cleanup.is_some() {
+            self.retire_connection();
+            return Err(LocalSubscriptionExchangeError::Setup(ClientError::Io(
+                "transport awaits terminal lease cancellation".to_owned(),
+            )));
+        }
         if self.lifecycle == Lifecycle::Released {
             return Err(LocalSubscriptionExchangeError::Setup(ClientError::Io(
                 "transport already released by a terminal lease cancellation".to_owned(),
@@ -629,20 +661,79 @@ impl LocalSubscriptionTransport {
         }
         self.prepare_request_until(deadline)
             .map_err(LocalSubscriptionExchangeError::Setup)?;
+        let mut drained = None;
         let result = {
             let mut exchange = self
                 .client
                 .begin_exchange(request, deadline)
                 .map_err(|error| LocalSubscriptionExchangeError::Setup(map_control_error(error)))?;
-            exchange.wait_with(tick)
+            let result = exchange.wait_with(tick);
+            if let (Err(error), Some(lease)) = (&result, held_lease) {
+                if matches!(
+                    error.failure,
+                    backend_replication::LocalControlExchangeFailure::Cancelled
+                        | backend_replication::LocalControlExchangeFailure::Stalled
+                ) && matches!(
+                    error.progress.phase,
+                    backend_replication::LocalControlExchangePhase::ReadingHeader
+                        | backend_replication::LocalControlExchangePhase::ReadingBody
+                ) {
+                    let cleanup_deadline = Instant::now() + TERMINAL_CLEANUP_ALLOWANCE;
+                    if exchange
+                        .discard_response_until(
+                            cleanup_deadline,
+                            |stream, remaining| stream.set_read_timeout(Some(remaining)),
+                            |response| match response {
+                                LocalControlResponse::Subscription(response) => {
+                                    response.lease() == lease
+                                }
+                                LocalControlResponse::Rejected { .. } => true,
+                                _ => false,
+                            },
+                        )
+                        .is_ok()
+                    {
+                        drained = Some(cleanup_deadline);
+                    }
+                }
+            }
+            result
         };
+        if let Some(cleanup_deadline) = drained {
+            // Restore normal timeout configuration before terminal Cancel;
+            // Cancel then applies only its remaining real-time allowance.
+            if self
+                .client
+                .stream()
+                .set_read_timeout(Some(self.io_timeout))
+                .and_then(|()| {
+                    self.client
+                        .stream()
+                        .set_write_timeout(Some(self.io_timeout))
+                })
+                .is_ok()
+                && Instant::now() < cleanup_deadline
+            {
+                if let Some(lease) = held_lease {
+                    self.frames_on_connection = self.frames_on_connection.saturating_add(1);
+                    self.terminal_cleanup = Some(TerminalCleanup {
+                        lease,
+                        connection: self.connection.clone(),
+                        deadline: cleanup_deadline,
+                    });
+                }
+            } else {
+                drained = None;
+                self.retire_connection();
+            }
+        }
         match result {
             Ok(response) => {
                 self.frames_on_connection = self.frames_on_connection.saturating_add(1);
                 Ok(response)
             }
             Err(error) => {
-                if !error.request_was_not_sent() {
+                if !error.request_was_not_sent() && drained.is_none() {
                     self.retire_connection();
                 }
                 Err(LocalSubscriptionExchangeError::Exchange(error))
@@ -774,8 +865,9 @@ impl LocalSubscriptionTransport {
     }
 
     /// Best-effort terminal release on this exact socket. Never reconnects
-    /// or rotates a connection during teardown. The two socket waits each
-    /// use the caller's short timeout; native configuration is not preemptible.
+    /// or rotates a connection during teardown. Drain and Cancel share one
+    /// absolute deadline. Each I/O wait uses its remaining allowance; OS
+    /// granularity, scheduling and decoding are not preemptible.
     pub(crate) fn cancel_lease_current(
         &mut self,
         lease: LocalSubscriptionId,
@@ -793,6 +885,19 @@ impl LocalSubscriptionTransport {
             ));
         }
         self.lifecycle = Lifecycle::Released;
+        let cleanup = self.terminal_cleanup.take();
+        let deadline = match cleanup {
+            Some(cleanup) if cleanup.lease == lease && cleanup.connection == held_on => {
+                cleanup.deadline
+            }
+            Some(_) => {
+                self.retire_connection();
+                return Err(ClientError::Protocol(
+                    "terminal cleanup belongs to another lease/socket".to_owned(),
+                ));
+            }
+            None => Instant::now() + timeout,
+        };
         let result = (|| {
             self.client
                 .stream()
@@ -807,7 +912,21 @@ impl LocalSubscriptionTransport {
                 request_id,
                 operation: LocalSubscriptionOperation::Cancel { lease },
             });
-            match self.client.request(&request).map_err(map_control_error)? {
+            let mut exchange = self
+                .client
+                .begin_exchange(&request, deadline)
+                .map_err(map_control_error)?;
+            match exchange
+                .wait_exact_with_io_deadline(
+                    |_| LocalControlExchangeDecision::Continue,
+                    |stream, remaining| {
+                        stream
+                            .set_read_timeout(Some(remaining))
+                            .and_then(|()| stream.set_write_timeout(Some(remaining)))
+                    },
+                )
+                .map_err(|error| ClientError::Protocol(error.to_string()))?
+            {
                 LocalControlResponse::Subscription(LocalSubscriptionResponse::Cancelled {
                     request_id: observed,
                     lease: acknowledged,
@@ -927,7 +1046,7 @@ impl LocalSubscriptionTransport {
             request_id,
             operation,
         });
-        match self.request_with_tick(&raw, deadline, tick)? {
+        match self.request_with_tick_cleanup(&raw, deadline, tick, expected_lease)? {
             LocalControlResponse::Subscription(response) => {
                 if expected_lease.is_some_and(|expected| response.lease() != expected) {
                     return Err(LocalSubscriptionExchangeError::Invalid(
@@ -1507,5 +1626,148 @@ mod exchange_tests {
         );
         assert_eq!(transport.connection(), connection);
         server.join().expect("owner response");
+    }
+    #[test]
+    fn abandoned_held_page_discards_partial_response_then_cancels_on_exact_socket() {
+        for prefix in [2, 5] {
+            let (stream, mut peer) = UnixStream::pair().expect("socket pair");
+            let lease = LocalSubscriptionId::from_bytes([91; 16]);
+            let mut transport = LocalSubscriptionTransport::from_stream(stream);
+            let connection = transport.connection();
+            let (release, await_release) = std::sync::mpsc::channel();
+            let owner = std::thread::spawn(move || {
+                let raw = read_frame(&mut peer, control_limits()).expect("page request");
+                let request = decode_request(&raw, control_limits()).expect("decode page");
+                assert!(
+                    matches!(&request, LocalControlRequest::Subscription(r) if matches!(r.operation, LocalSubscriptionOperation::Page { lease: id, .. } if id == lease))
+                );
+                let body = encode_response(
+                    &LocalControlResponse::Rejected {
+                        request_id: request.request_id(),
+                        message: "abandoned response is never admitted".to_owned(),
+                    },
+                    control_limits(),
+                )
+                .expect("encode abandoned response");
+                let mut frame = (body.len() as u32).to_be_bytes().to_vec();
+                frame.extend(body);
+                peer.write_all(&frame[..prefix]).expect("partial response");
+                await_release
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("mid-frame cancellation");
+                peer.write_all(&frame[prefix..])
+                    .expect("exact pending suffix");
+                let raw = read_frame(&mut peer, control_limits()).expect("cancel on same socket");
+                let request = decode_request(&raw, control_limits()).expect("decode cancel");
+                assert!(
+                    matches!(&request, LocalControlRequest::Subscription(r) if matches!(r.operation, LocalSubscriptionOperation::Cancel { lease: id } if id == lease))
+                );
+                write_frame(
+                    &mut peer,
+                    &encode_response(
+                        &LocalControlResponse::Subscription(LocalSubscriptionResponse::Cancelled {
+                            request_id: request.request_id(),
+                            lease,
+                        }),
+                        control_limits(),
+                    )
+                    .expect("encode cancel"),
+                    control_limits(),
+                )
+                .expect("acknowledge cancel");
+            });
+            let mut notified = false;
+            let error = transport
+                .lease_request_with_tick(
+                    LocalSubscriptionOperation::Page {
+                        lease,
+                        page: Box::from([]),
+                        credit: 4,
+                    },
+                    Instant::now() + Duration::from_secs(1),
+                    |progress| {
+                        let partial = if prefix == 2 {
+                            progress.header_offset == 2
+                        } else {
+                            progress.body_offset == 1
+                        };
+                        if partial && !notified {
+                            notified = true;
+                            release.send(()).expect("release pending suffix");
+                            LocalControlExchangeDecision::Cancel
+                        } else {
+                            LocalControlExchangeDecision::Continue
+                        }
+                    },
+                )
+                .expect_err("ordinary cancellation is preserved");
+            assert!(
+                matches!(error, LocalSubscriptionExchangeError::Exchange(e) if e.failure == LocalControlExchangeFailure::Cancelled)
+            );
+            assert!(transport.terminal_cleanup.is_some());
+            assert_eq!(transport.connection(), connection);
+            transport
+                .cancel_lease_current(lease, connection.clone(), Duration::from_millis(50))
+                .expect("bounded same-socket cancel");
+            assert_eq!(transport.connection(), connection);
+            assert!(transport.terminal_cleanup.is_none());
+            assert_eq!(transport.lifecycle, Lifecycle::Released);
+            owner.join().expect("one socket owner");
+        }
+    }
+
+    #[test]
+    fn abandoned_held_page_missing_suffix_retires_without_a_cancel_or_redial() {
+        let (stream, mut peer) = UnixStream::pair().expect("socket pair");
+        let lease = LocalSubscriptionId::from_bytes([92; 16]);
+        let mut transport = LocalSubscriptionTransport::from_stream(stream);
+        let (release, await_release) = std::sync::mpsc::channel();
+        let owner = std::thread::spawn(move || {
+            read_frame(&mut peer, control_limits()).expect("page request");
+            peer.write_all(&[0, 0]).expect("partial header");
+            await_release
+                .recv_timeout(Duration::from_secs(1))
+                .expect("cancellation");
+            peer.set_read_timeout(Some(Duration::from_secs(1)))
+                .expect("bound owner observation");
+            let mut byte = [0];
+            assert_eq!(
+                peer.read(&mut byte).expect("retired socket closes"),
+                0,
+                "no Cancel frame or replay"
+            );
+        });
+        let started = Instant::now();
+        let mut notified = false;
+        let error = transport
+            .lease_request_with_tick(
+                LocalSubscriptionOperation::Page {
+                    lease,
+                    page: Box::from([]),
+                    credit: 4,
+                },
+                started + Duration::from_secs(1),
+                |progress| {
+                    if progress.header_offset == 2 && !notified {
+                        notified = true;
+                        release.send(()).expect("owner notified");
+                        LocalControlExchangeDecision::Cancel
+                    } else {
+                        LocalControlExchangeDecision::Continue
+                    }
+                },
+            )
+            .expect_err("cancel preserved after failed drain");
+        assert!(
+            matches!(error, LocalSubscriptionExchangeError::Exchange(e) if e.failure == LocalControlExchangeFailure::Cancelled)
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(250),
+            "real bounded cleanup"
+        );
+        assert!(transport.client.requires_reconnect());
+        assert!(transport.terminal_cleanup.is_none());
+        assert!(transport.peer.is_none());
+        owner.join().expect("retired exact socket");
     }
 }
