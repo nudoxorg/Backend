@@ -3965,14 +3965,7 @@ pub(in crate::builtin) fn commit_builtin_intent(
     request_id: u64,
     intent: &BuiltinIntent,
 ) -> Result<(), BuiltinModelError> {
-    let intent = if intent.has_capture_changes() && intent.capture_basis().is_none() {
-        let snapshot = daemon.engine().daemon().owner().snapshot();
-        intent
-            .clone()
-            .with_capture_basis(capture_basis_for_snapshot(&snapshot)?)?
-    } else {
-        intent.clone()
-    };
+    let intent = prepare_builtin_intent(daemon, intent)?;
     let request = BuiltinModel.request_id(&intent);
     let expected = daemon.engine().daemon().owner().head().expectation();
     let receiver = daemon
@@ -4002,6 +3995,25 @@ pub(in crate::builtin) fn commit_builtin_intent(
             "builtin intent was sent to the wrong owner lane".to_owned(),
         )),
     }
+}
+
+/// Adds the authenticated selected-base binding required by the current
+/// capture intent format. Callers that need the canonical request identity
+/// before committing must hash this prepared value, then commit that exact
+/// value so the persisted capture rows and operation receipt share one ID.
+pub(in crate::builtin) fn prepare_builtin_intent(
+    daemon: &ProductDaemon,
+    intent: &BuiltinIntent,
+) -> Result<BuiltinIntent, BuiltinModelError> {
+    let intent = if intent.has_capture_changes() && intent.capture_basis().is_none() {
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        intent
+            .clone()
+            .with_capture_basis(capture_basis_for_snapshot(&snapshot)?)?
+    } else {
+        intent.clone()
+    };
+    Ok(intent)
 }
 
 fn symbol_row_by_label<'a>(

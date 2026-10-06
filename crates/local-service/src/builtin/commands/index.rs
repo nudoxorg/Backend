@@ -691,9 +691,9 @@ pub(super) fn finish_index_scan(
                 Some(key) => capture_intent.with_operation_key(key)?,
                 None => capture_intent,
             };
+            let capture_request = super::adapter::prepare_builtin_intent(daemon, &capture_intent)?;
             let capture_request_identity =
-                backend_engine::WorkspaceModel::request_id(&BuiltinModel, &capture_intent);
-            let capture_request = capture_intent.clone();
+                backend_engine::WorkspaceModel::request_id(&BuiltinModel, &capture_request);
             semantic_authority.commit_product_selection_transaction(Vec::new(), || {
                 super::adapter::commit_builtin_intent(daemon, request_id, &capture_request)
             })?;
