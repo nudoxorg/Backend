@@ -1595,7 +1595,7 @@ impl Render for Map {
                 if current && lease.restore_scene { graph.focus_handle(cx).focus(window, cx); }
             }
             let handle = graph.focus_handle(cx);
-            self.mounted_focus = handle.contains_focused(window, cx).then(|| {
+            self.mounted_focus = (handle.is_focused(window) || handle.contains_focused(window, cx)).then(|| {
                 let mut receipt = self.mount_focus_lease(window, cx)?;
                 // The component admits parking its own retiring descendants,
                 // but their old control cannot authorize a guessed new stop.
