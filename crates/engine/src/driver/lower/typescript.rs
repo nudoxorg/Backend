@@ -4001,10 +4001,11 @@ fn native_tsz_member_symbol(
 ) -> Option<TszSymbolId> {
     let member_name = arena.get_identifier_at(member_name)?.escaped_text.as_str();
     let receiver_type = checker.get_type_of_node(receiver);
-    let owner = checker.ctx.resolve_type_to_symbol_id(receiver_type)?;
+    let owner = checker.ctx.resolve_type_to_symbol_id(receiver_type);
+    let owner = owner?;
     let owner = binder.resolve_import_symbol(owner).unwrap_or(owner);
     let owner = binder.symbols.get(owner)?;
-    owner
+    let member = owner
         .members
         .as_ref()
         .and_then(|members| members.get(member_name))
@@ -4013,7 +4014,8 @@ fn native_tsz_member_symbol(
                 .exports
                 .as_ref()
                 .and_then(|exports| exports.get(member_name))
-        })
+        });
+    member
 }
 
 /// Uses TSZ's exact bound symbol and stable declaration file/span to identify
@@ -10057,7 +10059,8 @@ mod lane_tests {
     use backend_frontend_typescript::legacy::{Reference, Report, source_digest};
     use backend_frontend_typescript::{
         TszCheckerOptions, TszEnvironmentFingerprint, TszFileInput, TszProject,
-        TszProjectAuthority, TszProjectOptions, TszProjectSemanticOptions,
+        TszProjectAuthority, TszProjectModuleRequestKind, TszProjectModuleResolution,
+        TszProjectModuleResolutionTarget, TszProjectOptions, TszProjectSemanticOptions,
     };
     use backend_semantic::ir::{
         ComputedType, EntityKind, FragmentError, FragmentView, OccurrenceFault, OccurrenceTarget,
@@ -10232,11 +10235,16 @@ mod lane_tests {
             .map_err(LaneError::from)
     }
 
-    fn native_tsz_project(files: &[(&str, &str)]) -> Result<TszProjectAuthority, LaneError> {
+    fn native_tsz_project_with_resolutions(
+        files: &[(&str, &str)],
+        module_resolutions: &[TszProjectModuleResolution],
+    ) -> Result<TszProjectAuthority, LaneError> {
         let mut checker = TszCheckerOptions::default();
         checker.no_lib = true;
         let options = TszProjectOptions {
             checker,
+            semantic_options: TszProjectSemanticOptions::declaration_scoped(),
+            module_resolutions: module_resolutions.to_vec(),
             environment: TszEnvironmentFingerprint::from_sha256([0x71; 32]),
         };
         let mut authority = TszProjectAuthority::new();
@@ -10256,8 +10264,78 @@ mod lane_tests {
         Ok(authority)
     }
 
-    fn collect_native_tsz_file<'source>(
+    fn module_resolution(
+        importer_path: &str,
+        specifier: &str,
+        request_kind: TszProjectModuleRequestKind,
+        target: TszProjectModuleResolutionTarget,
+    ) -> TszProjectModuleResolution {
+        TszProjectModuleResolution {
+            importer_path: importer_path.to_owned(),
+            specifier: specifier.to_owned(),
+            request_kind,
+            resolution_mode: None,
+            target,
+        }
+    }
+
+    fn assert_exact_module_resolution_metadata(
         project: &TszProject,
+        expected: &[TszProjectModuleResolution],
+    ) {
+        let program = project.program();
+        let outcomes = program
+            .project_module_resolution_outcomes
+            .as_ref()
+            .expect("exact module-resolution outcomes are attached to the merged program");
+        let mut actual = outcomes
+            .iter()
+            .map(|((importer, specifier, mode, kind), outcome)| {
+                (
+                    program.files[*importer].file_name.clone(),
+                    specifier.clone(),
+                    format!("{kind:?}"),
+                    format!("{mode:?}"),
+                    format!("{outcome:?}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut expected = expected
+            .iter()
+            .map(|resolution| {
+                let target = match &resolution.target {
+                    TszProjectModuleResolutionTarget::File { path } => {
+                        let index = program
+                            .files
+                            .iter()
+                            .position(|file| &file.file_name == path)
+                            .expect("file target belongs to the admitted program");
+                        format!("File({index})")
+                    }
+                    TszProjectModuleResolutionTarget::External { identity } => {
+                        format!("External {{ identity: {identity:?} }}")
+                    }
+                    TszProjectModuleResolutionTarget::Unresolved => "Unresolved".to_owned(),
+                };
+                (
+                    resolution.importer_path.clone(),
+                    resolution.specifier.clone(),
+                    format!("{:?}", resolution.request_kind),
+                    format!("{:?}", resolution.resolution_mode),
+                    target,
+                )
+            })
+            .collect::<Vec<_>>();
+        actual.sort();
+        expected.sort();
+        assert_eq!(
+            actual, expected,
+            "every source import has one exact project outcome, including external/unresolved requests"
+        );
+    }
+
+    fn collect_native_tsz_file<'source>(
+        project: &'source TszProject,
         path: &str,
         source: &'source str,
     ) -> Result<FactSet<'source>, LaneError> {
@@ -10320,14 +10398,62 @@ mod lane_tests {
         let spec = include_str!(
             "../../../tests/fixtures/typescript_nest_reference/src/app.controller.spec.ts"
         );
-        let authority = native_tsz_project(&[
-            ("src/app.controller.ts", controller),
-            ("src/app.service.ts", service),
-            ("src/app.controller.spec.ts", spec),
-        ])?;
+        let module_resolutions = vec![
+            module_resolution(
+                "src/app.controller.ts",
+                "@nestjs/common",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::Unresolved,
+            ),
+            module_resolution(
+                "src/app.controller.ts",
+                "./app.service.js",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File {
+                    path: "src/app.service.ts".to_owned(),
+                },
+            ),
+            module_resolution(
+                "src/app.service.ts",
+                "@nestjs/common",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::Unresolved,
+            ),
+            module_resolution(
+                "src/app.controller.spec.ts",
+                "@nestjs/testing",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::Unresolved,
+            ),
+            module_resolution(
+                "src/app.controller.spec.ts",
+                "./app.controller.js",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File {
+                    path: "src/app.controller.ts".to_owned(),
+                },
+            ),
+            module_resolution(
+                "src/app.controller.spec.ts",
+                "./app.service.js",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File {
+                    path: "src/app.service.ts".to_owned(),
+                },
+            ),
+        ];
+        let authority = native_tsz_project_with_resolutions(
+            &[
+                ("src/app.controller.ts", controller),
+                ("src/app.service.ts", service),
+                ("src/app.controller.spec.ts", spec),
+            ],
+            &module_resolutions,
+        )?;
         let project = authority
             .project()
             .ok_or(LaneError::Missing("Nest TSZ project"))?;
+        assert_exact_module_resolution_metadata(project, &module_resolutions);
 
         let controller_facts =
             collect_native_tsz_file(project, "src/app.controller.ts", controller)?;
@@ -10382,15 +10508,45 @@ mod lane_tests {
         let reexport = "export { Service as RenamedService } from './impl.js';\n";
         let dependency = "export declare class DependencyService { getHello(): string; }\n";
         let caller = "import { RenamedService } from './barrel.js';\nimport { DependencyService } from '../node_modules/@fixture/lib/index.js';\nconst local = new RenamedService();\nconst dependency = new DependencyService();\nexport function useLocal() { return local.getHello('local'); }\nexport function useDependency() { return dependency.getHello(); }\n";
-        let authority = native_tsz_project(&[
-            ("src/impl.ts", implementation),
-            ("src/barrel.ts", reexport),
-            ("node_modules/@fixture/lib/index.d.ts", dependency),
-            ("src/caller.ts", caller),
-        ])?;
+        let module_resolutions = vec![
+            module_resolution(
+                "src/barrel.ts",
+                "./impl.js",
+                TszProjectModuleRequestKind::EsmReExport,
+                TszProjectModuleResolutionTarget::File {
+                    path: "src/impl.ts".to_owned(),
+                },
+            ),
+            module_resolution(
+                "src/caller.ts",
+                "./barrel.js",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File {
+                    path: "src/barrel.ts".to_owned(),
+                },
+            ),
+            module_resolution(
+                "src/caller.ts",
+                "../node_modules/@fixture/lib/index.js",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File {
+                    path: "node_modules/@fixture/lib/index.d.ts".to_owned(),
+                },
+            ),
+        ];
+        let authority = native_tsz_project_with_resolutions(
+            &[
+                ("src/impl.ts", implementation),
+                ("src/barrel.ts", reexport),
+                ("node_modules/@fixture/lib/index.d.ts", dependency),
+                ("src/caller.ts", caller),
+            ],
+            &module_resolutions,
+        )?;
         let project = authority
             .project()
             .ok_or(LaneError::Missing("alias TSZ project"))?;
+        assert_exact_module_resolution_metadata(project, &module_resolutions);
         let caller_facts = collect_native_tsz_file(project, "src/caller.ts", caller)?;
         let targets = staged_tsz_coordinates(&caller_facts)?;
         let implementation_start = u32::try_from(
