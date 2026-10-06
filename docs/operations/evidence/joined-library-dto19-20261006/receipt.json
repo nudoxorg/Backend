@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "tested_commit": "9f44dae6342fb286178178bda5be33ea79d969a4",
+  "tested_tree": "ad83c231bb9f1d4612093d4c6ff14dcf916cd6b3",
+  "library": {
+    "passed": 287,
+    "failed": 0,
+    "ignored_existing": 1
+  },
+  "source_changed_during_build": false,
+  "evidence": {
+    "guarded-run.json": "f5faf93e1ebaabf9d9879ed40e036184ecc66d78ba1076299da42b894a42b4a1",
+    "library.txt": "960ca88e27ab20beea8d65485d52ed923bc3ebb300be9f3d594001dbe97efecd"
+  },
+  "scope": "Complete joined backend-library unit suite, including capability-only row-sharing rebind and ranked cursor proofs. This is not CLI/MCP whole-package acceptance. Public daemon/client paging admission and same-manifest/new-capability journal binding remain real runtime blockers."
+}
