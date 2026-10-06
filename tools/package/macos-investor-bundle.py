@@ -1340,21 +1340,33 @@ def write_application_launcher(macos: Path) -> None:
     compiler paths remain available, but a bundle default must not replace
     that project-local selection with the bundled legacy checker.
     """
-    launcher = macos / "Nudox"
-    launcher.write_text(
+    environment = (
         "#!/bin/sh\n"
         "set -eu\n"
-        'contents=$(CDPATH= cd "$(dirname "$0")/.." && pwd)\n'
+        'self=$0\n'
+        'while [ -L "$self" ]; do\n'
+        '  link=$(/usr/bin/readlink "$self")\n'
+        '  case "$link" in\n'
+        '    /*) self=$link ;;\n'
+        '    *) self="$(dirname "$self")/$link" ;;\n'
+        '  esac\n'
+        'done\n'
+        'contents=$(CDPATH= cd "$(dirname "$self")/.." && pwd -P)\n'
         'export NUDOX_DOTNET="${NUDOX_DOTNET-$contents/Resources/dotnet/dotnet}"\n'
         'export NUDOX_ROSLYN_HELPER="${NUDOX_ROSLYN_HELPER-$contents/Resources/Helpers/csharp/oracle.dll}"\n'
         'export NUDOX_GO_ORACLE="${NUDOX_GO_ORACLE-$contents/Resources/Helpers/go/oracle}"\n'
         'export NUDOX_GO_ORACLE_BIN="${NUDOX_GO_ORACLE_BIN-$contents/Resources/Helpers/go/oracle}"\n'
         'export NUDOX_PYREFLY="${NUDOX_PYREFLY-$contents/Resources/Helpers/python/pyrefly}"\n'
         'export NUDOX_TYPESCRIPT_NODE="${NUDOX_TYPESCRIPT_NODE-$contents/Resources/Helpers/typescript/node/bin/node}"\n'
-        'exec "$contents/MacOS/backend-desktop" "$@"\n',
-        encoding="utf-8",
     )
-    launcher.chmod(0o755)
+    # Package-manager links must initialize the same bundled helpers as Finder.
+    for name, executable in {
+        "Nudox": "backend-desktop", "nudox-cli": "backend-cli",
+        "nudox-mcp": "backend-mcp", "nudox-locald": "backend-locald",
+    }.items():
+        launcher = macos / name
+        launcher.write_text(environment + f'exec "$contents/MacOS/{executable}" "$@"\n', encoding="utf-8")
+        launcher.chmod(0o755)
 
 
 def main() -> int:

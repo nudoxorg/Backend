@@ -116,6 +116,21 @@ class LauncherEnvironmentTests(unittest.TestCase):
             values = dict.fromkeys(COMPILER_VARIABLES, "")
             self.assertEqual(self._run(launcher, values)["compiler"], values)
 
+    def test_package_manager_symlinks_preserve_helpers_and_arguments(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            gui, node = self._bundle(root)
+            for name, binary in {"nudox-cli": "backend-cli", "nudox-mcp": "backend-mcp", "nudox-locald": "backend-locald"}.items():
+                probe = gui.parent / binary
+                self._executable(probe, (gui.parent / "backend-desktop").read_text())
+                link = root / "bin" / name
+                link.parent.mkdir(exist_ok=True)
+                link.symlink_to(gui.parent / name)
+                observed = self._run(link, {})
+                self.assertEqual(Path(observed["node"]), node)
+                self.assertEqual(observed["compiler"], dict.fromkeys(COMPILER_VARIABLES))
+                self.assertEqual(observed["args"], ["--project", "project with spaces", "literal $(not executed)"])
+
 
 if __name__ == "__main__":
     unittest.main()

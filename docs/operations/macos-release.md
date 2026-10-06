@@ -107,7 +107,7 @@ read-back verification; only then is the RC published for Concourse discovery:
 
 ```sh
 python3 tools/package/release_contract.py candidate \
-  --candidate /absolute/path/release/candidate --candidate-tag v0.2.0-rc.1
+  --candidate /absolute/path/release/candidate --candidate-tag v0.2.0-rc.1-macos
 ```
 
 Concourse `nudox-backend-release/validate-candidate` then verifies the candidate against
@@ -129,3 +129,13 @@ Web shows its version/minimum OS, and all three legacy platform selections are u
 Future Windows/Linux CD extends native packaging/acceptance and independently promotes their
 channels. Backend index/worker deployment and dedicated Mac CI enrollment remain separate
 tracks in the NuDox root plan; this desktop lane does not deploy those servers.
+
+## Release pipeline handoff
+
+Use the shared [desktop release runbook](desktop-release-pipeline.md) for submission and
+promotion. The release contract now additionally requires `browser_download_launch` and
+`cli_mcp` in the Mac native QA record. Browser acceptance must retain the downloaded archive's
+quarantine and open through Finder/Gatekeeper, without xattr removal, ad-hoc re-signing,
+a Nix dev shell or build-machine-only compiler paths. This restores the release safeguard
+from the older recovery PR. `cargo bundle` creates a bundle; Developer ID signing and Apple
+notarization still come from this native release driver and the team's Apple credentials.
