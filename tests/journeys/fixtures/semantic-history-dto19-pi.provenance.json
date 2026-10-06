@@ -1,0 +1,11 @@
+{
+  "schema": "nudox.retained-history-fixture-provenance.v1",
+  "source_commit": "9f44dae6342fb286178178bda5be33ea79d969a4",
+  "source_tree": "ad83c231bb9f1d4612093d4c6ff14dcf916cd6b3",
+  "runtime_manifest_sha256": "08500de7a408dd4f6961f793f6b2a47570ece6e3b23d99a0ae3d53d8af873067",
+  "raw_original_path": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T092958Z-typescript-stock-tools-80ff6d0b-history-poll-7956a4b6/history-18.stdout",
+  "independent_history_observation_sha256": "48b8bad450ab54383e700e57613b4e418f3fc7f93c1ec93bc7f888b09947f31f",
+  "scope": "actual retained Published package history, not whole-package acceptance or replay authority",
+  "input_replay_status": "unproven",
+  "selected_images": 3
+}

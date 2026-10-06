@@ -128,6 +128,71 @@ class DerivedHistoryAwaitTests(unittest.TestCase):
                 self.wait([invalid])
 
 
+class CompletePackageHistoryTests(unittest.TestCase):
+    def setUp(self):
+        self.value = json.loads((SCRIPT_DIRECTORY.parent / "fixtures/semantic-history-dto19-pi.json").read_bytes())
+        self.case = runner.ProjectCase("pi", Path(self.value["selected_source_frontier"]["package"]["value"]), False, 0,
+                                      ({"profile": "typescript"},))
+        proof = self.value["records"][0]["history_status"]["proof"]
+        self.encoded = runner.native_history_identity_bytes(proof)
+        self.package_identity = bytes(proof["package_identity"])
+
+    def check(self, value=None, hash_function=None):
+        def golden_digest(encoded):
+            self.assertEqual(encoded, self.encoded)
+            # The retained real proof was independently hashed using pinned b3sum.
+            # This test proves exact admission/encoding, not a Python BLAKE3 implementation.
+            return self.package_identity
+        return runner.assert_semantic_versions(value or self.value, self.case,
+            {"typescript": (1, 0)}, 100, 1000, "fixture",
+            package_hash=hash_function or golden_digest)
+
+    def test_real_three_image_global_frontier_is_admitted(self):
+        admitted = self.check()
+        self.assertEqual(admitted["history_state"], "published")
+        self.assertNotIn("selected_source_frontier", self.value["records"][0])
+        self.assertEqual(admitted["selected_source_frontier"], self.value["selected_source_frontier"])
+        self.assertEqual(len(self.value["records"][0]["history_status"]["proof"]["images"]), 3)
+
+    def test_package_hash_verification_is_required(self):
+        with self.assertRaises(runner.Blocked):
+            runner.assert_semantic_versions(self.value, self.case,
+                {"typescript": (1, 0)}, 100, 1000, "fixture")
+        with self.assertRaisesRegex(runner.AcceptanceError, "package identity"):
+            self.check(hash_function=lambda _: bytes(32))
+
+    def test_wrong_package_coordinate_and_unknown_proof_fields_fail(self):
+        for field, replacement in (("target_package", "/other"),
+                                   ("target_coordinate", "pkg:npm/other@1"),
+                                   ("unexpected", True)):
+            value = json.loads(json.dumps(self.value))
+            value["records"][0]["history_status"]["proof"][field] = replacement
+            with self.subTest(field=field), self.assertRaises(runner.AcceptanceError):
+                self.check(value)
+
+    def test_ordinal_lineage_final_tip_and_replay_are_not_relaxed(self):
+        for mutation in ("ordinal", "parents", "tip", "replay", "bool-ordinal"):
+            value = json.loads(json.dumps(self.value));proof = value["records"][0]["history_status"]["proof"]
+            if mutation == "ordinal": proof["images"][1]["image"]["artifact_ordinal"] = 0
+            elif mutation == "bool-ordinal": proof["images"][0]["image"]["artifact_ordinal"] = False
+            elif mutation == "parents": proof["images"][1]["parent_commits"] = []
+            elif mutation == "tip": proof["reference_tip"] = [0]*32
+            elif mutation == "replay": proof["input_replay_status"] = "proven"
+            with self.subTest(mutation=mutation), self.assertRaises(runner.AcceptanceError):
+                self.check(value)
+
+    def test_conflicting_duplicate_frontier_fails(self):
+        value = json.loads(json.dumps(self.value))
+        value["records"][0]["selected_source_frontier"] = {**value["selected_source_frontier"], "file_count": 999}
+        with self.assertRaisesRegex(runner.AcceptanceError, "different Project frontier"):
+            self.check(value)
+
+    def test_selection_revision_must_fit_typed_u64(self):
+        value = json.loads(json.dumps(self.value))
+        value["records"][0]["history_status"]["proof"]["selection"]["selection_revision"] = 2**64
+        with self.assertRaises(runner.AcceptanceError): self.check(value)
+
+
 class SnapshotToolchainAdmissionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()

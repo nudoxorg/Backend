@@ -2442,6 +2442,51 @@ def await_selected_history(
     raise AssertionError("bounded history wait exhausted without classification")
 
 
+def native_history_identity_bytes(proof: dict[str, Any]) -> bytes:
+    """DTO19 identity domain, matching the frozen Rust package proof encoder."""
+    selected = proof["selection"]
+    payload = bytearray(b"backend.replication.selected-native-history-package.v1\0")
+    for name in ("target_package", "target_coordinate"):
+        encoded = proof[name].encode("utf-8")
+        payload += len(encoded).to_bytes(8, "little") + encoded
+    payload += bytes(selected["profile"]) + bytes(selected["namespace"])
+    payload += bytes(selected["profile"]) + bytes(selected["source_coordinate"])
+    payload += selected["selection_revision"].to_bytes(8, "little")
+    for name in ("selected_root", "closure_id", "catalog_root"):
+        payload += bytes(selected[name])
+    payload += len(proof["images"]).to_bytes(8, "little")
+    for member in proof["images"]:
+        image = member["image"]
+        payload += image["artifact_ordinal"].to_bytes(4, "little")
+        for name in ("semantic_generation", "manifest_root", "image_identity"):
+            payload += bytes(image[name])
+    return bytes(payload)
+
+
+def bounded_history_hasher(tool: Path | None, deadline: Deadline,
+                           witness: dict[str, Any]) -> Callable[[bytes], bytes]:
+    """Hash with an explicit observer tool, never a compiler environment override."""
+    def digest(payload: bytes) -> bytes:
+        if tool is None:
+            raise Blocked("published package history requires explicit --history-hash-tool (b3sum) for independent identity verification")
+        if not tool.is_absolute() or tool.is_symlink():
+            raise Blocked("history hash executable must be an absolute final regular path")
+        before = read_bounded_regular(tool, 32 * 1024 * 1024, "history hash executable")
+        tool_sha = sha256_bytes(before)
+        if witness and witness != {"path": str(tool), "sha256": tool_sha}:
+            raise AcceptanceError("history hash executable changed during observation")
+        witness.update({"path": str(tool), "sha256": tool_sha})
+        stdout, stderr, code, _ = run_bounded_process(
+            [str(tool), "--no-names"], {}, payload, deadline, "native history identity hash")
+        after = read_bounded_regular(tool, 32 * 1024 * 1024, "history hash executable")
+        if sha256_bytes(after) != tool_sha:
+            raise AcceptanceError("history hash executable changed during execution")
+        if code != 0 or stderr or re.fullmatch(rb"[0-9a-f]{64}\n?", stdout) is None:
+            raise AcceptanceError("history hash executable did not return one bounded BLAKE3 digest")
+        return bytes.fromhex(stdout.decode().strip())
+    return digest
+
+
 def assert_semantic_versions(
     value: Any,
     case: ProjectCase,
@@ -2449,6 +2494,7 @@ def assert_semantic_versions(
     absolute_inline_maximum: int,
     maximum_files: int,
     label: str,
+    package_hash: Callable[[bytes], bytes] | None = None,
 ) -> dict[str, Any]:
     if (
         not isinstance(value, dict)
@@ -2511,11 +2557,8 @@ def assert_semantic_versions(
             proof = history.get("proof")
             if not isinstance(proof, dict) or set(proof) != {
                 "selection",
-                "image",
-                "reference_tip",
-                "reachable_commit",
-                "parent_commits",
-                "input_replay_status",
+                "target_package", "target_coordinate", "package_identity", "images",
+                "reference_tip", "reachable_commit", "input_replay_status",
             }:
                 raise AcceptanceError(f"{label} published history proof is incomplete")
             selection = proof.get("selection")
@@ -2533,7 +2576,7 @@ def assert_semantic_versions(
                 }
                 or selection.get("profile") != list(code)
                 or type(selection.get("selection_revision")) is not int
-                or selection["selection_revision"] < 0
+                or not 0 <= selection["selection_revision"] < 2**64
                 or not byte_array(selection.get("namespace"), 16)
                 or any(
                     not byte_array(selection.get(name), 32)
@@ -2548,52 +2591,52 @@ def assert_semantic_versions(
                 raise AcceptanceError(
                     f"{label} history proof is not bound to the typed profile selection"
                 )
-            image = proof.get("image")
-            if (
-                not isinstance(image, dict)
-                or set(image)
-                != {
-                    "artifact_ordinal",
-                    "semantic_generation",
-                    "manifest_root",
-                    "image_identity",
-                }
-                or type(image.get("artifact_ordinal")) is not int
-                or image["artifact_ordinal"] < 0
-                or any(
-                    not byte_array(image.get(name), 32)
-                    for name in ("semantic_generation", "manifest_root", "image_identity")
-                )
-            ):
-                raise AcceptanceError(
-                    f"{label} history proof lacks its exact native image identity"
-                )
-            if (
-                not byte_array(proof.get("reference_tip"), 32)
+            images = proof.get("images")
+            if (proof.get("target_package") != str(case.path)
+                or proof.get("target_coordinate") != row["title"]
+                or not byte_array(proof.get("package_identity"), 32)
+                or not isinstance(images, list) or not 1 <= len(images) <= maximum_files):
+                raise AcceptanceError(f"{label} history proof has wrong package, coordinate or bounded image set")
+            previous_commit = None
+            for ordinal, member in enumerate(images):
+                if not isinstance(member, dict) or set(member) != {"image", "history_commit", "parent_commits"}:
+                    raise AcceptanceError(f"{label} history member changed its typed shape")
+                image = member.get("image")
+                parents = member.get("parent_commits")
+                if (not isinstance(image, dict)
+                    or set(image) != {"artifact_ordinal", "semantic_generation", "manifest_root", "image_identity"}
+                    or type(image.get("artifact_ordinal")) is not int
+                    or image["artifact_ordinal"] != ordinal
+                    or any(not byte_array(image.get(name), 32) for name in ("semantic_generation", "manifest_root", "image_identity"))
+                    or not byte_array(member.get("history_commit"), 32)
+                    or not isinstance(parents, list) or len(parents) > 1
+                    or any(not byte_array(parent, 32) for parent in parents)
+                    or (ordinal > 0 and parents != [previous_commit])):
+                    raise AcceptanceError(f"{label} history proof has invalid image ordinal or sequential lineage")
+                previous_commit = member["history_commit"]
+            if (not byte_array(proof.get("reference_tip"), 32)
                 or not byte_array(proof.get("reachable_commit"), 32)
+                or proof["reference_tip"] != proof["reachable_commit"]
                 or proof["reachable_commit"] != history["commit"]
-                or not isinstance(proof.get("parent_commits"), list)
-                or len(proof["parent_commits"]) > 2
-                or any(not byte_array(parent, 32) for parent in proof["parent_commits"])
-                or proof.get("input_replay_status") != "unproven"
-            ):
-                raise AcceptanceError(
-                    f"{label} history proof has invalid lineage or replay status"
-                )
+                or previous_commit != history["commit"]
+                or proof.get("input_replay_status") != "unproven"):
+                raise AcceptanceError(f"{label} history proof has invalid final lineage or replay status")
+            if package_hash is None:
+                raise Blocked(f"{label} package identity has no independent BLAKE3 verifier")
+            if package_hash(native_history_identity_bytes(proof)) != bytes(proof["package_identity"]):
+                raise AcceptanceError(f"{label} history package identity does not match the ordered selected image set")
             eligible.append(row)
         if len(eligible) != 1:
             raise AcceptanceError(
                 f"{label} expected one selected, complete, current, history-published "
                 f"generation for profile {list(code)}; found {len(eligible)}"
             )
-        if eligible[0].get("selected_source_frontier") != frontier:
-            if eligible[0].get("selected_source_frontier") is None:
-                raise Blocked(
-                    f"{label} selected semantic row omitted its exact Project membership evidence"
-                )
-            raise AcceptanceError(
-                f"{label} selected semantic row is bound to a different Project frontier"
-            )
+        # ProductDto hoists the selected local-package frontier to the product;
+        # it deliberately does not duplicate that field in every ProductRecord.
+        # A row carrying a frontier must still agree with the exact global one.
+        if (eligible[0].get("selected_source_frontier") is not None
+            and eligible[0]["selected_source_frontier"] != frontier):
+            raise AcceptanceError(f"{label} selected semantic row is bound to a different Project frontier")
         selected_by_profile["-".join(str(byte) for byte in code)] = eligible[0]
     return {
         "profile_rows": selected_by_profile,
@@ -3032,6 +3075,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cli", type=Path, required=True)
     parser.add_argument("--mcp", type=Path, required=True)
     parser.add_argument("--compiler-snapshot", type=Path, required=True)
+    parser.add_argument("--history-hash-tool", type=Path, help="explicit b3sum observer executable; required to credit published package history")
     parser.add_argument("--setup-mode", choices=["configured", "stock"], default="configured",
                         help="stock omits compiler environment injection; snapshot remains a tooling witness")
     parser.add_argument("--corpus-manifest", type=Path, required=True)
@@ -3107,6 +3151,8 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
         raise Blocked("this runner requires exact Unix process-group cleanup")
 
     deadline = Deadline(args.deadline_seconds)
+    history_hash_witness: dict[str, Any] = {}
+    history_package_hash = bounded_history_hasher(args.history_hash_tool, deadline, history_hash_witness)
     evidence: ClientEvidence = ClientEvidence()
     started_at = utc_now()
     result: dict[str, Any] = {
@@ -3159,6 +3205,7 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
             "accepted files from the exact checked Project membership attached to the selected "
             "semantic query; source candidates are not substituted for this count"
         ),
+        "history_hash_tool": history_hash_witness,
         "source_capacity": None,
         "source_capacity_note": (
             "source candidate bytes/count are independent inventory measurements, not compiler "
@@ -3475,6 +3522,7 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
                 source_capacity["project_frontier_absolute_inline_maximum"],
                 source_capacity["project_file_record_maximum"],
                 f"CLI before restart {case.project_id}",
+                package_hash=history_package_hash,
             )
             mcp_semantic = mcp_call(
                 binaries["backend-mcp"],
@@ -3495,6 +3543,7 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
                 source_capacity["project_frontier_absolute_inline_maximum"],
                 source_capacity["project_file_record_maximum"],
                 f"MCP before restart {case.project_id}",
+                package_hash=history_package_hash,
             )
             if cli_semantic_identity != mcp_semantic_identity:
                 raise AcceptanceError(
@@ -3676,6 +3725,7 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
                 source_capacity["project_frontier_absolute_inline_maximum"],
                 source_capacity["project_file_record_maximum"],
                 f"CLI after restart {case.project_id}",
+                package_hash=history_package_hash,
             )
             mcp_semantic = mcp_call(
                 binaries["backend-mcp"],
@@ -3696,6 +3746,7 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
                 source_capacity["project_frontier_absolute_inline_maximum"],
                 source_capacity["project_file_record_maximum"],
                 f"MCP after restart {case.project_id}",
+                package_hash=history_package_hash,
             )
             if cli_semantic_identity != mcp_semantic_identity:
                 raise AcceptanceError(
