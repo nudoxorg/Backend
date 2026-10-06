@@ -65,6 +65,12 @@ struct Fake {
     graph_query_calls: usize,
     /// Exact index operands that reached the owner admission boundary.
     index_paths: Vec<String>,
+    /// Real catalog projection used to exercise owner-issued page contracts.
+    page_catalog: Option<backend_library::Library>,
+    /// Each cursor keeps its actual selected owner root at issuance.
+    catalog_cursors: BTreeMap<String, (PageContinuation, ViewStateRoot)>,
+    /// Actual page bounds admitted by the catalog adapter.
+    page_limits: Vec<u16>,
 }
 
 fn basis() -> Basis {
@@ -251,6 +257,41 @@ impl Engine for Fake {
         Ok(ReplyDto::new(1, reply))
     }
 
+    fn probe_page(
+        &mut self,
+        probe: Probe<'_>,
+        continuation: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        let Some(catalog) = &self.page_catalog else {
+            if continuation.is_some() {
+                return Err(ClientError::StaleCursor);
+            }
+            return self.probe(probe);
+        };
+        let (text, limit, names) = match probe {
+            Probe::Search { text, limit } => (text, limit, false),
+            Probe::Names { text, limit } => (text, limit, true),
+            _ => return self.probe(probe),
+        };
+        self.page_limits.push(limit);
+        let credit = backend_library::QueryLimit::new(limit).expect("admitted limit");
+        let reply = if names {
+            let mut query = backend_library::NameQuery::new(text, catalog.revision_root(), credit);
+            if let Some(cursor) = continuation {
+                query = query.with_cursor(cursor.cursor());
+            }
+            catalog.names(&query).map(CommandReply::Names)
+        } else {
+            let mut query = backend_library::Query::new(text, catalog.revision_root(), credit);
+            if let Some(cursor) = continuation {
+                query = query.with_cursor(cursor.cursor());
+            }
+            catalog.search(&query).map(CommandReply::Search)
+        }
+        .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        Ok(ReplyDto::new(1, reply))
+    }
+
     fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
         self.surface_commands.push(command.clone());
         if let Some(error) = self.surface_error.take() {
@@ -334,6 +375,12 @@ impl Product for Fake {
         if let Some(error) = self.adapter_error.take() {
             return Err(error);
         }
+        if let Some(catalog) = &self.page_catalog {
+            let token = format!("catalog-page-{}", continuation.cursor().query_offset());
+            self.catalog_cursors
+                .insert(token.clone(), (continuation, catalog.revision_root()));
+            return Ok(token);
+        }
         if self.next_continuation == Some(continuation) {
             Ok("fixture-page-1".to_owned())
         } else {
@@ -343,20 +390,56 @@ impl Product for Fake {
 
     fn graph_page(
         &mut self,
-        _: String,
-        _: u16,
-        _: Option<PageContinuation>,
+        coordinate: String,
+        limit: u16,
+        continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
         self.adapter_boundary = Some("graph_page");
-        Err(self.adapter_error.take().unwrap_or_else(|| {
-            ClientError::Protocol("this product does not expose graph pagination".to_owned())
-        }))
+        if let Some(error) = self.adapter_error.take() {
+            return Err(error);
+        }
+        if let Some(catalog) = &self.page_catalog {
+            self.page_limits.push(limit);
+            let mut request = backend_library::PageRequest::new(
+                catalog.revision_root(),
+                backend_library::QueryLimit::new(limit).expect("admitted limit"),
+            );
+            if let Some(cursor) = continuation {
+                request = request.with_continuation(cursor);
+            }
+            let page = catalog
+                .graph_page(symbol_key(&coordinate), request)
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
+            return Ok(ReplyDto::new(1, CommandReply::ProjectionPage(page)));
+        }
+        if coordinate == MISSING {
+            return Err(ClientError::CommandFailed(
+                backend_library::CommandFailure::NotFound,
+            ));
+        }
+        Ok(ReplyDto::new(
+            1,
+            CommandReply::ProjectionPage(ProjectionPage {
+                snapshot: snapshot(vec![declaration_row()]),
+                terminal: PageTerminal::Complete,
+            }),
+        ))
     }
 
     fn decode_continuation(
         &mut self,
         token: &str,
     ) -> Result<backend_library::PageContinuation, ClientError> {
+        if let Some(catalog) = &self.page_catalog {
+            let (cursor, root) = self
+                .catalog_cursors
+                .get(token)
+                .ok_or_else(|| ClientError::Protocol("unknown catalog cursor".to_owned()))?;
+            if *root != catalog.revision_root() {
+                return Err(ClientError::StaleCursor);
+            }
+            return Ok(*cursor);
+        }
         if token == "fixture-page-1" {
             if self.stale_cursor {
                 return Err(ClientError::StaleCursor);
@@ -710,6 +793,186 @@ fn assert_context_bounded(response: &Value) {
         bytes.len(),
         DEFAULT_RESPONSE_BUDGET_BYTES
     );
+}
+
+fn paging_catalog(count: usize) -> backend_library::Library {
+    let mut rows = vec![package_row(), module_row()];
+    rows.extend((0..count).map(|index| {
+        let coordinate = format!("{MODULE}:{}::Session_{index:03}", index + 2);
+        Row::in_package(
+            RowId::Symbol(symbol_key(&coordinate)),
+            basis(),
+            package_key(PROJECT),
+            coordinate,
+        )
+        .with_parent(symbol_key(MODULE))
+    }));
+    // This is a genuine incomplete catalog projection; no compiler or
+    // complete-coverage authority is asserted by this paging fixture.
+    let view = root(rows);
+    let cursor = backend_library::Cursor::for_view_root(&view);
+    backend_library::Library::from_view(view, cursor).expect("catalog projection")
+}
+
+#[test]
+fn default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapshots() {
+    for tool in ["backend.search", "backend.resolve", "backend.graph"] {
+        let catalog = paging_catalog(61);
+        let credit = backend_library::QueryLimit::new(200).expect("bounded oracle page");
+        let snapshot = match tool {
+            "backend.search" => catalog
+                .search(&backend_library::Query::new(
+                    "Session",
+                    catalog.revision_root(),
+                    credit,
+                ))
+                .expect("complete selected search"),
+            "backend.resolve" => catalog
+                .names(&backend_library::NameQuery::new(
+                    "Session",
+                    catalog.revision_root(),
+                    credit,
+                ))
+                .expect("complete selected names"),
+            _ => {
+                catalog
+                    .graph_page(
+                        symbol_key(MODULE),
+                        backend_library::PageRequest::new(catalog.revision_root(), credit),
+                    )
+                    .expect("complete selected neighborhood")
+                    .snapshot
+            }
+        };
+        let mut expected = record_list("selected", &snapshot)
+            .records()
+            .iter()
+            .map(|record| record.identity().coordinate().as_str().to_owned())
+            .collect::<Vec<_>>();
+        if tool == "backend.graph" {
+            // Neighborhood snapshots sort identities within each selected
+            // page. The root/parent prefix precedes children in owner page
+            // selection, so compare the actual owner order at this credit.
+            let membership = expected
+                .iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>();
+            expected.clear();
+            let mut cursor = None;
+            loop {
+                let mut page = backend_library::PageRequest::new(
+                    catalog.revision_root(),
+                    backend_library::QueryLimit::new(backend_present::DEFAULT_LIMIT)
+                        .expect("default credit"),
+                );
+                if let Some(next) = cursor {
+                    page = page.with_continuation(next);
+                }
+                let page = catalog
+                    .graph_page(symbol_key(MODULE), page)
+                    .expect("owner page");
+                expected.extend(
+                    record_list("selected", &page.snapshot)
+                        .records()
+                        .iter()
+                        .map(|record| record.identity().coordinate().as_str().to_owned()),
+                );
+                let PageTerminal::More(next) = page.terminal else {
+                    break;
+                };
+                cursor = Some(next);
+            }
+            assert_eq!(
+                expected
+                    .iter()
+                    .cloned()
+                    .collect::<std::collections::BTreeSet<_>>(),
+                membership
+            );
+        }
+        let mut server = ready(Fake {
+            page_catalog: Some(catalog),
+            ..Fake::default()
+        });
+        let mut arguments = if tool == "backend.graph" {
+            json!({"coordinate": MODULE})
+        } else {
+            json!({"query": "Session"})
+        };
+        let mut seen = Vec::new();
+        let mut first_cursor = None;
+        for _ in 0..10 {
+            let response = request(
+                &mut server,
+                "tools/call",
+                &json!({"name": tool, "arguments": arguments}),
+            );
+            assert_context_bounded(&response);
+            let result = &response["result"];
+            assert_eq!(result["isError"], false, "{tool}: {response}");
+            assert_eq!(result["structuredContent"]["detail"], "summary");
+            let records = result["structuredContent"]["records"]
+                .as_array()
+                .expect("complete typed rows");
+            assert!(records.len() <= usize::from(backend_present::DEFAULT_LIMIT));
+            seen.extend(records.iter().map(|row| {
+                row["identity"]["coordinate"]
+                    .as_str()
+                    .expect("exact coordinate")
+                    .to_owned()
+            }));
+            let Some(cursor) = result["structuredContent"]["nextCursor"].as_str() else {
+                break;
+            };
+            assert_eq!(result["structuredContent"]["more"], true);
+            first_cursor.get_or_insert_with(|| cursor.to_owned());
+            arguments["cursor"] = json!(cursor);
+        }
+        assert_eq!(
+            seen, expected,
+            "{tool} preserves owner order, no skipped/duplicate rows"
+        );
+        assert_eq!(
+            server.product.page_limits,
+            vec![backend_present::DEFAULT_LIMIT; 3]
+        );
+        let first_cursor = first_cursor.expect("ordinary default continues");
+
+        // The same query spelling and MAC cannot make an old projection
+        // current when the underlying catalog changes.
+        server.product.page_catalog = Some(paging_catalog(62));
+        arguments["cursor"] = json!(first_cursor);
+        let stale = request(
+            &mut server,
+            "tools/call",
+            &json!({"name": tool, "arguments": arguments}),
+        );
+        assert_eq!(stale["error"]["code"], -32010);
+        assert_eq!(stale["error"]["data"]["kind"], "stale_cursor");
+    }
+}
+
+#[test]
+fn combined_budget_shortens_only_the_readable_preview_with_explicit_provenance() {
+    // Egress-only values exercise escaped-byte measurement and UTF-8
+    // boundaries. They claim no owner-admitted source or compiler evidence.
+    let cursor = "mcp1-complete-signed-cursor";
+    let structured = json!({"records": [{"coordinate": "λאב".repeat(5000)}], "coverage": "unavailable", "nextCursor": cursor});
+    let text = "\"\\\nλאב".repeat(3000);
+    let result = tool_result(&text, structured.clone(), false);
+    assert_eq!(result["isError"], false);
+    assert_eq!(result["structuredContent"], structured);
+    let preview = text_of(&result);
+    assert!(preview.contains("readable preview shortened"));
+    assert!(preview.contains("complete page and any nextCursor"));
+    assert!(text.starts_with(preview.split("\n\n…").next().expect("UTF-8 prefix")));
+    assert_context_bounded(&success(json!(17), result));
+
+    let too_large = json!({"records": ["x".repeat(MCP_RESULT_BUDGET_BYTES)]});
+    let refused = tool_result(&text, too_large, false);
+    assert_eq!(refused["isError"], true);
+    assert_eq!(refused["structuredContent"]["cause"], "oversized");
+    assert!(refused["structuredContent"].get("records").is_none());
 }
 
 fn setup_compiler_failure() -> backend_library::PackageCompilerFailure {

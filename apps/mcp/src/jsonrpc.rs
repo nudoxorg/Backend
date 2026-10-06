@@ -617,9 +617,7 @@ impl<P: Product> Server<P> {
         if name == QUERY_TOOL {
             return self.query_tool(arguments, detail, continuation, &context);
         }
-        if name == "backend.graph"
-            && (arguments.contains_key("limit") || arguments.contains_key("cursor"))
-        {
+        if name == "backend.graph" {
             return self.graph_tool(arguments, detail, continuation, &context);
         }
         let Some(grammar) = grammar_for_tool(name) else {
@@ -1299,13 +1297,44 @@ pub(super) fn token_budget_rpc_response_with_observed(
 }
 
 fn tool_result(text: &str, structured: Value, is_error: bool) -> Value {
-    let candidate = json!({
+    let mut candidate = json!({
         "content": [{ "type": "text", "text": text }],
         "structuredContent": structured,
         "isError": is_error
     });
     let bytes = serialized_bytes(&candidate);
-    if bytes <= MCP_RESULT_BUDGET_BYTES {
+    // Leave room for the ordinary JSON-RPC envelope. The final reply gate
+    // still checks the actual caller ID, including deliberately huge IDs.
+    const ENVELOPE_RESERVE: usize = 256;
+    let budget = MCP_RESULT_BUDGET_BYTES.saturating_sub(ENVELOPE_RESERVE);
+    if bytes <= budget {
+        return candidate;
+    }
+    // Text duplicates the typed answer. A shorter, explicitly labelled
+    // preview keeps every structured row, coverage fact, and owner cursor
+    // intact; it never turns an oversized typed page into a partial result.
+    const MARKER: &str = "\n\n… readable preview shortened to fit this response; structuredContent contains the complete page and any nextCursor.";
+    candidate["content"][0]["text"] = Value::String(MARKER.to_owned());
+    if serialized_bytes(&candidate) <= budget {
+        let mut lower = 0;
+        let mut upper = text.len();
+        while lower < upper {
+            let midpoint = lower + (upper - lower).div_ceil(2);
+            let mut end = midpoint;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            candidate["content"][0]["text"] = Value::String(format!("{}{MARKER}", &text[..end]));
+            if serialized_bytes(&candidate) <= budget {
+                lower = midpoint;
+            } else {
+                upper = midpoint - 1;
+            }
+        }
+        while !text.is_char_boundary(lower) {
+            lower -= 1;
+        }
+        candidate["content"][0]["text"] = Value::String(format!("{}{MARKER}", &text[..lower]));
         return candidate;
     }
     let fault = oversized_fault(BudgetExceeded {
