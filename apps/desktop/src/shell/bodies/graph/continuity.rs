@@ -4,13 +4,33 @@
 use super::identity::IdentityAdapter;
 use crate::{
     model::pages::{PackageRef, SymbolRef},
-    navigation::Route,
+    navigation::{Route, presentation::VisitId},
 };
 use facet::graph::{GraphView, Start, presentation::Geometry, scene::Scene};
 
+/// Explicit graph commands can cancel restoration within one canonical
+/// reading VisitId. Their foreground-only token uses allocation identity;
+/// clones keep it alive, so address reuse cannot revive an old live claim.
+#[derive(Clone, Debug)]
+pub(super) struct VisitIdentity(std::rc::Rc<()>);
+
+impl Default for VisitIdentity {
+    fn default() -> Self {
+        Self(std::rc::Rc::new(()))
+    }
+}
+
+impl PartialEq for VisitIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        std::rc::Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for VisitIdentity {}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct PresentationVisit {
-    pub sequence: u64,
+    pub identity: VisitIdentity,
+    pub reading: VisitId,
     pub route: Route,
     pub preferred: Option<PackageRef>,
 }
@@ -103,12 +123,32 @@ mod tests {
     };
     use std::{collections::BTreeMap, sync::Arc};
 
+    #[test]
+    fn a_retained_visit_identity_cannot_match_later_visits_or_be_revived() {
+        let retained = VisitIdentity::default();
+        let clone = retained.clone();
+        assert_eq!(retained, clone, "one unchanged visit shares its token");
+        for _ in 0..1000 {
+            let later = VisitIdentity::default();
+            assert_ne!(retained, later, "old live token cannot alias a new visit");
+            assert_ne!(clone, later);
+        }
+        assert_eq!(
+            retained, clone,
+            "the old token never changes under later cancellation"
+        );
+    }
+
     fn package() -> PackageRef {
         PackageRef::parse("/fixture/owner").expect("exact package")
     }
     fn visit() -> PresentationVisit {
         PresentationVisit {
-            sequence: 7,
+            identity: {
+                std::thread_local! { static CURRENT: VisitIdentity = VisitIdentity::default(); }
+                CURRENT.with(Clone::clone)
+            },
+            reading: VisitId::initial(),
             route: Route::World,
             preferred: Some(package()),
         }
@@ -265,12 +305,20 @@ mod tests {
     fn a_later_world_intent_route_or_preferred_package_cannot_restore_old_presentation() {
         let (scene, identities) = fixture(&["A", "B"], &["exact-A", "exact-B"]);
         let mut later_world = visit();
-        later_world.sequence += 1;
+        later_world.identity = VisitIdentity::default();
+        assert_eq!(later_world.route, visit().route);
+        assert_eq!(later_world.preferred, visit().preferred);
+        assert_eq!(later_world.reading, visit().reading);
         let mut later_route = visit();
         later_route.route = Route::Orbit(crate::navigation::OrbitRoute::Home);
         let mut later_package = visit();
         later_package.preferred = None;
-        for current in [later_world, later_route, later_package] {
+        let mut later_reading = visit();
+        later_reading.reading = later_reading
+            .reading
+            .next()
+            .expect("new canonical reading visit");
+        for current in [later_world, later_route, later_package, later_reading] {
             let (packet, _) = selected(&scene);
             assert!(packet.restore(&current, &scene, &identities).is_none());
         }

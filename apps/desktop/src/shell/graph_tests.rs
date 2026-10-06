@@ -894,6 +894,37 @@ fn publication_preserves_selected_b_and_exact_camera_on_consumed_route_a(cx: &mu
 }
 
 #[gpui::test]
+fn covered_publication_preserves_graph_geometry_without_taking_settings_focus(cx: &mut TestAppContext) {
+    let route = view_route("RelationLabel", View::Graph);
+    let mut rig = continuity_rig(cx, route.clone());
+    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.settle();
+    let before = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx).expect("mounted graph"));
+    let camera = facet::motion::Camera::new(18.5, -12.25, 119.75);
+    before.update(rig.cx, |graph, cx| graph.fly_to(camera, cx));
+    rig.settle();
+    rig.go(Intent::OpenSettings(SettingsPage::Appearance));
+    rig.native_press("tab");
+    rig.settle();
+    let focused = rig.cx.update(|window, cx| window.focused(cx)).expect("actual Settings control focus");
+    rig.cx.update(|window, cx| {
+        use gpui::Focusable as _;
+        assert!(!before.read(cx).focus_handle(cx).contains_focused(window, cx), "Settings owns native input while the graph is covered");
+    });
+    publish_continuity(&mut rig);
+    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), Some(focused),
+        "publication under Settings cannot revive the hidden graph's native focus ownership");
+    assert_eq!(rig.route(), route);
+    rig.native_press("escape");
+    rig.cx.run_until_parked();
+    let after = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx).expect("graph remounts on explicit cover return"));
+    assert_ne!(before.entity_id(), after.entity_id());
+    assert_eq!(after.read_with(rig.cx, |graph, _| (graph.focused(), graph.camera())), (Some(1), Some(camera)),
+        "the unchanged underlying reading visit retains B and exact placement across cover retirement");
+    assert_eq!(rig.route(), route);
+}
+
+#[gpui::test]
 fn publication_remaps_permuted_selection_and_anchor_on_first_ready_paint(cx: &mut TestAppContext) {
     use crate::runtime::indexed_world::{self, TestProjectionGate};
     let mut rig = continuity_rig(cx, view_route("RelationLabel", View::Graph));

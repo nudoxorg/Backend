@@ -4,7 +4,7 @@
 
 pub(crate) mod identity;
 mod continuity;
-use continuity::{PresentationVisit, RetainedPresentation};
+use continuity::{PresentationVisit, RetainedPresentation, VisitIdentity};
 use identity::{IdentityAdapter, MatchFailure, ResolvedSymbol};
 
 use crate::core::{Activity, ProducerAuthority, Resource, ResourceTerminal, VersionedRoot};
@@ -91,7 +91,7 @@ pub(crate) struct Map {
     route: Option<Route>,
     /// Route entry has already been consumed; independent of scene node ids.
     route_consumed: bool,
-    presentation_visit: u64,
+    presentation_visit: VisitIdentity,
     retained_presentation: Option<RetainedPresentation>,
     presented_visit: Option<PresentationVisit>,
     semantic_focus: Option<NodeId>,
@@ -329,7 +329,7 @@ impl Map {
             mounted_focus: None,
             route: None,
             route_consumed: false,
-            presentation_visit: 0,
+            presentation_visit: VisitIdentity::default(),
             retained_presentation: None,
             presented_visit: None,
             semantic_focus: None,
@@ -345,7 +345,7 @@ impl Map {
     }
 
     fn cancel_presentation(&mut self) {
-        self.presentation_visit = self.presentation_visit.wrapping_add(1);
+        self.presentation_visit = VisitIdentity::default();
         self.retained_presentation = None;
     }
 
@@ -353,7 +353,7 @@ impl Map {
         if let Some(graph) = &self.graph
             && let Some(identities) = &self.identities
             && let Some(visit) = &self.presented_visit
-            && visit.sequence == self.presentation_visit
+            && visit.identity == self.presentation_visit
         {
             self.retained_presentation = RetainedPresentation::capture(graph.read(cx), identities, visit.clone());
         }
@@ -594,7 +594,9 @@ impl Map {
     }
 
     pub(crate) fn suspend(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.cancel_presentation();
+        // A cover (Settings/Inbox) suspends native input while retaining the
+        // underlying reading visit. Route changes and explicit World commands
+        // independently cancel passive restoration.
         if self.visible {
             self.invalidate_open();
             if let Some(graph) = &self.graph {
@@ -644,7 +646,8 @@ impl Map {
             return;
         };
         self.presented_visit = Some(PresentationVisit {
-            sequence: self.presentation_visit,
+            identity: self.presentation_visit.clone(),
+            reading: self.links.snapshot(cx).session().reading.current.id,
             route: route.clone(),
             preferred: self.world_key.as_ref().and_then(|key| key.preferred().cloned()),
         });
@@ -1532,7 +1535,8 @@ impl Render for Map {
         if let Some((scene, identities, coverage)) = self.ready_scene.take() {
             let snapshot = self.links.snapshot(cx);
             let visit = PresentationVisit {
-                sequence: self.presentation_visit,
+                identity: self.presentation_visit.clone(),
+                reading: snapshot.session().reading.current.id,
                 route: snapshot.route().clone(),
                 preferred: self.world_key.as_ref().and_then(|key| key.preferred().cloned()),
             };

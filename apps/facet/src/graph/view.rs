@@ -111,7 +111,8 @@ pub enum Start {
     Restore {
         /// The actual camera placement to retain.
         camera: Camera,
-        /// A selection remapped and checked by the embedding owner.
+        /// A selection remapped by the embedding owner. Out-of-world ids are
+        /// cleared before semantic presentation; the camera remains retained.
         focus: Option<NodeId>,
     },
 }
@@ -431,7 +432,10 @@ impl GraphView {
             on_peek_action: None,
             _subscriptions: vec![subscription],
         };
-        if let Start::Restore { focus: Some(node), .. } = start { this.restore_selection(node); }
+        if let Start::Restore { camera, focus } = start {
+            let focus = focus.filter(|&node| this.restore_selection(node));
+            this.start = Start::Restore { camera, focus };
+        }
         this
     }
 
@@ -762,11 +766,15 @@ impl GraphView {
     }
 
     /// Initialize semantic presentation without a camera command or new visit.
-    fn restore_selection(&mut self, i: NodeId) {
+    fn restore_selection(&mut self, i: NodeId) -> bool {
+        // Public Start::Restore may be constructed without an identity adapter.
+        // Admit against this immutable world before any focus or prism access.
+        if self.world.nodes.get(i as usize).is_none() { return false; }
         self.state.focus = Some(i);
         self.reading_a = 1.0;
         self.motion.set(READING_KEY, 1.0);
         self.gather_prism(i);
+        true
     }
 
     fn gather_prism(&mut self, i: NodeId) {
