@@ -5188,6 +5188,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             let row = intern_native_tsz_type(
                 &registry,
                 self.facts,
+                checker,
                 database,
                 native_type,
                 owner,
@@ -8329,6 +8330,7 @@ fn intern_computed_tree<'source>(
 fn intern_native_tsz_type<'source>(
     registry: &FactRegistry<'_, 'source>,
     facts: &mut FactSet<'source>,
+    checker: &mut TszCheckerState<'_>,
     database: &dyn TszTypeDatabase,
     type_id: TszTypeId,
     owner: u32,
@@ -8345,22 +8347,40 @@ fn intern_native_tsz_type<'source>(
             },
         ));
     }
-    if !active.insert(type_id) {
+    // A declaration's checker type can be a lazy definition handle even
+    // when its body is a supported mapped/operator/structural type. Resolve
+    // only that exact checker-owned handle through the active project
+    // checker before interpreting TypeData; guessing from source spelling
+    // would lose generic arguments and could confuse unrelated declarations.
+    let resolved_type_id = checker.resolve_lazy_type(type_id);
+    // `resolve_lazy_type` leaves unresolved handles lazy; a result of `any`
+    // therefore comes from the checker-owned body and must keep its native
+    // dynamically-typed meaning instead of being confused with a failed lookup.
+    if !active.insert(resolved_type_id) {
         return Err(computed_fault(
             registry,
             owner,
             FactFault::TypeProjectionCycle { type_id: type_id.0 },
         ));
     }
-    let result =
-        intern_native_tsz_type_inner(registry, facts, database, type_id, owner, depth, active);
-    active.remove(&type_id);
+    let result = intern_native_tsz_type_inner(
+        registry,
+        facts,
+        checker,
+        database,
+        resolved_type_id,
+        owner,
+        depth,
+        active,
+    );
+    active.remove(&resolved_type_id);
     result
 }
 
 fn intern_native_tsz_type_inner<'source>(
     registry: &FactRegistry<'_, 'source>,
     facts: &mut FactSet<'source>,
+    checker: &mut TszCheckerState<'_>,
     database: &dyn TszTypeDatabase,
     type_id: TszTypeId,
     owner: u32,
@@ -8380,7 +8400,7 @@ fn intern_native_tsz_type_inner<'source>(
         }
         TypeData::Array(element) => {
             let child = intern_native_tsz_type(
-                registry, facts, database, element, owner, next_depth, active,
+                registry, facts, checker, database, element, owner, next_depth, active,
             )?;
             intern_native_tsz_row(
                 registry,
@@ -8392,14 +8412,16 @@ fn intern_native_tsz_type_inner<'source>(
         }
         TypeData::ReadonlyType(inner) => {
             let child = intern_native_tsz_type(
-                registry, facts, database, inner, owner, next_depth, active,
+                registry, facts, checker, database, inner, owner, next_depth, active,
             )?;
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Annotated);
             record.payload0 = AnnotationKind::Readonly as u32;
             intern_native_tsz_row(registry, facts, record, owner, &[(child, None, 0)])
         }
         TypeData::NoInfer(inner) => {
-            intern_native_tsz_type(registry, facts, database, inner, owner, next_depth, active)
+            intern_native_tsz_type(
+                registry, facts, checker, database, inner, owner, next_depth, active,
+            )
         }
         TypeData::Union(list) | TypeData::Intersection(list) => {
             let tag = if matches!(data, TypeData::Union(_)) {
@@ -8409,7 +8431,7 @@ fn intern_native_tsz_type_inner<'source>(
             };
             let members = database.type_list(list);
             intern_native_tsz_associative(
-                registry, facts, database, &members, owner, next_depth, active, tag,
+                registry, facts, checker, database, &members, owner, next_depth, active, tag,
             )
         }
         TypeData::Tuple(list) => {
@@ -8429,6 +8451,7 @@ fn intern_native_tsz_type_inner<'source>(
                 let child = intern_native_tsz_type(
                     registry,
                     facts,
+                    checker,
                     database,
                     element.type_id,
                     owner,
@@ -8457,11 +8480,15 @@ fn intern_native_tsz_type_inner<'source>(
         }
         TypeData::Function(shape_id) => {
             let shape = database.function_shape(shape_id);
-            intern_native_tsz_function(registry, facts, database, &shape, owner, next_depth, active)
+            intern_native_tsz_function(
+                registry, facts, checker, database, &shape, owner, next_depth, active,
+            )
         }
         TypeData::Object(shape_id) | TypeData::ObjectWithIndex(shape_id) => {
             let shape = database.object_shape(shape_id);
-            intern_native_tsz_object(registry, facts, database, &shape, owner, next_depth, active)
+            intern_native_tsz_object(
+                registry, facts, checker, database, &shape, owner, next_depth, active,
+            )
         }
         TypeData::Application(application_id) => {
             let application = database.type_application(application_id);
@@ -8480,6 +8507,7 @@ fn intern_native_tsz_type_inner<'source>(
                 intern_native_tsz_type(
                     registry,
                     facts,
+                    checker,
                     database,
                     application.base,
                     owner,
@@ -8492,7 +8520,7 @@ fn intern_native_tsz_type_inner<'source>(
             for argument in &application.args {
                 children.push((
                     intern_native_tsz_type(
-                        registry, facts, database, *argument, owner, next_depth, active,
+                        registry, facts, checker, database, *argument, owner, next_depth, active,
                     )?,
                     None,
                     0,
@@ -8514,6 +8542,7 @@ fn intern_native_tsz_type_inner<'source>(
             intern_native_tsz_conditional(
                 registry,
                 facts,
+                checker,
                 database,
                 &conditional,
                 owner,
@@ -8524,7 +8553,7 @@ fn intern_native_tsz_type_inner<'source>(
         TypeData::Mapped(mapped_id) => {
             let mapped = database.mapped_type(mapped_id);
             intern_native_tsz_mapped(
-                registry, facts, database, &mapped, owner, next_depth, active,
+                registry, facts, checker, database, &mapped, owner, next_depth, active,
             )
         }
         TypeData::TemplateLiteral(template_id) => {
@@ -8576,7 +8605,14 @@ fn intern_native_tsz_type_inner<'source>(
                         .map_err(|cause| computed_fault(registry, owner, cause))?,
                     (TemplateSpan::Type(part_type), None) => {
                         let child = intern_native_tsz_type(
-                            registry, facts, database, *part_type, owner, next_depth, active,
+                            registry,
+                            facts,
+                            checker,
+                            database,
+                            *part_type,
+                            owner,
+                            next_depth,
+                            active,
                         )?;
                         facts
                             .computed_type_child(child, None, 0)
@@ -8609,6 +8645,7 @@ fn intern_native_tsz_type_inner<'source>(
         } => intern_native_tsz_associative(
             registry,
             facts,
+            checker,
             database,
             &[base_type, constraint],
             owner,
@@ -8618,7 +8655,7 @@ fn intern_native_tsz_type_inner<'source>(
         ),
         TypeData::KeyOf(inner) => {
             let child = intern_native_tsz_type(
-                registry, facts, database, inner, owner, next_depth, active,
+                registry, facts, checker, database, inner, owner, next_depth, active,
             )?;
             intern_native_tsz_row(
                 registry,
@@ -8630,10 +8667,10 @@ fn intern_native_tsz_type_inner<'source>(
         }
         TypeData::IndexAccess(object, index) => {
             let object = intern_native_tsz_type(
-                registry, facts, database, object, owner, next_depth, active,
+                registry, facts, checker, database, object, owner, next_depth, active,
             )?;
             let index = intern_native_tsz_type(
-                registry, facts, database, index, owner, next_depth, active,
+                registry, facts, checker, database, index, owner, next_depth, active,
             )?;
             intern_native_tsz_row(
                 registry,
@@ -8819,6 +8856,7 @@ fn intern_native_tsz_type_parameter<'source>(
 fn intern_native_tsz_function<'source>(
     registry: &FactRegistry<'_, 'source>,
     facts: &mut FactSet<'source>,
+    checker: &mut TszCheckerState<'_>,
     database: &dyn TszTypeDatabase,
     function: &FunctionShape,
     owner: u32,
@@ -8842,12 +8880,13 @@ fn intern_native_tsz_function<'source>(
     let mut children = Vec::with_capacity(function.params.len() + 1);
     for parameter in &function.params {
         children.push(native_tsz_parameter_child(
-            registry, facts, database, *parameter, owner, depth, active,
+            registry, facts, checker, database, *parameter, owner, depth, active,
         )?);
     }
     let result = intern_native_tsz_type(
         registry,
         facts,
+        checker,
         database,
         function.return_type,
         owner,
@@ -8870,6 +8909,7 @@ fn intern_native_tsz_function<'source>(
 fn native_tsz_parameter_child<'source>(
     registry: &FactRegistry<'_, 'source>,
     facts: &mut FactSet<'source>,
+    checker: &mut TszCheckerState<'_>,
     database: &dyn TszTypeDatabase,
     parameter: ParamInfo,
     owner: u32,
@@ -8879,6 +8919,7 @@ fn native_tsz_parameter_child<'source>(
     let child = intern_native_tsz_type(
         registry,
         facts,
+        checker,
         database,
         parameter.type_id,
         owner,
@@ -8901,6 +8942,7 @@ fn native_tsz_parameter_child<'source>(
 fn intern_native_tsz_conditional<'source>(
     registry: &FactRegistry<'_, 'source>,
     facts: &mut FactSet<'source>,
+    checker: &mut TszCheckerState<'_>,
     database: &dyn TszTypeDatabase,
     conditional: &ConditionalType,
     owner: u32,
@@ -8915,7 +8957,9 @@ fn intern_native_tsz_conditional<'source>(
         conditional.false_type,
     ] {
         children.push((
-            intern_native_tsz_type(registry, facts, database, child_id, owner, depth, active)?,
+            intern_native_tsz_type(
+                registry, facts, checker, database, child_id, owner, depth, active,
+            )?,
             None,
             0,
         ));
@@ -8932,6 +8976,7 @@ fn intern_native_tsz_conditional<'source>(
 fn intern_native_tsz_mapped<'source>(
     registry: &FactRegistry<'_, 'source>,
     facts: &mut FactSet<'source>,
+    checker: &mut TszCheckerState<'_>,
     database: &dyn TszTypeDatabase,
     mapped: &MappedType,
     owner: u32,
@@ -8952,7 +8997,9 @@ fn intern_native_tsz_mapped<'source>(
     .flatten()
     {
         children.push((
-            intern_native_tsz_type(registry, facts, database, child_id, owner, depth, active)?,
+            intern_native_tsz_type(
+                registry, facts, checker, database, child_id, owner, depth, active,
+            )?,
             None,
             0,
         ));
@@ -8975,6 +9022,7 @@ fn native_tsz_mapped_modifier(modifier: Option<TszMappedModifier>) -> u32 {
 fn intern_native_tsz_associative<'source>(
     registry: &FactRegistry<'_, 'source>,
     facts: &mut FactSet<'source>,
+    checker: &mut TszCheckerState<'_>,
     database: &dyn TszTypeDatabase,
     members: &[TszTypeId],
     owner: u32,
@@ -8988,7 +9036,7 @@ fn intern_native_tsz_associative<'source>(
     let mut rows = Vec::with_capacity(members.len());
     for member in members {
         rows.push(intern_native_tsz_type(
-            registry, facts, database, *member, owner, depth, active,
+            registry, facts, checker, database, *member, owner, depth, active,
         )?);
     }
     while rows.len() > MAX_TYPE_CHILDREN {
@@ -9018,6 +9066,7 @@ fn intern_native_tsz_associative<'source>(
 fn intern_native_tsz_object<'source>(
     registry: &FactRegistry<'_, 'source>,
     facts: &mut FactSet<'source>,
+    checker: &mut TszCheckerState<'_>,
     database: &dyn TszTypeDatabase,
     shape: &TszObjectShape,
     owner: u32,
@@ -9053,6 +9102,7 @@ fn intern_native_tsz_object<'source>(
         let child = intern_native_tsz_type(
             registry,
             facts,
+            checker,
             database,
             property.type_id,
             owner,
@@ -9127,7 +9177,7 @@ fn intern_native_tsz_object<'source>(
         .flatten()
     {
         parts.push(intern_native_tsz_index_signature(
-            registry, facts, database, signature, owner, depth, active,
+            registry, facts, checker, database, signature, owner, depth, active,
         )?);
     }
 
@@ -9153,6 +9203,7 @@ fn intern_native_tsz_object<'source>(
 fn intern_native_tsz_index_signature<'source>(
     registry: &FactRegistry<'_, 'source>,
     facts: &mut FactSet<'source>,
+    checker: &mut TszCheckerState<'_>,
     database: &dyn TszTypeDatabase,
     signature: TszIndexSignature,
     owner: u32,
@@ -9162,6 +9213,7 @@ fn intern_native_tsz_index_signature<'source>(
     let key = intern_native_tsz_type(
         registry,
         facts,
+        checker,
         database,
         signature.key_type,
         owner,
@@ -9171,6 +9223,7 @@ fn intern_native_tsz_index_signature<'source>(
     let value = intern_native_tsz_type(
         registry,
         facts,
+        checker,
         database,
         signature.value_type,
         owner,
