@@ -1,0 +1,145 @@
+{
+  "root": "/root/nudox-corpus-20261006/runs/sol-tantivy-real/owner-pgid-e0fa4825",
+  "manifest": {
+    "schema": "nudox.runtime-build-manifest.v1",
+    "source": {
+      "commit": "9f44dae6342fb286178178bda5be33ea79d969a4",
+      "tree": "ad83c231bb9f1d4612093d4c6ff14dcf916cd6b3",
+      "clean": true
+    },
+    "executables": {
+      "backend-locald": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto19-successor-9f44dae6-20261006T0850Z/backend-locald",
+        "sha256": "5344cc4d2d82c6a087a70556c75ff3d529148f08f6e27c66f1efd7b354191180",
+        "bytes": 105356480
+      },
+      "backend-cli": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto19-successor-9f44dae6-20261006T0850Z/backend-cli",
+        "sha256": "8c78bb9d91af25baac20dbf4188cfedca7429394400864e371420b324f6b989c",
+        "bytes": 43079608
+      },
+      "backend-mcp": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto19-successor-9f44dae6-20261006T0850Z/backend-mcp",
+        "sha256": "556666f2812960579ba0cd1cf406f9072ac8ef69617908810ecb3555ae9ea4a7",
+        "bytes": 31800632
+      }
+    },
+    "root_receipt": {
+      "schema": "nudox.runtime-artifact-build-receipt.v1",
+      "path": "/root/nudox-corpus-20261006/receipts/dto19-successor-9f44dae6-cargo-build-20261006T0850Z.json",
+      "sha256": "a6b19738f1d97e01df8aec3a9893bc583c10a465fd5d64c0739e77d1f44edc40"
+    }
+  },
+  "cases": [
+    {
+      "mode": "fixed-launcher",
+      "cli": {
+        "pid": 919831,
+        "pgid": 919831,
+        "sid": 919831,
+        "stat": "919831 (sol-owner-detac) S 919826 919831 919831 0 -1 4194304 105 0 0 0 0 0 0 0 20 0 2 0 62874688 73359360 751 18446744073709551615 98967405200320 98967406108320 140724880960864 0 0 0 0 4096 1088 0 0 0 17 12 0 0 0 0 0 98967406167552 98967406170080 98967429337088 140724880965670 140724880965800 140724880965800 140724880969653 0\n",
+        "cmdline": [
+          "/root/nudox-corpus-20261006/artifacts/sol-owner-detach-linux-tests",
+          "--exact",
+          "tests::real_private_owner_launch",
+          "--ignored",
+          "--nocapture",
+          ""
+        ],
+        "exe": "/root/nudox-corpus-20261006/artifacts/sol-owner-detach-linux-tests"
+      },
+      "owner": {
+        "pid": 919834,
+        "pgid": 919834,
+        "sid": 919831,
+        "stat": "919834 (backend-locald) D 919831 919834 919831 0 -1 4194304 767 0 0 0 0 0 0 0 20 0 1 0 62874689 109465600 5901 18446744073709551615 107406633784192 107406708931792 140725079622592 0 0 0 0 4096 1088 1 0 0 17 13 0 0 0 0 0 107406710938104 107406711022248 107406767104000 140725079625479 140725079625863 140725079625863 140725079629716 0\n",
+        "cmdline": [
+          "/root/nudox-corpus-20261006/artifacts/images-dto19-successor-9f44dae6-20261006T0850Z/backend-locald",
+          "--endpoint",
+          "/tmp/nudox-pgid-fd03052ddce74591.sock",
+          "--workspace",
+          "/root/nudox-corpus-20261006/runs/sol-tantivy-real/owner-pgid-e0fa4825/fixed-launcher/state",
+          "--authority-secret-file",
+          "/root/nudox-corpus-20261006/runs/sol-tantivy-real/owner-pgid-e0fa4825/fixed-launcher/state/authority.secret",
+          ""
+        ],
+        "exe": "/root/nudox-corpus-20261006/artifacts/images-dto19-successor-9f44dae6-20261006T0850Z/backend-locald"
+      },
+      "other_contenders": [],
+      "signal_target_pgid": 919831,
+      "cli_exit": -15,
+      "owner_after_client_cancel": {
+        "pid": 919834,
+        "pgid": 919834,
+        "sid": 919831,
+        "stat": "919834 (backend-locald) D 1 919834 919831 0 -1 4194304 767 0 0 0 0 0 0 0 20 0 1 0 62874689 109465600 5901 18446744073709551615 107406633784192 107406708931792 140725079622592 0 0 0 0 4096 1088 1 0 0 17 13 0 0 0 0 0 107406710938104 107406711022248 107406767104000 140725079625479 140725079625863 140725079625863 140725079629716 0\n",
+        "cmdline": [
+          "/root/nudox-corpus-20261006/artifacts/images-dto19-successor-9f44dae6-20261006T0850Z/backend-locald",
+          "--endpoint",
+          "/tmp/nudox-pgid-fd03052ddce74591.sock",
+          "--workspace",
+          "/root/nudox-corpus-20261006/runs/sol-tantivy-real/owner-pgid-e0fa4825/fixed-launcher/state",
+          "--authority-secret-file",
+          "/root/nudox-corpus-20261006/runs/sol-tantivy-real/owner-pgid-e0fa4825/fixed-launcher/state/authority.secret",
+          ""
+        ],
+        "exe": "/root/nudox-corpus-20261006/artifacts/images-dto19-successor-9f44dae6-20261006T0850Z/backend-locald"
+      },
+      "owner_terminal_after_client_cancel": false,
+      "after_cancel_ready": true,
+      "ready_seconds": 39.92315205000341,
+      "health_exit": 0,
+      "health_seconds": 0.4406473330454901,
+      "health_payload": {
+        "readiness": "ready",
+        "revision": "d3794e3a1bf253d81e610edee2f84be09318aea046db31b4a0a48d236b69c147",
+        "revision_tag": "d3794e3a",
+        "source": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
+        "source_tag": "a98a2689",
+        "sequence": 1,
+        "rows": 3096,
+        "coverage": [
+          {
+            "lane": "exact",
+            "state": "complete"
+          },
+          {
+            "lane": "names",
+            "state": "complete"
+          },
+          {
+            "lane": "graph",
+            "state": "complete"
+          },
+          {
+            "lane": "semantic",
+            "state": "unavailable",
+            "reason": "unconfigured"
+          }
+        ],
+        "capabilities": {
+          "frontends_ready": 9,
+          "frontends_total": 9,
+          "oracles_ready": 0,
+          "oracles_total": 18,
+          "embedding": "unconfigured",
+          "unavailable": [
+            {
+              "reason": "no-manifest",
+              "count": 11
+            }
+          ],
+          "summary": "frontends 9/9 ready \u00b7 oracles 0/18 ready \u00b7 11 no-manifest \u00b7 embedding unconfigured"
+        },
+        "answer": "status",
+        "detail": "full",
+        "budget": {
+          "bytes": 805,
+          "estimatedTokens": 202,
+          "bytesPerToken": 4
+        }
+      }
+    }
+  ],
+  "launcher_image_sha256": "9540b3d6e58239c014d60f986f41fe1946be9b76ffb483575ca6400408e03009"
+}

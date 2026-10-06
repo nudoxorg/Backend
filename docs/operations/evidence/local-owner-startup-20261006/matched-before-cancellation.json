@@ -1,0 +1,146 @@
+{
+  "root": "/root/nudox-corpus-20261006/runs/sol-tantivy-real/owner-pgid-e0ab2c65",
+  "manifest": {
+    "schema": "nudox.runtime-build-manifest.v1",
+    "source": {
+      "commit": "9f44dae6342fb286178178bda5be33ea79d969a4",
+      "tree": "ad83c231bb9f1d4612093d4c6ff14dcf916cd6b3",
+      "clean": true
+    },
+    "executables": {
+      "backend-locald": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto19-successor-9f44dae6-20261006T0850Z/backend-locald",
+        "sha256": "5344cc4d2d82c6a087a70556c75ff3d529148f08f6e27c66f1efd7b354191180",
+        "bytes": 105356480
+      },
+      "backend-cli": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto19-successor-9f44dae6-20261006T0850Z/backend-cli",
+        "sha256": "8c78bb9d91af25baac20dbf4188cfedca7429394400864e371420b324f6b989c",
+        "bytes": 43079608
+      },
+      "backend-mcp": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto19-successor-9f44dae6-20261006T0850Z/backend-mcp",
+        "sha256": "556666f2812960579ba0cd1cf406f9072ac8ef69617908810ecb3555ae9ea4a7",
+        "bytes": 31800632
+      }
+    },
+    "root_receipt": {
+      "schema": "nudox.runtime-artifact-build-receipt.v1",
+      "path": "/root/nudox-corpus-20261006/receipts/dto19-successor-9f44dae6-cargo-build-20261006T0850Z.json",
+      "sha256": "a6b19738f1d97e01df8aec3a9893bc583c10a465fd5d64c0739e77d1f44edc40"
+    }
+  },
+  "cases": [
+    {
+      "mode": "auto",
+      "cli": {
+        "pid": 901355,
+        "pgid": 901355,
+        "sid": 901355,
+        "stat": "901355 (backend-cli) S 901345 901355 901355 0 -1 4194304 379 0 0 0 0 0 0 0 20 0 1 0 62845714 47009792 1852 18446744073709551615 95558019083328 95558054673904 140725341996304 0 0 0 0 4096 1088 1 0 0 17 19 0 0 0 0 0 95558055645296 95558055685536 95558140837888 140725341999224 140725341999603 140725341999603 140725342003095 0\n",
+        "cmdline": [
+          "/root/nudox-corpus-20261006/artifacts/images-dto19-successor-9f44dae6-20261006T0850Z/backend-cli",
+          "--json",
+          "--detail",
+          "full",
+          "--project",
+          "/root/nudox-corpus-20261006/runs/sol-tantivy-real/20261006T094603Z-python-configured-b8d7d646/project",
+          "--workspace",
+          "/root/nudox-corpus-20261006/runs/sol-tantivy-real/owner-pgid-e0ab2c65/auto/state",
+          "--endpoint",
+          "/tmp/nudox-pgid-cf0c1d93bc3e4eb8.sock",
+          "health",
+          ""
+        ],
+        "exe": "/root/nudox-corpus-20261006/artifacts/images-dto19-successor-9f44dae6-20261006T0850Z/backend-cli"
+      },
+      "owner": {
+        "pid": 901356,
+        "pgid": 901355,
+        "sid": 901355,
+        "stat": "901356 (backend-locald) D 901355 901355 901355 0 -1 4194304 692 0 0 0 0 0 0 0 20 0 1 0 62845716 109293568 4289 18446744073709551615 102308065764224 102308140911824 140730932584256 0 0 0 0 4096 1088 1 0 0 17 12 0 0 0 0 0 102308142918136 102308143002280 102309029728256 140730932588676 140730932589040 140730932589040 140730932592532 0\n",
+        "cmdline": [
+          "/root/nudox-corpus-20261006/artifacts/images-dto19-successor-9f44dae6-20261006T0850Z/backend-locald",
+          "--endpoint",
+          "/tmp/nudox-pgid-cf0c1d93bc3e4eb8.sock",
+          "--workspace",
+          "/root/nudox-corpus-20261006/runs/sol-tantivy-real/owner-pgid-e0ab2c65/auto/state",
+          "--authority-secret-file",
+          "/root/nudox-corpus-20261006/runs/sol-tantivy-real/owner-pgid-e0ab2c65/auto/state/authority.secret",
+          ""
+        ],
+        "exe": "/root/nudox-corpus-20261006/artifacts/images-dto19-successor-9f44dae6-20261006T0850Z/backend-locald"
+      },
+      "other_contenders": [],
+      "signal_target_pgid": 901355,
+      "cli_exit": -15,
+      "owner_after_client_cancel": {
+        "pid": 901356,
+        "absent": true
+      },
+      "owner_terminal_after_client_cancel": true
+    },
+    {
+      "mode": "direct",
+      "cli": {
+        "pid": 901361,
+        "pgid": 901361,
+        "sid": 901361,
+        "stat": "901361 (backend-cli) D 901345 901361 901361 0 -1 4194304 378 0 0 0 0 0 0 0 20 0 1 0 62845721 47009792 1970 18446744073709551615 105416161266752 105416196857328 140725885742608 0 0 0 0 4096 1088 1 0 0 17 19 0 0 0 0 0 105416197828720 105416197868960 105417046777856 140725885743214 140725885743595 140725885743595 140725885747095 0\n",
+        "cmdline": [
+          "/root/nudox-corpus-20261006/artifacts/images-dto19-successor-9f44dae6-20261006T0850Z/backend-cli",
+          "--json",
+          "--detail",
+          "full",
+          "--project",
+          "/root/nudox-corpus-20261006/runs/sol-tantivy-real/20261006T094603Z-python-configured-b8d7d646/project",
+          "--workspace",
+          "/root/nudox-corpus-20261006/runs/sol-tantivy-real/owner-pgid-e0ab2c65/direct/state",
+          "--endpoint",
+          "/tmp/nudox-pgid-81565b16b249405d.sock",
+          "health",
+          ""
+        ],
+        "exe": "/root/nudox-corpus-20261006/artifacts/images-dto19-successor-9f44dae6-20261006T0850Z/backend-cli"
+      },
+      "owner": {
+        "pid": 901360,
+        "pgid": 901360,
+        "sid": 901360,
+        "stat": "901360 (backend-locald) D 901345 901360 901360 0 -1 4194304 693 0 0 0 0 0 0 0 20 0 1 0 62845721 109293568 4304 18446744073709551615 94820077106048 94820152253648 140722606003360 0 0 0 0 4096 1088 1 0 0 17 17 0 0 0 0 0 94820154259960 94820154344104 94820759818240 140722606010592 140722606010856 140722606010856 140722606014356 0\n",
+        "cmdline": [
+          "/root/nudox-corpus-20261006/artifacts/images-dto19-successor-9f44dae6-20261006T0850Z/backend-locald",
+          "--workspace",
+          "/root/nudox-corpus-20261006/runs/sol-tantivy-real/owner-pgid-e0ab2c65/direct/state",
+          "--endpoint",
+          "/tmp/nudox-pgid-81565b16b249405d.sock",
+          "--idle-timeout-ms",
+          "0",
+          ""
+        ],
+        "exe": "/root/nudox-corpus-20261006/artifacts/images-dto19-successor-9f44dae6-20261006T0850Z/backend-locald"
+      },
+      "other_contenders": [],
+      "signal_target_pgid": 901361,
+      "cli_exit": -15,
+      "owner_after_client_cancel": {
+        "pid": 901360,
+        "pgid": 901360,
+        "sid": 901360,
+        "stat": "901360 (backend-locald) D 901345 901360 901360 0 -1 4194304 693 0 0 0 0 0 0 0 20 0 1 0 62845721 109293568 4304 18446744073709551615 94820077106048 94820152253648 140722606003360 0 0 0 0 4096 1088 1 0 0 17 17 0 0 0 0 0 94820154259960 94820154344104 94820759818240 140722606010592 140722606010856 140722606010856 140722606014356 0\n",
+        "cmdline": [
+          "/root/nudox-corpus-20261006/artifacts/images-dto19-successor-9f44dae6-20261006T0850Z/backend-locald",
+          "--workspace",
+          "/root/nudox-corpus-20261006/runs/sol-tantivy-real/owner-pgid-e0ab2c65/direct/state",
+          "--endpoint",
+          "/tmp/nudox-pgid-81565b16b249405d.sock",
+          "--idle-timeout-ms",
+          "0",
+          ""
+        ],
+        "exe": "/root/nudox-corpus-20261006/artifacts/images-dto19-successor-9f44dae6-20261006T0850Z/backend-locald"
+      },
+      "owner_terminal_after_client_cancel": false
+    }
+  ]
+}
