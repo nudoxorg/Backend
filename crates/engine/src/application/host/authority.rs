@@ -347,6 +347,10 @@ fn python_checker_probe_failure(
             LocalRuntimePythonCheckerProbeFailure::StreamRead
         }
         ToolchainProbeError::Bounded {
+            primary: ToolchainProbePrimary::Cancelled,
+            ..
+        } => LocalRuntimePythonCheckerProbeFailure::Cancelled,
+        ToolchainProbeError::Bounded {
             primary: ToolchainProbePrimary::Deadline { .. },
             ..
         } => LocalRuntimePythonCheckerProbeFailure::TimedOut,
@@ -380,6 +384,14 @@ mod python_checker_probe_tests {
 
     #[test]
     fn pyrefly_probe_failure_projection_keeps_only_bounded_typed_causes() {
+        let cancelled = ToolchainProbeError::Bounded {
+            tool: NativeTool::Python,
+            primary: ToolchainProbePrimary::Cancelled,
+        };
+        assert_eq!(
+            python_checker_probe_failure(&cancelled),
+            LocalRuntimePythonCheckerProbeFailure::Cancelled,
+        );
         let timeout = ToolchainProbeError::Bounded {
             tool: NativeTool::Python,
             primary: ToolchainProbePrimary::Deadline {
