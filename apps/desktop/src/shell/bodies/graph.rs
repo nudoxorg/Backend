@@ -84,7 +84,8 @@ pub(crate) struct Map {
     error: Option<String>,
     load_error: Option<String>,
     visible: bool,
-    focus_on_mount: bool,
+    focus_on_mount: Option<GraphMountFocus>,
+    mounted_focus: Option<GraphMountFocus>,
     route: Option<Route>,
     routed_focus: Option<NodeId>,
     semantic_focus: Option<NodeId>,
@@ -95,6 +96,15 @@ pub(crate) struct Map {
     _graph_events: Option<Subscription>,
     _open_intents: Option<Subscription>,
     _events: Subscription,
+}
+
+struct GraphMountFocus {
+    lease: crate::shell::keyboard::NativeReturnLease,
+    retired: bool,
+    restore_scene: bool,
+    // Retain the displaced receiver until handoff. Dropping the old Graph
+    // must not manufacture a native blur that revokes its own valid lease.
+    _origin: Option<gpui::FocusHandle>,
 }
 
 /// Native paint evidence only, separate from every serving capability. The
@@ -305,7 +315,8 @@ impl Map {
             error: None,
             load_error: None,
             visible: false,
-            focus_on_mount: false,
+            focus_on_mount: None,
+            mounted_focus: None,
             route: None,
             routed_focus: None,
             semantic_focus: None,
@@ -336,7 +347,12 @@ impl Map {
         self.painted_focus = None;
         self.entry_origin = None;
         self.canvas_transform = gpui::LayerTransform::IDENTITY;
-        self.focus_on_mount = self.visible;
+        // A replacement may inherit only the focus actually owned by its
+        // mounted predecessor (or an unconsumed arrival), never visibility.
+        if let Some(mut departing) = self.mounted_focus.take() {
+            departing.retired = true;
+            self.focus_on_mount = Some(departing);
+        }
         self._graph_events = None;
         self.load_error = None;
         self.toured = 0;
@@ -569,6 +585,8 @@ impl Map {
             }
         }
         self.visible = false;
+        self.focus_on_mount = None;
+        self.mounted_focus = None;
         self.publish_focus(cx);
     }
 
@@ -582,7 +600,7 @@ impl Map {
         let changed_route = self.route.as_ref() != Some(route);
         let arriving = !self.visible || changed_route;
         if arriving {
-            self.focus_on_mount = true;
+            self.focus_on_mount = self.mount_focus_lease(window, cx);
             self.painted_focus = None;
             self.entry_origin = route_symbol(route).and_then(|symbol| {
                 let key = crate::shell::kit::shared_id(&symbol);
@@ -723,6 +741,30 @@ impl Map {
         self.graph
             .as_ref()
             .is_some_and(|graph| graph.read(cx).focused().is_some())
+    }
+
+    fn mount_focus_lease(&self, window: &Window, cx: &App) -> Option<GraphMountFocus> {
+        if !window.is_window_active() { return None; }
+        let shell = self.links.shell.upgrade()?;
+        let lease = crate::shell::keyboard::NativeReturnLease::new(
+            window.window_handle().window_id(), shell.read(cx).focus_return_generation(), window.focus_epoch(),
+        )?;
+        Some(GraphMountFocus { lease, retired: false, restore_scene: true, _origin: window.focused(cx) })
+    }
+
+    fn park_retired_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(mut pending) = self.focus_on_mount.take() else { return; };
+        if pending.retired
+            && let Some(origin) = pending._origin.as_ref()
+            && let Some(shell) = self.links.shell.upgrade()
+            && pending.lease.current(window.window_handle().window_id(), shell.read(cx).focus_return_generation(), window.focus_epoch())
+            && let Some(lease) = shell.update(cx, |shell, cx| shell.park_retired_reader_focus(origin, window, cx))
+        {
+            pending.lease = lease;
+            pending._origin = window.focused(cx);
+            pending.retired = false;
+        }
+        self.focus_on_mount = Some(pending);
     }
 
     /// Uses the same indexed open path as Enter/double-click; the graph's
@@ -1459,6 +1501,10 @@ impl Render for Map {
         // before the scene mount. No second frame or render-time notify is
         // needed to turn an announced Memo result into native graph content.
         self.request_world(cx);
+        // Retire the old scene onto the mounted Shell receiver while its
+        // asynchronous replacement reads. A later user choice already
+        // invalidated the receipt, so this cannot manufacture a fresh claim.
+        self.park_retired_focus(window, cx);
         if let Some((scene, identities, coverage)) = self.ready_scene.take() {
             self.identities = Some(identities);
             self.coverage = Some(coverage);
@@ -1549,10 +1595,22 @@ impl Render for Map {
         }
         let mut root = div().relative().size_full();
         if let Some(graph) = &self.graph {
-            if self.focus_on_mount && self.visible {
-                graph.focus_handle(cx).focus(window, cx);
-                self.focus_on_mount = false;
+            if let Some(lease) = self.focus_on_mount.take() {
+                let snapshot = self.links.snapshot(cx);
+                let current = window.is_window_active() && self.visible
+                    && self.route.as_ref() == Some(snapshot.route()) && snapshot.page_overlay().is_none()
+                    && self.links.shell.upgrade().is_some_and(|shell| lease.lease.current(
+                        window.window_handle().window_id(), shell.read(cx).focus_return_generation(), window.focus_epoch()));
+                if current && lease.restore_scene { graph.focus_handle(cx).focus(window, cx); }
             }
+            let handle = graph.focus_handle(cx);
+            self.mounted_focus = (handle.is_focused(window) || handle.contains_focused(window, cx)).then(|| {
+                let mut receipt = self.mount_focus_lease(window, cx)?;
+                // The component admits parking its own retiring descendants,
+                // but their old control cannot authorize a guessed new stop.
+                receipt.restore_scene = handle.is_focused(window);
+                Some(receipt)
+            }).flatten();
             root = root.child(graph.clone()).child(
                 div()
                     .absolute()

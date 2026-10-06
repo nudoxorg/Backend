@@ -418,10 +418,12 @@ struct FindFocusReturn {
 /// The actual mounted Find input, reported by its component after paint.
 #[derive(Clone)]
 struct MountedFindQuery {
+    visit: crate::navigation::presentation::VisitId,
+    state: facet::browse::find::FindState,
     place: u64,
     route: Route,
     root: crate::core::VersionedRoot,
-    focus: FocusHandle,
+    focus: Option<FocusHandle>,
 }
 
 /// The reader region.
@@ -676,6 +678,7 @@ pub(crate) struct Reader {
     pending_page_focus: Option<SettingsReturn>,
     /// Reader focus when Settings covered a painted place.
     settings_departure: Option<SettingsDeparture>,
+    settings_native_origin: Option<SettingsNativeOrigin>,
     /// One return focus attempt after the uncovered page actually registers targets.
     pending_settings_focus: Option<PendingSettingsReturn>,
     /// A place change seen, waiting for the next render to start it.
@@ -741,6 +744,7 @@ impl Reader {
             painted_graph: None,
             pending_page_focus: None,
             settings_departure: None,
+            settings_native_origin: None,
             pending_settings_focus: None,
             // The ring re-wraps as the library grows: a name that moves to
             // another line lands there, never flying across the others.
@@ -1132,18 +1136,44 @@ impl Reader {
     /// Region observation can retire the old controls before the Shell sees
     /// the overlay event. Match its actual displaced native handle against
     /// that short-lived identity receipt, never against logical selection.
-    pub(super) fn capture_settings_native_origin(&mut self, origin: &FocusHandle) -> bool {
-        if let Some(departure) = &mut self.settings_departure {
-            if let Some(target) = departure.native.target_for(origin) {
-                departure.target = Some(target);
-                return true;
-            }
-        } else if let Some(target) = self.targets.target_for_native_handle(origin) {
-            // The Shell may also receive the event before this Region.
-            self.targets.focus(target);
-            return true;
+    pub(super) fn capture_settings_native_origin(&mut self, origin: Option<&FocusHandle>, cx: &mut App) -> bool {
+        let target = origin.and_then(|origin| match &self.settings_departure {
+            Some(departure) => departure.native.target_for(origin),
+            None => self.targets.target_for_native_handle(origin),
+        });
+        let find = self.mounted_find_query.as_ref().filter(|mounted| {
+            mounted.focus.as_ref() == origin && origin.is_some()
+                && self.painted == Some(mounted.place)
+                && mounted.state.focus_handle(cx).as_ref() == origin
+                && mounted.route == *self.links.snapshot(cx).route()
+                && mounted.root.same_authority(self.links.snapshot(cx).key())
+        });
+        let receipt = if let Some(target) = target {
+            SettingsNativeOrigin::Target(target)
+        } else if let Some(find) = find {
+            SettingsNativeOrigin::Find(find.focus.clone().expect("matched native query"))
+        } else {
+            SettingsNativeOrigin::Unmatched
+        };
+        // Ask/Add can cover the Settings page itself. Returning to that same
+        // page must not replace its original Reader receipt with the retiring
+        // cover's native editor. A fresh opening starts with Unmatched, so its
+        // actual origin is still captured regardless of subscriber order.
+        if matches!(receipt, SettingsNativeOrigin::Unmatched)
+            && self.settings_departure.as_ref().is_some_and(|departure|
+                !matches!(departure.origin, SettingsNativeOrigin::Unmatched)) {
+            return false;
         }
-        false
+        let reader_origin = !matches!(receipt, SettingsNativeOrigin::Unmatched);
+        if let Some(mounted) = &self.mounted_find_query { mounted.state.suspend(cx); }
+        if let Some(departure) = &mut self.settings_departure {
+            departure.origin = receipt;
+        } else {
+            // Shell and Region are independent subscribers. The receipt is
+            // identical whichever observes the opening event first.
+            self.settings_native_origin = Some(receipt);
+        }
+        reader_origin
     }
 
     pub(super) fn arm_settings_focus_return(&mut self, lease: NativeReturnLease, cx: &mut Context<Self>) {
@@ -1199,7 +1229,7 @@ impl Reader {
         let Some(focused) = focused else { return false; };
         let Some(mounted) = self.mounted_find_query.as_ref() else { return false; };
         let Some(place) = self.places.last() else { return false; };
-        if mounted.focus != focused || mounted.place != place.key || mounted.route != place.route
+        if mounted.focus.as_ref() != Some(&focused) || mounted.place != place.key || mounted.route != place.route
             || !mounted.root.same_authority(self.links.snapshot(cx).key())
             || self.painted != Some(place.key) { return false; }
         self.begin_find_focus_return(Some(focused), cx);
@@ -1224,9 +1254,42 @@ impl Reader {
                 && self.painted == Some(place.key)
                 && self.links.snapshot(cx).overlay().is_none()
                 && self.links.snapshot(cx).key().same_authority(source_root)) {
-            self.mounted_find_query = Some(MountedFindQuery {
-                place: place.key, route: place.route.clone(), root: self.links.snapshot(cx).key(), focus: query.clone(),
-            });
+            if let Some(mounted) = &mut self.mounted_find_query
+                && mounted.visit == place.visit
+                && mounted.state.focus_handle(cx).as_ref() == Some(&query)
+            {
+                mounted.place = place.key;
+                mounted.route = place.route.clone();
+                mounted.root = self.links.snapshot(cx).key();
+                mounted.focus = Some(query.clone());
+            }
+        }
+        if let Some(pending) = self.pending_settings_focus.as_ref()
+            && pending.focus.place == source_place
+            && matches!(&pending.origin, SettingsNativeOrigin::Find(focused) if *focused == query)
+        {
+            let current = pending.focus.has_same_authority(source_root)
+                && self.links.snapshot(cx).overlay().is_none()
+                && self.painted == Some(source_place) && self.native_input_allowed()
+                && !super::titlebar::menu_open(window, cx)
+                && self.mounted_find_query.as_ref().is_some_and(|mounted|
+                    mounted.place == source_place && mounted.focus.as_ref() == Some(&query)
+                        && mounted.state.focus_handle(cx).as_ref() == Some(&query));
+            let lease_current = pending.lease.map(|lease| self.links.shell.upgrade().is_some_and(|shell| {
+                let shell = shell.read(cx);
+                lease.current(window.window_handle().window_id(), shell.focus_return_generation(), window.focus_epoch())
+                    && shell.allows_reader_native_return(window)
+            }));
+            if lease_current == Some(false) || !pending.focus.has_same_authority(source_root) {
+                self.pending_settings_focus = None;
+                return ReturnDisposition::Invalid;
+            }
+            if current && lease_current == Some(true) && window.is_focus_handle_mounted(&query) {
+                self.pending_settings_focus = None;
+                window.focus(&query, cx);
+                return ReturnDisposition::Applied;
+            }
+            return ReturnDisposition::Waiting;
         }
         let Some(pending) = self.find_focus_return.clone() else { return ReturnDisposition::Invalid; };
         if pending.place != source_place || &pending.route != source_route
@@ -2103,13 +2166,21 @@ struct Place {
 struct SettingsDeparture {
     route: Route,
     root: crate::core::VersionedRoot,
-    target: Option<SharedString>,
+    origin: SettingsNativeOrigin,
     native: NativeFocusDeparture,
 }
 
 struct PendingSettingsReturn {
     focus: SettingsReturn,
+    origin: SettingsNativeOrigin,
     lease: Option<NativeReturnLease>,
+}
+
+#[derive(Clone)]
+enum SettingsNativeOrigin {
+    Target(SharedString),
+    Find(FocusHandle),
+    Unmatched,
 }
 
 struct SettingsReturn {
@@ -2465,22 +2536,22 @@ impl Region for Reader {
                         .map(|root| SettingsDeparture {
                             route: self.route.clone(),
                             root,
-                            target: self.targets.is_active().then(|| self.targets.focused()).flatten(),
+                            origin: self.settings_native_origin.take().unwrap_or(SettingsNativeOrigin::Unmatched),
                             native: self.targets.take_native_departure(),
                         });
                 }
                 let departure = if closing_settings { self.settings_departure.take() } else { None };
                 self.arrive(snapshot.route(), overlay, &snapshot.session().reading.current);
                 self.pending_settings_focus = if closing_settings && overlay.is_none() {
+                    let origin = departure.filter(|departure| {
+                        departure.route == *snapshot.route()
+                            && departure.root.same_authority(snapshot.key())
+                    }).map_or(SettingsNativeOrigin::Unmatched, |departure| departure.origin);
                     Some(PendingSettingsReturn { focus: SettingsReturn {
                         place: self.descents,
                         root: snapshot.key(),
-                        target: departure.filter(|departure| {
-                            departure.route == *snapshot.route()
-                                && departure.root.same_authority(snapshot.key())
-                        })
-                            .and_then(|departure| departure.target),
-                    }, lease: None })
+                        target: None,
+                    }, origin, lease: None })
                 } else {
                     None
                 };
@@ -2630,6 +2701,24 @@ impl Reader {
         };
         let leaves = {
             let symbol_disclosure = route_symbol(&place.route).map(|symbol| self.symbol_disclosure(&symbol)).unwrap_or_default();
+            let find_state = if matches!(place.route, Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome | BrowseRoute::Find(_)))) {
+                // The edit belongs to the visit, independently of producer
+                // replacement. Its mounted/root receipt is refreshed only by
+                // the current frame's callback, so retaining text grants no
+                // old authority permission to return focus or invoke results.
+                if current && self.mounted_find_query.as_ref().is_none_or(|mounted|
+                    mounted.visit != place.visit) {
+                    self.mounted_find_query = Some(MountedFindQuery {
+                        visit: place.visit, state: Default::default(), place: place.key,
+                        route: place.route.clone(), root: snapshot.key(), focus: None,
+                    });
+                }
+                self.mounted_find_query.as_ref().filter(|mounted| mounted.visit == place.visit)
+                    .map(|mounted| mounted.state.clone()).unwrap_or_default()
+            } else {
+                if current && place.overlay.is_none() { self.mounted_find_query = None; }
+                Default::default()
+            };
             let mut ctx = Ctx {
                 reader: cx.weak_entity(),
                 active: current,
@@ -2662,6 +2751,7 @@ impl Reader {
                 symbol_disclosure,
                 package_outline_expanded: self.package_outline_expanded,
                 find_held: self.find_held.clone(),
+                find_state,
                 // A hop forward from another declaration: it is ringed on this page.
                 arrived_from: place.hop
                     .then(|| place.from.as_ref().and_then(|(route, _)| route_symbol(route)))
@@ -2947,7 +3037,7 @@ impl Render for Reader {
                 cx.notify();
             }
         }
-        if let Some(mut pending) = self.pending_settings_focus.take()
+        if let Some(pending) = self.pending_settings_focus.take()
             && pending.focus.place == current.key
         {
             let lease_current = pending.lease.map(|lease| {
@@ -2961,21 +3051,21 @@ impl Render for Reader {
             if lease_current == Some(false) {
                 // A newer input choice wins even if this page is still landing.
             } else if lease_current == Some(true) && self.painted == Some(current.key) && self.native_input_allowed() {
-                if !pending.focus.has_same_authority(snapshot.key()) { pending.focus.target = None; }
-                if self.targets.is_active() {
-                    if let Some(target) = pending.focus.target {
-                        self.targets.focus(target);
-                        if self.targets.current().is_none() {
-                            self.targets.clear_focus();
-                            self.targets.walk(1);
+                if pending.focus.has_same_authority(snapshot.key()) {
+                    match pending.origin.clone() {
+                        SettingsNativeOrigin::Target(target) if self.targets.is_active() => {
+                            if self.targets.focus_native(&target, window, cx) {
+                                self.targets.focus(target);
+                                self.reveal.set(true);
+                                cx.notify();
+                            }
                         }
-                    } else {
-                        self.targets.walk(1);
-                    }
-                    if let Some(target) = self.targets.focused() {
-                        self.targets.focus_native(&target, window, cx);
-                        self.reveal.set(true);
-                        cx.notify();
+                        SettingsNativeOrigin::Find(_) => {
+                            // Its existing after-frame callback registers and
+                            // restores the retained native input after AX paint.
+                            self.pending_settings_focus = Some(pending);
+                        }
+                        _ => { self.pending_page_focus = None; self.targets.clear_focus(); }
                     }
                 }
             } else {

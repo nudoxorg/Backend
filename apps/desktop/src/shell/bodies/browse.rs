@@ -88,6 +88,7 @@ pub(super) fn body(
         }
         let leaves = vec![Leaf::new(
             facet::browse::find::find("find", model, actions, &ctx.measure)
+                .retained(ctx.find_state.clone())
                 .admission(admission)
                 .local_activation(ctx.native_local_activation_scope(cx))
                 .active(ctx.native_input_active && ctx.links.snapshot(cx).overlay().is_none()),
