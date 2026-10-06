@@ -13,6 +13,9 @@ use crate::shell::bodies::graph::identity::IdentityAdapter;
 use gpui::TestAppContext;
 use std::sync::Arc;
 
+#[path = "graph_production_tests.rs"]
+mod production;
+
 /// Node ids in the anatomy world.
 pub(super) const RELATION_LABEL: u32 = 0;
 pub(super) const RELATION_LABEL_FN: u32 = 3;

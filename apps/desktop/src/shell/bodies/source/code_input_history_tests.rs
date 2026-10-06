@@ -5,7 +5,7 @@ use crate::model::pages::{Known, PageValue, ReadFailure, RelationKind};
 use crate::navigation::presentation::{ReadingChange, ReadingSession, SourceLineDraft};
 use crate::navigation::{Intent, View};
 use crate::runtime::reads::{PageReader, ReadContext, ReadPool, ReadRequest};
-use crate::shell::tests::{native_bounds, rig_with_reads, view_route};
+use crate::shell::tests::{native_bounds, native_bounds_id, rig_with_reads, view_route};
 use gpui::{AppContext as _, TestAppContext};
 use gpui_component::WindowExt as _;
 use std::sync::Arc;
@@ -144,10 +144,16 @@ fn native_tab_edits_code_line_immediately_and_history_restores_its_draft(
 
 #[gpui::test]
 fn owner_loss_keeps_the_mounted_line_draft_but_denies_source_jump(cx: &mut TestAppContext) {
-    let code = view_route("RelationLabel", View::Code);
+    let crate::navigation::Route::Symbol(mut source) = view_route("RelationLabel", View::Code) else { unreachable!() };
+    // LongSource declares near EOF. Start at line one so the positive Next
+    // gesture has another actual immutable page before and after owner loss.
+    source.line = Some(1);
+    let code = crate::navigation::Route::Symbol(source);
     let pool = ReadPool::start(2, |_| LongSource).expect("source read pool");
     let mut rig = rig_with_reads(cx, Some(code.clone()), 900.0, 700.0, pool);
     let original = visit(&mut rig);
+    assert!(native_bounds_id(&mut rig, "source-page-top-next", "Button", "Next lines", true).is_some(),
+        "positive paging precondition on the current actual source page");
     let _input = focus_line_input(&mut rig);
     let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
     rig.graph.store.update(rig.cx, |store, cx| store.owner_failed(
@@ -155,8 +161,8 @@ fn owner_loss_keeps_the_mounted_line_draft_but_denies_source_jump(cx: &mut TestA
     ));
     assert!(rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_attachment().is_none()),
         "the source producer lease is genuinely revoked");
-    // The producer receipt is revoked now, before a repaint can replace the
-    // still-mounted native editor with a read-only retained source page.
+    // The producer receipt is revoked now, before the unavailable frame
+    // updates the currently mounted editor's separate resource controls.
     rig.cx.simulate_input("17");
     rig.cx.simulate_keystrokes("enter");
     assert_eq!(targets.focused().as_deref(), Some("source-jump-field"),
@@ -164,11 +170,36 @@ fn owner_loss_keeps_the_mounted_line_draft_but_denies_source_jump(cx: &mut TestA
     rig.cx.run_until_parked();
     assert_eq!(draft(&mut rig), "17", "local visit editing outlives owner authority");
     rig.settle();
+    let current = focus_line_input(&mut rig);
+    rig.cx.simulate_input("8");
+    rig.settle();
+    assert_eq!(current.read_with(rig.cx, |input, _| input.value().to_string()), "178",
+        "typing remains native after the unavailable source frame actually paints");
+    assert_eq!(draft(&mut rig), "178");
+    let before = rig.said();
+    rig.keys("enter");
+    assert_eq!(rig.said(), before, "retained source Return cannot jump through retired resource authority");
+    rig.keys("secondary-,");
+    assert!(native_bounds(&mut rig, "Heading", "Appearance", false).is_some(),
+        "Settings actually mounts before the source return");
+    rig.keys("escape");
+    assert!(rig.cx.update(|window, cx| window.has_focused_input(cx)),
+        "Settings returns to current local source input while its service is unavailable");
+    rig.cx.simulate_input("9");
+    rig.settle();
+    assert_eq!(draft(&mut rig), "1789");
+    let next = native_bounds_id(&mut rig, "source-page-top-next", "Button", "Next lines", true)
+        .expect("retained immutable source exposes local paging");
+    rig.cx.simulate_click(next.center(), gpui::Modifiers::none());
+    rig.settle();
+    assert_ne!(rig.said(), before, "native paging changes the retained visible byte range");
+    assert_eq!(draft(&mut rig), "1789", "local paging does not submit or rewrite the line draft");
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_attachment().is_none()));
     rig.go(Intent::Back);
     rig.go(Intent::Forward);
     assert_eq!(rig.route(), code);
     assert_eq!(visit(&mut rig), original);
-    assert_eq!(draft(&mut rig), "17", "the returned unavailable visit retains the draft");
+    assert_eq!(draft(&mut rig), "1789", "the returned unavailable visit retains the local draft");
 }
 
 #[gpui::test]
@@ -208,7 +239,7 @@ fn settings_returns_to_the_native_line_editor_even_without_a_logical_selection(
     let pool = ReadPool::start(2, |_| LongSource).expect("source read pool");
     let mut rig = rig_with_reads(cx, Some(code.clone()), 900.0, 700.0, pool);
     let original = visit(&mut rig);
-    let input = focus_line_input(&mut rig);
+    let _input = focus_line_input(&mut rig);
     rig.keys("1 7");
     assert_eq!(draft(&mut rig), "17");
     let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
@@ -223,8 +254,10 @@ fn settings_returns_to_the_native_line_editor_even_without_a_logical_selection(
         Some("source-jump-field"), "Settings must return to the mounted native editor");
     assert!(rig.cx.update(|window, cx| window.has_focused_input(cx)),
         "the actual text engine receives subsequent typing");
+    let current_input = rig.cx.update(|window, cx| window.focused_input(cx)
+        .and_then(|input| input.as_input().cloned()).expect("actual returned input engine"));
     rig.keys("8");
-    assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "178");
+    assert_eq!(current_input.read_with(rig.cx, |input, _| input.value().to_string()), "178");
     assert_eq!(draft(&mut rig), "178");
     rig.keys("enter");
     assert!(rig.said().iter().any(|line| line.contains("Lines 178")),

@@ -7,6 +7,47 @@
 use crate::navigation::{Overlay, presentation::VisitId};
 use gpui::{FocusHandle, WindowId};
 
+/// The destination that owns local presentation and editing. This is not a
+/// producer or resource lease: owner replacement does not change a reading
+/// visit, while navigation, a cover, or a preview retires its local input.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct LocalReadingScope {
+    pub(crate) visit: VisitId,
+    route: crate::navigation::Route,
+}
+
+/// Actual current native editor ownership, used only for local draft writes.
+/// The private fields prevent an old logical target from manufacturing it.
+pub(crate) struct LocalNativeEditorFrame {
+    _reading: LocalReadingScope,
+    _window: WindowId,
+    _focus_epoch: u64,
+}
+
+impl LocalReadingScope {
+    pub(crate) fn capture(snapshot: &crate::model::AppSnapshot) -> Self {
+        Self { visit: snapshot.session().reading.current.id, route: snapshot.route().clone() }
+    }
+
+    pub(crate) fn matches_destination(&self, snapshot: &crate::model::AppSnapshot) -> bool {
+        self.visit == snapshot.session().reading.current.id && &self.route == snapshot.route()
+    }
+
+    pub(crate) fn admits_input(&self, snapshot: &crate::model::AppSnapshot) -> bool {
+        self.matches_destination(snapshot) && snapshot.overlay().is_none()
+            && snapshot.page_overlay().is_none() && snapshot.session().preview.is_none()
+    }
+
+    pub(crate) fn native_editor_frame(&self, snapshot: &crate::model::AppSnapshot,
+        handle: &FocusHandle, window: &gpui::Window, cx: &gpui::App) -> Option<LocalNativeEditorFrame>
+    {
+        (self.admits_input(snapshot) && window.is_window_active()
+            && window.is_focus_handle_mounted(handle) && handle.is_focused(window))
+            .then(|| LocalNativeEditorFrame { _reading: self.clone(),
+                _window: window.window_handle().window_id(), _focus_epoch: window.focus_epoch() })
+    }
+}
+
 /// A deferred return may run only while its stable handoff still owns input.
 /// Window identity, native focus changes, and user navigation independently
 /// revoke it; an exhausted generation can never grant a new return.

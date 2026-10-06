@@ -18,7 +18,7 @@ use crate::model::pages::{
     DocFragment, PageKey, RelationKind, SourceCoverage, SourceOrigin, SourceText, SourceView, SymbolRef,
 };
 use crate::navigation::{Intent, Route, SymbolRoute};
-use crate::navigation::presentation::{ReadingChange, SourceLineDraft, VisitId};
+use crate::navigation::presentation::{ReadingChange, SourceLineDraft};
 use crate::shell::focus::{Recall, Target, TargetAction};
 use crate::shell::kit::{gap_words, quiet, symbol_route, text};
 use crate::shell::reader::Reader;
@@ -87,9 +87,9 @@ struct Pager {
     _subscription: Subscription,
 }
 
+#[derive(Clone)]
 struct DraftOwner {
-    visit: VisitId,
-    route: Route,
+    reading: Option<crate::shell::keyboard::LocalReadingScope>,
     links: Links,
 }
 
@@ -97,25 +97,60 @@ impl DraftOwner {
     fn from_ctx(route: Route, ctx: &Ctx<'_>, cx: &App) -> (Self, SourceLineDraft) {
         let snapshot = ctx.links.snapshot(cx);
         let reading = &snapshot.session().reading.current;
-        let draft = if ctx.active && snapshot.route() == &route {
+        let scope = (ctx.active && snapshot.route() == &route)
+            .then(|| crate::shell::keyboard::LocalReadingScope::capture(&snapshot));
+        let draft = if scope.is_some() {
             reading.presentation.controls().source_line_draft.clone()
         } else {
             SourceLineDraft::default()
         };
-        (Self { visit: reading.id, route, links: ctx.links.clone() }, draft)
+        (Self { reading: scope, links: ctx.links.clone() }, draft)
     }
 
-    fn save(&self, draft: SourceLineDraft, cx: &mut App) {
+    fn save(&self, draft: SourceLineDraft, handle: &gpui::FocusHandle, window: &Window, cx: &mut App) {
         let snapshot = self.links.snapshot(cx);
-        if snapshot.route() == &self.route && snapshot.session().reading.current.id == self.visit
-            && snapshot.overlay().is_none() && snapshot.page_overlay().is_none()
-            && snapshot.session().preview.is_none()
-        {
+        let Some(reading) = &self.reading else { return; };
+        if reading.native_editor_frame(&snapshot, handle, window, cx).is_some() {
             self.links.dispatch(Intent::SetReading {
-                visit: self.visit,
+                visit: reading.visit,
                 change: ReadingChange::SourceLineDraft(draft),
             }, cx);
         }
+    }
+}
+
+/// Exact immutable source bytes in this local reading. Editing and paging
+/// these bytes confer no declaration, copy, jump or producer permission.
+struct LocalSourceFrame {
+    reading: crate::shell::keyboard::LocalReadingScope,
+    symbol: SymbolRef,
+    value: Arc<SourceView>,
+}
+
+impl LocalSourceFrame {
+    fn guard(&self, ctx: &Ctx<'_>, cx: &App) -> Rc<dyn Fn(&mut App) -> bool> {
+        let local = ctx.native_local_guard(cx);
+        let reading = self.reading.clone();
+        let symbol = self.symbol.clone();
+        let value = self.value.clone();
+        let links = ctx.links.clone();
+        Rc::new(move |app| local(app) && {
+            let store = links.store.read(app);
+            reading.admits_input(&store.snapshot())
+                && store.source(&symbol).loaded_arc().is_some_and(|current|
+                    Arc::ptr_eq(current, &value) && current.symbol.coordinate == symbol)
+        })
+    }
+}
+
+enum SourcePresentation {
+    Current(Arc<SourceView>),
+    Earlier { value: Arc<SourceView>, notice: String },
+}
+
+impl SourcePresentation {
+    fn value(&self) -> &Arc<SourceView> {
+        match self { Self::Current(value) | Self::Earlier { value, .. } => value }
     }
 }
 
@@ -143,11 +178,11 @@ impl Pager {
         let subscription = cx.subscribe_in(
             &input,
             window,
-            |pager, input, event: &InputEvent, _window, cx| {
+            |pager, input, event: &InputEvent, window, cx| {
                 match event {
                     InputEvent::Change => {
                         if let Some(draft) = SourceLineDraft::new(input.read(cx).value().to_string()) {
-                            pager.draft_owner.save(draft, cx);
+                            pager.draft_owner.save(draft, &input.read(cx).focus_handle(cx), window, cx);
                         }
                     }
                     InputEvent::PressEnter { .. } => {
@@ -260,26 +295,22 @@ pub(super) fn body(
     );
     let semantic_notice = match symbol_resource.terminal() {
         crate::core::ResourceTerminal::Fault(error) => format!(
-            "The source is current, but the declaration reading failed: {}. Semantic links and source controls are disabled.",
+            "The source is current, but the declaration reading failed: {}. Semantic links and resource actions are disabled.",
             error.message(),
         ),
         crate::core::ResourceTerminal::Unavailable(_) =>
-            "The source is current, but this declaration is not served by the current producer. Semantic links and source controls are disabled.".to_owned(),
+            "The source is current, but this declaration is not served by the current producer. Semantic links and resource actions are disabled.".to_owned(),
         crate::core::ResourceTerminal::Complete | crate::core::ResourceTerminal::Partial =>
-            "The source is current, but this declaration's semantic reading is still pending. Semantic links and source controls are disabled.".to_owned(),
+            "The source is current, but this declaration's semantic reading is still pending. Semantic links and resource actions are disabled.".to_owned(),
     };
     drop(live);
     let evidence = display_evidence(&resource, root, serving, |view| {
         view.symbol.coordinate.as_str() == symbol.as_str()
     });
-    let view = match &evidence {
-        DisplayEvidence::Current(view) if symbol_current => (**view).clone(),
-        DisplayEvidence::Current(view) => {
-            return read_only_source(view, &semantic_notice, route, ctx);
-        }
-        DisplayEvidence::Earlier { value, .. } => {
-            return read_only_source(value, &earlier_notice(&evidence).unwrap_or_default(), route, ctx);
-        }
+    let notice = match &evidence {
+        DisplayEvidence::Current(_) if symbol_current => None,
+        DisplayEvidence::Current(_) => Some(semantic_notice),
+        DisplayEvidence::Earlier { .. } => Some(earlier_notice(&evidence).unwrap_or_default()),
         DisplayEvidence::Missing(other) => {
             let name = symbol.identity().name().to_owned();
             return not_ready(other, &PageKey::Source(symbol), &name, ctx, cx);
@@ -288,9 +319,24 @@ pub(super) fn body(
             "The saved source belongs to another exact declaration or release.", &ctx.measure, ctx.palette,
         ))],
     };
+    let Some(value) = resource.loaded_arc().cloned() else {
+        return vec![Leaf::new(quiet("The source bytes are unavailable.", &ctx.measure, ctx.palette))];
+    };
+    let presentation = match notice {
+        None => SourcePresentation::Current(value),
+        Some(notice) => SourcePresentation::Earlier { value, notice },
+    };
     let measure = ctx.measure;
     let palette = ctx.palette;
     let mut leaves = Vec::new();
+    let view = presentation.value();
+    let local = LocalSourceFrame { reading: crate::shell::keyboard::LocalReadingScope::capture(&ctx.links.snapshot(cx)),
+        symbol: symbol.clone(), value: view.clone() };
+    let local_guard = local.guard(ctx, cx);
+    if let SourcePresentation::Earlier { notice, .. } = &presentation {
+        let words = ctx.say(format!("{notice} Local line editing and text paging remain available."));
+        leaves.push(Leaf::new(quiet(words.clone(), &ctx.measure, ctx.palette).role(gpui::Role::Status).aria_label(words)));
+    }
     // The crumb: package › file › declaration.
     let identity = symbol.identity();
     let mut crumb = Vec::new();
@@ -324,8 +370,11 @@ pub(super) fn body(
                 let words = ctx.say(status);
                 leaves.push(Leaf::new(quiet(words.clone(), &measure, palette).role(gpui::Role::Status).aria_label(words)));
             }
-            let note = margin(&view, store, &symbol, route, ctx, cx);
-            let code = code(&view, source, route, ctx, window, cx);
+            let note = match &presentation {
+                SourcePresentation::Current(_) => margin(view, store, &symbol, route, ctx, cx),
+                SourcePresentation::Earlier { .. } => None,
+            };
+            let code = code(view, source, route, &local_guard, ctx, window, cx);
             let leaf = Leaf::new(code);
             leaves.push(match note {
                 Some(note) => leaf.with_note(note),
@@ -342,34 +391,6 @@ pub(super) fn body(
                 leaves.push(Leaf::new(quiet(words.clone(), &measure, palette).role(gpui::Role::Status).aria_label(words)));
             }
         }
-    }
-    leaves
-}
-
-fn read_only_source(view: &SourceView, notice: &str, route: &SymbolRoute, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
-    let mut leaves = Vec::new();
-    let status = ctx.say(notice.to_owned());
-    leaves.push(Leaf::new(quiet(status.clone(), &ctx.measure, ctx.palette).role(gpui::Role::Status).aria_label(status)));
-    let heading = ctx.say(view.symbol.coordinate.as_str().to_owned());
-    leaves.push(Leaf::new(text(ty::MONO_ROW, &ctx.measure, ctx.palette.ink2).role(gpui::Role::Label).aria_label(heading.clone()).child(heading)));
-    match view.text.known() {
-        Some(source) => {
-            let line = route.line.filter(|line| source.line_range().is_some_and(|range| (range.first..=range.last).contains(line)))
-                .unwrap_or(source.first_line());
-            let cursor = initial_cursor(source, line, CONTEXT_BEFORE);
-            let page = SourcePage::at(source, cursor);
-            let rows = page.lines.iter().filter_map(|line| {
-                source.text().get(line.span.range()).map(|text| format!("{}  {text}", line.number))
-            }).collect::<Vec<_>>().join("\n");
-            let words = ctx.say(rows);
-            leaves.push(Leaf::new(div().id("read-only-source-page").role(gpui::Role::Label)
-                .aria_label(words.clone())
-                .child(text(ty::CODE, &ctx.measure, ctx.palette.ink1).child(words))));
-            if page.next.is_some() {
-                leaves.push(Leaf::new(quiet("Earlier source continues beyond this bounded excerpt; a current reading is needed for source paging.", &ctx.measure, ctx.palette)));
-            }
-        }
-        None => leaves.push(Leaf::new(quiet("No source text was recorded in this reading.", &ctx.measure, ctx.palette))),
     }
     leaves
 }
@@ -518,6 +539,7 @@ fn code(
     view: &SourceView,
     source: &SourceText,
     route: &SymbolRoute,
+    local_guard: &Rc<dyn Fn(&mut App) -> bool>,
     ctx: &mut Ctx<'_>,
     window: &mut Window,
     cx: &mut Context<Reader>,
@@ -584,6 +606,7 @@ fn code(
     let reveal = Rc::clone(&ctx.reader_reveal);
     let pager_memory = Rc::clone(&paging);
     let (draft_owner, draft) = DraftOwner::from_ctx(leaving.clone(), ctx, cx);
+    let mounted_owner = draft_owner.clone();
     let pager = window.use_keyed_state(pager_key, cx, move |window, cx| {
         Pager::new(
             pager_memory,
@@ -598,6 +621,7 @@ fn code(
             cx,
         )
     });
+    pager.update(cx, |pager, _| pager.draft_owner = mounted_owner);
     let selected = crate::runtime::store::route_declaration(&leaving)
         .unwrap_or_else(|_| view.symbol.coordinate.clone());
     let source_key = PageKey::Source(selected.clone());
@@ -661,7 +685,7 @@ fn code(
     let below = last_line.saturating_sub(rendered_to);
     let mut column = div().flex().flex_col().gap(measure.space(Space::Base));
     column = column.child(pager_controls(
-        "top", &pager, cursor, &page, source, &source_guard, ctx, cx,
+        "top", &pager, cursor, &page, source, &source_guard, local_guard, ctx, cx,
     ));
     if above > 0 || cursor.byte > 0 {
         let label = if cursor.byte > 0 {
@@ -939,7 +963,7 @@ fn code(
         };
         column = column.child(quiet(continuation.clone(), &measure, palette).role(gpui::Role::Label).aria_label(continuation));
         column = column.child(pager_controls(
-            "bottom", &pager, cursor, &page, source, &source_guard, ctx, cx,
+            "bottom", &pager, cursor, &page, source, &source_guard, local_guard, ctx, cx,
         ));
     }
     if let Some(editor_path) = view.editor_path.known() {
@@ -1119,6 +1143,7 @@ fn pager_controls(
     page: &SourcePage,
     source: &SourceText,
     source_guard: &Rc<dyn Fn(&mut App) -> bool>,
+    local_guard: &Rc<dyn Fn(&mut App) -> bool>,
     ctx: &mut Ctx<'_>,
     cx: &mut Context<Reader>,
 ) -> gpui::AnyElement {
@@ -1163,7 +1188,7 @@ fn pager_controls(
         let act: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
             state.update(app, |pager, cx| pager.previous(cursor, previous, cx));
         });
-        let target_action = TargetAction::new(Rc::clone(source_guard), act);
+        let target_action = TargetAction::new(Rc::clone(local_guard), act);
         let act = target_action.callback();
         ctx.targets.push(Target {
             id: id.clone(),
@@ -1174,7 +1199,7 @@ fn pager_controls(
         });
         let focus = ctx.native_handle(&id, cx);
         let mut control = facet::controls::button(id.clone(), "Previous lines", &measure)
-            .when_current(Rc::clone(source_guard))
+            .when_current(Rc::clone(local_guard))
             .ghost().size(Control::Small).on_click(move |window, app| act(window, app));
         if let Some(focus) = focus { control = control.focus_handle(focus); }
         controls = controls.child(
@@ -1194,7 +1219,7 @@ fn pager_controls(
         let act: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, app| {
             state.update(app, |pager, cx| pager.next(cursor, next, cx));
         });
-        let target_action = TargetAction::new(Rc::clone(source_guard), act);
+        let target_action = TargetAction::new(Rc::clone(local_guard), act);
         let act = target_action.callback();
         ctx.targets.push(Target {
             id: id.clone(),
@@ -1205,7 +1230,7 @@ fn pager_controls(
         });
         let focus = ctx.native_handle(&id, cx);
         let mut control = facet::controls::button(id.clone(), "Next lines", &measure)
-            .when_current(Rc::clone(source_guard))
+            .when_current(Rc::clone(local_guard))
             .ghost().size(Control::Small).on_click(move |window, app| act(window, app));
         if let Some(focus) = focus { control = control.focus_handle(focus); }
         controls = controls.child(
@@ -1224,7 +1249,7 @@ fn pager_controls(
         let focus: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |window, app| {
             focus_input.update(app, |input, cx| input.focus(window, cx));
         });
-        let target_action = TargetAction::new(Rc::clone(source_guard), focus);
+        let target_action = TargetAction::new(Rc::clone(local_guard), focus);
         let focus = target_action.callback();
         ctx.targets.push(Target {
             id: field_id.clone(),
@@ -1247,7 +1272,7 @@ fn pager_controls(
                     .w(px(112.0 * measure.scale()))
                     .min_w_0()
                     .on_click(move |_: &ClickEvent, window, app| focus(window, app))
-                    .child(field), Rc::clone(source_guard)),
+                    .child(field), Rc::clone(local_guard)),
             ),
         );
         let id: SharedString = "source-jump-go".into();

@@ -1,5 +1,6 @@
 //! Passive graph presentation. No producer authority, old NodeId, scene,
-//! search state or deferred callback can cross the publication boundary.
+//! search results or deferred callback can cross the publication boundary.
+//! The native query/caret is local editing scoped to this exact reading visit.
 
 use super::identity::IdentityAdapter;
 use crate::{
@@ -45,11 +46,13 @@ pub(super) struct RetainedPresentation {
     geometry: Geometry,
     selected: Option<ExactSelection>,
     had_selection: bool,
+    editing: Option<facet::graph::view::LocalEditing>,
 }
 
 pub(super) struct Restoration {
     pub start: Start,
     pub status: Option<&'static str>,
+    pub editing: Option<facet::graph::view::LocalEditing>,
 }
 
 impl RetainedPresentation {
@@ -69,6 +72,7 @@ impl RetainedPresentation {
                     symbol: exact.symbol,
                 }),
             had_selection: focus.is_some(),
+            editing: Some(graph.local_editing()),
         })
     }
 
@@ -109,6 +113,7 @@ impl RetainedPresentation {
         Some(Restoration {
             start: camera.map_or(Start::World, |camera| Start::Restore { camera, focus }),
             status,
+            editing: self.editing,
         })
     }
 }
@@ -214,6 +219,7 @@ mod tests {
                     symbol: symbol("exact-B"),
                 }),
                 had_selection: true,
+                editing: None,
             },
             camera,
         )
@@ -344,6 +350,7 @@ mod tests {
                 geometry: Geometry::capture(&old, camera, None),
                 selected: None,
                 had_selection: false,
+                editing: None,
             };
             let restored = packet
                 .restore(&visit(), &fresh, &identities)

@@ -111,7 +111,7 @@ struct GraphMountFocus {
     // Retain the displaced receiver until handoff. Dropping the old Graph
     // must not manufacture a native blur that revokes its own valid lease.
     _origin: Option<gpui::FocusHandle>,
-    settings_return: Option<(crate::navigation::presentation::VisitId, ProducerAuthority)>,
+    settings_return: Option<LocalGraphReturnScope>,
     scheduled: bool,
 }
 
@@ -119,6 +119,21 @@ struct GraphMountFocus {
 pub(crate) struct SettingsGraphOrigin {
     pub component: gpui::EntityId,
     pub visit: crate::navigation::presentation::VisitId,
+    frame: LocalGraphRootFrame,
+}
+
+/// Permission to return only to this reading's local root. It is independent
+/// of a serving composition and cannot authorize a declaration or read.
+#[derive(Clone, PartialEq, Eq)]
+struct LocalGraphReturnScope {
+    reading: crate::shell::keyboard::LocalReadingScope,
+    authority: ProducerAuthority,
+}
+
+#[derive(Clone)]
+struct LocalGraphRootFrame {
+    graph: gpui::EntityId,
+    scope: LocalGraphReturnScope,
     handle: gpui::FocusHandle,
 }
 
@@ -128,6 +143,7 @@ pub(crate) struct SettingsGraphOrigin {
 struct PaintedScene {
     graph: gpui::EntityId,
     key: WorldKey,
+    reading: crate::shell::keyboard::LocalReadingScope,
 }
 
 /// Graph display can be a painted scene or an exact declaration route whose
@@ -240,6 +256,11 @@ pub(crate) fn install_test_world(
 }
 
 impl Map {
+    #[cfg(test)]
+    pub(crate) fn projection_evidence(&self) -> Option<(WorldKey, indexed_world::Origin)> {
+        Some((self.world_key.clone()?, self.projection_origin.clone()?))
+    }
+
     pub(crate) fn new(links: Links, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let events = cx.subscribe_in(
             &links.store,
@@ -410,6 +431,14 @@ impl Map {
         if !self.visible {
             return;
         }
+        // A registered endpoint is not an attached read capability. Local
+        // repaint over an existing scene must not derive keys or touch Memo
+        // while that producer is unavailable. A ready attachment can still
+        // discover and replace a changed serving generation below.
+        if self.graph.is_some() && self.links.store.read(cx).current_owner_attachment().is_none() {
+            self.unavailable_world(cx);
+            return;
+        }
         let snapshot = self.links.snapshot(cx);
         let preferred = snapshot
             .workspace()
@@ -418,8 +447,7 @@ impl Map {
             .or(snapshot.workspace().host.as_ref())
             .and_then(|project| PackageRef::parse(project.as_str()).ok());
         let Some(key) = indexed_world::key(snapshot.key(), preferred, cx) else {
-            self.reset_indexed_world(cx);
-            self.load_error = Some("Waiting for the local index connection.".into());
+            self.unavailable_world(cx);
             return;
         };
         if self.world_key.as_ref() != Some(&key) {
@@ -430,6 +458,8 @@ impl Map {
         // producer authority (and therefore the scene cache key) is stable.
         self.world_key = Some(key.clone());
         if self.graph.is_some() || self.ready_scene.is_some() {
+            self.projection_waiting = false;
+            self.load_error = None;
             return;
         }
         match indexed_world::get(&key, cx) {
@@ -458,6 +488,15 @@ impl Map {
                 // this value before mounting the scene in that same frame.
             }
         }
+    }
+
+    fn unavailable_world(&mut self, cx: &mut Context<Self>) {
+        if let Some(key) = &self.world_key { indexed_world::retire_owner(key, cx); }
+        if self.local_root_frame(cx).is_none() { self.reset_indexed_world(cx); }
+        self.projection_waiting = false;
+        self.load_error = Some(if self.graph.is_some() {
+            "Earlier indexed graph · local exploration available; the index connection is unavailable."
+        } else { "Waiting for the local index connection." }.into());
     }
 
     /// A capture waits for the mounted map's indexed projection and any routed
@@ -783,7 +822,8 @@ impl Map {
         if let Some(graph) = &self.graph {
             if !self.world_key.as_ref().is_some_and(|key| key.at_authority(snapshot.key())) { return None; }
             return self.painted_scene.as_ref().filter(|painted| painted.graph == graph.entity_id()
-                && self.world_key.as_ref() == Some(&painted.key)).map(|painted| MountedGraph::Scene(painted.graph));
+                && self.world_key.as_ref() == Some(&painted.key)
+                && painted.reading.matches_destination(&snapshot)).map(|painted| MountedGraph::Scene(painted.graph));
         }
         matches!(snapshot.route(), Route::Symbol(route) if route.view == View::Graph)
             .then_some(MountedGraph::Declaration)
@@ -804,29 +844,29 @@ impl Map {
         Some(GraphMountFocus { lease, retired: false, restore_scene: true, _origin: window.focused(cx), settings_return: None, scheduled: false })
     }
 
-    fn current_scene_owner_frame(&self, cx: &mut Context<Self>) -> bool {
+    fn local_root_frame(&self, cx: &App) -> Option<LocalGraphRootFrame> {
         let snapshot = self.links.snapshot(cx);
-        if !self.visible || self.route.as_ref() != Some(snapshot.route()) || !self.links.store.read(cx).owner_serving() { return false; }
-        let preferred = snapshot.workspace().active.as_ref().or(snapshot.workspace().host.as_ref())
-            .and_then(|project| PackageRef::parse(project.as_str()).ok());
-        let Some(key) = indexed_world::key(snapshot.key(), preferred, cx) else { return false; };
-        self.world_key.as_ref() == Some(&key) && self.graph.as_ref().is_some_and(|graph|
-            self.painted_scene.as_ref().is_some_and(|painted| painted.graph == graph.entity_id() && painted.key == key))
+        let graph = self.graph.as_ref()?;
+        if self.mounted_presentation(cx) != Some(MountedGraph::Scene(graph.entity_id())) { return None; }
+        let painted = self.painted_scene.as_ref()?;
+        Some(LocalGraphRootFrame { graph: graph.entity_id(),
+            scope: LocalGraphReturnScope { reading: painted.reading.clone(), authority: snapshot.key().authority() },
+            handle: graph.focus_handle(cx) })
     }
 
     pub(crate) fn capture_settings_root(&self, origin: Option<&gpui::FocusHandle>, cx: &mut Context<Self>) -> Option<SettingsGraphOrigin> {
-        if !self.current_scene_owner_frame(cx) { return None; }
-        let handle = self.graph.as_ref()?.focus_handle(cx);
-        if origin != Some(&handle) { return None; }
-        Some(SettingsGraphOrigin { component: cx.entity_id(), visit: self.links.snapshot(cx).session().reading.current.id, handle })
+        let frame = self.local_root_frame(cx)?;
+        if origin != Some(&frame.handle) { return None; }
+        Some(SettingsGraphOrigin { component: cx.entity_id(), visit: frame.scope.reading.visit, frame })
     }
 
     pub(crate) fn arm_settings_root_return(&mut self, origin: SettingsGraphOrigin, authority: ProducerAuthority, lease: crate::shell::keyboard::NativeReturnLease, cx: &mut Context<Self>) -> bool {
         let snapshot = self.links.snapshot(cx);
         if origin.component != cx.entity_id() || origin.visit != snapshot.session().reading.current.id
-            || authority != snapshot.key().authority() || !is_graph(snapshot.route()) || snapshot.overlay().is_some() { return false; }
+            || authority != snapshot.key().authority() || origin.frame.scope.authority != authority
+            || !origin.frame.scope.reading.admits_input(&snapshot) || !is_graph(snapshot.route()) { return false; }
         self.focus_on_mount = Some(GraphMountFocus { lease, retired: false, restore_scene: true,
-            _origin: Some(origin.handle), settings_return: Some((origin.visit, authority)), scheduled: false });
+            _origin: Some(origin.frame.handle), settings_return: Some(origin.frame.scope), scheduled: false });
         cx.notify();
         true
     }
@@ -835,9 +875,9 @@ impl Map {
         let Some(pending) = self.focus_on_mount.as_mut().filter(|pending| pending.lease == lease && pending.settings_return.is_some()) else { return; };
         pending.scheduled = false;
         let snapshot = self.links.snapshot(cx);
-        let scope = pending.settings_return.expect("checked return");
+        let scope = pending.settings_return.clone().expect("checked return");
         let current = window.is_window_active() && snapshot.overlay().is_none()
-            && scope == (snapshot.session().reading.current.id, snapshot.key().authority())
+            && scope.reading.admits_input(&snapshot) && scope.authority == snapshot.key().authority()
             && !crate::shell::titlebar::menu_open(window, cx)
             && self.links.shell.upgrade().is_some_and(|shell| {
                 let shell = shell.read(cx);
@@ -845,13 +885,12 @@ impl Map {
                     && shell.allows_reader_native_return(window)
             });
         if !current { self.focus_on_mount = None; return; }
-        if self.graph.as_ref().is_some_and(|graph| graph.entity_id() == graph_id)
-            && self.current_scene_owner_frame(cx)
-            && let Some(graph) = &self.graph
-            && window.is_focus_handle_mounted(&graph.focus_handle(cx))
+        if let Some(frame) = self.local_root_frame(cx)
+            && frame.graph == graph_id && frame.scope == scope
+            && window.is_focus_handle_mounted(&frame.handle)
         {
             self.focus_on_mount = None;
-            graph.focus_handle(cx).focus(window, cx);
+            frame.handle.focus(window, cx);
         }
     }
 
@@ -1031,6 +1070,16 @@ impl Map {
         )
     }
 
+    /// Local presentation does not admit a cached coordinate as a current
+    /// resource action. Recheck the exact composition and attached producer
+    /// at dispatch, including callbacks queued before its withdrawal.
+    fn resource_scene_owner(&self, cx: &App) -> Option<crate::runtime::indexed_world::ServingProjectionOwner> {
+        let store = self.links.store.read(cx);
+        let key = self.world_key.as_ref()?;
+        if !key.at_authority(store.snapshot().key()) || store.current_owner_attachment().is_none() { return None; }
+        key.serving_owner(cx)
+    }
+
     fn peek_action(
         &mut self,
         node: NodeId,
@@ -1039,7 +1088,7 @@ impl Map {
         cx: &mut Context<Self>,
     ) {
         let snapshot = self.links.snapshot(cx);
-        if snapshot.overlay().is_some() {
+        if snapshot.overlay().is_some() || self.resource_scene_owner(cx).is_none() {
             return;
         }
         let Some(graph) = self.graph.clone() else {
@@ -1086,6 +1135,7 @@ impl Map {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.resource_scene_owner(cx).is_none() { return; }
         let snapshot = self.links.snapshot(cx);
         let focus = self
             .graph
@@ -1146,6 +1196,10 @@ impl Map {
         let Some(request) = self.pending.clone() else {
             return;
         };
+        if self.resource_scene_owner(cx).is_none() {
+            self.invalidate_open();
+            return;
+        }
         let (snapshot, resource) = {
             let store = self.links.store.read(cx);
             (store.snapshot(), store.search(&request.query))
@@ -1273,6 +1327,7 @@ impl Map {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.resource_scene_owner(cx).is_none() { return; }
         let key = crate::shell::kit::shared_id(&symbol);
         if let Some(bounds) = anchor {
             facet::motion::shared::remember(key, bounds, window, cx);
@@ -1441,6 +1496,7 @@ fn handoff_anchor(
 /// canvas draws the node; the gem is visible only during a real shared morph.
 struct FocusMark {
     scene_paint: Option<facet::graph::view::ScenePaintReceipt>,
+    reading: crate::shell::keyboard::LocalReadingScope,
     graph: Entity<GraphView>,
     owner: gpui::WeakEntity<Map>,
 }
@@ -1584,7 +1640,9 @@ impl gpui::Element for FocusMark {
         // order. Prepaint alone cannot install a scene receipt.
         let _ = self.owner.update(cx, |map, _| {
             if self.scene_paint.as_ref().is_some_and(|receipt| receipt.was_painted()) && map.visible && map.graph.as_ref().is_some_and(|graph| graph.entity_id() == self.graph.entity_id()) {
-                map.painted_scene = map.world_key.clone().map(|key| PaintedScene { graph: self.graph.entity_id(), key });
+                map.painted_scene = map.world_key.clone().map(|key| PaintedScene {
+                    graph: self.graph.entity_id(), key, reading: self.reading.clone(),
+                });
             }
         });
         if let Some(mark) = mark {
@@ -1619,13 +1677,17 @@ impl Render for Map {
             let restored = self.retained_presentation.take().and_then(|packet| packet.restore(&visit, &scene, &identities));
             self.presented_visit = Some(visit);
             let start = restored.as_ref().map_or(Start::World, |restored| restored.start);
-            if let Some(restored) = restored { self.error = restored.status.map(str::to_owned); }
+            let editing = restored.and_then(|restored| {
+                self.error = restored.status.map(str::to_owned);
+                restored.editing
+            });
             self.identities = Some(identities);
             self.coverage = Some(coverage);
             let owner = cx.entity().downgrade();
             let peek_owner = owner.clone();
             self.graph = Some(cx.new(|cx| {
                 let mut graph = GraphView::with_scene(scene, start, window, cx);
+                if let Some(editing) = editing { graph = graph.with_local_editing(editing, window, cx); }
                 graph.on_open(Rc::new(move |node, window, cx| {
                     let Some(map) = owner.upgrade() else {
                         return;
@@ -1690,6 +1752,7 @@ impl Render for Map {
             let owner = cx.entity().downgrade();
             let graph_id = graph.entity_id();
             let basis = self.callback_basis(cx);
+            let local_reading = crate::shell::keyboard::LocalReadingScope::capture(&self.links.snapshot(cx));
             let key = self.world_key.clone();
             let attachment = self.links.store.read(cx).current_owner_attachment();
             graph.update(cx, |graph, _| graph.on_interaction_admission(Rc::new(move |phase, cx| {
@@ -1703,9 +1766,15 @@ impl Render for Map {
                         && map.graph.as_ref().is_some_and(|graph| graph.entity_id() == graph_id)
                         && map.world_key == key
                         && map.world_key.as_ref().is_some_and(|key| key.at_authority(snapshot.key()))
-                        && map.callback_current(&basis, cx)
-                        && (phase == facet::graph::view::InteractionPhase::LocalFocus
-                            || attachment.as_ref().is_some_and(|token| map.links.store.read(cx).admits_owner_attachment(token)))
+                        && if phase == facet::graph::view::InteractionPhase::LocalFocus {
+                            // Local input belongs to the actually painted reading
+                            // visit, not the generation of a resource-open request.
+                            local_reading.admits_input(&snapshot)
+                        } else {
+                            map.callback_current(&basis, cx)
+                                && key.as_ref().is_some_and(|key| key.serving_owner(cx).is_some())
+                                && attachment.as_ref().is_some_and(|token| map.links.store.read(cx).admits_owner_attachment(token))
+                        }
                 })
             })));
         }
@@ -1743,6 +1812,7 @@ impl Render for Map {
                     .bottom_0()
                     .child(FocusMark {
                         scene_paint: graph.read(cx).paint_receipt(),
+                        reading: crate::shell::keyboard::LocalReadingScope::capture(&self.links.snapshot(cx)),
                         graph: graph.clone(),
                         owner: cx.entity().downgrade(),
                     }),

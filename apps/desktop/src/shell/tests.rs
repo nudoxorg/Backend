@@ -409,6 +409,7 @@ pub(crate) struct Rig {
     /// How long [`Rig::settle`] waits, in real time, for reads that are in
     /// flight (a fake engine answers at once; a real owner takes seconds).
     pub patience: Duration,
+    projection: RigProjection,
 }
 
 /// Opens a real shell window at `route` (after an Orbit start, so the
@@ -459,7 +460,19 @@ fn rig_with_engine_gate_at_root(
     gate: Option<OwnerGate>,
     initial_root: VersionedRoot,
 ) -> Rig {
-    rig_with_engine_gate_at_root_keep(cx, route, width, height, pool, engine, gate, initial_root, None)
+    rig_with_engine_gate_at_root_keep(cx, route, width, height, pool, engine, gate, initial_root, None, RigProjection::Fixture)
+}
+
+#[derive(Clone, Copy)]
+enum RigProjection { Fixture, IndexedOwner }
+
+/// The production graph key/read path, without installing TestProjection.
+/// The caller supplies the actual certified service revision and real lanes.
+pub(crate) fn rig_with_production_owner(cx: &mut TestAppContext, pool: ReadPool,
+    engine: impl EngineClient, gate: OwnerGate, root: VersionedRoot) -> Rig
+{
+    rig_with_engine_gate_at_root_keep(cx, None, 1440.0, 900.0,
+        pool, engine, Some(gate), root, None, RigProjection::IndexedOwner)
 }
 
 /// Mounts a real Reader from an already decoded private cold snapshot.
@@ -472,7 +485,7 @@ pub(crate) fn rig_with_cold_keep(
     rig_with_engine_gate_at_root_keep(
         cx, Some(route), 1440.0, 900.0,
         ReadPool::start(2, |_| Fixture).expect("pool"), RootOnly,
-        Some(gate), VersionedRoot::unserved(), Some(keep),
+        Some(gate), VersionedRoot::unserved(), Some(keep), RigProjection::Fixture,
     )
 }
 
@@ -486,6 +499,7 @@ fn rig_with_engine_gate_at_root_keep(
     gate: Option<OwnerGate>,
     initial_root: VersionedRoot,
     keep: Option<crate::runtime::snapshot::Keep>,
+    projection: RigProjection,
 ) -> Rig {
     let cold = keep.is_some();
     let waiting_for_owner = gate.as_ref().is_some_and(|gate| !matches!(gate.state(), OwnerState::Ready { .. }));
@@ -550,13 +564,16 @@ fn rig_with_engine_gate_at_root_keep(
         graph,
         cx: visual,
         patience: Duration::from_secs(20),
+        projection,
     };
     if waiting_for_owner {
         rig.draw();
     } else {
         rig.settle();
-        let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
-        rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture(root, cx));
+        if matches!(projection, RigProjection::Fixture) {
+            let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+            rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture(root, cx));
+        }
         rig.repaint();
         rig.settle();
     }
@@ -621,7 +638,13 @@ impl Rig {
             }
             // Only the shell asking again is held to the rounds: a read in
             // flight is waiting on real work, which the deadline bounds.
-            if asking {
+            // The production rig crosses actual sockets and owner threads.
+            // A virtual 28 s frame budget cannot time out 80 ms of real I/O.
+            // Keep its real deadline for pending owner work; once no real
+            // work is pending, the ordinary frame watchdog applies again.
+            let actual_io = matches!(self.projection, RigProjection::IndexedOwner)
+                && (reading || root_work);
+            if asking && !actual_io {
                 rounds += 1;
             }
             assert!(

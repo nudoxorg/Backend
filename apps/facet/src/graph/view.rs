@@ -68,6 +68,10 @@ pub enum InteractionPhase { Render, LocalFocus, Activate }
 /// Host guard shared by rendering, local editing and resource activation.
 pub type InteractionAdmission = Rc<dyn Fn(InteractionPhase, &App) -> bool>;
 
+/// Local query/caret state only. Search results, scene data, subscriptions,
+/// callback permission and focus-return claims are not retained here.
+pub struct LocalEditing { find: Entity<InputState> }
+
 /// A denied producer cannot fall through to another focus walk. Only an
 /// admitted edge hands focus back to the host's existing native zone order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,6 +158,33 @@ struct Drag {
     from: Camera,
     moved: f32,
     hist: Vec<(Instant, f32, f32)>,
+    press: LocalCanvasGesture,
+}
+
+/// An actual native gesture on the current painted canvas owns local
+/// viewport movement. A Down retains this witness until its matching Up;
+/// wheel and pinch consume it immediately. It confers no semantic authority.
+struct LocalCanvasGesture {
+    scene: Arc<Scene>,
+    admission: Option<InteractionAdmission>,
+    native_scope: NativeControlScope,
+    window: gpui::WindowId,
+    focus_epoch: u64,
+}
+
+impl LocalCanvasGesture {
+    fn current(&self, graph: &GraphView, window: &Window, cx: &App) -> bool {
+        window.is_window_active() && window.window_handle().window_id() == self.window
+            && window.focus_epoch() == self.focus_epoch
+            && graph.scene.as_ref().is_some_and(|scene| Arc::ptr_eq(scene, &self.scene))
+            && graph.admits_local_focus(cx)
+            && self.admission.as_ref().is_none_or(|admit| admit(InteractionPhase::LocalFocus, cx))
+    }
+
+    fn admits_click(&self, graph: &GraphView, cx: &App) -> bool {
+        self.native_scope == graph.native_scope() && graph.admits_native_interaction(cx)
+            && self.admission.as_ref().is_none_or(|admit| admit(InteractionPhase::Activate, cx))
+    }
 }
 
 /// Bounded collections retained by the graph between frames.
@@ -526,9 +557,13 @@ impl GraphView {
     pub fn native_focus_diagnostic(&self, window: &Window, cx: &App) -> String {
         let order = self.native_focus_order(window, cx).map(|handles| handles.into_iter()
             .map(|handle| format!("{handle:?}: focused={}, tab_stop={}", handle.is_focused(window), handle.tab_stop)).collect::<Vec<_>>());
-        format!("order={order:?}; physical_graph={}, find={}, local={}, resource={}, painted_resources={:?}; scope={:?}/{:?}",
+        format!("order={order:?}; physical_graph={}, find={}, local={}, resource={}, painted_resources={:?}; scope={:?}/{:?}; canvas={}; view={:?}/{:?}; camera={:?}/{:?}; drag={:?}; epoch={}; pointer={:?}; chrome={:?}",
             self.owns_native_focus(window, cx), self.find_focused(window, cx), self.admits_local_focus(cx), self.admits_native_interaction(cx),
-            self.painted_labels.as_ref().map(|painted| painted.controls.resources_enabled), self.native_scope(), self.painted_labels.as_ref().map(|painted| painted.native_scope))
+            self.painted_labels.as_ref().map(|painted| painted.controls.resources_enabled), self.native_scope(), self.painted_labels.as_ref().map(|painted| painted.native_scope),
+            self.local_canvas_gesture(window, cx).is_some(), self.view, self.painted_labels.as_ref().map(|painted| painted.view),
+            self.camera(), self.painted_labels.as_ref().map(|painted| painted.camera),
+            self.drag.as_ref().map(|drag| (drag.moved, drag.press.current(self, window, cx), drag.press.focus_epoch)),
+            window.focus_epoch(), window.mouse_position(), self.chrome_bounds)
     }
 
     /// Physical focus bookkeeping grants no resource capability. The host
@@ -634,6 +669,19 @@ impl GraphView {
     /// Whether native graph find owns the exploration surface.
     #[must_use]
     pub const fn find_open(&self) -> bool { self.state.find_open }
+
+    #[must_use]
+    pub fn local_editing(&self) -> LocalEditing { LocalEditing { find: self.find.clone() } }
+
+    /// The host has admitted the same local reading visit. Rebind the editor
+    /// to this graph's new search engine without restoring native focus.
+    #[must_use]
+    pub fn with_local_editing(mut self, editing: LocalEditing, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        self._subscriptions.clear();
+        self.find = editing.find;
+        self._subscriptions.push(Self::observe_find(&self.find, window, cx));
+        self
+    }
 
     /// Whether the native find input currently owns keyboard focus.
     #[must_use]
@@ -1032,7 +1080,12 @@ impl GraphView {
     /// A fresh find field and its subscription.
     fn find_field(window: &mut Window, cx: &mut Context<Self>) -> (Entity<InputState>, Subscription) {
         let find = cx.new(|cx| InputState::new(window, cx).placeholder("Find a symbol"));
-        let subscription = cx.subscribe_in(&find, window, |this: &mut Self, input, event: &InputEvent, window, cx| match event {
+        let subscription = Self::observe_find(&find, window, cx);
+        (find, subscription)
+    }
+
+    fn observe_find(find: &Entity<InputState>, window: &mut Window, cx: &mut Context<Self>) -> Subscription {
+        cx.subscribe_in(find, window, |this: &mut Self, input, event: &InputEvent, window, cx| match event {
             InputEvent::Change => {
                 let q = input.read(cx).value().to_string();
                 this.refresh_search(&q, cx);
@@ -1055,8 +1108,7 @@ impl GraphView {
                 // ownership rather than leaving a hidden input timer alive.
                 this.reset_find(window, cx);
             }
-        });
-        (find, subscription)
+        })
     }
 
     /// Closes find and returns focus to the map. The last query is retained;
@@ -1265,6 +1317,10 @@ impl GraphView {
     }
 
     fn pointer_move(&mut self, x: f32, y: f32, pressed: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.drag.as_ref().is_some_and(|drag| !drag.press.current(self, window, cx)) {
+            self.drag = None;
+            return false;
+        }
         let (Some(scene), Some(view), Some(rig)) = (self.scene.clone(), self.view, self.rig.as_mut()) else {
             return false;
         };
@@ -1355,6 +1411,22 @@ impl GraphView {
             && (painted.focus != self.state.focus || self.state.focus != Some(label.node)))
     }
 
+    fn local_canvas_gesture(&self, window: &Window, cx: &App) -> Option<LocalCanvasGesture> {
+        let painted = self.painted_labels.as_ref()?;
+        if !window.is_window_active() || self.view != Some(painted.view)
+            || self.camera() != Some(painted.camera) || self.native_scope() != painted.native_scope
+            || !self.admits_local_focus(cx)
+            || painted.admission.as_ref().is_some_and(|admit| !admit(InteractionPhase::LocalFocus, cx))
+        { return None; }
+        // A revoked resource-enabled frame is stale, not a newly admitted
+        // local-only frame. Keep denial until the unavailable frame paints.
+        if painted.controls.resources_enabled && (!self.admits_native_interaction(cx)
+            || painted.admission.as_ref().is_some_and(|admit| !admit(InteractionPhase::Activate, cx)))
+        { return None; }
+        Some(LocalCanvasGesture { scene: self.scene.clone()?, admission: painted.admission.clone(),
+            native_scope: painted.native_scope, window: window.window_handle().window_id(), focus_epoch: window.focus_epoch() })
+    }
+
     fn enter_territory(&mut self, territory: Terr, scene: &Scene, view: &View, cx: &mut Context<Self>) {
         let bounds = match territory.module {
             Some(module) => scene.layout.modules[module as usize].bounds,
@@ -1375,12 +1447,18 @@ impl GraphView {
     }
 
     fn pointer_down(&mut self, x: f32, y: f32, window: &mut Window, cx: &mut Context<Self>) {
-        if self.over_chrome(x, y) || !self.admits_native_interaction(cx) || !self.admits_painted_pointer(x, y, cx) { return; }
+        if self.over_chrome(x, y) { return; }
+        let Some(mut press) = self.local_canvas_gesture(window, cx) else { return; };
         window.focus(&self.focus_handle, cx);
+        press.focus_epoch = window.focus_epoch();
         let Some(rig) = &mut self.rig else { return };
+        // This admitted press already owns native focus. The outer tracked
+        // container's later default focus is the same event, not a new user
+        // intent, and would otherwise immediately retire the Down lease.
+        window.prevent_default();
         rig.hold();
         self.pointer = Some((x, y));
-        self.drag = Some(Drag { x, y, from: rig.cam, moved: 0.0, hist: vec![(motion::now(cx), x, y)] });
+        self.drag = Some(Drag { x, y, from: rig.cam, moved: 0.0, hist: vec![(motion::now(cx), x, y)], press });
         cx.notify();
     }
 
@@ -1393,7 +1471,9 @@ impl GraphView {
         });
         if complete_move { self.pointer_move(x, y, true, window, cx); }
         let Some(drag) = self.drag.take() else { return };
-        if !self.admits_native_interaction(cx) || drag.moved <= 3.0 && (!allow_click || self.over_chrome(x, y) || !self.admits_painted_pointer(x, y, cx)) { return; }
+        if !drag.press.current(self, window, cx) { return; }
+        if drag.moved <= 3.0 && (!drag.press.admits_click(self, cx) || !allow_click
+            || self.over_chrome(x, y) || !self.admits_painted_pointer(x, y, cx)) { return; }
         let (Some(scene), Some(view)) = (self.scene.clone(), self.view) else { return };
         if drag.moved <= 3.0 {
             let slot = self.pick_prism(x, y);
@@ -1446,6 +1526,7 @@ impl GraphView {
     }
 
     fn wheel(&mut self, event: &ScrollWheelEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(_gesture) = self.local_canvas_gesture(window, cx) else { return; };
         self.navigate(window, cx);
         let (Some(scene), Some(view), Some(rig)) = (self.scene.clone(), self.view, self.rig.as_mut()) else { return };
         let (x, y) = (f32::from(event.position.x), f32::from(event.position.y));
@@ -1462,6 +1543,7 @@ impl GraphView {
     }
 
     fn pinch(&mut self, event: &PinchEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(_gesture) = self.local_canvas_gesture(window, cx) else { return; };
         self.navigate(window, cx);
         let (Some(scene), Some(view), Some(rig)) = (self.scene.clone(), self.view, self.rig.as_mut()) else { return };
         let max_w = scene.max_w(&view);
@@ -2313,7 +2395,7 @@ impl Element for Canvas {
         let admission = self.view.read(cx).interaction_admission.clone();
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
             if phase != DispatchPhase::Bubble || event.button != MouseButton::Left || !hit.is_hovered(window)
-                || admission.as_ref().is_some_and(|admit| !admit(InteractionPhase::Activate, cx)) {
+                || admission.as_ref().is_some_and(|admit| !admit(InteractionPhase::LocalFocus, cx)) {
                 return;
             }
             let (x, y) = (f32::from(event.position.x), f32::from(event.position.y));
@@ -2336,7 +2418,7 @@ impl Element for Canvas {
         let view = self.view.clone();
         let hit = hitbox.clone();
         window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
-            if phase != DispatchPhase::Bubble || !hit.is_hovered(window) {
+            if phase != DispatchPhase::Bubble || !hit.should_handle_scroll(window) {
                 return;
             }
             view.update(cx, |v, cx| {
@@ -2346,7 +2428,7 @@ impl Element for Canvas {
         let view = self.view.clone();
         let hit = hitbox.clone();
         window.on_mouse_event(move |event: &PinchEvent, phase, window, cx| {
-            if phase != DispatchPhase::Bubble || !hit.is_hovered(window) {
+            if phase != DispatchPhase::Bubble || !hit.should_handle_scroll(window) {
                 return;
             }
             view.update(cx, |v, cx| {
@@ -2370,9 +2452,7 @@ impl Render for GraphView {
             .capture_any_mouse_down(cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                 let local = pointer_admission.as_ref().is_none_or(|admit| admit(InteractionPhase::LocalFocus, cx)) && this.admits_local_focus(cx);
                 let canvas = !this.over_chrome(f32::from(event.position.x), f32::from(event.position.y));
-                if !local || (canvas && (pointer_admission.as_ref().is_some_and(|admit| !admit(InteractionPhase::Activate, cx))
-                    || !this.admits_native_interaction(cx)
-                    || !this.admits_painted_pointer(f32::from(event.position.x), f32::from(event.position.y), cx))) {
+                if !local || (canvas && this.local_canvas_gesture(window, cx).is_none()) {
                     // track_focus otherwise installs GPUI's default bubble
                     // focus before Canvas's denied semantic callback returns.
                     // Local chrome keeps its own input/disclosure admission.

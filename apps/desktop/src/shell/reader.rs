@@ -824,6 +824,13 @@ impl Reader {
     }
 
     #[cfg(test)]
+    pub(crate) fn graph_projection_evidence(&self, cx: &gpui::App)
+        -> Option<(crate::runtime::indexed_world::Key, crate::runtime::indexed_world::Origin)>
+    {
+        self.map.as_ref().and_then(|map| map.read(cx).projection_evidence())
+    }
+
+    #[cfg(test)]
     pub(crate) fn graph_canvas_geometry(&self, node: facet::graph::NodeId, cx: &gpui::App) -> (Option<gpui::Bounds<Pixels>>, Option<gpui::Bounds<Pixels>>, gpui::LayerTransform) {
         self.map.as_ref().map_or((None, None, gpui::LayerTransform::IDENTITY), |map| map.read(cx).canvas_geometry(node, cx))
     }
@@ -3071,11 +3078,15 @@ impl Render for Reader {
                 // Record the visible exact Map presentation for this place.
                 // A first immutable scene mount qualifies next frame; an exact
                 // declaration terminal preserves its separate Page/Code lease.
-                self.painted_graph = map.read(cx).mounted_presentation(cx)
+                let presentation = map.read(cx).mounted_presentation(cx);
+                self.painted_graph = presentation
                     .zip(self.links.store.read(cx).current_owner_attachment())
                     .map(|(presentation, owner)| (map.entity_id(), presentation, owner));
-                self.painted = self.painted_graph.as_ref().map(|_| current.key);
-                self.painted_root = self.painted_graph.as_ref().map(|_| snapshot.key());
+                // Local input/cover return belongs to the actual painted
+                // destination, including an immutable retained scene. Only
+                // resource header actions consume painted_graph's owner.
+                self.painted = presentation.map(|_| current.key);
+                self.painted_root = presentation.map(|_| snapshot.key());
                 if retaining_departure { root = root.child(opening_status(palette)); }
                 root
             };
