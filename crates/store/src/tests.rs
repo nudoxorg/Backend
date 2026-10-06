@@ -922,7 +922,7 @@ fn typed_closure_round_trips_and_binds_workspace_root() {
         &workspace,
         bound_manifest,
     ));
-    assert_eq!(bound.manifest().id(), bound.binding().closure());
+    assert_eq!(bound.control_manifest().id(), bound.binding().closure());
     assert_eq!(bound.binding().root(), workspace.root().as_bytes());
 }
 
@@ -1034,9 +1034,17 @@ fn closure_extension_binds_checked_target_and_replaces_root_only_frontier() {
     ));
     assert_eq!(extended.root(), target_workspace.root());
     assert_ne!(extended.root(), base.root());
-    assert!(extended.manifest().contains_object_id(target_object.id()));
-    assert!(!extended.manifest().contains_object_id(old_object.id()));
-    assert_eq!(extended.manifest().objects().len(), 2);
+    assert!(
+        extended
+            .control_manifest()
+            .contains_object_id(target_object.id())
+    );
+    assert!(
+        !extended
+            .control_manifest()
+            .contains_object_id(old_object.id())
+    );
+    assert_eq!(extended.control_manifest().objects().len(), 2);
 
     // A capture-only or unchanged reindex has no newly copied relation nodes.
     // Its exact typed base root is supplied as an unchanged object; it must
@@ -1049,8 +1057,12 @@ fn closure_extension_binds_checked_target_and_replaces_root_only_frontier() {
         [authority_object.clone(), target_object.clone()],
     ));
     assert_eq!(unchanged.root(), extended.root());
-    assert_eq!(unchanged.manifest(), extended.manifest());
-    assert!(unchanged.manifest().contains_object_id(target_object.id()));
+    assert_eq!(unchanged.control_manifest(), extended.control_manifest());
+    assert!(
+        unchanged
+            .control_manifest()
+            .contains_object_id(target_object.id())
+    );
 
     // Empty work cannot introduce a different relation root merely because
     // its caller presents a separately checked target manifest.
@@ -1107,8 +1119,8 @@ fn closure_extension_binds_checked_target_and_replaces_root_only_frontier() {
             [state.root_handle()],
             [authority_object.clone()],
         ));
-        assert_eq!(current.manifest().objects().len(), 2);
-        assert!(!current.manifest().contains_object_id(previous.id()));
+        assert_eq!(current.control_manifest().objects().len(), 2);
+        assert!(!current.control_manifest().contains_object_id(previous.id()));
         previous = object;
     }
 }
@@ -1196,11 +1208,15 @@ fn root_only_extension_tracks_all_checked_relation_roots_by_binding() {
     assert_eq!(extended.root(), target_workspace.root());
     assert!(
         extended
-            .manifest()
+            .control_manifest()
             .contains_object_id(target_raw_object.id())
     );
-    assert!(!extended.manifest().contains_object_id(old_raw_object.id()));
-    assert_eq!(extended.manifest().objects().len(), 3);
+    assert!(
+        !extended
+            .control_manifest()
+            .contains_object_id(old_raw_object.id())
+    );
+    assert_eq!(extended.control_manifest().objects().len(), 3);
 }
 
 #[test]
@@ -1299,7 +1315,7 @@ fn root_only_extension_durably_writes_every_registered_relation_root() {
     let pack_id = must(store.write_pack(&pack));
     let publication = CheckedWorkspacePublication::new(
         &target_workspace,
-        extended.manifest().clone(),
+        extended.control_manifest().clone(),
         layout,
         pack_id,
         None,
@@ -1315,7 +1331,7 @@ fn root_only_extension_durably_writes_every_registered_relation_root() {
         8 * 1024 * 1024,
         must(RelationAdmissionRegistry::default().with_relation::<AuxiliaryRelation>()),
     ));
-    let closure = must(reopened.read_closure(extended.manifest().id()));
+    let closure = must(reopened.read_closure(extended.control_manifest().id()));
     assert!(closure.objects().iter().any(|object| {
         object.schema() == SchemaIdentity::of_relation::<AuxiliaryRelation>()
             && object.version() == auxiliary.root().as_bytes()
