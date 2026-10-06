@@ -1,0 +1,52 @@
+{
+  "argv": [
+    "/nix/store/9r02ykx9y35lf4gk6gc30gnag1y8ncp7-python3-3.13.15/bin/python3",
+    "/root/nudox-corpus-20261006/artifacts/fresh-remote-runtime/fresh-remote-product-journey-budget-v3.py",
+    "--images",
+    "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z",
+    "--manifest",
+    "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/runtime-build-manifest.json",
+    "--source",
+    "/root/nudox-corpus-20261006/artifacts/stratified-framework-dossiers-20261006T1030Z/pypi-pydantic/source",
+    "--origin",
+    "/root/nudox-corpus-20261006/artifacts/stratified-framework-dossiers-20261006T1030Z/pypi-pydantic/registry-origin.json",
+    "--runs",
+    "/root/nudox-corpus-20261006/runs/fresh-remote-runtime",
+    "--language",
+    "python",
+    "--mode",
+    "configured",
+    "--compiler-snapshot",
+    "/root/nudox-corpus-20261006/receipts/closed-compiler-host-snapshot-80543-3lang-v1.json",
+    "--query",
+    "model_validate",
+    "--witness-path",
+    "pydantic/main.py",
+    "--witness-line",
+    "694",
+    "--resolve-detail",
+    "summary",
+    "--first-publish-only"
+  ],
+  "pid": 1024277,
+  "utc": "2026-10-06T11:54:35Z",
+  "memory_available_kib": 58250972,
+  "disk_free_bytes": 57574100992,
+  "observer_sha256": "ce120d95cb3d3e39aea3d858b4f44a8b7c3a6f1399ba241bf0749c7c9823ad94",
+  "candidate_manifest_sha256": "a693977a9bcbf2e25c7b7ebb3c820d8a971ac5a190cf25708d608ee69c4c07f8",
+  "whole_official_source_tree": true,
+  "source_tree_sha256": "739f52410447f8258a81bd5eac6485559c7495b535aaaee5c117fc780d2d0bc2",
+  "external_project_dependencies_installed": false,
+  "dependency_requirements": {
+    "requires_dist": [
+      "annotated-types>=0.6.0",
+      "pydantic-core==2.46.5",
+      "typing-extensions>=4.14.1",
+      "typing-inspection>=0.4.2",
+      "email-validator>=2.0.0; extra == \"email\"",
+      "tzdata; (python_version >= \"3.9\" and platform_system == \"Windows\") and extra == \"timezone\""
+    ]
+  },
+  "nudox_installer_tested": false,
+  "whole_package_pass": false
+}

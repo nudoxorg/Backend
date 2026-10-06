@@ -1,0 +1,160 @@
+{
+  "schema": "nudox.source-verified-stratified-dossier.v1",
+  "package": {
+    "ecosystem": "pypi",
+    "id": "itsdangerous",
+    "version": "2.2.0"
+  },
+  "source_root": "/root/nudox-corpus-20261006/artifacts/stratified-pure-python-dossiers-20261006T1204Z/pypi-itsdangerous/source",
+  "source_tree_sha256": "32c4e8712ee1cf9aeb471b3c18d84c63499af4b03c6b7b00ce2e86fe1d807e84",
+  "source_files": 46,
+  "source_bytes": 121551,
+  "inventory_sha256": "da380c6e97f3537f7828867a594a3ebf3d85d824f2ff38925e62446db89b1743",
+  "origin_sha256": "755c291ac3a355c2a04f56ec083d79502555f1f9ac649a55b9595c03cbdc079c",
+  "archive_sha256": "e0050c0b7da1eea53ffaf149c0cfbb5c6e2e2b69c4bef22c81fa6eb73e5f6173",
+  "origin_verified": true,
+  "archives_reused": false,
+  "acquisition_requests": [
+    {
+      "url": "https://pypi.org/pypi/itsdangerous/json",
+      "final_url": "https://pypi.org/pypi/itsdangerous/json",
+      "status": 200,
+      "seconds": 0.13216430798638612,
+      "bytes": 32101,
+      "sha256": "ded24c79f1c64c9d01948931f45efe6fce2cef68ca075cd9299f5893602ad16c",
+      "utc": "2026-10-06T12:02:09Z"
+    },
+    {
+      "url": "https://files.pythonhosted.org/packages/9c/cb/8ac0172223afbccb63986cc25049b154ecfb5e85932587206f42317be31d/itsdangerous-2.2.0.tar.gz",
+      "final_url": "https://files.pythonhosted.org/packages/9c/cb/8ac0172223afbccb63986cc25049b154ecfb5e85932587206f42317be31d/itsdangerous-2.2.0.tar.gz",
+      "status": 200,
+      "seconds": 0.08483894297387451,
+      "bytes": 54410,
+      "sha256": "e0050c0b7da1eea53ffaf149c0cfbb5c6e2e2b69c4bef22c81fa6eb73e5f6173",
+      "utc": "2026-10-06T12:02:09Z"
+    }
+  ],
+  "resource_before": {
+    "memory_available_kib": 57901236,
+    "free_disk_bytes": 56627511296
+  },
+  "dependency_requirements": {
+    "requires_dist": []
+  },
+  "dependency_closure_installed": false,
+  "source_expectations": [
+    {
+      "name": "Serializer",
+      "path": "src/itsdangerous/serializer.py",
+      "line": 42,
+      "end_line": 406,
+      "kind": "ClassDef",
+      "file_sha256": "3e67700032ea912c902d9d2338a0200ec016e24fc7d13940ef5122df3d02e5a2",
+      "start_byte": 1377,
+      "end_byte": 15600,
+      "declaration_sha256": "40cbb4372c214daf7ff0e4324ffa70d867d9fa1d17134c0b186cd339ccd383d1",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "Signer",
+      "path": "src/itsdangerous/signer.py",
+      "line": 76,
+      "end_line": 266,
+      "kind": "ClassDef",
+      "file_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584",
+      "start_byte": 2296,
+      "end_byte": 9646,
+      "declaration_sha256": "6a45a39fc18482152a7aac8245388dc1d4dffc717dc153a9e48f00d7e616923c",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "sign",
+      "path": "src/itsdangerous/signer.py",
+      "line": 222,
+      "end_line": 225,
+      "kind": "FunctionDef",
+      "file_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584",
+      "start_byte": 8204,
+      "end_byte": 8380,
+      "declaration_sha256": "dc4ee4895d3328f19c1b08418e26c3fd50c9115f1c60eb41fdbde5521c0f558e",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "unsign",
+      "path": "src/itsdangerous/signer.py",
+      "line": 244,
+      "end_line": 256,
+      "kind": "FunctionDef",
+      "file_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584",
+      "start_byte": 8876,
+      "end_byte": 9332,
+      "declaration_sha256": "dc6f918478ca3b44cd2a9efce00294aaca22620c80590062b7425b0d3affabb8",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "sign",
+      "path": "src/itsdangerous/timed.py",
+      "line": 45,
+      "end_line": 51,
+      "kind": "FunctionDef",
+      "file_sha256": "e91bc332a36e9863317f4f8796969974df4f51042646fad01a994a871ba2bd4b",
+      "start_byte": 1423,
+      "end_byte": 1774,
+      "declaration_sha256": "a89027c0fca90759788a52721cd1bc1b7248ef0083b4c28be0c067e9c892d768",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "unsign",
+      "path": "src/itsdangerous/timed.py",
+      "line": 57,
+      "end_line": 62,
+      "kind": "FunctionDef",
+      "file_sha256": "e91bc332a36e9863317f4f8796969974df4f51042646fad01a994a871ba2bd4b",
+      "start_byte": 1915,
+      "end_byte": 2117,
+      "declaration_sha256": "c01ad981d5358ea9d5f052185c8dc57812684ded112400824e49db7d194b4190",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "unsign",
+      "path": "src/itsdangerous/timed.py",
+      "line": 65,
+      "end_line": 70,
+      "kind": "FunctionDef",
+      "file_sha256": "e91bc332a36e9863317f4f8796969974df4f51042646fad01a994a871ba2bd4b",
+      "start_byte": 2139,
+      "end_byte": 2322,
+      "declaration_sha256": "0e7c6121174cdc3085db463b93e089ce7e590f0c242818cb6ce02725dc0c601c",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "unsign",
+      "path": "src/itsdangerous/timed.py",
+      "line": 72,
+      "end_line": 158,
+      "kind": "FunctionDef",
+      "file_sha256": "e91bc332a36e9863317f4f8796969974df4f51042646fad01a994a871ba2bd4b",
+      "start_byte": 2328,
+      "end_byte": 5617,
+      "declaration_sha256": "009c4f6fca68292cb744e1be0fc2224d066d6ed9b4b7ee12878dec34f59df30e",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "URLSafeSerializer",
+      "path": "src/itsdangerous/url_safe.py",
+      "line": 72,
+      "end_line": 76,
+      "kind": "ClassDef",
+      "file_sha256": "6b3e1ee5f5e2fefb3e61b5a3f186709f8c2254a7de0fef8610a453e547aee0fe",
+      "start_byte": 1950,
+      "end_byte": 2218,
+      "declaration_sha256": "e98b21ac848d21933a30ef3f47dd7a557b0cae74e0558a8e25617c33965d2759",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    }
+  ],
+  "runtime_acceptance_status": "not_run",
+  "runtime_passes": 0,
+  "package_code_executed": false,
+  "observer_sha256": "513e77f08a87dfb9646d16410506b705cdde13b9b2fd71620c864717081ec17d",
+  "origin_verifier_sha256": "1ef8275b8e6daa9bfe711d05d367316b09635061b4cb9ca147816c6bed3a3039"
+}

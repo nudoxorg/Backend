@@ -1,0 +1,25 @@
+{
+  "argv": [
+    "/nix/store/9r02ykx9y35lf4gk6gc30gnag1y8ncp7-python3-3.13.15/bin/python3",
+    "/root/nudox-corpus-20261006/artifacts/fresh-remote-runtime/replay-private-owner-query-v2.py",
+    "--run",
+    "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T111804Z-python-configured-be573f9e",
+    "--skip-repeat",
+    "--query",
+    "Command",
+    "--resolve-query",
+    "Command",
+    "--witness-path",
+    "src/click/core.py",
+    "--witness-line",
+    "959"
+  ],
+  "pid": 998589,
+  "utc": "2026-10-06T11:33:38Z",
+  "memory_available_kib": 60120208,
+  "disk_free_bytes": 61560250368,
+  "observer_sha256": "fd281e050d0a418e940735789523a23b0381f0fbeced4363b3f0a9e32b219485",
+  "original_source_and_state_mutated": false,
+  "whole_package_pass": false,
+  "scope": "DTO19 stopped-state clone, same old binaries, ordinary summary fallback and source/ref/graph"
+}

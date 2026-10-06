@@ -1,0 +1,85 @@
+{
+  "files": [
+    {
+      "bytes": 1074,
+      "path": "LICENSE",
+      "sha256": "9df3bb69929a3b650ed73b3bfa1756725aaff0ac296461605753547004eafeaf"
+    },
+    {
+      "bytes": 6164,
+      "path": "README.md",
+      "sha256": "bfb4ce0b6f3f34ffdc42be1a6549926aaa13854aae0d1827287d50c2c293097f"
+    },
+    {
+      "bytes": 650,
+      "path": "dist/formats.d.ts",
+      "sha256": "f050afc4e2e063baf534e8bfa7aa6489e360f1016eba8603c19b45ba9fcd5887"
+    },
+    {
+      "bytes": 12263,
+      "path": "dist/formats.js",
+      "sha256": "b61693a26869970a92cc1fe832c931ccd3afe8b6d66802b19c48306349e84880"
+    },
+    {
+      "bytes": 7070,
+      "path": "dist/formats.js.map",
+      "sha256": "572005eb8eca5a6bf6a82bb08fe5b96d001afd801a71c4f0c60dc98ec4e72e87"
+    },
+    {
+      "bytes": 572,
+      "path": "dist/index.d.ts",
+      "sha256": "092657fbee8f216761a98d6d1242bfe819a5ba06d8f312eafb03fe8b9ba059ce"
+    },
+    {
+      "bytes": 1508,
+      "path": "dist/index.js",
+      "sha256": "3f3014150293846086d11058bb8bf43e669e354a98b37adcf10281454d5e753b"
+    },
+    {
+      "bytes": 1534,
+      "path": "dist/index.js.map",
+      "sha256": "b954274ddd48215db2779c9da8b6353d3a327166de369219d45762378b30e5b5"
+    },
+    {
+      "bytes": 468,
+      "path": "dist/limit.d.ts",
+      "sha256": "9d6d5aec23fce486ccc52123d440d056519572f529d1f03dca71270d34efeec8"
+    },
+    {
+      "bytes": 2900,
+      "path": "dist/limit.js",
+      "sha256": "ffc374031a55c3f6e39dc3fe69e663f8251b9d9d7ddb8f513a6807c985c18bb8"
+    },
+    {
+      "bytes": 2868,
+      "path": "dist/limit.js.map",
+      "sha256": "1f7c052543625258c85ac43a754478960655ad4954a23846bc841a47e6fdf8e4"
+    },
+    {
+      "bytes": 1897,
+      "path": "package.json",
+      "sha256": "402fb4bcfa457f0226813f3976ac42839dd619907c075c108efba8600d7edb69"
+    },
+    {
+      "bytes": 12928,
+      "path": "src/formats.ts",
+      "sha256": "fec0bb3f73fd3ea487205c9fa783dca3d088d8f402829ab14c207567d00f0f8e"
+    },
+    {
+      "bytes": 1793,
+      "path": "src/index.ts",
+      "sha256": "fb330a47ec7d2c8498d03078834603dab1a0689f40ca15875e6d57d740c5ff71"
+    },
+    {
+      "bytes": 3074,
+      "path": "src/limit.ts",
+      "sha256": "62402e4fcb3bd9a0f4a22d2b228f1371897d47982e67ecd62950fdadb46261e6"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "ajv-formats",
+    "version": "3.0.1"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

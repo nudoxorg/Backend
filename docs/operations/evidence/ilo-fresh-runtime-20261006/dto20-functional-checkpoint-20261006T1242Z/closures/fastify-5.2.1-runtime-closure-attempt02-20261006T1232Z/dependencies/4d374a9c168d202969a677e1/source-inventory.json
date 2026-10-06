@@ -1,0 +1,100 @@
+{
+  "files": [
+    {
+      "bytes": 80,
+      "path": ".gitattributes",
+      "sha256": "e173bffc6cde613d3e6d06e49f2b1d05385cb02aa68c4931656b5b051ab649dd"
+    },
+    {
+      "bytes": 274,
+      "path": ".github/dependabot.yml",
+      "sha256": "60ffc0c7159ff6af5e36ad3ecc56fe63782e4defaabafa94a13df7150d9a84c6"
+    },
+    {
+      "bytes": 388,
+      "path": ".github/workflows/ci.yml",
+      "sha256": "a89ab62fd13c83157ff88a91b9c8bb25d12dd138b09658501fb7f01ed150eb73"
+    },
+    {
+      "bytes": 1064,
+      "path": "LICENSE",
+      "sha256": "0943b637252a9c6f1a062c77063aa58213ae93a18d5445f2fb77d1de7c60dc12"
+    },
+    {
+      "bytes": 11412,
+      "path": "README.md",
+      "sha256": "5bd1ac561abaedbe727581fb09a3b1aedee2904a48fd698beecdf3b7ace6dc0a"
+    },
+    {
+      "bytes": 135,
+      "path": "eslint.config.js",
+      "sha256": "52e3a2601a98f23c954d664ab8de95fddb390789f8b067815e484b010d3da2d0"
+    },
+    {
+      "bytes": 8413,
+      "path": "index.js",
+      "sha256": "9e143f898110d9ca8f3c05d1c48f55172e7c3a1fc04c693b0564e19c8dbe9dba"
+    },
+    {
+      "bytes": 1749,
+      "path": "package.json",
+      "sha256": "9eb2d3da89ae8983734e1072fb63a138cc4ff651057202cfb572e8f939300f9e"
+    },
+    {
+      "bytes": 1346,
+      "path": "test/anchor.test.js",
+      "sha256": "b7ccf7ff0500ed724c428e0b33a0a0538cd883005fbd2e9393984b639aeaecf3"
+    },
+    {
+      "bytes": 4458,
+      "path": "test/collisions.test.js",
+      "sha256": "d9756cecdee8e05862c717e10a602052721bf9f083f1d29162736873f1884a2f"
+    },
+    {
+      "bytes": 5910,
+      "path": "test/deref-schema.test.js",
+      "sha256": "87ddcfbaf3349fb21839b891c6919d76247bf812d40fd1f9d3655689cf3a2ff2"
+    },
+    {
+      "bytes": 7745,
+      "path": "test/get-deref-schema.test.js",
+      "sha256": "b078841a2ec6965b30bc974c7965e2be2e0a002ff462d4ff2008ff44c6f8bc46"
+    },
+    {
+      "bytes": 3778,
+      "path": "test/get-schema-dependencies.test.js",
+      "sha256": "25b9e4eb23f080395b83657d155fe9742fde17804b5f5e07c1ccf737c3d02391"
+    },
+    {
+      "bytes": 2357,
+      "path": "test/get-schema-refs.test.js",
+      "sha256": "77ad1f3062ad59b801ff7040a65dbf82f958a15b2f1cdc2c857be2cffa07f4aa"
+    },
+    {
+      "bytes": 5403,
+      "path": "test/get-schema.test.js",
+      "sha256": "30eccb7cd17db55206a84e30518ff7f5d99b2d8cf675b636440dc79d7ee6ccf1"
+    },
+    {
+      "bytes": 710,
+      "path": "test/has-schema.test.js",
+      "sha256": "7aed0024c013e74f2c1b6d48409288f61c2b02029d3688caf72fa7fd3add5796"
+    },
+    {
+      "bytes": 2838,
+      "path": "types/index.d.ts",
+      "sha256": "14c6b2d64860ce7e92cda4a9e2eb41eb82df40a15237c5510a3c2e0c826b45de"
+    },
+    {
+      "bytes": 769,
+      "path": "types/index.test-d.ts",
+      "sha256": "0981bef135826eecccae13266911ecc33150e8b76d9589ba5bb559805ea7cea6"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "json-schema-ref-resolver",
+    "version": "3.0.0"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

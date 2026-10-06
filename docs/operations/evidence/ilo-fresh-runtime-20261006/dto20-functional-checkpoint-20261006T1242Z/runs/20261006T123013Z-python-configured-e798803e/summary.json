@@ -1,0 +1,678 @@
+{
+  "schema": "nudox.fresh-real-remote-runtime.v1",
+  "root": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e",
+  "language": "python",
+  "mode": "configured",
+  "source": "/root/nudox-corpus-20261006/artifacts/stratified-async-unicode-python-dossiers-20261006T1230Z/pypi-idna/source",
+  "source_origin": {
+    "archive": {
+      "path": "/root/nudox-corpus-20261006/artifacts/stratified-async-unicode-python-dossiers-20261006T1230Z/pypi-idna/archive.tar.gz",
+      "sha256": "a7db850025b95ded1eae8a46181a1a6c56c92c96f0e2b005d9ff8dc0210cab44",
+      "url": "https://files.pythonhosted.org/packages/f5/08/8eea9d4b8302028f3abb2c0813953f7aec26d33b7a8960ed760e65ff29fa/idna-3.20.tar.gz"
+    },
+    "package": {
+      "ecosystem": "pypi",
+      "id": "idna",
+      "version": "3.20"
+    },
+    "registry_metadata": {
+      "path": "/root/nudox-corpus-20261006/artifacts/stratified-async-unicode-python-dossiers-20261006T1230Z/pypi-idna/registry-metadata.json",
+      "sha256": "724599748057193c3fa6f98e11c76d7acc14a7b0d005bc2a506fc8e2ec41c117",
+      "url": "https://pypi.org/pypi/idna/json"
+    },
+    "schema": "nudox.registry-artifact-origin.v1",
+    "unpack": {
+      "strip_prefix": "idna-3.20/"
+    }
+  },
+  "source_before": {
+    "files": [
+      [
+        "HISTORY.md",
+        11688,
+        "7951de26eb3e8f3c6299c63205cf3b8b0ebff0d5160fd71cfadc5c39d05eb2b0"
+      ],
+      [
+        "LICENSE.md",
+        1541,
+        "1a9a4f0e3d479a27240ddd59a9137a66ab4a0f9dfdc8ca6188cc0bfd85187f04"
+      ],
+      [
+        "PKG-INFO",
+        7207,
+        "dbd8c14c1e4ca1e0c9824a6dbc7cbbf78884f38eb52d91148cd3025f671e4b85"
+      ],
+      [
+        "README.md",
+        5407,
+        "8760466dd7516c9917bc67375835e0fcbfbd0ecf56d4956db6e2b622e3fd8a7c"
+      ],
+      [
+        "idna/__init__.py",
+        944,
+        "8514c3ed53136a3596ebdf512fa487bbdd7da5a99adcaed82e0363d2c306d3af"
+      ],
+      [
+        "idna/__main__.py",
+        83,
+        "e0930aeba5a3e2e2d94ca6c5fac4f72c0c4eb2be9bba283becf98e909091471c"
+      ],
+      [
+        "idna/cli.py",
+        4245,
+        "2e01972a25e67afdfba5d824013c01e808893916539c0db33f72f37c42b8896a"
+      ],
+      [
+        "idna/codec.py",
+        8002,
+        "7dff4247d75e6e265cbea1261f10d122ba9299a371429cfa018e091ec0b7602d"
+      ],
+      [
+        "idna/compat.py",
+        1376,
+        "4ff7995ce52dd1be5381ae7a70fc9b42ef420982b41532b599d88f6fdea76bc0"
+      ],
+      [
+        "idna/core.py",
+        32580,
+        "3dd4c3ffee4ff223207fac65f3812a1e6895ae8ad1e7a6ed60115768f3551520"
+      ],
+      [
+        "idna/idnadata.py",
+        45763,
+        "23a9a8c1d15de9c634d0bf213d779810f485083fe1b0f7e09044ad04a69cc7eb"
+      ],
+      [
+        "idna/intranges.py",
+        1851,
+        "838f6c70b4a4a89b4084b98e3836bb8551eb8928e66fad2d893b04a287097412"
+      ],
+      [
+        "idna/package_data.py",
+        21,
+        "ae759534a3c582a00ac856cfca464a39ee8251d393208d8af06b605bc20e02a9"
+      ],
+      [
+        "idna/py.typed",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "idna/uts46data.py",
+        237174,
+        "770e849bfa156c71828a89440a57fe9aea70735f103ae4616ee4f682e13d6c00"
+      ],
+      [
+        "pyproject.toml",
+        2988,
+        "7c1a0500a1cfc39dba472fcc7907a7e3038e37a0b9f05a42c04aa66d67c132eb"
+      ],
+      [
+        "tests/__init__.py",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "tests/fuzz_idna_api.py",
+        4964,
+        "4d1e219e3ff823b68ef0fc587855f13fd7fe14847ceb150adf7782f65c9a1320"
+      ],
+      [
+        "tests/fuzz_idna_codec.py",
+        3574,
+        "82bd1fdf78b422e6cd592331c2cc4af8e83033a1362ea8f7cbc6e1042f88b5e8"
+      ],
+      [
+        "tests/test_idna.py",
+        29549,
+        "963b6082681b36d6348dcbebf92e4f2b198f38ca7ab361ff66bb5ccbbe4c8022"
+      ],
+      [
+        "tests/test_idna_cli.py",
+        12425,
+        "ef01f79aa6df045424b982702216033781e86c5eb1b6ab0f88d8d53a243858de"
+      ],
+      [
+        "tests/test_idna_codec.py",
+        6936,
+        "c6aefdcc29d3281fc710144a79a171df97465aac7368ef0e3e3738b784946f44"
+      ],
+      [
+        "tests/test_idna_compat.py",
+        580,
+        "2d5461490688f49bc57e9d8bc9e1d123b54d4179ed66b90632b8146c76015b05"
+      ],
+      [
+        "tests/test_idna_concurrency.py",
+        2807,
+        "4cbfa1755148464392ef1a1e9a1083ce2c5aa42b780fa25b35a30d418ca48262"
+      ],
+      [
+        "tests/test_idna_errors.py",
+        7949,
+        "fb3f061bdf86d9d1f8c63818e68d2274817b2ffc9cab97cf3eb49aaef0598cf1"
+      ],
+      [
+        "tests/test_idna_fuzz_targets.py",
+        3917,
+        "fa0f30f70e80e0816af3e75663cd4c5cfe415dcd608c359c94456ecda54352d2"
+      ],
+      [
+        "tests/test_idna_properties.py",
+        12197,
+        "e16fb28cf682e5f91b6c259276277e5751536f0020f5f82d96ff88aeb098f0ca"
+      ],
+      [
+        "tests/test_idna_uts46.py",
+        1460528,
+        "29984ac2e330eb5ca367e8ac658c9554c1870b60787d975c8ccece1a1d98a7a1"
+      ],
+      [
+        "tests/test_intranges.py",
+        2119,
+        "726c8a72e8500d6101a4091a9c5d2548064e5bec4734d4839c197118867c7bc6"
+      ],
+      [
+        "tools/README.md",
+        1844,
+        "53951b5b1ad93deb212577207d4c0107d53168aa0d31c02808a49ab290004be8"
+      ],
+      [
+        "tools/idna-data",
+        34318,
+        "7974d5a36122f5405a0b938e949ee729b6a7b775041639e5c5809722ee601ce3"
+      ]
+    ],
+    "sha256": "dcdf29577deaeb1309eff5cd2fdc6509ed9e08b2ae4aed274fe318ce71d6df23"
+  },
+  "runtime_manifest": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/runtime-build-manifest.json",
+  "runtime_manifest_sha256": "a693977a9bcbf2e25c7b7ebb3c820d8a971ac5a190cf25708d608ee69c4c07f8",
+  "runtime_manifest_content": {
+    "schema": "nudox.runtime-build-manifest.v1",
+    "source": {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "tree": "a3911d62ef9c4ef1f8206c4fc05b8a8c6fde5156",
+      "clean": true
+    },
+    "executables": {
+      "backend-locald": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+        "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb",
+        "bytes": 105569312
+      },
+      "backend-cli": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d",
+        "bytes": 43160648
+      },
+      "backend-mcp": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+        "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb",
+        "bytes": 31886392
+      }
+    },
+    "root_receipt": {
+      "schema": "nudox.runtime-artifact-build-receipt.v1",
+      "path": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/root-cargo-receipt.json",
+      "sha256": "523430d258c89c6434c0143be58b9e003065bf22f32d0008b2505ce908f27499"
+    }
+  },
+  "binaries": {
+    "backend-cli": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+      "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d"
+    },
+    "backend-locald": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+      "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb"
+    },
+    "backend-mcp": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+      "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb"
+    }
+  },
+  "env": {
+    "HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/home",
+    "XDG_CONFIG_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/home/.config",
+    "XDG_DATA_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/home/.local/share",
+    "XDG_STATE_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/home/.local/state",
+    "TMPDIR": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/tmp",
+    "PATH": "/nix/store/0nbp03038s33ck712yx9219gcj3a2sqm-nodejs-slim-24.18.0/bin:/nix/store/1xklj6dmgcpgz60c9w2ynaq7ynzfsrrq-go-1.26.4/share/go/bin:/nix/store/9r02ykx9y35lf4gk6gc30gnag1y8ncp7-python3-3.13.15/bin:/nix/store/qdxzxkwh13bgv50066fk2ka3p1zpnjap-pyrefly-1.2.0-dev.1/bin:/root/nudox-corpus-20261006/corpora/next-react-alias-fixture/node_modules/typescript/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin",
+    "LANG": "C.UTF-8",
+    "USER": "root",
+    "LOGNAME": "root",
+    "BACKEND_LOCALD_COMPILER_ENVIRONMENT": "{\"version\":1,\"paths\":[{\"variable\":\"NUDOX_PYTHON\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,57,114,48,50,121,107,120,57,121,51,53,108,102,52,103,107,54,103,99,51,48,103,110,97,103,49,121,56,110,99,112,55,45,112,121,116,104,111,110,51,45,51,46,49,51,46,49,53,47,98,105,110,47,112,121,116,104,111,110,51,46,49,51]}},{\"variable\":\"NUDOX_TSC\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115,47,116,121,112,101,115,99,114,105,112,116,47,98,105,110,47,116,115,99]}},{\"variable\":\"NUDOX_GO\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111,47,98,105,110,47,103,111]}},{\"variable\":\"NUDOX_TYPESCRIPT_NODE\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,48,110,98,112,48,51,48,51,56,115,51,51,99,107,55,49,50,121,120,57,50,49,57,103,99,106,51,97,50,115,113,109,45,110,111,100,101,106,115,45,115,108,105,109,45,50,52,46,49,56,46,48,47,98,105,110,47,110,111,100,101]}},{\"variable\":\"NUDOX_TYPESCRIPT_MODULE_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115]}},{\"variable\":\"NUDOX_PYREFLY\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,113,100,120,122,120,107,119,104,49,51,98,103,118,53,48,48,54,54,102,107,50,107,97,51,112,49,122,112,110,106,97,112,45,112,121,114,101,102,108,121,45,49,46,50,46,48,45,100,101,118,46,49,47,98,105,110,47,112,121,114,101,102,108,121]}},{\"variable\":\"NUDOX_GO_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111]}}]}"
+  },
+  "compiler_snapshot_sha256": "0f13715f573afb87eb795bc2eb7960737abd1b7e7cd8a35ddf54a46f4a51e066",
+  "workspace_preexisting": false,
+  "endpoint_preexisting": false,
+  "fresh_home_entries": [],
+  "installer_tested": false,
+  "dependency_closure_copied": false,
+  "accepted_project_pass": false,
+  "journey_options": {
+    "skip_update_cancel": false,
+    "cancel_before_first_add": false,
+    "transport_only": false,
+    "public_compiler_variables": [],
+    "requested_queries": [
+      "encode"
+    ],
+    "edit_file": "idna/core.py",
+    "keep_edited_source": true,
+    "first_publish_only": false,
+    "witness_path": "idna/core.py",
+    "witness_line": 732,
+    "resolve_detail": "summary",
+    "resolve_limit": 10
+  },
+  "source_after": {
+    "files": [
+      [
+        "HISTORY.md",
+        11688,
+        "7951de26eb3e8f3c6299c63205cf3b8b0ebff0d5160fd71cfadc5c39d05eb2b0"
+      ],
+      [
+        "LICENSE.md",
+        1541,
+        "1a9a4f0e3d479a27240ddd59a9137a66ab4a0f9dfdc8ca6188cc0bfd85187f04"
+      ],
+      [
+        "PKG-INFO",
+        7207,
+        "dbd8c14c1e4ca1e0c9824a6dbc7cbbf78884f38eb52d91148cd3025f671e4b85"
+      ],
+      [
+        "README.md",
+        5407,
+        "8760466dd7516c9917bc67375835e0fcbfbd0ecf56d4956db6e2b622e3fd8a7c"
+      ],
+      [
+        "idna/__init__.py",
+        944,
+        "8514c3ed53136a3596ebdf512fa487bbdd7da5a99adcaed82e0363d2c306d3af"
+      ],
+      [
+        "idna/__main__.py",
+        83,
+        "e0930aeba5a3e2e2d94ca6c5fac4f72c0c4eb2be9bba283becf98e909091471c"
+      ],
+      [
+        "idna/cli.py",
+        4245,
+        "2e01972a25e67afdfba5d824013c01e808893916539c0db33f72f37c42b8896a"
+      ],
+      [
+        "idna/codec.py",
+        8002,
+        "7dff4247d75e6e265cbea1261f10d122ba9299a371429cfa018e091ec0b7602d"
+      ],
+      [
+        "idna/compat.py",
+        1376,
+        "4ff7995ce52dd1be5381ae7a70fc9b42ef420982b41532b599d88f6fdea76bc0"
+      ],
+      [
+        "idna/core.py",
+        32582,
+        "028800a2e3f6a1f87caf2a6aaa2a264591313d903ec06c5aa819411e231d7276"
+      ],
+      [
+        "idna/idnadata.py",
+        45763,
+        "23a9a8c1d15de9c634d0bf213d779810f485083fe1b0f7e09044ad04a69cc7eb"
+      ],
+      [
+        "idna/intranges.py",
+        1851,
+        "838f6c70b4a4a89b4084b98e3836bb8551eb8928e66fad2d893b04a287097412"
+      ],
+      [
+        "idna/package_data.py",
+        21,
+        "ae759534a3c582a00ac856cfca464a39ee8251d393208d8af06b605bc20e02a9"
+      ],
+      [
+        "idna/py.typed",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "idna/uts46data.py",
+        237174,
+        "770e849bfa156c71828a89440a57fe9aea70735f103ae4616ee4f682e13d6c00"
+      ],
+      [
+        "pyproject.toml",
+        2988,
+        "7c1a0500a1cfc39dba472fcc7907a7e3038e37a0b9f05a42c04aa66d67c132eb"
+      ],
+      [
+        "tests/__init__.py",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "tests/fuzz_idna_api.py",
+        4964,
+        "4d1e219e3ff823b68ef0fc587855f13fd7fe14847ceb150adf7782f65c9a1320"
+      ],
+      [
+        "tests/fuzz_idna_codec.py",
+        3574,
+        "82bd1fdf78b422e6cd592331c2cc4af8e83033a1362ea8f7cbc6e1042f88b5e8"
+      ],
+      [
+        "tests/test_idna.py",
+        29549,
+        "963b6082681b36d6348dcbebf92e4f2b198f38ca7ab361ff66bb5ccbbe4c8022"
+      ],
+      [
+        "tests/test_idna_cli.py",
+        12425,
+        "ef01f79aa6df045424b982702216033781e86c5eb1b6ab0f88d8d53a243858de"
+      ],
+      [
+        "tests/test_idna_codec.py",
+        6936,
+        "c6aefdcc29d3281fc710144a79a171df97465aac7368ef0e3e3738b784946f44"
+      ],
+      [
+        "tests/test_idna_compat.py",
+        580,
+        "2d5461490688f49bc57e9d8bc9e1d123b54d4179ed66b90632b8146c76015b05"
+      ],
+      [
+        "tests/test_idna_concurrency.py",
+        2807,
+        "4cbfa1755148464392ef1a1e9a1083ce2c5aa42b780fa25b35a30d418ca48262"
+      ],
+      [
+        "tests/test_idna_errors.py",
+        7949,
+        "fb3f061bdf86d9d1f8c63818e68d2274817b2ffc9cab97cf3eb49aaef0598cf1"
+      ],
+      [
+        "tests/test_idna_fuzz_targets.py",
+        3917,
+        "fa0f30f70e80e0816af3e75663cd4c5cfe415dcd608c359c94456ecda54352d2"
+      ],
+      [
+        "tests/test_idna_properties.py",
+        12197,
+        "e16fb28cf682e5f91b6c259276277e5751536f0020f5f82d96ff88aeb098f0ca"
+      ],
+      [
+        "tests/test_idna_uts46.py",
+        1460528,
+        "29984ac2e330eb5ca367e8ac658c9554c1870b60787d975c8ccece1a1d98a7a1"
+      ],
+      [
+        "tests/test_intranges.py",
+        2119,
+        "726c8a72e8500d6101a4091a9c5d2548064e5bec4734d4839c197118867c7bc6"
+      ],
+      [
+        "tools/README.md",
+        1844,
+        "53951b5b1ad93deb212577207d4c0107d53168aa0d31c02808a49ab290004be8"
+      ],
+      [
+        "tools/idna-data",
+        34318,
+        "7974d5a36122f5405a0b938e949ee729b6a7b775041639e5c5809722ee601ce3"
+      ]
+    ],
+    "sha256": "ba847d0a8d04cc23e97162793f778b47c30ac71e7755aabdd4b31f6802b53431"
+  },
+  "checks": [
+    {
+      "query": "encode",
+      "mcp_search": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "~lanes exact\u271310 names\u271310 graph\u271310 semantic\u2717 unconfigured semantic-search unavailable (unconfigured)\nproject \u203a encode  \u00b7  function \u00b7 unknown\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project::semantic::fc4c3777a2bfcbbc6b799714e186c1085f86aa78db6680d8655185d79691aba1::encode`  function(parameters=[element(kind=required,label=x\"6F626A\",type=unknown(unannotated))],results=[],abi=none,variadic=none,unsafe=false)\nproject \u203a encode  \u00b7  type \u00b7 unknown\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project::semantic::2e98c8483e7b51ff194c86797adaffd61aca5db95b553f3bc36e39b310819378::encode`  unknown(unannotated)\nproject \u203a encode  \u00b7  function \u00b7 unknown\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project::semantic::362e792d0e5a28ca0e823fe2bdaf5e683884957ad06d5157f6bc6c7ae559a6d0::encode`  function(parameters=[element(kind=required,label=x\"64617461\",type=builtin(string)),element(kind=required,label=x\"6572726F7273\",type=builtin(string))],results=[element(kind=required,label=none,type=tuple[element(kind=required,label=none,type=builtin(bytes)),element(kind=required,label=none,type=builtin(arbitrary-integer))])],abi=none,variadic=none,unsafe=false)\nproject \u203a encode  \u00b7  type \u00b7 unknown\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project::semantic::f20f4d6ae4a602d13fb1033b11be73e21aca5db95b553f3bc36e39b310819378::encode`  unknown(unannotated)\nproject \u203a IncrementalEncoder  \u00b7  struct \u00b7 unknown\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project::semantic::a7d936396343ef10482e603232681a0bcddbfa793c1df04645a967348fc252d0::IncrementalEncoder`  nominal(entity(family=x\"A7D936396343EF10482E603232681A0B\",variant=x\"CDDBFA793C1DF04645A967348FC252D0\",name=x\"496E6372656D656E74616C456E636F646572\"))\nproject \u203a encode  \u00b7  type \u00b7 unknown\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project::semantic::709af140ff4e1939b702d9043cc3c8141aca5db95b553f3bc36e39b310819378::encode`  unknown(unannotated)\nproject \u203a Codec  \u00b7  struct \u00b7 unknown\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project::semantic::5c75bcec8e37a24c0d119303361753984c95caf54a9575410999636a071a6429::Codec`  nominal(entity(family=x\"5C75BCEC8E37A24C0D11930336175398\",variant=x\"4C95CAF54A9575410999636A071A6429\",name=x\"436F646563\"))\nproject \u203a encode  \u00b7  type \u00b7 unknown\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project::semantic::7898f8141127956235906e7f05316ef71aca5db95b553f3bc36e39b310819378::encode`  unknown(unannotated)\nproject \u203a encode  \u00b7  variable \u00b7 unknown\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project::semantic::8e80241750d0779431a1a7b1be48cac68be25359dabdf4292079e8c1b774756d::encode`  builtin(none)\nproject \u203a encode  \u00b7  function \u00b7 unknown\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project::semantic::9febe6619c424adde95010937bf59707e6421354030ace4db881397f94b47875::encode`  function(parameters=[element(kind=required,label=x\"73\",type=unknown(unrepresented,x\"737472207C206279746573207C20627974656172726179\")),element(kind=required,label=x\"737472696374\",type=builtin(bool)),element(kind=required,label=x\"7574733436\",type=builtin(bool)),element(kind=required,label=x\"737464335F72756C6573\",type=builtin(bool)),element(kind=required,label=x\"7472616E736974696F6E616C\",type=builtin(bool))],results=[element(kind=required,label=none,type=builtin(bytes))],abi=none,variadic=none,unsafe=false)\n\u2026 more rows at this revision; raise `limit` to see them\n",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "answer": "records",
+            "budget": {
+              "bytes": 8515,
+              "bytesPerToken": 4,
+              "estimatedTokens": 2129
+            },
+            "coverage": [
+              {
+                "lane": "exact",
+                "state": "complete"
+              },
+              {
+                "lane": "names",
+                "state": "complete"
+              },
+              {
+                "lane": "graph",
+                "state": "complete"
+              },
+              {
+                "lane": "semantic",
+                "reason": "unconfigured",
+                "state": "unavailable"
+              }
+            ],
+            "detail": "full",
+            "more": true,
+            "nextCursor": "mcp1-1791290727-cGMxLTAwMDM5MTQyYjYyYzEzOTJhMDYzOWZmYzBjMjViMmU4MjdhYzc0MTVjMmM0NTU5MDZmYjgwNWUyMzkyMTJmNGJmMzY1YjI0YzkyM2E1YmRjNmQxMzAyMjdhZjg0MjIyM2UwZGEwNDIwZDg5Y2EzZDA5OTg5ZDU1YWYxOWI0ODU0NzAxNjQ2NTBhNWQyZDM4YzUwN2M2MjFiYjdhZGVjOTYzYWZhYzdiZDc0MGJiYzg1MDA3YjFjZDYwOWE2N2ZiMjQ4MmYxMmE0MGIxYTlkOGIzYWYwOTJlYjk1NzQ1NzU5NjdjMTlhNWRiOWNhNDhlZGU1NDIyNmUyOGYyOTM2MWUzNzYwMDAwMzgyMmExYThlNmU1ZGZlMjMzZmZlYzQ2NDUwZjMwYTY0MTAxOTRiMWVlMTRiZWI2MDllNTQ3YjBhYzVhZDE2ZDMwMDAwMDAwMDAwMDAwMDAyMDAwMDAwMDAwMDAwMDAwYQ-4a71e3fc0b815dfa14e0251ac3239000",
+            "query": "encode",
+            "readiness": "ready",
+            "records": [
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project::semantic::fc4c3777a2bfcbbc6b799714e186c1085f86aa78db6680d8655185d79691aba1::encode",
+                  "key": "16b4012b",
+                  "name": "encode",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project",
+                  "segments": [
+                    "encode"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a encode"
+                },
+                "kind": "function",
+                "language": "unknown",
+                "score": 4294967290,
+                "signature": "function(parameters=[element(kind=required,label=x\"6F626A\",type=unknown(unannotated))],results=[],abi=none,variadic=none,unsafe=false)",
+                "state": "ready",
+                "summary": "stale semantic image: compiled from an earlier source snapshot; re-index to refresh"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project::semantic::2e98c8483e7b51ff194c86797adaffd61aca5db95b553f3bc36e39b310819378::encode",
+                  "key": "24392321",
+                  "name": "encode",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project",
+                  "segments": [
+                    "encode"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a encode"
+                },
+                "kind": "type",
+                "language": "unknown",
+                "score": 4294967291,
+                "signature": "unknown(unannotated)",
+                "state": "ready",
+                "summary": "stale semantic image: compiled from an earlier source snapshot; re-index to refresh"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project::semantic::362e792d0e5a28ca0e823fe2bdaf5e683884957ad06d5157f6bc6c7ae559a6d0::encode",
+                  "key": "426e5342",
+                  "name": "encode",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project",
+                  "segments": [
+                    "encode"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a encode"
+                },
+                "kind": "function",
+                "language": "unknown",
+                "score": 4294967294,
+                "signature": "function(parameters=[element(kind=required,label=x\"64617461\",type=builtin(string)),element(kind=required,label=x\"6572726F7273\",type=builtin(string))],results=[element(kind=required,label=none,type=tuple[element(kind=required,label=none,type=builtin(bytes)),element(kind=required,label=none,type=builtin(arbitrary-integer))])],abi=none,variadic=none,unsafe=false)",
+                "state": "ready",
+                "summary": "stale semantic image: compiled from an earlier source snapshot; re-index to refresh"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project::semantic::f20f4d6ae4a602d13fb1033b11be73e21aca5db95b553f3bc36e39b310819378::encode",
+                  "key": "47f9aac9",
+                  "name": "encode",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project",
+                  "segments": [
+                    "encode"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a encode"
+                },
+                "kind": "type",
+                "language": "unknown",
+                "score": 4294967292,
+                "signature": "unknown(unannotated)",
+                "state": "ready",
+                "summary": "stale semantic image: compiled from an earlier source snapshot; re-index to refresh"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project::semantic::a7d936396343ef10482e603232681a0bcddbfa793c1df04645a967348fc252d0::IncrementalEncoder",
+                  "key": "670143db",
+                  "name": "IncrementalEncoder",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project",
+                  "segments": [
+                    "IncrementalEncoder"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a IncrementalEncoder"
+                },
+                "kind": "struct",
+                "language": "unknown",
+                "score": 4294967287,
+                "signature": "nominal(entity(family=x\"A7D936396343EF10482E603232681A0B\",variant=x\"CDDBFA793C1DF04645A967348FC252D0\",name=x\"496E6372656D656E74616C456E636F646572\"))",
+                "state": "ready",
+                "summary": "Incremental IDNA 2008 encoder."
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project::semantic::709af140ff4e1939b702d9043cc3c8141aca5db95b553f3bc36e39b310819378::encode",
+                  "key": "839e785d",
+                  "name": "encode",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project",
+                  "segments": [
+                    "encode"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a encode"
+                },
+                "kind": "type",
+                "language": "unknown",
+                "score": 4294967289,
+                "signature": "unknown(unannotated)",
+                "state": "ready",
+                "summary": "stale semantic image: compiled from an earlier source snapshot; re-index to refresh"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project::semantic::5c75bcec8e37a24c0d119303361753984c95caf54a9575410999636a071a6429::Codec",
+                  "key": "d18048ea",
+                  "name": "Codec",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project",
+                  "segments": [
+                    "Codec"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a Codec"
+                },
+                "kind": "struct",
+                "language": "unknown",
+                "score": 4294967286,
+                "signature": "nominal(entity(family=x\"5C75BCEC8E37A24C0D11930336175398\",variant=x\"4C95CAF54A9575410999636A071A6429\",name=x\"436F646563\"))",
+                "state": "ready",
+                "summary": "Stateless IDNA 2008 codec."
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project::semantic::7898f8141127956235906e7f05316ef71aca5db95b553f3bc36e39b310819378::encode",
+                  "key": "d9edccef",
+                  "name": "encode",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project",
+                  "segments": [
+                    "encode"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a encode"
+                },
+                "kind": "type",
+                "language": "unknown",
+                "score": 4294967295,
+                "signature": "unknown(unannotated)",
+                "state": "ready",
+                "summary": "stale semantic image: compiled from an earlier source snapshot; re-index to refresh"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project::semantic::8e80241750d0779431a1a7b1be48cac68be25359dabdf4292079e8c1b774756d::encode",
+                  "key": "e3d8439f",
+                  "name": "encode",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project",
+                  "segments": [
+                    "encode"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a encode"
+                },
+                "kind": "variable",
+                "language": "unknown",
+                "score": 4294967288,
+                "signature": "builtin(none)",
+                "state": "ready",
+                "summary": "stale semantic image: compiled from an earlier source snapshot; re-index to refresh"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project::semantic::9febe6619c424adde95010937bf59707e6421354030ace4db881397f94b47875::encode",
+                  "key": "ed536894",
+                  "name": "encode",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-e798803e/project",
+                  "segments": [
+                    "encode"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a encode"
+                },
+                "kind": "function",
+                "language": "unknown",
+                "score": 4294967293,
+                "signature": "function(parameters=[element(kind=required,label=x\"73\",type=unknown(unrepresented,x\"737472207C206279746573207C20627974656172726179\")),element(kind=required,label=x\"737472696374\",type=builtin(bool)),element(kind=required,label=x\"7574733436\",type=builtin(bool)),element(kind=required,label=x\"737464335F72756C6573\",type=builtin(bool)),element(kind=required,label=x\"7472616E736974696F6E616C\",type=builtin(bool))],results=[element(kind=required,label=none,type=builtin(bytes))],abi=none,variadic=none,unsafe=false)",
+                "state": "ready",
+                "summary": "Encode a Unicode domain name into its ASCII (A-label) form."
+              }
+            ],
+            "semantic_search": {
+              "reason": "unconfigured",
+              "status": "unavailable"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "owned_daemons_remaining": [],
+  "endpoint_remaining": true,
+  "source_unchanged": false
+}

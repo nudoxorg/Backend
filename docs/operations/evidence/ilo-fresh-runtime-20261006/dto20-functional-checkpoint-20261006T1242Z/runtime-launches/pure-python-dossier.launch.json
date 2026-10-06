@@ -1,0 +1,24 @@
+{
+  "pid": 1031870,
+  "argv": [
+    "/nix/store/9r02ykx9y35lf4gk6gc30gnag1y8ncp7-python3-3.13.15/bin/python3",
+    "/root/nudox-corpus-20261006/artifacts/fresh-remote-runtime/prepare-stratified-registry-source-dossiers-pure-v3.py",
+    "--output",
+    "/root/nudox-corpus-20261006/artifacts/stratified-pure-python-dossiers-20261006T1204Z",
+    "--corpus",
+    "/root/nudox-corpus-20261006",
+    "--origin-verifier",
+    "/root/nudox-corpus-20261006/artifacts/report7/observer-163f022c2/registry_artifact_origin.py",
+    "--case",
+    "pypi:blinker",
+    "--case",
+    "pypi:itsdangerous",
+    "--case",
+    "pypi:packaging"
+  ],
+  "utc": "2026-10-06T12:02:09Z",
+  "observer_sha256": "513e77f08a87dfb9646d16410506b705cdde13b9b2fd71620c864717081ec17d",
+  "official_registry_only": true,
+  "package_code_or_scripts_executed": false,
+  "runtime_acceptance_credit": false
+}

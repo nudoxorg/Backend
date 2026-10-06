@@ -1,0 +1,87 @@
+{"label": "tool-node", "exit": 0, "seconds": 0.012455, "stdout_bytes": 9, "fault": null}
+{"label": "tool-tsc", "exit": 0, "seconds": 0.102178, "stdout_bytes": 14, "fault": null}
+{"label": "tool-python3", "exit": 0, "seconds": 0.002941, "stdout_bytes": 15, "fault": null}
+{"label": "tool-pyrefly", "exit": 0, "seconds": 0.002716, "stdout_bytes": 20, "fault": null}
+{"label": "tool-go", "exit": 0, "seconds": 0.003185, "stdout_bytes": 32, "fault": null}
+{"label": "fresh-health", "exit": 0, "seconds": 2.126665, "stdout_bytes": 802, "fault": null}
+{"label": "fresh-add", "exit": 2, "seconds": 28.050014, "stdout_bytes": 1022, "fault": {"answer": "fault", "cause": "refused", "compiler_failure": {"cause": {"family": "authority", "fault": {"class": "authority", "diagnostic": {"observed_bytes": 100, "retained_bytes": 100, "truncated": false}, "phase": "type_check"}}, "detail": "type check authority fault: authority runtime", "detail_truncated": false, "kind_tag": "authority_runtime", "phase": "authority", "recipe_identity": "content:116a099b19192f8d47e2db795ac3839d8d54f0bc876caad2c6f5e4f4462e5a2c", "relative_path": "fastify.d.ts", "source_byte_len": 13361, "source_identity": "content:0e5e4696f9f0b654be57a39ba7e64335ca3f4e9c150421949106358df74a1c1f"}, "detail": "fastify.d.ts: authority/authority_runtime; type check authority fault: authority runtime", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123252Z-typescript-configured-6e9a1e1f/project", "slug": "compiler-refused"}}
+{"label": "post-add-health", "exit": 0, "seconds": 0.10047, "stdout_bytes": 805, "fault": null}
+{"label": "post-add-packages", "exit": 0, "seconds": 0.014683, "stdout_bytes": 530, "fault": null}
+{"label": "post-add-semantic-versions", "exit": 0, "seconds": 0.031268, "stdout_bytes": 141, "fault": null}
+{"label": "query-search-FastifyRequest", "exit": 0, "seconds": 3.715361, "stdout_bytes": 8108, "fault": null}
+{"label": "query-resolve", "exit": 0, "seconds": 0.011461, "stdout_bytes": 6235, "fault": null}
+{"label": "query-outline-bare", "exit": 0, "seconds": 0.033141, "stdout_bytes": 11437, "fault": null}
+{"label": "query-outline-dot", "exit": 0, "seconds": 0.032098, "stdout_bytes": 11437, "fault": null}
+{"label": "query-outline-absolute", "exit": 0, "seconds": 0.029625, "stdout_bytes": 11437, "fault": null}
+{"label": "query-source-1e4c776a", "exit": 0, "seconds": 0.014785, "stdout_bytes": 12778, "fault": null}
+{"label": "query-show-1e4c776a", "exit": 0, "seconds": 0.084647, "stdout_bytes": 25604, "fault": null}
+{"label": "query-references-1e4c776a", "exit": 0, "seconds": 0.04152, "stdout_bytes": 286, "fault": null}
+{"label": "query-graph-1e4c776a", "exit": 0, "seconds": 0.054917, "stdout_bytes": 18552, "fault": null}
+{"label": "query-related-1e4c776a", "exit": 0, "seconds": 0.051433, "stdout_bytes": 18552, "fault": null}
+{"label": "query-source-95068942", "exit": 0, "seconds": 0.010036, "stdout_bytes": 1169, "fault": null}
+{"label": "query-show-95068942", "exit": 0, "seconds": 0.08223, "stdout_bytes": 1607, "fault": null}
+{"label": "query-references-95068942", "exit": 0, "seconds": 0.039513, "stdout_bytes": 287, "fault": null}
+{"label": "query-graph-95068942", "exit": 0, "seconds": 0.05168, "stdout_bytes": 1660, "fault": null}
+{"label": "query-related-95068942", "exit": 0, "seconds": 0.050884, "stdout_bytes": 1660, "fault": null}
+{"label": "query-source-d96a35d9", "exit": 0, "seconds": 0.012013, "stdout_bytes": 2067, "fault": null}
+{"label": "query-show-d96a35d9", "exit": 0, "seconds": 0.079427, "stdout_bytes": 3028, "fault": null}
+{"label": "query-references-d96a35d9", "exit": 0, "seconds": 0.04193, "stdout_bytes": 294, "fault": null}
+{"label": "query-graph-d96a35d9", "exit": 0, "seconds": 0.05325, "stdout_bytes": 2483, "fault": null}
+{"label": "query-related-d96a35d9", "exit": 0, "seconds": 0.049182, "stdout_bytes": 2483, "fault": null}
+{"label": "after-job-cancel-health", "exit": 0, "seconds": 0.099871, "stdout_bytes": 805, "fault": null}
+{"label": "retry-add", "exit": 2, "seconds": 36.567654, "stdout_bytes": 1022, "fault": {"answer": "fault", "cause": "refused", "compiler_failure": {"cause": {"family": "authority", "fault": {"class": "authority", "diagnostic": {"observed_bytes": 100, "retained_bytes": 100, "truncated": false}, "phase": "type_check"}}, "detail": "type check authority fault: authority runtime", "detail_truncated": false, "kind_tag": "authority_runtime", "phase": "authority", "recipe_identity": "content:116a099b19192f8d47e2db795ac3839d8d54f0bc876caad2c6f5e4f4462e5a2c", "relative_path": "fastify.d.ts", "source_byte_len": 13361, "source_identity": "content:0e5e4696f9f0b654be57a39ba7e64335ca3f4e9c150421949106358df74a1c1f"}, "detail": "fastify.d.ts: authority/authority_runtime; type check authority fault: authority runtime", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123252Z-typescript-configured-6e9a1e1f/project", "slug": "compiler-refused"}}
+{"label": "retry-health", "exit": 0, "seconds": 0.099771, "stdout_bytes": 805, "fault": null}
+{"label": "retry-search-FastifyRequest", "exit": 0, "seconds": 3.015559, "stdout_bytes": 8108, "fault": null}
+{"label": "retry-resolve", "exit": 0, "seconds": 0.011679, "stdout_bytes": 6235, "fault": null}
+{"label": "edit-add", "exit": 2, "seconds": 37.014407, "stdout_bytes": 1022, "fault": {"answer": "fault", "cause": "refused", "compiler_failure": {"cause": {"family": "authority", "fault": {"class": "authority", "diagnostic": {"observed_bytes": 100, "retained_bytes": 100, "truncated": false}, "phase": "type_check"}}, "detail": "type check authority fault: authority runtime", "detail_truncated": false, "kind_tag": "authority_runtime", "phase": "authority", "recipe_identity": "content:116a099b19192f8d47e2db795ac3839d8d54f0bc876caad2c6f5e4f4462e5a2c", "relative_path": "fastify.d.ts", "source_byte_len": 13361, "source_identity": "content:0e5e4696f9f0b654be57a39ba7e64335ca3f4e9c150421949106358df74a1c1f"}, "detail": "fastify.d.ts: authority/authority_runtime; type check authority fault: authority runtime", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123252Z-typescript-configured-6e9a1e1f/project", "slug": "compiler-refused"}}
+{"label": "edit-health", "exit": 0, "seconds": 0.106289, "stdout_bytes": 805, "fault": null}
+{"label": "edit-resolve", "exit": 0, "seconds": 0.011811, "stdout_bytes": 6235, "fault": null}
+{"label": "edit-source-1e4c776a", "exit": 0, "seconds": 0.012924, "stdout_bytes": 12780, "fault": null}
+{"label": "edit-document-1e4c776a", "exit": 0, "seconds": 0.088165, "stdout_bytes": 25606, "fault": null}
+{"label": "edit-source-95068942", "exit": 0, "seconds": 0.010564, "stdout_bytes": 1169, "fault": null}
+{"label": "edit-document-95068942", "exit": 0, "seconds": 0.086943, "stdout_bytes": 1607, "fault": null}
+{"label": "edit-source-d96a35d9", "exit": 0, "seconds": 0.008915, "stdout_bytes": 2067, "fault": null}
+{"label": "edit-document-d96a35d9", "exit": 0, "seconds": 0.086556, "stdout_bytes": 3028, "fault": null}
+{"label": "remove-project", "exit": 0, "seconds": 14.603936, "stdout_bytes": 362, "fault": null}
+{"label": "removed-health", "exit": 0, "seconds": 0.086325, "stdout_bytes": 802, "fault": null}
+{"label": "removed-source-1e4c776a", "exit": 2, "seconds": 0.011871, "stdout_bytes": 324, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: library record not found", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123252Z-typescript-configured-6e9a1e1f/project::types/request.d.ts:41::FastifyRequest", "slug": "protocol"}}
+{"label": "removed-show-1e4c776a", "exit": 2, "seconds": 0.011012, "stdout_bytes": 324, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: library record not found", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123252Z-typescript-configured-6e9a1e1f/project::types/request.d.ts:41::FastifyRequest", "slug": "protocol"}}
+{"label": "removed-references-1e4c776a", "exit": 2, "seconds": 0.005298, "stdout_bytes": 158, "fault": {"answer": "fault", "cause": "malformed", "detail": "references target is absent from the selected view", "operand": "", "slug": "invalid-query"}}
+{"label": "removed-graph-1e4c776a", "exit": 2, "seconds": 0.010783, "stdout_bytes": 380, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: command execution failed: semantic graph source is absent from the selected view", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123252Z-typescript-configured-6e9a1e1f/project::types/request.d.ts:41::FastifyRequest", "slug": "protocol"}}
+{"label": "removed-source-95068942", "exit": 2, "seconds": 0.011892, "stdout_bytes": 325, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: library record not found", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123252Z-typescript-configured-6e9a1e1f/project::fastify.d.ts:13::FastifyRequestContext", "slug": "protocol"}}
+{"label": "removed-show-95068942", "exit": 2, "seconds": 0.011036, "stdout_bytes": 325, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: library record not found", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123252Z-typescript-configured-6e9a1e1f/project::fastify.d.ts:13::FastifyRequestContext", "slug": "protocol"}}
+{"label": "removed-references-95068942", "exit": 2, "seconds": 0.005522, "stdout_bytes": 158, "fault": {"answer": "fault", "cause": "malformed", "detail": "references target is absent from the selected view", "operand": "", "slug": "invalid-query"}}
+{"label": "removed-graph-95068942", "exit": 2, "seconds": 0.010945, "stdout_bytes": 381, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: command execution failed: semantic graph source is absent from the selected view", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123252Z-typescript-configured-6e9a1e1f/project::fastify.d.ts:13::FastifyRequestContext", "slug": "protocol"}}
+{"label": "removed-source-d96a35d9", "exit": 2, "seconds": 0.011501, "stdout_bytes": 332, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: library record not found", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123252Z-typescript-configured-6e9a1e1f/project::test/types/route.test-d.ts:26::FastifyRequest", "slug": "protocol"}}
+{"label": "removed-show-d96a35d9", "exit": 2, "seconds": 0.010868, "stdout_bytes": 332, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: library record not found", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123252Z-typescript-configured-6e9a1e1f/project::test/types/route.test-d.ts:26::FastifyRequest", "slug": "protocol"}}
+{"label": "removed-references-d96a35d9", "exit": 2, "seconds": 0.005246, "stdout_bytes": 158, "fault": {"answer": "fault", "cause": "malformed", "detail": "references target is absent from the selected view", "operand": "", "slug": "invalid-query"}}
+{"label": "removed-graph-d96a35d9", "exit": 2, "seconds": 0.010717, "stdout_bytes": 388, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: command execution failed: semantic graph source is absent from the selected view", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123252Z-typescript-configured-6e9a1e1f/project::test/types/route.test-d.ts:26::FastifyRequest", "slug": "protocol"}}
+{"label": "readd-project", "exit": 2, "seconds": 50.145975, "stdout_bytes": 1022, "fault": {"answer": "fault", "cause": "refused", "compiler_failure": {"cause": {"family": "authority", "fault": {"class": "authority", "diagnostic": {"observed_bytes": 100, "retained_bytes": 100, "truncated": false}, "phase": "type_check"}}, "detail": "type check authority fault: authority runtime", "detail_truncated": false, "kind_tag": "authority_runtime", "phase": "authority", "recipe_identity": "content:116a099b19192f8d47e2db795ac3839d8d54f0bc876caad2c6f5e4f4462e5a2c", "relative_path": "fastify.d.ts", "source_byte_len": 13361, "source_identity": "content:0e5e4696f9f0b654be57a39ba7e64335ca3f4e9c150421949106358df74a1c1f"}, "detail": "fastify.d.ts: authority/authority_runtime; type check authority fault: authority runtime", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123252Z-typescript-configured-6e9a1e1f/project", "slug": "compiler-refused"}}
+{"label": "readded-health", "exit": 0, "seconds": 0.122746, "stdout_bytes": 805, "fault": null}
+{"label": "readded-source-1e4c776a", "exit": 0, "seconds": 0.016025, "stdout_bytes": 12780, "fault": null}
+{"label": "readded-show-1e4c776a", "exit": 0, "seconds": 0.100754, "stdout_bytes": 25606, "fault": null}
+{"label": "readded-references-1e4c776a", "exit": 0, "seconds": 0.049074, "stdout_bytes": 286, "fault": null}
+{"label": "readded-graph-1e4c776a", "exit": 0, "seconds": 0.077774, "stdout_bytes": 18554, "fault": null}
+{"label": "readded-source-95068942", "exit": 0, "seconds": 0.010308, "stdout_bytes": 1169, "fault": null}
+{"label": "readded-show-95068942", "exit": 0, "seconds": 0.121651, "stdout_bytes": 1607, "fault": null}
+{"label": "readded-references-95068942", "exit": 0, "seconds": 0.050748, "stdout_bytes": 287, "fault": null}
+{"label": "readded-graph-95068942", "exit": 0, "seconds": 0.079641, "stdout_bytes": 1660, "fault": null}
+{"label": "readded-source-d96a35d9", "exit": 0, "seconds": 0.01221, "stdout_bytes": 2067, "fault": null}
+{"label": "readded-show-d96a35d9", "exit": 0, "seconds": 0.117642, "stdout_bytes": 3028, "fault": null}
+{"label": "readded-references-d96a35d9", "exit": 0, "seconds": 0.053058, "stdout_bytes": 294, "fault": null}
+{"label": "readded-graph-d96a35d9", "exit": 0, "seconds": 0.069986, "stdout_bytes": 2483, "fault": null}
+{"label": "cold-health", "exit": 0, "seconds": 9.240422, "stdout_bytes": 805, "fault": null}
+{"label": "cold-search-FastifyRequest", "exit": 0, "seconds": 6.736678, "stdout_bytes": 8111, "fault": null}
+{"label": "cold-source-1e4c776a", "exit": 0, "seconds": 0.01307, "stdout_bytes": 12780, "fault": null}
+{"label": "cold-show-1e4c776a", "exit": 0, "seconds": 0.090289, "stdout_bytes": 25606, "fault": null}
+{"label": "cold-references-1e4c776a", "exit": 0, "seconds": 0.048312, "stdout_bytes": 286, "fault": null}
+{"label": "cold-graph-1e4c776a", "exit": 0, "seconds": 0.057565, "stdout_bytes": 18554, "fault": null}
+{"label": "cold-source-95068942", "exit": 0, "seconds": 0.009806, "stdout_bytes": 1169, "fault": null}
+{"label": "cold-show-95068942", "exit": 0, "seconds": 0.08483, "stdout_bytes": 1607, "fault": null}
+{"label": "cold-references-95068942", "exit": 0, "seconds": 0.04327, "stdout_bytes": 287, "fault": null}
+{"label": "cold-graph-95068942", "exit": 0, "seconds": 0.055892, "stdout_bytes": 1660, "fault": null}
+{"label": "cold-source-d96a35d9", "exit": 0, "seconds": 0.012183, "stdout_bytes": 2067, "fault": null}
+{"label": "cold-show-d96a35d9", "exit": 0, "seconds": 0.081916, "stdout_bytes": 3028, "fault": null}
+{"label": "cold-references-d96a35d9", "exit": 0, "seconds": 0.040353, "stdout_bytes": 294, "fault": null}
+{"label": "cold-graph-d96a35d9", "exit": 0, "seconds": 0.050181, "stdout_bytes": 2483, "fault": null}
+{"root": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123252Z-typescript-configured-6e9a1e1f", "source_unchanged": false, "accepted_project_pass": false, "remaining_owned_daemons": [], "journey_error": null}

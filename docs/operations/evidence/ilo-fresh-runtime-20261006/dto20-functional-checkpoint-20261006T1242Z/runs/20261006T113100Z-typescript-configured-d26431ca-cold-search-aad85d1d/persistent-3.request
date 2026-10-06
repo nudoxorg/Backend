@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "backend.search", "arguments": {"detail": "full", "query": "getHello", "limit": 1}}, "id": 3}

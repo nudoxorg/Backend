@@ -1,0 +1,3 @@
+usage: poll-private-semantic-history.py [-h] --run RUN --manifest MANIFEST
+                                        [--budget-seconds BUDGET_SECONDS]
+poll-private-semantic-history.py: error: the following arguments are required: --manifest

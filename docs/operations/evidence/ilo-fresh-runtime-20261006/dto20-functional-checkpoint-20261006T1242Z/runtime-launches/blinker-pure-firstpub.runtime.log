@@ -1,0 +1,17 @@
+{"label": "tool-node", "exit": 0, "seconds": 0.010496, "stdout_bytes": 9, "fault": null}
+{"label": "tool-tsc", "exit": 0, "seconds": 0.115604, "stdout_bytes": 14, "fault": null}
+{"label": "tool-python3", "exit": 0, "seconds": 0.002731, "stdout_bytes": 15, "fault": null}
+{"label": "tool-pyrefly", "exit": 0, "seconds": 0.00294, "stdout_bytes": 20, "fault": null}
+{"label": "tool-go", "exit": 0, "seconds": 0.002974, "stdout_bytes": 32, "fault": null}
+{"label": "fresh-health", "exit": 0, "seconds": 6.317888, "stdout_bytes": 802, "fault": null}
+{"label": "fresh-add", "exit": 0, "seconds": 6.552691, "stdout_bytes": 356, "fault": null}
+{"label": "post-add-health", "exit": 0, "seconds": 0.078654, "stdout_bytes": 804, "fault": null}
+{"label": "post-add-packages", "exit": 0, "seconds": 0.01122, "stdout_bytes": 522, "fault": null}
+{"label": "post-add-semantic-versions", "exit": 0, "seconds": 0.006148, "stdout_bytes": 1113, "fault": null}
+{"label": "query-search-send_async", "exit": 0, "seconds": 0.728857, "stdout_bytes": 2067, "fault": null}
+{"label": "query-resolve", "exit": 0, "seconds": 0.010393, "stdout_bytes": 1010, "fault": null}
+{"label": "query-source-36bb000e", "exit": 0, "seconds": 0.010423, "stdout_bytes": 3850, "fault": null}
+{"label": "query-show-36bb000e", "exit": 0, "seconds": 0.045746, "stdout_bytes": 6117, "fault": null}
+{"label": "query-references-36bb000e", "exit": 0, "seconds": 0.009295, "stdout_bytes": 331, "fault": null}
+{"label": "query-graph-36bb000e", "exit": 0, "seconds": 0.017956, "stdout_bytes": 3414, "fault": null}
+{"root": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-e8c8cc6f", "source_unchanged": true, "accepted_project_pass": false, "remaining_owned_daemons": [], "journey_error": null}

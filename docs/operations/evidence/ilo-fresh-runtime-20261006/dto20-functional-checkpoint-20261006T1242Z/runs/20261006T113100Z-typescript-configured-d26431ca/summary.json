@@ -1,0 +1,592 @@
+{
+  "schema": "nudox.fresh-real-remote-runtime.v1",
+  "root": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca",
+  "language": "typescript",
+  "mode": "configured",
+  "source": "/tmp/sol-ilo-ts-mcp-audit-20261005/corpora/nestjs--typescript-starter",
+  "source_origin": null,
+  "source_before": {
+    "files": [
+      [
+        ".gitignore",
+        387,
+        "546e0e7a874db63d28566d478aaa8ac6d0d56b239d1d470a97591808c51a7a46"
+      ],
+      [
+        ".oxlintrc.json",
+        221,
+        "ca7665105c4170a97ac6ae1cab7e9013c0eb26a6d14334050330f04d622330a6"
+      ],
+      [
+        ".prettierrc",
+        52,
+        "e51419e8206a0a5493e85ef1f4dea080982dc9187992bb253220a93d0784f6b2"
+      ],
+      [
+        "README.md",
+        6549,
+        "db690180555244945ec0311e384678f581db13ec243ee18ee8a185b958eaca75"
+      ],
+      [
+        "nest-cli.json",
+        171,
+        "bcb15e3049ff5d131762d2bfe3a6f917c3c64c83ac772467a4073975cd423b5b"
+      ],
+      [
+        "package-lock.json",
+        193019,
+        "d9ac75564a4e7c5deb6308c57c60d38d9589fb437a5c3f31a5c2d50faa3db13b"
+      ],
+      [
+        "package.json",
+        1460,
+        "60e35722e8bef28f3eddb70a928d37fcbcdc46fe48f1afbf7e35026d6b6e675b"
+      ],
+      [
+        "src/app.controller.spec.ts",
+        623,
+        "97c79df954aafe787ec44ed0da64f146a41affe994eb9a6c02b57eebfdb4477a"
+      ],
+      [
+        "src/app.controller.ts",
+        277,
+        "6f4dffdd41c8ebf932dd522d1cf14f252704e38767b93ef9b0ce84e165b69265"
+      ],
+      [
+        "src/app.module.ts",
+        811,
+        "8a1ab1e2aa5c8aab63b961820f3cc8a0c70a8e3349c526bdb07196225bc05c9a"
+      ],
+      [
+        "src/app.service.ts",
+        142,
+        "eaf8514ce110fa428a93a27408df4d06d133dbd9ed0a775c315ddfdd507853a9"
+      ],
+      [
+        "src/main.ts",
+        298,
+        "1c987e4d6e77a8cbb6c5ddb817888d5156059f7fbdad83f3b746b5d915e771bf"
+      ],
+      [
+        "test/app.e2e-spec.ts",
+        728,
+        "cf125983e555f5059e29e382047ff25c634bd66958ba333084431b95105a7979"
+      ],
+      [
+        "tsconfig.build.json",
+        170,
+        "4d3e73204cf9fbad4e5396f70aab7aa88cb1e93f0ab307123c3265b9c74e1504"
+      ],
+      [
+        "tsconfig.json",
+        608,
+        "79b493154e4022b2b4d95c64d92c20242bd10fcbc7a89bf45d0619126d4d825e"
+      ],
+      [
+        "vitest.config.e2e.ts",
+        245,
+        "1aa4b32d1c2a0268f5ae642d60d636902a29db541b41becf139c1d8ee1366310"
+      ],
+      [
+        "vitest.config.ts",
+        350,
+        "8fafca686508b9e08f41349d47ea712125c29a588caa6238791362fe2ac07551"
+      ]
+    ],
+    "sha256": "d3ff91d1285e002ac2480e4fb3689a16bccc8493361038f964b2f31a5f8d8aec"
+  },
+  "runtime_manifest": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/runtime-build-manifest.json",
+  "runtime_manifest_sha256": "a693977a9bcbf2e25c7b7ebb3c820d8a971ac5a190cf25708d608ee69c4c07f8",
+  "runtime_manifest_content": {
+    "schema": "nudox.runtime-build-manifest.v1",
+    "source": {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "tree": "a3911d62ef9c4ef1f8206c4fc05b8a8c6fde5156",
+      "clean": true
+    },
+    "executables": {
+      "backend-locald": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+        "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb",
+        "bytes": 105569312
+      },
+      "backend-cli": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d",
+        "bytes": 43160648
+      },
+      "backend-mcp": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+        "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb",
+        "bytes": 31886392
+      }
+    },
+    "root_receipt": {
+      "schema": "nudox.runtime-artifact-build-receipt.v1",
+      "path": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/root-cargo-receipt.json",
+      "sha256": "523430d258c89c6434c0143be58b9e003065bf22f32d0008b2505ce908f27499"
+    }
+  },
+  "binaries": {
+    "backend-cli": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+      "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d"
+    },
+    "backend-locald": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+      "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb"
+    },
+    "backend-mcp": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+      "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb"
+    }
+  },
+  "env": {
+    "HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/home",
+    "XDG_CONFIG_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/home/.config",
+    "XDG_DATA_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/home/.local/share",
+    "XDG_STATE_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/home/.local/state",
+    "TMPDIR": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/tmp",
+    "PATH": "/nix/store/0nbp03038s33ck712yx9219gcj3a2sqm-nodejs-slim-24.18.0/bin:/nix/store/1xklj6dmgcpgz60c9w2ynaq7ynzfsrrq-go-1.26.4/share/go/bin:/nix/store/9r02ykx9y35lf4gk6gc30gnag1y8ncp7-python3-3.13.15/bin:/nix/store/qdxzxkwh13bgv50066fk2ka3p1zpnjap-pyrefly-1.2.0-dev.1/bin:/root/nudox-corpus-20261006/corpora/next-react-alias-fixture/node_modules/typescript/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin",
+    "LANG": "C.UTF-8",
+    "USER": "root",
+    "LOGNAME": "root",
+    "BACKEND_LOCALD_COMPILER_ENVIRONMENT": "{\"version\":1,\"paths\":[{\"variable\":\"NUDOX_PYTHON\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,57,114,48,50,121,107,120,57,121,51,53,108,102,52,103,107,54,103,99,51,48,103,110,97,103,49,121,56,110,99,112,55,45,112,121,116,104,111,110,51,45,51,46,49,51,46,49,53,47,98,105,110,47,112,121,116,104,111,110,51,46,49,51]}},{\"variable\":\"NUDOX_TSC\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115,47,116,121,112,101,115,99,114,105,112,116,47,98,105,110,47,116,115,99]}},{\"variable\":\"NUDOX_GO\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111,47,98,105,110,47,103,111]}},{\"variable\":\"NUDOX_TYPESCRIPT_NODE\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,48,110,98,112,48,51,48,51,56,115,51,51,99,107,55,49,50,121,120,57,50,49,57,103,99,106,51,97,50,115,113,109,45,110,111,100,101,106,115,45,115,108,105,109,45,50,52,46,49,56,46,48,47,98,105,110,47,110,111,100,101]}},{\"variable\":\"NUDOX_TYPESCRIPT_MODULE_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115]}},{\"variable\":\"NUDOX_PYREFLY\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,113,100,120,122,120,107,119,104,49,51,98,103,118,53,48,48,54,54,102,107,50,107,97,51,112,49,122,112,110,106,97,112,45,112,121,114,101,102,108,121,45,49,46,50,46,48,45,100,101,118,46,49,47,98,105,110,47,112,121,114,101,102,108,121]}},{\"variable\":\"NUDOX_GO_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111]}}]}"
+  },
+  "compiler_snapshot_sha256": "0f13715f573afb87eb795bc2eb7960737abd1b7e7cd8a35ddf54a46f4a51e066",
+  "workspace_preexisting": false,
+  "endpoint_preexisting": false,
+  "fresh_home_entries": [],
+  "installer_tested": false,
+  "dependency_closure_copied": true,
+  "accepted_project_pass": false,
+  "journey_options": {
+    "skip_update_cancel": false,
+    "cancel_before_first_add": false,
+    "transport_only": false,
+    "public_compiler_variables": [],
+    "requested_queries": [
+      "getHello",
+      "AppService"
+    ],
+    "edit_file": "src/app.service.ts",
+    "keep_edited_source": true,
+    "first_publish_only": false,
+    "witness_path": "src/app.service.ts",
+    "witness_line": 5,
+    "resolve_detail": "full"
+  },
+  "source_after": {
+    "files": [
+      [
+        ".gitignore",
+        387,
+        "546e0e7a874db63d28566d478aaa8ac6d0d56b239d1d470a97591808c51a7a46"
+      ],
+      [
+        ".oxlintrc.json",
+        221,
+        "ca7665105c4170a97ac6ae1cab7e9013c0eb26a6d14334050330f04d622330a6"
+      ],
+      [
+        ".prettierrc",
+        52,
+        "e51419e8206a0a5493e85ef1f4dea080982dc9187992bb253220a93d0784f6b2"
+      ],
+      [
+        "README.md",
+        6549,
+        "db690180555244945ec0311e384678f581db13ec243ee18ee8a185b958eaca75"
+      ],
+      [
+        "nest-cli.json",
+        171,
+        "bcb15e3049ff5d131762d2bfe3a6f917c3c64c83ac772467a4073975cd423b5b"
+      ],
+      [
+        "package-lock.json",
+        193019,
+        "d9ac75564a4e7c5deb6308c57c60d38d9589fb437a5c3f31a5c2d50faa3db13b"
+      ],
+      [
+        "package.json",
+        1460,
+        "60e35722e8bef28f3eddb70a928d37fcbcdc46fe48f1afbf7e35026d6b6e675b"
+      ],
+      [
+        "src/app.controller.spec.ts",
+        623,
+        "97c79df954aafe787ec44ed0da64f146a41affe994eb9a6c02b57eebfdb4477a"
+      ],
+      [
+        "src/app.controller.ts",
+        277,
+        "6f4dffdd41c8ebf932dd522d1cf14f252704e38767b93ef9b0ce84e165b69265"
+      ],
+      [
+        "src/app.module.ts",
+        811,
+        "8a1ab1e2aa5c8aab63b961820f3cc8a0c70a8e3349c526bdb07196225bc05c9a"
+      ],
+      [
+        "src/app.service.ts",
+        163,
+        "d3f295f18a962d7d9b8be3d31c08ab90901761f6e6db4d59996a5cfc94012b90"
+      ],
+      [
+        "src/main.ts",
+        298,
+        "1c987e4d6e77a8cbb6c5ddb817888d5156059f7fbdad83f3b746b5d915e771bf"
+      ],
+      [
+        "test/app.e2e-spec.ts",
+        728,
+        "cf125983e555f5059e29e382047ff25c634bd66958ba333084431b95105a7979"
+      ],
+      [
+        "tsconfig.build.json",
+        170,
+        "4d3e73204cf9fbad4e5396f70aab7aa88cb1e93f0ab307123c3265b9c74e1504"
+      ],
+      [
+        "tsconfig.json",
+        608,
+        "79b493154e4022b2b4d95c64d92c20242bd10fcbc7a89bf45d0619126d4d825e"
+      ],
+      [
+        "vitest.config.e2e.ts",
+        245,
+        "1aa4b32d1c2a0268f5ae642d60d636902a29db541b41becf139c1d8ee1366310"
+      ],
+      [
+        "vitest.config.ts",
+        350,
+        "8fafca686508b9e08f41349d47ea712125c29a588caa6238791362fe2ac07551"
+      ]
+    ],
+    "sha256": "759085c4931d781ea941e5ec5f217b2e3e86124b4b83b41f53be38b84e84b065"
+  },
+  "checks": [
+    {
+      "query": "getHello",
+      "mcp_search": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "~lanes exact\u27133 names\u27133 graph\u27133 semantic\u2717 unconfigured semantic-search unavailable (unconfigured)\nproject \u203a src/app.controller.ts:9 \u203a getHello  \u00b7  function \u00b7 typescript\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::3aeee8774d15749a234cbf8013dbcb8df22ba43109dbe89324ca14158b5edb40::getHello`  getHello(): string\nexternal semantic target  \u00b7  unknown\n`external semantic target`\nproject \u203a src/app.service.ts:5 \u203a getHello  \u00b7  function \u00b7 typescript\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::74a695248b8a3fc6cc81a61ab9e9c6d26a0ad5661d3605c004aa382322430d8e::getHello`  getHello(): string\n",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "answer": "records",
+            "budget": {
+              "bytes": 1948,
+              "bytesPerToken": 4,
+              "estimatedTokens": 487
+            },
+            "coverage": [
+              {
+                "lane": "exact",
+                "state": "complete"
+              },
+              {
+                "lane": "names",
+                "state": "complete"
+              },
+              {
+                "lane": "graph",
+                "state": "complete"
+              },
+              {
+                "lane": "semantic",
+                "reason": "unconfigured",
+                "state": "unavailable"
+              }
+            ],
+            "detail": "full",
+            "more": false,
+            "query": "getHello",
+            "readiness": "ready",
+            "records": [
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::3aeee8774d15749a234cbf8013dbcb8df22ba43109dbe89324ca14158b5edb40::getHello",
+                  "key": "026fa027",
+                  "line": 9,
+                  "name": "getHello",
+                  "path": "src/app.controller.ts",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project",
+                  "segments": [
+                    "getHello"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a src/app.controller.ts:9 \u203a getHello"
+                },
+                "kind": "function",
+                "language": "typescript",
+                "score": 4294967295,
+                "signature": "getHello(): string",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "external semantic target",
+                  "key": "b256b801",
+                  "name": "external semantic target",
+                  "project": "external semantic target",
+                  "segments": [],
+                  "shape": "package",
+                  "trail": "external semantic target"
+                },
+                "language": "unknown",
+                "score": 4294967293,
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::74a695248b8a3fc6cc81a61ab9e9c6d26a0ad5661d3605c004aa382322430d8e::getHello",
+                  "key": "e50595a4",
+                  "line": 5,
+                  "name": "getHello",
+                  "path": "src/app.service.ts",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project",
+                  "segments": [
+                    "getHello"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a src/app.service.ts:5 \u203a getHello"
+                },
+                "kind": "function",
+                "language": "typescript",
+                "score": 4294967294,
+                "signature": "getHello(): string",
+                "state": "ready"
+              }
+            ],
+            "semantic_search": {
+              "reason": "unconfigured",
+              "status": "unavailable"
+            }
+          }
+        }
+      }
+    },
+    {
+      "query": "AppService",
+      "mcp_search": {
+        "id": 8,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "~lanes exact\u27139 names\u27139 graph\u27139 semantic\u2717 unconfigured semantic-search unavailable (unconfigured)\nexternal semantic target  \u00b7  unknown\n`external semantic target`\nproject \u203a appService  \u00b7  field \u00b7 unknown\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::2e92dea992dfab38a1833462ae15e7cda173faaf026b206a4d89ff4b8a7d4800::appService`  nominal(entity(family=x\"DA66DF9107B3589005F6637B09001CB4\",variant=x\"F054302B48C4B684E7023FC3D99C57DB\",name=x\"41707053657276696365\"))\nproject \u203a src/app.controller.spec.ts:3 \u203a AppService  \u00b7  import \u00b7 typescript\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::349d2240732034b599e7124543267e84f054302b48c4b684e7023fc3d99c57db::AppService`  value\n./app.service.js\nAppService\nproject \u203a src/app.controller.ts:2 \u203a AppService  \u00b7  import \u00b7 typescript\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::da66df9107b3589005f6637b09001cb4f054302b48c4b684e7023fc3d99c57db::AppService`  value\n./app.service.js\nAppService\nexternal semantic target  \u00b7  unknown\n`external semantic target`\nexternal semantic target  \u00b7  unknown\n`external semantic target`\nproject \u203a src/app.module.ts:4 \u203a AppService  \u00b7  import \u00b7 typescript\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::d76ad1af979d3da11becb3b289f11854f054302b48c4b684e7023fc3d99c57db::AppService`  value\n./app.service.js\nAppService\nproject \u203a appService  \u00b7  variable \u00b7 unknown\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::f3d7ef181f378ab5d90f319338e8a51d7b9173a2cdcc79488f436434aed4926b::appService`  nominal(entity(family=x\"DA66DF9107B3589005F6637B09001CB4\",variant=x\"F054302B48C4B684E7023FC3D99C57DB\",name=x\"41707053657276696365\"))\nproject \u203a src/app.service.ts:4 \u203a AppService  \u00b7  struct \u00b7 typescript\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::b4bff4be31821deb5d9d2cd0008245bcea009604487d6a135ea59721e2999264::AppService`  @Injectable()\nexport class AppService\n",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "answer": "records",
+            "budget": {
+              "bytes": 5231,
+              "bytesPerToken": 4,
+              "estimatedTokens": 1308
+            },
+            "coverage": [
+              {
+                "lane": "exact",
+                "state": "complete"
+              },
+              {
+                "lane": "names",
+                "state": "complete"
+              },
+              {
+                "lane": "graph",
+                "state": "complete"
+              },
+              {
+                "lane": "semantic",
+                "reason": "unconfigured",
+                "state": "unavailable"
+              }
+            ],
+            "detail": "full",
+            "more": false,
+            "query": "AppService",
+            "readiness": "ready",
+            "records": [
+              {
+                "identity": {
+                  "coordinate": "external semantic target",
+                  "key": "0ea13d45",
+                  "name": "external semantic target",
+                  "project": "external semantic target",
+                  "segments": [],
+                  "shape": "package",
+                  "trail": "external semantic target"
+                },
+                "language": "unknown",
+                "score": 4294967289,
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::2e92dea992dfab38a1833462ae15e7cda173faaf026b206a4d89ff4b8a7d4800::appService",
+                  "key": "17cc01c9",
+                  "name": "appService",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project",
+                  "segments": [
+                    "appService"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a appService"
+                },
+                "kind": "field",
+                "language": "unknown",
+                "score": 4294967291,
+                "signature": "nominal(entity(family=x\"DA66DF9107B3589005F6637B09001CB4\",variant=x\"F054302B48C4B684E7023FC3D99C57DB\",name=x\"41707053657276696365\"))",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::349d2240732034b599e7124543267e84f054302b48c4b684e7023fc3d99c57db::AppService",
+                  "key": "4b9568f0",
+                  "line": 3,
+                  "name": "AppService",
+                  "path": "src/app.controller.spec.ts",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project",
+                  "segments": [
+                    "AppService"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a src/app.controller.spec.ts:3 \u203a AppService"
+                },
+                "kind": "import",
+                "language": "typescript",
+                "score": 4294967294,
+                "signature": "value\n./app.service.js\nAppService",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::da66df9107b3589005f6637b09001cb4f054302b48c4b684e7023fc3d99c57db::AppService",
+                  "key": "4bb3722e",
+                  "line": 2,
+                  "name": "AppService",
+                  "path": "src/app.controller.ts",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project",
+                  "segments": [
+                    "AppService"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a src/app.controller.ts:2 \u203a AppService"
+                },
+                "kind": "import",
+                "language": "typescript",
+                "score": 4294967292,
+                "signature": "value\n./app.service.js\nAppService",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "external semantic target",
+                  "key": "64caeebe",
+                  "name": "external semantic target",
+                  "project": "external semantic target",
+                  "segments": [],
+                  "shape": "package",
+                  "trail": "external semantic target"
+                },
+                "language": "unknown",
+                "score": 4294967287,
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "external semantic target",
+                  "key": "9279e6ca",
+                  "name": "external semantic target",
+                  "project": "external semantic target",
+                  "segments": [],
+                  "shape": "package",
+                  "trail": "external semantic target"
+                },
+                "language": "unknown",
+                "score": 4294967288,
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::d76ad1af979d3da11becb3b289f11854f054302b48c4b684e7023fc3d99c57db::AppService",
+                  "key": "aff01e95",
+                  "line": 4,
+                  "name": "AppService",
+                  "path": "src/app.module.ts",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project",
+                  "segments": [
+                    "AppService"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a src/app.module.ts:4 \u203a AppService"
+                },
+                "kind": "import",
+                "language": "typescript",
+                "score": 4294967293,
+                "signature": "value\n./app.service.js\nAppService",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::f3d7ef181f378ab5d90f319338e8a51d7b9173a2cdcc79488f436434aed4926b::appService",
+                  "key": "dda933ac",
+                  "name": "appService",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project",
+                  "segments": [
+                    "appService"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a appService"
+                },
+                "kind": "variable",
+                "language": "unknown",
+                "score": 4294967290,
+                "signature": "nominal(entity(family=x\"DA66DF9107B3589005F6637B09001CB4\",variant=x\"F054302B48C4B684E7023FC3D99C57DB\",name=x\"41707053657276696365\"))",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::b4bff4be31821deb5d9d2cd0008245bcea009604487d6a135ea59721e2999264::AppService",
+                  "key": "f672aa58",
+                  "line": 4,
+                  "name": "AppService",
+                  "path": "src/app.service.ts",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project",
+                  "segments": [
+                    "AppService"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a src/app.service.ts:4 \u203a AppService"
+                },
+                "kind": "struct",
+                "language": "typescript",
+                "score": 4294967295,
+                "signature": "@Injectable()\nexport class AppService",
+                "state": "ready"
+              }
+            ],
+            "semantic_search": {
+              "reason": "unconfigured",
+              "status": "unavailable"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "owned_daemons_remaining": [],
+  "endpoint_remaining": true,
+  "source_unchanged": false
+}

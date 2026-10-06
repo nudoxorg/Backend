@@ -1,0 +1,1 @@
+{"query":"parse(version:","coverage":[{"lane":"exact","state":"complete"},{"lane":"names","state":"complete"},{"lane":"graph","state":"complete"},{"lane":"semantic","state":"unavailable","reason":"unconfigured"}],"readiness":"ready","records":[],"more":false,"answer":"records","detail":"full","budget":{"bytes":356,"estimatedTokens":89,"bytesPerToken":4}}

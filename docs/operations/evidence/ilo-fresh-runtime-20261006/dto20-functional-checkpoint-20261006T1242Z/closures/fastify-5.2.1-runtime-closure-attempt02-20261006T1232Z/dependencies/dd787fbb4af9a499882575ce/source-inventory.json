@@ -1,0 +1,130 @@
+{
+  "files": [
+    {
+      "bytes": 80,
+      "path": ".gitattributes",
+      "sha256": "e173bffc6cde613d3e6d06e49f2b1d05385cb02aa68c4931656b5b051ab649dd"
+    },
+    {
+      "bytes": 274,
+      "path": ".github/dependabot.yml",
+      "sha256": "60ffc0c7159ff6af5e36ad3ecc56fe63782e4defaabafa94a13df7150d9a84c6"
+    },
+    {
+      "bytes": 772,
+      "path": ".github/stale.yml",
+      "sha256": "37d3b5006981593361f22e1e77d08f01c279543cdbc3cf97aff5d32d275536da"
+    },
+    {
+      "bytes": 779,
+      "path": ".github/workflows/benchmark.yml",
+      "sha256": "093a412d5a2031a831ef94b55e9de68adb60581d5e2c30a538173cd3d9409927"
+    },
+    {
+      "bytes": 365,
+      "path": ".github/workflows/ci.yml",
+      "sha256": "66eaee0e091f46c8d96139ee5cbeabeae24f6bba1dd7bfa4aaf1bee86595f3ec"
+    },
+    {
+      "bytes": 1778,
+      "path": "LICENSE",
+      "sha256": "c59ffead4ccbc72ddc3258c23d608bc6f10cea5241038ca8d39cdd7d7e7667c9"
+    },
+    {
+      "bytes": 11020,
+      "path": "README.md",
+      "sha256": "f0bd7dd8f2c9ca3ab02e34cbccd79e73ea2053e23520c4763d8ea54eab0e360d"
+    },
+    {
+      "bytes": 4117,
+      "path": "benchmark/benchmark.js",
+      "sha256": "5880532cc2c0d240d12ac491ebe130c278df48b9729a775e592f42d5bf2c0fe5"
+    },
+    {
+      "bytes": 2231,
+      "path": "build/build-validation.js",
+      "sha256": "59b03e5b21cd9d48cb0823dd04ddf95dceb601da6472daabdc061faf15b0c38b"
+    },
+    {
+      "bytes": 173,
+      "path": "eslint.config.js",
+      "sha256": "534fb6622b2f4a223a9247e9a0c1d4e5fc642d64d60a4bd451b8d023318b5b23"
+    },
+    {
+      "bytes": 4947,
+      "path": "index.js",
+      "sha256": "bba315b79b2891a1285f5374d3e6c64c0596e3e14c30cb4639c39ba98b19d1c5"
+    },
+    {
+      "bytes": 23822,
+      "path": "lib/config-validator.js",
+      "sha256": "213354d80ee399f69111d1cf03ab23bcbfa575af40b58c48b38de20cf895c8b7"
+    },
+    {
+      "bytes": 2717,
+      "path": "lib/form-data.js",
+      "sha256": "1f5f4312534e9bf1c3ed92f8cf6fcb88a73833c70eeef7665c908c767ba5547b"
+    },
+    {
+      "bytes": 1157,
+      "path": "lib/parse-url.js",
+      "sha256": "1d66476b421aaa6b573ede130524ae73145a8a7d954ddff8bf88df7b4a90eb35"
+    },
+    {
+      "bytes": 7764,
+      "path": "lib/request.js",
+      "sha256": "76772c96bd02c833932999588f54610a2a7ec5b43debcc3dcb50d9ebdd4b14c8"
+    },
+    {
+      "bytes": 6418,
+      "path": "lib/response.js",
+      "sha256": "8a21971463d2716fa7814bfe3600407d1eab1c718552c853289aa4ae7aaf4f2b"
+    },
+    {
+      "bytes": 2127,
+      "path": "package.json",
+      "sha256": "ea314158c512e360b0685cde9eb3aaddab2e50ae284accf0a35abe28d0ec28b9"
+    },
+    {
+      "bytes": 1470,
+      "path": "test/async-await.test.js",
+      "sha256": "dec4963c19fd5cb17790f90315c2f6631d2ccf0b40540228ae701014246d7f08"
+    },
+    {
+      "bytes": 60200,
+      "path": "test/index.test.js",
+      "sha256": "550ce8f00cee3d175309dace017330f067fbec1b8150dac3d4171119ce81d13c"
+    },
+    {
+      "bytes": 322,
+      "path": "test/request.test.js",
+      "sha256": "0ff068fcbdbd23a50e54a8b1b2bfc3399ed441254782ba0740688b00403b4014"
+    },
+    {
+      "bytes": 381,
+      "path": "test/response.test.js",
+      "sha256": "2575b45a7b9f34e34ebc3d575ad48ea8cac8e61e56cb40495a13d01929050f32"
+    },
+    {
+      "bytes": 9581,
+      "path": "test/stream.test.js",
+      "sha256": "f78b79d2b97fe74e72a2e1c57876bad7de3ed4c3ddc821e79c30ad260321bbb9"
+    },
+    {
+      "bytes": 3481,
+      "path": "types/index.d.ts",
+      "sha256": "f69b484edf398d636992757d587e7e38ea91844a66dbca9d682c9cf7858b77cf"
+    },
+    {
+      "bytes": 4754,
+      "path": "types/index.test-d.ts",
+      "sha256": "10025bc1f0a37f19a8b76a3439f35a6bd81102016fd2a89fd85ea21131a738d4"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "light-my-request",
+    "version": "6.6.0"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

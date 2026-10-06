@@ -1,0 +1,88 @@
+{
+  "schema": "nudox.source-verified-stratified-dossier.v1",
+  "package": {
+    "ecosystem": "pypi",
+    "id": "packaging",
+    "version": "26.3"
+  },
+  "source_root": "/root/nudox-corpus-20261006/artifacts/stratified-pure-python-dossiers-20261006T1204Z/pypi-packaging/source",
+  "source_tree_sha256": "3eeed86415c4bf318b1926e68f9e0ae037403ddfca3f28c62eedccd4bd4b6eac",
+  "source_files": 105,
+  "source_bytes": 1481622,
+  "inventory_sha256": "78169fadd8e0d92dd71dbf6f612b3801f1838b284da4af0205a39c25a96e7821",
+  "origin_sha256": "c0cb7f9767a15f41415408a85e5261aacb678b347afb457cb578353ec346cc52",
+  "archive_sha256": "94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79",
+  "origin_verified": true,
+  "archives_reused": false,
+  "acquisition_requests": [
+    {
+      "url": "https://pypi.org/pypi/packaging/json",
+      "final_url": "https://pypi.org/pypi/packaging/json",
+      "status": 200,
+      "seconds": 0.05175985593814403,
+      "bytes": 90241,
+      "sha256": "9d7a2885e9e79296598f8c943e0a94c2468e21c800abd26ed13c633465a78835",
+      "utc": "2026-10-06T12:02:09Z"
+    },
+    {
+      "url": "https://files.pythonhosted.org/packages/7d/fa/3944b40b07da9ce895c0e6303a5ab7d53da063554f534556b134a54d6093/packaging-26.3.tar.gz",
+      "final_url": "https://files.pythonhosted.org/packages/7d/fa/3944b40b07da9ce895c0e6303a5ab7d53da063554f534556b134a54d6093/packaging-26.3.tar.gz",
+      "status": 200,
+      "seconds": 0.0458910430315882,
+      "bytes": 313412,
+      "sha256": "94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79",
+      "utc": "2026-10-06T12:02:09Z"
+    }
+  ],
+  "resource_before": {
+    "memory_available_kib": 57901236,
+    "free_disk_bytes": 56627503104
+  },
+  "dependency_requirements": {
+    "requires_dist": []
+  },
+  "dependency_closure_installed": false,
+  "source_expectations": [
+    {
+      "name": "Requirement",
+      "path": "src/packaging/requirements.py",
+      "line": 35,
+      "end_line": 192,
+      "kind": "ClassDef",
+      "file_sha256": "459476eb2107fe30e6b1310051a5bdb44c7d3b7f78e0e87bada268282cba62f5",
+      "start_byte": 822,
+      "end_byte": 7039,
+      "declaration_sha256": "5282a8763b28814fa1e6c4f8b20f0017ed3a41ee846becfaa08f332f7b635d40",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "parse",
+      "path": "src/packaging/version.py",
+      "line": 110,
+      "end_line": 121,
+      "kind": "FunctionDef",
+      "file_sha256": "558b2fb50fd198c660a4c082f96b8919c565911b6b4b6e07f34b6b60c074be97",
+      "start_byte": 2525,
+      "end_byte": 2874,
+      "declaration_sha256": "1a79b4d9c50f7a44f347ea97a632d905ce0d48ede912c023a3faa9429c9dc74e",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "Version",
+      "path": "src/packaging/version.py",
+      "line": 340,
+      "end_line": 1087,
+      "kind": "ClassDef",
+      "file_sha256": "558b2fb50fd198c660a4c082f96b8919c565911b6b4b6e07f34b6b60c074be97",
+      "start_byte": 9894,
+      "end_byte": 33404,
+      "declaration_sha256": "c6167b3ae793e1658a972563b4898ccf53f40d12b92152c06dc05399c32a1726",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    }
+  ],
+  "runtime_acceptance_status": "not_run",
+  "runtime_passes": 0,
+  "package_code_executed": false,
+  "observer_sha256": "513e77f08a87dfb9646d16410506b705cdde13b9b2fd71620c864717081ec17d",
+  "origin_verifier_sha256": "1ef8275b8e6daa9bfe711d05d367316b09635061b4cb9ca147816c6bed3a3039"
+}

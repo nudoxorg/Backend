@@ -1,0 +1,30 @@
+{
+  "files": [
+    {
+      "bytes": 1126,
+      "path": "LICENSE",
+      "sha256": "c5c6c5183a789d122f267c405f685037efb87e27fcde28ab1dd7378a2d2f5962"
+    },
+    {
+      "bytes": 7297,
+      "path": "README.md",
+      "sha256": "44b46dc6ed5dc1cc31b7d2a33f41d1a4fd3d9a5687eb8ccb4c2d462df806e2bc"
+    },
+    {
+      "bytes": 7010,
+      "path": "lib/set-cookie.js",
+      "sha256": "610b576bca244b789f23a1f361e8ab89b31c2a4588b3388b4bc71ad4986700f9"
+    },
+    {
+      "bytes": 1021,
+      "path": "package.json",
+      "sha256": "30485e315a03f4ffbafbbcdc205542b754526850a6d71e4cfc1130a4a986a057"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "set-cookie-parser",
+    "version": "2.7.2"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

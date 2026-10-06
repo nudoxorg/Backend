@@ -1,0 +1,65 @@
+{
+  "files": [
+    {
+      "bytes": 1928,
+      "path": "dist/index.js",
+      "sha256": "3275d8ab222476b133728732ab891a246b2ca032827593139a2c5ea032ac32f1"
+    },
+    {
+      "bytes": 1262,
+      "path": "dist/index.min.js",
+      "sha256": "1d9cb564dfac1a340257451e84178ff0c4193a50c800443a8f37c44ca623be51"
+    },
+    {
+      "bytes": 1910,
+      "path": "dist/index.mjs",
+      "sha256": "55841ec4ce25d76ccb43d18bfe3056f2ba0ce49afc58e3446055b1bd2c7376af"
+    },
+    {
+      "bytes": 52,
+      "path": "index.d.ts",
+      "sha256": "41a5ae482e864a6128e6054e88f1c0e06884793f92aff5c67144fb02d2373079"
+    },
+    {
+      "bytes": 1114,
+      "path": "license",
+      "sha256": "306fa513e39b23a6e8747520de761809d206b99800ef41907b530226574c59ae"
+    },
+    {
+      "bytes": 52,
+      "path": "lite/index.d.ts",
+      "sha256": "41a5ae482e864a6128e6054e88f1c0e06884793f92aff5c67144fb02d2373079"
+    },
+    {
+      "bytes": 802,
+      "path": "lite/index.js",
+      "sha256": "8c9976b5b9fa179d8e6dd11f213d63f2295d8990b0b99a49b3c363d2130f7671"
+    },
+    {
+      "bytes": 658,
+      "path": "lite/index.min.js",
+      "sha256": "137be7971993e7c62805efdd8a3f6c811830115df2c8c9bf3ef0f569f53b9073"
+    },
+    {
+      "bytes": 784,
+      "path": "lite/index.mjs",
+      "sha256": "49ff561397669f6e0707d9eb8542a6fedad14e7930cad610538e596129dd41fe"
+    },
+    {
+      "bytes": 1205,
+      "path": "package.json",
+      "sha256": "a41e430cd3d990700f1544c5ffece552449ab758d778fa34ad5458cf6ec35d6b"
+    },
+    {
+      "bytes": 4462,
+      "path": "readme.md",
+      "sha256": "13d0baa49b78a3567af96171135e0784f2be2e5a19dc775d0b4f92647267b887"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "dequal",
+    "version": "2.0.3"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

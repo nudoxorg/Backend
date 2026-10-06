@@ -1,0 +1,120 @@
+{
+  "files": [
+    {
+      "bytes": 80,
+      "path": ".gitattributes",
+      "sha256": "e173bffc6cde613d3e6d06e49f2b1d05385cb02aa68c4931656b5b051ab649dd"
+    },
+    {
+      "bytes": 273,
+      "path": ".github/dependabot.yml",
+      "sha256": "67dcd2013ebde5683fd6684194a6df609eeed7de80098198f59a7e07b5c19eba"
+    },
+    {
+      "bytes": 384,
+      "path": ".github/workflows/ci.yml",
+      "sha256": "1547f46405a051d946e02a7e192d6e4dba8216d29b79f4eb2d56869342e6360c"
+    },
+    {
+      "bytes": 36,
+      "path": ".taprc",
+      "sha256": "29a4aa30b7b66b99e2e541f0854a316375c2945b901a72ad497d32daa6ec93ea"
+    },
+    {
+      "bytes": 1059,
+      "path": "LICENSE",
+      "sha256": "d9726abc9eff9496f3ecb5302e70756f310db24a01c7ddd20f541143bf5576ad"
+    },
+    {
+      "bytes": 4335,
+      "path": "README.md",
+      "sha256": "0eec12ee5cdc06de0b2e5d6852f6e120ac7bd46dbbf56e07fa54fdd4bbee057a"
+    },
+    {
+      "bytes": 457,
+      "path": "benchmarks/warn.js",
+      "sha256": "83559e834c8cae0eb922daad5130df0a08f4e65932b9044a70b401f0a429a0af"
+    },
+    {
+      "bytes": 135,
+      "path": "eslint.config.js",
+      "sha256": "52e3a2601a98f23c954d664ab8de95fddb390789f8b067815e484b010d3da2d0"
+    },
+    {
+      "bytes": 202,
+      "path": "examples/example.js",
+      "sha256": "9e45d1be76278f0607bc98681068ae1cae0c554ab4550ebd22022b23df37ede4"
+    },
+    {
+      "bytes": 4010,
+      "path": "index.js",
+      "sha256": "f4d297bf6d6dee22c2ff387fe17a712709a84b3426d79f3e9b634b0728668b94"
+    },
+    {
+      "bytes": 1694,
+      "path": "package.json",
+      "sha256": "481bad767f4642828df0cdd934fd6249cb3b2ce45fb56cb33c754669f9a38ecc"
+    },
+    {
+      "bytes": 625,
+      "path": "test/emit-interpolated-string.test.js",
+      "sha256": "25fb36e8bf636745b9acca93ff4850ddd99ca0b31a6c565af30b831dad414eda"
+    },
+    {
+      "bytes": 595,
+      "path": "test/emit-once-only.test.js",
+      "sha256": "251b962dfb035f71dbe830bfad6ebbbabc409d8b6abf44ec785bc9bd8b3fcd46"
+    },
+    {
+      "bytes": 584,
+      "path": "test/emit-reset.test.js",
+      "sha256": "3382ec9ccaa2d01c64ebf3f421f532a16eae81ab0a4cc3da9f97270ea935dda6"
+    },
+    {
+      "bytes": 553,
+      "path": "test/emit-set.test.js",
+      "sha256": "d617ce7e81034dc202c953765b1f64948c143edcb83e43ca5198c4c30dd5fdec"
+    },
+    {
+      "bytes": 782,
+      "path": "test/emit-unlimited.test.js",
+      "sha256": "34ad4c0353ec06d14518acce63d3fb8e3c553a47d1287291871ceca43c26cac2"
+    },
+    {
+      "bytes": 2529,
+      "path": "test/index.test.js",
+      "sha256": "f92b75e9c98cb2affc359a6f3fbb09d0a8e262f6420ffdb696d7ceaedbcaa846"
+    },
+    {
+      "bytes": 577,
+      "path": "test/issue-88.test.js",
+      "sha256": "584d7fac1b5665aab62e3735b61c893e47b5f8358b57bcbabc2cf5e287c4a17d"
+    },
+    {
+      "bytes": 528,
+      "path": "test/jest.test.js",
+      "sha256": "299a4fcdfeeb8a24daa5815545ff0315fea4060e8d397383f9d5e261d7c12b12"
+    },
+    {
+      "bytes": 1697,
+      "path": "test/no-warnings.test.js",
+      "sha256": "f9aaa574e3088066db2a671f71e678e32c55e2792fc2739762c7b133152da650"
+    },
+    {
+      "bytes": 929,
+      "path": "types/index.d.ts",
+      "sha256": "e5871e20659be270d5bd5e03b81f1fe52379cecb70144a6ea6685fb57f302972"
+    },
+    {
+      "bytes": 915,
+      "path": "types/index.test-d.ts",
+      "sha256": "6eccc7ecde97fc204cdc9a73122cbaa920f3b108f54bd9ea810cef0bc0eeb08d"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "process-warning",
+    "version": "4.0.1"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

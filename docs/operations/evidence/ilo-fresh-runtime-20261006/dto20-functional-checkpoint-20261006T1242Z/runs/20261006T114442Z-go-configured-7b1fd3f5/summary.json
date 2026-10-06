@@ -1,0 +1,635 @@
+{
+  "schema": "nudox.fresh-real-remote-runtime.v1",
+  "root": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T114442Z-go-configured-7b1fd3f5",
+  "language": "go",
+  "mode": "configured",
+  "source": "/root/nudox-corpus-20261006/go/modcache/golang.org/x/sync@v0.23.0",
+  "source_origin": {
+    "cases": [
+      {
+        "acquisition_target_subdir": "errgroup",
+        "go_list_witness": {
+          "argv": [
+            "/root/nudox-corpus-20261006/go/toolchain/extract/go/bin/go",
+            "list",
+            "-json",
+            "."
+          ],
+          "cgo_files": [],
+          "cwd": "/root/nudox-corpus-20261006/go/modcache/golang.org/x/sync@v0.23.0/errgroup",
+          "dir": "/root/nudox-corpus-20261006/go/modcache/golang.org/x/sync@v0.23.0/errgroup",
+          "environment": {
+            "CGO_ENABLED": "0",
+            "GOARCH": "amd64",
+            "GOCACHE": "/root/nudox-corpus-20261006/go/online/closure-20261006T072020Z/gocache",
+            "GOENV": "off",
+            "GOMODCACHE": "/root/nudox-corpus-20261006/go/modcache",
+            "GOOS": "linux",
+            "GOPROXY": "off",
+            "GOROOT": "/root/nudox-corpus-20261006/go/toolchain/extract/go",
+            "GOSUMDB": "off",
+            "GOTOOLCHAIN": "local",
+            "GOWORK": "off",
+            "PATH": "/root/nudox-corpus-20261006/go/toolchain/extract/go/bin:/usr/bin:/bin"
+          },
+          "executable": "/root/nudox-corpus-20261006/go/toolchain/extract/go/bin/go",
+          "executable_sha256": "30969f97169d7f43fe6a085873d75613adc21e30818a8c61d95bd27275df4624",
+          "exit_code": 0,
+          "external_test_go_files": [
+            "errgroup_example_md5all_test.go",
+            "errgroup_test.go"
+          ],
+          "go_files": [
+            "errgroup.go"
+          ],
+          "ignored_go_files": [],
+          "import_path": "golang.org/x/sync/errgroup",
+          "module_path": "golang.org/x/sync",
+          "path": "/root/nudox-corpus-20261006/go/diagnostics/go-initial-publication-candidates-084329Z/x-sync-errgroup-v0.23.0.go-list.json",
+          "sha256": "c2c23803ae98e32caeadd2df798255bf0e7fca98f245fe9f0cbc6e7bdba3f423",
+          "stderr_path": "/root/nudox-corpus-20261006/go/diagnostics/go-initial-publication-candidates-084329Z/x-sync-errgroup-v0.23.0.go-list.stderr",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "test_go_files": []
+        },
+        "name": "x-sync-errgroup-v0.23.0",
+        "origin": {
+          "ecosystem": "go",
+          "id": "golang.org/x/sync",
+          "registry_request_path": "golang.org/x/sync",
+          "requested_ref": "latest",
+          "resolved_version": "v0.23.0",
+          "version": "v0.23.0"
+        },
+        "origin_evidence": {
+          "archive": {
+            "path": "/root/nudox-corpus-20261006/go/modcache/cache/download/golang.org/x/sync/@v/v0.23.0.zip",
+            "sha256": "c19a11baba5c1a093cb4fd2f6d0d8d79673c97a82cb0fe2d693c9b6ad84f0f82",
+            "sum": "h1:KameEIfc1IkluZyXWLn39Wd4tURc6GbCiISGiZm2bQk=",
+            "url": "https://proxy.golang.org/golang.org/x/sync/@v/v0.23.0.zip"
+          },
+          "download_json_sha256": "645e465f557f74957ca09796b3a824e4910b55cb2924b5a21ee6a03e5d1f1ddd",
+          "go_mod": {
+            "go_mod_sum": "h1:sUUOizhqBxiL6pEWpqNLUiaJn1ShEbZ6BBqskPbjZm0=",
+            "path": "/root/nudox-corpus-20261006/go/modcache/cache/download/golang.org/x/sync/@v/v0.23.0.mod",
+            "sha256": "febf4fed5dc12c0de24528f7065bf071cc74a2424070194aaf24617b91066cda"
+          },
+          "original_download_json": "/root/nudox-corpus-20261006/go/receipts/module-a210ede2ffb121862c73.download.json",
+          "original_download_process_sidecar": "/root/nudox-corpus-20261006/go/diagnostics/go-initial-publication-candidates-084329Z/x-sync-errgroup-v0.23.0.download-process.json",
+          "registry_metadata_info": {
+            "path": "/root/nudox-corpus-20261006/go/modcache/cache/download/golang.org/x/sync/@v/v0.23.0.info",
+            "sha256": "0842b53e293bdd9e9574ddbf33bb39538b447cf336b6f385e69928b5df4cf5ff",
+            "url": "https://proxy.golang.org/golang.org/x/sync/@v/v0.23.0.info"
+          },
+          "sidecar_sha256": "5f27a37c522c285d6e466b4b291ac5a7838444e341795323a7a9a96de2d99c76",
+          "sumdb_lookup": {
+            "path": "/root/nudox-corpus-20261006/go/modcache/cache/download/sumdb/sum.golang.org/lookup/golang.org/x/sync@v0.23.0",
+            "sha256": "22f905a4b6c6389fdae6e69bf7fd0d616b084c14261e9483193c3ca080688cc9",
+            "url": "https://sum.golang.org/lookup/golang.org/x/sync@v0.23.0"
+          }
+        },
+        "source_inventory": {
+          "file_count": 19,
+          "module_tree_source_identity_sha256": "463cc8ab1a0ac94e98b7a07cbbfd73ab5af4d7298b4bc1e0da32f30a81061a18",
+          "path": "/root/nudox-corpus-20261006/go/inventories/source-seed100-ebe0252705d09641daff.json",
+          "schema": "nudox.acquired-package-source-inventory.v1",
+          "sha256": "bdc8e2783772799153c9fd13f56524fd63fe80464b608cc59b47f685fa8d6f1a",
+          "source_root": "/root/nudox-corpus-20261006/go/modcache/golang.org/x/sync@v0.23.0"
+        },
+        "symbol_caller_source_witness": {
+          "caller_file": "/root/nudox-corpus-20261006/go/modcache/golang.org/x/sync@v0.23.0/errgroup/errgroup_example_md5all_test.go",
+          "caller_file_sha256": "9dfbb3dcf07488e4574ea5bb7540a405c4e03e50cce13d12184be60f3b8d8c76",
+          "caller_lines": [
+            {
+              "line": 41,
+              "text": "// ctx is canceled when g.Wait() returns. When this version of MD5All returns"
+            },
+            {
+              "line": 44,
+              "text": "g, ctx := errgroup.WithContext(ctx)"
+            },
+            {
+              "line": 47,
+              "text": "g.Go(func() error {"
+            },
+            {
+              "line": 69,
+              "text": "g.Go(func() error {"
+            },
+            {
+              "line": 85,
+              "text": "g.Wait()"
+            },
+            {
+              "line": 96,
+              "text": "if err := g.Wait(); err != nil {"
+            }
+          ],
+          "declaration_file": "/root/nudox-corpus-20261006/go/modcache/golang.org/x/sync@v0.23.0/errgroup/errgroup.go",
+          "declaration_file_sha256": "fd91297cc3313c8d965137301beb80f51707d5bc863510dcd8270570cc510b87",
+          "declarations": [
+            {
+              "line": 48,
+              "text": "func WithContext(ctx context.Context) (*Group, context.Context) {"
+            },
+            {
+              "line": 55,
+              "text": "func (g *Group) Wait() error {"
+            },
+            {
+              "line": 72,
+              "text": "func (g *Group) Go(f func() error) {"
+            }
+          ],
+          "status": "source-backed expectation; owner/reference relation must be confirmed by Go type-authority runtime, not name-match-only"
+        },
+        "target_package": {
+          "ecosystem": "go",
+          "id": "golang.org/x/sync/errgroup",
+          "version": "v0.23.0"
+        }
+      },
+      {
+        "acquisition_target_subdir": "expirable",
+        "go_list_witness": {
+          "argv": [
+            "/root/nudox-corpus-20261006/go/toolchain/extract/go/bin/go",
+            "list",
+            "-json",
+            "."
+          ],
+          "cgo_files": [],
+          "cwd": "/root/nudox-corpus-20261006/go/modcache/github.com/hashicorp/golang-lru/v2@v2.0.7/expirable",
+          "dir": "/root/nudox-corpus-20261006/go/modcache/github.com/hashicorp/golang-lru/v2@v2.0.7/expirable",
+          "environment": {
+            "CGO_ENABLED": "0",
+            "GOARCH": "amd64",
+            "GOCACHE": "/root/nudox-corpus-20261006/go/online/closure-20261006T072020Z/gocache",
+            "GOENV": "off",
+            "GOMODCACHE": "/root/nudox-corpus-20261006/go/modcache",
+            "GOOS": "linux",
+            "GOPROXY": "off",
+            "GOROOT": "/root/nudox-corpus-20261006/go/toolchain/extract/go",
+            "GOSUMDB": "off",
+            "GOTOOLCHAIN": "local",
+            "GOWORK": "off",
+            "PATH": "/root/nudox-corpus-20261006/go/toolchain/extract/go/bin:/usr/bin:/bin"
+          },
+          "executable": "/root/nudox-corpus-20261006/go/toolchain/extract/go/bin/go",
+          "executable_sha256": "30969f97169d7f43fe6a085873d75613adc21e30818a8c61d95bd27275df4624",
+          "exit_code": 0,
+          "external_test_go_files": [],
+          "go_files": [
+            "expirable_lru.go"
+          ],
+          "ignored_go_files": [],
+          "import_path": "github.com/hashicorp/golang-lru/v2/expirable",
+          "module_path": "github.com/hashicorp/golang-lru/v2",
+          "path": "/root/nudox-corpus-20261006/go/diagnostics/go-initial-publication-candidates-084329Z/hashicorp-golang-lru-expirable-v2.0.7.go-list.json",
+          "sha256": "b8ef9e4c578cb2810e69a12c62e939d72a3d026845004ae3665668f7319cde8d",
+          "stderr_path": "/root/nudox-corpus-20261006/go/diagnostics/go-initial-publication-candidates-084329Z/hashicorp-golang-lru-expirable-v2.0.7.go-list.stderr",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "test_go_files": [
+            "expirable_lru_test.go"
+          ]
+        },
+        "name": "hashicorp-golang-lru-expirable-v2.0.7",
+        "origin": {
+          "ecosystem": "go",
+          "id": "github.com/hashicorp/golang-lru/v2",
+          "registry_request_path": "github.com/hashicorp/golang-lru/v2",
+          "requested_ref": "latest",
+          "resolved_version": "v2.0.7",
+          "version": "v2.0.7"
+        },
+        "origin_evidence": {
+          "archive": {
+            "path": "/root/nudox-corpus-20261006/go/modcache/cache/download/github.com/hashicorp/golang-lru/v2/@v/v2.0.7.zip",
+            "sha256": "2eb92ff13970bccd460efae14255bfc03bb51474da0137e477a60f95561acc30",
+            "sum": "h1:a+bsQ5rvGLjzHuww6tVxozPZFVghXaHOwFs4luLUK2k=",
+            "url": "https://proxy.golang.org/github.com/hashicorp/golang-lru/v2/@v/v2.0.7.zip"
+          },
+          "download_json_sha256": "4519f815f33937738ac995b9b8e83ecb924fbceca6ea51546933fde3c50eae62",
+          "go_mod": {
+            "go_mod_sum": "h1:QeFd9opnmA6QUJc5vARoKUSoFhyfM2/ZepoAG6RGpeM=",
+            "path": "/root/nudox-corpus-20261006/go/modcache/cache/download/github.com/hashicorp/golang-lru/v2/@v/v2.0.7.mod",
+            "sha256": "c6b886c0242ffeac92b6b6aecf1123bc63c86faee81b16fff3a13273e50f6824"
+          },
+          "original_download_json": "/root/nudox-corpus-20261006/go/receipts/module-827831eeaee232b148bd.download.json",
+          "original_download_process_sidecar": "/root/nudox-corpus-20261006/go/diagnostics/go-initial-publication-candidates-084329Z/hashicorp-golang-lru-expirable-v2.0.7.download-process.json",
+          "registry_metadata_info": {
+            "path": "/root/nudox-corpus-20261006/go/modcache/cache/download/github.com/hashicorp/golang-lru/v2/@v/v2.0.7.info",
+            "sha256": "45f84f6c839965ab7cf80e3fc2dc08584246db7bfdc9ed7bb20b958d8d5a1456",
+            "url": "https://proxy.golang.org/github.com/hashicorp/golang-lru/v2/@v/v2.0.7.info"
+          },
+          "sidecar_sha256": "cfd13a7473fba2a0b0c2b5ab92241751e197951d6b4c1b6a96360a905b8f350b",
+          "sumdb_lookup": {
+            "path": "/root/nudox-corpus-20261006/go/modcache/cache/download/sumdb/sum.golang.org/lookup/github.com/hashicorp/golang-lru/v2@v2.0.7",
+            "sha256": "e6de92b984a60f38255dc85007096ffcf848578f011060322b0adcf39be22120",
+            "url": "https://sum.golang.org/lookup/github.com/hashicorp/golang-lru/v2@v2.0.7"
+          }
+        },
+        "source_inventory": {
+          "file_count": 19,
+          "module_tree_source_identity_sha256": "39f3830af79ce3b97056f7f6fdec0bd500255634bf8afd657bcfcb20887a933d",
+          "path": "/root/nudox-corpus-20261006/go/inventories/source-seed100-28db392058ff9f96d118.json",
+          "schema": "nudox.acquired-package-source-inventory.v1",
+          "sha256": "61d25ad0bbe557e64ab0fbaa9016fbcf5b83d2d71b9f927341c4be2a99406c3a",
+          "source_root": "/root/nudox-corpus-20261006/go/modcache/github.com/hashicorp/golang-lru/v2@v2.0.7"
+        },
+        "symbol_caller_source_witness": {
+          "caller_file": "/root/nudox-corpus-20261006/go/modcache/github.com/hashicorp/golang-lru/v2@v2.0.7/expirable/expirable_lru_test.go",
+          "caller_file_sha256": "d5f994227c66b06b482f208a37b012608333eb3d4ceb3d1ccab8478387a8d77e",
+          "caller_lines": [
+            {
+              "line": 130,
+              "text": "lc := NewLRU[string, string](10, nil, 0)"
+            },
+            {
+              "line": 132,
+              "text": "lc.Add(\"key1\", \"val1\")"
+            },
+            {
+              "line": 137,
+              "text": "v, ok := lc.Peek(\"key1\")"
+            },
+            {
+              "line": 198,
+              "text": "lc := NewLRU[string, string](3, nil, 0)"
+            },
+            {
+              "line": 200,
+              "text": "lc.Add(\"key1\", \"val1\")"
+            },
+            {
+              "line": 211,
+              "text": "//\tlc := NewLRU[string, string](10, nil, 0)"
+            },
+            {
+              "line": 232,
+              "text": "lc.Add(\"key1\", \"val1\")"
+            },
+            {
+              "line": 300,
+              "text": "lc := NewLRU[string, string](10, nil, time.Hour)"
+            },
+            {
+              "line": 323,
+              "text": "lc := NewLRU[string, string](0, nil, 0)"
+            },
+            {
+              "line": 342,
+              "text": "lc.Add(\"key1\", \"val1\")"
+            },
+            {
+              "line": 370,
+              "text": "lc := NewLRU[string, string](0, nil, time.Millisecond*5)"
+            },
+            {
+              "line": 372,
+              "text": "lc.Add(\"key1\", \"val1\")"
+            },
+            {
+              "line": 377,
+              "text": "v, ok := lc.Peek(\"key1\")"
+            },
+            {
+              "line": 408,
+              "text": "v, ok = lc.Peek(\"key1\")"
+            },
+            {
+              "line": 426,
+              "text": "lc := NewLRU[string, string](2, nil, 0)"
+            },
+            {
+              "line": 444,
+              "text": "lc.Add(\"key1\", \"val1\")"
+            },
+            {
+              "line": 493,
+              "text": "cache := NewLRU[string, string](5, nil, time.Millisecond*10)"
+            }
+          ],
+          "declaration_file": "/root/nudox-corpus-20261006/go/modcache/github.com/hashicorp/golang-lru/v2@v2.0.7/expirable/expirable_lru.go",
+          "declaration_file_sha256": "7bb8e0c8498522c15a5acea7d252ec325558de9940f8962c95858c5a1832196a",
+          "declarations": [
+            {
+              "line": 17,
+              "text": "type LRU[K comparable, V any] struct {"
+            },
+            {
+              "line": 54,
+              "text": "func NewLRU[K comparable, V any](size int, onEvict EvictCallback[K, V], ttl time.Duration) *LRU[K, V] {"
+            },
+            {
+              "line": 120,
+              "text": "func (c *LRU[K, V]) Add(key K, value V) (evicted bool) {"
+            },
+            {
+              "line": 149,
+              "text": "func (c *LRU[K, V]) Get(key K) (value V, ok bool) {"
+            }
+          ],
+          "status": "source-backed expectation; owner/reference relation must be confirmed by Go type-authority runtime, not name-match-only"
+        },
+        "target_package": {
+          "ecosystem": "go",
+          "id": "github.com/hashicorp/golang-lru/v2/expirable",
+          "version": "v2.0.7"
+        }
+      }
+    ],
+    "created_utc": "2026-10-06T08:43:29.621437+00:00",
+    "schema": "nudox.go-initial-publication-candidate-packet.v1",
+    "toolchain": {
+      "goroot": "/root/nudox-corpus-20261006/go/toolchain/extract/go",
+      "path": "/root/nudox-corpus-20261006/go/toolchain/extract/go/bin/go",
+      "sha256": "30969f97169d7f43fe6a085873d75613adc21e30818a8c61d95bd27275df4624",
+      "version": "go version go1.27.1 linux/amd64"
+    }
+  },
+  "source_before": {
+    "files": [
+      [
+        "CONTRIBUTING.md",
+        913,
+        "6f509e4bff3be1f056f1d8d5224c5e8eefd61fdf62c57fb1d0c8c6ce369e56e4"
+      ],
+      [
+        "LICENSE",
+        1453,
+        "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+      ],
+      [
+        "PATENTS",
+        1303,
+        "96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc"
+      ],
+      [
+        "README.md",
+        640,
+        "6687bc62f617eb83cd15bab40cf0e40ff0cfa49c2028f983ef7338413c0e7f79"
+      ],
+      [
+        "codereview.cfg",
+        21,
+        "7c54d4c5f43de8c5cba7ec4ed15d1a497e075b1656ba5e8a51d86a86543a516d"
+      ],
+      [
+        "errgroup/errgroup.go",
+        4033,
+        "fd91297cc3313c8d965137301beb80f51707d5bc863510dcd8270570cc510b87"
+      ],
+      [
+        "errgroup/errgroup_example_md5all_test.go",
+        2419,
+        "9dfbb3dcf07488e4574ea5bb7540a405c4e03e50cce13d12184be60f3b8d8c76"
+      ],
+      [
+        "errgroup/errgroup_test.go",
+        6647,
+        "fcea55f5453e6f61b1290c17b88790c40288fbf81cd98fe9c4d45c496f6d0dc5"
+      ],
+      [
+        "go.mod",
+        36,
+        "febf4fed5dc12c0de24528f7065bf071cc74a2424070194aaf24617b91066cda"
+      ],
+      [
+        "semaphore/semaphore.go",
+        4614,
+        "b75801ca432d216a980f41d56e8ded5523950f3a0421c165a9237629800e1596"
+      ],
+      [
+        "semaphore/semaphore_bench_test.go",
+        2842,
+        "e928a807e5503d31d066f2f7e6d1e8be66c30f0fce0ac507f346056e5abfb592"
+      ],
+      [
+        "semaphore/semaphore_example_test.go",
+        2047,
+        "7e00fd84cb54ed114dbefa225d37a41a5cc228df82eff8a5397644a225660885"
+      ],
+      [
+        "semaphore/semaphore_test.go",
+        6666,
+        "82aa8c57eacb6ce7fa08efb7c23a098a5c079f23ac5f6f1969204ae6f9e80d96"
+      ],
+      [
+        "singleflight/singleflight.go",
+        5412,
+        "3f40c5efb4aa1a42885f5de8bdf4615f69eb851c5cf5abdf86276bace4b98fc7"
+      ],
+      [
+        "singleflight/singleflight_test.go",
+        9176,
+        "1282fb401e196edb120ad242c20d719f08fec6c46ea29ff5d9a5036db6711b26"
+      ],
+      [
+        "syncmap/map.go",
+        733,
+        "b56b0d009241f7ac1d9482b62cfbfbac57cf931137715dd7a94ed1e870c7324b"
+      ],
+      [
+        "syncmap/map_bench_test.go",
+        4917,
+        "cf16377a2bcd9c95a6e0014342c73dc309cd637f0cf3f88368ef49e682abd273"
+      ],
+      [
+        "syncmap/map_reference_test.go",
+        3134,
+        "09aae2cc9776a31e15a277d526b7e5b067f3b123774cdeb4304e6b551f61f34d"
+      ],
+      [
+        "syncmap/map_test.go",
+        3432,
+        "8c7c106e0fa7626aa724ea27d9ef49918b0359009d7abf36f898785e74b2645b"
+      ]
+    ],
+    "sha256": "abc0ae82f02ab374ce3debba81f88026c1d4fff31da85943462a867ccc4603bb"
+  },
+  "runtime_manifest": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/runtime-build-manifest.json",
+  "runtime_manifest_sha256": "a693977a9bcbf2e25c7b7ebb3c820d8a971ac5a190cf25708d608ee69c4c07f8",
+  "runtime_manifest_content": {
+    "schema": "nudox.runtime-build-manifest.v1",
+    "source": {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "tree": "a3911d62ef9c4ef1f8206c4fc05b8a8c6fde5156",
+      "clean": true
+    },
+    "executables": {
+      "backend-locald": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+        "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb",
+        "bytes": 105569312
+      },
+      "backend-cli": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d",
+        "bytes": 43160648
+      },
+      "backend-mcp": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+        "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb",
+        "bytes": 31886392
+      }
+    },
+    "root_receipt": {
+      "schema": "nudox.runtime-artifact-build-receipt.v1",
+      "path": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/root-cargo-receipt.json",
+      "sha256": "523430d258c89c6434c0143be58b9e003065bf22f32d0008b2505ce908f27499"
+    }
+  },
+  "binaries": {
+    "backend-cli": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+      "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d"
+    },
+    "backend-locald": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+      "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb"
+    },
+    "backend-mcp": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+      "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb"
+    }
+  },
+  "env": {
+    "HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T114442Z-go-configured-7b1fd3f5/home",
+    "XDG_CONFIG_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T114442Z-go-configured-7b1fd3f5/home/.config",
+    "XDG_DATA_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T114442Z-go-configured-7b1fd3f5/home/.local/share",
+    "XDG_STATE_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T114442Z-go-configured-7b1fd3f5/home/.local/state",
+    "TMPDIR": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T114442Z-go-configured-7b1fd3f5/tmp",
+    "PATH": "/nix/store/0nbp03038s33ck712yx9219gcj3a2sqm-nodejs-slim-24.18.0/bin:/nix/store/1xklj6dmgcpgz60c9w2ynaq7ynzfsrrq-go-1.26.4/share/go/bin:/nix/store/9r02ykx9y35lf4gk6gc30gnag1y8ncp7-python3-3.13.15/bin:/nix/store/qdxzxkwh13bgv50066fk2ka3p1zpnjap-pyrefly-1.2.0-dev.1/bin:/root/nudox-corpus-20261006/corpora/next-react-alias-fixture/node_modules/typescript/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin",
+    "LANG": "C.UTF-8",
+    "USER": "root",
+    "LOGNAME": "root",
+    "BACKEND_LOCALD_COMPILER_ENVIRONMENT": "{\"version\":1,\"paths\":[{\"variable\":\"NUDOX_PYTHON\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,57,114,48,50,121,107,120,57,121,51,53,108,102,52,103,107,54,103,99,51,48,103,110,97,103,49,121,56,110,99,112,55,45,112,121,116,104,111,110,51,45,51,46,49,51,46,49,53,47,98,105,110,47,112,121,116,104,111,110,51,46,49,51]}},{\"variable\":\"NUDOX_TSC\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115,47,116,121,112,101,115,99,114,105,112,116,47,98,105,110,47,116,115,99]}},{\"variable\":\"NUDOX_GO\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111,47,98,105,110,47,103,111]}},{\"variable\":\"NUDOX_TYPESCRIPT_NODE\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,48,110,98,112,48,51,48,51,56,115,51,51,99,107,55,49,50,121,120,57,50,49,57,103,99,106,51,97,50,115,113,109,45,110,111,100,101,106,115,45,115,108,105,109,45,50,52,46,49,56,46,48,47,98,105,110,47,110,111,100,101]}},{\"variable\":\"NUDOX_TYPESCRIPT_MODULE_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115]}},{\"variable\":\"NUDOX_PYREFLY\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,113,100,120,122,120,107,119,104,49,51,98,103,118,53,48,48,54,54,102,107,50,107,97,51,112,49,122,112,110,106,97,112,45,112,121,114,101,102,108,121,45,49,46,50,46,48,45,100,101,118,46,49,47,98,105,110,47,112,121,114,101,102,108,121]}},{\"variable\":\"NUDOX_GO_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111]}}]}"
+  },
+  "compiler_snapshot_sha256": "0f13715f573afb87eb795bc2eb7960737abd1b7e7cd8a35ddf54a46f4a51e066",
+  "workspace_preexisting": false,
+  "endpoint_preexisting": false,
+  "fresh_home_entries": [],
+  "installer_tested": false,
+  "dependency_closure_copied": false,
+  "accepted_project_pass": false,
+  "journey_options": {
+    "skip_update_cancel": false,
+    "cancel_before_first_add": false,
+    "transport_only": false,
+    "public_compiler_variables": [],
+    "requested_queries": [
+      "WithContext"
+    ],
+    "edit_file": null,
+    "keep_edited_source": false,
+    "first_publish_only": true,
+    "witness_path": "errgroup/errgroup.go",
+    "witness_line": 48,
+    "resolve_detail": "summary"
+  },
+  "first_publication_observed": false,
+  "source_after": {
+    "files": [
+      [
+        "CONTRIBUTING.md",
+        913,
+        "6f509e4bff3be1f056f1d8d5224c5e8eefd61fdf62c57fb1d0c8c6ce369e56e4"
+      ],
+      [
+        "LICENSE",
+        1453,
+        "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+      ],
+      [
+        "PATENTS",
+        1303,
+        "96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc"
+      ],
+      [
+        "README.md",
+        640,
+        "6687bc62f617eb83cd15bab40cf0e40ff0cfa49c2028f983ef7338413c0e7f79"
+      ],
+      [
+        "codereview.cfg",
+        21,
+        "7c54d4c5f43de8c5cba7ec4ed15d1a497e075b1656ba5e8a51d86a86543a516d"
+      ],
+      [
+        "errgroup/errgroup.go",
+        4033,
+        "fd91297cc3313c8d965137301beb80f51707d5bc863510dcd8270570cc510b87"
+      ],
+      [
+        "errgroup/errgroup_example_md5all_test.go",
+        2419,
+        "9dfbb3dcf07488e4574ea5bb7540a405c4e03e50cce13d12184be60f3b8d8c76"
+      ],
+      [
+        "errgroup/errgroup_test.go",
+        6647,
+        "fcea55f5453e6f61b1290c17b88790c40288fbf81cd98fe9c4d45c496f6d0dc5"
+      ],
+      [
+        "go.mod",
+        36,
+        "febf4fed5dc12c0de24528f7065bf071cc74a2424070194aaf24617b91066cda"
+      ],
+      [
+        "semaphore/semaphore.go",
+        4614,
+        "b75801ca432d216a980f41d56e8ded5523950f3a0421c165a9237629800e1596"
+      ],
+      [
+        "semaphore/semaphore_bench_test.go",
+        2842,
+        "e928a807e5503d31d066f2f7e6d1e8be66c30f0fce0ac507f346056e5abfb592"
+      ],
+      [
+        "semaphore/semaphore_example_test.go",
+        2047,
+        "7e00fd84cb54ed114dbefa225d37a41a5cc228df82eff8a5397644a225660885"
+      ],
+      [
+        "semaphore/semaphore_test.go",
+        6666,
+        "82aa8c57eacb6ce7fa08efb7c23a098a5c079f23ac5f6f1969204ae6f9e80d96"
+      ],
+      [
+        "singleflight/singleflight.go",
+        5412,
+        "3f40c5efb4aa1a42885f5de8bdf4615f69eb851c5cf5abdf86276bace4b98fc7"
+      ],
+      [
+        "singleflight/singleflight_test.go",
+        9176,
+        "1282fb401e196edb120ad242c20d719f08fec6c46ea29ff5d9a5036db6711b26"
+      ],
+      [
+        "syncmap/map.go",
+        733,
+        "b56b0d009241f7ac1d9482b62cfbfbac57cf931137715dd7a94ed1e870c7324b"
+      ],
+      [
+        "syncmap/map_bench_test.go",
+        4917,
+        "cf16377a2bcd9c95a6e0014342c73dc309cd637f0cf3f88368ef49e682abd273"
+      ],
+      [
+        "syncmap/map_reference_test.go",
+        3134,
+        "09aae2cc9776a31e15a277d526b7e5b067f3b123774cdeb4304e6b551f61f34d"
+      ],
+      [
+        "syncmap/map_test.go",
+        3432,
+        "8c7c106e0fa7626aa724ea27d9ef49918b0359009d7abf36f898785e74b2645b"
+      ]
+    ],
+    "sha256": "abc0ae82f02ab374ce3debba81f88026c1d4fff31da85943462a867ccc4603bb"
+  },
+  "checks": [],
+  "owned_daemons_remaining": [],
+  "endpoint_remaining": true,
+  "source_unchanged": true
+}

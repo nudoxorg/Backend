@@ -1,0 +1,260 @@
+{
+  "files": [
+    {
+      "bytes": 80,
+      "path": ".gitattributes",
+      "sha256": "e173bffc6cde613d3e6d06e49f2b1d05385cb02aa68c4931656b5b051ab649dd"
+    },
+    {
+      "bytes": 1420,
+      "path": ".github/dependabot.yml",
+      "sha256": "fed0703d37709ec385b507e8e826709f94c3d72c8804487f918d16b862a265bb"
+    },
+    {
+      "bytes": 4176,
+      "path": ".github/workflows/ci.yml",
+      "sha256": "75cb9f8e4de167eca969255cd8591f065e32c1ce24915c3921bc1d4be92dd801"
+    },
+    {
+      "bytes": 340,
+      "path": ".github/workflows/lock-threads.yml",
+      "sha256": "37dbbbadeff86c27af3c2357f3a098165064ddbe14dc4affa3eff614b772657e"
+    },
+    {
+      "bytes": 1658,
+      "path": ".github/workflows/ossf-scorecard.yml",
+      "sha256": "193af51e0e9c582029dc9e0019d1d1b642962f8305609601d73a5f3b5c7a3c0a"
+    },
+    {
+      "bytes": 1813,
+      "path": "LICENSE",
+      "sha256": "b010b0dfdfdb23d7396e03b82cd4621fc9bb8f95d6b0aea70b9c24e12074c786"
+    },
+    {
+      "bytes": 11952,
+      "path": "README.md",
+      "sha256": "a5fca7a42989af21f6c53f36fc725067424d2064316c2423d33b09de18c51312"
+    },
+    {
+      "bytes": 9571,
+      "path": "SECURITY.md",
+      "sha256": "2f169141c9855decbd76eb9a44e4946a19b248604829ae9286ed14556e4f26aa"
+    },
+    {
+      "bytes": 6737,
+      "path": "benchmark/benchmark.mjs",
+      "sha256": "94367909523f616ed8f090d5c3b55ceaff49a12b903f3ec829d9d534b464174e"
+    },
+    {
+      "bytes": 1671,
+      "path": "benchmark/encoder.mjs",
+      "sha256": "fd06c2dc44a23b417595ca0175e632b6814ea880077a67a26772ed302c19a6f7"
+    },
+    {
+      "bytes": 1305,
+      "path": "benchmark/equal.mjs",
+      "sha256": "36eb5b2acea9c4e969ab8fe028e88b781aa948e597368655a13528c3a93f1d39"
+    },
+    {
+      "bytes": 838,
+      "path": "benchmark/non-simple-domain.mjs",
+      "sha256": "303eb41faa6c2489b5086f3d2764bf6ecaf3b937b385647c6e8b14aaf2582524"
+    },
+    {
+      "bytes": 293,
+      "path": "benchmark/package.json",
+      "sha256": "463a034d344b042e495841b770ca69a812693087ee2053d7c18cc8497e020b58"
+    },
+    {
+      "bytes": 819,
+      "path": "benchmark/string-array-to-hex-stripped.mjs",
+      "sha256": "693d4a312b0e275e02ef5531d707ff7df6cddf14cd83bc09a79909ea2008bfd4"
+    },
+    {
+      "bytes": 1891,
+      "path": "benchmark/ws-is-secure.mjs",
+      "sha256": "6f105dc633aadd4bd4b8362765f4a1d44fb31fe0c8754cb11d73f27ff7d6527b"
+    },
+    {
+      "bytes": 135,
+      "path": "eslint.config.js",
+      "sha256": "52e3a2601a98f23c954d664ab8de95fddb390789f8b067815e484b010d3da2d0"
+    },
+    {
+      "bytes": 23742,
+      "path": "index.js",
+      "sha256": "610b35cefcf5387d420fdb416501572b67b999a45eee58a85d854fe145f0d0b9"
+    },
+    {
+      "bytes": 23445,
+      "path": "lib/schemes.js",
+      "sha256": "c48f912ff499be871c602892158bf76cddb26a16b8b819bfc262c8b8363a254c"
+    },
+    {
+      "bytes": 24895,
+      "path": "lib/utils.js",
+      "sha256": "feb8fefb742be1759c3a9faa8e4f6fc6e63d0ed74e9730a803a7fabfa8b7ea6b"
+    },
+    {
+      "bytes": 1963,
+      "path": "package.json",
+      "sha256": "077ea5e1c0e775e79e7a7bf867bf6eb22787f9fa4ce264d1a24fcc5e11493ab1"
+    },
+    {
+      "bytes": 752,
+      "path": "test/ajv.test.js",
+      "sha256": "75892faa0e01df30856f2a87eb50dcd4a4aa9a3ec1c7aa4e290ff936b0789f72"
+    },
+    {
+      "bytes": 4690,
+      "path": "test/component-safe-serialization.test.js",
+      "sha256": "354eb0c7c00d0a827d2351ccaeea702ac2c04f794fe6831ab7b8c15f7a7b15e4"
+    },
+    {
+      "bytes": 8174,
+      "path": "test/equal.test.js",
+      "sha256": "5a29d94b18d837cdfb54947115a4780668b14cd88030243f55fb090d4a2c9e3c"
+    },
+    {
+      "bytes": 10276,
+      "path": "test/fixtures/uri-js-parse.json",
+      "sha256": "bc79392f033f75a491f4360f8cd50610375d9945f257b5d1a40f872f17e059c9"
+    },
+    {
+      "bytes": 2056,
+      "path": "test/fixtures/uri-js-serialize.json",
+      "sha256": "b00ff2ebe5274ed5e21106af5d2a93159294b74f1eaf55cccd9863915f25ee21"
+    },
+    {
+      "bytes": 1144,
+      "path": "test/ipv6-canonical.test.js",
+      "sha256": "647cca74400388c5ea503c67433507a71fa371ba3377e5ddcec5204948b16968"
+    },
+    {
+      "bytes": 9357,
+      "path": "test/ipv6-validation.test.js",
+      "sha256": "33cf34f31cb4c05a40e7cfdd492f40bf3c1cffe0549cb474e42822bac0c4fbdf"
+    },
+    {
+      "bytes": 4609,
+      "path": "test/mailto-authority-security.test.js",
+      "sha256": "b5c7ee0e9908fdf518e0a441edb7f4365d83fd28e47675ae804899909cac142a"
+    },
+    {
+      "bytes": 5732,
+      "path": "test/mailto-field-name-security.test.js",
+      "sha256": "ccefefd44d4192ab2bbfa1178aeea162c827509cd2fcda0b4c699c8e706171e7"
+    },
+    {
+      "bytes": 2795,
+      "path": "test/malformed-percent.test.js",
+      "sha256": "151bf26b0c6096adb923677c42ea33dfa2dabb999cd4dc07ce34f94aa8281fce"
+    },
+    {
+      "bytes": 2196,
+      "path": "test/malformed-urn.test.js",
+      "sha256": "dfc01dbace807c71fab8e80acd154aeba25d1eca0aa2740681fa62d046bfe437"
+    },
+    {
+      "bytes": 20127,
+      "path": "test/parse.test.js",
+      "sha256": "31f3467e1bb0adfd1f29057885005234357cc04b0abd1e09223dcacc8d3e637b"
+    },
+    {
+      "bytes": 1716,
+      "path": "test/query-fragment-normalization.test.js",
+      "sha256": "18051e881d06450b5e33009e92c7582cc020b4dc39d636103370e0e8dd3ea0a6"
+    },
+    {
+      "bytes": 3661,
+      "path": "test/reserved-path-normalization.test.js",
+      "sha256": "984c6d447e4e0474b8b11c75cf2a5f54ffd855206dc588c8d5c47fd819fe7212"
+    },
+    {
+      "bytes": 4480,
+      "path": "test/resolve.test.js",
+      "sha256": "5f44df0de389cfb13848595184fd73a309ef7a702f55ebf5fc3cf0490ff7709c"
+    },
+    {
+      "bytes": 5279,
+      "path": "test/rfc-3986.test.js",
+      "sha256": "b753dd115304e6cc567d2cb1169dd4d23641148274956fde0fabfdc612c65e27"
+    },
+    {
+      "bytes": 766,
+      "path": "test/scheme-normalization.test.js",
+      "sha256": "5d7a26e50b2a314b13f062e84f3a36449ee1e5db3bdceec8c9ffd0784e1f8093"
+    },
+    {
+      "bytes": 3557,
+      "path": "test/scheme-validation.test.js",
+      "sha256": "40b1b535d6358acbc79d1c7db357241b85bf7dbb8168232af8c2bf3bafaaa889"
+    },
+    {
+      "bytes": 6859,
+      "path": "test/security-normalization.test.js",
+      "sha256": "a8a76693ee9035b8fa631a30269b4165a77f73f1174d376d4a596d25f6d03182"
+    },
+    {
+      "bytes": 6001,
+      "path": "test/security-utf8-encoding.test.js",
+      "sha256": "b1bbb110e75953b1aa0211978a1ac11af2dbe068898da153cdf065f1ea48c954"
+    },
+    {
+      "bytes": 14258,
+      "path": "test/security.test.js",
+      "sha256": "ce2138c92e7c0f6cbad4cdc8e6d142b66ecf78af192b04771cd3b48c604dbb1d"
+    },
+    {
+      "bytes": 12108,
+      "path": "test/serialize.test.js",
+      "sha256": "a0b12436f99595fb09b18695a79c394a738bedcd36546b7002a1b91c306b9a6c"
+    },
+    {
+      "bytes": 883,
+      "path": "test/uri-js-compatibility.test.js",
+      "sha256": "7464559828ce69bf797b3908a6507b4377722f0cbd143b5e87d44bd85d637ef2"
+    },
+    {
+      "bytes": 42061,
+      "path": "test/uri-js.test.js",
+      "sha256": "15bcde70619941a421eb770ad39e2e5b131cdb79995478f1955e404a7abd3ca1"
+    },
+    {
+      "bytes": 1320,
+      "path": "test/urn-full-input.test.js",
+      "sha256": "2f36727aafe2524ef08b8c5f1d124dea6971784ec9e96cffbf1986fba6c95718"
+    },
+    {
+      "bytes": 1550,
+      "path": "test/util.test.js",
+      "sha256": "efc8f431301ac46e00127ab28ae62bc52dc61da8b5f457b9573e66667644a063"
+    },
+    {
+      "bytes": 903,
+      "path": "test/websocket-query-preservation.test.js",
+      "sha256": "b3e7a45b622530f0c76910d7bdda2aa18b3b17a1d55b66e67dbb86d030fc0769"
+    },
+    {
+      "bytes": 162,
+      "path": "tsconfig.json",
+      "sha256": "652102759c2ba051297a981538a83cbb0a34ba989d1ad0d75a56a72659cc2be4"
+    },
+    {
+      "bytes": 2465,
+      "path": "types/index.d.ts",
+      "sha256": "21d7c72eeb9af9c887287011853c35ccb3edc4b8aa98d8610dc15273f3882a82"
+    },
+    {
+      "bytes": 873,
+      "path": "types/index.tst.ts",
+      "sha256": "f58b233dc32b6b513fd3662e3c51a8576c280ccca1fbec6830eed902ae78b94b"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "fast-uri",
+    "version": "4.2.1"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

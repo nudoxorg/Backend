@@ -1,0 +1,13 @@
+{"label": "tool-node", "exit": 0, "seconds": 0.012507, "stdout_bytes": 9, "fault": null}
+{"label": "tool-tsc", "exit": 0, "seconds": 0.112595, "stdout_bytes": 14, "fault": null}
+{"label": "tool-python3", "exit": 0, "seconds": 0.002842, "stdout_bytes": 15, "fault": null}
+{"label": "tool-pyrefly", "exit": 0, "seconds": 0.002962, "stdout_bytes": 20, "fault": null}
+{"label": "tool-go", "exit": 0, "seconds": 0.002891, "stdout_bytes": 32, "fault": null}
+{"label": "fresh-health", "exit": 0, "seconds": 6.305582, "stdout_bytes": 802, "fault": null}
+{"label": "fresh-add", "exit": 0, "seconds": 35.677284, "stdout_bytes": 356, "fault": null}
+{"label": "post-add-health", "exit": 0, "seconds": 0.092463, "stdout_bytes": 805, "fault": null}
+{"label": "post-add-packages", "exit": 0, "seconds": 0.010615, "stdout_bytes": 522, "fault": null}
+{"label": "post-add-semantic-versions", "exit": 0, "seconds": 0.014748, "stdout_bytes": 1117, "fault": null}
+{"label": "query-search-parse", "exit": 0, "seconds": 9.47147, "stdout_bytes": 14865, "fault": null}
+{"label": "query-resolve", "exit": 0, "seconds": 0.016671, "stdout_bytes": 203, "fault": {"answer": "fault", "cause": "oversized", "detail": "response is 60057 bytes, above the 49152 byte budget; lower limit or request detail=summary", "operand": "response", "slug": "transport"}}
+{"root": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T120515Z-python-configured-6e0f640f", "source_unchanged": true, "accepted_project_pass": false, "remaining_owned_daemons": [], "journey_error": null}

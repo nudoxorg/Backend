@@ -1,0 +1,40 @@
+{
+  "files": [
+    {
+      "bytes": 764,
+      "path": "LICENSE",
+      "sha256": "c372ef2fa1dfcb124ed807609751e75e3a009f108c5724916b489288fcb88a0c"
+    },
+    {
+      "bytes": 3381,
+      "path": "README.md",
+      "sha256": "7369c93bb01adc348ccdd1ac052880cc7d06e39a4a037c6a3f15175c3a6f0a64"
+    },
+    {
+      "bytes": 472,
+      "path": "bench.js",
+      "sha256": "de9eadc4133f88e9991f504899c47ef841ee923576dba2a8e50dc34a1d48692e"
+    },
+    {
+      "bytes": 3764,
+      "path": "index.js",
+      "sha256": "842471719e0e901e01ae1a1d3a6a4d1ff3e36747a7f50d5644f09d1d595c1857"
+    },
+    {
+      "bytes": 1113,
+      "path": "package.json",
+      "sha256": "87b734c3087c8d9ed5d76d1bff00db30f960831ba8705dd18d73b180d08d2140"
+    },
+    {
+      "bytes": 7925,
+      "path": "test.js",
+      "sha256": "de9619b9670887b6d1ed959287b96b46334cd9a6be21487c8a715afad90eade8"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "split2",
+    "version": "4.2.0"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

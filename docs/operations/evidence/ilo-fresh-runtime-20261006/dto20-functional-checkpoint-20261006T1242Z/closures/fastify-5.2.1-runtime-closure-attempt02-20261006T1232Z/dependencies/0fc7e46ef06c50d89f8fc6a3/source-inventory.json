@@ -1,0 +1,45 @@
+{
+  "files": [
+    {
+      "bytes": 370,
+      "path": ".github/workflows/ci.yml",
+      "sha256": "409262d62291133c0dbc4fd8b14d2afdcdd3669b00a17b54716ea8d6436d902e"
+    },
+    {
+      "bytes": 1091,
+      "path": "LICENSE",
+      "sha256": "5ac141bfc70bec8f40838502436bfcb85e3f4c24377e41b9ddef07bdd6aa51bc"
+    },
+    {
+      "bytes": 626,
+      "path": "benchmark.js",
+      "sha256": "9c4a5c2a9c108149a4a69dc684f213d98c05540d1913cecbc450d73e7f459198"
+    },
+    {
+      "bytes": 2661,
+      "path": "index.js",
+      "sha256": "a4c18cd2d647ea5f3dc231143f0287799af735fdda37846faffd9773c898d340"
+    },
+    {
+      "bytes": 729,
+      "path": "package.json",
+      "sha256": "e25559231cba29186a6c278ac945ef19c65b9dca221394892d6682d6a22c046a"
+    },
+    {
+      "bytes": 1689,
+      "path": "readme.md",
+      "sha256": "e2ed5d6605d9e50b882b00cffe0b2ce695452d321dab80a0ea27b61c16aeb1b0"
+    },
+    {
+      "bytes": 5663,
+      "path": "test/index.js",
+      "sha256": "9a87d4026b227007b310150cbddb957602a3886167e35fc39e2da7b417ff56aa"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "quick-format-unescaped",
+    "version": "4.0.4"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

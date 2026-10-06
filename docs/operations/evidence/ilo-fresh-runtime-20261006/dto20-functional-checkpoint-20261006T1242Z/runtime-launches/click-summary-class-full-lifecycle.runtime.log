@@ -1,0 +1,31 @@
+{"label": "tool-node", "exit": 0, "seconds": 0.006626, "stdout_bytes": 9, "fault": null}
+{"label": "tool-tsc", "exit": 0, "seconds": 0.103233, "stdout_bytes": 14, "fault": null}
+{"label": "tool-python3", "exit": 0, "seconds": 0.002973, "stdout_bytes": 15, "fault": null}
+{"label": "tool-pyrefly", "exit": 0, "seconds": 0.003224, "stdout_bytes": 20, "fault": null}
+{"label": "tool-go", "exit": 0, "seconds": 0.002917, "stdout_bytes": 32, "fault": null}
+{"label": "fresh-health", "exit": 0, "seconds": 3.903647, "stdout_bytes": 802, "fault": null}
+{"label": "fresh-add", "exit": 0, "seconds": 28.59346, "stdout_bytes": 356, "fault": null}
+{"label": "post-add-health", "exit": 0, "seconds": 0.092158, "stdout_bytes": 805, "fault": null}
+{"label": "post-add-packages", "exit": 0, "seconds": 0.01102, "stdout_bytes": 520, "fault": null}
+{"label": "post-add-semantic-versions", "exit": 0, "seconds": 0.012831, "stdout_bytes": 1107, "fault": null}
+{"label": "query-search-Command", "exit": 0, "seconds": 7.226815, "stdout_bytes": 10452, "fault": null}
+{"label": "query-resolve", "exit": 0, "seconds": 0.016248, "stdout_bytes": 203, "fault": {"answer": "fault", "cause": "oversized", "detail": "response is 62193 bytes, above the 49152 byte budget; lower limit or request detail=summary", "operand": "response", "slug": "transport"}}
+{"label": "query-outline-bare", "exit": 0, "seconds": 0.035979, "stdout_bytes": 20256, "fault": null}
+{"label": "query-outline-dot", "exit": 0, "seconds": 0.031391, "stdout_bytes": 20256, "fault": null}
+{"label": "query-outline-absolute", "exit": 0, "seconds": 0.035616, "stdout_bytes": 20256, "fault": null}
+{"label": "after-job-cancel-health", "exit": 0, "seconds": 0.095323, "stdout_bytes": 805, "fault": null}
+{"label": "retry-add", "exit": 0, "seconds": 22.92917, "stdout_bytes": 356, "fault": null}
+{"label": "retry-health", "exit": 0, "seconds": 0.092503, "stdout_bytes": 805, "fault": null}
+{"label": "retry-search-Command", "exit": 0, "seconds": 4.24225, "stdout_bytes": 10452, "fault": null}
+{"label": "retry-resolve", "exit": 0, "seconds": 0.014963, "stdout_bytes": 203, "fault": {"answer": "fault", "cause": "oversized", "detail": "response is 62193 bytes, above the 49152 byte budget; lower limit or request detail=summary", "operand": "response", "slug": "transport"}}
+{"label": "edit-add", "exit": 0, "seconds": 25.565455, "stdout_bytes": 356, "fault": null}
+{"label": "edit-health", "exit": 0, "seconds": 0.091649, "stdout_bytes": 805, "fault": null}
+{"label": "edit-resolve", "exit": 0, "seconds": 0.029912, "stdout_bytes": 203, "fault": {"answer": "fault", "cause": "oversized", "detail": "response is 62194 bytes, above the 49152 byte budget; lower limit or request detail=summary", "operand": "response", "slug": "transport"}}
+{"label": "remove-project", "exit": 0, "seconds": 3.231762, "stdout_bytes": 358, "fault": null}
+{"label": "removed-health", "exit": 0, "seconds": 0.08706, "stdout_bytes": 802, "fault": null}
+{"label": "readd-project", "exit": 0, "seconds": 20.065455, "stdout_bytes": 356, "fault": null}
+{"label": "readded-health", "exit": 0, "seconds": 0.103488, "stdout_bytes": 805, "fault": null}
+{"label": "cold-health", "exit": 1, "seconds": 0.084979, "stdout_bytes": 256, "fault": {"answer": "fault", "cause": "unreachable", "detail": "the local endpoint closed this connection (connection reset); a fresh connection was opened, so retry the command", "operand": "", "shell": "re-run the same command", "slug": "endpoint"}}
+{"label": "cold-health-explicit-retry", "exit": 0, "seconds": 6.30933, "stdout_bytes": 805, "fault": null}
+{"label": "cold-search-Command", "exit": 0, "seconds": 7.175641, "stdout_bytes": 10373, "fault": null}
+{"root": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-python-configured-e02a971f", "source_unchanged": false, "accepted_project_pass": false, "remaining_owned_daemons": [], "journey_error": null}

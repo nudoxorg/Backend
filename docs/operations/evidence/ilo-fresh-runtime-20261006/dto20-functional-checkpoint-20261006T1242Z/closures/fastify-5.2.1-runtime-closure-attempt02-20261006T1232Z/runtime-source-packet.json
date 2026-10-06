@@ -1,0 +1,600 @@
+{
+  "consumer_manifest": "/root/nudox-corpus-20261006/artifacts/fastify-5.2.1-runtime-closure-attempt02-20261006T1232Z/consumer/package.json",
+  "consumer_manifest_sha256": "e8b1e5a5b982f884c3cbe9b5ce89034f8dabef60234f4c40035a3438853d342a",
+  "env": {
+    "HOME": "/root/nudox-corpus-20261006/artifacts/fastify-5.2.1-runtime-closure-attempt02-20261006T1232Z/home",
+    "LANG": "C.UTF-8",
+    "PATH": "/nix/store/lnfxdsvvm1srsa9kk94s7jqw06yq1h2d-nodejs-24.18.0/bin",
+    "npm_config_cache": "/root/nudox-corpus-20261006/artifacts/fastify-5.2.1-runtime-closure-attempt02-20261006T1232Z/npm-cache",
+    "npm_config_registry": "https://registry.npmjs.org/"
+  },
+  "extra_consumer_dependencies": {
+    "@types/node": "^22.0.0"
+  },
+  "install_command": {
+    "argv": [
+      "/nix/store/lnfxdsvvm1srsa9kk94s7jqw06yq1h2d-nodejs-24.18.0/bin/npm",
+      "ci",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund"
+    ],
+    "cwd": "/root/nudox-corpus-20261006/artifacts/fastify-5.2.1-runtime-closure-attempt02-20261006T1232Z/consumer",
+    "env": {
+      "HOME": "/root/nudox-corpus-20261006/artifacts/fastify-5.2.1-runtime-closure-attempt02-20261006T1232Z/home",
+      "LANG": "C.UTF-8",
+      "PATH": "/nix/store/lnfxdsvvm1srsa9kk94s7jqw06yq1h2d-nodejs-24.18.0/bin",
+      "npm_config_cache": "/root/nudox-corpus-20261006/artifacts/fastify-5.2.1-runtime-closure-attempt02-20261006T1232Z/npm-cache",
+      "npm_config_registry": "https://registry.npmjs.org/"
+    },
+    "exit": 0,
+    "seconds": 0.5147800999693573
+  },
+  "installed": [
+    {
+      "archive_sha256": "7c65d581bb832775ee0533d6f1f08784ccf3db6d6775f2fc3810bfbe83b6b6ec",
+      "package": {
+        "ecosystem": "npm",
+        "id": "@fastify/ajv-compiler",
+        "version": "4.0.6"
+      },
+      "path": "node_modules/@fastify/ajv-compiler",
+      "verified_files": 22
+    },
+    {
+      "archive_sha256": "58ec6d9b9c29a78cbe98de68cf8d7b648ca4f8791db6c2d32d8a72e26415245f",
+      "package": {
+        "ecosystem": "npm",
+        "id": "@fastify/error",
+        "version": "4.2.0"
+      },
+      "path": "node_modules/@fastify/error",
+      "verified_files": 16
+    },
+    {
+      "archive_sha256": "ee0b833182a3ef32328c6942c33b610c350ea1cc88a771faa22ce66e56982ae2",
+      "package": {
+        "ecosystem": "npm",
+        "id": "@fastify/fast-json-stringify-compiler",
+        "version": "5.1.0"
+      },
+      "path": "node_modules/@fastify/fast-json-stringify-compiler",
+      "verified_files": 15
+    },
+    {
+      "archive_sha256": "a887740fd16ad88d84b0669ca182cdb06776750739752166d63e184569356a31",
+      "package": {
+        "ecosystem": "npm",
+        "id": "fast-json-stringify",
+        "version": "7.0.1"
+      },
+      "path": "node_modules/@fastify/fast-json-stringify-compiler/node_modules/fast-json-stringify",
+      "verified_files": 86
+    },
+    {
+      "archive_sha256": "54bf1f4507cfa8376c5c1f0344a52b8261de4beced320c52f0cabaf0faf8360b",
+      "package": {
+        "ecosystem": "npm",
+        "id": "@fastify/forwarded",
+        "version": "3.0.2"
+      },
+      "path": "node_modules/@fastify/forwarded",
+      "verified_files": 5
+    },
+    {
+      "archive_sha256": "7f040daf23110134ecb74ae4ed9405c05fabfa969a587ea5cd13013329f44c28",
+      "package": {
+        "ecosystem": "npm",
+        "id": "@fastify/merge-json-schemas",
+        "version": "0.2.1"
+      },
+      "path": "node_modules/@fastify/merge-json-schemas",
+      "verified_files": 52
+    },
+    {
+      "archive_sha256": "babef1401ce205bc3336781faa433ce438cb6f23add92a594d16d9a9ce09fbff",
+      "package": {
+        "ecosystem": "npm",
+        "id": "@fastify/proxy-addr",
+        "version": "5.1.1"
+      },
+      "path": "node_modules/@fastify/proxy-addr",
+      "verified_files": 18
+    },
+    {
+      "archive_sha256": "d66004def64efb6c13629b0740639344e0775fe537373674571711a2bb2fc704",
+      "package": {
+        "ecosystem": "npm",
+        "id": "@pinojs/redact",
+        "version": "0.4.0"
+      },
+      "path": "node_modules/@pinojs/redact",
+      "verified_files": 19
+    },
+    {
+      "archive_sha256": "1d382e6ea27221dcf02fc1cada5c5d396c4ca499552201323ca43713baa60012",
+      "package": {
+        "ecosystem": "npm",
+        "id": "@types/node",
+        "version": "22.20.5"
+      },
+      "path": "node_modules/@types/node",
+      "verified_files": 74
+    },
+    {
+      "archive_sha256": "9a2ab6159e9d3b04e10f1536fab762d18e09d353941a298171e57b6e25640994",
+      "package": {
+        "ecosystem": "npm",
+        "id": "abstract-logging",
+        "version": "2.0.1"
+      },
+      "path": "node_modules/abstract-logging",
+      "verified_files": 4
+    },
+    {
+      "archive_sha256": "b2f0b3a893bbb8cc5efb6814f08b1499e19e31d5dd73683f5893382f48f6e7b3",
+      "package": {
+        "ecosystem": "npm",
+        "id": "ajv",
+        "version": "8.20.0"
+      },
+      "path": "node_modules/ajv",
+      "verified_files": 466
+    },
+    {
+      "archive_sha256": "f4d6980fd367381fd29199066911e863db8d97496613b6c2c5b91563a150acc5",
+      "package": {
+        "ecosystem": "npm",
+        "id": "ajv-formats",
+        "version": "3.0.1"
+      },
+      "path": "node_modules/ajv-formats",
+      "verified_files": 15
+    },
+    {
+      "archive_sha256": "86be033b406a7737c0521edc8fe3e15c7ac0cb6b5e509478cc9539a2efaa086c",
+      "package": {
+        "ecosystem": "npm",
+        "id": "fast-uri",
+        "version": "3.1.8"
+      },
+      "path": "node_modules/ajv/node_modules/fast-uri",
+      "verified_files": 44
+    },
+    {
+      "archive_sha256": "44749ee4b82d2b5fa66323af77c5b836c08368667015a9c8a966033801a56964",
+      "package": {
+        "ecosystem": "npm",
+        "id": "atomic-sleep",
+        "version": "1.0.0"
+      },
+      "path": "node_modules/atomic-sleep",
+      "verified_files": 6
+    },
+    {
+      "archive_sha256": "f6045be9f2d859a829f97b4b31be4918bb12751c203bfd2140c426fa783abd2c",
+      "package": {
+        "ecosystem": "npm",
+        "id": "avvio",
+        "version": "9.3.0"
+      },
+      "path": "node_modules/avvio",
+      "verified_files": 72
+    },
+    {
+      "archive_sha256": "0e9342b066986722098d9b108b238033862eae90b3d53ff90581538264d91b60",
+      "package": {
+        "ecosystem": "npm",
+        "id": "cookie",
+        "version": "1.1.1"
+      },
+      "path": "node_modules/cookie",
+      "verified_files": 6
+    },
+    {
+      "archive_sha256": "941d90d6629878167d10d2a05d8c6df8f8fa13acc826616abb49db63ac6a5c35",
+      "package": {
+        "ecosystem": "npm",
+        "id": "dequal",
+        "version": "2.0.3"
+      },
+      "path": "node_modules/dequal",
+      "verified_files": 11
+    },
+    {
+      "archive_sha256": "de015feadef7113b88f0a56a04f8f7b4f3566d43823adc452216fc081ce8d2a7",
+      "package": {
+        "ecosystem": "npm",
+        "id": "fast-decode-uri-component",
+        "version": "1.0.1"
+      },
+      "path": "node_modules/fast-decode-uri-component",
+      "verified_files": 7
+    },
+    {
+      "archive_sha256": "b019a0980f27638dc3f85836b0e478f188e00d7a6e5852c0819fa86f56e47b8f",
+      "package": {
+        "ecosystem": "npm",
+        "id": "fast-deep-equal",
+        "version": "3.1.3"
+      },
+      "path": "node_modules/fast-deep-equal",
+      "verified_files": 11
+    },
+    {
+      "archive_sha256": "c09d8299536ca58dabc36e2789d2b9b78aa13dec4dc1c7b59d9cd08f6ca73434",
+      "package": {
+        "ecosystem": "npm",
+        "id": "fast-json-stringify",
+        "version": "6.4.0"
+      },
+      "path": "node_modules/fast-json-stringify",
+      "verified_files": 86
+    },
+    {
+      "archive_sha256": "86be033b406a7737c0521edc8fe3e15c7ac0cb6b5e509478cc9539a2efaa086c",
+      "package": {
+        "ecosystem": "npm",
+        "id": "fast-uri",
+        "version": "3.1.8"
+      },
+      "path": "node_modules/fast-json-stringify/node_modules/fast-uri",
+      "verified_files": 44
+    },
+    {
+      "archive_sha256": "f165a9cb6994ee56b985821adcab43d858cbad39cfcd3315424a7552b732a722",
+      "package": {
+        "ecosystem": "npm",
+        "id": "fast-querystring",
+        "version": "1.1.2"
+      },
+      "path": "node_modules/fast-querystring",
+      "verified_files": 8
+    },
+    {
+      "archive_sha256": "5e8f578d8b61a322289028af5ee135edd3dde32bb6c1c870ef4329e4e12601a8",
+      "package": {
+        "ecosystem": "npm",
+        "id": "fast-uri",
+        "version": "4.2.1"
+      },
+      "path": "node_modules/fast-uri",
+      "verified_files": 50
+    },
+    {
+      "archive_sha256": "cdcbf6387484c524461ddc4c338d2acb25276c4072ecea495959178d28367fef",
+      "package": {
+        "ecosystem": "npm",
+        "id": "fastq",
+        "version": "1.20.3"
+      },
+      "path": "node_modules/fastq",
+      "verified_files": 14
+    },
+    {
+      "archive_sha256": "73735f2bd2e86206f8f12a2c0dc37d54deb29d5baebf8366740f792add23ea00",
+      "package": {
+        "ecosystem": "npm",
+        "id": "find-my-way",
+        "version": "9.9.0"
+      },
+      "path": "node_modules/find-my-way",
+      "verified_files": 99
+    },
+    {
+      "archive_sha256": "586f7ae92cc869bf61612f0d2765a02d98f813c7d1fff461745b93178da626c3",
+      "package": {
+        "ecosystem": "npm",
+        "id": "ipaddr.js",
+        "version": "2.5.0"
+      },
+      "path": "node_modules/ipaddr.js",
+      "verified_files": 5
+    },
+    {
+      "archive_sha256": "abbcae713d66f530be057b05affde461e0c8041a6f72bdd641eceacb673e9e62",
+      "package": {
+        "ecosystem": "npm",
+        "id": "json-schema-ref-resolver",
+        "version": "3.0.0"
+      },
+      "path": "node_modules/json-schema-ref-resolver",
+      "verified_files": 18
+    },
+    {
+      "archive_sha256": "023222622df29fc274bde5d3590e47aa1d4a8e3c1d6e2aba029948ed79799b21",
+      "package": {
+        "ecosystem": "npm",
+        "id": "json-schema-traverse",
+        "version": "1.0.0"
+      },
+      "path": "node_modules/json-schema-traverse",
+      "verified_files": 12
+    },
+    {
+      "archive_sha256": "16270b0b82c7ffff1c1c364bfa161c23ac155aed98d4b09a140e0d80c8789930",
+      "package": {
+        "ecosystem": "npm",
+        "id": "light-my-request",
+        "version": "6.6.0"
+      },
+      "path": "node_modules/light-my-request",
+      "verified_files": 24
+    },
+    {
+      "archive_sha256": "1ed10cfc6a8a8807b1c7b7eae520dbd15a104d5d0256202f8b08e1ec56cda1a8",
+      "package": {
+        "ecosystem": "npm",
+        "id": "on-exit-leak-free",
+        "version": "2.1.2"
+      },
+      "path": "node_modules/on-exit-leak-free",
+      "verified_files": 12
+    },
+    {
+      "archive_sha256": "e3cf66fc547c957aad15864cdf980dd14d8c9a1f5a363134ffe25c599a769508",
+      "package": {
+        "ecosystem": "npm",
+        "id": "pino",
+        "version": "9.14.0"
+      },
+      "path": "node_modules/pino",
+      "verified_files": 207
+    },
+    {
+      "archive_sha256": "eded21b859cbee8e21988d1a32f95a00cb4f15a528a3708aac654d0cd647149c",
+      "package": {
+        "ecosystem": "npm",
+        "id": "pino-abstract-transport",
+        "version": "2.0.0"
+      },
+      "path": "node_modules/pino-abstract-transport",
+      "verified_files": 15
+    },
+    {
+      "archive_sha256": "c8ee1578a9fd84a929924515d7572eaeb4a3944d38953eaf8eb3dbd165020763",
+      "package": {
+        "ecosystem": "npm",
+        "id": "pino-std-serializers",
+        "version": "7.1.0"
+      },
+      "path": "node_modules/pino-std-serializers",
+      "verified_files": 21
+    },
+    {
+      "archive_sha256": "98812059c26360ab9a3908a0de8556be7ef63c71fb76d04285a81e2c5d12451f",
+      "package": {
+        "ecosystem": "npm",
+        "id": "process-warning",
+        "version": "5.1.0"
+      },
+      "path": "node_modules/pino/node_modules/process-warning",
+      "verified_files": 24
+    },
+    {
+      "archive_sha256": "828285e437d503f1e315053aa6bff99e859b5f352878fe7eba171fe824696ca6",
+      "package": {
+        "ecosystem": "npm",
+        "id": "process-warning",
+        "version": "4.0.1"
+      },
+      "path": "node_modules/process-warning",
+      "verified_files": 22
+    },
+    {
+      "archive_sha256": "acba54ec5587ffddfb0811b693aad4844366772f01511291302d3380d431a485",
+      "package": {
+        "ecosystem": "npm",
+        "id": "quick-format-unescaped",
+        "version": "4.0.4"
+      },
+      "path": "node_modules/quick-format-unescaped",
+      "verified_files": 7
+    },
+    {
+      "archive_sha256": "2aa86d462e4bcec95cca91c935002e102644e1bb2fcd36a9b52e4f4555c73f96",
+      "package": {
+        "ecosystem": "npm",
+        "id": "real-require",
+        "version": "0.2.0"
+      },
+      "path": "node_modules/real-require",
+      "verified_files": 4
+    },
+    {
+      "archive_sha256": "cb694a4965908f7775a0c757f00cf4e624d193cd71d77988fbcca0f597b88d82",
+      "package": {
+        "ecosystem": "npm",
+        "id": "require-from-string",
+        "version": "2.0.2"
+      },
+      "path": "node_modules/require-from-string",
+      "verified_files": 4
+    },
+    {
+      "archive_sha256": "4a990f0113ddcbc04d77b279730659ccfe5e5d700d014fc584bb09a9f50dff61",
+      "package": {
+        "ecosystem": "npm",
+        "id": "ret",
+        "version": "0.5.0"
+      },
+      "path": "node_modules/ret",
+      "verified_files": 36
+    },
+    {
+      "archive_sha256": "2460004412100eea8e96b98f14d3dfb4e22a6628654e5431d14f974c6201ca18",
+      "package": {
+        "ecosystem": "npm",
+        "id": "reusify",
+        "version": "1.1.0"
+      },
+      "path": "node_modules/reusify",
+      "verified_files": 14
+    },
+    {
+      "archive_sha256": "559af1871d927b198ddfa472da35839ba31b01fdf4645206aae279cab91d566a",
+      "package": {
+        "ecosystem": "npm",
+        "id": "rfdc",
+        "version": "1.4.1"
+      },
+      "path": "node_modules/rfdc",
+      "verified_files": 9
+    },
+    {
+      "archive_sha256": "a963f5da58a4cb231a7647304fdcb47617563ad969f72fd9bbc681dbac9322e1",
+      "package": {
+        "ecosystem": "npm",
+        "id": "safe-regex2",
+        "version": "5.1.1"
+      },
+      "path": "node_modules/safe-regex2",
+      "verified_files": 14
+    },
+    {
+      "archive_sha256": "acf5b4e0f8e5f0bfd9479eae41a6dd90e175d89eecd98fe1c834eab602073e91",
+      "package": {
+        "ecosystem": "npm",
+        "id": "safe-stable-stringify",
+        "version": "2.5.0"
+      },
+      "path": "node_modules/safe-stable-stringify",
+      "verified_files": 8
+    },
+    {
+      "archive_sha256": "1ea3000bdd294058ee359c162164b648d4d90057bd10ece1ce37a905e1e5445e",
+      "package": {
+        "ecosystem": "npm",
+        "id": "secure-json-parse",
+        "version": "3.0.2"
+      },
+      "path": "node_modules/secure-json-parse",
+      "verified_files": 19
+    },
+    {
+      "archive_sha256": "d85045d4300d7d57c891336b95df532e73f34c22ffcd222452b6d08b9d127d5d",
+      "package": {
+        "ecosystem": "npm",
+        "id": "semver",
+        "version": "7.8.5"
+      },
+      "path": "node_modules/semver",
+      "verified_files": 53
+    },
+    {
+      "archive_sha256": "1fdf9181ca54f9cdbd4d6bcfc59d28d9f0495fc2743029169d8213987210596c",
+      "package": {
+        "ecosystem": "npm",
+        "id": "set-cookie-parser",
+        "version": "2.7.2"
+      },
+      "path": "node_modules/set-cookie-parser",
+      "verified_files": 4
+    },
+    {
+      "archive_sha256": "bf128eca0c2a2ed9eb9f598a69eb374df08f3886dd9c506c5129935487166b87",
+      "package": {
+        "ecosystem": "npm",
+        "id": "sonic-boom",
+        "version": "4.2.1"
+      },
+      "path": "node_modules/sonic-boom",
+      "verified_files": 25
+    },
+    {
+      "archive_sha256": "e0061e7f042fc5ff6dcda8afb66619757d92ab1ff514a28a5904f2ebde27bf54",
+      "package": {
+        "ecosystem": "npm",
+        "id": "split2",
+        "version": "4.2.0"
+      },
+      "path": "node_modules/split2",
+      "verified_files": 6
+    },
+    {
+      "archive_sha256": "99ec7b0a30060ca693bebe16c780642ecd2b4b92b1e7ab89ef0cd8014f78ecf1",
+      "package": {
+        "ecosystem": "npm",
+        "id": "thread-stream",
+        "version": "3.2.0"
+      },
+      "path": "node_modules/thread-stream",
+      "verified_files": 62
+    },
+    {
+      "archive_sha256": "fb7f029bae841d6c98fe234c8fa171c1dce6b287a7c4cf9295f772771a30ffc4",
+      "package": {
+        "ecosystem": "npm",
+        "id": "toad-cache",
+        "version": "3.7.4"
+      },
+      "path": "node_modules/toad-cache",
+      "verified_files": 7
+    },
+    {
+      "archive_sha256": "cfa1a9a5e18988850e548f4f6b629c58da32dc32bebb116e58ea301e516fd16d",
+      "package": {
+        "ecosystem": "npm",
+        "id": "undici-types",
+        "version": "6.21.0"
+      },
+      "path": "node_modules/undici-types",
+      "verified_files": 41
+    }
+  ],
+  "lifecycle_scripts_executed": false,
+  "lock_command": {
+    "argv": [
+      "/nix/store/lnfxdsvvm1srsa9kk94s7jqw06yq1h2d-nodejs-24.18.0/bin/npm",
+      "install",
+      "--package-lock-only",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+      "--lockfile-version=3"
+    ],
+    "cwd": "/root/nudox-corpus-20261006/artifacts/fastify-5.2.1-runtime-closure-attempt02-20261006T1232Z/consumer",
+    "env": {
+      "HOME": "/root/nudox-corpus-20261006/artifacts/fastify-5.2.1-runtime-closure-attempt02-20261006T1232Z/home",
+      "LANG": "C.UTF-8",
+      "PATH": "/nix/store/lnfxdsvvm1srsa9kk94s7jqw06yq1h2d-nodejs-24.18.0/bin",
+      "npm_config_cache": "/root/nudox-corpus-20261006/artifacts/fastify-5.2.1-runtime-closure-attempt02-20261006T1232Z/npm-cache",
+      "npm_config_registry": "https://registry.npmjs.org/"
+    },
+    "exit": 0,
+    "seconds": 3.0696343439631164
+  },
+  "lock_sha256": "04176318cf177e02faa08261c58fc4f8387c22151ac762e784a6ca77a5225d7e",
+  "product_runtime_started": false,
+  "project": "/root/nudox-corpus-20261006/artifacts/fastify-5.2.1-runtime-closure-attempt02-20261006T1232Z/project",
+  "resource_before": {
+    "disk_free_bytes": 54482264064,
+    "memory_available_kib": 58340048
+  },
+  "root_inventory": "/root/nudox-corpus-20261006/artifacts/stratified-framework-dossiers-20261006T1030Z/npm-fastify/source-inventory.json",
+  "root_inventory_sha256": "c66ef5f6eeff95f22bb09242380c670a4b3b4ba7c85d472fd786a0cc5c8a4b1e",
+  "root_origin": "/root/nudox-corpus-20261006/artifacts/stratified-framework-dossiers-20261006T1030Z/npm-fastify/registry-origin.json",
+  "root_origin_sha256": "b08e5f6f47c6a867fa4f890be8e47fd46abf2386e7b162a7ac0a2d0641861496",
+  "root_package": {
+    "ecosystem": "npm",
+    "id": "fastify",
+    "version": "5.2.1"
+  },
+  "schema": "nudox.official-npm-private-runtime-closure.v1",
+  "source_package_json_sha256": "68d35c86bcba83e7641eead44c84a08c7968c0ba3da016f3f307883067230d7d",
+  "source_package_json_unchanged": true,
+  "tools": {
+    "node": {
+      "path": "/nix/store/lnfxdsvvm1srsa9kk94s7jqw06yq1h2d-nodejs-24.18.0/bin/node",
+      "sha256": "47ce0b0ce242dc8a97a9c9fe5fda1d0c0ff1430457b6efe71072274b76a67c9e",
+      "version": "v24.18.0"
+    },
+    "npm": {
+      "path": "/nix/store/lnfxdsvvm1srsa9kk94s7jqw06yq1h2d-nodejs-24.18.0/bin/npm",
+      "sha256": "6761b97a075380a8977803d988ddd9fe19616b0b861bc922c9bebf66318d5e40",
+      "version": "11.16.0"
+    }
+  },
+  "unique_releases": 50,
+  "whole_package_pass": false
+}

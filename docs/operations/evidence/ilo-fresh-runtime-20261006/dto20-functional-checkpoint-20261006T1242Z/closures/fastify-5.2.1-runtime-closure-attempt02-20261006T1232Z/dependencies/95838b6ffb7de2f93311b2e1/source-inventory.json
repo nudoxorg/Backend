@@ -1,0 +1,45 @@
+{
+  "files": [
+    {
+      "bytes": 132,
+      "path": ".travis.yml",
+      "sha256": "a63026ff6b55af136ebce5a6e8015e605e60358ed5a7261df6ca8fcc89db764e"
+    },
+    {
+      "bytes": 1174,
+      "path": "LICENSE",
+      "sha256": "27384b39baee4b476fb876670a75f282286fa55658bf0db14639621dd3801c9a"
+    },
+    {
+      "bytes": 1941,
+      "path": "README.md",
+      "sha256": "0eccf9b0921453a587dc0526c9b9f7198b467d61e4f70f452dbbf418ee9083df"
+    },
+    {
+      "bytes": 941,
+      "path": "bench.js",
+      "sha256": "2f4ffce0daf6595df0040697245c41b13857c105f20251363a116f573e305e1a"
+    },
+    {
+      "bytes": 3219,
+      "path": "index.js",
+      "sha256": "d49d2cc0b03ad25b6691feb3928f231bf78dfb1187a0ecd6f9a5246e610973e6"
+    },
+    {
+      "bytes": 818,
+      "path": "package.json",
+      "sha256": "ebdbe738d2ac40389ca3b8b60ae72c248e7293bb5fcffcf2ada794877c0de54a"
+    },
+    {
+      "bytes": 1007,
+      "path": "test.js",
+      "sha256": "278dffd24f9498e3f591856ecd080de879e03e966248e4c0b2a7e28e59b70715"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "fast-decode-uri-component",
+    "version": "1.0.1"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

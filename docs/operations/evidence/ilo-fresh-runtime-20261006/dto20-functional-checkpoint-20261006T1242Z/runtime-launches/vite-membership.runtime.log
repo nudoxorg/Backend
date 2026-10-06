@@ -1,0 +1,11 @@
+Traceback (most recent call last):
+  File "/root/nudox-corpus-20261006/artifacts/fresh-remote-runtime/read-private-functional-surfaces-v1.py", line 30, in <module>
+    spec.loader.exec_module(observer)
+    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File "<frozen importlib._bootstrap_external>", line 1023, in exec_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/root/nudox-corpus-20261006/artifacts/report7/observer-163f022c2/run-real-workspace-index-acceptance.py", line 33, in <module>
+    from runtime_build_receipt import (
+    ...<5 lines>...
+    )
+ModuleNotFoundError: No module named 'runtime_build_receipt'

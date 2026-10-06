@@ -1,0 +1,90 @@
+{
+  "files": [
+    {
+      "bytes": 80,
+      "path": ".gitattributes",
+      "sha256": "e173bffc6cde613d3e6d06e49f2b1d05385cb02aa68c4931656b5b051ab649dd"
+    },
+    {
+      "bytes": 274,
+      "path": ".github/dependabot.yml",
+      "sha256": "60ffc0c7159ff6af5e36ad3ecc56fe63782e4defaabafa94a13df7150d9a84c6"
+    },
+    {
+      "bytes": 419,
+      "path": ".github/workflows/ci.yml",
+      "sha256": "b6524ec46c7e959509f8f595f92c92845f9c70e07eaeac3f8115c949eddb90d9"
+    },
+    {
+      "bytes": 1064,
+      "path": "LICENSE",
+      "sha256": "ec99456b6f97f7e559790df166a17a2418dbdbf595d63502792a5ce661f1346c"
+    },
+    {
+      "bytes": 5517,
+      "path": "README.md",
+      "sha256": "dc1c48fa4c0d444c2c3dbffefb63cde4379ae3b713d0149f745862942d0100f9"
+    },
+    {
+      "bytes": 319,
+      "path": "benchmarks/create.js",
+      "sha256": "6ef9af652aef1c5b6330e541d91d9c75dc07e80d70d9b98544f80787d699ca83"
+    },
+    {
+      "bytes": 1072,
+      "path": "benchmarks/instantiate.js",
+      "sha256": "8260555069e8dda8aacb654ed224806e4cede7cbbe7f2533b59a02498633ed0b"
+    },
+    {
+      "bytes": 547,
+      "path": "benchmarks/no-stack.js",
+      "sha256": "3fe294d15a523b339ef2693c170da5a61041c25905cfffb09a3a8183944c69d6"
+    },
+    {
+      "bytes": 373,
+      "path": "benchmarks/toString.js",
+      "sha256": "3028084e83bf322245a79a1ca4c620ccfd8de1126f41447a32c0da714b76c851"
+    },
+    {
+      "bytes": 135,
+      "path": "eslint.config.js",
+      "sha256": "52e3a2601a98f23c954d664ab8de95fddb390789f8b067815e484b010d3da2d0"
+    },
+    {
+      "bytes": 2732,
+      "path": "index.js",
+      "sha256": "1f5139e84c2176208279a72112a0872edd2a708f06ad40041872b3a3a429543e"
+    },
+    {
+      "bytes": 1726,
+      "path": "package.json",
+      "sha256": "c1030ebfbe3f41eb2dbcb68f0fb4a194f7583d3a2fbfb1aecb9db94ad3f17f0b"
+    },
+    {
+      "bytes": 6765,
+      "path": "test/index.test.js",
+      "sha256": "4c5ed966a967ecb14576f15e900836491d1372ffc6618d7803f529a88bfa643f"
+    },
+    {
+      "bytes": 9967,
+      "path": "test/instanceof.test.js",
+      "sha256": "200cc7e5e82bddbaa88c8bab8da05c805b15fa9e9630007b34beead30f00d645"
+    },
+    {
+      "bytes": 1446,
+      "path": "types/index.d.ts",
+      "sha256": "cc2d5d5687bdf9d7c49b6946b8769ac7abcbdcd1701d9bb9ca70a8bc1b003e8b"
+    },
+    {
+      "bytes": 4436,
+      "path": "types/index.test-d.ts",
+      "sha256": "792e28bede09bb1d100a0a5c3c9ad360ff4ced46fdc4e70715dbef6adc1e7e97"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "@fastify/error",
+    "version": "4.2.0"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

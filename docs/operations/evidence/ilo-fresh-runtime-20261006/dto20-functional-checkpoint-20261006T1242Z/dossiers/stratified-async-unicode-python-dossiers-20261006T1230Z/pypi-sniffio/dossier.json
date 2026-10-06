@@ -1,0 +1,76 @@
+{
+  "schema": "nudox.source-verified-stratified-dossier.v1",
+  "package": {
+    "ecosystem": "pypi",
+    "id": "sniffio",
+    "version": "1.3.1"
+  },
+  "source_root": "/root/nudox-corpus-20261006/artifacts/stratified-async-unicode-python-dossiers-20261006T1230Z/pypi-sniffio/source",
+  "source_tree_sha256": "9d4c6ff6dfcf6d74871cf44d70f30adc85feb6eb83ac4d9f59f118a42b8f3eb0",
+  "source_files": 38,
+  "source_bytes": 55551,
+  "inventory_sha256": "5d6e63989a7b4f1604e45de78febf9d1adbe242461cb4edc55aaa77f34333705",
+  "origin_sha256": "1559a752b947c21715e2af0d3b6f6864a7d2039b7fa17c325ea55219fad0b717",
+  "archive_sha256": "f4324edc670a0f49750a81b895f35c3adb843cca46f0530f79fc1babb23789dc",
+  "origin_verified": true,
+  "archives_reused": false,
+  "acquisition_requests": [
+    {
+      "url": "https://pypi.org/pypi/sniffio/json",
+      "final_url": "https://pypi.org/pypi/sniffio/json",
+      "status": 200,
+      "seconds": 0.04619452799670398,
+      "bytes": 14337,
+      "sha256": "e9af8ee27171c4cbf1086c7fef5119e266a219b0cac54fee61609de1eab103d9",
+      "utc": "2026-10-06T12:28:42Z"
+    },
+    {
+      "url": "https://files.pythonhosted.org/packages/a2/87/a6771e1546d97e7e041b6ae58d80074f81b7d5121207425c964ddf5cfdbd/sniffio-1.3.1.tar.gz",
+      "final_url": "https://files.pythonhosted.org/packages/a2/87/a6771e1546d97e7e041b6ae58d80074f81b7d5121207425c964ddf5cfdbd/sniffio-1.3.1.tar.gz",
+      "status": 200,
+      "seconds": 0.02757024799939245,
+      "bytes": 20372,
+      "sha256": "f4324edc670a0f49750a81b895f35c3adb843cca46f0530f79fc1babb23789dc",
+      "utc": "2026-10-06T12:28:42Z"
+    }
+  ],
+  "resource_before": {
+    "memory_available_kib": 58879012,
+    "free_disk_bytes": 54024515584
+  },
+  "dependency_requirements": {
+    "requires_dist": []
+  },
+  "dependency_closure_installed": false,
+  "source_expectations": [
+    {
+      "name": "AsyncLibraryNotFoundError",
+      "path": "sniffio/_impl.py",
+      "line": 21,
+      "end_line": 22,
+      "kind": "ClassDef",
+      "file_sha256": "526505319a62b8eadc8e7b8786e62260cc5e08d59faaef6406568f7f4c64e97f",
+      "start_byte": 493,
+      "end_byte": 548,
+      "declaration_sha256": "ad09c83d754e745bade0526aa93d942bf9cb8bd8d7194774a3d1426a79ab94a6",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    },
+    {
+      "name": "current_async_library",
+      "path": "sniffio/_impl.py",
+      "line": 25,
+      "end_line": 95,
+      "kind": "FunctionDef",
+      "file_sha256": "526505319a62b8eadc8e7b8786e62260cc5e08d59faaef6406568f7f4c64e97f",
+      "start_byte": 551,
+      "end_byte": 2842,
+      "declaration_sha256": "e25986ab0cb89fe6662c3b9cee0be041675cec643bc9c78ca9830237427b436b",
+      "expectation_authority": "actual source AST; compiler binding/reference confidence not yet observed"
+    }
+  ],
+  "runtime_acceptance_status": "not_run",
+  "runtime_passes": 0,
+  "package_code_executed": false,
+  "observer_sha256": "a6376b24c31c9a2b12cec4ed9d77a970fd3590e611cb885832ce28542688ef58",
+  "origin_verifier_sha256": "1ef8275b8e6daa9bfe711d05d367316b09635061b4cb9ca147816c6bed3a3039"
+}

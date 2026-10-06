@@ -1,0 +1,72 @@
+{"label": "tool-node", "exit": 0, "seconds": 0.006559, "stdout_bytes": 9, "fault": null}
+{"label": "tool-tsc", "exit": 0, "seconds": 0.097994, "stdout_bytes": 14, "fault": null}
+{"label": "tool-python3", "exit": 0, "seconds": 0.002496, "stdout_bytes": 15, "fault": null}
+{"label": "tool-pyrefly", "exit": 0, "seconds": 0.002219, "stdout_bytes": 20, "fault": null}
+{"label": "tool-go", "exit": 0, "seconds": 0.002964, "stdout_bytes": 32, "fault": null}
+{"label": "fresh-health", "exit": 0, "seconds": 4.070238, "stdout_bytes": 802, "fault": null}
+{"label": "fresh-add", "exit": 0, "seconds": 8.152464, "stdout_bytes": 360, "fault": null}
+{"label": "post-add-health", "exit": 0, "seconds": 0.079458, "stdout_bytes": 803, "fault": null}
+{"label": "post-add-packages", "exit": 0, "seconds": 0.010812, "stdout_bytes": 546, "fault": null}
+{"label": "post-add-semantic-versions", "exit": 0, "seconds": 0.0053, "stdout_bytes": 1122, "fault": null}
+{"label": "query-search-getHello", "exit": 0, "seconds": 0.374776, "stdout_bytes": 1948, "fault": null}
+{"label": "query-search-AppService", "exit": 0, "seconds": 0.012015, "stdout_bytes": 5231, "fault": null}
+{"label": "query-resolve", "exit": 0, "seconds": 0.009842, "stdout_bytes": 1577, "fault": null}
+{"label": "query-outline-bare", "exit": 0, "seconds": 0.025969, "stdout_bytes": 11894, "fault": null}
+{"label": "query-outline-dot", "exit": 0, "seconds": 0.027211, "stdout_bytes": 11894, "fault": null}
+{"label": "query-outline-absolute", "exit": 0, "seconds": 0.025793, "stdout_bytes": 11894, "fault": null}
+{"label": "query-source-3275be0b", "exit": 0, "seconds": 0.011136, "stdout_bytes": 1013, "fault": null}
+{"label": "query-show-3275be0b", "exit": 0, "seconds": 0.039469, "stdout_bytes": 1580, "fault": null}
+{"label": "query-references-3275be0b", "exit": 0, "seconds": 0.005361, "stdout_bytes": 333, "fault": null}
+{"label": "query-graph-3275be0b", "exit": 0, "seconds": 0.011764, "stdout_bytes": 1148, "fault": null}
+{"label": "query-related-3275be0b", "exit": 0, "seconds": 0.011512, "stdout_bytes": 1148, "fault": null}
+{"label": "query-source-4334edca", "exit": 0, "seconds": 0.011211, "stdout_bytes": 1034, "fault": null}
+{"label": "query-show-4334edca", "exit": 0, "seconds": 0.03669, "stdout_bytes": 2525, "fault": null}
+{"label": "query-references-4334edca", "exit": 0, "seconds": 0.007901, "stdout_bytes": 333, "fault": null}
+{"label": "query-graph-4334edca", "exit": 0, "seconds": 0.012206, "stdout_bytes": 2321, "fault": null}
+{"label": "query-related-4334edca", "exit": 0, "seconds": 0.011509, "stdout_bytes": 2321, "fault": null}
+{"label": "after-job-cancel-health", "exit": 0, "seconds": 0.079338, "stdout_bytes": 803, "fault": null}
+{"label": "retry-add", "exit": 0, "seconds": 6.808223, "stdout_bytes": 360, "fault": null}
+{"label": "retry-health", "exit": 0, "seconds": 0.092355, "stdout_bytes": 803, "fault": null}
+{"label": "retry-search-getHello", "exit": 0, "seconds": 0.336384, "stdout_bytes": 1948, "fault": null}
+{"label": "retry-search-AppService", "exit": 0, "seconds": 0.023633, "stdout_bytes": 5231, "fault": null}
+{"label": "retry-resolve", "exit": 0, "seconds": 0.018407, "stdout_bytes": 1577, "fault": null}
+{"label": "edit-add", "exit": 0, "seconds": 8.131087, "stdout_bytes": 360, "fault": null}
+{"label": "edit-health", "exit": 0, "seconds": 0.076432, "stdout_bytes": 803, "fault": null}
+{"label": "edit-resolve", "exit": 0, "seconds": 0.011534, "stdout_bytes": 1577, "fault": null}
+{"label": "edit-source-3275be0b", "exit": 0, "seconds": 0.010368, "stdout_bytes": 1034, "fault": null}
+{"label": "edit-document-3275be0b", "exit": 0, "seconds": 0.040332, "stdout_bytes": 1601, "fault": null}
+{"label": "edit-source-4334edca", "exit": 0, "seconds": 0.013935, "stdout_bytes": 1034, "fault": null}
+{"label": "edit-document-4334edca", "exit": 0, "seconds": 0.041188, "stdout_bytes": 2525, "fault": null}
+{"label": "remove-project", "exit": 0, "seconds": 0.747546, "stdout_bytes": 362, "fault": null}
+{"label": "removed-health", "exit": 0, "seconds": 0.095905, "stdout_bytes": 802, "fault": null}
+{"label": "removed-source-3275be0b", "exit": 2, "seconds": 0.011391, "stdout_bytes": 371, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: library record not found", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::74a695248b8a3fc6cc81a61ab9e9c6d26a0ad5661d3605c004aa382322430d8e::getHello", "slug": "protocol"}}
+{"label": "removed-show-3275be0b", "exit": 2, "seconds": 0.010229, "stdout_bytes": 371, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: library record not found", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::74a695248b8a3fc6cc81a61ab9e9c6d26a0ad5661d3605c004aa382322430d8e::getHello", "slug": "protocol"}}
+{"label": "removed-references-3275be0b", "exit": 2, "seconds": 0.00522, "stdout_bytes": 158, "fault": {"answer": "fault", "cause": "malformed", "detail": "references target is absent from the selected view", "operand": "", "slug": "invalid-query"}}
+{"label": "removed-graph-3275be0b", "exit": 2, "seconds": 0.015436, "stdout_bytes": 427, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: command execution failed: semantic graph source is absent from the selected view", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::74a695248b8a3fc6cc81a61ab9e9c6d26a0ad5661d3605c004aa382322430d8e::getHello", "slug": "protocol"}}
+{"label": "removed-source-4334edca", "exit": 2, "seconds": 0.013762, "stdout_bytes": 371, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: library record not found", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::3aeee8774d15749a234cbf8013dbcb8df22ba43109dbe89324ca14158b5edb40::getHello", "slug": "protocol"}}
+{"label": "removed-show-4334edca", "exit": 2, "seconds": 0.01891, "stdout_bytes": 371, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: library record not found", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::3aeee8774d15749a234cbf8013dbcb8df22ba43109dbe89324ca14158b5edb40::getHello", "slug": "protocol"}}
+{"label": "removed-references-4334edca", "exit": 2, "seconds": 0.010466, "stdout_bytes": 158, "fault": {"answer": "fault", "cause": "malformed", "detail": "references target is absent from the selected view", "operand": "", "slug": "invalid-query"}}
+{"label": "removed-graph-4334edca", "exit": 2, "seconds": 0.018313, "stdout_bytes": 427, "fault": {"answer": "fault", "cause": "unproven", "detail": "a frame, DTO, or identity proof failed admission: command execution failed: semantic graph source is absent from the selected view", "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca/project::semantic::3aeee8774d15749a234cbf8013dbcb8df22ba43109dbe89324ca14158b5edb40::getHello", "slug": "protocol"}}
+{"label": "readd-project", "exit": 0, "seconds": 7.930534, "stdout_bytes": 360, "fault": null}
+{"label": "readded-health", "exit": 0, "seconds": 0.079318, "stdout_bytes": 804, "fault": null}
+{"label": "readded-source-3275be0b", "exit": 0, "seconds": 0.010607, "stdout_bytes": 1034, "fault": null}
+{"label": "readded-show-3275be0b", "exit": 0, "seconds": 0.036127, "stdout_bytes": 1601, "fault": null}
+{"label": "readded-references-3275be0b", "exit": 0, "seconds": 0.003651, "stdout_bytes": 333, "fault": null}
+{"label": "readded-graph-3275be0b", "exit": 0, "seconds": 0.011841, "stdout_bytes": 1148, "fault": null}
+{"label": "readded-source-4334edca", "exit": 0, "seconds": 0.010968, "stdout_bytes": 1034, "fault": null}
+{"label": "readded-show-4334edca", "exit": 0, "seconds": 0.035732, "stdout_bytes": 2525, "fault": null}
+{"label": "readded-references-4334edca", "exit": 0, "seconds": 0.003643, "stdout_bytes": 333, "fault": null}
+{"label": "readded-graph-4334edca", "exit": 0, "seconds": 0.012427, "stdout_bytes": 2321, "fault": null}
+{"label": "cold-health", "exit": 1, "seconds": 0.007603, "stdout_bytes": 256, "fault": {"answer": "fault", "cause": "unreachable", "detail": "the local endpoint closed this connection (connection reset); a fresh connection was opened, so retry the command", "operand": "", "shell": "re-run the same command", "slug": "endpoint"}}
+{"label": "cold-health-explicit-retry", "exit": 0, "seconds": 2.518707, "stdout_bytes": 804, "fault": null}
+{"label": "cold-search-getHello", "exit": 0, "seconds": 0.390163, "stdout_bytes": 1948, "fault": null}
+{"label": "cold-search-AppService", "exit": 0, "seconds": 0.012189, "stdout_bytes": 5231, "fault": null}
+{"label": "cold-source-3275be0b", "exit": 0, "seconds": 0.010385, "stdout_bytes": 1034, "fault": null}
+{"label": "cold-show-3275be0b", "exit": 0, "seconds": 0.037596, "stdout_bytes": 1601, "fault": null}
+{"label": "cold-references-3275be0b", "exit": 0, "seconds": 0.007588, "stdout_bytes": 333, "fault": null}
+{"label": "cold-graph-3275be0b", "exit": 0, "seconds": 0.01198, "stdout_bytes": 1148, "fault": null}
+{"label": "cold-source-4334edca", "exit": 0, "seconds": 0.011093, "stdout_bytes": 1034, "fault": null}
+{"label": "cold-show-4334edca", "exit": 0, "seconds": 0.037683, "stdout_bytes": 2525, "fault": null}
+{"label": "cold-references-4334edca", "exit": 0, "seconds": 0.007486, "stdout_bytes": 333, "fault": null}
+{"label": "cold-graph-4334edca", "exit": 0, "seconds": 0.012483, "stdout_bytes": 2321, "fault": null}
+{"root": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T113100Z-typescript-configured-d26431ca", "source_unchanged": false, "accepted_project_pass": false, "remaining_owned_daemons": [], "journey_error": null}

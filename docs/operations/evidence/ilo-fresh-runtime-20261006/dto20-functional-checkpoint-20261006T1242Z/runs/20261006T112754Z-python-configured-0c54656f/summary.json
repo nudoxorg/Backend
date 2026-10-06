@@ -1,0 +1,849 @@
+{
+  "schema": "nudox.fresh-real-remote-runtime.v1",
+  "root": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f",
+  "language": "python",
+  "mode": "configured",
+  "source": "/root/nudox-corpus-20261006/python/packages/pypi-quart-0.23.1/source/quart-0.23.1",
+  "source_origin": {
+    "analysis": {
+      "acceptance_status": "not_run",
+      "method": "Python stdlib AST over the pinned source tree; package code was not executed"
+    },
+    "declarations": [
+      {
+        "end_line": 1810,
+        "file_sha256": "05494db9e7a884d6592c28d253367b39effc016210a50621de9bbf8c835f2a7d",
+        "name": "Quart",
+        "path": "src/quart/app.py",
+        "public_export": {
+          "file_sha256": "8bbcbc61e3de049f8cd54e825620d51b8fe0c9801fdb58105ec2edf9f6aa9844",
+          "line": 6,
+          "path": "src/quart/__init__.py"
+        },
+        "semantic_kind": "class",
+        "slice_bytes": 60480,
+        "slice_sha256": "238b9cca7d6415de14fe76a07f0c96ff65c1a8fc9eac33a831debfbe84ada50c",
+        "start_line": 148
+      },
+      {
+        "end_line": 1780,
+        "file_sha256": "05494db9e7a884d6592c28d253367b39effc016210a50621de9bbf8c835f2a7d",
+        "name": "startup",
+        "owner": "Quart",
+        "path": "src/quart/app.py",
+        "semantic_kind": "async_function",
+        "slice_bytes": 683,
+        "slice_sha256": "a64fb3d682889a0faf7d0a32cefa7bc39590cbd8d06d2c06484fc323ad689f11",
+        "start_line": 1765
+      },
+      {
+        "end_line": 1810,
+        "file_sha256": "05494db9e7a884d6592c28d253367b39effc016210a50621de9bbf8c835f2a7d",
+        "name": "shutdown",
+        "owner": "Quart",
+        "path": "src/quart/app.py",
+        "semantic_kind": "async_function",
+        "slice_bytes": 1172,
+        "slice_sha256": "18673aad86143a88c0878c2661d82703c10a8c9d20ad8d55ce3c3a2f87ff5bd5",
+        "start_line": 1782
+      },
+      {
+        "end_line": 1481,
+        "file_sha256": "05494db9e7a884d6592c28d253367b39effc016210a50621de9bbf8c835f2a7d",
+        "name": "handle_request",
+        "owner": "Quart",
+        "path": "src/quart/app.py",
+        "semantic_kind": "async_function",
+        "slice_bytes": 578,
+        "slice_sha256": "062118862d59c9318af442556c405a6c23577e050ad2d356195a6ff1948fd38d",
+        "start_line": 1471
+      }
+    ],
+    "expected_reference_sites": [
+      {
+        "callee": "self.app.startup",
+        "line": 375,
+        "path": "src/quart/asgi.py",
+        "target": "Quart.startup"
+      },
+      {
+        "callee": "self.app.shutdown",
+        "line": 392,
+        "path": "src/quart/asgi.py",
+        "target": "Quart.shutdown"
+      },
+      {
+        "callee": "self.app.handle_request",
+        "line": 104,
+        "path": "src/quart/asgi.py",
+        "target": "Quart.handle_request"
+      },
+      {
+        "context": "isinstance(app, Quart)",
+        "line": 72,
+        "path": "src/quart/cli.py",
+        "target": "Quart"
+      },
+      {
+        "context": "isinstance(value, Quart)",
+        "line": 75,
+        "path": "src/quart/cli.py",
+        "target": "Quart"
+      },
+      {
+        "callee": "find_best_app",
+        "line": 199,
+        "path": "src/quart/cli.py",
+        "target": "find_best_app"
+      }
+    ],
+    "origin_inventory_binding": {
+      "binding_path": "/root/nudox-corpus-20261006/python/manifests/80543-v2/source-origin-v3-smoke/pypi-8770d062c718a0d41ebe.binding.json",
+      "binding_sha256": "f8b18da5220bce8d8d6c12ddc835ed65dc158198cae108f4d2f680fdb73f6a0f",
+      "inventory_path": "/root/nudox-corpus-20261006/python/manifests/80543-v2/source-origin-v3-smoke/pypi-8770d062c718a0d41ebe.inventory.json",
+      "inventory_sha256": "69d70229a4dee18f1deb66028b490a1952ff778136b99811d0347cc386c34350",
+      "origin_path": "/root/nudox-corpus-20261006/python/manifests/80543-v2/source-origin-v3-smoke/pypi-8770d062c718a0d41ebe.origin.json",
+      "origin_sha256": "05fffffc71f55ce068bc5f1036609e4468eecc2502ca3eb92f632d1c229b71a1"
+    },
+    "package": {
+      "ecosystem": "pypi",
+      "id": "quart",
+      "version": "0.23.1"
+    },
+    "runtime_acceptance_count": 0,
+    "schema": "nudox.python.public-api-source-witness.v1",
+    "source_root": "/root/nudox-corpus-20261006/python/packages/pypi-quart-0.23.1/source/quart-0.23.1",
+    "source_tree_sha256": "b9688441d423b635524ef1982f9e84f3daa5e7a31cd3d5f20ea40ae992346fb0",
+    "supporting_declaration": {
+      "end_line": 407,
+      "file_sha256": "ea1f8cb8a53bef0dec4e001585b4eab06cdb71141deedf41ce8b6f9a9422627b",
+      "name": "ASGILifespan.__call__",
+      "path": "src/quart/asgi.py",
+      "slice_bytes": 1539,
+      "slice_sha256": "bfbb761cef69171dcdf70bcbc7687cfc69d5908cbcf568e2e4195fa588022750",
+      "start_line": 368
+    }
+  },
+  "source_before": {
+    "files": [
+      [
+        "LICENSE.txt",
+        1060,
+        "70a5a96e77c13378db31e782cbcbac45002f19b674d84c5bacd18b2adb7ae4b4"
+      ],
+      [
+        "PKG-INFO",
+        4098,
+        "74a481fe11a1d22f64b0a954ece2392c0724a083bec378932ce0f2720d2d7f12"
+      ],
+      [
+        "README.md",
+        2729,
+        "bc5aef4e17d942c82ae7061d888be4ac9e9563dcb141dd6d03a1c296a319b729"
+      ],
+      [
+        "pyproject.toml",
+        5258,
+        "80ede715b26e8f81dbb929438d25a597d9f1d8f478584433bb710200a7dac590"
+      ],
+      [
+        "src/quart/__init__.py",
+        2914,
+        "8bbcbc61e3de049f8cd54e825620d51b8fe0c9801fdb58105ec2edf9f6aa9844"
+      ],
+      [
+        "src/quart/__main__.py",
+        101,
+        "8232bec18fd2a0c099233c286913c130543589ef673d7038d0a268acaba37066"
+      ],
+      [
+        "src/quart/app.py",
+        66581,
+        "05494db9e7a884d6592c28d253367b39effc016210a50621de9bbf8c835f2a7d"
+      ],
+      [
+        "src/quart/asgi.py",
+        16452,
+        "ea1f8cb8a53bef0dec4e001585b4eab06cdb71141deedf41ce8b6f9a9422627b"
+      ],
+      [
+        "src/quart/blueprints.py",
+        14592,
+        "e6ee457e19315bcb07c33d24cd26a4dbfd83059c39f6177340875d4412c51158"
+      ],
+      [
+        "src/quart/cli.py",
+        24349,
+        "0ea11bd252b1650c0b1152ca3f6301601aeb4a12da55ef91cc3bd41fd2ab0e98"
+      ],
+      [
+        "src/quart/config.py",
+        1533,
+        "fcec6f3a732059763ef4aa79f8379c4d0a2fa17ac7f978dfa2661567e89baae9"
+      ],
+      [
+        "src/quart/ctx.py",
+        14727,
+        "aeb86ff4149a0bad383607258dd1c0547a0b040fee5838bde4c365ee6d8e5d1d"
+      ],
+      [
+        "src/quart/datastructures.py",
+        1623,
+        "a922f943f54ad8412773fb99156452f5c03a0a1355cdc721f95e512424270642"
+      ],
+      [
+        "src/quart/debug.py",
+        2226,
+        "6b289d154d52317241c31d43f9fb6a88f3bbf304fc2a03c3e86155534f2b753e"
+      ],
+      [
+        "src/quart/formparser.py",
+        8232,
+        "c6d8cdbe2cb7479423b14ae2c35fcbecc262df3da83ea64274826399bad2b4f4"
+      ],
+      [
+        "src/quart/globals.py",
+        1969,
+        "901255e7a8a40f9f9cf27b27bde74025f39e79d36ba46dff18a1fa530141e9a6"
+      ],
+      [
+        "src/quart/helpers.py",
+        13585,
+        "438ffc3359b3bbef5a239847dfba81c7048cc33345dd18b558a243d96e2e4a94"
+      ],
+      [
+        "src/quart/json/__init__.py",
+        1213,
+        "553658b32be3faf0bc65b2ecbf2a45be2ede0ec4dd3892d2472dd7bface4b23c"
+      ],
+      [
+        "src/quart/json/provider.py",
+        164,
+        "0be5fbf2303dc6626ed25d4b3ffdc70babac73a38fc311470ef8ae4e839d14e1"
+      ],
+      [
+        "src/quart/json/tag.py",
+        646,
+        "03e7417638fc482bf55ebe453fd0f8cd12db0890520256908863b176825b9224"
+      ],
+      [
+        "src/quart/logging.py",
+        2197,
+        "faf1fb55719dc60f945c2a2d2fdf08524eddacabc0ec85108b1a4fa9b05913e1"
+      ],
+      [
+        "src/quart/py.typed",
+        7,
+        "b28c3db284f03fd4ff80401049587b19bf3ce79874e0dc2686cd967be2518193"
+      ],
+      [
+        "src/quart/routing.py",
+        2752,
+        "adbb77e5be1d81b7c4ea49f50fef66bf890e5626caca962a2cb8bd44739ced12"
+      ],
+      [
+        "src/quart/sessions.py",
+        8738,
+        "3abd6561baee6af84d9163a4c0a74fc93a066398c4538791fd6c1fec860124e7"
+      ],
+      [
+        "src/quart/signals.py",
+        3637,
+        "cdb32584868660609f23ddbb6ee1134918cbe31e044253e850ea987a29804176"
+      ],
+      [
+        "src/quart/templating.py",
+        5601,
+        "d73645b9aff5eb9e725c43a358edbe37c453ad02f05a96150d505d8cf0897c4a"
+      ],
+      [
+        "src/quart/testing/__init__.py",
+        1207,
+        "2f33bd18212c9d477559a6b7ee532d96717002190de21e67e315cad0d670b138"
+      ],
+      [
+        "src/quart/testing/app.py",
+        2727,
+        "6425dab6b47d4c093da823fafe29c56e62b944d65dc2464b4954becd8aba7bf3"
+      ],
+      [
+        "src/quart/testing/client.py",
+        14602,
+        "35a64b1fad6a1352697ec0c795bb0431aebdb28c525c388b9fec9b14334fc303"
+      ],
+      [
+        "src/quart/testing/connections.py",
+        6769,
+        "594c53b241ecfe63abafb36ef1b3fbf8701d64f491c1fe2f626abd0a64c8b621"
+      ],
+      [
+        "src/quart/testing/utils.py",
+        7397,
+        "fd0f46c8b75a659cec41ba068fdf746a2b357eb57dc61f813bacd23f61281056"
+      ],
+      [
+        "src/quart/typing.py",
+        9862,
+        "703b2e3e675ec93e974364e45a6ee73ab97390028987acddbf3db6cd37c39a74"
+      ],
+      [
+        "src/quart/utils.py",
+        4972,
+        "eaca9994c2649106617400544a2ff190064337a5fa4ca1d33cf1c48064353128"
+      ],
+      [
+        "src/quart/views.py",
+        4346,
+        "f5dc253619d5058d9ce55285d7e5ba41cde4abac3600f130250ca289bf0c96e5"
+      ],
+      [
+        "src/quart/wrappers/__init__.py",
+        370,
+        "ec4985a67972c99e00a2b13656ac3d3fe901cd858e6be402efb9fed2939035e9"
+      ],
+      [
+        "src/quart/wrappers/base.py",
+        3646,
+        "1b8db290bd69d1311879430491c84ec0091629724a41c8b099277246ccee5371"
+      ],
+      [
+        "src/quart/wrappers/request.py",
+        13770,
+        "37385c3712b85dd0fffea7dbbc99e5a7e3fa68eb86abaf35309830c6d3605a03"
+      ],
+      [
+        "src/quart/wrappers/response.py",
+        16550,
+        "2f7e23116b380a53d01c44bc53e260c84ee6beea0d8a40b3aec2763d86dd842a"
+      ],
+      [
+        "src/quart/wrappers/websocket.py",
+        4194,
+        "6bf7e02cc53186d904cffb916c7b2d7a63b5369d1898fd94d5caec9dae8b5ad2"
+      ]
+    ],
+    "sha256": "664bdfea7b2e7ec0dc54b6b6e2251d0e59cce6b3371d7595567550b3a7091dd9"
+  },
+  "runtime_manifest": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/runtime-build-manifest.json",
+  "runtime_manifest_sha256": "a693977a9bcbf2e25c7b7ebb3c820d8a971ac5a190cf25708d608ee69c4c07f8",
+  "runtime_manifest_content": {
+    "schema": "nudox.runtime-build-manifest.v1",
+    "source": {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "tree": "a3911d62ef9c4ef1f8206c4fc05b8a8c6fde5156",
+      "clean": true
+    },
+    "executables": {
+      "backend-locald": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+        "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb",
+        "bytes": 105569312
+      },
+      "backend-cli": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d",
+        "bytes": 43160648
+      },
+      "backend-mcp": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+        "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb",
+        "bytes": 31886392
+      }
+    },
+    "root_receipt": {
+      "schema": "nudox.runtime-artifact-build-receipt.v1",
+      "path": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/root-cargo-receipt.json",
+      "sha256": "523430d258c89c6434c0143be58b9e003065bf22f32d0008b2505ce908f27499"
+    }
+  },
+  "binaries": {
+    "backend-cli": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+      "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d"
+    },
+    "backend-locald": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+      "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb"
+    },
+    "backend-mcp": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+      "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb"
+    }
+  },
+  "env": {
+    "HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/home",
+    "XDG_CONFIG_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/home/.config",
+    "XDG_DATA_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/home/.local/share",
+    "XDG_STATE_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/home/.local/state",
+    "TMPDIR": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/tmp",
+    "PATH": "/nix/store/0nbp03038s33ck712yx9219gcj3a2sqm-nodejs-slim-24.18.0/bin:/nix/store/1xklj6dmgcpgz60c9w2ynaq7ynzfsrrq-go-1.26.4/share/go/bin:/nix/store/9r02ykx9y35lf4gk6gc30gnag1y8ncp7-python3-3.13.15/bin:/nix/store/qdxzxkwh13bgv50066fk2ka3p1zpnjap-pyrefly-1.2.0-dev.1/bin:/root/nudox-corpus-20261006/corpora/next-react-alias-fixture/node_modules/typescript/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin",
+    "LANG": "C.UTF-8",
+    "USER": "root",
+    "LOGNAME": "root",
+    "BACKEND_LOCALD_COMPILER_ENVIRONMENT": "{\"version\":1,\"paths\":[{\"variable\":\"NUDOX_PYTHON\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,57,114,48,50,121,107,120,57,121,51,53,108,102,52,103,107,54,103,99,51,48,103,110,97,103,49,121,56,110,99,112,55,45,112,121,116,104,111,110,51,45,51,46,49,51,46,49,53,47,98,105,110,47,112,121,116,104,111,110,51,46,49,51]}},{\"variable\":\"NUDOX_TSC\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115,47,116,121,112,101,115,99,114,105,112,116,47,98,105,110,47,116,115,99]}},{\"variable\":\"NUDOX_GO\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111,47,98,105,110,47,103,111]}},{\"variable\":\"NUDOX_TYPESCRIPT_NODE\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,48,110,98,112,48,51,48,51,56,115,51,51,99,107,55,49,50,121,120,57,50,49,57,103,99,106,51,97,50,115,113,109,45,110,111,100,101,106,115,45,115,108,105,109,45,50,52,46,49,56,46,48,47,98,105,110,47,110,111,100,101]}},{\"variable\":\"NUDOX_TYPESCRIPT_MODULE_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115]}},{\"variable\":\"NUDOX_PYREFLY\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,113,100,120,122,120,107,119,104,49,51,98,103,118,53,48,48,54,54,102,107,50,107,97,51,112,49,122,112,110,106,97,112,45,112,121,114,101,102,108,121,45,49,46,50,46,48,45,100,101,118,46,49,47,98,105,110,47,112,121,114,101,102,108,121]}},{\"variable\":\"NUDOX_GO_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111]}}]}"
+  },
+  "compiler_snapshot_sha256": "0f13715f573afb87eb795bc2eb7960737abd1b7e7cd8a35ddf54a46f4a51e066",
+  "workspace_preexisting": false,
+  "endpoint_preexisting": false,
+  "fresh_home_entries": [],
+  "installer_tested": false,
+  "dependency_closure_copied": false,
+  "accepted_project_pass": false,
+  "journey_options": {
+    "skip_update_cancel": false,
+    "cancel_before_first_add": false,
+    "transport_only": false,
+    "public_compiler_variables": [],
+    "requested_queries": [
+      "startup"
+    ],
+    "edit_file": "src/quart/app.py",
+    "keep_edited_source": true,
+    "first_publish_only": false,
+    "witness_path": "src/quart/app.py",
+    "witness_line": 1765
+  },
+  "source_after": {
+    "files": [
+      [
+        "LICENSE.txt",
+        1060,
+        "70a5a96e77c13378db31e782cbcbac45002f19b674d84c5bacd18b2adb7ae4b4"
+      ],
+      [
+        "PKG-INFO",
+        4098,
+        "74a481fe11a1d22f64b0a954ece2392c0724a083bec378932ce0f2720d2d7f12"
+      ],
+      [
+        "README.md",
+        2729,
+        "bc5aef4e17d942c82ae7061d888be4ac9e9563dcb141dd6d03a1c296a319b729"
+      ],
+      [
+        "pyproject.toml",
+        5258,
+        "80ede715b26e8f81dbb929438d25a597d9f1d8f478584433bb710200a7dac590"
+      ],
+      [
+        "src/quart/__init__.py",
+        2914,
+        "8bbcbc61e3de049f8cd54e825620d51b8fe0c9801fdb58105ec2edf9f6aa9844"
+      ],
+      [
+        "src/quart/__main__.py",
+        101,
+        "8232bec18fd2a0c099233c286913c130543589ef673d7038d0a268acaba37066"
+      ],
+      [
+        "src/quart/app.py",
+        66583,
+        "756fafa18a5ed00f4e2c18ddfaf4f531ff68ca05db6725a624fab1834ec4ad5d"
+      ],
+      [
+        "src/quart/asgi.py",
+        16452,
+        "ea1f8cb8a53bef0dec4e001585b4eab06cdb71141deedf41ce8b6f9a9422627b"
+      ],
+      [
+        "src/quart/blueprints.py",
+        14592,
+        "e6ee457e19315bcb07c33d24cd26a4dbfd83059c39f6177340875d4412c51158"
+      ],
+      [
+        "src/quart/cli.py",
+        24349,
+        "0ea11bd252b1650c0b1152ca3f6301601aeb4a12da55ef91cc3bd41fd2ab0e98"
+      ],
+      [
+        "src/quart/config.py",
+        1533,
+        "fcec6f3a732059763ef4aa79f8379c4d0a2fa17ac7f978dfa2661567e89baae9"
+      ],
+      [
+        "src/quart/ctx.py",
+        14727,
+        "aeb86ff4149a0bad383607258dd1c0547a0b040fee5838bde4c365ee6d8e5d1d"
+      ],
+      [
+        "src/quart/datastructures.py",
+        1623,
+        "a922f943f54ad8412773fb99156452f5c03a0a1355cdc721f95e512424270642"
+      ],
+      [
+        "src/quart/debug.py",
+        2226,
+        "6b289d154d52317241c31d43f9fb6a88f3bbf304fc2a03c3e86155534f2b753e"
+      ],
+      [
+        "src/quart/formparser.py",
+        8232,
+        "c6d8cdbe2cb7479423b14ae2c35fcbecc262df3da83ea64274826399bad2b4f4"
+      ],
+      [
+        "src/quart/globals.py",
+        1969,
+        "901255e7a8a40f9f9cf27b27bde74025f39e79d36ba46dff18a1fa530141e9a6"
+      ],
+      [
+        "src/quart/helpers.py",
+        13585,
+        "438ffc3359b3bbef5a239847dfba81c7048cc33345dd18b558a243d96e2e4a94"
+      ],
+      [
+        "src/quart/json/__init__.py",
+        1213,
+        "553658b32be3faf0bc65b2ecbf2a45be2ede0ec4dd3892d2472dd7bface4b23c"
+      ],
+      [
+        "src/quart/json/provider.py",
+        164,
+        "0be5fbf2303dc6626ed25d4b3ffdc70babac73a38fc311470ef8ae4e839d14e1"
+      ],
+      [
+        "src/quart/json/tag.py",
+        646,
+        "03e7417638fc482bf55ebe453fd0f8cd12db0890520256908863b176825b9224"
+      ],
+      [
+        "src/quart/logging.py",
+        2197,
+        "faf1fb55719dc60f945c2a2d2fdf08524eddacabc0ec85108b1a4fa9b05913e1"
+      ],
+      [
+        "src/quart/py.typed",
+        7,
+        "b28c3db284f03fd4ff80401049587b19bf3ce79874e0dc2686cd967be2518193"
+      ],
+      [
+        "src/quart/routing.py",
+        2752,
+        "adbb77e5be1d81b7c4ea49f50fef66bf890e5626caca962a2cb8bd44739ced12"
+      ],
+      [
+        "src/quart/sessions.py",
+        8738,
+        "3abd6561baee6af84d9163a4c0a74fc93a066398c4538791fd6c1fec860124e7"
+      ],
+      [
+        "src/quart/signals.py",
+        3637,
+        "cdb32584868660609f23ddbb6ee1134918cbe31e044253e850ea987a29804176"
+      ],
+      [
+        "src/quart/templating.py",
+        5601,
+        "d73645b9aff5eb9e725c43a358edbe37c453ad02f05a96150d505d8cf0897c4a"
+      ],
+      [
+        "src/quart/testing/__init__.py",
+        1207,
+        "2f33bd18212c9d477559a6b7ee532d96717002190de21e67e315cad0d670b138"
+      ],
+      [
+        "src/quart/testing/app.py",
+        2727,
+        "6425dab6b47d4c093da823fafe29c56e62b944d65dc2464b4954becd8aba7bf3"
+      ],
+      [
+        "src/quart/testing/client.py",
+        14602,
+        "35a64b1fad6a1352697ec0c795bb0431aebdb28c525c388b9fec9b14334fc303"
+      ],
+      [
+        "src/quart/testing/connections.py",
+        6769,
+        "594c53b241ecfe63abafb36ef1b3fbf8701d64f491c1fe2f626abd0a64c8b621"
+      ],
+      [
+        "src/quart/testing/utils.py",
+        7397,
+        "fd0f46c8b75a659cec41ba068fdf746a2b357eb57dc61f813bacd23f61281056"
+      ],
+      [
+        "src/quart/typing.py",
+        9862,
+        "703b2e3e675ec93e974364e45a6ee73ab97390028987acddbf3db6cd37c39a74"
+      ],
+      [
+        "src/quart/utils.py",
+        4972,
+        "eaca9994c2649106617400544a2ff190064337a5fa4ca1d33cf1c48064353128"
+      ],
+      [
+        "src/quart/views.py",
+        4346,
+        "f5dc253619d5058d9ce55285d7e5ba41cde4abac3600f130250ca289bf0c96e5"
+      ],
+      [
+        "src/quart/wrappers/__init__.py",
+        370,
+        "ec4985a67972c99e00a2b13656ac3d3fe901cd858e6be402efb9fed2939035e9"
+      ],
+      [
+        "src/quart/wrappers/base.py",
+        3646,
+        "1b8db290bd69d1311879430491c84ec0091629724a41c8b099277246ccee5371"
+      ],
+      [
+        "src/quart/wrappers/request.py",
+        13770,
+        "37385c3712b85dd0fffea7dbbc99e5a7e3fa68eb86abaf35309830c6d3605a03"
+      ],
+      [
+        "src/quart/wrappers/response.py",
+        16550,
+        "2f7e23116b380a53d01c44bc53e260c84ee6beea0d8a40b3aec2763d86dd842a"
+      ],
+      [
+        "src/quart/wrappers/websocket.py",
+        4194,
+        "6bf7e02cc53186d904cffb916c7b2d7a63b5369d1898fd94d5caec9dae8b5ad2"
+      ]
+    ],
+    "sha256": "40e5973628fed5e4d54286ea4dd1af501324daf81fe317829ca0e725d836f9df"
+  },
+  "checks": [
+    {
+      "query": "startup",
+      "mcp_search": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "~lanes exact\u271310 names\u271310 graph\u271310 semantic\u2717 unconfigured semantic-search unavailable (unconfigured)\nproject \u203a src/quart/app.py:483 \u203a while_serving  \u00b7  function \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/project::semantic::534790808d1adc66758ccb2744ed909f32c9fb993254230e98a087f1b187fee5::while_serving`  @setupmethod\nexternal semantic target  \u00b7  unknown\n`external semantic target`\nproject \u203a LifespanStartupCompleteEvent  \u00b7  type \u00b7 unknown\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/project::semantic::e9e651249d153642852afe4eaa79c91c2414e063b271ded5da4e424aad710acd::LifespanStartupCompleteEvent`  unknown(unannotated)\nproject \u203a src/quart/blueprints.py:358 \u203a while_app_serving  \u00b7  function \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/project::semantic::4be2f8205dc684578bf014335c356d6fd45d6ad48a595fd9711714baa56f4a76::while_app_serving`  @setupmethod\nproject \u203a src/quart/app.py:1765 \u203a startup  \u00b7  function \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/project::semantic::d8d5f67a7488fb44003bb9ac2dabb393b784ebbf144da8460e5d19c879bbb768::startup`  async def startup(self) -> None:\nproject \u203a src/quart/testing/app.py:42 \u203a startup  \u00b7  function \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/project::semantic::f6867a3f30429fee10da3eb643fc29305e9ecbca624d21fc5c5cc4be022037b6::startup`  async def startup(self) -> None:\n        scope: LifespanScope =\nproject \u203a LifespanStartupFailedEvent  \u00b7  type \u00b7 unknown\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/project::semantic::6a41cb1d5bd0fec4c8d3dc6689c16264aaf25d6074898a180d4ce626d310fd68::LifespanStartupFailedEvent`  unknown(unannotated)\nproject \u203a startup_timeout  \u00b7  variable \u00b7 unknown\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/project::semantic::893fc37a8454b8174ca9f0d1dd50f4189cb20760ed7658b0a002d8be01015615::startup_timeout`  builtin(arbitrary-integer)\nproject \u203a src/quart/typing.py:311 \u203a startup  \u00b7  function \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/project::semantic::7e5e2f5052550b49a06c18daf52178dd7277fd1fe788b62f7586830a753d0ed4::startup`  async def startup(self) -> None: ...\nexternal semantic target  \u00b7  unknown\n`external semantic target`\n\u2026 more rows at this revision; raise `limit` to see them\n",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "answer": "records",
+            "budget": {
+              "bytes": 6688,
+              "bytesPerToken": 4,
+              "estimatedTokens": 1672
+            },
+            "coverage": [
+              {
+                "lane": "exact",
+                "state": "complete"
+              },
+              {
+                "lane": "names",
+                "state": "complete"
+              },
+              {
+                "lane": "graph",
+                "state": "complete"
+              },
+              {
+                "lane": "semantic",
+                "reason": "unconfigured",
+                "state": "unavailable"
+              }
+            ],
+            "detail": "full",
+            "more": true,
+            "nextCursor": "mcp1-1791286992-cGMxLTAwMDM5YjRjOTE2NDNhZjIwNjBhYzY5Y2I2ZTlmY2RjN2MxYmZiODBkZmQzYWIwNGIxN2NiZWZkYWYyNDg3YTM3MTQxODVhMzhhNmNiYjZlMTMyMDcxOTMzNDgwMmVmMTU5NmQxM2ZjYjViMGU3ZGI3YjE5YmZiNWVlYTg5MDNlNGI5NDQ2NTBhNWQyZDM4YzUwN2M2MjFiYjdhZGVjOTYzYWZhYzdiZDc0MGJiYzg1MDA3YjFjZDYwOWE2N2ZiMjQ4MmYxMmE0MGIxYTlkOGIzYWYwOTJlYjk1NzQ1NzU5NjdjMTlhNWRiOWNhNDhlZGU1NDIyNmUyOGYyOTM2MWUzNzYwMDAwMzY3YzJjMTkwZDcxMzc5ZDA0NDI5N2Y3YTc0YWJjMDljNDQwOWY0ZDg0YmRiYTEwMGRmNmM3NTMxYTZkZDRhZmQwMDAwMDAwMDAwMDAwMDAyMDAwMDAwMDAwMDAwMDAwYQ-96f6b243c5d2cd17bc340b1f08c06680",
+            "query": "startup",
+            "readiness": "ready",
+            "records": [
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/project::semantic::534790808d1adc66758ccb2744ed909f32c9fb993254230e98a087f1b187fee5::while_serving",
+                  "key": "147e0746",
+                  "line": 483,
+                  "name": "while_serving",
+                  "path": "src/quart/app.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/project",
+                  "segments": [
+                    "while_serving"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a src/quart/app.py:483 \u203a while_serving"
+                },
+                "kind": "function",
+                "language": "python",
+                "score": 4294967291,
+                "signature": "@setupmethod",
+                "state": "ready",
+                "summary": "Add a while serving generator function."
+              },
+              {
+                "identity": {
+                  "coordinate": "external semantic target",
+                  "key": "21f2ce4b",
+                  "name": "external semantic target",
+                  "project": "external semantic target",
+                  "segments": [],
+                  "shape": "package",
+                  "trail": "external semantic target"
+                },
+                "language": "unknown",
+                "score": 4294967286,
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/project::semantic::e9e651249d153642852afe4eaa79c91c2414e063b271ded5da4e424aad710acd::LifespanStartupCompleteEvent",
+                  "key": "42a2dbcf",
+                  "name": "LifespanStartupCompleteEvent",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/project",
+                  "segments": [
+                    "LifespanStartupCompleteEvent"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a LifespanStartupCompleteEvent"
+                },
+                "kind": "type",
+                "language": "unknown",
+                "score": 4294967289,
+                "signature": "unknown(unannotated)",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/project::semantic::4be2f8205dc684578bf014335c356d6fd45d6ad48a595fd9711714baa56f4a76::while_app_serving",
+                  "key": "6475a78b",
+                  "line": 358,
+                  "name": "while_app_serving",
+                  "path": "src/quart/blueprints.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/project",
+                  "segments": [
+                    "while_app_serving"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a src/quart/blueprints.py:358 \u203a while_app_serving"
+                },
+                "kind": "function",
+                "language": "python",
+                "score": 4294967292,
+                "signature": "@setupmethod",
+                "state": "ready",
+                "summary": "Add a while serving function to the App."
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/project::semantic::d8d5f67a7488fb44003bb9ac2dabb393b784ebbf144da8460e5d19c879bbb768::startup",
+                  "key": "785828cf",
+                  "line": 1765,
+                  "name": "startup",
+                  "path": "src/quart/app.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/project",
+                  "segments": [
+                    "startup"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a src/quart/app.py:1765 \u203a startup"
+                },
+                "kind": "function",
+                "language": "python",
+                "score": 4294967294,
+                "signature": "async def startup(self) -> None:",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/project::semantic::f6867a3f30429fee10da3eb643fc29305e9ecbca624d21fc5c5cc4be022037b6::startup",
+                  "key": "bcd876fc",
+                  "line": 42,
+                  "name": "startup",
+                  "path": "src/quart/testing/app.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/project",
+                  "segments": [
+                    "startup"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a src/quart/testing/app.py:42 \u203a startup"
+                },
+                "kind": "function",
+                "language": "python",
+                "score": 4294967295,
+                "signature": "async def startup(self) -> None:\n        scope: LifespanScope =",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/project::semantic::6a41cb1d5bd0fec4c8d3dc6689c16264aaf25d6074898a180d4ce626d310fd68::LifespanStartupFailedEvent",
+                  "key": "cdf21c30",
+                  "name": "LifespanStartupFailedEvent",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/project",
+                  "segments": [
+                    "LifespanStartupFailedEvent"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a LifespanStartupFailedEvent"
+                },
+                "kind": "type",
+                "language": "unknown",
+                "score": 4294967290,
+                "signature": "unknown(unannotated)",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/project::semantic::893fc37a8454b8174ca9f0d1dd50f4189cb20760ed7658b0a002d8be01015615::startup_timeout",
+                  "key": "d064d82e",
+                  "name": "startup_timeout",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/project",
+                  "segments": [
+                    "startup_timeout"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a startup_timeout"
+                },
+                "kind": "variable",
+                "language": "unknown",
+                "score": 4294967288,
+                "signature": "builtin(arbitrary-integer)",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/project::semantic::7e5e2f5052550b49a06c18daf52178dd7277fd1fe788b62f7586830a753d0ed4::startup",
+                  "key": "e0a5bbbe",
+                  "line": 311,
+                  "name": "startup",
+                  "path": "src/quart/typing.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T112754Z-python-configured-0c54656f/project",
+                  "segments": [
+                    "startup"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a src/quart/typing.py:311 \u203a startup"
+                },
+                "kind": "function",
+                "language": "python",
+                "score": 4294967293,
+                "signature": "async def startup(self) -> None: ...",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "external semantic target",
+                  "key": "eeb5131a",
+                  "name": "external semantic target",
+                  "project": "external semantic target",
+                  "segments": [],
+                  "shape": "package",
+                  "trail": "external semantic target"
+                },
+                "language": "unknown",
+                "score": 4294967287,
+                "state": "ready"
+              }
+            ],
+            "semantic_search": {
+              "reason": "unconfigured",
+              "status": "unavailable"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "owned_daemons_remaining": [],
+  "endpoint_remaining": true,
+  "source_unchanged": false
+}

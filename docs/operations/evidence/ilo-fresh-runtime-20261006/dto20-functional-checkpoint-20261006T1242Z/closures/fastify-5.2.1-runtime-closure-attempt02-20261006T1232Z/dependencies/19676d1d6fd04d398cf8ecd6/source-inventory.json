@@ -1,0 +1,85 @@
+{
+  "files": [
+    {
+      "bytes": 273,
+      "path": ".github/dependabot.yml",
+      "sha256": "67dcd2013ebde5683fd6684194a6df609eeed7de80098198f59a7e07b5c19eba"
+    },
+    {
+      "bytes": 2454,
+      "path": ".github/workflows/ci.yml",
+      "sha256": "00a80501ed880346a1f01cb352bb5c52b6c8c820e585c057dbd04955483b919d"
+    },
+    {
+      "bytes": 62,
+      "path": ".husky/pre-commit",
+      "sha256": "d0d539975dca8c3d4867548e3694828efc884ad17898c6f6fbaf82ad953d74bd"
+    },
+    {
+      "bytes": 1061,
+      "path": "LICENSE",
+      "sha256": "31f005ecff86a12a1351f4c2cb1133267c0b152546b08cd6fa4bdeb1943e00cd"
+    },
+    {
+      "bytes": 4730,
+      "path": "README.md",
+      "sha256": "d2964db4beda2ca135335c35c8b9fc39e04c4f8dcb6009798419372b87245d17"
+    },
+    {
+      "bytes": 3576,
+      "path": "index.d.ts",
+      "sha256": "89bf59c1d834a4b01c7d9b5b4cfa64ffed09e59580d27bbadf1acdd69706c200"
+    },
+    {
+      "bytes": 3086,
+      "path": "index.js",
+      "sha256": "bec10076916c68fc039be6d05c01ed0b61855153ec5e037e4a3f6906e84209fa"
+    },
+    {
+      "bytes": 1040,
+      "path": "package.json",
+      "sha256": "aa850ef43ff1c421ec88c2e4ab988896ca1ce849b7531f6f32f3e32c2881bb4d"
+    },
+    {
+      "bytes": 9948,
+      "path": "test/base.test.js",
+      "sha256": "3576d6e84fe43a8b742cac03bc100c6c0ae9479e7ffea0b98e66031a23bfb356"
+    },
+    {
+      "bytes": 473,
+      "path": "test/fixtures/transport-async-iteration.js",
+      "sha256": "d99f43254ec65b110bf848b1a582710d2bd85b08dc51cc2732b55e3d2f91f237"
+    },
+    {
+      "bytes": 471,
+      "path": "test/fixtures/transport-on-data.js",
+      "sha256": "33d7991578dc6a358cae6c2411125e4d10a1be0a31a1eee09c29137a99939e3a"
+    },
+    {
+      "bytes": 704,
+      "path": "test/fixtures/transport-transform.js",
+      "sha256": "8fec689012fb156d37f49235342a6f63741e5fcd5ac185962b036943dd54e944"
+    },
+    {
+      "bytes": 369,
+      "path": "test/fixtures/worker-pipeline.js",
+      "sha256": "5e2523742f808b831d989723fb38ab9604078bec99d6d5093e08144107851bee"
+    },
+    {
+      "bytes": 1033,
+      "path": "test/types/index.test-d.ts",
+      "sha256": "8ba5f73692226826bf1a1c1bfe87ae5e4d9d0ad1636172331728f2074478f265"
+    },
+    {
+      "bytes": 8924,
+      "path": "test/worker.test.js",
+      "sha256": "e5729c125d788377cb4ba909523b7b83a00c9ed1dd904d6377e6ed06651149a9"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "pino-abstract-transport",
+    "version": "2.0.0"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

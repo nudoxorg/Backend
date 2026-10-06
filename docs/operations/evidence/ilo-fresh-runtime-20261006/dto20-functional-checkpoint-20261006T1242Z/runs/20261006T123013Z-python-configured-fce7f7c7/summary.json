@@ -1,0 +1,455 @@
+{
+  "schema": "nudox.fresh-real-remote-runtime.v1",
+  "root": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7",
+  "language": "python",
+  "mode": "configured",
+  "source": "/root/nudox-corpus-20261006/artifacts/stratified-async-unicode-python-dossiers-20261006T1230Z/pypi-certifi/source",
+  "source_origin": {
+    "archive": {
+      "path": "/root/nudox-corpus-20261006/artifacts/stratified-async-unicode-python-dossiers-20261006T1230Z/pypi-certifi/archive.tar.gz",
+      "sha256": "741e2c3b351ddf169a738da9f2c048608ff7f2c5cc02f1ebc6b118bb090d5d55",
+      "url": "https://files.pythonhosted.org/packages/a3/c2/24167ea9858356b47a87a50d39908bfdb72ceeefe0041586e704e5376b3a/certifi-2026.7.22.tar.gz"
+    },
+    "package": {
+      "ecosystem": "pypi",
+      "id": "certifi",
+      "version": "2026.7.22"
+    },
+    "registry_metadata": {
+      "path": "/root/nudox-corpus-20261006/artifacts/stratified-async-unicode-python-dossiers-20261006T1230Z/pypi-certifi/registry-metadata.json",
+      "sha256": "3b94efeb879dddf7172a6ab03cd53b68e76f046c11893249d6c17e99a0293a3c",
+      "url": "https://pypi.org/pypi/certifi/json"
+    },
+    "schema": "nudox.registry-artifact-origin.v1",
+    "unpack": {
+      "strip_prefix": "certifi-2026.7.22/"
+    }
+  },
+  "source_before": {
+    "files": [
+      [
+        "LICENSE",
+        989,
+        "e93716da6b9c0d5a4a1df60fe695b370f0695603d21f6f83f053e42cfc10caf7"
+      ],
+      [
+        "MANIFEST.in",
+        200,
+        "7dffab8a578e0cf98fead81ebe76a32bcde30b650519f50f55d9e7ddb5c950ee"
+      ],
+      [
+        "PKG-INFO",
+        2474,
+        "ef5af1638fbb23676ac3c5777dfcfc2cd9c348fe4172ed5ba3d277655b248090"
+      ],
+      [
+        "README.rst",
+        1157,
+        "b36c3a5405b444d155327a647cce2ec27b564bb04710359e6322205ee04994e4"
+      ],
+      [
+        "certifi/__init__.py",
+        94,
+        "7a52e5f4205f9b3d12a31898ceaa7e3f6837d19cc230700bcae1a9d91d1486c1"
+      ],
+      [
+        "certifi/__main__.py",
+        243,
+        "c410688fdd394d45812d118034e71fee88ba7beddd30fe1c1281bd3b232cd758"
+      ],
+      [
+        "certifi/cacert.pem",
+        240216,
+        "9cc2a774b5198dcff14d9be1e66091f538975d867ce029a96bce15a55dfd730f"
+      ],
+      [
+        "certifi/core.py",
+        3394,
+        "5c55f2727746e697f7edac9e17c377d8752e0da7ecca191531b3b80403d61dad"
+      ],
+      [
+        "certifi/py.typed",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "certifi/tests/__init__.py",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "certifi/tests/test_certify.py",
+        467,
+        "7c179d1edf37f7e912b133663735fb46c6338d5d0e5f8915d11c3bc287d227b8"
+      ],
+      [
+        "certifi.egg-info/PKG-INFO",
+        2474,
+        "ef5af1638fbb23676ac3c5777dfcfc2cd9c348fe4172ed5ba3d277655b248090"
+      ],
+      [
+        "certifi.egg-info/SOURCES.txt",
+        356,
+        "52a6f6268c2986594afbc178e2d9dab9fba7c420de07570fff929d49a648163d"
+      ],
+      [
+        "certifi.egg-info/dependency_links.txt",
+        1,
+        "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+      ],
+      [
+        "certifi.egg-info/not-zip-safe",
+        1,
+        "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+      ],
+      [
+        "certifi.egg-info/top_level.txt",
+        8,
+        "28cbb8bd409fb232eb90f6d235d81d7a44bea552730402453bffe723c345ebe5"
+      ],
+      [
+        "pyproject.toml",
+        91,
+        "81562b11a9a84cb5d47f66a78e7338546fddb7f5c62f4308b337e891f7d8a0d7"
+      ],
+      [
+        "setup.cfg",
+        38,
+        "1c473cbaee8da5fc46e7f0158794af5cea4414c34a3cf3f180c2001f5e38bd3e"
+      ],
+      [
+        "setup.py",
+        2221,
+        "0467d673b39e7cd81f6289cbb7b6ac50c2f7f5ba0f79b9241e51bc07af3dc061"
+      ]
+    ],
+    "sha256": "b05abdd5029ead8428de90b525084fa3e4f00950db4afb3fcbe54e4bba642ebc"
+  },
+  "runtime_manifest": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/runtime-build-manifest.json",
+  "runtime_manifest_sha256": "a693977a9bcbf2e25c7b7ebb3c820d8a971ac5a190cf25708d608ee69c4c07f8",
+  "runtime_manifest_content": {
+    "schema": "nudox.runtime-build-manifest.v1",
+    "source": {
+      "commit": "039c360d286962a6cf19488fb86caabd1d8c93de",
+      "tree": "a3911d62ef9c4ef1f8206c4fc05b8a8c6fde5156",
+      "clean": true
+    },
+    "executables": {
+      "backend-locald": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+        "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb",
+        "bytes": 105569312
+      },
+      "backend-cli": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+        "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d",
+        "bytes": 43160648
+      },
+      "backend-mcp": {
+        "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+        "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb",
+        "bytes": 31886392
+      }
+    },
+    "root_receipt": {
+      "schema": "nudox.runtime-artifact-build-receipt.v1",
+      "path": "/root/nudox-corpus-20261006/receipts/dto20-039c360d28-runtime-build-20261006T111152Z-attempt03/root-cargo-receipt.json",
+      "sha256": "523430d258c89c6434c0143be58b9e003065bf22f32d0008b2505ce908f27499"
+    }
+  },
+  "binaries": {
+    "backend-cli": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-cli",
+      "sha256": "8bed4d798f032218a800e9533fd8be83759303f4117000ec2779a8469c1c6b7d"
+    },
+    "backend-locald": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-locald",
+      "sha256": "75a57be7880b1946281ec7dae5ee5d177132c4cf9e4dad0a0fefa319b4a1c0bb"
+    },
+    "backend-mcp": {
+      "path": "/root/nudox-corpus-20261006/artifacts/images-dto20-039c360d28-20261006T111152Z/backend-mcp",
+      "sha256": "d6b58696fa516c89aee2c062cf388aae692ad5f56c5f507028e3ddbd2e0e2aeb"
+    }
+  },
+  "env": {
+    "HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/home",
+    "XDG_CONFIG_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/home/.config",
+    "XDG_DATA_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/home/.local/share",
+    "XDG_STATE_HOME": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/home/.local/state",
+    "TMPDIR": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/tmp",
+    "PATH": "/nix/store/0nbp03038s33ck712yx9219gcj3a2sqm-nodejs-slim-24.18.0/bin:/nix/store/1xklj6dmgcpgz60c9w2ynaq7ynzfsrrq-go-1.26.4/share/go/bin:/nix/store/9r02ykx9y35lf4gk6gc30gnag1y8ncp7-python3-3.13.15/bin:/nix/store/qdxzxkwh13bgv50066fk2ka3p1zpnjap-pyrefly-1.2.0-dev.1/bin:/root/nudox-corpus-20261006/corpora/next-react-alias-fixture/node_modules/typescript/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin",
+    "LANG": "C.UTF-8",
+    "USER": "root",
+    "LOGNAME": "root",
+    "BACKEND_LOCALD_COMPILER_ENVIRONMENT": "{\"version\":1,\"paths\":[{\"variable\":\"NUDOX_PYTHON\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,57,114,48,50,121,107,120,57,121,51,53,108,102,52,103,107,54,103,99,51,48,103,110,97,103,49,121,56,110,99,112,55,45,112,121,116,104,111,110,51,45,51,46,49,51,46,49,53,47,98,105,110,47,112,121,116,104,111,110,51,46,49,51]}},{\"variable\":\"NUDOX_TSC\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115,47,116,121,112,101,115,99,114,105,112,116,47,98,105,110,47,116,115,99]}},{\"variable\":\"NUDOX_GO\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111,47,98,105,110,47,103,111]}},{\"variable\":\"NUDOX_TYPESCRIPT_NODE\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,48,110,98,112,48,51,48,51,56,115,51,51,99,107,55,49,50,121,120,57,50,49,57,103,99,106,51,97,50,115,113,109,45,110,111,100,101,106,115,45,115,108,105,109,45,50,52,46,49,56,46,48,47,98,105,110,47,110,111,100,101]}},{\"variable\":\"NUDOX_TYPESCRIPT_MODULE_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,114,111,111,116,47,110,117,100,111,120,45,99,111,114,112,117,115,45,50,48,50,54,49,48,48,54,47,99,111,114,112,111,114,97,47,110,101,120,116,45,114,101,97,99,116,45,97,108,105,97,115,45,102,105,120,116,117,114,101,47,110,111,100,101,95,109,111,100,117,108,101,115]}},{\"variable\":\"NUDOX_PYREFLY\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,113,100,120,122,120,107,119,104,49,51,98,103,118,53,48,48,54,54,102,107,50,107,97,51,112,49,122,112,110,106,97,112,45,112,121,114,101,102,108,121,45,49,46,50,46,48,45,100,101,118,46,49,47,98,105,110,47,112,121,114,101,102,108,121]}},{\"variable\":\"NUDOX_GO_ROOT\",\"path\":{\"encoding\":\"unix\",\"units\":[47,110,105,120,47,115,116,111,114,101,47,49,120,107,108,106,54,100,109,103,99,112,103,122,54,48,99,57,119,50,121,110,97,113,55,121,110,122,102,115,114,114,113,45,103,111,45,49,46,50,54,46,52,47,115,104,97,114,101,47,103,111]}}]}"
+  },
+  "compiler_snapshot_sha256": "0f13715f573afb87eb795bc2eb7960737abd1b7e7cd8a35ddf54a46f4a51e066",
+  "workspace_preexisting": false,
+  "endpoint_preexisting": false,
+  "fresh_home_entries": [],
+  "installer_tested": false,
+  "dependency_closure_copied": false,
+  "accepted_project_pass": false,
+  "journey_options": {
+    "skip_update_cancel": false,
+    "cancel_before_first_add": false,
+    "transport_only": false,
+    "public_compiler_variables": [],
+    "requested_queries": [
+      "contents"
+    ],
+    "edit_file": "certifi/core.py",
+    "keep_edited_source": true,
+    "first_publish_only": false,
+    "witness_path": "certifi/core.py",
+    "witness_line": 46,
+    "resolve_detail": "summary",
+    "resolve_limit": 10
+  },
+  "source_after": {
+    "files": [
+      [
+        "LICENSE",
+        989,
+        "e93716da6b9c0d5a4a1df60fe695b370f0695603d21f6f83f053e42cfc10caf7"
+      ],
+      [
+        "MANIFEST.in",
+        200,
+        "7dffab8a578e0cf98fead81ebe76a32bcde30b650519f50f55d9e7ddb5c950ee"
+      ],
+      [
+        "PKG-INFO",
+        2474,
+        "ef5af1638fbb23676ac3c5777dfcfc2cd9c348fe4172ed5ba3d277655b248090"
+      ],
+      [
+        "README.rst",
+        1157,
+        "b36c3a5405b444d155327a647cce2ec27b564bb04710359e6322205ee04994e4"
+      ],
+      [
+        "certifi/__init__.py",
+        94,
+        "7a52e5f4205f9b3d12a31898ceaa7e3f6837d19cc230700bcae1a9d91d1486c1"
+      ],
+      [
+        "certifi/__main__.py",
+        243,
+        "c410688fdd394d45812d118034e71fee88ba7beddd30fe1c1281bd3b232cd758"
+      ],
+      [
+        "certifi/cacert.pem",
+        240216,
+        "9cc2a774b5198dcff14d9be1e66091f538975d867ce029a96bce15a55dfd730f"
+      ],
+      [
+        "certifi/core.py",
+        3396,
+        "1785558b249cbf157945445fc49fa3bc2bc92b0ac37153b30a8d1eb4387d8fd1"
+      ],
+      [
+        "certifi/py.typed",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "certifi/tests/__init__.py",
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      [
+        "certifi/tests/test_certify.py",
+        467,
+        "7c179d1edf37f7e912b133663735fb46c6338d5d0e5f8915d11c3bc287d227b8"
+      ],
+      [
+        "certifi.egg-info/PKG-INFO",
+        2474,
+        "ef5af1638fbb23676ac3c5777dfcfc2cd9c348fe4172ed5ba3d277655b248090"
+      ],
+      [
+        "certifi.egg-info/SOURCES.txt",
+        356,
+        "52a6f6268c2986594afbc178e2d9dab9fba7c420de07570fff929d49a648163d"
+      ],
+      [
+        "certifi.egg-info/dependency_links.txt",
+        1,
+        "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+      ],
+      [
+        "certifi.egg-info/not-zip-safe",
+        1,
+        "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+      ],
+      [
+        "certifi.egg-info/top_level.txt",
+        8,
+        "28cbb8bd409fb232eb90f6d235d81d7a44bea552730402453bffe723c345ebe5"
+      ],
+      [
+        "pyproject.toml",
+        91,
+        "81562b11a9a84cb5d47f66a78e7338546fddb7f5c62f4308b337e891f7d8a0d7"
+      ],
+      [
+        "setup.cfg",
+        38,
+        "1c473cbaee8da5fc46e7f0158794af5cea4414c34a3cf3f180c2001f5e38bd3e"
+      ],
+      [
+        "setup.py",
+        2221,
+        "0467d673b39e7cd81f6289cbb7b6ac50c2f7f5ba0f79b9241e51bc07af3dc061"
+      ]
+    ],
+    "sha256": "f4297b84672ae3fd91bca3e45b96682f7f33412597e97b65a6039212d47191ce"
+  },
+  "checks": [
+    {
+      "query": "contents",
+      "mcp_search": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "~lanes exact\u27135 names\u27135 graph\u27135 semantic\u2717 unconfigured semantic-search unavailable (unconfigured)\nproject \u203a certifi/tests/test_certify.py:11 \u203a test_read_contents  \u00b7  function \u00b7 python\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::90206043b7f0fccd291850ced876b29242526a97a1051c79805fc437392fdf51::test_read_contents`  def test_read_contents(self) -> None:\nproject \u203a contents  \u00b7  function \u00b7 unknown\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a4f6fee4b9daedd2acc0ac6f941e17449081d75ca3cdad71ba57058c61dd03f7::contents`  function(parameters=[],results=[element(kind=required,label=none,type=builtin(string))],abi=none,variadic=none,unsafe=false)\nexternal semantic target  \u00b7  unknown\n`external semantic target`\nproject \u203a contents  \u00b7  type \u00b7 unknown\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a3f9341a9d540515e73eba7ae95e8ef8f5f4540bbdef48fe50d5c3be7c223e1a::contents`  unknown(unannotated)\nproject \u203a contents  \u00b7  type \u00b7 unknown\n`/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::1c754b72602d1321aa5c31440de9700cf5f4540bbdef48fe50d5c3be7c223e1a::contents`  unknown(unannotated)\n",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "answer": "records",
+            "budget": {
+              "bytes": 3154,
+              "bytesPerToken": 4,
+              "estimatedTokens": 789
+            },
+            "coverage": [
+              {
+                "lane": "exact",
+                "state": "complete"
+              },
+              {
+                "lane": "names",
+                "state": "complete"
+              },
+              {
+                "lane": "graph",
+                "state": "complete"
+              },
+              {
+                "lane": "semantic",
+                "reason": "unconfigured",
+                "state": "unavailable"
+              }
+            ],
+            "detail": "full",
+            "more": false,
+            "query": "contents",
+            "readiness": "ready",
+            "records": [
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::90206043b7f0fccd291850ced876b29242526a97a1051c79805fc437392fdf51::test_read_contents",
+                  "key": "434eb0c2",
+                  "line": 11,
+                  "name": "test_read_contents",
+                  "path": "certifi/tests/test_certify.py",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project",
+                  "segments": [
+                    "test_read_contents"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a certifi/tests/test_certify.py:11 \u203a test_read_contents"
+                },
+                "kind": "function",
+                "language": "python",
+                "score": 4294967292,
+                "signature": "def test_read_contents(self) -> None:",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a4f6fee4b9daedd2acc0ac6f941e17449081d75ca3cdad71ba57058c61dd03f7::contents",
+                  "key": "66b68de3",
+                  "name": "contents",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project",
+                  "segments": [
+                    "contents"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a contents"
+                },
+                "kind": "function",
+                "language": "unknown",
+                "score": 4294967295,
+                "signature": "function(parameters=[],results=[element(kind=required,label=none,type=builtin(string))],abi=none,variadic=none,unsafe=false)",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "external semantic target",
+                  "key": "b067f3c7",
+                  "name": "external semantic target",
+                  "project": "external semantic target",
+                  "segments": [],
+                  "shape": "package",
+                  "trail": "external semantic target"
+                },
+                "language": "unknown",
+                "score": 4294967291,
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::a3f9341a9d540515e73eba7ae95e8ef8f5f4540bbdef48fe50d5c3be7c223e1a::contents",
+                  "key": "e48b9b57",
+                  "name": "contents",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project",
+                  "segments": [
+                    "contents"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a contents"
+                },
+                "kind": "type",
+                "language": "unknown",
+                "score": 4294967293,
+                "signature": "unknown(unannotated)",
+                "state": "ready"
+              },
+              {
+                "identity": {
+                  "coordinate": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project::semantic::1c754b72602d1321aa5c31440de9700cf5f4540bbdef48fe50d5c3be7c223e1a::contents",
+                  "key": "f7f1a09c",
+                  "name": "contents",
+                  "project": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T123013Z-python-configured-fce7f7c7/project",
+                  "segments": [
+                    "contents"
+                  ],
+                  "shape": "semantic",
+                  "trail": "project \u203a contents"
+                },
+                "kind": "type",
+                "language": "unknown",
+                "score": 4294967294,
+                "signature": "unknown(unannotated)",
+                "state": "ready"
+              }
+            ],
+            "semantic_search": {
+              "reason": "unconfigured",
+              "status": "unavailable"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "owned_daemons_remaining": [],
+  "endpoint_remaining": true,
+  "source_unchanged": false
+}

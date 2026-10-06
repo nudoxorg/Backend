@@ -1,0 +1,30 @@
+{
+  "files": [
+    {
+      "bytes": 1070,
+      "path": "Readme.md",
+      "sha256": "e1a86711fb5055c0e66901276b7d2c843554bf5f1dab218c069c8b9d17148e81"
+    },
+    {
+      "bytes": 235,
+      "path": "index.js",
+      "sha256": "f2886112236b5abaddb9dbd5c4962f037fb9a9879b6fcd0765158ecdb7188dfa"
+    },
+    {
+      "bytes": 642,
+      "path": "package.json",
+      "sha256": "33f6c3a8ec869b76fba4173cd688d1865ae74d746cc3f3b5d85abf9f40ab4038"
+    },
+    {
+      "bytes": 353,
+      "path": "test.js",
+      "sha256": "26261a38739761558b44433234039654a06d6cc4018eee94df845646577c1355"
+    }
+  ],
+  "package": {
+    "ecosystem": "npm",
+    "id": "abstract-logging",
+    "version": "2.0.1"
+  },
+  "schema": "nudox.acquired-package-source-inventory.v1"
+}

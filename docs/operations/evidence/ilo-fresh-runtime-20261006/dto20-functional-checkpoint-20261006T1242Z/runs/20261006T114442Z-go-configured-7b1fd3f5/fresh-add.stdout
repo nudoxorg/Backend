@@ -1,0 +1,29 @@
+{
+  "answer": "fault",
+  "cause": "refused",
+  "compiler_failure": {
+    "cause": {
+      "family": "authority",
+      "fault": {
+        "class": "authority",
+        "diagnostic": {
+          "observed_bytes": 206,
+          "retained_bytes": 206,
+          "truncated": false
+        },
+        "phase": "open"
+      }
+    },
+    "detail": "open authority fault: authority runtime",
+    "detail_truncated": false,
+    "kind_tag": "authority_runtime",
+    "phase": "authority",
+    "recipe_identity": "content:1135256415ccbf4e2e5b6a4d813def7543290395458806180b823398fc53211a",
+    "relative_path": "errgroup/errgroup.go",
+    "source_byte_len": 4033,
+    "source_identity": "content:0e4b4c46b1fbc88e5b94a7722f5bc15e84ba248c04a775f5c5b6a1d271d49d58"
+  },
+  "detail": "errgroup/errgroup.go: authority/authority_runtime; open authority fault: authority runtime",
+  "operand": "/root/nudox-corpus-20261006/runs/fresh-remote-runtime/20261006T114442Z-go-configured-7b1fd3f5/project",
+  "slug": "compiler-refused"
+}
