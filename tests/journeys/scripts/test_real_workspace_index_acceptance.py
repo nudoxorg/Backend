@@ -1110,6 +1110,26 @@ class RegistryArtifactOriginTests(unittest.TestCase):
                 with self.assertRaisesRegex(runner.AcceptanceError, "actual acquired source tree"):
                     runner.verify_registry_origin(binding, package, files, runner.Deadline(1))
 
+    def test_inventory_origin_and_declared_archive_are_one_exact_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            package, files, origin_binding, origin, _ = self.fixture(root)
+            source = root / "source"
+            inventory = {"schema": "nudox.acquired-package-source-inventory.v1",
+                         "package": package, "source_root": str(source), "files": files}
+            inventory_path = root / "inventory.json"
+            inventory_path.write_bytes(runner.canonical_json(inventory))
+            case = runner.ProjectCase("requests", source, False, 0, (),
+                {**package, "provenance": {"kind": "archive-sha256", "sha256": origin["archive"]["sha256"]}},
+                {"inventory_path": str(inventory_path), "inventory_sha256": hashlib.sha256(inventory_path.read_bytes()).hexdigest(),
+                 "target_subdir": ".", "origin": origin_binding})
+            proof = runner.verify_acquired_source_inventory(case, "a" * 64)
+            self.assertEqual(proof["origin_verification"], "verified-registry-artifact-v1")
+            self.assertEqual(proof["source_tree_sha256"], proof["origin_evidence"]["archive_membership_sha256"])
+            case.package["provenance"]["sha256"] = "b" * 64
+            with self.assertRaisesRegex(runner.AcceptanceError, "declared package archive"):
+                runner.verify_acquired_source_inventory(case, "a" * 64)
+
     def test_relabelled_package_cannot_reuse_real_metadata_and_archive(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             package, files, binding, origin, _ = self.fixture(Path(directory).resolve())

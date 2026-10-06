@@ -1679,6 +1679,8 @@ def verify_acquired_source_inventory(case: ProjectCase, manifest_sha: str, deadl
             "corpus_manifest_sha256": manifest_sha, "declared": case.package}
     if "origin" in binding:
         proof.update(verify_registry_origin(binding["origin"], package, observed, deadline))
+        if case.package["provenance"]["kind"] == "archive-sha256" and case.package["provenance"]["sha256"] != proof["origin_evidence"]["archive_sha256"]:
+            raise AcceptanceError("declared package archive differs from verified registry artifact")
     return proof
 
 
