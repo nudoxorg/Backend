@@ -18,7 +18,8 @@ use backend_version::{
 };
 use core::num::NonZeroU32;
 
-const MAGIC: &[u8; 4] = b"PSC1";
+const LEGACY_MAGIC: &[u8; 4] = b"PSC1";
+const MAGIC: &[u8; 4] = b"PSC2";
 const ROOT_KEY: [u8; 32] = [0x53; 32];
 
 /// Outcome retained independently from the selected semantic publication.
@@ -53,7 +54,7 @@ pub enum ProductSemanticCaptureOutcome {
 }
 
 /// Exact source and operation evidence for one package/profile capture.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProductSemanticCaptureRecord {
     operation_key: Option<[u8; 32]>,
     request_identity: [u8; 32],
@@ -64,6 +65,8 @@ pub struct ProductSemanticCaptureRecord {
     source_workspace_sequence: u64,
     source_commit: [u8; 32],
     outcome: ProductSemanticCaptureOutcome,
+    compiler_failure: Option<backend_library::PackageCompilerFailure>,
+    compiler_failure_bytes: Option<Box<[u8]>>,
 }
 
 impl ProductSemanticCaptureRecord {
@@ -83,6 +86,39 @@ impl ProductSemanticCaptureRecord {
         source_commit: [u8; 32],
         outcome: ProductSemanticCaptureOutcome,
     ) -> Result<Self, &'static str> {
+        Self::new_with_compiler_failure(
+            operation_key,
+            request_identity,
+            capture,
+            base_workspace_root,
+            base_workspace_sequence,
+            source_workspace_root,
+            source_workspace_sequence,
+            source_commit,
+            outcome,
+            None,
+        )
+    }
+
+    /// Admits a capture and, when semantic lowering refused a package, its
+    /// bounded typed compiler-failure projection.
+    ///
+    /// # Errors
+    /// Rejects the same invalid capture identities as [`Self::new`], failure
+    /// JSON over the DTO's bound, or a compiler failure attached to a
+    /// non-terminal capture state.
+    pub fn new_with_compiler_failure(
+        operation_key: Option<[u8; 32]>,
+        request_identity: [u8; 32],
+        capture: SemanticSourceCapture,
+        base_workspace_root: [u8; 32],
+        base_workspace_sequence: u64,
+        source_workspace_root: [u8; 32],
+        source_workspace_sequence: u64,
+        source_commit: [u8; 32],
+        outcome: ProductSemanticCaptureOutcome,
+        compiler_failure: Option<backend_library::PackageCompilerFailure>,
+    ) -> Result<Self, &'static str> {
         if operation_key.is_some_and(|key| key.iter().all(|byte| *byte == 0))
             || request_identity.iter().all(|byte| *byte == 0)
             || operation_key.as_ref() != capture.operation_key()
@@ -95,6 +131,27 @@ impl ProductSemanticCaptureRecord {
         {
             return Err("semantic capture operation or root identity is invalid");
         }
+        if compiler_failure.is_some()
+            && !matches!(
+                outcome,
+                ProductSemanticCaptureOutcome::Unavailable { .. }
+                    | ProductSemanticCaptureOutcome::Failed { .. }
+            )
+        {
+            return Err("compiler failure is only valid on a terminal unavailable capture");
+        }
+        let compiler_failure_bytes = compiler_failure
+            .as_ref()
+            .map(|failure| {
+                serde_json::to_vec(failure)
+                    .ok()
+                    .filter(|bytes| {
+                        bytes.len() <= backend_library::PackageCompilerFailure::MAX_ENCODED_BYTES
+                    })
+                    .ok_or("compiler failure exceeds its canonical encoding bound")
+            })
+            .transpose()?
+            .map(Vec::into_boxed_slice);
         Ok(Self {
             operation_key,
             request_identity,
@@ -105,6 +162,8 @@ impl ProductSemanticCaptureRecord {
             source_workspace_sequence,
             source_commit,
             outcome,
+            compiler_failure,
+            compiler_failure_bytes,
         })
     }
 
@@ -162,6 +221,12 @@ impl ProductSemanticCaptureRecord {
         self.outcome
     }
 
+    /// Typed, bounded package compiler failure retained for this capture.
+    #[must_use]
+    pub fn compiler_failure(&self) -> Option<&backend_library::PackageCompilerFailure> {
+        self.compiler_failure.as_ref()
+    }
+
     /// Creates a terminal update while preserving the exact capture and root
     /// basis admitted with the structural source transition.
     ///
@@ -172,7 +237,7 @@ impl ProductSemanticCaptureRecord {
         &self,
         outcome: ProductSemanticCaptureOutcome,
     ) -> Result<Self, &'static str> {
-        Self::new(
+        Self::new_with_compiler_failure(
             self.operation_key,
             self.request_identity,
             self.capture,
@@ -182,6 +247,31 @@ impl ProductSemanticCaptureRecord {
             self.source_workspace_sequence,
             self.source_commit,
             outcome,
+            self.compiler_failure.clone(),
+        )
+    }
+
+    /// Adds the compiler fault that explains an unavailable or failed
+    /// semantic result while preserving the source-capture identity.
+    ///
+    /// # Errors
+    /// Returns an error when the capture is pending/published or the typed
+    /// payload exceeds its canonical byte bound.
+    pub fn with_compiler_failure(
+        &self,
+        failure: backend_library::PackageCompilerFailure,
+    ) -> Result<Self, &'static str> {
+        Self::new_with_compiler_failure(
+            self.operation_key,
+            self.request_identity,
+            self.capture,
+            self.base_workspace_root,
+            self.base_workspace_sequence,
+            self.source_workspace_root,
+            self.source_workspace_sequence,
+            self.source_commit,
+            self.outcome,
+            Some(failure),
         )
     }
 }
@@ -238,6 +328,15 @@ impl Relation for ProductSemanticCaptureRelation {
                 encode_claim(claim, output);
             }
         }
+        match &value.compiler_failure_bytes {
+            Some(bytes) => {
+                output.push(1);
+                let length = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+                output.extend_from_slice(&length.to_be_bytes());
+                output.extend_from_slice(bytes);
+            }
+            None => output.push(0),
+        }
     }
 }
 
@@ -255,9 +354,13 @@ impl CanonicalRelation for ProductSemanticCaptureRelation {
     }
 
     fn decode_value(bytes: &[u8]) -> Result<Self::Value, RelationDecodeError> {
-        let mut rest = bytes
-            .strip_prefix(MAGIC)
-            .ok_or(RelationDecodeError::Malformed)?;
+        let (mut rest, has_failure_slot) = if let Some(rest) = bytes.strip_prefix(MAGIC) {
+            (rest, true)
+        } else if let Some(rest) = bytes.strip_prefix(LEGACY_MAGIC) {
+            (rest, false)
+        } else {
+            return Err(RelationDecodeError::Malformed);
+        };
         let (&operation_key_tag, next) =
             rest.split_first().ok_or(RelationDecodeError::Malformed)?;
         rest = next;
@@ -284,31 +387,30 @@ impl CanonicalRelation for ProductSemanticCaptureRelation {
         rest = next;
         let (source_commit, next) = take::<32>(rest)?;
         let (&tag, rest) = next.split_first().ok_or(RelationDecodeError::Malformed)?;
-        let outcome = match tag {
+        let (outcome, rest) = match tag {
             1 => {
                 let (prior, rest) = decode_optional_prior(rest)?;
-                if !rest.is_empty() {
-                    return Err(RelationDecodeError::Malformed);
-                }
-                ProductSemanticCaptureOutcome::Pending { prior }
+                (ProductSemanticCaptureOutcome::Pending { prior }, rest)
             }
             2 => {
-                let [reason] = rest else {
-                    return Err(RelationDecodeError::Malformed);
-                };
-                ProductSemanticCaptureOutcome::Unavailable {
-                    reason: decode_reason(*reason)?,
-                }
+                let (&reason, rest) = rest.split_first().ok_or(RelationDecodeError::Malformed)?;
+                (
+                    ProductSemanticCaptureOutcome::Unavailable {
+                        reason: decode_reason(reason)?,
+                    },
+                    rest,
+                )
             }
             3 => {
                 let (prior, rest) = decode_version(rest)?;
-                let [reason] = rest else {
-                    return Err(RelationDecodeError::Malformed);
-                };
-                ProductSemanticCaptureOutcome::Failed {
-                    prior,
-                    reason: decode_reason(*reason)?,
-                }
+                let (&reason, rest) = rest.split_first().ok_or(RelationDecodeError::Malformed)?;
+                (
+                    ProductSemanticCaptureOutcome::Failed {
+                        prior,
+                        reason: decode_reason(reason)?,
+                    },
+                    rest,
+                )
             }
             4 => {
                 let (coverage, rest) = decode_coverage(rest)?;
@@ -316,14 +418,49 @@ impl CanonicalRelation for ProductSemanticCaptureRelation {
                     .split_at_checked(super::semantic_relation::CLAIM_BYTES)
                     .ok_or(RelationDecodeError::Malformed)?;
                 let claim = super::semantic_relation::decode_claim(claim_bytes)?;
-                if !rest.is_empty() {
-                    return Err(RelationDecodeError::Malformed);
-                }
-                ProductSemanticCaptureOutcome::Published { coverage, claim }
+                (
+                    ProductSemanticCaptureOutcome::Published { coverage, claim },
+                    rest,
+                )
             }
             _ => return Err(RelationDecodeError::Malformed),
         };
-        ProductSemanticCaptureRecord::new(
+        let compiler_failure = if has_failure_slot {
+            let (&tag, rest) = rest.split_first().ok_or(RelationDecodeError::Malformed)?;
+            match tag {
+                0 if rest.is_empty() => None,
+                1 => {
+                    let (length_bytes, rest) = rest
+                        .split_at_checked(4)
+                        .ok_or(RelationDecodeError::Malformed)?;
+                    let length = u32::from_be_bytes(
+                        length_bytes
+                            .try_into()
+                            .map_err(|_| RelationDecodeError::Malformed)?,
+                    ) as usize;
+                    if length > backend_library::PackageCompilerFailure::MAX_ENCODED_BYTES
+                        || rest.len() != length
+                    {
+                        return Err(RelationDecodeError::Malformed);
+                    }
+                    let failure: backend_library::PackageCompilerFailure =
+                        serde_json::from_slice(rest).map_err(|_| RelationDecodeError::Malformed)?;
+                    let canonical =
+                        serde_json::to_vec(&failure).map_err(|_| RelationDecodeError::Malformed)?;
+                    if canonical.as_slice() != rest {
+                        return Err(RelationDecodeError::Malformed);
+                    }
+                    Some(failure)
+                }
+                _ => return Err(RelationDecodeError::Malformed),
+            }
+        } else {
+            if !rest.is_empty() {
+                return Err(RelationDecodeError::Malformed);
+            }
+            None
+        };
+        ProductSemanticCaptureRecord::new_with_compiler_failure(
             operation_key,
             request_identity,
             capture,
@@ -333,6 +470,7 @@ impl CanonicalRelation for ProductSemanticCaptureRelation {
             source_workspace_sequence,
             source_commit,
             outcome,
+            compiler_failure,
         )
         .map_err(|_| RelationDecodeError::Malformed)
     }

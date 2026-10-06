@@ -14,8 +14,7 @@ use thiserror::Error;
 
 use super::{
     CanonicalCompilation, CanonicalSemanticCompilation, CompilationManifestError,
-    CompilationManifestView, CompilationPrepareError, CompilationWriteError,
-    SemanticImageRegion,
+    CompilationManifestView, CompilationPrepareError, CompilationWriteError, SemanticImageRegion,
 };
 use backend_semantic::vocabulary::{
     CompileRecipeFact, LanguageProfile, NativeTool, RustEdition, Stage,
@@ -90,8 +89,8 @@ fn canonical_manifest_is_order_stable_and_uses_the_ir_manifest_identity() -> Res
     clippy::result_large_err,
     reason = "focused test retains exact duplicate-fragment admission diagnostics"
 )]
-fn canonical_manifest_deduplicates_byte_identical_empty_module_fragments()
--> Result<(), TestError> {
+fn canonical_manifest_deduplicates_byte_identical_empty_module_fragments() -> Result<(), TestError>
+{
     let (bytes, length) = fragment(b"same-empty-source", b"empty-module")?;
     let inputs = [
         compiled(FragmentView::validate(&bytes[..length])?),
@@ -99,10 +98,10 @@ fn canonical_manifest_deduplicates_byte_identical_empty_module_fragments()
     ];
     let mut scratch = [0; 2];
     let canonical = CanonicalCompilation::prepare(&inputs, &mut scratch)?;
-    assert_eq!(canonical.canonical_ordinals(), &[0]);
+    assert_eq!(canonical.fragments().count(), 1);
 
-    let mut output = [0_u8; super::COMPILATION_MANIFEST_HEADER_BYTES
-        + super::COMPILATION_MANIFEST_ENTRY_BYTES];
+    let mut output =
+        [0_u8; super::COMPILATION_MANIFEST_HEADER_BYTES + super::COMPILATION_MANIFEST_ENTRY_BYTES];
     let mut facts = [None; 1];
     let manifest = canonical.write_into(&mut output, &mut facts)?;
     assert_eq!(manifest.fragment_count, 1);
@@ -127,15 +126,11 @@ fn canonical_semantic_manifest_deduplicates_matching_empty_images_and_rejects_co
         SemanticImageRegion::from_measurement(0, 3),
     ];
     let mut scratch = [0; 2];
-    let canonical = CanonicalSemanticCompilation::prepare(
-        &inputs,
-        &images,
-        &image_bytes,
-        &mut scratch,
-    )?;
-    assert_eq!(canonical.canonical_ordinals(), &[0]);
-    let mut output = [0_u8; super::COMPILATION_MANIFEST_HEADER_BYTES
-        + super::COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES];
+    let canonical =
+        CanonicalSemanticCompilation::prepare(&inputs, &images, &image_bytes, &mut scratch)?;
+    assert_eq!(canonical.artifacts().count(), 1);
+    let mut output = [0_u8;
+        super::COMPILATION_MANIFEST_HEADER_BYTES + super::COMPILATION_SEMANTIC_MANIFEST_ENTRY_BYTES];
     let mut facts = [None; 1];
     let manifest = canonical.write_into(&mut output, &mut facts)?;
     assert_eq!(manifest.fragment_count, 1);

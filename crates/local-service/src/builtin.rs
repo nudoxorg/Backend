@@ -67,9 +67,9 @@ mod profile;
 mod source_frontier;
 use profile::{
     BuiltinAuthorityVerifier, BuiltinCaptureChange, BuiltinProfile, BuiltinSemanticChange,
-    BuiltinSemanticRelation, BuiltinSourceChange, BuiltinValidator, BuiltinWorkspaceRelation,
-    ProfileDescriptor, ProfileIds, builtin_dispatcher, execution_manifest, execution_resources,
-    product_dependency_manifest, profile_descriptor,
+    BuiltinSemanticRelation, BuiltinSourceChange, BuiltinSourceFactsChange, BuiltinValidator,
+    BuiltinWorkspaceRelation, ProfileDescriptor, ProfileIds, builtin_dispatcher,
+    execution_manifest, execution_resources, product_dependency_manifest, profile_descriptor,
 };
 pub use profile::{BuiltinIntent, BuiltinModel, BuiltinModelError};
 
@@ -395,6 +395,8 @@ pub(super) struct LazyClosureUpdate<'a> {
     pub(super) intent: &'a BuiltinIntent,
     pub(super) capture_objects: &'a [TypedObject],
     pub(super) capture_pointer: Option<&'a TypedObject>,
+    pub(super) source_facts_objects: &'a [TypedObject],
+    pub(super) source_facts_pointer: Option<&'a TypedObject>,
 }
 
 fn transition_closure_lazy(
@@ -419,6 +421,10 @@ fn transition_closure_lazy(
     if let Some(pointer) = update.capture_pointer {
         objects.push(pointer.clone());
     }
+    objects.extend(update.source_facts_objects.iter().cloned());
+    if let Some(pointer) = update.source_facts_pointer {
+        objects.push(pointer.clone());
+    }
     let registry = RelationAdmissionRegistry::new()
         .with_relation::<BuiltinWorkspaceRelation>()
         .map_err(|error| BuiltinModelError(format!("register builtin relation: {error:?}")))?
@@ -427,7 +433,9 @@ fn transition_closure_lazy(
         .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
         .map_err(|error| {
             BuiltinModelError(format!("register semantic capture relation: {error:?}"))
-        })?;
+        })?
+        .with_relation::<backend_engine::builtin::ProductSourceFileFactsRelation>()
+        .map_err(|error| BuiltinModelError(format!("register source facts relation: {error:?}")))?;
     if update.changed_sources.is_empty() {
         WorkspaceClosure::extend_checked_nodes_with_registry(
             base,

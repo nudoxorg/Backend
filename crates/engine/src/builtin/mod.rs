@@ -20,12 +20,13 @@ pub(crate) use authority::{authorized_coverage, complete_coverage};
 pub use file_facts_relation::{
     ProductSourceFactsDeclarationRef, ProductSourceFactsDirectory, ProductSourceFactsDirectoryRef,
     ProductSourceFactsPage, ProductSourceFactsPageRef, ProductSourceFactsPageView,
-    ProductSourceFileFactsAdmission, ProductSourceFileFactsInline, ProductSourceFileFactsManifest,
-    ProductSourceFileFactsPaged, ProductSourceFileFactsRecord, ProductSourceFileFactsRelation,
-    ProductSourceFileFactsRootSchema, ProductSourceFileFactsStatus, ProductSourceFileFactsUpdate,
-    admit_product_source_file_facts, build_product_source_file_facts,
-    product_source_facts_page_key, product_source_file_facts_relation,
-    product_source_file_facts_root_object,
+    ProductSourceFileFactsAdmission, ProductSourceFileFactsInline, ProductSourceFileFactsLookup,
+    ProductSourceFileFactsManifest, ProductSourceFileFactsPaged, ProductSourceFileFactsRecord,
+    ProductSourceFileFactsRelation, ProductSourceFileFactsRootSchema, ProductSourceFileFactsStatus,
+    ProductSourceFileFactsUpdate, admit_product_source_file_facts, build_product_source_file_facts,
+    product_source_facts_page_key, product_source_file_facts_record_key,
+    product_source_file_facts_relation, product_source_file_facts_root_object,
+    product_source_file_facts_row_keys,
 };
 pub use manifest::{
     ProductClosureManifestClaim, admit_product_closure_manifest, execution_input_basis,

@@ -12,10 +12,11 @@ use super::diff::execute_semantic_diff;
 use super::graph::{execute_certified_graph_query, execute_search};
 use super::index::{
     DeferredIndex, DeferredProfileTicket, IndexScanFailure, IndexScanResult, IndexScanWork,
-    PreparedIndex, PreparedProductSelection, capture_index_scan, deferred_compile_was_cancelled,
-    finish_deferred_index, finish_deferred_profile, finish_index_scan, index_project_intent_at,
-    index_project_intent_with_cluster_and_intent, remove_project_intent, run_deferred_compile,
-    run_index_scan, semantic_version_record, semantic_versions,
+    PreparedIndex, PreparedProductSelection, capture_index_scan, commit_pending_capture_failure,
+    deferred_compile_was_cancelled, finish_deferred_index, finish_deferred_profile,
+    finish_index_scan, index_project_intent_at, index_project_intent_with_cluster_and_intent,
+    remove_project_intent, run_deferred_compile, run_index_scan, semantic_version_record,
+    semantic_versions,
 };
 use super::index_operation::{
     Acceptance as IndexOperationAcceptance, IndexOperationJournal, JournalEntry,
@@ -26,10 +27,12 @@ use super::semantic_query::{
 };
 use super::semantic_shapes::execute_semantic_shapes;
 use backend_engine::application::LocalCompilerClient;
-use backend_engine::builtin::{ProductSemanticPublicationKey, ProductSemanticPublicationRecord};
+use backend_engine::builtin::{
+    ProductSemanticPublicationKey, ProductSemanticPublicationRecord, SemanticSourceCapture,
+};
 use backend_library::CompileExecutionIntent;
 use backend_library::interface::PackageUrl;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -209,6 +212,8 @@ struct IndexJob {
     owner_ticket: backend_library::IndexJobTicket,
     /// Caller-owned durable operation key; legacy starts leave this absent.
     operation_key: Option<backend_library::IndexOperationKey>,
+    /// Source captures committed before semantic candidate work began.
+    captures: BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
     /// Legacy Add request waiting for its committed Added reply.
     legacy_add: Option<(u64, u64)>,
     /// Owner-issued IndexAwait request listeners waiting for this terminal.
@@ -1864,6 +1869,8 @@ impl CommandAdapter {
                             self.owner_cluster.as_deref(),
                             self.pending_stored_acks.as_ref(),
                             true,
+                            indexing.operation_key,
+                            Some(&mut self.index_operations),
                         ) {
                             Ok(PreparedIndex::Ready(prepared)) => {
                                 terminal = Some(self.finish_prepared_index_selection(
@@ -1874,6 +1881,7 @@ impl CommandAdapter {
                                 ));
                             }
                             Ok(PreparedIndex::Compile(job)) if job.has_pending_profiles() => {
+                                indexing.captures = job.captures.clone();
                                 match self.spawn_next_index_profile(&mut indexing, job) {
                                     Ok(()) => {
                                         self.indexing = Some(indexing);
@@ -1915,107 +1923,112 @@ impl CommandAdapter {
                     mut job,
                     profile,
                     compiled,
-                } => match compiled.try_recv() {
-                    Err(std::sync::mpsc::TryRecvError::Empty) => {
-                        indexing.work = IndexJobWork::Compiling {
-                            job,
-                            profile,
-                            compiled,
-                        };
-                        self.indexing = Some(indexing);
-                        return self.with_browse_completions(daemon, ready);
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        let mut attempts = vec![profile.candidate_attempt().clone()];
-                        attempts.extend(job.pending_attempts());
-                        terminal_attempts = Some(attempts);
-                        terminal = Some(backend_library::IndexJobOutcome::Failed(
-                            backend_library::ProductText::from_static(
-                                "compiler worker ended without a terminal receipt",
-                            ),
-                        ));
-                    }
-                    Ok(_result) if indexing.cancelled.load(Ordering::Acquire) => {
-                        let mut attempts = vec![profile.candidate_attempt().clone()];
-                        attempts.extend(job.pending_attempts());
-                        terminal_attempts = Some(attempts);
-                        terminal = Some(backend_library::IndexJobOutcome::Cancelled);
-                    }
-                    Ok(result) if deferred_compile_was_cancelled(&result) => {
-                        let mut attempts = vec![profile.candidate_attempt().clone()];
-                        attempts.extend(job.pending_attempts());
-                        terminal_attempts = Some(attempts);
-                        terminal = Some(backend_library::IndexJobOutcome::Cancelled);
-                    }
-                    Ok(result) => {
-                        // The profile is consumed by admission below. Retain
-                        // only its compact attempt capability; clone the
-                        // queued list only if admission reports a terminal.
-                        let current_attempt = profile.candidate_attempt().clone();
-                        let progress = (
-                            backend_engine::SemanticLanguageProfile::new(profile.profile()),
-                            profile.ordinal(),
-                            profile.total(),
-                        );
-                        match finish_deferred_profile(
-                            daemon,
-                            &mut self.semantic_authority,
-                            &mut job,
-                            profile,
-                            result,
-                        ) {
-                            Ok(()) => {
-                                self.emit_index_progress(
-                                    &mut indexing,
-                                    backend_library::IndexJobProgressKind::ProfileAdmitted {
-                                        profile: progress.0,
-                                        ordinal: progress.1,
-                                        total: progress.2,
-                                    },
-                                );
-                                if job.has_pending_profiles() {
-                                    match self.spawn_next_index_profile(&mut indexing, job) {
-                                        Ok(()) => {
-                                            self.indexing = Some(indexing);
-                                            return self.with_browse_completions(daemon, ready);
+                } => {
+                    indexing.captures = job.captures.clone();
+                    match compiled.try_recv() {
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {
+                            indexing.work = IndexJobWork::Compiling {
+                                job,
+                                profile,
+                                compiled,
+                            };
+                            self.indexing = Some(indexing);
+                            return self.with_browse_completions(daemon, ready);
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            let mut attempts = vec![profile.candidate_attempt().clone()];
+                            attempts.extend(job.pending_attempts());
+                            terminal_attempts = Some(attempts);
+                            terminal = Some(backend_library::IndexJobOutcome::Failed(
+                                backend_library::ProductText::from_static(
+                                    "compiler worker ended without a terminal receipt",
+                                ),
+                            ));
+                        }
+                        Ok(_result) if indexing.cancelled.load(Ordering::Acquire) => {
+                            let mut attempts = vec![profile.candidate_attempt().clone()];
+                            attempts.extend(job.pending_attempts());
+                            terminal_attempts = Some(attempts);
+                            terminal = Some(backend_library::IndexJobOutcome::Cancelled);
+                        }
+                        Ok(result) if deferred_compile_was_cancelled(&result) => {
+                            let mut attempts = vec![profile.candidate_attempt().clone()];
+                            attempts.extend(job.pending_attempts());
+                            terminal_attempts = Some(attempts);
+                            terminal = Some(backend_library::IndexJobOutcome::Cancelled);
+                        }
+                        Ok(result) => {
+                            // The profile is consumed by admission below. Retain
+                            // only its compact attempt capability; clone the
+                            // queued list only if admission reports a terminal.
+                            let current_attempt = profile.candidate_attempt().clone();
+                            let progress = (
+                                backend_engine::SemanticLanguageProfile::new(profile.profile()),
+                                profile.ordinal(),
+                                profile.total(),
+                            );
+                            match finish_deferred_profile(
+                                daemon,
+                                &mut self.semantic_authority,
+                                &mut job,
+                                profile,
+                                result,
+                            ) {
+                                Ok(()) => {
+                                    self.emit_index_progress(
+                                        &mut indexing,
+                                        backend_library::IndexJobProgressKind::ProfileAdmitted {
+                                            profile: progress.0,
+                                            ordinal: progress.1,
+                                            total: progress.2,
+                                        },
+                                    );
+                                    if job.has_pending_profiles() {
+                                        match self.spawn_next_index_profile(&mut indexing, job) {
+                                            Ok(()) => {
+                                                self.indexing = Some(indexing);
+                                                return self.with_browse_completions(daemon, ready);
+                                            }
+                                            Err(error) => {
+                                                terminal =
+                                                    Some(backend_library::IndexJobOutcome::Failed(
+                                                        bounded_index_detail(error),
+                                                    ));
+                                            }
                                         }
-                                        Err(error) => {
-                                            terminal =
-                                                Some(backend_library::IndexJobOutcome::Failed(
-                                                    bounded_index_detail(error),
-                                                ));
-                                        }
-                                    }
-                                } else {
-                                    match finish_deferred_index(daemon, job) {
-                                        Ok(prepared) => {
-                                            terminal = Some(self.finish_prepared_index_selection(
-                                                daemon,
-                                                &mut indexing,
-                                                prepared,
-                                                &mut legacy_reply,
-                                            ));
-                                        }
-                                        Err(refusal) => {
-                                            terminal =
-                                                Some(backend_library::IndexJobOutcome::Refused(
-                                                    bounded_index_detail(refusal),
-                                                ));
+                                    } else {
+                                        match finish_deferred_index(daemon, job) {
+                                            Ok(prepared) => {
+                                                terminal =
+                                                    Some(self.finish_prepared_index_selection(
+                                                        daemon,
+                                                        &mut indexing,
+                                                        prepared,
+                                                        &mut legacy_reply,
+                                                    ));
+                                            }
+                                            Err(refusal) => {
+                                                terminal = Some(
+                                                    backend_library::IndexJobOutcome::Refused(
+                                                        bounded_index_detail(refusal),
+                                                    ),
+                                                );
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            Err(refusal) => {
-                                let mut attempts = vec![current_attempt];
-                                attempts.extend(job.pending_attempts());
-                                terminal_attempts = Some(attempts);
-                                terminal = Some(backend_library::IndexJobOutcome::Refused(
-                                    bounded_index_detail(refusal),
-                                ));
+                                Err(refusal) => {
+                                    let mut attempts = vec![current_attempt];
+                                    attempts.extend(job.pending_attempts());
+                                    terminal_attempts = Some(attempts);
+                                    terminal = Some(backend_library::IndexJobOutcome::Refused(
+                                        bounded_index_detail(refusal),
+                                    ));
+                                }
                             }
                         }
                     }
-                },
+                }
                 IndexJobWork::Transition => {
                     terminal = Some(backend_library::IndexJobOutcome::Failed(
                         backend_library::ProductText::from_static(
@@ -2024,7 +2037,28 @@ impl CommandAdapter {
                     ));
                 }
             }
-            if let Some(outcome) = terminal {
+            if let Some(mut outcome) = terminal {
+                if !matches!(outcome, backend_library::IndexJobOutcome::Published)
+                    && !indexing.captures.is_empty()
+                {
+                    let reason = if matches!(outcome, backend_library::IndexJobOutcome::Cancelled) {
+                        backend_engine::builtin::SemanticUnavailableReason::Cancelled
+                    } else {
+                        backend_engine::builtin::SemanticUnavailableReason::Rejected
+                    };
+                    let label = indexing.owner_ticket.package().as_str();
+                    if let Err(error) = commit_pending_capture_failure(
+                        daemon,
+                        indexing.requested_package,
+                        label,
+                        indexing.request_id,
+                        &indexing.captures,
+                        reason,
+                    ) {
+                        outcome =
+                            backend_library::IndexJobOutcome::Failed(bounded_index_detail(error));
+                    }
+                }
                 let outcome = if let Some(reason) = index_attempt_retirement_reason(&outcome) {
                     let mut retirement_failure = None;
                     for attempt in terminal_attempts.take().unwrap_or_default() {
@@ -2158,6 +2192,7 @@ impl CommandAdapter {
         let mut indexing = IndexJob {
             owner_ticket,
             operation_key,
+            captures: BTreeMap::new(),
             legacy_add: legacy_add.map(|ticket| (ticket, request_id)),
             awaiters: Vec::new(),
             cancelled: Arc::clone(&cancelled),
@@ -2774,7 +2809,9 @@ impl CommandAdapter {
             }
             Command::Search(query) => self.search(daemon, &query, certificate),
             Command::Graph(query) => self.graph(daemon, query, certificate, false),
-            Command::GraphPage { symbol, page } => self.graph_page(daemon, symbol, page, certificate),
+            Command::GraphPage { symbol, page } => {
+                self.graph_page(daemon, symbol, page, certificate)
+            }
             Command::Related(query) => self.graph(daemon, query, certificate, true),
             Command::GraphQuery(request) => execute_certified_graph_query(
                 daemon,
@@ -3135,11 +3172,19 @@ impl CommandAdapter {
             Command::Graph(query)
         };
         let query = Self::claimed_graph_source(daemon, query, certificate.as_ref());
-        let reply = self.graph_snapshot(daemon, query, include_incoming)?.map_or_else(
-            || daemon.engine().daemon().library().execute(command.clone())
-                .unwrap_or_else(|error| CommandReply::Failed(error.into())),
-            CommandReply::Graph,
-        );
+        let reply = self
+            .graph_snapshot(daemon, query, include_incoming)?
+            .map_or_else(
+                || {
+                    daemon
+                        .engine()
+                        .daemon()
+                        .library()
+                        .execute(command.clone())
+                        .unwrap_or_else(|error| CommandReply::Failed(error.into()))
+                },
+                CommandReply::Graph,
+            );
         Self::certify(daemon, &command, reply, certificate)
     }
 
@@ -3149,8 +3194,14 @@ impl CommandAdapter {
         query: backend_engine::GraphNeighborhoodQuery,
         include_incoming: bool,
     ) -> Result<Option<backend_engine::ViewSnapshot>, BuiltinModelError> {
-        match execute_semantic_graph(daemon, &self.compiler, &mut self.generations,
-            &mut self.image_rows, query, include_incoming)? {
+        match execute_semantic_graph(
+            daemon,
+            &self.compiler,
+            &mut self.generations,
+            &mut self.image_rows,
+            query,
+            include_incoming,
+        )? {
             Some(snapshot) => Ok(Some(snapshot)),
             None => execute_structural_call_graph(daemon, query, include_incoming),
         }
@@ -3165,21 +3216,31 @@ impl CommandAdapter {
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let command = Command::GraphPage { symbol, page };
         let library = daemon.engine().daemon().library();
-        let selected = Self::claimed_graph_symbol(daemon, symbol, page.basis(), certificate.as_ref());
+        let selected =
+            Self::claimed_graph_symbol(daemon, symbol, page.basis(), certificate.as_ref());
         let reply = if let Some(resolved) = selected.resolve(library.view()) {
-            let query = backend_engine::GraphNeighborhoodQuery::new(resolved, library.revision_root());
+            let query =
+                backend_engine::GraphNeighborhoodQuery::new(resolved, library.revision_root());
             // A stale page must be refused before executing against a newer graph.
             if !page.basis().matches(library.revision_root()) {
                 library.graph_page_for_address(resolved, symbol, page)
             } else if let Some(snapshot) = self.graph_snapshot(daemon, query, false)? {
-                let ids = snapshot.root.rows().iter().map(|row| row.id).collect::<Vec<_>>();
+                let ids = snapshot
+                    .root
+                    .rows()
+                    .iter()
+                    .map(|row| row.id)
+                    .collect::<Vec<_>>();
                 library.graph_page_from_ids(resolved, symbol, page, &ids)
             } else {
                 library.graph_page_for_address(resolved, symbol, page)
-            }.map(CommandReply::ProjectionPage)
-             .unwrap_or_else(|error| CommandReply::Error(error.to_string()))
+            }
+            .map(CommandReply::ProjectionPage)
+            .unwrap_or_else(|error| CommandReply::Error(error.to_string()))
         } else {
-            library.execute(command.clone()).unwrap_or_else(|error| CommandReply::Error(error.to_string()))
+            library
+                .execute(command.clone())
+                .unwrap_or_else(|error| CommandReply::Error(error.to_string()))
         };
         Self::certify(daemon, &command, reply, certificate)
     }
@@ -4259,6 +4320,7 @@ mod tests {
         adapter.indexing = Some(IndexJob {
             owner_ticket,
             operation_key: None,
+            captures: BTreeMap::new(),
             legacy_add: None,
             awaiters: Vec::new(),
             cancelled: Arc::clone(&cancelled),

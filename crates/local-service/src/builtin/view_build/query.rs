@@ -15,9 +15,9 @@ use super::identity::{
 };
 use super::semantic::semantic_row_content;
 use super::structural::{StructuralParent, StructuralProjectionPlan};
+use backend_engine::RowId;
 use backend_engine::application::{DocumentationSession, LocalCompilerClient};
 use backend_engine::builtin::ProductSemanticPublicationRecord;
-use backend_engine::RowId;
 use backend_semantic::ir::{
     DeclarationIdentity, ExternalId, ExternalTargetIdentity, LinkTarget, SemanticCoreReader as _,
     SemanticImageView, SemanticReader as _,

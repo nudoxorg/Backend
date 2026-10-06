@@ -20,7 +20,10 @@ use backend_engine::builtin::SemanticPublicationClaim;
 use backend_engine::builtin::{
     ProductSemanticCaptureOutcome, ProductSemanticCaptureRecord, ProductSemanticCaptureRelation,
     ProductSemanticPublicationKey, ProductSemanticPublicationRecord,
-    ProductSemanticPublicationRelation, SemanticPublicationVersion, SemanticSourceCapture,
+    ProductSemanticPublicationRelation, ProductSourceFileFactsRecord,
+    ProductSourceFileFactsRelation, ProductSourceFileFactsRootSchema, SemanticPublicationVersion,
+    SemanticSourceCapture, admit_product_source_file_facts, product_source_file_facts_record_key,
+    product_source_file_facts_relation, product_source_file_facts_root_object,
     semantic_capture_relation, semantic_capture_root_object,
 };
 use backend_engine::{
@@ -451,6 +454,7 @@ pub struct BuiltinIntent {
     changes: Box<[BuiltinSourceChange]>,
     semantic_changes: Box<[BuiltinSemanticChange]>,
     capture_changes: Box<[BuiltinCaptureChange]>,
+    source_facts_changes: Box<[BuiltinSourceFactsChange]>,
     semantic_selection: Option<BuiltinSemanticSelectionIntent>,
     operation_key: Option<[u8; 32]>,
 }
@@ -476,6 +480,14 @@ pub(super) struct BuiltinCaptureChange {
     pub(super) expected: Option<ProductSemanticCaptureRecord>,
     pub(super) capture: SemanticSourceCapture,
     pub(super) outcome: ProductSemanticCaptureOutcome,
+}
+
+/// Exact before/after evidence for one complete source-facts relation row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct BuiltinSourceFactsChange {
+    pub(super) key: [u8; 32],
+    pub(super) expected: Option<ProductSourceFileFactsRecord>,
+    pub(super) after: Option<ProductSourceFileFactsRecord>,
 }
 
 /// Exact before/after evidence for changing the selected compiler generation.
@@ -504,6 +516,7 @@ impl BuiltinIntent {
     const VERSION: u8 = 4;
     const KEYED_VERSION: u8 = 5;
     const CAPTURE_VERSION: u8 = 6;
+    const FACTS_VERSION: u8 = 7;
     const ADD: u8 = 1;
     const REMOVE: u8 = 2;
     const INDEX: u8 = 3;
@@ -662,6 +675,47 @@ impl BuiltinIntent {
             None,
             None,
             capture_changes,
+            Vec::new(),
+        )
+    }
+
+    pub(super) fn with_source_facts(
+        self,
+        source_facts_changes: Vec<BuiltinSourceFactsChange>,
+    ) -> Result<Self, BuiltinModelError> {
+        Self::new_with_version(
+            Self::FACTS_VERSION,
+            self.operation,
+            self.package,
+            self.label,
+            self.changes.into_vec(),
+            self.semantic_changes.into_vec(),
+            self.semantic_selection,
+            self.operation_key,
+            self.capture_changes.into_vec(),
+            source_facts_changes,
+        )
+    }
+
+    pub(super) fn index_with_source_facts(
+        package: backend_engine::PackageKey,
+        label: impl Into<String>,
+        changes: Vec<BuiltinSourceChange>,
+        semantic_changes: Vec<BuiltinSemanticChange>,
+        capture_changes: Vec<BuiltinCaptureChange>,
+        source_facts_changes: Vec<BuiltinSourceFactsChange>,
+    ) -> Result<Self, BuiltinModelError> {
+        Self::new_with_version(
+            Self::FACTS_VERSION,
+            BuiltinIntentOperation::Index,
+            package,
+            label,
+            changes,
+            semantic_changes,
+            None,
+            None,
+            capture_changes,
+            source_facts_changes,
         )
     }
 
@@ -710,6 +764,7 @@ impl BuiltinIntent {
             semantic_selection,
             None,
             Vec::new(),
+            Vec::new(),
         )
     }
 
@@ -723,10 +778,11 @@ impl BuiltinIntent {
         semantic_selection: Option<BuiltinSemanticSelectionIntent>,
         operation_key: Option<[u8; 32]>,
         mut capture_changes: Vec<BuiltinCaptureChange>,
+        mut source_facts_changes: Vec<BuiltinSourceFactsChange>,
     ) -> Result<Self, BuiltinModelError> {
         if !matches!(
             encoding_version,
-            3 | Self::VERSION | Self::KEYED_VERSION | Self::CAPTURE_VERSION
+            3 | Self::VERSION | Self::KEYED_VERSION | Self::CAPTURE_VERSION | Self::FACTS_VERSION
         ) || (encoding_version < Self::VERSION
             && (matches!(operation, BuiltinIntentOperation::SelectSemanticGeneration)
                 || semantic_selection.is_some()))
@@ -734,6 +790,7 @@ impl BuiltinIntent {
                 && operation_key.is_none_or(|key| key.iter().all(|byte| *byte == 0)))
             || (encoding_version != Self::KEYED_VERSION
                 && encoding_version != Self::CAPTURE_VERSION
+                && encoding_version != Self::FACTS_VERSION
                 && operation_key.is_some())
         {
             return Err(BuiltinModelError(
@@ -798,7 +855,36 @@ impl BuiltinIntent {
                     .to_owned(),
             ));
         }
-        if (changes.is_empty() && semantic_changes.is_empty() && capture_changes.is_empty())
+        source_facts_changes.sort_by_key(|change| change.key);
+        if source_facts_changes.len() > BuiltinPackageRecord::MAX_PROJECT_FILES.saturating_mul(300)
+            || (encoding_version == Self::FACTS_VERSION && source_facts_changes.is_empty())
+            || (encoding_version != Self::FACTS_VERSION && !source_facts_changes.is_empty())
+            || source_facts_changes
+                .windows(2)
+                .any(|window| window[0].key >= window[1].key)
+            || source_facts_changes.iter().any(|change| {
+                change.expected == change.after
+                    || [change.expected.as_ref(), change.after.as_ref()]
+                        .into_iter()
+                        .flatten()
+                        .any(|record| {
+                            let Some(owner) = record.file_key() else {
+                                return true;
+                            };
+                            product_source_file_facts_record_key(owner, record)
+                                .map_or(true, |canonical| canonical != change.key)
+                        })
+            })
+        {
+            return Err(BuiltinModelError(
+                "source-facts intent is unordered, oversized, or contains an invalid owner"
+                    .to_owned(),
+            ));
+        }
+        if (changes.is_empty()
+            && semantic_changes.is_empty()
+            && capture_changes.is_empty()
+            && source_facts_changes.is_empty())
             || semantic_changes.len() > backend_engine::application::MAX_MANIFEST_ENTRIES
             || semantic_changes
                 .windows(2)
@@ -832,6 +918,7 @@ impl BuiltinIntent {
             changes: changes.into_boxed_slice(),
             semantic_changes: semantic_changes.into_boxed_slice(),
             capture_changes: capture_changes.into_boxed_slice(),
+            source_facts_changes: source_facts_changes.into_boxed_slice(),
             semantic_selection,
             operation_key,
         })
@@ -843,7 +930,7 @@ impl BuiltinIntent {
         mut self,
         operation_key: backend_library::IndexOperationKey,
     ) -> Result<Self, BuiltinModelError> {
-        if self.encoding_version != Self::CAPTURE_VERSION {
+        if self.encoding_version < Self::CAPTURE_VERSION {
             self.encoding_version = Self::KEYED_VERSION;
         }
         self.operation_key = Some(operation_key.to_bytes());
@@ -869,7 +956,7 @@ impl BuiltinIntent {
         capture_changes: Vec<BuiltinCaptureChange>,
     ) -> Result<Self, BuiltinModelError> {
         Self::new_with_version(
-            Self::CAPTURE_VERSION,
+            self.encoding_version.max(Self::CAPTURE_VERSION),
             self.operation,
             self.package,
             self.label,
@@ -878,6 +965,7 @@ impl BuiltinIntent {
             self.semantic_selection,
             self.operation_key,
             capture_changes,
+            self.source_facts_changes.into_vec(),
         )
     }
 
@@ -892,7 +980,8 @@ impl BuiltinIntent {
             3 => b"BPI3",
             4 => b"BPI4",
             5 => b"BPI5",
-            _ => b"BPI6",
+            6 => b"BPI6",
+            _ => b"BPI7",
         });
         bytes.push(self.encoding_version);
         bytes.push(match self.operation {
@@ -960,7 +1049,7 @@ impl BuiltinIntent {
                     .operation_key
                     .expect("keyed intents are validated at construction"),
             );
-        } else if self.encoding_version == Self::CAPTURE_VERSION {
+        } else if self.encoding_version >= Self::CAPTURE_VERSION {
             match self.operation_key {
                 Some(key) => {
                     bytes.push(1);
@@ -978,6 +1067,18 @@ impl BuiltinIntent {
                 encode_optional_capture_record(change.expected.as_ref(), &mut bytes);
                 encode_source_capture(change.capture, &mut bytes);
                 encode_capture_outcome(change.outcome, &mut bytes);
+            }
+            if self.encoding_version >= Self::FACTS_VERSION {
+                bytes.extend_from_slice(
+                    &u32::try_from(self.source_facts_changes.len())
+                        .unwrap_or(u32::MAX)
+                        .to_be_bytes(),
+                );
+                for change in &self.source_facts_changes {
+                    bytes.extend_from_slice(&change.key);
+                    encode_optional_source_facts_record(change.expected.as_ref(), &mut bytes);
+                    encode_optional_source_facts_record(change.after.as_ref(), &mut bytes);
+                }
             }
         }
         bytes
@@ -997,6 +1098,7 @@ impl BuiltinIntent {
         let semantic_selection = decoder.semantic_selection()?;
         let operation_key = decoder.operation_key()?;
         let capture_changes = decoder.capture_changes()?;
+        let source_facts_changes = decoder.source_facts_changes()?;
         decoder.finish()?;
         let mut intent = Self::new_with_version(
             encoding_version,
@@ -1008,8 +1110,9 @@ impl BuiltinIntent {
             semantic_selection,
             operation_key,
             capture_changes,
+            source_facts_changes,
         )?;
-        if encoding_version != Self::CAPTURE_VERSION && !intent.capture_changes.is_empty() {
+        if encoding_version < Self::CAPTURE_VERSION && !intent.capture_changes.is_empty() {
             return Err(BuiltinModelError(
                 "capture markers require the v6 intent encoding".to_owned(),
             ));
@@ -1035,6 +1138,10 @@ impl BuiltinIntent {
 
     pub(super) fn capture_changes(&self) -> &[BuiltinCaptureChange] {
         &self.capture_changes
+    }
+
+    pub(super) fn source_facts_changes(&self) -> &[BuiltinSourceFactsChange] {
+        &self.source_facts_changes
     }
 
     fn admit_semantic_selection_against(
@@ -1152,6 +1259,26 @@ fn encode_optional_capture_record(
             output.push(1);
             let mut encoded = Vec::new();
             ProductSemanticCaptureRelation::encode_value(record, &mut encoded);
+            output.extend_from_slice(
+                &u32::try_from(encoded.len())
+                    .unwrap_or(u32::MAX)
+                    .to_be_bytes(),
+            );
+            output.extend_from_slice(&encoded);
+        }
+    }
+}
+
+fn encode_optional_source_facts_record(
+    record: Option<&ProductSourceFileFactsRecord>,
+    output: &mut Vec<u8>,
+) {
+    match record {
+        None => output.push(0),
+        Some(record) => {
+            output.push(1);
+            let mut encoded = Vec::new();
+            ProductSourceFileFactsRelation::encode_value(record, &mut encoded);
             output.extend_from_slice(
                 &u32::try_from(encoded.len())
                     .unwrap_or(u32::MAX)
@@ -1308,7 +1435,11 @@ impl<'a> IntentDecoder<'a> {
         if bytes.len() < 50
             || !matches!(
                 (bytes.get(..4), version),
-                (Some(b"BPI3"), 3) | (Some(b"BPI4"), 4) | (Some(b"BPI5"), 5) | (Some(b"BPI6"), 6)
+                (Some(b"BPI3"), 3)
+                    | (Some(b"BPI4"), 4)
+                    | (Some(b"BPI5"), 5)
+                    | (Some(b"BPI6"), 6)
+                    | (Some(b"BPI7"), 7)
             )
         {
             return Err(BuiltinModelError(
@@ -1473,7 +1604,7 @@ impl<'a> IntentDecoder<'a> {
                 }
                 Ok(Some(key))
             }
-            Some(0) if self.version == BuiltinIntent::CAPTURE_VERSION => Ok(None),
+            Some(0) if self.version >= BuiltinIntent::CAPTURE_VERSION => Ok(None),
             _ => Err(BuiltinModelError(
                 "malformed index operation key marker".to_owned(),
             )),
@@ -1481,16 +1612,67 @@ impl<'a> IntentDecoder<'a> {
     }
 
     fn capture_changes(&mut self) -> Result<Vec<BuiltinCaptureChange>, BuiltinModelError> {
-        if self.version != BuiltinIntent::CAPTURE_VERSION {
+        if self.version < BuiltinIntent::CAPTURE_VERSION {
             return Ok(Vec::new());
         }
         let count = self.read_u32()? as usize;
-        if count == 0 || count > backend_engine::application::MAX_MANIFEST_ENTRIES {
+        if (count == 0 && self.version == BuiltinIntent::CAPTURE_VERSION)
+            || count > backend_engine::application::MAX_MANIFEST_ENTRIES
+        {
             return Err(BuiltinModelError(
                 "malformed semantic capture change count".to_owned(),
             ));
         }
         (0..count).map(|_| self.capture_change()).collect()
+    }
+
+    fn source_facts_changes(&mut self) -> Result<Vec<BuiltinSourceFactsChange>, BuiltinModelError> {
+        if self.version < BuiltinIntent::FACTS_VERSION {
+            return Ok(Vec::new());
+        }
+        let count = self.read_u32()? as usize;
+        let maximum = BuiltinPackageRecord::MAX_PROJECT_FILES.saturating_mul(300);
+        let minimum_bytes_per_change = 34usize;
+        if count == 0
+            || count > maximum
+            || count > self.bytes.len().saturating_sub(self.at) / minimum_bytes_per_change
+        {
+            return Err(BuiltinModelError(
+                "malformed source-facts change count".to_owned(),
+            ));
+        }
+        (0..count).map(|_| self.source_facts_change()).collect()
+    }
+
+    fn source_facts_change(&mut self) -> Result<BuiltinSourceFactsChange, BuiltinModelError> {
+        let key = self
+            .take(32)?
+            .try_into()
+            .map_err(|_| BuiltinModelError("malformed source-facts key".to_owned()))?;
+        let expected = self.optional_source_facts_record()?;
+        let after = self.optional_source_facts_record()?;
+        Ok(BuiltinSourceFactsChange {
+            key,
+            expected,
+            after,
+        })
+    }
+
+    fn optional_source_facts_record(
+        &mut self,
+    ) -> Result<Option<ProductSourceFileFactsRecord>, BuiltinModelError> {
+        match self.take(1)?.first().copied() {
+            Some(0) => Ok(None),
+            Some(1) => {
+                let length = self.read_u32()? as usize;
+                ProductSourceFileFactsRelation::decode_value(self.take(length)?)
+                    .map(Some)
+                    .map_err(|_| BuiltinModelError("malformed source-facts record".to_owned()))
+            }
+            _ => Err(BuiltinModelError(
+                "malformed source-facts record tag".to_owned(),
+            )),
+        }
     }
 
     fn capture_change(&mut self) -> Result<BuiltinCaptureChange, BuiltinModelError> {
@@ -1748,6 +1930,7 @@ pub(super) fn prepare_transition_with_source_update(
         .map_err(|error| BuiltinModelError(format!("open semantic publications: {error}")))?;
     intent.admit_semantic_selection_against(&semantic)?;
     let semantic_update = prepare_semantic_update(&semantic, intent.semantic_changes())?;
+    let source_facts_update = prepare_source_facts_relation_update(base, intent)?;
     let source_changed = update.delta().changes().next().is_some();
     let semantic_changed = semantic_update.delta().changes().next().is_some();
     let changed_items = update
@@ -1755,6 +1938,7 @@ pub(super) fn prepare_transition_with_source_update(
         .changes()
         .count()
         .saturating_add(semantic_update.delta().changes().count())
+        .saturating_add(intent.source_facts_changes().len())
         .saturating_add(intent.capture_changes().len());
     if changed_items == 0 {
         return Err(BuiltinModelError(
@@ -1825,6 +2009,8 @@ pub(super) fn prepare_transition_with_source_update(
             intent,
             capture_objects: &capture_update.node_objects,
             capture_pointer: capture_update.pointer.as_ref(),
+            source_facts_objects: &source_facts_update.node_objects,
+            source_facts_pointer: source_facts_update.pointer.as_ref(),
         },
     )?;
     let registry = RelationAdmissionRegistry::new()
@@ -1835,7 +2021,9 @@ pub(super) fn prepare_transition_with_source_update(
         .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
         .map_err(|error| {
             BuiltinModelError(format!("register semantic capture relation: {error:?}"))
-        })?;
+        })?
+        .with_relation::<ProductSourceFileFactsRelation>()
+        .map_err(|error| BuiltinModelError(format!("register source facts relation: {error:?}")))?;
     let intent_bytes = intent.encode();
     let intent_key = ObjectKey::<BuiltinIntentSchema>::from_value(&intent_bytes);
     let intent_object = TypedObject::from_value(&intent_key, &intent_bytes);
@@ -1858,6 +2046,16 @@ pub(super) fn prepare_transition_with_source_update(
     } else {
         transition
     };
+    let transition = transition
+        .retain_objects(source_facts_update.node_objects, &registry)
+        .map_err(|error| BuiltinModelError(format!("retain source facts nodes: {error}")))?;
+    let transition = if let Some(pointer) = source_facts_update.pointer {
+        transition
+            .replace_object_family([pointer], &registry)
+            .map_err(|error| BuiltinModelError(format!("select source facts root: {error}")))?
+    } else {
+        transition
+    };
     transition
         .replace_object_family([intent_object], &registry)
         .map(|transition| transition.with_work(work))
@@ -1867,6 +2065,103 @@ pub(super) fn prepare_transition_with_source_update(
 struct PreparedCaptureRelationUpdate {
     node_objects: Vec<TypedObject>,
     pointer: Option<TypedObject>,
+}
+
+struct PreparedSourceFactsRelationUpdate {
+    node_objects: Vec<TypedObject>,
+    pointer: Option<TypedObject>,
+}
+
+fn prepare_source_facts_relation_update(
+    base: &WorkspaceSnapshot,
+    intent: &BuiltinIntent,
+) -> Result<PreparedSourceFactsRelationUpdate, BuiltinModelError> {
+    if intent.source_facts_changes().is_empty() {
+        return Ok(PreparedSourceFactsRelationUpdate {
+            node_objects: Vec::new(),
+            pointer: None,
+        });
+    }
+    let selected = product_source_file_facts_relation(base).map_err(|error| {
+        BuiltinModelError(format!("open selected source facts relation: {error}"))
+    })?;
+    let changes = intent
+        .source_facts_changes()
+        .iter()
+        .map(|change| TreeChange {
+            key: change.key,
+            after: change.after.clone(),
+        })
+        .collect::<Vec<_>>();
+    if let Some(relation) = selected {
+        for change in intent.source_facts_changes() {
+            let current = relation.lookup(&change.key).map_err(|error| {
+                BuiltinModelError(format!("read current source facts row: {error}"))
+            })?;
+            if current != change.expected {
+                return Err(BuiltinModelError(
+                    "source facts base does not match its persisted before value".to_owned(),
+                ));
+            }
+        }
+        let update = relation
+            .prepare_update(&changes)
+            .map_err(|error| BuiltinModelError(format!("prepare source facts delta: {error}")))?;
+        let node_objects = update
+            .changed_nodes()
+            .iter()
+            .map(|node| {
+                TypedObject::from_state_root(node.commitment(), node).map_err(|error| {
+                    BuiltinModelError(format!("retain source facts node: {error:?}"))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(PreparedSourceFactsRelationUpdate {
+            node_objects,
+            pointer: Some(product_source_file_facts_root_object(
+                update.target().root(),
+            )),
+        })
+    } else {
+        if intent
+            .source_facts_changes()
+            .iter()
+            .any(|change| change.expected.is_some() || change.after.is_none())
+        {
+            return Err(BuiltinModelError(
+                "source facts relation disappeared before its expected row".to_owned(),
+            ));
+        }
+        let entries: Vec<([u8; 32], ProductSourceFileFactsRecord)> = intent
+            .source_facts_changes()
+            .iter()
+            .filter_map(|change| change.after.clone().map(|record| (change.key, record)))
+            .collect();
+        let state = backend_engine::RelationState::<ProductSourceFileFactsRelation>::from_entries(
+            entries,
+            super::admitted_coverage()?,
+        )
+        .map_err(|error| {
+            BuiltinModelError(format!("build initial source facts relation: {error}"))
+        })?;
+        let mut closure = state.node_closure();
+        let mut node_objects = Vec::new();
+        while let Some(node) = closure.try_next().map_err(|error| {
+            BuiltinModelError(format!("traverse initial source facts nodes: {error:?}"))
+        })? {
+            node_objects.push(
+                TypedObject::from_state_root(node.state_root(), node.canonical()).map_err(
+                    |error| {
+                        BuiltinModelError(format!("retain initial source facts node: {error:?}"))
+                    },
+                )?,
+            );
+        }
+        Ok(PreparedSourceFactsRelationUpdate {
+            node_objects,
+            pointer: Some(product_source_file_facts_root_object(state.root())),
+        })
+    }
 }
 
 fn prepare_capture_relation_update(
@@ -1917,12 +2212,11 @@ fn prepare_capture_relation_update(
                 let selected = semantic.lookup(&change.key).map_err(|error| {
                     BuiltinModelError(format!("read captured semantic selection: {error}"))
                 })?;
-                let selected_prior = selected.as_ref().and_then(|record| {
-                    record
-                        .selected_claim()
-                        .copied()
-                        .zip(record.selected_coverage())
-                        .map(|(claim, coverage)| SemanticPublicationVersion::new(coverage, claim))
+                let selected_prior = selected.as_ref().and_then(|record| match record {
+                    ProductSemanticPublicationRecord::Published { coverage, claim } => {
+                        Some(SemanticPublicationVersion::new(*coverage, *claim))
+                    }
+                    ProductSemanticPublicationRecord::Unavailable(_) => None,
                 });
                 if selected_prior != prior {
                     return Err(BuiltinModelError(
@@ -2423,7 +2717,9 @@ fn admit_persisted_relations(
         .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
         .map_err(|error| {
             BuiltinModelError(format!("register semantic capture relation: {error:?}"))
-        })?;
+        })?
+        .with_relation::<ProductSourceFileFactsRelation>()
+        .map_err(|error| BuiltinModelError(format!("register source facts relation: {error:?}")))?;
     // Reopen the exact authenticated closure selected by the physical HEAD.
     // The compact transition envelope intentionally contains only recovery
     // pointers, so rebuilding a new manifest from that subset would produce a
@@ -2449,6 +2745,13 @@ fn admit_persisted_relations(
                 backend_engine::encode_id(closure_id.as_bytes())
             ))
         })?;
+    validate_persisted_source_facts(
+        persisted,
+        store,
+        &persisted_intent,
+        &target_tree,
+        persisted_objects.objects(),
+    )?;
     let closure = WorkspaceClosure::from_checked_transition_root_only_with_registry(
         &manifest,
         &checked_delta,
@@ -2482,6 +2785,71 @@ fn admit_persisted_relations(
         .replace_object_family([intent_object], &registry)
         .map(|transition| transition.with_work(work))
         .map_err(|error| BuiltinModelError(format!("retain persisted intent: {error}")))
+}
+
+fn validate_persisted_source_facts(
+    persisted: &backend_engine::PersistedTransition,
+    store: &backend_engine::FileStore,
+    intent: &BuiltinIntent,
+    source: &WorkspaceRelationHandle<BuiltinWorkspaceRelation>,
+    closure_objects: &[TypedObject],
+) -> Result<(), BuiltinModelError> {
+    if intent.source_facts_changes().is_empty() {
+        return Ok(());
+    }
+    let pointer_schema = backend_version::SchemaIdentity::new(
+        ProductSourceFileFactsRootSchema::DOMAIN,
+        ProductSourceFileFactsRootSchema::TYPE,
+        ProductSourceFileFactsRootSchema::VERSION,
+    );
+    let pointer_key = ObjectKey::<ProductSourceFileFactsRootSchema>::from_value(&[0x46; 32]);
+    let pointer = closure_objects
+        .iter()
+        .find(|object| object.schema() == pointer_schema && object.key() == pointer_key.as_bytes())
+        .ok_or_else(|| {
+            BuiltinModelError("persisted source facts update has no target root pointer".to_owned())
+        })?;
+    let root: [u8; 32] = pointer
+        .bytes()
+        .try_into()
+        .map_err(|_| BuiltinModelError("malformed persisted source facts root".to_owned()))?;
+    let target = persisted
+        .relation::<ProductSourceFileFactsRelation>(store, root)
+        .map_err(|error| {
+            BuiltinModelError(format!("open persisted target source facts: {error}"))
+        })?;
+    for change in intent.source_facts_changes() {
+        let after = target.lookup(&change.key).map_err(|error| {
+            BuiltinModelError(format!("read persisted target source facts: {error}"))
+        })?;
+        if after != change.after {
+            return Err(BuiltinModelError(
+                "persisted source facts root does not match its exact intent rows".to_owned(),
+            ));
+        }
+        if let Some(ProductSourceFileFactsRecord::Manifest(manifest)) = &after {
+            let source_record = source
+                .lookup(&change.key)
+                .map_err(|error| {
+                    BuiltinModelError(format!("read persisted target source row: {error}"))
+                })?
+                .ok_or_else(|| {
+                    BuiltinModelError(
+                        "persisted source facts manifest has no source row".to_owned(),
+                    )
+                })?;
+            let file = source_record.file_fields().ok_or_else(|| {
+                BuiltinModelError("persisted source facts owner is not a file".to_owned())
+            })?;
+            admit_product_source_file_facts(file, change.key, manifest.clone(), |key| {
+                target.lookup(key).map_err(|error| error.to_string())
+            })
+            .map_err(|error| {
+                BuiltinModelError(format!("admit persisted complete source facts: {error}"))
+            })?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug)]

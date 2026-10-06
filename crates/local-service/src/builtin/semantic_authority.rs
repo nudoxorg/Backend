@@ -24,10 +24,10 @@ use backend_extension_turso::{
     AttemptInvalidatedByObservationProof, AuthorityHash, AuthorityNamespace,
     COMPILER_SEMANTIC_IMAGE_SCHEMA, CandidateAttempt, CandidateAttemptRecoveryClaim,
     CandidateAttemptRetirementReason, CompilerImageMember, CompilerPublicationEnvelope,
-    CompilerPublicationMetadata, ExistingGenerationSelection, ProjectionKind,
-    SelectedGeneration, SourceObservation, SourceObservationReceipt,
-    SourceObservationValue, SupersededAttemptProof, TursoAuthority, VersionedPlaneArtifactMetadata,
-    VersionedPlaneMember, VersionedPlaneMetadata, reopen_selected_compiler_metadata,
+    CompilerPublicationMetadata, ExistingGenerationSelection, ProjectionKind, SelectedGeneration,
+    SourceObservation, SourceObservationReceipt, SourceObservationValue, SupersededAttemptProof,
+    TursoAuthority, VersionedPlaneArtifactMetadata, VersionedPlaneMember, VersionedPlaneMetadata,
+    reopen_selected_compiler_metadata,
 };
 use backend_library::interface::{SemanticImageAuthority, SemanticImageSnapshot};
 use backend_semantic::ir::{ImageProvenance, SemanticCoreReader};
@@ -47,10 +47,10 @@ use backend_version::{
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, SyncSender, TrySendError};
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 #[cfg(test)]
 use std::sync::Mutex;
+use std::sync::mpsc::{self, SyncSender, TrySendError};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const LOCAL_BRANCH: &str = "locald";
@@ -482,11 +482,8 @@ impl CommittedSemanticSelectionLease<'_> {
         &self,
         image: backend_semantic::ir::SemanticPlaneImageKey,
     ) -> Result<backend_semantic::ir::SemanticImageIdentity, BuiltinModelError> {
-        self.authority.selected_native_image_identity_for(
-            self.claim,
-            &self.selected,
-            image,
-        )
+        self.authority
+            .selected_native_image_identity_for(self.claim, &self.selected, image)
     }
 }
 
@@ -1698,12 +1695,7 @@ impl SemanticAuthority {
         selected: &SelectedGeneration,
         image: backend_semantic::ir::SemanticPlaneImageKey,
     ) -> Result<backend_semantic::ir::SemanticImageIdentity, BuiltinModelError> {
-        Self::selected_native_image_identity_for_store(
-            &self.store,
-            expected_claim,
-            selected,
-            image,
-        )
+        Self::selected_native_image_identity_for_store(&self.store, expected_claim, selected, image)
     }
 
     pub(super) fn selected_native_image_identity_for_store(
@@ -4163,7 +4155,10 @@ mod tests {
                 .expect("admit complete Rust source set"),
             )
             .expect("compile real multifile Rust package");
-        assert!(!original_lock.exists(), "offline metadata must keep the generated lock private");
+        assert!(
+            !original_lock.exists(),
+            "offline metadata must keep the generated lock private"
+        );
         assert_eq!(staged.artifacts().len(), 2, "both crate sources compile");
         let planes = staged
             .versioned_planes()

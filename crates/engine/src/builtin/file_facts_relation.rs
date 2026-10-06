@@ -11,11 +11,13 @@
 
 use super::relation::{
     Container, DeclarationKind, ProductFileRef, ProductSourceRecord, ProductSourceRelation,
-    SourceDeclaration, SourceExcerpt, SourceExcerptExtent, SourceLanguage, SourceLocation,
-    product_source_file_key,
+    SourceDeclaration, SourceLanguage, SourceLocation, product_source_file_key,
 };
 use crate::workspace::{WorkspaceRelationError, WorkspaceRelationHandle, WorkspaceSnapshot};
-use backend_compile::{DeclarationFacts, Deprecation, Fact, MAX_FACT_TEXT_BYTES, Obligation};
+use backend_compile::{
+    DeclarationFacts, Deprecation, Fact, MAX_FACT_TEXT_BYTES, Obligation, SourceExcerpt,
+    SourceExcerptExtent,
+};
 use backend_store::TypedObject;
 use backend_version::{
     CanonicalRelation, ContentId, ObjectKey, Relation, RelationDecodeError, Schema, SchemaIdentity,
@@ -154,6 +156,13 @@ pub enum ProductSourceFileFactsRecord {
     /// One bounded run of complete declaration facts in source order.
     Page(ProductSourceFactsPage),
 }
+
+/// Owned lazy lookup retained by an admitted paged file-facts result.
+///
+/// The closure holds a clone of the owner-selected relation handle. It loads
+/// one directory or declaration row at a time when the caller visits pages.
+pub type ProductSourceFileFactsLookup =
+    Box<dyn FnMut(&[u8; 32]) -> Result<Option<ProductSourceFileFactsRecord>, String>>;
 
 /// Directory row for at most 256 declaration pages.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -309,7 +318,7 @@ pub struct ProductSourceFactsPageView<'a> {
     container_line_deltas: &'a [Option<i64>],
 }
 
-impl ProductSourceFactsPageView<'_> {
+impl<'a> ProductSourceFactsPageView<'a> {
     /// Number of declarations in this page.
     #[must_use]
     pub fn len(self) -> usize {
@@ -324,7 +333,7 @@ impl ProductSourceFactsPageView<'_> {
 
     /// Returns one declaration with its absolute source and container lines.
     #[must_use]
-    pub fn declaration(self, index: usize) -> Option<ProductSourceFactsDeclarationRef<'_>> {
+    pub fn declaration(self, index: usize) -> Option<ProductSourceFactsDeclarationRef<'a>> {
         let declaration = self.declarations.get(index)?;
         let line = self.declaration_line(index)?;
         let container_start_line = self.container_start_line(index);
@@ -551,10 +560,14 @@ pub fn build_product_source_file_facts(
             source_identity,
             status: ProductSourceFileFactsStatus::InlineComplete(Arc::from(declarations)),
         };
-        if encode_manifest(&inline_manifest)?.len()
-            <= ProductSourceFileFactsRecord::ROW_VALUE_CAPACITY
-        {
-            return finish_update(file_key, inline_manifest, Vec::new());
+        let encoded_manifest = encode_manifest(&inline_manifest)?;
+        if encoded_manifest.len() <= ProductSourceFileFactsRecord::ROW_VALUE_CAPACITY {
+            return finish_update(
+                file_key,
+                inline_manifest,
+                Vec::new(),
+                encoded_manifest.len(),
+            );
         }
     }
 
@@ -605,11 +618,11 @@ pub fn build_product_source_file_facts(
             pages: Arc::from(refs.into_boxed_slice()),
         };
         let directory_record = ProductSourceFileFactsRecord::Directory(directory);
-        let directory_key = record_content_key(&directory_record)?;
         let encoded = encode_record(&directory_record)?;
         if encoded.len() > ProductSourceFileFactsRecord::ROW_VALUE_CAPACITY {
             return Err("facts directory exceeds canonical row capacity".to_owned());
         }
+        let directory_key = content_key_bytes(&encoded);
         directory_refs.push(ProductSourceFactsDirectoryRef {
             key: directory_key,
             base_line,
@@ -623,7 +636,7 @@ pub fn build_product_source_file_facts(
                 .ok_or_else(|| "empty facts directory group".to_owned())?
                 .last_boundary,
         });
-        directory_rows.push((directory_key, directory_record));
+        directory_rows.push((directory_key, directory_record, encoded.len()));
     }
 
     let declaration_count = u32::try_from(declarations.len())
@@ -645,19 +658,31 @@ pub fn build_product_source_file_facts(
     }
     let mut rows = Vec::with_capacity(page_rows.len() + directory_rows.len());
     let mut unique = BTreeMap::new();
-    for (key, record) in page_rows
+    for (key, record, encoded_len) in page_rows
         .into_iter()
-        .map(|page| (page.key, ProductSourceFileFactsRecord::Page(page.record)))
+        .map(|page| {
+            (
+                page.key,
+                ProductSourceFileFactsRecord::Page(page.record),
+                page.encoded_bytes,
+            )
+        })
         .chain(directory_rows)
     {
-        if let Some(prior) = unique.insert(key, record.clone())
-            && prior != record
-        {
-            return Err("facts page content key collision".to_owned());
+        if let Some((prior, _)) = unique.insert(key, (record.clone(), encoded_len)) {
+            if prior != record {
+                return Err("facts page content key collision".to_owned());
+            }
         }
     }
-    rows.extend(unique);
-    finish_update(file_key, manifest, rows)
+    let mut encoded_bytes = manifest_bytes.len();
+    for (_, (_, encoded_len)) in &unique {
+        encoded_bytes = encoded_bytes
+            .checked_add(*encoded_len)
+            .ok_or_else(|| "source facts encoded byte count overflowed".to_owned())?;
+    }
+    rows.extend(unique.into_iter().map(|(key, (record, _))| (key, record)));
+    finish_update(file_key, manifest, rows, encoded_bytes)
 }
 
 /// Admits a file manifest against its exact compact source row and resolves
@@ -729,6 +754,58 @@ where
     }
 }
 
+/// Returns all canonical relation keys owned by one admitted file-facts
+/// manifest. The manifest and every referenced directory/page are validated
+/// against the exact compact source row before their keys can be removed or
+/// replaced by a source transaction.
+///
+/// The returned vector is bounded by the single file's verified page tree;
+/// it never walks or materializes other files in the project relation.
+///
+/// # Errors
+/// Returns an error when the manifest is not bound to `file` or its page tree
+/// is incomplete, unordered, misowned, or has a bad content key.
+pub fn product_source_file_facts_row_keys<Lookup>(
+    file: ProductFileRef<'_>,
+    manifest_key: [u8; 32],
+    manifest: ProductSourceFileFactsManifest,
+    lookup: Lookup,
+) -> Result<Vec<[u8; 32]>, String>
+where
+    Lookup: FnMut(&[u8; 32]) -> Result<Option<ProductSourceFileFactsRecord>, String>,
+{
+    let mut keys = vec![manifest_key];
+    match admit_product_source_file_facts(file, manifest_key, manifest, lookup)? {
+        ProductSourceFileFactsAdmission::InlineComplete(_) => {}
+        ProductSourceFileFactsAdmission::PagedVerified(mut paged) => {
+            for directory_ref in paged.directories.iter() {
+                let directory = lookup_directory(&mut paged.lookup, paged.file_key, directory_ref)?;
+                keys.push(directory_ref.key);
+                for page_ref in directory.pages.iter() {
+                    let page = lookup_page(
+                        &mut paged.lookup,
+                        paged.file_key,
+                        page_ref,
+                        &directory_ref.key,
+                    )?;
+                    validate_page_identity(
+                        &page,
+                        paged.project,
+                        &paged.path,
+                        paged.language,
+                        directory_ref
+                            .base_line
+                            .checked_add(page_ref.line_delta)
+                            .ok_or_else(|| "facts page base line exceeds u32".to_owned())?,
+                    )?;
+                    keys.push(page_ref.key);
+                }
+            }
+        }
+    }
+    Ok(keys)
+}
+
 impl Relation for ProductSourceFileFactsRelation {
     const DOMAIN: u8 = 0x97;
     const TYPE: u16 = 6;
@@ -761,10 +838,32 @@ pub fn product_source_facts_page_key(
     file_key: [u8; 32],
     page: &ProductSourceFileFactsRecord,
 ) -> Result<[u8; 32], String> {
-    if !matches!(page, ProductSourceFileFactsRecord::Page(_)) || page.file_key() != Some(file_key) {
+    if !matches!(page, ProductSourceFileFactsRecord::Page(_)) {
         return Err("facts page key input has the wrong record or owner".to_owned());
     }
-    record_content_key(page)
+    product_source_file_facts_record_key(file_key, page)
+}
+
+/// Returns the canonical relation key for one facts row owned by `file_key`.
+/// Manifest keys are the source-file key; directory and declaration-page keys
+/// are content hashes that include their exact file owner.
+///
+/// # Errors
+/// Returns an error for a mismatched owner or a manifest stored under any key
+/// other than its owning source-file key.
+pub fn product_source_file_facts_record_key(
+    file_key: [u8; 32],
+    record: &ProductSourceFileFactsRecord,
+) -> Result<[u8; 32], String> {
+    if record.file_key() != Some(file_key) {
+        return Err("facts record has the wrong file owner".to_owned());
+    }
+    match record {
+        ProductSourceFileFactsRecord::Manifest(_) => Ok(file_key),
+        ProductSourceFileFactsRecord::Directory(_) | ProductSourceFileFactsRecord::Page(_) => {
+            record_content_key(record)
+        }
+    }
 }
 
 struct BuiltPage {
@@ -773,23 +872,17 @@ struct BuiltPage {
     first_boundary: [u8; 32],
     last_boundary: [u8; 32],
     record: ProductSourceFactsPage,
+    encoded_bytes: usize,
 }
 
 fn finish_update(
     manifest_key: [u8; 32],
     manifest: ProductSourceFileFactsManifest,
     pages: Vec<([u8; 32], ProductSourceFileFactsRecord)>,
+    encoded_bytes: usize,
 ) -> Result<ProductSourceFileFactsUpdate, String> {
-    let record = ProductSourceFileFactsRecord::Manifest(manifest.clone());
-    let manifest_bytes = encode_record(&record)?;
-    let mut encoded_bytes = manifest_bytes.len();
-    if manifest_bytes.len() > ProductSourceFileFactsRelation::ROW_VALUE_CAPACITY {
+    if encoded_bytes == 0 {
         return Err("source facts manifest exceeds canonical row capacity".to_owned());
-    }
-    for (_, record) in &pages {
-        encoded_bytes = encoded_bytes
-            .checked_add(encode_record(record)?.len())
-            .ok_or_else(|| "source facts encoded byte count overflowed".to_owned())?;
     }
     Ok(ProductSourceFileFactsUpdate {
         manifest_key,
@@ -817,14 +910,14 @@ fn build_declaration_pages(
             let cost = estimate_declaration_bytes(&declarations[end], path)?;
             if end > start
                 && estimated.saturating_add(cost)
-                    > ProductSourceFileFactsRelation::ROW_VALUE_CAPACITY
+                    > ProductSourceFileFactsRecord::ROW_VALUE_CAPACITY
                         .saturating_sub(FACTS_PAGE_HEADROOM)
             {
                 break;
             }
             if end == start
                 && cost
-                    > ProductSourceFileFactsRelation::ROW_VALUE_CAPACITY
+                    > ProductSourceFileFactsRecord::ROW_VALUE_CAPACITY
                         .saturating_sub(FACTS_PAGE_HEADROOM)
             {
                 return Err("one source declaration exceeds facts page capacity".to_owned());
@@ -851,7 +944,7 @@ fn build_declaration_pages(
             &boundaries[start..end],
         )?;
         let mut encoded = encode_record(&ProductSourceFileFactsRecord::Page(page.clone()))?;
-        while encoded.len() > ProductSourceFileFactsRelation::ROW_VALUE_CAPACITY {
+        while encoded.len() > ProductSourceFileFactsRecord::ROW_VALUE_CAPACITY {
             if end <= start + 1 {
                 return Err(
                     "one encoded source facts declaration page exceeds row capacity".to_owned(),
@@ -869,14 +962,14 @@ fn build_declaration_pages(
             )?;
             encoded = encode_record(&ProductSourceFileFactsRecord::Page(page.clone()))?;
         }
-        let page_record = ProductSourceFileFactsRecord::Page(page.clone());
-        let key = record_content_key(&page_record)?;
+        let key = content_key_bytes(&encoded);
         pages.push(BuiltPage {
             key,
             base_line,
             first_boundary: page.first_boundary,
             last_boundary: page.last_boundary,
             record: page,
+            encoded_bytes: encoded.len(),
         });
         start = end;
     }
@@ -1243,10 +1336,14 @@ fn page_last_absolute_line(page: &ProductSourceFactsPage, base_line: u32) -> Res
 
 fn record_content_key(record: &ProductSourceFileFactsRecord) -> Result<[u8; 32], String> {
     let bytes = encode_record(record)?;
+    Ok(content_key_bytes(&bytes))
+}
+
+fn content_key_bytes(bytes: &[u8]) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"backend.product-source-file-facts.row.v1\0");
-    hasher.update(&bytes);
-    Ok(*hasher.finalize().as_bytes())
+    hasher.update(bytes);
+    *hasher.finalize().as_bytes()
 }
 
 fn encode_record(record: &ProductSourceFileFactsRecord) -> Result<Vec<u8>, String> {
@@ -1941,28 +2038,152 @@ mod tests {
                 matches!(record, ProductSourceFileFactsRecord::Page(_)).then_some(*key)
             })
             .collect::<std::collections::BTreeSet<_>>();
-        let new_keys = second
+        let prefixed_keys = second
             .pages()
             .iter()
             .filter_map(|(key, record)| {
                 matches!(record, ProductSourceFileFactsRecord::Page(_)).then_some(*key)
             })
             .collect::<std::collections::BTreeSet<_>>();
-        let reused = old_keys.intersection(&new_keys).count();
-        assert!(
-            reused > 0,
-            "prefix insertion should retain some declaration pages"
-        );
-        assert!(
-            reused < old_keys.len(),
-            "the insertion must rewrite affected pages"
+        assert_eq!(
+            old_keys, prefixed_keys,
+            "line-only prefix must preserve every page key"
         );
         assert_eq!(second.declaration_count(), original.len());
+        let prefix_page_bytes = first
+            .pages()
+            .iter()
+            .filter(|(key, record)| {
+                matches!(record, ProductSourceFileFactsRecord::Page(_))
+                    && prefixed_keys.contains(key)
+            })
+            .map(|(_, record)| encode_record(record).expect("encoded page").len())
+            .sum::<usize>();
+
+        let comment_source = format!("// A harmless inventory note.\n\n{source}");
+        let comment_analysis = frontend
+            .analyze(Path::new("src/Panels.tsx"), comment_source.as_bytes())
+            .expect("comment-prefixed realistic TSX source analysis");
+        let comment_update = build_product_source_file_facts(
+            project,
+            "src/Panels.tsx",
+            SourceLanguage::TypeScript,
+            [0x18; 32],
+            [2; 32],
+            ContentId::<SourceFactDomain>::from_canonical_bytes(comment_source.as_bytes()),
+            comment_analysis.declarations(),
+        )
+        .expect("comment-prefixed facts");
+        let comment_keys = comment_update
+            .pages()
+            .iter()
+            .filter_map(|(key, record)| {
+                matches!(record, ProductSourceFileFactsRecord::Page(_)).then_some(*key)
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        let original_first_page = first.pages().iter().find_map(|(key, record)| {
+            let ProductSourceFileFactsRecord::Page(page) = record else {
+                return None;
+            };
+            page.declarations
+                .iter()
+                .any(|declaration| declaration.name() == "Panel_0000")
+                .then_some(*key)
+        });
+        let comment_first_page = comment_update.pages().iter().find_map(|(key, record)| {
+            let ProductSourceFileFactsRecord::Page(page) = record else {
+                return None;
+            };
+            page.declarations
+                .iter()
+                .any(|declaration| declaration.name() == "Panel_0000")
+                .then_some(*key)
+        });
+        let original_first_page = original_first_page.expect("first declaration page");
+        let comment_first_page = comment_first_page.expect("comment-prefixed first page");
+        assert_ne!(original_first_page, comment_first_page);
+        let rewritten_old = old_keys
+            .difference(&comment_keys)
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        let original_keys = first
+            .pages()
+            .iter()
+            .filter_map(|(key, record)| {
+                matches!(record, ProductSourceFileFactsRecord::Page(_)).then_some(*key)
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        let rewritten_new = comment_keys
+            .difference(&original_keys)
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(rewritten_old, [original_first_page].into());
+        assert_eq!(rewritten_new, [comment_first_page].into());
+        let original_page_bytes = first
+            .pages()
+            .iter()
+            .filter(|(_, record)| matches!(record, ProductSourceFileFactsRecord::Page(_)))
+            .map(|(_, record)| encode_record(record).expect("encoded page").len())
+            .sum::<usize>();
+        let comment_reused_bytes = first
+            .pages()
+            .iter()
+            .filter(|(key, record)| {
+                matches!(record, ProductSourceFileFactsRecord::Page(_))
+                    && comment_keys.contains(key)
+            })
+            .map(|(_, record)| encode_record(record).expect("encoded page").len())
+            .sum::<usize>();
+        eprintln!(
+            "TSX comment prefix: rewrote 1 first declaration page; reused {}/{} prior page bytes",
+            comment_reused_bytes, original_page_bytes
+        );
+
+        // Add a real source declaration in the middle, then exercise the same
+        // frontend and page producer. Content-defined boundaries must
+        // resynchronize shortly after the insertion instead of rewriting the
+        // entire suffix.
+        let mut inserted_source = prefixed_source.clone();
+        let insert_at = inserted_source
+            .find("/** Catalog panel 450;")
+            .expect("middle declaration anchor");
+        inserted_source.insert_str(
+            insert_at,
+            "/** Inserted panel. */\nexport function Panel_0449_inserted() { return <aside>Inserted</aside>; }\n",
+        );
+        let inserted_analysis = frontend
+            .analyze(Path::new("src/Panels.tsx"), inserted_source.as_bytes())
+            .expect("TSX declaration insertion analysis");
+        let inserted = build_product_source_file_facts(
+            project,
+            "src/Panels.tsx",
+            SourceLanguage::TypeScript,
+            [9; 32],
+            [2; 32],
+            ContentId::<SourceFactDomain>::from_canonical_bytes(inserted_source.as_bytes()),
+            inserted_analysis.declarations(),
+        )
+        .expect("inserted declaration facts");
+        let inserted_keys = inserted
+            .pages()
+            .iter()
+            .filter_map(|(key, record)| {
+                matches!(record, ProductSourceFileFactsRecord::Page(_)).then_some(*key)
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        let reused_keys = old_keys.intersection(&inserted_keys).count();
+        let old_page_bytes = first
+            .pages()
+            .iter()
+            .filter(|(_, record)| matches!(record, ProductSourceFileFactsRecord::Page(_)))
+            .map(|(_, record)| encode_record(record).expect("encoded page").len())
+            .sum::<usize>();
         let reused_bytes = first
             .pages()
             .iter()
             .filter(|(key, record)| {
-                matches!(record, ProductSourceFileFactsRecord::Page(_)) && new_keys.contains(key)
+                matches!(record, ProductSourceFileFactsRecord::Page(_))
+                    && inserted_keys.contains(key)
             })
             .map(|(_, record)| encode_record(record).expect("encoded page").len())
             .sum::<usize>();
@@ -1970,24 +2191,36 @@ mod tests {
             .pages()
             .iter()
             .filter(|(key, record)| {
-                matches!(record, ProductSourceFileFactsRecord::Page(_)) && !new_keys.contains(key)
+                matches!(record, ProductSourceFileFactsRecord::Page(_))
+                    && !inserted_keys.contains(key)
             })
-            .chain(second.pages().iter().filter(|(key, record)| {
+            .chain(inserted.pages().iter().filter(|(key, record)| {
                 matches!(record, ProductSourceFileFactsRecord::Page(_)) && !old_keys.contains(key)
             }))
             .map(|(_, record)| encode_record(record).expect("encoded page").len())
             .sum::<usize>();
-        assert!(reused_bytes > 0);
+        let old_rewritten_pages = old_keys.difference(&inserted_keys).count();
+        let new_rewritten_pages = inserted_keys.difference(&old_keys).count();
+        assert!(reused_keys > 0, "declaration insertion should reuse pages");
+        assert!(
+            reused_bytes * 2 >= old_page_bytes,
+            "at least half of prior fact-page bytes should be reused"
+        );
+        assert!(
+            old_rewritten_pages <= 4 && new_rewritten_pages <= 4,
+            "one inserted declaration should rewrite only the affected content-cut neighborhood"
+        );
         assert!(rewritten_bytes > 0);
         eprintln!(
-            "TSX prefix edit page reuse: {reused} pages / {reused_bytes} bytes reused; {rewritten_bytes} page bytes rewritten"
+            "TSX prefix edit: all {} pages / {prefix_page_bytes} bytes reused; one declaration insertion reused {reused_keys} pages / {reused_bytes} of {old_page_bytes} prior bytes and rewrote {rewritten_bytes} bytes",
+            old_keys.len()
         );
     }
 
     fn tsx_catalog_source(indices: impl IntoIterator<Item = usize>, prefix: bool) -> String {
         let mut source = String::new();
         if prefix {
-            source.push_str("// A harmless package inventory note.\n\n");
+            source.push_str("\n\n");
         }
         for index in indices {
             source.push_str(&format!(

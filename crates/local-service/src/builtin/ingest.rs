@@ -5,8 +5,8 @@ use backend_compile::{
     DeclarationKind, InputContentSchema, SourceExcerpt, SourceLanguage, SyntaxFrontend, typed_of,
 };
 use backend_engine::{
-    ProductSourceRecord, ProductSourceRelation, Relation, SourceUnavailableReason,
-    product_source_file_key,
+    ProductSourceFileFactsUpdate, ProductSourceRecord, ProductSourceRelation, Relation,
+    SourceUnavailableReason, build_product_source_file_facts, product_source_file_key,
 };
 use backend_library::{
     DiscoveryPolicy, EntryKind, discover_source_entries, source_selection_policy,
@@ -61,6 +61,8 @@ fn check_scan_cancellation(cancellation: Option<&AtomicBool>) -> Result<(), Stri
 pub(super) struct IndexSnapshot {
     pub(super) source_version: [u8; 32],
     pub(super) files: Vec<([u8; 32], ProductSourceRecord)>,
+    /// Complete file-facts updates produced before compact source-row retention.
+    pub(super) source_facts: Vec<ProductSourceFileFactsUpdate>,
     pub(super) compiler_sources: Vec<CompilerSource>,
     pub(super) reused_compiler_files: Vec<ReusedCompilerFile>,
     pub(super) compiler_configuration: CompilerConfigurationSnapshot,
@@ -174,6 +176,7 @@ struct ScannedFile {
     /// a compiler could be asked to analyse.
     compiler_source: Option<CompilerSource>,
     reused_compiler: Option<ReusedCompilerFile>,
+    source_facts: Option<ProductSourceFileFactsUpdate>,
 }
 
 /// An opened project directory capability. Source reads resolve every path
@@ -1638,6 +1641,7 @@ fn scan_project_with_configuration_policy_attempt(
     let mut source = blake3::Hasher::new();
     source.update(b"backend.project-snapshot.v2\0");
     let mut files = Vec::with_capacity(scanned.len());
+    let mut source_facts = Vec::with_capacity(scanned.len());
     let mut compiler_sources = Vec::with_capacity(scanned.len());
     let mut reused_compiler_files = Vec::with_capacity(scanned.len());
     for scanned in scanned {
@@ -1646,6 +1650,7 @@ fn scan_project_with_configuration_policy_attempt(
             record,
             compiler_source,
             reused_compiler,
+            source_facts: facts,
             source_bytes_read: _,
             ..
         } = scanned;
@@ -1656,6 +1661,7 @@ fn scan_project_with_configuration_policy_attempt(
         source.update(&file.content_version);
         source.update(&file.analysis_version);
         files.push((key, record));
+        source_facts.extend(facts);
         compiler_sources.extend(compiler_source);
         reused_compiler_files.extend(reused_compiler);
     }
@@ -1684,6 +1690,7 @@ fn scan_project_with_configuration_policy_attempt(
     let snapshot = IndexSnapshot {
         source_version: *source.finalize().as_bytes(),
         files,
+        source_facts,
         compiler_sources,
         reused_compiler_files,
         compiler_configuration,
@@ -2204,6 +2211,7 @@ fn unavailable_file(
         source_bytes: 0,
         source_bytes_read,
         encoded_record_bytes: encoded.len(),
+        source_facts: None,
     })
 }
 
@@ -2244,9 +2252,8 @@ fn scan_one(
     let key = product_source_file_key(project, &relative);
     let content = typed_of::<InputContentSchema>(&bytes).to_bytes();
     let analysis = frontend.analysis_version();
-
-    if let Some(record) = reusable.get(&key)
-        && record.file_fields().is_some_and(|fields| {
+    let reusable_record = reusable.get(&key).filter(|record| {
+        record.file_fields().is_some_and(|fields| {
             fields.project == project
                 && fields.path == relative
                 && fields.language == frontend.language()
@@ -2257,22 +2264,7 @@ fn scan_one(
                 && fields.content_version != [0; 32]
                 && fields.analysis_version == analysis
         })
-    {
-        // The bytes already hashed to the admitted text. Drop them here; a
-        // later package compile re-reads through the project root and refuses
-        // the compile if that second read no longer matches `content`.
-        return reused_scanned_file(
-            relative,
-            key,
-            record.clone(),
-            bytes.len(),
-            bytes.len(),
-            content,
-            profile,
-            None,
-        )
-        .map_err(SourceFault::Fatal);
-    }
+    });
 
     // The read is capped by MAX_SOURCE_BYTES. Move that bounded buffer into
     // its UTF-8 owner to avoid a second per-file source allocation; project-
@@ -2290,32 +2282,67 @@ fn scan_one(
         })?;
     debug_assert_eq!(analyzed.language(), frontend.language());
     debug_assert_eq!(analyzed.content().to_bytes(), content);
+    // Facts are produced from the full frontend result before the compact
+    // source relation applies its bounded-row retention policy. A reused
+    // compact source row is never treated as a complete facts source.
+    let source_identity =
+        backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
+            source.as_bytes(),
+        );
+    let source_facts = build_product_source_file_facts(
+        project,
+        relative.clone(),
+        analyzed.language(),
+        analyzed.content().to_bytes(),
+        analysis,
+        source_identity,
+        analyzed.declarations(),
+    )
+    .map_err(SourceFault::Fatal)?;
     // A real source file routinely extracts more detail than one canonical
     // relation row can carry: `memchr 2.8.3` alone produces a 65 686 byte row
     // for `src/arch/x86_64/avx2/memchr.rs` against a 65 464 byte capacity.
     // Constructing through the capacity-aware path sheds derived detail in a
     // fixed order and records how far it had to go, instead of failing the
     // whole project when the relation delta is later prepared.
-    let record = ProductSourceRecord::file_within_row_capacity(
-        project,
-        relative.clone(),
-        analyzed.language(),
-        analyzed.content().to_bytes(),
-        analysis,
-        analyzed.declarations().clone(),
-    )
-    .map_err(SourceFault::Fatal)?
-    // Persist the exact `SourceFactDomain` identity the semantic compiler
-    // derives from these bytes, so the view can detect an in-place edit by
-    // comparing content identity instead of path sets.
-    .with_source_identity(backend_version::ContentId::<
-        backend_version::SourceFactDomain,
-    >::from_canonical_bytes(source.as_bytes()))
-    .map_err(SourceFault::Fatal)?;
+    let record = if let Some(record) = reusable_record {
+        record.clone()
+    } else {
+        ProductSourceRecord::file_within_row_capacity(
+            project,
+            relative.clone(),
+            analyzed.language(),
+            analyzed.content().to_bytes(),
+            analysis,
+            analyzed.declarations().clone(),
+        )
+        .map_err(SourceFault::Fatal)?
+        // Persist the exact `SourceFactDomain` identity the semantic compiler
+        // derives from these bytes, so the view can detect an in-place edit by
+        // comparing content identity instead of path sets.
+        .with_source_identity(source_identity)
+        .map_err(SourceFault::Fatal)?
+    };
+    if reusable_record.is_some() {
+        let mut scanned = reused_scanned_file(
+            relative,
+            key,
+            record,
+            source_bytes,
+            source_bytes,
+            content,
+            profile,
+            None,
+        )
+        .map_err(SourceFault::Fatal)?;
+        scanned.source_facts = Some(source_facts);
+        return Ok(scanned);
+    }
     scanned_file(
         relative,
         key,
         record,
+        source_facts,
         source,
         source_bytes,
         source_bytes,
@@ -2329,6 +2356,7 @@ fn scanned_file(
     relative: String,
     key: [u8; 32],
     record: ProductSourceRecord,
+    source_facts: ProductSourceFileFactsUpdate,
     source: String,
     source_bytes: usize,
     source_bytes_read: usize,
@@ -2349,6 +2377,7 @@ fn scanned_file(
         }),
         None,
         None,
+        Some(source_facts),
     )
 }
 
@@ -2377,6 +2406,7 @@ fn reused_scanned_file(
             content,
         }),
         encoded_record_bytes,
+        None,
     )
 }
 
@@ -2390,6 +2420,7 @@ fn finish_scanned_file(
     compiler_source: Option<CompilerSource>,
     reused_compiler: Option<ReusedCompilerFile>,
     known_encoded_record_bytes: Option<usize>,
+    source_facts: Option<ProductSourceFileFactsUpdate>,
 ) -> Result<ScannedFile, String> {
     let encoded_record_bytes = if let Some(size) = known_encoded_record_bytes {
         size
@@ -2414,6 +2445,7 @@ fn finish_scanned_file(
         source_bytes,
         source_bytes_read,
         encoded_record_bytes,
+        source_facts,
     })
 }
 
