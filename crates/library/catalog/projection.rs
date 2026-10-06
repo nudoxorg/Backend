@@ -229,7 +229,11 @@ impl Library {
                 offset,
                 limit,
                 |id| self.view.row(id),
-                |row, address| self.row_matches_address(row, address),
+                |id, address| {
+                    self.view
+                        .row_ref(id)
+                        .is_some_and(|row| self.row_matches_address(row, address))
+                },
                 &self.work,
             )
         };
@@ -268,14 +272,22 @@ impl Library {
     /// Matches only producer-admitted address evidence. A readable source
     /// address selects the same compiler-owned row as its semantic address;
     /// the package prefix and captured site are read from this exact view.
-    fn row_matches_address(&self, row: &Row, address: &str) -> bool {
-        if row.label == address {
+    fn row_matches_address(
+        &self,
+        row: &Row,
+        address: crate::command::AddressSelection<'_>,
+    ) -> bool {
+        if row.label == address.text {
             return true;
         }
-        let Some((site, name)) = address.rsplit_once("::") else {
+        let Some(site) = address.source else {
             return false;
         };
-        if row.label.rsplit("::").next() != Some(name) {
+        if !row
+            .label
+            .strip_suffix(site.name)
+            .is_some_and(|prefix| prefix.ends_with("::"))
+        {
             return false;
         }
         let Some(location) = row.source.captured() else {
@@ -287,16 +299,9 @@ impl Library {
         let Some(package_row) = self.view.row_ref(RowId::Package(package)) else {
             return false;
         };
-        let Some(location_text) = site
-            .strip_prefix(&package_row.label)
-            .and_then(|suffix| suffix.strip_prefix("::"))
-        else {
-            return false;
-        };
-        let Some((path, line)) = location_text.rsplit_once(':') else {
-            return false;
-        };
-        path == location.path() && line == location.start_line().to_string()
+        site.package == package_row.label
+            && site.path == location.path()
+            && site.line == location.start_line()
     }
 
     /// Looks up one package outline under an exact source basis.

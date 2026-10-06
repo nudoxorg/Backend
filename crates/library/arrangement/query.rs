@@ -5,7 +5,7 @@ use super::{
     ProjectionArrangement, SearchPostingKey, SearchPostingTree, WorkCounters, search_grams,
     searchable_text, update,
 };
-use crate::command::NameSelection;
+use crate::command::{AddressSelection, NameSelection};
 use crate::{PackageKey, Row, RowId, SymbolKey};
 use backend_flow::MaterializedIndex;
 use std::cmp::Ordering;
@@ -177,7 +177,7 @@ impl ProjectionArrangement {
     ) -> ArrangementPage
     where
         F: Fn(RowId) -> Option<Row>,
-        A: Fn(&Row, &str) -> bool,
+        A: Fn(RowId, AddressSelection<'_>) -> bool,
     {
         let text = selection.posting_text();
         if text.is_empty() {
@@ -331,10 +331,14 @@ fn select_name_matches_page(
     limit: usize,
     postings: Option<&NamePostingTree>,
     row_for_id: impl Fn(RowId) -> Option<Row>,
-    address_matches: impl Fn(&Row, &str) -> bool,
+    address_matches: impl Fn(RowId, AddressSelection<'_>) -> bool,
     work: &WorkCounters,
 ) -> ArrangementPage {
     let normalized = selection.posting_text().to_lowercase();
+    let name_text = match selection {
+        NameSelection::Name { text, .. } => Some(text.to_lowercase()),
+        NameSelection::Address(_) => None,
+    };
     let grams = search_grams(&normalized);
     let Some(postings) = postings else {
         return ArrangementPage {
@@ -358,11 +362,16 @@ fn select_name_matches_page(
             .range((std::ops::Bound::Included(lower), std::ops::Bound::Unbounded))
             .take_while(|(key, ())| key.gram.as_slice() == gram.as_slice())
             .filter_map(|(key, ())| key.id)
+            .filter(|&id| match selection {
+                NameSelection::Name { .. } => true,
+                NameSelection::Address(address) => address_matches(id, address),
+            })
             .filter_map(row_for_id)
             .map(RankedRow::new)
-            .filter(|row| match selection {
-                NameSelection::Name(_) => row.normalized_label.contains(&normalized),
-                NameSelection::Address { address, .. } => address_matches(&row.row, address),
+            .filter(|row| {
+                name_text
+                    .as_ref()
+                    .is_none_or(|text| row.normalized_label.contains(text))
             }),
         capacity,
     );

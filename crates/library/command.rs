@@ -643,16 +643,68 @@ impl DocumentQuery {
 /// its final name only chooses a posting; it does not mint a symbol identity.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum NameSelection<'a> {
-    Name(&'a str),
-    Address { address: &'a str, name: &'a str },
+    Name { text: &'a str, name: &'a str },
+    Address(AddressSelection<'a>),
+}
+
+/// Caller address syntax, which still needs membership in the selected view.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AddressSelection<'a> {
+    pub(crate) text: &'a str,
+    name: &'a str,
+    pub(crate) source: Option<SourceAddress<'a>>,
+}
+
+/// Borrowed source-site spelling with one strictly canonical decimal line.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SourceAddress<'a> {
+    pub(crate) package: &'a str,
+    pub(crate) path: &'a str,
+    pub(crate) line: u32,
+    pub(crate) name: &'a str,
 }
 
 impl<'a> NameSelection<'a> {
     pub(crate) const fn posting_text(self) -> &'a str {
         match self {
-            Self::Name(name) | Self::Address { name, .. } => name,
+            Self::Name { name, .. } | Self::Address(AddressSelection { name, .. }) => name,
         }
     }
+}
+
+fn source_address(text: &str) -> (bool, Option<SourceAddress<'_>>) {
+    // A declaration's qualified name can itself contain `::`. Look for the
+    // rightmost source-site segment, retaining every borrowed name segment.
+    for (at, _) in text.rmatch_indices("::") {
+        let package = &text[..at];
+        let Some((site, name)) = text[at + 2..].split_once("::") else {
+            continue;
+        };
+        let Some((path, line)) = site.rsplit_once(':') else {
+            continue;
+        };
+        if package.is_empty() || path.is_empty() || name.is_empty() {
+            continue;
+        }
+        let parsed = if line.is_empty()
+            || line.starts_with('0')
+            || !line.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            None
+        } else {
+            line.parse::<u32>().ok()
+        };
+        return (
+            true,
+            parsed.map(|line| SourceAddress {
+                package,
+                path,
+                line,
+                name,
+            }),
+        );
+    }
+    (false, None)
 }
 
 /// Name or exact declaration-address lookup pinned to a source root.
@@ -691,14 +743,22 @@ impl NameQuery {
     }
 
     pub(crate) fn selection(&self) -> NameSelection<'_> {
-        match self.text.rsplit_once("::") {
-            Some((prefix, name)) if !prefix.is_empty() && !name.is_empty() => {
-                NameSelection::Address {
-                    address: &self.text,
-                    name,
-                }
-            }
-            _ => NameSelection::Name(&self.text),
+        let text = self.text.as_str();
+        let name = text.rsplit("::").next().unwrap_or(text);
+        let (source_syntax, source) = source_address(text);
+        let windows_root = text.as_bytes().get(1) == Some(&b':')
+            && matches!(text.as_bytes().get(2), Some(b'/' | b'\\'));
+        if source_syntax
+            || text.contains("::semantic::")
+            || text.starts_with('/')
+            || text.starts_with("pkg:")
+            || windows_root
+        {
+            NameSelection::Address(AddressSelection { text, name, source })
+        } else {
+            // Relative qualifications are ordinary case-insensitive names.
+            // Only their leaf selects the posting; the full text verifies a hit.
+            NameSelection::Name { text, name }
         }
     }
 

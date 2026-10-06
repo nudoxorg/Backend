@@ -1287,6 +1287,95 @@ fn exact_address_names_preserves_ambiguity_and_snapshot_bound_continuations() {
 }
 
 #[test]
+fn exact_address_names_retains_relative_qualified_ambiguity_without_scope_fallback() {
+    let (root, object) = source();
+    let basis = Basis::new(root, object);
+    let package = package_key("pkg");
+    let other_package = package_key("other");
+    let first = RowId::Symbol(symbol_key("compiler-pkg-method"));
+    let second = RowId::Symbol(symbol_key("compiler-other-method"));
+    let unrelated = RowId::Symbol(symbol_key("compiler-bar-method"));
+    let address = "pkg::semantic::hash::Foo::method";
+    let library = projection(vec![
+        Row::new(RowId::Package(package), basis, "pkg"),
+        Row::new(RowId::Package(other_package), basis, "other"),
+        Row::in_package(first, basis, package, address)
+            .with_source(SourceLocation::new("src/foo.py", 4).expect("site")),
+        Row::in_package(
+            second,
+            basis,
+            other_package,
+            "other::semantic::hash::Foo::method",
+        )
+        .with_source(SourceLocation::new("src/foo.py", 4).expect("other site")),
+        Row::in_package(
+            unrelated,
+            basis,
+            package,
+            "pkg::semantic::other::Bar::method",
+        )
+        .with_source(SourceLocation::new("src/bar.py", 8).expect("unrelated site")),
+    ]);
+    let names = |text| {
+        library
+            .names(&NameQuery::new(
+                text,
+                library.revision_root(),
+                QueryLimit::default(),
+            ))
+            .expect("qualified selection")
+    };
+    let mut expected = vec![first, second];
+    expected.sort_unstable();
+    for relative in ["Foo::method", "fOO::mETHod", "Foo::met"] {
+        assert_eq!(name_page_ids(&names(relative)), expected, "{relative}");
+    }
+    for exact in [
+        address,
+        "pkg::src/foo.py:4::method",
+        "pkg::src/foo.py:4::Foo::method",
+    ] {
+        assert_eq!(name_page_ids(&names(exact)), [first], "{exact}");
+    }
+    for foreign in [
+        "forged::semantic::hash::Foo::method",
+        "pkg::semantic::forged::Foo::method",
+        "pkg::semantic::hash::Foo::Method",
+        "forged::src/foo.py:4::Foo::method",
+        "pkg::src/Foo.py:4::Foo::method",
+        "pkg::src/foo.py:5::Foo::method",
+        "pkg::src/foo.py:04::Foo::method",
+        "pkg::src/foo.py:+4::Foo::method",
+        "pkg::src/foo.py:4294967296::Foo::method",
+        "pkg::src/foo.py:4::foo::method",
+    ] {
+        assert_eq!(names(foreign).root.row_count(), 0, "{foreign}");
+    }
+    let page = library
+        .names(&NameQuery::new(
+            "Foo::method",
+            library.revision_root(),
+            QueryLimit::new(1).expect("limit"),
+        ))
+        .expect("qualified first page");
+    let next = page.next.expect("ambiguous relative qualification");
+    let second_page = library
+        .names(
+            &NameQuery::new(
+                "Foo::method",
+                library.revision_root(),
+                QueryLimit::new(1).expect("limit"),
+            )
+            .with_cursor(next),
+        )
+        .expect("qualified continuation");
+    assert_ne!(name_page_ids(&page), name_page_ids(&second_page));
+    assert!(second_page.next.is_none());
+    assert!(!library.view().compatibility_rows_are_materialized());
+    assert_eq!(library.work_counters().scan_rows, 0);
+}
+
+#[test]
 fn exact_address_names_and_leaf_postings_agree_after_incremental_replacement() {
     let (root, object) = source();
     let basis = Basis::new(root, object);
