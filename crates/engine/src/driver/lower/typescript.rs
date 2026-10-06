@@ -11746,6 +11746,63 @@ type Container = {\n\
     }
 
     #[test]
+    fn native_tsz_compact_fragment_uses_typed_anonymous_anchors_and_keeps_empty_literals()
+    -> Result<(), LaneError> {
+        let source = "const empty = \"\";\nexport function currentImpl(copy: any) {\n  return [copy].map((key, childValue) => { return childValue; });\n}\n";
+        let authority = native_tsz_project_with_resolutions(&[("input.ts", source)], &[])?;
+        let project = authority
+            .project()
+            .ok_or(LaneError::Missing("native project"))?;
+        let facts = collect_native_tsz_file(project, "input.ts", source)?;
+        let identity = backend_semantic::ir::SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes()),
+            byte_len: u32::try_from(source.len())?,
+        };
+        let recipe = CompileRecipeFact::derive(
+            LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+            Stage::LowerIr,
+            NativeTool::TypeScriptCompiler,
+            identity.identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"native-anonymous-compact-fixture"),
+        );
+        let ir = facts.build_ir(
+            recipe.profile,
+            identity,
+            recipe,
+            crate::driver::types::DeclarationScope::fixture(),
+        )?;
+        assert!(ir.items().any(|item| item.name() == b"empty"));
+        let anchors = ir
+            .canonical_entities()
+            .filter_map(|entity| {
+                entity
+                    .name
+                    .anonymous_callable_anchor()
+                    .and_then(|atom| ir.atom(atom))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(anchors.len(), 1);
+        assert!(AnonymousCallableAnchorView::try_from_encoded(anchors[0]).is_some());
+        let mut output = vec![0xa5; 65_536];
+        let bytes = admit(&facts, identity, recipe, recipe.profile, &mut output)?;
+        let compact = FragmentView::validate(bytes)?;
+        assert!(compact.atoms().all(|atom| !atom.bytes.is_empty()));
+        assert!(compact.atoms().any(|atom| atom.bytes == anchors[0]));
+        assert!(compact.atoms().any(|atom| atom.bytes == b"empty"));
+
+        let mut invalid = FactSet::new();
+        let rejected = invalid
+            .push(crate::driver::lower::SemanticFact::new(
+                EntityKind::Function,
+                b"",
+                crate::driver::lower::LEAF_PRODUCT,
+            ))
+            .expect_err("an absent required name is not an anonymous anchor");
+        assert_eq!(rejected.cause, crate::driver::lower::FactFault::EmptyName);
+        Ok(())
+    }
+
+    #[test]
     fn native_tsz_anonymous_callables_keep_instance_sites_and_ambiguous_families()
     -> Result<(), LaneError> {
         let source = "function helper(value: number) { return value; }\n\
