@@ -31,7 +31,7 @@ use backend_frontend_rust::legacy::{
     RustWorkspaceSessionLease,
 };
 use backend_library::interface::{
-    CompilerAttempt, CompilerCapability, CompilerCause, CompilerReadiness,
+    CompilerAttempt, CompilerCapability, CompilerCause, CompilerFragmentFailure, CompilerReadiness,
     CompilerRequest as ApplicationCompilerRequest, CompilerTerminal, FragmentCause,
     GeneratedArtifact, PackageCompilePhase, PackageCompileRequest, PackageDeclarationScopeCause,
     PackageSourceCause, PublicationAuthority, PublicationCause, PublicationPhase,
@@ -46,16 +46,17 @@ use backend_semantic::ir::{
 };
 use backend_semantic::registry::{AdapterRoute, FullRegistry};
 use backend_semantic::vocabulary::AuthorityDiagnosticClass;
+use backend_store::FileStore;
 use backend_store::journal::{
     DurablePublisher, PublicationLimits, PublicationPaths, ShutdownError,
 };
-use backend_store::FileStore;
 use backend_version::Coverage;
 use backend_version::ScopeRoot;
 use backend_version::{
     ArtifactId, ContentId, IrFragmentDomain, IrFragmentEncoding, SourceFactDomain,
 };
 use std::{
+    collections::BTreeMap,
     error::Error as _,
     fmt::Write as _,
     io,
@@ -1544,15 +1545,16 @@ impl StagedSemanticPackage {
     #[must_use]
     pub fn output_object(&self, ordinal: usize) -> Option<StagedSemanticOutputObject<'_>> {
         let claim = *self.prepared.object_claims.get(ordinal)?;
+        let key = *claim.key();
         let bytes = match ordinal {
-            0 => self.prepared.manifest_bytes.as_ref(),
-            value if value % 2 == 1 => {
-                let artifact_ordinal = value / 2;
+            _ if key == 0 => self.prepared.manifest_bytes.as_ref(),
+            _ if key % 2 == 1 => {
+                let artifact_ordinal = usize::try_from((key - 1) / 2).ok()?;
                 let artifact = *self.prepared.canonical_ordinals.get(artifact_ordinal)?;
                 self.staged.artifacts.get(artifact)?.fragment.as_ref()
             }
-            value => {
-                let artifact_ordinal = value / 2 - 1;
+            _ => {
+                let artifact_ordinal = usize::try_from(key / 2 - 1).ok()?;
                 let artifact = *self.prepared.canonical_ordinals.get(artifact_ordinal)?;
                 let region = *self.staged.image_plan.get(artifact)?;
                 region.bytes(&self.staged.semantic_images)?
@@ -2969,14 +2971,64 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         })?;
         drop(compiled);
 
-        let required_claims = count
+        let expected_claim_capacity = prepared
+            .canonical_ordinals
+            .len()
             .checked_mul(2)
             .and_then(|pairs| pairs.checked_add(1))
             .ok_or(PackageSemanticError::Capacity {
                 lane: "generation claims",
             })?;
-        if prepared.object_claims.len() != required_claims
-            || prepared.canonical_ordinals.len() != count
+        let mut expected_claim_edges = Vec::new();
+        expected_claim_edges
+            .try_reserve_exact(expected_claim_capacity)
+            .map_err(PackageSemanticError::Allocation)?;
+        expected_claim_edges.push((0_u64, None));
+        let mut artifact_claim_keys = Vec::new();
+        artifact_claim_keys
+            .try_reserve_exact(prepared.canonical_ordinals.len())
+            .map_err(PackageSemanticError::Allocation)?;
+        let mut next_claim_key = 1_u64;
+        for _ in prepared.canonical_ordinals.iter() {
+            let fragment_key = next_claim_key;
+            next_claim_key = next_claim_key.checked_add(1).ok_or(
+                PackageSemanticError::Capacity {
+                    lane: "generation claims",
+                },
+            )?;
+            let image_key = next_claim_key;
+            next_claim_key = next_claim_key.checked_add(1).ok_or(
+                PackageSemanticError::Capacity {
+                    lane: "generation claims",
+                },
+            )?;
+            expected_claim_edges.push((fragment_key, Some(0)));
+            expected_claim_edges.push((image_key, Some(0)));
+            artifact_claim_keys.push((fragment_key, image_key));
+        }
+        let mut observed_claim_edges = Vec::new();
+        observed_claim_edges
+            .try_reserve_exact(prepared.object_claims.len())
+            .map_err(PackageSemanticError::Allocation)?;
+        let mut claims_by_key = BTreeMap::new();
+        for claim in prepared.object_claims.iter().copied() {
+            let key = *claim.key();
+            let parent = claim.parent().map(|parent| *parent);
+            observed_claim_edges.push((key, parent));
+            if claims_by_key.insert(key, claim).is_some() {
+                return Err(PackageSemanticError::Capacity {
+                    lane: "generation claims",
+                });
+            }
+        }
+        expected_claim_edges.sort_unstable();
+        observed_claim_edges.sort_unstable();
+        if observed_claim_edges != expected_claim_edges
+            || prepared.canonical_ordinals.is_empty()
+            || prepared
+                .canonical_ordinals
+                .iter()
+                .any(|ordinal| *ordinal >= count)
         {
             return Err(PackageSemanticError::Capacity {
                 lane: "generation claims",
@@ -2990,7 +3042,7 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
 
         let mut artifacts = Vec::new();
         artifacts
-            .try_reserve_exact(count)
+            .try_reserve_exact(prepared.canonical_ordinals.len())
             .map_err(PackageSemanticError::Allocation)?;
         for (canonical_ordinal, input_ordinal) in
             prepared.canonical_ordinals.iter().copied().enumerate()
@@ -3010,20 +3062,19 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
                     lane: "generation claims",
                 });
             };
-            let Some(fragment_claim) = prepared
-                .object_claims
-                .get(1 + canonical_ordinal * 2)
-                .copied()
+            let Some((fragment_key, image_key)) = artifact_claim_keys.get(canonical_ordinal)
             else {
                 return Err(PackageSemanticError::Capacity {
                     lane: "generation claims",
                 });
             };
-            let Some(semantic_claim) = prepared
-                .object_claims
-                .get(2 + canonical_ordinal * 2)
-                .copied()
+            let Some(fragment_claim) = claims_by_key.get(fragment_key).copied()
             else {
+                return Err(PackageSemanticError::Capacity {
+                    lane: "generation claims",
+                });
+            };
+            let Some(semantic_claim) = claims_by_key.get(image_key).copied() else {
                 return Err(PackageSemanticError::Capacity {
                     lane: "generation claims",
                 });
@@ -3070,12 +3121,12 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
             artifact.fragment.as_ref(),
         );
         let fragment_view = backend_semantic::ir::FragmentView::validate(&artifact.fragment)
-            .map_err(|_| CompilerTerminal::Compile {
+            .map_err(|cause| CompilerTerminal::Compile {
                 attempted: CompilerAttempt {
                     source,
                     recipe: recipe.identity,
                 },
-                cause: CompilerCause::Fragment(FragmentCause::Validate),
+                cause: CompilerCause::FragmentFailure(CompilerFragmentFailure::validate(cause)),
             })?;
         let compiled = CompiledFragment {
             source: artifact.source,
@@ -3775,10 +3826,7 @@ fn bounded_error_display(
     } else {
         output.text
     };
-    BoundedErrorMessage {
-        text,
-        truncated,
-    }
+    BoundedErrorMessage { text, truncated }
 }
 
 struct BoundedErrorMessageWriter {
@@ -4037,16 +4085,19 @@ mod tests {
 
         let diagnostic = bounded_error_chain(&error);
 
-        assert!(diagnostic.text.starts_with(
-            "package semantic output could not be prepared for transport"
-        ));
-        assert!(diagnostic.text.contains("stored semantic-image bytes contain 2048"));
+        assert!(
+            diagnostic
+                .text
+                .starts_with("package semantic output could not be prepared for transport")
+        );
+        assert!(
+            diagnostic
+                .text
+                .contains("stored semantic-image bytes contain 2048")
+        );
         assert!(diagnostic.text.contains("… intermediate causes omitted …"));
         assert!(diagnostic.truncated);
-        assert!(
-            diagnostic.text.len()
-                <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES
-        );
+        assert!(diagnostic.text.len() <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES);
     }
 
     #[test]
@@ -4063,10 +4114,7 @@ mod tests {
         assert!(diagnostic.text.is_char_boundary(diagnostic.text.len()));
         assert!(diagnostic.text.ends_with('…'));
         assert!(diagnostic.truncated);
-        assert!(
-            diagnostic.text.len()
-                <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES
-        );
+        assert!(diagnostic.text.len() <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES);
     }
 
     #[test]
@@ -4123,10 +4171,7 @@ mod tests {
 
         assert!(diagnostic.text.contains("error source cycle detected"));
         assert!(diagnostic.truncated);
-        assert!(
-            diagnostic.text.len()
-                <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES
-        );
+        assert!(diagnostic.text.len() <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES);
     }
 
     #[test]
@@ -4149,15 +4194,14 @@ mod tests {
         let diagnostic = bounded_error_chain(&error);
 
         assert!(diagnostic.text.contains("cause 7"));
-        assert!(diagnostic
-            .text
-            .contains("additional causes omitted after depth limit"));
+        assert!(
+            diagnostic
+                .text
+                .contains("additional causes omitted after depth limit")
+        );
         assert!(!diagnostic.text.contains("cause beyond depth limit"));
         assert!(diagnostic.truncated);
-        assert!(
-            diagnostic.text.len()
-                <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES
-        );
+        assert!(diagnostic.text.len() <= backend_semantic::vocabulary::MAX_NATIVE_DIAGNOSTIC_BYTES);
     }
 
     #[test]
@@ -4175,7 +4219,11 @@ mod tests {
         let source = std::error::Error::source(&error).expect("typed publication source");
         assert!(source.is::<crate::publication::PublishSemanticError>());
         let diagnostic = bounded_error_chain(&error);
-        assert!(diagnostic.text.contains("semantic image bytes contain 256 bytes"));
+        assert!(
+            diagnostic
+                .text
+                .contains("semantic image bytes contain 256 bytes")
+        );
         assert!(!diagnostic.truncated);
     }
 

@@ -1,6 +1,10 @@
 //! Typed source relations and owner-held lazy source snapshots.
 
 use super::complete_coverage;
+use super::file_facts_relation::{
+    ProductSourceFileFactsAdmission, ProductSourceFileFactsLookup, ProductSourceFileFactsRecord,
+    admit_product_source_file_facts, product_source_file_facts_relation,
+};
 use crate::workspace::{TransitionWork, WorkspaceRelationHandle, WorkspaceSnapshot};
 pub use backend_compile::{
     Container, DeclarationKind, SourceDeclaration, SourceLanguage, SourceLocation,
@@ -2294,6 +2298,8 @@ pub struct ProductSourceSnapshot {
     workspace: WorkspaceRoot,
     transition: ProductSourceTransition,
     relation: WorkspaceRelationHandle<ProductSourceRelation>,
+    source_facts:
+        Option<WorkspaceRelationHandle<super::file_facts_relation::ProductSourceFileFactsRelation>>,
     manifest: Arc<[u8]>,
     authority: [u8; backend_version::ID_BYTES],
     delta: ProductSourceDeltaFacts,
@@ -2314,6 +2320,8 @@ impl ProductSourceSnapshot {
         let relation = snapshot
             .relation::<ProductSourceRelation>()
             .map_err(|error| error.to_string())?;
+        let source_facts =
+            product_source_file_facts_relation(snapshot).map_err(|error| error.to_string())?;
         let relation_root = relation.root_node().map_err(|error| error.to_string())?;
         let (base, target) = snapshot
             .transition_relation_roots::<ProductSourceRelation>()
@@ -2327,6 +2335,7 @@ impl ProductSourceSnapshot {
             workspace: snapshot.root(),
             transition: ProductSourceTransition { base, target },
             relation,
+            source_facts,
             manifest: Arc::from(snapshot.manifest().encode().into_boxed_slice()),
             authority: *snapshot.manifest().authority(),
             delta: ProductSourceDeltaFacts::from_transition(snapshot.transition_work()),
@@ -2360,6 +2369,58 @@ impl ProductSourceSnapshot {
     #[must_use]
     pub const fn relation(&self) -> &WorkspaceRelationHandle<ProductSourceRelation> {
         &self.relation
+    }
+
+    /// Admits complete structural facts for one exact file row from the
+    /// auxiliary relation selected by this same workspace closure.
+    ///
+    /// `Some` is returned only after the manifest and every referenced page
+    /// have been checked against the exact file identity. The returned paged
+    /// form keeps a lazy relation lookup and visits one bounded page at a
+    /// time. `None` is reserved for legacy rows whose compact retention is
+    /// already complete; a compact overflow row with no facts manifest is a
+    /// hard error and can never be presented as complete.
+    pub fn admit_complete_file_facts(
+        &self,
+        record: &ProductSourceRecord,
+    ) -> Result<Option<ProductSourceFileFactsAdmission<ProductSourceFileFactsLookup>>, String> {
+        let file = record
+            .file_fields()
+            .ok_or_else(|| "complete source facts requested for a non-file row".to_owned())?;
+        let file_key = product_source_file_key(file.project, file.path);
+        let Some(relation) = &self.source_facts else {
+            return if file.retention.is_complete() {
+                Ok(None)
+            } else {
+                Err(
+                    "compact source row is incomplete and has no selected complete facts relation"
+                        .to_owned(),
+                )
+            };
+        };
+        let Some(manifest_record) = relation
+            .lookup(&file_key)
+            .map_err(|error| error.to_string())?
+        else {
+            return if file.retention.is_complete() {
+                Ok(None)
+            } else {
+                Err(
+                    "compact source row is incomplete and has no complete facts manifest"
+                        .to_owned(),
+                )
+            };
+        };
+        let ProductSourceFileFactsRecord::Manifest(manifest) = manifest_record else {
+            return Err("source facts manifest key names another row kind".to_owned());
+        };
+        let selected_relation = relation.clone();
+        let lookup: ProductSourceFileFactsLookup = Box::new(move |key| {
+            selected_relation
+                .lookup(key)
+                .map_err(|error| error.to_string())
+        });
+        admit_product_source_file_facts(file, file_key, manifest, lookup).map(Some)
     }
 
     /// Returns exact source change facts carried by the selected head.

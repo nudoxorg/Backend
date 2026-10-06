@@ -11,9 +11,10 @@ use super::browse_lane::{BrowseLane, Terminal as BrowseTerminal};
 use super::diff::execute_semantic_diff;
 use super::graph::{execute_certified_graph_query, execute_search};
 use super::index::{
-    DeferredIndex, DeferredProfileTicket, IndexScanFailure, IndexScanResult, IndexScanWork,
-    PreparedIndex, PreparedProductSelection, capture_index_scan, deferred_compile_was_cancelled,
-    finish_deferred_index, finish_deferred_profile, finish_index_scan, index_project_intent_at,
+    DeferredIndex, DeferredProfileFailure, DeferredProfileTicket, IndexScanFailure,
+    IndexScanResult, IndexScanWork, PreparedIndex, PreparedProductSelection, capture_index_scan,
+    commit_pending_capture_failure, deferred_compile_was_cancelled, finish_deferred_index,
+    finish_deferred_profile, finish_index_scan, index_project_intent_at,
     index_project_intent_with_cluster_and_intent, remove_project_intent, run_deferred_compile,
     run_index_scan, semantic_version_record, semantic_versions,
 };
@@ -26,10 +27,12 @@ use super::semantic_query::{
 };
 use super::semantic_shapes::execute_semantic_shapes;
 use backend_engine::application::LocalCompilerClient;
-use backend_engine::builtin::{ProductSemanticPublicationKey, ProductSemanticPublicationRecord};
+use backend_engine::builtin::{
+    ProductSemanticPublicationKey, ProductSemanticPublicationRecord, SemanticSourceCapture,
+};
 use backend_library::CompileExecutionIntent;
 use backend_library::interface::PackageUrl;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -78,6 +81,52 @@ fn bounded_index_detail(value: impl std::fmt::Display) -> backend_library::Produ
         .unwrap_or_else(|_| backend_library::ProductText::from_static("index job failed"))
 }
 
+fn refused_index_outcome(
+    detail: impl std::fmt::Display,
+    compiler_failure: Option<backend_library::PackageCompilerFailure>,
+) -> backend_library::IndexJobOutcome {
+    let detail = bounded_index_detail(detail);
+    match compiler_failure {
+        Some(failure) => {
+            backend_library::IndexJobOutcome::RefusedWithCompilerFailure { detail, failure }
+        }
+        None => backend_library::IndexJobOutcome::Refused(detail),
+    }
+}
+
+fn deferred_profile_refused_outcome(
+    refusal: DeferredProfileFailure,
+) -> backend_library::IndexJobOutcome {
+    match refusal.compiler_failure {
+        Some(failure) => {
+            // The semantic summary is the bounded, source-bound explanation.
+            // Do not copy the broader compiler error chain into persisted or
+            // user-visible text: it can contain arbitrary tool output.
+            let detail = format!(
+                "local compiler rejected {} with {}: {}",
+                failure.relative_path(),
+                failure.kind_tag(),
+                failure.detail(),
+            );
+            refused_index_outcome(detail, Some(failure))
+        }
+        None => refused_index_outcome(refusal.detail, None),
+    }
+}
+
+fn legacy_add_compiler_failure(
+    outcome: &backend_library::IndexJobOutcome,
+) -> Option<backend_library::CommandFailure> {
+    let backend_library::IndexJobOutcome::RefusedWithCompilerFailure { detail, failure } = outcome
+    else {
+        return None;
+    };
+    Some(backend_library::CommandFailure::CompilerRefused {
+        detail: detail.as_str().to_owned(),
+        failure: failure.clone(),
+    })
+}
+
 fn index_operation_failure(
     outcome: Option<&backend_library::IndexJobOutcome>,
 ) -> (
@@ -92,6 +141,10 @@ fn index_operation_failure(
             ),
         ),
         Some(backend_library::IndexJobOutcome::Refused(detail)) => (
+            backend_library::IndexOperationFailureReason::Refused,
+            detail.clone(),
+        ),
+        Some(backend_library::IndexJobOutcome::RefusedWithCompilerFailure { detail, .. }) => (
             backend_library::IndexOperationFailureReason::Refused,
             detail.clone(),
         ),
@@ -113,12 +166,15 @@ fn index_operation_published_observation(
     operation_key: backend_library::IndexOperationKey,
     receipt: backend_library::IndexOperationPublicationReceipt,
 ) -> backend_library::IndexOperationObservation {
-    backend_library::IndexOperationObservation::Known(backend_library::IndexOperationStatus::new(
-        operation_key,
-        entry.package.clone(),
-        entry.execution_intent,
-        backend_library::IndexOperationState::Published(receipt),
-    ))
+    backend_library::IndexOperationObservation::Known(
+        backend_library::IndexOperationStatus::new(
+            operation_key,
+            entry.package.clone(),
+            entry.execution_intent,
+            backend_library::IndexOperationState::Published(receipt),
+        )
+        .with_source_capture(entry.source_capture.clone()),
+    )
 }
 
 fn index_attempt_retirement_reason(
@@ -127,7 +183,8 @@ fn index_attempt_retirement_reason(
     use backend_extension_turso::CandidateAttemptRetirementReason as R;
     match outcome {
         backend_library::IndexJobOutcome::Published => None,
-        backend_library::IndexJobOutcome::Refused(_) => Some(R::Refused),
+        backend_library::IndexJobOutcome::Refused(_)
+        | backend_library::IndexJobOutcome::RefusedWithCompilerFailure { .. } => Some(R::Refused),
         backend_library::IndexJobOutcome::Cancelled => Some(R::Cancelled),
         backend_library::IndexJobOutcome::Failed(_) => Some(R::Failed),
     }
@@ -206,6 +263,8 @@ struct IndexJob {
     owner_ticket: backend_library::IndexJobTicket,
     /// Caller-owned durable operation key; legacy starts leave this absent.
     operation_key: Option<backend_library::IndexOperationKey>,
+    /// Source captures committed before semantic candidate work began.
+    captures: BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
     /// Legacy Add request waiting for its committed Added reply.
     legacy_add: Option<(u64, u64)>,
     /// Owner-issued IndexAwait request listeners waiting for this terminal.
@@ -678,6 +737,22 @@ impl CommandAdapter {
             }
         }
 
+        let acceptance_head = daemon.engine().daemon().owner().head();
+        if let Err(error) = self.index_operations.bind_source_capture_base(
+            operation_key,
+            *acceptance_head.root().as_bytes(),
+            acceptance_head.sequence(),
+        ) {
+            return self.fail_accepted_index_operation(
+                daemon,
+                operation_key,
+                package,
+                execution_intent,
+                request_id,
+                bounded_index_detail(format!("record accepted workspace base: {error}")),
+            );
+        }
+
         let owner_ticket = match self.issue_index_ticket(package.clone()) {
             Ok(ticket) => ticket,
             Err(error) => {
@@ -743,6 +818,42 @@ impl CommandAdapter {
         request_id: u64,
         detail: backend_library::ProductText,
     ) -> Result<Executed, BuiltinModelError> {
+        if let Ok(Some(JournalEntry::Retained(mut entry))) =
+            self.index_operations.entry(operation_key)
+            && matches!(entry.state, StoredOperationState::Accepted)
+            && let Some(base) = entry.source_capture_base
+            && daemon.engine().daemon().owner().head().sequence() > base.workspace_sequence
+        {
+            let recovered = self
+                .resolve_index_operation(daemon, operation_key, None)
+                .map_err(|error| {
+                    BuiltinModelError(format!("recover source-captured operation: {error}"))
+                })?;
+            if let backend_library::IndexOperationObservation::Known(status) = &recovered
+                && (status.source_capture.is_some()
+                    || matches!(
+                        &status.state,
+                        backend_library::IndexOperationState::Unresolved { .. }
+                    ))
+            {
+                return Self::encode_index_operation(daemon, request_id, recovered, true);
+            }
+            // The root has advanced but the operation marker was not recovered.
+            // Keep an explicit unresolved result instead of falsely claiming
+            // that no structural commit occurred.
+            entry.source_capture = None;
+            return Self::encode_index_operation(
+                daemon,
+                request_id,
+                Self::unresolved_index_operation(
+                    operation_key,
+                    &entry,
+                    backend_library::IndexOperationUnresolvedReason::WorkspaceEvidenceMismatch,
+                    "the workspace advanced before the source-capture receipt could be recovered",
+                ),
+                true,
+            );
+        }
         let observation = if self
             .index_operations
             .failed(
@@ -767,6 +878,8 @@ impl CommandAdapter {
                     ),
                     package,
                     execution_intent,
+                    source_capture: None,
+                    source_capture_base: None,
                     state: StoredOperationState::Accepted,
                 },
                 backend_library::IndexOperationUnresolvedReason::ReceiptPersistenceFailed,
@@ -841,7 +954,7 @@ impl CommandAdapter {
         let Some(entry) = self.index_operations.entry(operation_key)? else {
             return Ok(backend_library::IndexOperationObservation::Unknown { operation_key });
         };
-        let entry = match entry {
+        let mut entry = match entry {
             JournalEntry::Retained(entry) => entry,
             JournalEntry::OutsideReceiptWindow { request_digest } => {
                 return Ok(
@@ -864,6 +977,124 @@ impl CommandAdapter {
                         .unwrap_or(backend_library::IndexJobStage::Scanning),
                 )
             });
+        if matches!(entry.state, StoredOperationState::Accepted) && active.is_none() {
+            if entry.source_capture.is_none() {
+                if let Some(base) = entry.source_capture_base {
+                    let head = daemon.engine().daemon().owner().head();
+                    if head.sequence() == base.workspace_sequence.saturating_add(1) {
+                        if let Some(receipt) = super::index::source_capture_receipt_for_root(
+                            daemon,
+                            &entry.package,
+                            operation_key,
+                            Some(head.request_identity()),
+                        )
+                        .map_err(|error| IndexOperationJournalError::Corrupt(error.to_string()))?
+                        {
+                            if self
+                                .index_operations
+                                .source_captured(operation_key, receipt.clone())
+                                .is_err()
+                            {
+                                entry.source_capture = Some(receipt);
+                                return Ok(Self::unresolved_index_operation(
+                                    operation_key,
+                                    &entry,
+                                    backend_library::IndexOperationUnresolvedReason::ReceiptPersistenceFailed,
+                                    "the exact source-capture root is selected but its separate durable receipt could not be persisted",
+                                ));
+                            }
+                            if let Some(JournalEntry::Retained(recovered)) =
+                                self.index_operations.entry(operation_key)?
+                            {
+                                entry = recovered;
+                            }
+                        }
+                    } else if head.sequence() > base.workspace_sequence.saturating_add(1) {
+                        return Ok(Self::unresolved_index_operation(
+                            operation_key,
+                            &entry,
+                            backend_library::IndexOperationUnresolvedReason::WorkspaceEvidenceMismatch,
+                            "the owner restarted after the recorded base advanced, so the exact source-capture root cannot be identified",
+                        ));
+                    }
+                }
+            }
+            if let Some(original) = entry.source_capture.clone() {
+                let _ = self.refresh_index_operation_source_capture(
+                    daemon,
+                    operation_key,
+                    &entry.package,
+                    &original,
+                );
+                if let Some(JournalEntry::Retained(refreshed)) =
+                    self.index_operations.entry(operation_key)?
+                {
+                    entry = refreshed;
+                }
+                let profiles = entry
+                    .source_capture
+                    .as_ref()
+                    .map(backend_library::IndexOperationSourceCaptureReceipt::profiles)
+                    .unwrap_or_default();
+                let all_terminal = !profiles.is_empty()
+                    && profiles.iter().all(|profile| {
+                        !matches!(
+                            profile.state,
+                            backend_library::IndexOperationSemanticProfileState::Pending { .. }
+                        )
+                    });
+                let any_published = profiles.iter().any(|profile| {
+                    matches!(
+                        profile.state,
+                        backend_library::IndexOperationSemanticProfileState::Published { .. }
+                    )
+                });
+                if all_terminal && !any_published {
+                    let (reason, detail) = index_operation_failure(terminal_outcome);
+                    if self
+                        .index_operations
+                        .failed(operation_key, reason, detail)
+                        .is_ok()
+                    {
+                        return Ok(self
+                            .index_operations
+                            .observation(operation_key, None)?
+                            .expect("failed operation remains in the journal"));
+                    }
+                    return Ok(Self::unresolved_index_operation(
+                        operation_key,
+                        &entry,
+                        backend_library::IndexOperationUnresolvedReason::ReceiptPersistenceFailed,
+                        "semantic profiles reached terminal source-capture outcomes but the operation failure could not be persisted",
+                    ));
+                }
+                if any_published {
+                    return Ok(Self::unresolved_index_operation(
+                        operation_key,
+                        &entry,
+                        backend_library::IndexOperationUnresolvedReason::WorkspaceEvidenceMismatch,
+                        "semantic publication is present after restart without its prepared operation receipt",
+                    ));
+                }
+                if profiles.iter().any(|profile| {
+                    matches!(
+                        profile.state,
+                        backend_library::IndexOperationSemanticProfileState::Pending { .. }
+                    )
+                }) {
+                    return Ok(Self::unresolved_index_operation(
+                        operation_key,
+                        &entry,
+                        backend_library::IndexOperationUnresolvedReason::SemanticWorkInterruptedAfterCapture,
+                        "the exact source root is durable, but the owner restarted before recording a semantic worker result",
+                    ));
+                }
+                return Ok(self
+                    .index_operations
+                    .observation(operation_key, None)?
+                    .expect("accepted source-captured operation remains in the journal"));
+            }
+        }
         match entry.state.clone() {
             StoredOperationState::Accepted if active.is_some() => Ok(self
                 .index_operations
@@ -911,6 +1142,19 @@ impl CommandAdapter {
                     (selected_exactly, base_still_selected)
                 };
                 if selected_exactly {
+                    if let Some(source_capture) = entry.source_capture.clone() {
+                        let _ = self.refresh_index_operation_source_capture(
+                            daemon,
+                            operation_key,
+                            &entry.package,
+                            &source_capture,
+                        );
+                        if let Some(JournalEntry::Retained(refreshed)) =
+                            self.index_operations.entry(operation_key)?
+                        {
+                            entry = refreshed;
+                        }
+                    }
                     let receipt = self
                         .current_index_operation_receipt(
                             daemon,
@@ -985,6 +1229,46 @@ impl CommandAdapter {
         }
     }
 
+    fn refresh_index_operation_source_capture(
+        &mut self,
+        daemon: &ProductDaemon,
+        operation_key: backend_library::IndexOperationKey,
+        package: &backend_library::PackageReference,
+        original: &backend_library::IndexOperationSourceCaptureReceipt,
+    ) -> Result<(), IndexOperationJournalError> {
+        let Some(latest) =
+            super::index::source_capture_receipt_for_root(daemon, package, operation_key, None)
+                .map_err(|error| IndexOperationJournalError::Corrupt(error.to_string()))?
+        else {
+            return Ok(());
+        };
+        if original.profiles().len() != latest.profiles().len()
+            || !original
+                .profiles()
+                .iter()
+                .zip(latest.profiles())
+                .all(|(left, right)| {
+                    left.profile == right.profile
+                        && left.source_version == right.source_version
+                        && left.input_digest == right.input_digest
+                        && left.observation_sequence == right.observation_sequence
+                        && left.source_count == right.source_count
+                })
+        {
+            return Err(IndexOperationJournalError::InvalidTransition);
+        }
+        let refreshed = backend_library::IndexOperationSourceCaptureReceipt::from_checked_parts(
+            operation_key,
+            *original.commit_identity(),
+            *original.workspace_root(),
+            original.workspace_sequence(),
+            latest.profiles().to_vec().into_boxed_slice(),
+        )
+        .map_err(|_| IndexOperationJournalError::InvalidTransition)?;
+        self.index_operations
+            .source_capture_updated(operation_key, refreshed)
+    }
+
     fn current_index_operation_receipt(
         &self,
         daemon: &ProductDaemon,
@@ -1045,7 +1329,8 @@ impl CommandAdapter {
                         },
                     ),
                 },
-            ),
+            )
+            .with_source_capture(entry.source_capture.clone()),
         )
     }
 
@@ -1358,6 +1643,17 @@ impl CommandAdapter {
         legacy_reply: Option<Result<Vec<u8>, BuiltinModelError>>,
     ) -> Vec<(u64, Result<Vec<u8>, BuiltinModelError>)> {
         if let Some(operation_key) = indexing.operation_key {
+            if let Ok(Some(JournalEntry::Retained(entry))) =
+                self.index_operations.entry(operation_key)
+                && let Some(source_capture) = entry.source_capture.as_ref()
+            {
+                let _ = self.refresh_index_operation_source_capture(
+                    daemon,
+                    operation_key,
+                    &entry.package,
+                    source_capture,
+                );
+            }
             let _ = self.resolve_index_operation(daemon, operation_key, Some(&outcome));
         }
         let mut ready = Vec::new();
@@ -1366,13 +1662,22 @@ impl CommandAdapter {
             outcome,
         };
         self.retain_index_terminal(terminal.clone());
-        if let Some((transport_ticket, _request_id)) = indexing.legacy_add {
-            let reply = legacy_reply.unwrap_or_else(|| {
-                Err(BuiltinModelError(format!(
-                    "index job did not publish: {:?}",
-                    terminal.outcome
-                )))
-            });
+        if let Some((transport_ticket, request_id)) = indexing.legacy_add {
+            let reply = if let Some(failure) = legacy_add_compiler_failure(&terminal.outcome) {
+                Self::encode(
+                    daemon,
+                    request_id,
+                    (CommandReply::Failed(failure), None),
+                    None,
+                )
+            } else {
+                legacy_reply.unwrap_or_else(|| {
+                    Err(BuiltinModelError(format!(
+                        "index job did not publish: {:?}",
+                        terminal.outcome
+                    )))
+                })
+            };
             ready.push((transport_ticket, reply));
         }
         for (transport_ticket, request_id) in indexing.awaiters {
@@ -1525,6 +1830,7 @@ impl CommandAdapter {
         if let Some(mut indexing) = self.indexing.take() {
             let mut terminal;
             let mut legacy_reply = None;
+            let mut terminal_compiler_profile = None;
             let work = std::mem::replace(&mut indexing.work, IndexJobWork::Transition);
             // Candidate-attempt cleanup inventory is built only when a
             // compiler stage actually reaches a terminal path. Healthy polls
@@ -1624,6 +1930,8 @@ impl CommandAdapter {
                             self.owner_cluster.as_deref(),
                             self.pending_stored_acks.as_ref(),
                             true,
+                            indexing.operation_key,
+                            Some(&mut self.index_operations),
                         ) {
                             Ok(PreparedIndex::Ready(prepared)) => {
                                 terminal = Some(self.finish_prepared_index_selection(
@@ -1634,6 +1942,7 @@ impl CommandAdapter {
                                 ));
                             }
                             Ok(PreparedIndex::Compile(job)) if job.has_pending_profiles() => {
+                                indexing.captures = job.captures.clone();
                                 match self.spawn_next_index_profile(&mut indexing, job) {
                                     Ok(()) => {
                                         self.indexing = Some(indexing);
@@ -1675,107 +1984,114 @@ impl CommandAdapter {
                     mut job,
                     profile,
                     compiled,
-                } => match compiled.try_recv() {
-                    Err(std::sync::mpsc::TryRecvError::Empty) => {
-                        indexing.work = IndexJobWork::Compiling {
-                            job,
-                            profile,
-                            compiled,
-                        };
-                        self.indexing = Some(indexing);
-                        return self.with_browse_completions(daemon, ready);
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        let mut attempts = vec![profile.candidate_attempt().clone()];
-                        attempts.extend(job.pending_attempts());
-                        terminal_attempts = Some(attempts);
-                        terminal = Some(backend_library::IndexJobOutcome::Failed(
-                            backend_library::ProductText::from_static(
-                                "compiler worker ended without a terminal receipt",
-                            ),
-                        ));
-                    }
-                    Ok(_result) if indexing.cancelled.load(Ordering::Acquire) => {
-                        let mut attempts = vec![profile.candidate_attempt().clone()];
-                        attempts.extend(job.pending_attempts());
-                        terminal_attempts = Some(attempts);
-                        terminal = Some(backend_library::IndexJobOutcome::Cancelled);
-                    }
-                    Ok(result) if deferred_compile_was_cancelled(&result) => {
-                        let mut attempts = vec![profile.candidate_attempt().clone()];
-                        attempts.extend(job.pending_attempts());
-                        terminal_attempts = Some(attempts);
-                        terminal = Some(backend_library::IndexJobOutcome::Cancelled);
-                    }
-                    Ok(result) => {
-                        // The profile is consumed by admission below. Retain
-                        // only its compact attempt capability; clone the
-                        // queued list only if admission reports a terminal.
-                        let current_attempt = profile.candidate_attempt().clone();
-                        let progress = (
-                            backend_engine::SemanticLanguageProfile::new(profile.profile()),
-                            profile.ordinal(),
-                            profile.total(),
-                        );
-                        match finish_deferred_profile(
-                            daemon,
-                            &mut self.semantic_authority,
-                            &mut job,
-                            profile,
-                            result,
-                        ) {
-                            Ok(()) => {
-                                self.emit_index_progress(
-                                    &mut indexing,
-                                    backend_library::IndexJobProgressKind::ProfileAdmitted {
-                                        profile: progress.0,
-                                        ordinal: progress.1,
-                                        total: progress.2,
-                                    },
-                                );
-                                if job.has_pending_profiles() {
-                                    match self.spawn_next_index_profile(&mut indexing, job) {
-                                        Ok(()) => {
-                                            self.indexing = Some(indexing);
-                                            return self.with_browse_completions(daemon, ready);
+                } => {
+                    indexing.captures = job.captures.clone();
+                    match compiled.try_recv() {
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {
+                            indexing.work = IndexJobWork::Compiling {
+                                job,
+                                profile,
+                                compiled,
+                            };
+                            self.indexing = Some(indexing);
+                            return self.with_browse_completions(daemon, ready);
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            let mut attempts = vec![profile.candidate_attempt().clone()];
+                            attempts.extend(job.pending_attempts());
+                            terminal_attempts = Some(attempts);
+                            terminal = Some(backend_library::IndexJobOutcome::Failed(
+                                backend_library::ProductText::from_static(
+                                    "compiler worker ended without a terminal receipt",
+                                ),
+                            ));
+                        }
+                        Ok(_result) if indexing.cancelled.load(Ordering::Acquire) => {
+                            let mut attempts = vec![profile.candidate_attempt().clone()];
+                            attempts.extend(job.pending_attempts());
+                            terminal_attempts = Some(attempts);
+                            terminal = Some(backend_library::IndexJobOutcome::Cancelled);
+                        }
+                        Ok(result) if deferred_compile_was_cancelled(&result) => {
+                            let mut attempts = vec![profile.candidate_attempt().clone()];
+                            attempts.extend(job.pending_attempts());
+                            terminal_attempts = Some(attempts);
+                            terminal = Some(backend_library::IndexJobOutcome::Cancelled);
+                        }
+                        Ok(result) => {
+                            // The profile is consumed by admission below. Retain
+                            // only its compact attempt capability; clone the
+                            // queued list only if admission reports a terminal.
+                            let current_attempt = profile.candidate_attempt().clone();
+                            let current_profile = profile.profile();
+                            let progress = (
+                                backend_engine::SemanticLanguageProfile::new(current_profile),
+                                profile.ordinal(),
+                                profile.total(),
+                            );
+                            match finish_deferred_profile(
+                                daemon,
+                                &mut self.semantic_authority,
+                                &mut job,
+                                profile,
+                                result,
+                            ) {
+                                Ok(()) => {
+                                    self.emit_index_progress(
+                                        &mut indexing,
+                                        backend_library::IndexJobProgressKind::ProfileAdmitted {
+                                            profile: progress.0,
+                                            ordinal: progress.1,
+                                            total: progress.2,
+                                        },
+                                    );
+                                    if job.has_pending_profiles() {
+                                        match self.spawn_next_index_profile(&mut indexing, job) {
+                                            Ok(()) => {
+                                                self.indexing = Some(indexing);
+                                                return self.with_browse_completions(daemon, ready);
+                                            }
+                                            Err(error) => {
+                                                terminal =
+                                                    Some(backend_library::IndexJobOutcome::Failed(
+                                                        bounded_index_detail(error),
+                                                    ));
+                                            }
                                         }
-                                        Err(error) => {
-                                            terminal =
-                                                Some(backend_library::IndexJobOutcome::Failed(
-                                                    bounded_index_detail(error),
-                                                ));
-                                        }
-                                    }
-                                } else {
-                                    match finish_deferred_index(daemon, job) {
-                                        Ok(prepared) => {
-                                            terminal = Some(self.finish_prepared_index_selection(
-                                                daemon,
-                                                &mut indexing,
-                                                prepared,
-                                                &mut legacy_reply,
-                                            ));
-                                        }
-                                        Err(refusal) => {
-                                            terminal =
-                                                Some(backend_library::IndexJobOutcome::Refused(
-                                                    bounded_index_detail(refusal),
-                                                ));
+                                    } else {
+                                        match finish_deferred_index(daemon, job) {
+                                            Ok(prepared) => {
+                                                terminal =
+                                                    Some(self.finish_prepared_index_selection(
+                                                        daemon,
+                                                        &mut indexing,
+                                                        prepared,
+                                                        &mut legacy_reply,
+                                                    ));
+                                            }
+                                            Err(refusal) => {
+                                                terminal = Some(
+                                                    backend_library::IndexJobOutcome::Refused(
+                                                        bounded_index_detail(refusal),
+                                                    ),
+                                                );
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            Err(refusal) => {
-                                let mut attempts = vec![current_attempt];
-                                attempts.extend(job.pending_attempts());
-                                terminal_attempts = Some(attempts);
-                                terminal = Some(backend_library::IndexJobOutcome::Refused(
-                                    bounded_index_detail(refusal),
-                                ));
+                                Err(refusal) => {
+                                    let mut attempts = vec![current_attempt];
+                                    attempts.extend(job.pending_attempts());
+                                    terminal_attempts = Some(attempts);
+                                    if refusal.compiler_failure.is_some() {
+                                        terminal_compiler_profile = Some(current_profile);
+                                    }
+                                    terminal = Some(deferred_profile_refused_outcome(refusal));
+                                }
                             }
                         }
                     }
-                },
+                }
                 IndexJobWork::Transition => {
                     terminal = Some(backend_library::IndexJobOutcome::Failed(
                         backend_library::ProductText::from_static(
@@ -1784,7 +2100,47 @@ impl CommandAdapter {
                     ));
                 }
             }
-            if let Some(outcome) = terminal {
+            if let Some(mut outcome) = terminal {
+                if !matches!(outcome, backend_library::IndexJobOutcome::Published)
+                    && !indexing.captures.is_empty()
+                {
+                    let compiler_failure = match &outcome {
+                        backend_library::IndexJobOutcome::RefusedWithCompilerFailure {
+                            failure,
+                            ..
+                        } => terminal_compiler_profile.map(|profile| (profile, failure.clone())),
+                        _ => None,
+                    };
+                    if matches!(
+                        &outcome,
+                        backend_library::IndexJobOutcome::RefusedWithCompilerFailure { .. }
+                    ) && compiler_failure.is_none()
+                    {
+                        outcome = backend_library::IndexJobOutcome::Failed(
+                            backend_library::ProductText::from_static(
+                                "typed compiler refusal lost its captured profile binding",
+                            ),
+                        );
+                    }
+                    let reason = if matches!(outcome, backend_library::IndexJobOutcome::Cancelled) {
+                        backend_engine::builtin::SemanticUnavailableReason::Cancelled
+                    } else {
+                        backend_engine::builtin::SemanticUnavailableReason::Rejected
+                    };
+                    let label = indexing.owner_ticket.package().as_str();
+                    if let Err(error) = commit_pending_capture_failure(
+                        daemon,
+                        indexing.requested_package,
+                        label,
+                        indexing.request_id,
+                        &indexing.captures,
+                        reason,
+                        compiler_failure,
+                    ) {
+                        outcome =
+                            backend_library::IndexJobOutcome::Failed(bounded_index_detail(error));
+                    }
+                }
                 let outcome = if let Some(reason) = index_attempt_retirement_reason(&outcome) {
                     let mut retirement_failure = None;
                     for attempt in terminal_attempts.take().unwrap_or_default() {
@@ -1918,6 +2274,7 @@ impl CommandAdapter {
         let mut indexing = IndexJob {
             owner_ticket,
             operation_key,
+            captures: BTreeMap::new(),
             legacy_add: legacy_add.map(|ticket| (ticket, request_id)),
             awaiters: Vec::new(),
             cancelled: Arc::clone(&cancelled),
@@ -2112,6 +2469,22 @@ impl CommandAdapter {
         )?;
         self.publish_view(daemon, committed.as_ref())?;
         if let Some(operation_key) = operation_key {
+            if let Ok(Some(JournalEntry::Retained(entry))) =
+                self.index_operations.entry(operation_key)
+                && let Some(source_capture) = entry.source_capture.as_ref()
+            {
+                self.refresh_index_operation_source_capture(
+                    daemon,
+                    operation_key,
+                    &entry.package,
+                    source_capture,
+                )
+                .map_err(|error| {
+                    BuiltinModelError(format!(
+                        "record semantic outcome for source capture: {error}"
+                    ))
+                })?;
+            }
             let receipt = self
                 .current_index_operation_receipt(
                     daemon,
@@ -2518,7 +2891,9 @@ impl CommandAdapter {
             }
             Command::Search(query) => self.search(daemon, &query, certificate),
             Command::Graph(query) => self.graph(daemon, query, certificate, false),
-            Command::GraphPage { symbol, page } => self.graph_page(daemon, symbol, page, certificate),
+            Command::GraphPage { symbol, page } => {
+                self.graph_page(daemon, symbol, page, certificate)
+            }
             Command::Related(query) => self.graph(daemon, query, certificate, true),
             Command::GraphQuery(request) => execute_certified_graph_query(
                 daemon,
@@ -2879,11 +3254,19 @@ impl CommandAdapter {
             Command::Graph(query)
         };
         let query = Self::claimed_graph_source(daemon, query, certificate.as_ref());
-        let reply = self.graph_snapshot(daemon, query, include_incoming)?.map_or_else(
-            || daemon.engine().daemon().library().execute(command.clone())
-                .unwrap_or_else(|error| CommandReply::Failed(error.into())),
-            CommandReply::Graph,
-        );
+        let reply = self
+            .graph_snapshot(daemon, query, include_incoming)?
+            .map_or_else(
+                || {
+                    daemon
+                        .engine()
+                        .daemon()
+                        .library()
+                        .execute(command.clone())
+                        .unwrap_or_else(|error| CommandReply::Failed(error.into()))
+                },
+                CommandReply::Graph,
+            );
         Self::certify(daemon, &command, reply, certificate)
     }
 
@@ -2893,8 +3276,14 @@ impl CommandAdapter {
         query: backend_engine::GraphNeighborhoodQuery,
         include_incoming: bool,
     ) -> Result<Option<backend_engine::ViewSnapshot>, BuiltinModelError> {
-        match execute_semantic_graph(daemon, &self.compiler, &mut self.generations,
-            &mut self.image_rows, query, include_incoming)? {
+        match execute_semantic_graph(
+            daemon,
+            &self.compiler,
+            &mut self.generations,
+            &mut self.image_rows,
+            query,
+            include_incoming,
+        )? {
             Some(snapshot) => Ok(Some(snapshot)),
             None => execute_structural_call_graph(daemon, query, include_incoming),
         }
@@ -2909,21 +3298,31 @@ impl CommandAdapter {
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let command = Command::GraphPage { symbol, page };
         let library = daemon.engine().daemon().library();
-        let selected = Self::claimed_graph_symbol(daemon, symbol, page.basis(), certificate.as_ref());
+        let selected =
+            Self::claimed_graph_symbol(daemon, symbol, page.basis(), certificate.as_ref());
         let reply = if let Some(resolved) = selected.resolve(library.view()) {
-            let query = backend_engine::GraphNeighborhoodQuery::new(resolved, library.revision_root());
+            let query =
+                backend_engine::GraphNeighborhoodQuery::new(resolved, library.revision_root());
             // A stale page must be refused before executing against a newer graph.
             if !page.basis().matches(library.revision_root()) {
                 library.graph_page_for_address(resolved, symbol, page)
             } else if let Some(snapshot) = self.graph_snapshot(daemon, query, false)? {
-                let ids = snapshot.root.rows().iter().map(|row| row.id).collect::<Vec<_>>();
+                let ids = snapshot
+                    .root
+                    .rows()
+                    .iter()
+                    .map(|row| row.id)
+                    .collect::<Vec<_>>();
                 library.graph_page_from_ids(resolved, symbol, page, &ids)
             } else {
                 library.graph_page_for_address(resolved, symbol, page)
-            }.map(CommandReply::ProjectionPage)
-             .unwrap_or_else(|error| CommandReply::Error(error.to_string()))
+            }
+            .map(CommandReply::ProjectionPage)
+            .unwrap_or_else(|error| CommandReply::Error(error.to_string()))
         } else {
-            library.execute(command.clone()).unwrap_or_else(|error| CommandReply::Error(error.to_string()))
+            library
+                .execute(command.clone())
+                .unwrap_or_else(|error| CommandReply::Error(error.to_string()))
         };
         Self::certify(daemon, &command, reply, certificate)
     }
@@ -3646,7 +4045,7 @@ mod tests {
     use super::{
         ADD_TARGET_REQUIRED, AddTarget, CommandAdapter, Executed, GraphProjectionStamp, IndexJob,
         IndexJobWork, MAX_WAITING_COMMANDS, ProductDaemon, ResidentCatalog, ResidentDependencies,
-        admitted_project_source_root, classify_add_target,
+        admitted_project_source_root, classify_add_target, legacy_add_compiler_failure,
     };
     use crate::builtin::{
         BuiltinIntent, BuiltinModel, BuiltinProfile, BuiltinSemanticRelation,
@@ -3661,8 +4060,55 @@ mod tests {
     };
     use backend_library::CompileExecutionIntent;
     use backend_semantic::vocabulary::NativeTool;
+    use std::collections::BTreeMap;
     use std::fs;
     use std::num::NonZeroUsize;
+
+    #[test]
+    fn legacy_add_failure_keeps_exact_compiler_summary() {
+        let attempt = backend_library::interface::CompilerAttempt {
+            source: backend_library::interface::SourceAuthority {
+                identity: backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
+                    b"source bytes",
+                ),
+                byte_len: 12,
+            },
+            recipe: backend_version::ContentId::<backend_version::CompileRecipeDomain>::from_canonical_bytes(
+                b"recipe bytes",
+            ),
+        };
+        let fragment_failure = backend_library::interface::CompilerFragmentFailure::build(
+            backend_semantic::ir::BuildError::InvalidOccurrenceSpan {
+                owner: backend_semantic::ir::EntityId::new(7),
+                start: 18,
+                end: 24,
+            },
+        );
+        let failure = backend_library::PackageCompilerFailure::from_fragment_failure(
+            "src/recovery.ts",
+            attempt,
+            &fragment_failure,
+        )
+        .expect("typed package compiler failure");
+        let outcome = backend_library::IndexJobOutcome::RefusedWithCompilerFailure {
+            detail: backend_library::ProductText::new("local compiler rejected src/recovery.ts")
+                .expect("bounded refusal detail"),
+            failure: failure.clone(),
+        };
+
+        let backend_library::CommandFailure::CompilerRefused {
+            detail,
+            failure: projected,
+        } = legacy_add_compiler_failure(&outcome).expect("legacy Add retains typed refusal")
+        else {
+            panic!("typed outcome must remain a typed command failure");
+        };
+        assert_eq!(detail, "local compiler rejected src/recovery.ts");
+        assert_eq!(projected, failure);
+        assert_eq!(projected.relative_path(), "src/recovery.ts");
+        assert_eq!(projected.kind_tag(), "build_invalid_occurrence_span");
+        assert!(projected.detail().contains("occurrence span"));
+    }
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -3844,7 +4290,9 @@ mod tests {
                 .with_relation::<BuiltinWorkspaceRelation>()
                 .expect("workspace relation registry")
                 .with_relation::<BuiltinSemanticRelation>()
-                .expect("semantic relation registry");
+                .expect("semantic relation registry")
+                .with_relation::<backend_engine::builtin::ProductSemanticCaptureRelation>()
+                .expect("semantic capture relation registry");
             let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
                 &workspace,
                 BuiltinModel,
@@ -4001,6 +4449,7 @@ mod tests {
         adapter.indexing = Some(IndexJob {
             owner_ticket,
             operation_key: None,
+            captures: BTreeMap::new(),
             legacy_add: None,
             awaiters: Vec::new(),
             cancelled: Arc::clone(&cancelled),

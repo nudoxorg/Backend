@@ -6,16 +6,15 @@ pub(super) use crate::{
 use std::fmt;
 
 pub(super) use super::{
-    REGISTRY_NATIVE_METADATA_VERSION,
     MAX_REGISTRY_NATIVE_METADATA_BYTES, MAX_REGISTRY_NATIVE_ROWS, MAX_REGISTRY_NATIVE_TEXT_BYTES,
-    RegistryCargoMetadata, RegistryConanMetadata, RegistryConanSourceAvailability,
-    RegistryGoMetadata, RegistryGoRetract, RegistryGoSourceFacts, RegistryMavenChecksum,
-    RegistryMavenMetadata, RegistryNativeArtifact, RegistryNativeArtifactKind,
-    RegistryNativeAvailability, RegistryNativeChecksum, RegistryNativeChecksumAlgorithm,
-    RegistryNativeDetails, RegistryNativeDistTag, RegistryNativeEvidenceClaim,
-    RegistryNativeFeature, RegistryNativeMetadata, RegistryNativeObservation,
-    RegistryNativeProvenance, RegistryNativeVulnerability, RegistryNpmMetadata,
-    RegistryNugetMetadata, RegistryPypiMetadata,
+    REGISTRY_NATIVE_METADATA_VERSION, RegistryCargoMetadata, RegistryConanMetadata,
+    RegistryConanSourceAvailability, RegistryGoMetadata, RegistryGoRetract, RegistryGoSourceFacts,
+    RegistryMavenChecksum, RegistryMavenMetadata, RegistryNativeArtifact,
+    RegistryNativeArtifactKind, RegistryNativeAvailability, RegistryNativeChecksum,
+    RegistryNativeChecksumAlgorithm, RegistryNativeDetails, RegistryNativeDistTag,
+    RegistryNativeEvidenceClaim, RegistryNativeFeature, RegistryNativeMetadata,
+    RegistryNativeObservation, RegistryNativeProvenance, RegistryNativeVulnerability,
+    RegistryNpmMetadata, RegistryNugetMetadata, RegistryPypiMetadata,
 };
 
 #[path = "decode.rs"]

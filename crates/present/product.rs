@@ -177,7 +177,6 @@ impl ProductRecord {
     pub const fn compiler_profile(&self) -> Option<SemanticLanguageProfile> {
         self.compiler_profile
     }
-
 }
 
 /// One rendered product answer.
@@ -607,7 +606,10 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
 fn index_operation_view(observation: &backend_library::IndexOperationObservation) -> ProductView {
     use backend_library::IndexOperationObservation as O;
     match observation {
-        O::OutsideReceiptWindow { operation_key, request_digest } => ProductView::rows(
+        O::OutsideReceiptWindow {
+            operation_key,
+            request_digest,
+        } => ProductView::rows(
             "index-operation",
             vec![ProductRecord::new(
                 "index operation receipt is outside the evidence window".to_owned(),
@@ -644,12 +646,57 @@ fn index_operation_view(observation: &backend_library::IndexOperationObservation
                     format!("unresolved: {}", detail.as_str())
                 }
             };
+            let mut facts = vec![format!("package {}", status.package.as_str())];
+            if let Some(capture) = &status.source_capture {
+                facts.push(format!(
+                    "source capture root {} at sequence {}",
+                    lower_hex(capture.workspace_root()),
+                    capture.workspace_sequence()
+                ));
+                for profile in capture.profiles() {
+                    let semantic = match profile.state {
+                        backend_library::IndexOperationSemanticProfileState::Pending { prior } => {
+                            match prior {
+                                Some(prior) => format!(
+                                    "pending; prior generation {} is retained as stale",
+                                    lower_hex(&prior.generation)
+                                ),
+                                None => "pending; no prior generation is selected".to_owned(),
+                            }
+                        }
+                        backend_library::IndexOperationSemanticProfileState::Unavailable {
+                            reason,
+                        } => format!("unavailable: {reason:?}"),
+                        backend_library::IndexOperationSemanticProfileState::Failed {
+                            prior,
+                            reason,
+                        } => format!(
+                            "failed: {reason:?}; prior generation {} is retained as stale",
+                            lower_hex(&prior.generation)
+                        ),
+                        backend_library::IndexOperationSemanticProfileState::Published {
+                            generation,
+                            coverage,
+                        } => format!(
+                            "published generation {} with {coverage:?} coverage",
+                            lower_hex(&generation)
+                        ),
+                    };
+                    facts.push(format!(
+                        "{} source version {} ({} files, observation {}): {semantic}",
+                        profile.profile.name().unwrap_or("unknown profile"),
+                        lower_hex(&profile.source_version),
+                        profile.source_count,
+                        profile.observation_sequence,
+                    ));
+                }
+            }
             ProductView::rows(
                 "index-operation",
                 vec![ProductRecord::new(
                     format!("index operation {state}"),
                     Some(status.operation_key.to_hex()),
-                    vec![format!("package {}", status.package.as_str())],
+                    facts,
                 )],
             )
         }
@@ -677,12 +724,21 @@ fn index_terminal_view(terminal: &IndexJobTerminal) -> ProductView {
     let (state, detail) = match &terminal.outcome {
         IndexJobOutcome::Published => ("published", None),
         IndexJobOutcome::Refused(reason) => ("refused", Some(reason.as_str())),
+        IndexJobOutcome::RefusedWithCompilerFailure { detail, .. } => {
+            ("refused", Some(detail.as_str()))
+        }
         IndexJobOutcome::Cancelled => ("cancelled", None),
         IndexJobOutcome::Failed(reason) => ("failed", Some(reason.as_str())),
     };
     let mut tags = vec![format!("outcome {state}")];
     if let Some(detail) = detail {
         tags.push(detail.to_owned());
+    }
+    if let IndexJobOutcome::RefusedWithCompilerFailure { failure, .. } = &terminal.outcome {
+        tags.push(format!(
+            "compiler_failure {}",
+            serde_json::to_string(failure).unwrap_or_else(|_| "{}".to_owned())
+        ));
     }
     ProductView::rows(
         "index-job-terminal",
@@ -2202,8 +2258,14 @@ mod tests {
             SurfaceReply::IndexOperationStatus(observation.clone()),
         ] {
             let view = product_view(&reply);
-            assert!(view.index_job().is_none(), "a tombstone cannot create a live job or terminal receipt");
-            assert_eq!(view.records()[0].operand(), Some(operation_key.to_hex().as_str()));
+            assert!(
+                view.index_job().is_none(),
+                "a tombstone cannot create a live job or terminal receipt"
+            );
+            assert_eq!(
+                view.records()[0].operand(),
+                Some(operation_key.to_hex().as_str())
+            );
             for rendered in [
                 crate::markdown::product(&view),
                 crate::text::product(&view, crate::Theme::plain()),
@@ -2519,6 +2581,56 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn durable_index_operation_view_exposes_structural_capture_and_pending_semantics() {
+        use backend_library::{
+            CompileExecutionIntent, IndexOperationKey, IndexOperationObservation,
+            IndexOperationSemanticProfileState, IndexOperationSourceCaptureReceipt,
+            IndexOperationSourceProfile, IndexOperationState, IndexOperationStatus,
+            SemanticLanguageProfile,
+        };
+
+        let key = IndexOperationKey::from_bytes([0x29; 32]).expect("operation key");
+        let package = PackageReference::parse("/workspace/project").expect("local package");
+        let receipt = IndexOperationSourceCaptureReceipt::from_checked_parts(
+            key,
+            [0x31; 32],
+            [0x32; 32],
+            11,
+            vec![IndexOperationSourceProfile {
+                profile: SemanticLanguageProfile::from_name("rust").expect("Rust profile"),
+                source_version: [0x33; 32],
+                input_digest: [0x34; 32],
+                observation_sequence: 12,
+                source_count: 7,
+                state: IndexOperationSemanticProfileState::Pending { prior: None },
+            }]
+            .into_boxed_slice(),
+        )
+        .expect("checked source receipt");
+        let observation = IndexOperationObservation::Known(
+            IndexOperationStatus::new(
+                key,
+                package,
+                CompileExecutionIntent::Interactive,
+                IndexOperationState::Accepted,
+            )
+            .with_source_capture(Some(receipt.clone())),
+        );
+        let view = index_operation_view(&observation);
+        assert_eq!(view.index_operation(), Some(&observation));
+        let tags = view.records()[0].tags();
+        assert!(
+            tags.iter()
+                .any(|tag| tag.contains(&lower_hex(receipt.workspace_root())))
+        );
+        assert!(
+            tags.iter()
+                .any(|tag| tag.contains("pending; no prior generation"))
+        );
+        assert!(tags.iter().any(|tag| tag.contains("source version")));
     }
 
     fn published_history_proof(

@@ -71,10 +71,7 @@ impl LocalAnswer {
         let candidate_entities = result
             .candidates
             .iter()
-            .filter_map(|candidate| {
-                self.candidate_row(candidate.id)
-                    .map(|(entity, _)| entity)
-            })
+            .filter_map(|candidate| self.candidate_row(candidate.id).map(|(entity, _)| entity))
             .collect::<Vec<_>>();
         let Ok(lexical) = self.lexical_relevance_for_candidates(&candidate_entities) else {
             return self.unavailable_semantic(Freshness::Unknown);
@@ -158,8 +155,7 @@ fn compose(
     let mut suppressed = 0usize;
     let mut augmented = 0usize;
     for candidate in &result.candidates {
-        let Some((entity, row)) = answer.candidate_row(candidate.id)
-        else {
+        let Some((entity, row)) = answer.candidate_row(candidate.id) else {
             suppressed = suppressed.saturating_add(1);
             continue;
         };

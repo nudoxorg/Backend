@@ -277,13 +277,49 @@ impl<'input, 'scratch, 'fragment, 'images>
             *slot = ordinal;
         }
         ordinals.sort_unstable_by_key(|ordinal| fragment_identity(&inputs[*ordinal]));
-        for pair in ordinals.windows(2) {
-            let previous = fragment_identity(&inputs[pair[0]]);
-            let observed = fragment_identity(&inputs[pair[1]]);
-            if previous == observed {
-                return Err(CompilationPrepareError::DuplicateFragment { identity: previous });
+        let mut unique_len = 0_usize;
+        for position in 0..ordinals.len() {
+            let ordinal = ordinals[position];
+            if let Some(previous_ordinal) = unique_len
+                .checked_sub(1)
+                .map(|index| ordinals[index])
+                && fragment_identity(&inputs[previous_ordinal])
+                    == fragment_identity(&inputs[ordinal])
+            {
+                if inputs[previous_ordinal].fragment.as_ref()
+                    != inputs[ordinal].fragment.as_ref()
+                {
+                    return Err(CompilationPrepareError::DuplicateFragment {
+                        identity: fragment_identity(&inputs[ordinal]),
+                    });
+                }
+                let previous_image = images[previous_ordinal].bytes(semantic_bytes).ok_or(
+                    CompilationPrepareError::SemanticImageRegion {
+                        ordinal: previous_ordinal,
+                        offset: images[previous_ordinal].offset,
+                        byte_length: images[previous_ordinal].byte_length,
+                        available: semantic_bytes.len(),
+                    },
+                )?;
+                let observed_image = images[ordinal].bytes(semantic_bytes).ok_or(
+                    CompilationPrepareError::SemanticImageRegion {
+                        ordinal,
+                        offset: images[ordinal].offset,
+                        byte_length: images[ordinal].byte_length,
+                        available: semantic_bytes.len(),
+                    },
+                )?;
+                if previous_image != observed_image {
+                    return Err(CompilationPrepareError::DuplicateFragment {
+                        identity: fragment_identity(&inputs[ordinal]),
+                    });
+                }
+                continue;
             }
+            ordinals[unique_len] = ordinal;
+            unique_len += 1;
         }
+        let ordinals = &mut ordinals[..unique_len];
         Ok(Self {
             inputs,
             images,
@@ -382,8 +418,9 @@ impl<'input, 'scratch, 'fragment, 'images>
 }
 
 impl<'input, 'scratch, 'fragment> CanonicalCompilation<'input, 'scratch, 'fragment> {
-    /// Writes caller input ordinals into caller scratch, sorts them by typed fragment identity,
-    /// and rejects duplicate immutable fragments before any manifest byte is written.
+    /// Writes unique caller input ordinals into caller scratch, sorted by typed fragment identity.
+    /// Byte-identical repeats share one canonical manifest entry; conflicting bytes for one
+    /// identity remain a typed refusal.
     #[allow(
         clippy::result_large_err,
         reason = "admission retains exact typed fragment facts"
@@ -405,13 +442,28 @@ impl<'input, 'scratch, 'fragment> CanonicalCompilation<'input, 'scratch, 'fragme
             *slot = ordinal;
         }
         ordinals.sort_unstable_by_key(|ordinal| fragment_identity(&inputs[*ordinal]));
-        for pair in ordinals.windows(2) {
-            if fragment_identity(&inputs[pair[0]]) == fragment_identity(&inputs[pair[1]]) {
-                return Err(CompilationPrepareError::DuplicateFragment {
-                    identity: fragment_identity(&inputs[pair[0]]),
-                });
+        let mut unique_len = 0_usize;
+        for position in 0..ordinals.len() {
+            let ordinal = ordinals[position];
+            if let Some(previous_ordinal) = unique_len
+                .checked_sub(1)
+                .map(|index| ordinals[index])
+                && fragment_identity(&inputs[previous_ordinal])
+                    == fragment_identity(&inputs[ordinal])
+            {
+                if inputs[previous_ordinal].fragment.as_ref()
+                    != inputs[ordinal].fragment.as_ref()
+                {
+                    return Err(CompilationPrepareError::DuplicateFragment {
+                        identity: fragment_identity(&inputs[ordinal]),
+                    });
+                }
+                continue;
             }
+            ordinals[unique_len] = ordinal;
+            unique_len += 1;
         }
+        let ordinals = &mut ordinals[..unique_len];
         Ok(Self { inputs, ordinals })
     }
 

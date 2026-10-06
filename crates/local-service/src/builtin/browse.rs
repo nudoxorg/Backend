@@ -24,14 +24,13 @@ use backend_library::{
     CargoPackageReadmeLinkRequestV1, CargoPackageReadmeLinkResultV1,
     CargoPackageReadmeLinkTargetV1, CargoPackageReadmeManifestV1, CargoPackageReadmeOriginV1,
     CargoPackageReadmeRequestV1, CargoPackageReadmeResultV1, CargoPackageReadmeRootScopeV1,
-    CargoPackageReadmeSelectionV1, CargoPackageReadmeV1,
-    CargoPackageSourceAuthorityStateV1, CargoPackageSourceAuthorityV1,
-    CargoPackageSourceFileResultV1, CargoPackageSourceInventoryCoverageV1,
-    CargoPackageSourceInventoryFailureV1, CargoPackageSourceInventoryGapV1,
-    CargoPackageSourceInventoryResultV1, CargoPackageSourceInventoryV1, CargoPackageSourcePathV1,
-    CargoPackageSourceReadFailureV1, CargoPackageSourceSemanticStatusV1,
-    MAX_CARGO_PACKAGE_SOURCE_INVENTORY_PATHS, MAX_CARGO_PACKAGE_SOURCE_INVENTORY_SCAN_ENTRIES,
-    PackageReference,
+    CargoPackageReadmeSelectionV1, CargoPackageReadmeV1, CargoPackageSourceAuthorityStateV1,
+    CargoPackageSourceAuthorityV1, CargoPackageSourceFileResultV1,
+    CargoPackageSourceInventoryCoverageV1, CargoPackageSourceInventoryFailureV1,
+    CargoPackageSourceInventoryGapV1, CargoPackageSourceInventoryResultV1,
+    CargoPackageSourceInventoryV1, CargoPackageSourcePathV1, CargoPackageSourceReadFailureV1,
+    CargoPackageSourceSemanticStatusV1, MAX_CARGO_PACKAGE_SOURCE_INVENTORY_PATHS,
+    MAX_CARGO_PACKAGE_SOURCE_INVENTORY_SCAN_ENTRIES, PackageReference,
 };
 use backend_platform::child_output::{
     self, CaptureCommand, CaptureEnvironment, CaptureError, CaptureLimits, OutputStream,
@@ -1738,9 +1737,7 @@ fn browse_entry_retained_bytes(
         .saturating_add(size_of::<TreeInput>())
         .saturating_add(input.root.capacity())
         .saturating_add(input.packages.capacity() * size_of::<TreeInputPackage>())
-        .saturating_add(
-            input.edges.capacity() * size_of::<backend_library::browse::TreeEdge>(),
-        )
+        .saturating_add(input.edges.capacity() * size_of::<backend_library::browse::TreeEdge>())
         .saturating_add(package_rows.capacity().saturating_mul(256))
         .saturating_add(watched_capacity.saturating_mul(size_of::<PathBuf>()));
     match &input.source {
@@ -1753,8 +1750,7 @@ fn browse_entry_retained_bytes(
     if let Some(tool_reuse) = tool_reuse {
         // `files` is a boxed slice, so its length is its exact element count
         // with no spare vector capacity.
-        bytes = bytes
-            .saturating_add(tool_reuse.files.len() * size_of::<CargoToolFileReuse>());
+        bytes = bytes.saturating_add(tool_reuse.files.len() * size_of::<CargoToolFileReuse>());
         for file in &tool_reuse.files {
             bytes = bytes.saturating_add(file.canonical_path.capacity());
         }
@@ -6678,7 +6674,10 @@ mod tests {
         let before_metadata = std::fs::metadata(&tool).expect("initial metadata");
         let replacement_metadata = std::fs::metadata(&replacement).expect("replacement metadata");
         assert_eq!(before_metadata.len(), replacement_metadata.len());
-        assert_eq!(before_metadata.modified()?, replacement_metadata.modified()?);
+        assert_eq!(
+            before_metadata.modified()?,
+            replacement_metadata.modified()?
+        );
 
         let canonical = tool.canonicalize().expect("canonical fixture tool");
         let forged_reuse = CargoToolWitnessReuse {
@@ -6742,10 +6741,7 @@ mod tests {
         let ordinary = "[build]\ntarget = 'x86_64-unknown-linux-gnu'\n"
             .parse::<toml::Value>()
             .expect("ordinary config");
-        assert_eq!(
-            cargo_config_build_value(&ordinary, "rustc")?,
-            None
-        );
+        assert_eq!(cargo_config_build_value(&ordinary, "rustc")?, None);
         assert!(!cargo_config_has_env_tool_override(&ordinary));
         Ok(())
     }

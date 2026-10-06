@@ -22,6 +22,19 @@ use backend_version::{
 
 use crate::interface::{PackageCompilePhase, PackageCompileRequest, PackageSourceCause};
 
+#[path = "compiler_fragment.rs"]
+mod compiler_fragment;
+pub use compiler_fragment::{
+    AtomFaultFacts, BoundedCompilerFragmentDetail, BuildFaultKind, CanonicalDataFaultFacts,
+    CompilerFragmentDataLane, CompilerFragmentDataResource, CompilerFragmentFailure,
+    CompilerFragmentFault, CompilerFragmentFaultFacts, CompilerFragmentFaultFamily,
+    CompilerFragmentFaultKind, CompilerFragmentFaultPhase, CompilerFragmentLayoutStep,
+    CompilerFragmentNestedFaultKind, CompilerFragmentRecordLane, CompilerFragmentSemanticSpace,
+    EntityRecordFaultFacts, MAX_COMPILER_FRAGMENT_DETAIL_BYTES, NestedCompilerFaultFacts,
+    OccurrenceFaultFacts, PrepareFaultKind, SemanticDataFaultFacts, SignatureCarrierFaultFacts,
+    TypeNodeFaultFacts, ValidateFaultKind, ValidationFaultFacts, WriteFaultKind,
+};
+
 /// Typed source authority copied from a validated compiler result without importing its format.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SourceAuthority {
@@ -577,6 +590,12 @@ pub enum CompilerCause {
     Lowering(LoweringCause),
     /// Compact IR construction, output writing, or self-validation failed.
     Fragment(FragmentCause),
+    /// A concrete typed semantic/IR error from compact-fragment construction.
+    ///
+    /// `Fragment` remains for older callers that only have a phase. Compiler
+    /// driver failures use this variant so source errors and their operands
+    /// remain inspectable through library and transport boundaries.
+    FragmentFailure(CompilerFragmentFailure),
 }
 
 /// One cold owner for a lowering terminal whose largest language projection

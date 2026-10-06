@@ -3754,16 +3754,15 @@ fn search_projection_file_fingerprints(
                     "projection file count exceeds its bound",
                 ));
             }
-            let file =
-                match backend_platform::durability::open_regular_file_nofollow(&child_path) {
-                    Ok(file) => file,
-                    Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
-                        return Err(invalid_search_projection_file(
-                            "Tantivy file changed to a link or special entry",
-                        ));
-                    }
-                    Err(error) => return Err(error),
-                };
+            let file = match backend_platform::durability::open_regular_file_nofollow(&child_path) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                    return Err(invalid_search_projection_file(
+                        "Tantivy file changed to a link or special entry",
+                    ));
+                }
+                Err(error) => return Err(error),
+            };
             let opened_metadata = file.metadata()?;
             if opened_metadata.len() != child_metadata.len() {
                 return Err(invalid_search_projection_file(

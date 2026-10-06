@@ -202,7 +202,7 @@ pub enum PrepareError {
     ExtensionPoolsMismatch,
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Eq, Error, PartialEq)]
 /// Failure while writing a prepared fragment into caller-owned output bytes.
 pub enum WriteError {
     /// The provided output slice is shorter than the exact prepared capacity.

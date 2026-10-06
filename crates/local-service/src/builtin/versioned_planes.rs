@@ -1183,9 +1183,7 @@ fn native_history_publication_proof(
     })
 }
 
-fn selected_history_provenance(
-    selected: &SelectedNativeHistoryImage<'_>,
-) -> [u8; 32] {
+fn selected_history_provenance(selected: &SelectedNativeHistoryImage<'_>) -> [u8; 32] {
     let target = selected.target();
     let stamp = selected.selected_stamp();
     let image = selected.image_key();

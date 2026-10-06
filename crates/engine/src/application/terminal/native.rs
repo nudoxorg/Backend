@@ -9,8 +9,8 @@ use crate::driver::{
     CompileFailure, NativeDiagnostic, NativeWorkError, NativeWorkPrimary, ToolchainSelectionFact,
 };
 use backend_library::interface::{
-    CompilerCause, CompilerTerminal, FragmentCause, NativeIoPhase, NativePrimaryCause,
-    NativeWorkCause, NativeWorkPhase,
+    CompilerCause, CompilerFragmentFailure, CompilerTerminal, FragmentCause, NativeIoPhase,
+    NativePrimaryCause, NativeWorkCause, NativeWorkPhase,
 };
 
 use super::common::{
@@ -87,18 +87,26 @@ pub(crate) fn compile_terminal(error: CompileFailure<'_>) -> CompilerTerminal {
             recipe,
             lowering(backend_semantic::vocabulary::LoweringUnsupported::ClangDeclarationForm),
         ),
-        CompileFailure::Build { source_identity, recipe, ref cause } => {
-            // `FragmentCause` carries no diagnostic; keep the concrete build
-            // cause visible in the process log instead of discarding it.
-            eprintln!("nudox: semantic IR build failed for {:?}: {cause:?}", recipe.profile);
-            fragment_terminal(source_identity, recipe, FragmentCause::Prepare)
-        }
-        CompileFailure::Prepare { source_identity, recipe, ref cause } => {
-            eprintln!("nudox: semantic fragment prepare failed for {:?}: {cause:?}", recipe.profile);
-            fragment_terminal(source_identity, recipe, FragmentCause::Prepare)
-        }
-        CompileFailure::Write { source_identity, recipe, .. } => fragment_terminal(source_identity, recipe, FragmentCause::Write),
-        CompileFailure::Validate { source_identity, recipe, .. } => fragment_terminal(source_identity, recipe, FragmentCause::Validate),
+        CompileFailure::Build { source_identity, recipe, cause } => fragment_failure_terminal(
+            source_identity,
+            recipe,
+            CompilerFragmentFailure::build(cause),
+        ),
+        CompileFailure::Prepare { source_identity, recipe, cause } => fragment_failure_terminal(
+            source_identity,
+            recipe,
+            CompilerFragmentFailure::prepare(cause),
+        ),
+        CompileFailure::Write { source_identity, recipe, cause } => fragment_failure_terminal(
+            source_identity,
+            recipe,
+            CompilerFragmentFailure::write(cause),
+        ),
+        CompileFailure::Validate { source_identity, recipe, cause } => fragment_failure_terminal(
+            source_identity,
+            recipe,
+            CompilerFragmentFailure::validate(cause),
+        ),
     }
 }
 
@@ -288,6 +296,14 @@ const fn fragment_terminal(
     compile_from_driver(source, recipe, CompilerCause::Fragment(cause))
 }
 
+const fn fragment_failure_terminal(
+    source: backend_semantic::ir::SourceIdentity,
+    recipe: backend_semantic::vocabulary::CompileRecipeFact,
+    failure: CompilerFragmentFailure,
+) -> CompilerTerminal {
+    compile_from_driver(source, recipe, CompilerCause::FragmentFailure(failure))
+}
+
 const fn configured_tool(
     fact: ToolchainSelectionFact,
 ) -> Option<backend_semantic::vocabulary::NativeTool> {
@@ -299,16 +315,19 @@ const fn configured_tool(
 
 #[cfg(test)]
 mod tests {
-    use crate::driver::{AuthorityDiagnostic, AuthorityFailure};
+    use crate::driver::{AuthorityDiagnostic, AuthorityFailure, CompileFailure};
     use backend_frontend_typescript::legacy::{AuthorityError, with_analysis};
-    use backend_library::interface::{CompilerCause, CompilerTerminal};
+    use backend_library::interface::{
+        CompilerCause, CompilerFragmentFailure, CompilerFragmentFault, CompilerTerminal,
+    };
+    use backend_semantic::ir::{BuildError, EntityId, FragmentError, LayoutStep, PrepareError, WriteError};
     use backend_semantic::vocabulary::{
         AuthorityDiagnosticClass, AuthorityPhase, CompileRecipeFact, LanguageProfile, NativeTool,
         PythonVersion, Stage, TypeScriptSource,
     };
     use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 
-    use super::authority_terminal;
+    use super::{authority_terminal, compile_terminal};
 
     #[derive(Debug, thiserror::Error)]
     enum ProjectionError {
@@ -347,6 +366,88 @@ mod tests {
             ContentId::<ToolchainDomain>::from_canonical_bytes(b"projection-toolchain"),
         );
         (source, recipe)
+    }
+
+    fn fragment_failure(terminal: CompilerTerminal) -> CompilerFragmentFailure {
+        let CompilerTerminal::Compile { cause, .. } = terminal else {
+            panic!("fragment failures must remain compile terminals")
+        };
+        let CompilerCause::FragmentFailure(failure) = cause else {
+            panic!("fragment failures must not be reclassified as authority failures")
+        };
+        failure
+    }
+
+    #[test]
+    fn compile_terminal_retains_each_concrete_fragment_error_family() {
+        let (source, recipe) = source_and_recipe();
+        let build = fragment_failure(compile_terminal(CompileFailure::Build {
+            source_identity: source,
+            recipe,
+            cause: BuildError::InvalidOccurrenceSpan {
+                owner: EntityId::new(4),
+                start: 21,
+                end: 29,
+            },
+        }));
+        assert_eq!(
+            build.fault(),
+            &CompilerFragmentFault::Build(BuildError::InvalidOccurrenceSpan {
+                owner: EntityId::new(4),
+                start: 21,
+                end: 29,
+            })
+        );
+
+        let prepare = fragment_failure(compile_terminal(CompileFailure::Prepare {
+            source_identity: source,
+            recipe,
+            cause: PrepareError::LayoutOverflow {
+                step: LayoutStep::Occurrences,
+                entity_count: 31,
+                type_node_count: 47,
+            },
+        }));
+        assert!(matches!(
+            prepare.fault(),
+            CompilerFragmentFault::Prepare(PrepareError::LayoutOverflow {
+                step: LayoutStep::Occurrences,
+                entity_count: 31,
+                type_node_count: 47,
+            })
+        ));
+
+        let write = fragment_failure(compile_terminal(CompileFailure::Write {
+            source_identity: source,
+            recipe,
+            cause: WriteError::OutputTooSmall {
+                required: 8192,
+                available: 4096,
+            },
+        }));
+        assert!(matches!(
+            write.fault(),
+            CompilerFragmentFault::Write(WriteError::OutputTooSmall {
+                required: 8192,
+                available: 4096,
+            })
+        ));
+
+        let validate = fragment_failure(compile_terminal(CompileFailure::Validate {
+            source_identity: source,
+            recipe,
+            cause: FragmentError::TruncatedHeader {
+                required: 32,
+                actual: 7,
+            },
+        }));
+        assert!(matches!(
+            validate.fault(),
+            CompilerFragmentFault::Validate(FragmentError::TruncatedHeader {
+                required: 32,
+                actual: 7,
+            })
+        ));
     }
 
     #[test]

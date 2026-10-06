@@ -21,9 +21,9 @@ mod reply_semantic_shape;
 use super::{
     CoverageWire, CursorWire, DTO_VERSION, EmptyWire, FreshnessWire, FrontierWire, HealthWire,
     ReplyDto, WireCertificate, WireSchema, coverage_from_wire, coverage_to_wire, cursor_from_wire,
-    cursor_from_wire_with_capability, cursor_to_wire, ensure_version, freshness_from_wire, freshness_to_wire,
-    frontier_from_wire, frontier_to_wire, inventory_from_wire, inventory_to_wire,
-    progress_from_wire, progress_to_wire,
+    cursor_from_wire_with_capability, cursor_to_wire, ensure_version, freshness_from_wire,
+    freshness_to_wire, frontier_from_wire, frontier_to_wire, inventory_from_wire,
+    inventory_to_wire, progress_from_wire, progress_to_wire,
 };
 use crate::canonical::{
     BranchSchema, LogSchema, ObjectSchema, PackageSchema, SymbolSchema, ViewRecipeSchema,

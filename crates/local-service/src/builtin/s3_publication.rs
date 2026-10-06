@@ -405,10 +405,10 @@ pub(super) trait SelectedClosurePublisher: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::config::valid_prefix;
     use super::receipt::{closure_membership_digest, pack_membership_digest};
     use super::signing::{aws_encode, canonical_query};
+    use super::*;
 
     fn receipt() -> ExactS3ClosureReceipt {
         let publication_fence = PublicationFence {
