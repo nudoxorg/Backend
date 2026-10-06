@@ -13,7 +13,7 @@ import tarfile
 import zipfile
 from email.parser import BytesParser
 from pathlib import PurePosixPath
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import unquote, urlsplit
 
 
 class OriginError(ValueError):
@@ -120,9 +120,16 @@ def verify_registry_metadata(package, metadata, metadata_url, archive, archive_u
         if normalized_pypi(info.get("Name")) != name or info.get("Version") != version:
             raise OriginError("sdist package metadata belongs to another project or version")
     elif ecosystem == "npm":
-        official_url(metadata_url, "registry.npmjs.org", "/" + quote(name, safe="@/"))
+        official_url(metadata_url, "registry.npmjs.org")
+        metadata_path = unquote(urlsplit(metadata_url).path)
+        package_path = "/" + name
+        if metadata_path == package_path:
+            release = metadata.get("versions", {}).get(version)
+        elif metadata_path in {package_path + "/" + version, package_path + "/latest"}:
+            release = metadata
+        else:
+            raise OriginError("NPM metadata URL belongs to another package or release")
         official_url(archive_url, "registry.npmjs.org")
-        release = metadata.get("versions", {}).get(version)
         if metadata.get("name") != name or not isinstance(release, dict) or release.get("name") != name or release.get("version") != version:
             raise OriginError("NPM metadata belongs to another package or version")
         dist = release.get("dist", {})

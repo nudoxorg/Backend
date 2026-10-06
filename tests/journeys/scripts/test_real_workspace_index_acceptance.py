@@ -1065,6 +1065,27 @@ class AcquiredSourceInventoryTests(unittest.TestCase):
 
 
 class RegistryArtifactOriginTests(unittest.TestCase):
+    def test_npm_exact_release_and_encoded_scope_bind_archive_identity(self) -> None:
+        from registry_artifact_origin import OriginError, verify_registry_metadata
+        import base64
+        archive = b"retained archive"
+        package = {"ecosystem": "npm", "id": "@types/estree", "version": "1.2.3"}
+        archive_url = "https://registry.npmjs.org/@types/estree/-/estree-1.2.3.tgz"
+        release = {"name": "@types/estree", "version": "1.2.3", "dist": {
+            "tarball": archive_url, "integrity": "sha512-" + base64.b64encode(hashlib.sha512(archive).digest()).decode()}}
+        special = {"package.json": json.dumps({"name": package["id"], "version": package["version"]}).encode()}
+        for endpoint in ("/%40types%2Festree/latest", "/%40types%2Festree/1.2.3", "/@types/estree/1.2.3"):
+            with self.subTest(endpoint=endpoint):
+                verify_registry_metadata(package, release, "https://registry.npmjs.org" + endpoint, archive, archive_url, special)
+        verify_registry_metadata(package, {"name": package["id"], "versions": {"1.2.3": release}}, "https://registry.npmjs.org/%40types%2Festree", archive, archive_url, special)
+        for endpoint in ("/%40types%2Fcounterfeit/latest", "/%40types%2Festree/2.0.0", "/%2540types%252Festree/latest", "/@types/estree/latest/"):
+            with self.subTest(endpoint=endpoint), self.assertRaises(OriginError):
+                verify_registry_metadata(package, release, "https://registry.npmjs.org" + endpoint, archive, archive_url, special)
+        with self.assertRaisesRegex(OriginError, "another package or version"):
+            verify_registry_metadata(package, {**release, "version": "2.0.0"}, "https://registry.npmjs.org/%40types%2Festree/latest", archive, archive_url, special)
+        with self.assertRaisesRegex(OriginError, "archive belongs"):
+            verify_registry_metadata(package, release, "https://registry.npmjs.org/%40types%2Festree/latest", archive, archive_url, {"package.json": b'{"name":"@types/counterfeit","version":"1.2.3"}'})
+
     def test_pypi_official_project_url_accepts_normalized_names_only(self) -> None:
         from registry_artifact_origin import OriginError, verify_registry_metadata
         archive = b"retained archive"
