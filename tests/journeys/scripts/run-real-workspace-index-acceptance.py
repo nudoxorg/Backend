@@ -47,6 +47,7 @@ MAX_BUILD_MANIFEST_BYTES = 1024 * 1024
 MAX_CORPUS_MANIFEST_BYTES = 1024 * 1024
 MAX_COMPILER_SNAPSHOT_BYTES = 30 * 1024
 MAX_RUNTIME_POLICY_BYTES = 512
+MAX_COMPILER_FAILURE_BYTES = 8 * 1024
 MAX_PROJECTS = 32
 MAX_SYMBOLS = 2_000
 MAX_SOURCE_CANDIDATES = 150_000
@@ -2260,7 +2261,19 @@ def operation_state(
     if state_name in {"failed", "unresolved"}:
         if not isinstance(detail, dict) or not isinstance(detail.get("reason"), str) or not isinstance(detail.get("detail"), str):
             raise AcceptanceError("terminal operation failure omitted typed reason or detail")
-        return state_name, None, {"reason": detail["reason"], "detail": detail["detail"]}
+        terminal = {"reason": detail["reason"], "detail": detail["detail"]}
+        failure = detail.get("compiler_failure")
+        if failure is not None:
+            if state_name != "failed" or detail["reason"] != "refused" or not isinstance(failure, dict):
+                raise AcceptanceError("compiler failure facts require a typed refused operation")
+            encoded = canonical_json(failure)
+            if len(encoded) > MAX_COMPILER_FAILURE_BYTES:
+                raise AcceptanceError("compiler failure facts exceed their shared 8 KiB bound")
+            # The matched shared Rust client admits PackageCompilerFailure.
+            # This observer retains that exact machine field without inventing
+            # a parallel cause taxonomy or recovering facts from human detail.
+            terminal["compiler_failure"] = json.loads(encoded)
+        return state_name, None, terminal
     if state_name in {"accepted", "active"}:
         return state_name, None, None
     raise AcceptanceError("durable operation status used an unknown typed state")

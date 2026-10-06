@@ -107,3 +107,11 @@ The runner reads the active source capacity constants instead of copying them in
 The repository census available during harness preparation did not provide a truthful positive acceptance input: the smaller checkout had 759 recognized candidates, below the large-project minimum; the larger monorepo had 33,196, above both the 1,915-file conservative estimate and 2,045-file absolute inline upper bound. Those counts are source candidates only; they do not prove accepted Project members. No corpus manifest was fabricated and no backend acceptance was run. Select or prepare a real project set, and resolve any capacity refusal in the owning product path before interpreting a successful run as large-workspace coverage.
 
 The stdlib-only protocol tests exercise parsers, capacity extraction, path-safety refusal, bounded logs/client evidence, duplex-pipe draining, timeout cleanup, and pinned-runner command admission. They use disposable Python child processes and do not launch backend binaries or establish runtime acceptance.
+
+Durable failed-operation evidence retains the optional `compiler_failure` machine
+field only on a typed `refused` terminal, bounded to the shared 8 KiB cap. The
+matched shared Rust client admits the existing `PackageCompilerFailure` family;
+the observer does not implement another cause taxonomy. Human detail, including
+valid serialized compiler JSON, never supplies machine failure facts. Absent facts
+remain absent and do not establish a successful compilation attempt. These failure
+receipts remain unsuccessful package attempts and grant no semantic credit.

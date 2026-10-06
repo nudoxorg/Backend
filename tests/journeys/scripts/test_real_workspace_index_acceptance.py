@@ -1261,6 +1261,36 @@ class OperationObservationBoundaryTests(unittest.TestCase):
         self.assertEqual(runner.operation_state(self.surface(observation), self.key, self.package),
                          runner.operation_state(cli, self.key, self.package))
 
+    def test_typed_refusal_facts_survive_both_wrappers_without_human_promotion(self) -> None:
+        # Same existing DTO family; cause admission belongs to the shared Rust
+        # client. This test exercises observer retention, not compiler success.
+        failure = {"relative_path": "classes/comparator.d.ts", "source_identity": "ab" * 32,
+                   "source_byte_len": 11, "recipe_identity": None, "phase": "setup",
+                   "kind_tag": "toolchain_configuration_mismatch",
+                   "cause": {"family": "toolchain", "fault": {"language": "type_script",
+                       "stage": "lower-ir", "selected": "type_script_compiler", "configured": None}},
+                   "detail": "tsc is selected but not configured", "detail_truncated": False}
+        observation = self.observation()
+        detail = {"reason": "refused", "detail": "short human message", "compiler_failure": failure}
+        observation["detail"]["state"] = {"state": "failed", "detail": detail}
+        cli = {"answer": "product", "heading": "index-operation", "index_operation": observation}
+        for wrapped in [cli, self.surface(observation)]:
+            self.assertEqual(runner.operation_state(wrapped, self.key, self.package),
+                             ("failed", None, detail))
+        detail.pop("compiler_failure")
+        detail["detail"] = json.dumps(failure)
+        self.assertEqual(runner.operation_state(self.surface(observation), self.key, self.package),
+                         ("failed", None, detail))
+        for state, reason, facts in [("unresolved", "restarted", failure),
+                                     ("failed", "worker-failed", failure),
+                                     ("failed", "refused", json.dumps(failure)),
+                                     ("failed", "refused", {"opaque": "x" * 8192})]:
+            with self.subTest(state=state, reason=reason, facts_type=type(facts)):
+                observation["detail"]["state"] = {"state": state, "detail": {
+                    "reason": reason, "detail": "human detail", "compiler_failure": facts}}
+                with self.assertRaises(runner.AcceptanceError):
+                    runner.operation_state(self.surface(observation), self.key, self.package)
+
     def test_raw_surface_still_checks_the_exact_caller_key_package_and_request_digest(self) -> None:
         for field, value in [
             ("operation_key", "1" * 64),
