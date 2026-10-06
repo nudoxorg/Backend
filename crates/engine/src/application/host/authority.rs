@@ -26,8 +26,8 @@ use crate::application::toolchain_probe::{ToolchainProbeLimits, probe_command};
 use crate::application::typescript_host::TypeScriptProjectHost;
 use crate::application::{
     LocalRuntimeCSharpAuthority, LocalRuntimeJavaAuthority, LocalRuntimePackageAuthority,
-    LocalRuntimePackageRoot, LocalRuntimeRustAuthority, LocalRuntimeToolchain,
-    PyreflyToolchainIdentity,
+    LocalRuntimePackageRoot, LocalRuntimePythonCheckerState, LocalRuntimeRustAuthority,
+    LocalRuntimeToolchain, PyreflyToolchainIdentity,
 };
 
 impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
@@ -117,13 +117,22 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             LocalHostPathRole::Pyrefly,
             self.auxiliary_candidates(home, "pyrefly"),
         )?;
-        let python_toolchain_identity = pyrefly.as_deref().and_then(|executable| {
-            probe_command(NativeTool::Python, executable, &["--version"], probe_limits)
-                .ok()
-                .map(|output| PyreflyToolchainIdentity::from_version_output(&output))
-        });
-        let python = match (executables.python.as_ref(), pyrefly) {
-            (Some(_), Some(executable)) => Some(Pyrefly::from_executable(executable)?),
+        let (python_toolchain_identity, python_checker_state) = match pyrefly.as_deref() {
+            Some(executable) => {
+                match probe_command(NativeTool::Python, executable, &["--version"], probe_limits) {
+                    Ok(output) => (
+                        Some(PyreflyToolchainIdentity::from_version_output(&output)),
+                        LocalRuntimePythonCheckerState::Ready,
+                    ),
+                    Err(_) => (None, LocalRuntimePythonCheckerState::ProbeFailed),
+                }
+            }
+            None => (None, LocalRuntimePythonCheckerState::Unconfigured),
+        };
+        let python = match (executables.python.as_ref(), pyrefly, python_checker_state) {
+            (Some(_), Some(executable), LocalRuntimePythonCheckerState::Ready) => {
+                Some(Pyrefly::from_executable(executable)?)
+            }
             _ => None,
         };
         let rust = match (
@@ -193,6 +202,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 typescript,
                 python,
                 python_toolchain_identity,
+                python_checker_state,
                 rust,
                 go,
                 csharp,

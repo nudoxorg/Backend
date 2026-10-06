@@ -87,9 +87,10 @@ pub use self::runtime::{
     LocalCompilerRuntimeConfiguration, LocalCompilerRuntimeConfigurationError,
     LocalCompilerRuntimeOpenError, LocalCompilerRuntimePaths, LocalRuntimeCSharpAuthority,
     LocalRuntimeJavaAuthority, LocalRuntimePackageAuthority, LocalRuntimePackageRoot,
-    LocalRuntimePackageRootFacts, LocalRuntimeRustAuthority, LocalRuntimeToolchain,
-    LocalRuntimeToolchainFacts, LocalRuntimeToolchainState, OwnedPackageSource,
-    OwnedPackageSourceSet, PackageSemanticRuntimeError, PyreflyToolchainIdentity,
+    LocalRuntimePackageRootFacts, LocalRuntimePythonCheckerState, LocalRuntimeRustAuthority,
+    LocalRuntimeToolchain, LocalRuntimeToolchainFacts, LocalRuntimeToolchainState,
+    OwnedPackageSource, OwnedPackageSourceSet, PackageSemanticRuntimeError,
+    PyreflyToolchainIdentity,
 };
 pub use self::terminal::{LocalCompilerOpenError, LocalCompilerPath};
 pub(crate) use self::toolchain_probe::{
