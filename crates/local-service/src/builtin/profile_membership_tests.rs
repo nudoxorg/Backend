@@ -894,13 +894,14 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
     admitted
         .visit_pages(|page| {
             for index in 0..page.len() {
-                let declaration = page
+                let admitted = page
                     .declaration(index)
                     .ok_or_else(|| "cold admitted declaration".to_owned())?;
+                let declaration = admitted.to_owned()?;
                 let expected = declarations
                     .get(visited)
                     .ok_or_else(|| "cold source facts exceeded syntax producer output".to_owned())?;
-                if declaration.source_declaration() != expected {
+                if &declaration != expected {
                     return Err(format!(
                         "cold source facts differ from SyntaxFrontend output at ordinal {visited}: {} {:?}",
                         expected.name(),
@@ -917,9 +918,7 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
                         expected.name()
                     ));
                 }
-                if declaration.source_declaration().kind()
-                    == backend_compile::DeclarationKind::Function
-                {
+                if declaration.kind() == backend_compile::DeclarationKind::Function {
                     complete_panel_facts += 1;
                 }
             }
