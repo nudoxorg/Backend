@@ -5679,7 +5679,6 @@ mod tests {
             execution_intent: crate::CompileExecutionIntent::Interactive,
             source_capture: None,
             state: IndexOperationState::Published(receipt),
-            source_capture: None,
         };
         let observation = IndexOperationObservation::Known(status);
         observation.admit().expect("operation status admission");
@@ -5829,7 +5828,6 @@ mod tests {
             execution_intent: crate::CompileExecutionIntent::Interactive,
             source_capture: None,
             state: IndexOperationState::Published(receipt.clone()),
-            source_capture: None,
         };
 
         for (range, replacement) in [
