@@ -158,6 +158,12 @@ fn exercise(fixture: &OwnerFixture) {
     }
     assert!(delivery.production_rows().is_some_and(|rows| rows > 0), "held value contains actual indexed rows");
 
+    super::tab_to_graph_control(&mut rig, "Declarations");
+    let resource_origin = rig.cx.update(|window, cx| {
+        let origin = window.focused(cx).expect("actual production resource receiver");
+        assert!(window.is_focus_handle_mounted(&origin));
+        origin
+    });
     let attachment = gate.attached_ready_epoch().expect("actual attached epoch");
     assert!(gate.attached_lost_at(attachment, "attached service unavailable in private fixture".into()));
     assert!(registry::serving_composed().is_some(), "a real endpoint registration can outlive its attached read capability");
@@ -167,6 +173,14 @@ fn exercise(fixture: &OwnerFixture) {
     assert_eq!(graph.read_with(rig.cx, |graph, _| graph.camera()), Some(camera), "stale resource-enabled native wheel is refused before repaint");
     rig.settle();
     assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("attachment-loss retained scene").entity_id(), graph.entity_id());
+    assert!(rig.cx.update(|window, cx| window.focused(cx).is_some_and(|focus|
+        focus != resource_origin && window.is_focus_handle_mounted(&focus))),
+        "the real disabled resource receiver parks onto a mounted neutral receiver");
+    rig.keys("tab");
+    assert!(rig.cx.update(|window, cx| graph.read(cx).find_focused(window, cx)),
+        "a later actual Tab reaches current local Find after resource retirement");
+    rig.native_press("escape");
+    rig.settle();
     assert!(native_bounds(&mut rig, "Status", "Earlier indexed graph · local exploration available; the index connection is unavailable.", false).is_some(),
         "a retained real scene does not claim current coverage merely because the endpoint remains registered");
     let mut renewal = Session::connect(fixture.paths.endpoint()).expect("actual still-registered service");
@@ -179,8 +193,18 @@ fn exercise(fixture: &OwnerFixture) {
     assert!(native_bounds(&mut rig, "Button", "Declarations", true).is_some(), "a certified attachment renewal re-admits resource controls");
     assert!(native_bounds(&mut rig, "Status", "Earlier indexed graph · local exploration available; the index connection is unavailable.", false).is_none(),
         "same-generation certified renewal clears the earlier notice");
+    super::tab_to_graph_control(&mut rig, "Declarations");
+    rig.cx.update(|window, cx| rig.shell.update(cx, |shell, cx|
+        shell.take_zone(super::super::focus::Zone::Shelf, window, cx)));
+    let shelf = rig.shell.read_with(rig.cx, |shell, _| shell.shelf_entity());
+    let targets = shelf.read_with(rig.cx, |shelf, _| shelf.targets.clone());
+    let target = targets.native_keys().into_iter().next().expect("registered production Shelf receiver");
+    rig.cx.update(|window, cx| assert!(targets.focus_native(&target, window, cx)));
+    let later_origin = rig.cx.update(|window, cx| window.focused(cx)).expect("later real Shelf focus");
     assert!(gate.attached_lost_at(gate.attached_ready_epoch().expect("renewed attachment"), "actual renewed attachment withdrawn".into()));
     rig.settle();
+    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), Some(later_origin),
+        "real producer loss cannot park a newer unrelated mounted native origin");
     drop(lease.take());
     assert!(registry::serving_composed().is_none(), "actual registry generation withdrawn");
     assert!(rig.cx.update(|_, cx| old_key.serving_owner(cx).is_none()), "resource capability retired immediately");
@@ -285,21 +309,28 @@ fn exercise(fixture: &OwnerFixture) {
     rig.settle();
     rig.keys("/");
     assert_eq!(current_input(&mut rig).read_with(rig.cx, |input, _| input.value().to_string()), "keep_local", "same visit retains the native Find draft through reconnect");
-    // Obtain the exact source identity from the admitted production projection.
+    // Names also occur on references/external rows. The fixture's compiler
+    // declaration is the unique Function at the known source line, before
+    // native Find chooses anything or Graph Return changes the route.
     let new_key = projection(&mut rig).0;
-    let source = requester.update(rig.cx, |_, cx| match indexed_world::get(&new_key, cx) {
+    let (expected_node, source) = requester.update(rig.cx, |_, cx| match indexed_world::get(&new_key, cx) {
         State::Ready(projection) => {
             assert_eq!(projection.origin, Origin::IndexedOwner);
-            let node = projection.world.nodes.iter().position(|node| node.name.as_ref() == "keep_local").expect("actual declaration");
-            projection.identities.exact_node(node as u32).expect("exact compiler source coordinate")
+            let definitions = projection.world.nodes.iter().enumerate()
+                .filter(|(_, node)| node.name.as_ref() == "keep_local" && node.kind == facet::graph::Kind::Function)
+                .filter_map(|(node, _)| projection.identities.exact_node(node as u32)
+                    .filter(|source| source.line == Some(2)).map(|source| (node as u32, source)))
+                .collect::<Vec<_>>();
+            assert_eq!(definitions.len(), 1, "one actual compiler definition at the fixture's known line");
+            definitions.into_iter().next().expect("unique source definition")
         }
         _ => panic!("completed production projection"),
     });
     let code = crate::shell::kit::symbol_view_route(source.package.as_str(), &source.symbol,
         View::Code, source.line).expect("exact source route");
     rig.keys("enter");
-    assert!(resumed.read_with(rig.cx, |graph, _| graph.focused().is_some()),
-        "the reconnected owner admits the real Find result");
+    assert_eq!(resumed.read_with(rig.cx, |graph, _| graph.focused()), Some(expected_node),
+        "native Find selects the exact compiler Function rather than a same-name reference");
     rig.keys("enter");
     let page = crate::shell::kit::symbol_view_route(source.package.as_str(), &source.symbol,
         View::Page, source.line).expect("exact page route");

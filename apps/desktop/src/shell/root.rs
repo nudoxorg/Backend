@@ -1422,6 +1422,20 @@ impl Shell {
     }
 
     /// Tab: the next zone takes the keyboard.
+    fn graph_component_tab(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        // Graph has already walked its own mounted native region before
+        // propagating this component action. Its real edge belongs to the
+        // existing Shell zone walk, rather than CE's whole-window fallback.
+        if super::bodies::graph::is_graph(self.links.snapshot(cx).route())
+            && self.reader.read(cx).adopt_mounted_native_focus(window, cx).is_some()
+        {
+            self.with_background_input(|shell| shell.cycle_zone(forward, window, cx));
+        } else {
+            cx.propagate();
+        }
+    }
+
+    /// Tab: the next zone takes the keyboard.
     pub fn cycle_zone(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.pending_transient_return = None;
         if self.shelf_over_open {
@@ -2683,6 +2697,8 @@ impl Render for Shell {
             .on_action(cx.listener(|shell, _: &keys::ToggleShelf, window, cx| shell.with_background_input(|shell| shell.toggle_shelf(window, cx))))
             .on_action(cx.listener(|shell, _: &keys::NextZone, window, cx| shell.with_background_input(|shell| shell.cycle_zone(true, window, cx))))
             .on_action(cx.listener(|shell, _: &keys::PrevZone, window, cx| shell.with_background_input(|shell| shell.cycle_zone(false, window, cx))))
+            .on_action(cx.listener(|shell, _: &gpui_component::Tab, window, cx| shell.graph_component_tab(true, window, cx)))
+            .on_action(cx.listener(|shell, _: &gpui_component::TabPrev, window, cx| shell.graph_component_tab(false, window, cx)))
             .on_action(cx.listener(|shell, _: &keys::AskNext, window, cx| shell.ask_tab(false, window, cx)))
             .on_action(cx.listener(|shell, _: &keys::AskPrev, window, cx| shell.ask_tab(true, window, cx)))
             .on_action(cx.listener(|shell, _: &keys::FolioNext, window, cx| shell.with_background_input(|shell| shell.folio_tab(false, window, cx))))

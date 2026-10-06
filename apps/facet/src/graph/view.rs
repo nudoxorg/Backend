@@ -573,6 +573,19 @@ impl GraphView {
         self.focus_handle.contains_focused(window, cx)
     }
 
+    /// The actual mounted resource receiver that this local frame is about to
+    /// disable. The host may park it neutrally before its ancestry disappears;
+    /// this receipt cannot choose another control or restore scene focus.
+    pub fn retiring_native_resource_origin(&self, window: &Window, cx: &App) -> Option<FocusHandle> {
+        // Host admission is checked by the caller. This physical receipt is
+        // passive: calling the host guard here would re-enter its updating Map.
+        if !self.painted_labels.as_ref()?.controls.resources_enabled { return None; }
+        let origin = window.focused(cx)?;
+        (window.is_focus_handle_mounted(&origin) && self.focus_handle.contains(&origin, window)
+            && (self.declaration_focus.contains(&origin) || origin == self.status_focus))
+            .then_some(origin)
+    }
+
     fn admits_native_focus(&self, next: &FocusHandle, cx: &App) -> bool {
         if *next == self.find.read(cx).focus_handle(cx) { return true; }
         self.admits_native_interaction(cx) && self.painted_labels.as_ref().is_some_and(|painted|

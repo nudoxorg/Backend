@@ -554,6 +554,35 @@ fn freshly_painted_owner_failed_graph_has_local_find_and_real_native_boundaries(
 }
 
 #[gpui::test]
+fn resource_control_retirement_cannot_park_a_later_native_origin(cx: &mut TestAppContext) {
+    for origin in ["shelf", "blur", "inactive"] {
+        let (mut rig, gate) = canary_native_rig(cx, 1440.0, 1.0, facet::tokens::Appearance::Abyss);
+        tab_to_graph_control(&mut rig, "Declarations");
+        let retiring = rig.cx.update(|window, cx| window.focused(cx)).expect("actual enabled resource origin");
+        gate.publish(crate::runtime::owner::OwnerState::Failed("fixture owner unavailable".into()));
+        match origin {
+            "shelf" => {
+                rig.cx.update(|window, cx| rig.shell.update(cx, |shell, cx| shell.take_zone(super::focus::Zone::Shelf, window, cx)));
+                let shelf = rig.shell.read_with(rig.cx, |shell, _| shell.shelf_entity());
+                let targets = shelf.read_with(rig.cx, |shelf, _| shelf.targets.clone());
+                let target = targets.native_keys().into_iter().next().expect("registered mounted Shelf control");
+                rig.cx.update(|window, cx| assert!(targets.focus_native(&target, window, cx)));
+            }
+            "blur" => rig.cx.update(|window, _| window.blur()),
+            "inactive" => { rig.cx.deactivate_window(); rig.cx.update(|window, _| window.blur()); }
+            _ => unreachable!(),
+        }
+        let later = rig.cx.update(|window, cx| window.focused(cx));
+        assert_ne!(later, Some(retiring), "the later platform choice actually replaces the resource origin");
+        rig.draw(); rig.repaint(); rig.settle();
+        assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), later,
+            "resource retirement preserves the later {origin} origin");
+        assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_some(),
+            "denied parking does not erase the retained local scene");
+    }
+}
+
+#[gpui::test]
 fn graph_native_release_cannot_adopt_a_replacement_owner(cx: &mut TestAppContext) {
     use gpui::{KeyDownEvent, KeyUpEvent, Keystroke};
     let (mut rig, gate) = canary_native_rig(cx, 663.0, 1.5, facet::tokens::Appearance::Abyss);
@@ -1208,7 +1237,18 @@ fn first_graph_paint_cannot_recreate_permission_after_later_native_input(cx: &mu
             // no event is inserted into reducer/subscriber execution.
             match change {
                 "blur" => rig.cx.update(|window, _| window.blur()),
-                "key" => rig.native_press("left"),
+                "key" => {
+                    // A completed cover return can already have restored the
+                    // root. Give this later key an actual different mounted
+                    // receiver, rather than treating Left on that root as a
+                    // new outside focus choice.
+                    rig.cx.update(|window, cx| rig.shell.update(cx, |shell, cx| shell.take_zone(super::focus::Zone::Shelf, window, cx)));
+                    let shelf = rig.shell.read_with(rig.cx, |shell, _| shell.shelf_entity());
+                    let targets = shelf.read_with(rig.cx, |shelf, _| shelf.targets.clone());
+                    let target = targets.native_keys().into_iter().next().expect("mounted Shelf origin");
+                    rig.cx.update(|window, cx| assert!(targets.focus_native(&target, window, cx)));
+                    rig.native_press("left");
+                }
                 "inactive" => { rig.cx.deactivate_window(); rig.cx.update(|window, _| window.blur()); }
                 _ => unreachable!(),
             }

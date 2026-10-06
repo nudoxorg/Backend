@@ -1662,6 +1662,16 @@ impl Render for Map {
         // before the scene mount. No second frame or render-time notify is
         // needed to turn an announced Memo result into native graph content.
         self.request_world(cx);
+        // An unavailable retained scene keeps local input, but its disabled
+        // resource controls leave the next native dispatch tree. Park only
+        // the actual mounted resource origin before that retirement happens.
+        if self.local_root_frame(cx).is_some()
+            && self.resource_scene_owner(cx).is_none()
+            && let Some(origin) = self.graph.as_ref().and_then(|graph| graph.read(cx).retiring_native_resource_origin(window, cx))
+            && let Some(shell) = self.links.shell.upgrade()
+        {
+            shell.update(cx, |shell, cx| { shell.park_retired_reader_focus(&origin, window, cx); });
+        }
         // Retire the old scene onto the mounted Shell receiver while its
         // asynchronous replacement reads. A later user choice already
         // invalidated the receipt, so this cannot manufacture a fresh claim.
