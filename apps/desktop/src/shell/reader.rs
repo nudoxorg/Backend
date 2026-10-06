@@ -1911,12 +1911,12 @@ impl Reader {
         facet: &facet::Facet,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> gpui::Div {
+    ) -> gpui::AnyElement {
         let still = facet::motion::still(cx);
         let body = self.body(place, false, snapshot, layout, facet, edge, None, window, cx);
         drop(still);
         let body = gpui::inert(("leaving-page", place.key), format!("Previous page: {}", place_name(&place.route)), body);
-        div().absolute().top_0().left_0().right_0().bottom_0().child(a11y_inert(masked(
+        let page = div().absolute().top_0().left_0().right_0().bottom_0().child(a11y_inert(masked(
             mask,
             offset(
                 div()
@@ -1930,7 +1930,10 @@ impl Reader {
                     .child(div().relative().w_full().flex().justify_center().child(body)),
             )
             .x(drift),
-        )))
+        )));
+        #[cfg(test)]
+        let page = transit_tests::owned_ink(Some(place.key), page);
+        page.into_any_element()
     }
 
     /// This frame of the change in flight, in window space (and the change
@@ -2949,6 +2952,8 @@ impl Render for Reader {
                 scroll_mount: None,
                 child: div().size_full().child(map.clone()).into_any_element(),
             };
+            #[cfg(test)]
+            let framed = transit_tests::owned_ink(None, framed);
             let mut root = div().relative().size_full()
                 .text_color(palette.ink1.hsla()).font_family(facet::fonts::family(ty::BODY));
             match (staged, transit.as_ref(), leaving, reader) {
@@ -3158,6 +3163,8 @@ impl Render for Reader {
             child: scroller.into_any_element(),
         });
         let scroller = scroller.into_any_element();
+        #[cfg(test)]
+        let scroller = transit_tests::owned_ink(Some(current.key), scroller).into_any_element();
         let mut root = div().relative().size_full();
         // Where you were: the row a Close came back to, tinted under the page.
         let tint = self.tint_now(cx);
@@ -3239,7 +3246,10 @@ impl Render for Reader {
                     } else {
                         staged.outside[0]
                     };
-                    root = root.child(div().id("unfolding-map").absolute().top_0().left_0().size_full().child(a11y_inert(masked(map_mask, div().size_full().child(map.clone())))));
+                    let graph = div().size_full().child(map.clone());
+                    #[cfg(test)]
+                    let graph = transit_tests::owned_ink(None, graph);
+                    root = root.child(div().id("unfolding-map").absolute().top_0().left_0().size_full().child(a11y_inert(masked(map_mask, graph))));
                 }
                 root = root.child(plate_ground(&staged)).child(masked(staged.plate, scroller)).children(gem(&staged));
             }
@@ -3607,6 +3617,63 @@ mod transit_tests {
     use std::collections::BTreeSet;
     use std::time::Duration;
 
+    /// Actual paint calls, attributed by the mounted child that issued them.
+    /// None denotes Map; Some is the exact page place. No word or geometry
+    /// filter is used, including when a child paints outside its viewport.
+    #[derive(Default)]
+    struct InkTrace(Vec<(Option<u64>, PaintedText)>);
+    impl gpui::Global for InkTrace {}
+
+    pub(super) fn owned_ink(page: Option<u64>, child: impl gpui::IntoElement)
+        -> impl gpui::IntoElement
+    {
+        OwnedInk { page, child: child.into_element() }
+    }
+
+    struct OwnedInk<E> { page: Option<u64>, child: E }
+    impl<E: gpui::Element> gpui::IntoElement for OwnedInk<E> {
+        type Element = Self;
+        fn into_element(self) -> Self { self }
+    }
+    impl<E: gpui::Element> gpui::Element for OwnedInk<E> {
+        type RequestLayoutState = E::RequestLayoutState;
+        type PrepaintState = E::PrepaintState;
+        fn id(&self) -> Option<gpui::ElementId> { self.child.id() }
+        fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+            self.child.source_location()
+        }
+        fn a11y_role(&self) -> Option<gpui::Role> { self.child.a11y_role() }
+        fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
+            self.child.write_a11y_info(node);
+        }
+        fn a11y_synthetic_children(&mut self, state: &mut Self::PrepaintState,
+            builder: &mut gpui::A11ySubtreeBuilder) {
+            self.child.a11y_synthetic_children(state, builder);
+        }
+        fn request_layout(&mut self, id: Option<&gpui::GlobalElementId>,
+            inspector: Option<&gpui::InspectorElementId>, window: &mut gpui::Window,
+            cx: &mut gpui::App) -> (gpui::LayoutId, Self::RequestLayoutState) {
+            self.child.request_layout(id, inspector, window, cx)
+        }
+        fn prepaint(&mut self, id: Option<&gpui::GlobalElementId>,
+            inspector: Option<&gpui::InspectorElementId>, bounds: Bounds<Pixels>,
+            state: &mut Self::RequestLayoutState, window: &mut gpui::Window,
+            cx: &mut gpui::App) -> Self::PrepaintState {
+            self.child.prepaint(id, inspector, bounds, state, window, cx)
+        }
+        fn paint(&mut self, id: Option<&gpui::GlobalElementId>,
+            inspector: Option<&gpui::InspectorElementId>, bounds: Bounds<Pixels>,
+            layout: &mut Self::RequestLayoutState, prepaint: &mut Self::PrepaintState,
+            window: &mut gpui::Window, cx: &mut gpui::App) {
+            let first = window.painted_texts().len();
+            self.child.paint(id, inspector, bounds, layout, prepaint, window, cx);
+            if let Some(trace) = cx.try_global_mut::<InkTrace>() {
+                trace.0.extend(window.painted_texts()[first..].iter().cloned()
+                    .map(|text| (self.page, text)));
+            }
+        }
+    }
+
     struct HeldDestination {
         gate: crate::runtime::owner::OwnerGate,
         entered: std::sync::mpsc::Sender<()>,
@@ -3683,11 +3750,13 @@ mod transit_tests {
         assert_eq!(frame, viewport, "the measured embedding and Reveal's scroll viewport agree on the first resized frame");
         assert!(inside(resized.plate.expect("reversing resized plate"), frame),
             "the reversing plate uses this resize's measured viewport: {resized:#?} in {frame:?}");
-        for text in &resized.texts {
-            assert!(text.bounds.left() >= px(0.0) && text.bounds.top() >= px(0.0)
-                && text.bounds.right() <= px(1000.0) && text.bounds.bottom() <= px(700.0),
-                "200% resize paints within the native viewport: {text:#?}");
+        for text in reading(&resized) {
+            assert!(inside(text.bounds, frame),
+                "200% resize clips actual Reader ink to its native viewport: {text:#?} vs {frame:?}");
         }
+        let native = rig.cx.update(|window, _| window.debug_a11y_tree_json().expect("resized native tree"));
+        assert!(!native.contains("TransitHeldDestination"),
+            "the departed pending visit contributes no stale native control: {native}");
         drop(release);
         rig.settle();
         assert_eq!(rig.route(), crate::shell::tests::page_route("RelationLabel"),
@@ -3733,6 +3802,7 @@ mod transit_tests {
         tint: Vec<(String, f32)>,
         targets: Vec<(String, Bounds<Pixels>)>,
         texts: Vec<PaintedText>,
+        ink: Vec<(Option<u64>, PaintedText)>,
     }
 
     /// A place in the reader's list, for the list's own rules.
@@ -3782,7 +3852,10 @@ mod transit_tests {
             rig.cx.executor().advance_clock(Duration::from_millis(ms));
         }
         rig.cx.run_until_parked();
-        let _ = rig.cx.update(|_, cx| facet::probe::take(cx));
+        let _ = rig.cx.update(|_, cx| {
+            cx.set_global(InkTrace::default());
+            facet::probe::take(cx)
+        });
         rig.cx.update(|window, cx| {
             window.simulate_next_frame(cx);
             window.refresh();
@@ -3811,6 +3884,7 @@ mod transit_tests {
                 .collect(),
             targets: ledger.targets.iter().map(|target| (target.key.clone(), bounds(&target.bounds))).collect(),
             texts,
+            ink: rig.cx.update(|_, cx| std::mem::take(&mut cx.global_mut::<InkTrace>().0)),
         }
     }
 
@@ -4118,7 +4192,7 @@ mod transit_tests {
     /// The reader's texts in a frame (the shelf and titlebar are not the
     /// reader's).
     fn reading(shot: &Shot) -> impl Iterator<Item = &PaintedText> {
-        shot.texts.iter().filter(|text| inside(text.bounds, shot.reader))
+        shot.ink.iter().map(|(_, text)| text)
     }
 
     fn near(a: Bounds<Pixels>, b: Bounds<Pixels>, within: f32) -> bool {
@@ -4135,7 +4209,9 @@ mod transit_tests {
     fn a_page_folds_into_its_node_and_the_graph_is_uncovered_around_it(cx: &mut TestAppContext) {
         use crate::navigation::View;
         let mut rig = page_over_graph(cx);
-        let page: BTreeSet<String> = reading(&shoot(&mut rig, 0, 0)).map(|text| text.text.to_string()).collect();
+        let before = shoot(&mut rig, 0, 0);
+        let page = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_entity().read(cx).painted.expect("the page was really painted"));
+        assert!(before.ink.iter().any(|(owner, text)| *owner == Some(page) && text.text.as_ref() == "RelationLabel"));
         let shots = film(&mut rig, set_view(View::Graph), 480);
         rig.settle();
         let node = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_focus_glyph(cx)).expect("the graph focuses the node");
@@ -4148,20 +4224,21 @@ mod transit_tests {
             }
             last = Some(plate);
             let held = shot.p.is_some_and(|p| p >= 0.999);
-            for text in reading(shot) {
-                let content = text.text.to_string();
+            for (owner, text) in &shot.ink {
+                assert!(inside(text.bounds, shot.reader), "native masked owner {owner:?} ink escapes Reader: {text:?}");
                 if held {
-                    assert!(page.contains(&content), "`{content}` (not the page's) is painted while the page folds, at {} ms: {:?}", shot.at, text.bounds);
+                    assert_eq!(*owner, Some(page), "Map paints while the page still folds at {} ms: {text:?}", shot.at);
                     folding += 1;
-                } else {
-                    if !page.contains(&content) {
-                        uncovered.insert(content);
-                    }
+                } else if owner.is_none() {
+                    uncovered.insert(text.text.to_string());
                 }
             }
             if !held {
                 // The page has folded off its plate before the plate moves.
-                let on_plate: Vec<_> = reading(shot).filter(|text| page.contains(&text.text.to_string()) && inside(text.bounds, plate) && plate.size.width < px(1170.0)).map(|text| text.text.to_string()).collect();
+                // Graph has its own same-label RelationLabel. Attribution is
+                // to actual paint calls, so even that label cannot hide stale
+                // page ink anywhere, including outside the shrinking plate.
+                let on_plate: Vec<_> = shot.ink.iter().filter(|(owner, _)| *owner == Some(page)).collect();
                 assert!(on_plate.is_empty(), "the page is still on the moving plate at {} ms: {on_plate:?}", shot.at);
             }
         }
