@@ -421,10 +421,9 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
     }
 
     /// Locates the module root paired with one already-admitted TypeScript
-    /// compiler. Exact compiler-relative roots remain valid in explicit-only
-    /// mode because they derive from that selected compiler rather than an
-    /// ambient search. Platform roots are considered only under platform
-    /// discovery.
+    /// compiler. Exact compiler-relative roots remain valid in explicit-only mode because they
+    /// derive from that selected compiler rather than an ambient search. No unrelated module root
+    /// is selected when the compiler does not identify one.
     pub(super) fn typescript_module_root(
         &self,
         compiler: Option<&Path>,

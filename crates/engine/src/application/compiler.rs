@@ -4198,6 +4198,7 @@ mod tests {
         bounded_error_chain, package_authority_terminal, request_source, select_toolchain,
     };
     use crate::compiler_input_manifest_v2::{CompilationUnitKeyV2, CompilerPackageTargetV2};
+    use backend_version::{ContentId, SourceFactDomain};
 
     #[test]
     fn missing_typescript_host_error_explains_dependencies_and_warm_daemon_restart() {
