@@ -1267,6 +1267,10 @@ pub enum IndexOperationState {
         reason: IndexOperationFailureReason,
         /// Bounded explanatory detail.
         detail: ProductText,
+        /// Exact typed compiler refusal, when compilation produced one. Absence
+        /// does not establish that compilation was attempted or succeeded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        compiler_failure: Option<PackageCompilerFailure>,
     },
     /// The retained evidence cannot prove whether the exact publication completed.
     Unresolved {
@@ -1412,6 +1416,17 @@ impl IndexOperationObservation {
                         }
                         _ => {}
                     }
+                }
+                if let IndexOperationState::Failed {
+                    reason,
+                    compiler_failure: Some(failure),
+                    ..
+                } = &status.state
+                {
+                    if *reason != IndexOperationFailureReason::Refused {
+                        return Err(ProductAdmissionError::IndexOperationShape);
+                    }
+                    failure.encode_bounded_json()?;
                 }
                 match &status.state {
                     IndexOperationState::Active { ticket, .. }
@@ -5729,6 +5744,48 @@ mod tests {
             .expect("operation status request decode"),
             lookup
         );
+    }
+
+    #[test]
+    fn durable_compiler_refusal_requires_closed_refusal_state_on_wire() {
+        let key = IndexOperationKey::from_bytes([0x47; 32]).expect("operation key");
+        let failure = compiler_failure("src/recovery.ts");
+        let observation = |reason| {
+            IndexOperationObservation::Known(IndexOperationStatus::new(
+                key,
+                PackageReference::parse("/workspace/demo").expect("package"),
+                crate::CompileExecutionIntent::Interactive,
+                IndexOperationState::Failed {
+                    reason,
+                    detail: ProductText::from_static("short human explanation"),
+                    compiler_failure: Some(failure.clone()),
+                },
+            ))
+        };
+        let command = crate::CommandDto::new(
+            53,
+            crate::Command::Surface(SurfaceCommand::IndexOperationStatus { operation_key: key }),
+        );
+        let reply = crate::ReplyDto::new(
+            53,
+            crate::CommandReply::Surface(SurfaceReply::IndexOperationStatus(observation(
+                IndexOperationFailureReason::Refused,
+            ))),
+        );
+        let encoded = serde_json::to_vec(&reply).expect("bounded typed status wire");
+        let decoded = crate::decode_reply_body(&encoded).expect("decode typed status");
+        crate::admit_reply(&command, &decoded).expect("admit typed refusal route");
+        assert_eq!(decoded, reply);
+        for reason in [
+            IndexOperationFailureReason::WorkerFailed,
+            IndexOperationFailureReason::Cancelled,
+        ] {
+            let reply = SurfaceReply::IndexOperationStatus(observation(reason));
+            assert_eq!(
+                reply.admit(CommandId::IndexProgress),
+                Err(ProductAdmissionError::IndexOperationShape)
+            );
+        }
     }
 
     #[test]

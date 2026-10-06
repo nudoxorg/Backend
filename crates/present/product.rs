@@ -735,8 +735,24 @@ fn index_operation_view(observation: &backend_library::IndexOperationObservation
                     let _published_root = receipt.view_root();
                     "published".to_owned()
                 }
-                backend_library::IndexOperationState::Failed { detail, .. } => {
-                    format!("failed: {}", detail.as_str())
+                backend_library::IndexOperationState::Failed {
+                    detail,
+                    compiler_failure,
+                    ..
+                } => {
+                    let sentence = compiler_failure.as_ref().map_or_else(
+                        || detail.as_str().to_owned(),
+                        |failure| {
+                            Fault::compiler_refusal(
+                                failure,
+                                Operand::Text(status.operation_key.to_hex()),
+                            )
+                            .cause()
+                            .sentence()
+                            .to_owned()
+                        },
+                    );
+                    format!("failed: {sentence}")
                 }
                 backend_library::IndexOperationState::Unresolved { detail, .. } => {
                     format!("unresolved: {}", detail.as_str())
@@ -2676,6 +2692,19 @@ mod tests {
             backend_library::Cursor::for_view_root(&view),
         )
         .expect("checked published receipt");
+        let compiler_failure = backend_library::PackageCompilerFailure::from_package_terminal(
+            "classes/comparator.d.ts",
+            &backend_library::interface::CompilerTerminal::Toolchain {
+                source: backend_library::interface::SourceAuthority {
+                    identity: backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(b"declaration"),
+                    byte_len: 11,
+                },
+                language: backend_semantic::vocabulary::Language::TypeScript,
+                stage: backend_semantic::vocabulary::Stage::LowerIr,
+                selected: backend_semantic::vocabulary::NativeTool::TypeScriptCompiler,
+                configured: None,
+            },
+        ).expect("valid setup terminal").expect("closed compiler refusal");
         let observations = [
             IndexOperationObservation::Unknown { operation_key: key },
             IndexOperationObservation::OutsideReceiptWindow {
@@ -2695,6 +2724,12 @@ mod tests {
             IndexOperationObservation::Known(status(IndexOperationState::Failed {
                 reason: IndexOperationFailureReason::WorkerFailed,
                 detail: ProductText::new("bounded worker detail").expect("failure detail"),
+                compiler_failure: None,
+            })),
+            IndexOperationObservation::Known(status(IndexOperationState::Failed {
+                reason: IndexOperationFailureReason::Refused,
+                detail: ProductText::from_static("compiler rejected declaration"),
+                compiler_failure: Some(compiler_failure.clone()),
             })),
             IndexOperationObservation::Known(status(IndexOperationState::Unresolved {
                 reason: IndexOperationUnresolvedReason::RestartedDuringPublication,
@@ -2710,6 +2745,22 @@ mod tests {
             ] {
                 let view = product_view(&reply);
                 assert_eq!(view.index_operation(), Some(&observation));
+                if let IndexOperationObservation::Known(status) = &observation
+                    && let IndexOperationState::Failed {
+                        compiler_failure: Some(_),
+                        ..
+                    } = &status.state
+                {
+                    let human = &view.records()[0].title;
+                    assert!(human.contains(
+                        "classes/comparator.d.ts: setup/toolchain_configuration_mismatch"
+                    ));
+                    assert!(human.contains("Set NUDOX_TSC"));
+                    assert!(
+                        !human.contains("source_identity"),
+                        "digest JSON belongs only in the typed DTO"
+                    );
+                }
                 let dto = crate::dto::ProductDto::new(&view);
                 assert_eq!(dto.index_operation.as_ref(), Some(&observation));
                 let encoded = serde_json::to_value(&dto).expect("full product DTO");

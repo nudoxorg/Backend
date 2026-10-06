@@ -290,6 +290,7 @@ impl EngineClient for Refuses {
                             reason: backend_library::IndexOperationFailureReason::Refused,
                             detail: backend_library::ProductText::new(REFUSED)
                                 .expect("bounded failure receipt detail"),
+                            compiler_failure: None,
                         }),
                 })
             }

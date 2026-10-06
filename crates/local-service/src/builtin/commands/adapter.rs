@@ -158,6 +158,7 @@ fn index_operation_failure(
 ) -> (
     backend_library::IndexOperationFailureReason,
     backend_library::ProductText,
+    Option<backend_library::PackageCompilerFailure>,
 ) {
     match outcome {
         Some(backend_library::IndexJobOutcome::Cancelled) => (
@@ -165,30 +166,36 @@ fn index_operation_failure(
             backend_library::ProductText::from_static(
                 "index operation was cancelled before commit",
             ),
+            None,
         ),
         Some(backend_library::IndexJobOutcome::Refused(detail)) => (
             backend_library::IndexOperationFailureReason::Refused,
             detail.clone(),
+            None,
         ),
-        Some(backend_library::IndexJobOutcome::RefusedWithCompilerFailure { detail, .. }) => (
+        Some(backend_library::IndexJobOutcome::RefusedWithCompilerFailure { detail, failure }) => (
             backend_library::IndexOperationFailureReason::Refused,
             detail.clone(),
+            Some(failure.clone()),
         ),
         Some(backend_library::IndexJobOutcome::Failed(detail)) => (
             backend_library::IndexOperationFailureReason::WorkerFailed,
             detail.clone(),
+            None,
         ),
         Some(backend_library::IndexJobOutcome::Published) => (
             backend_library::IndexOperationFailureReason::WorkerFailed,
             backend_library::ProductText::from_static(
                 "semantic publication was reported while a captured profile remains Pending",
             ),
+            None,
         ),
         None => (
             backend_library::IndexOperationFailureReason::WorkerFailed,
             backend_library::ProductText::from_static(
                 "owner restarted or stopped before the exact commit was selected",
             ),
+            None,
         ),
     }
 }
@@ -201,7 +208,7 @@ fn pending_capture_unresolved(
 ) {
     match outcome {
         Some(outcome) => {
-            let (_, primary) = index_operation_failure(Some(outcome));
+            let (_, primary, _) = index_operation_failure(Some(outcome));
             (
                 backend_library::IndexOperationUnresolvedReason::ReceiptPersistenceFailed,
                 bounded_index_detail(format!(
@@ -1109,10 +1116,16 @@ impl CommandAdapter {
                     )
                 });
                 if all_terminal && !any_published {
-                    let (reason, detail) = index_operation_failure(terminal_outcome);
+                    let (reason, detail, compiler_failure) =
+                        index_operation_failure(terminal_outcome);
                     if self
                         .index_operations
-                        .failed(operation_key, reason, detail)
+                        .failed_with_compiler_failure(
+                            operation_key,
+                            reason,
+                            detail,
+                            compiler_failure,
+                        )
                         .is_ok()
                     {
                         return Ok(self
@@ -1161,10 +1174,10 @@ impl CommandAdapter {
                 .observation(operation_key, active)?
                 .expect("accepted operation remains in the journal")),
             StoredOperationState::Accepted => {
-                let (reason, detail) = index_operation_failure(terminal_outcome);
+                let (reason, detail, compiler_failure) = index_operation_failure(terminal_outcome);
                 if self
                     .index_operations
-                    .failed(operation_key, reason, detail)
+                    .failed_with_compiler_failure(operation_key, reason, detail, compiler_failure)
                     .is_ok()
                 {
                     Ok(self
@@ -1253,10 +1266,16 @@ impl CommandAdapter {
                         "the exact workspace commit is selected but its product view receipt is not available",
                     ))
                 } else if base_still_selected {
-                    let (reason, detail) = index_operation_failure(terminal_outcome);
+                    let (reason, detail, compiler_failure) =
+                        index_operation_failure(terminal_outcome);
                     if self
                         .index_operations
-                        .failed(operation_key, reason, detail)
+                        .failed_with_compiler_failure(
+                            operation_key,
+                            reason,
+                            detail,
+                            compiler_failure,
+                        )
                         .is_ok()
                     {
                         Ok(self
@@ -4228,7 +4247,7 @@ mod tests {
         ADD_TARGET_REQUIRED, AddTarget, CommandAdapter, Executed, GraphProjectionStamp, IndexJob,
         IndexJobWork, MAX_WAITING_COMMANDS, ProductDaemon, ResidentCatalog, ResidentDependencies,
         admitted_project_source_root, capture_terminalization_failed, classify_add_target,
-        legacy_add_compiler_failure, pending_capture_unresolved,
+        index_operation_failure, legacy_add_compiler_failure, pending_capture_unresolved,
     };
     use crate::builtin::{
         BuiltinIntent, BuiltinModel, BuiltinProfile, BuiltinSemanticRelation,
@@ -4371,6 +4390,22 @@ mod tests {
         };
         assert_eq!(detail, "local compiler rejected src/recovery.ts");
         assert_eq!(projected, failure);
+        let (reason, detail, retained) = index_operation_failure(Some(&outcome));
+        assert_eq!(
+            reason,
+            backend_library::IndexOperationFailureReason::Refused
+        );
+        assert_eq!(detail.as_str(), "local compiler rejected src/recovery.ts");
+        assert_eq!(retained, Some(failure));
+        let (reason, _, retained) = index_operation_failure(None);
+        assert_eq!(
+            reason,
+            backend_library::IndexOperationFailureReason::WorkerFailed
+        );
+        assert_eq!(
+            retained, None,
+            "absence of an attempt cannot manufacture compiler facts"
+        );
         assert_eq!(projected.relative_path(), "src/recovery.ts");
         assert_eq!(projected.kind_tag(), "build_invalid_occurrence_span");
         assert!(projected.detail().contains("occurrence span"));

@@ -114,6 +114,10 @@ pub(super) enum StoredOperationState {
     Failed {
         reason: IndexOperationFailureReason,
         detail: ProductText,
+        /// Optional closed failure facts; legacy and non-compiler terminals
+        /// remain untyped rather than reconstructing facts from prose.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        compiler_failure: Option<backend_library::PackageCompilerFailure>,
     },
     /// The selected owner state did not establish a terminal result.
     Unresolved {
@@ -503,6 +507,16 @@ impl IndexOperationJournal {
         reason: IndexOperationFailureReason,
         detail: ProductText,
     ) -> Result<(), JournalError> {
+        self.failed_with_compiler_failure(operation_key, reason, detail, None)
+    }
+
+    pub(super) fn failed_with_compiler_failure(
+        &mut self,
+        operation_key: IndexOperationKey,
+        reason: IndexOperationFailureReason,
+        detail: ProductText,
+        compiler_failure: Option<backend_library::PackageCompilerFailure>,
+    ) -> Result<(), JournalError> {
         self.transition(operation_key, |mut entry| {
             if !matches!(
                 entry.state,
@@ -510,7 +524,11 @@ impl IndexOperationJournal {
             ) {
                 return Err(JournalError::InvalidTransition);
             }
-            entry.state = StoredOperationState::Failed { reason, detail };
+            entry.state = StoredOperationState::Failed {
+                reason,
+                detail,
+                compiler_failure,
+            };
             Ok(entry)
         })
     }
@@ -602,12 +620,15 @@ impl IndexOperationJournal {
                     StoredOperationState::Published { receipt, .. } => {
                         IndexOperationState::Published(receipt.clone())
                     }
-                    StoredOperationState::Failed { reason, detail } => {
-                        IndexOperationState::Failed {
-                            reason: *reason,
-                            detail: detail.clone(),
-                        }
-                    }
+                    StoredOperationState::Failed {
+                        reason,
+                        detail,
+                        compiler_failure,
+                    } => IndexOperationState::Failed {
+                        reason: *reason,
+                        detail: detail.clone(),
+                        compiler_failure: compiler_failure.clone(),
+                    },
                     StoredOperationState::Unresolved { reason, detail } => {
                         IndexOperationState::Unresolved {
                             reason: *reason,
@@ -1237,6 +1258,27 @@ fn validate_entry(entry: &StoredOperation) -> Result<(), JournalError> {
             .admit(backend_library::CommandId::IndexProgress)
             .map_err(|error| JournalError::Corrupt(error.to_string()))?;
     }
+    if let StoredOperationState::Failed {
+        reason,
+        detail,
+        compiler_failure,
+    } = &entry.state
+    {
+        let status = IndexOperationStatus::new(
+            entry.operation_key,
+            entry.package.clone(),
+            entry.execution_intent,
+            IndexOperationState::Failed {
+                reason: *reason,
+                detail: detail.clone(),
+                compiler_failure: compiler_failure.clone(),
+            },
+        )
+        .with_source_capture(entry.source_capture.clone());
+        SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(status))
+            .admit(backend_library::CommandId::IndexProgress)
+            .map_err(|error| JournalError::Corrupt(error.to_string()))?;
+    }
     if let StoredOperationState::Prepared {
         request_identity,
         base_workspace_root,
@@ -1549,6 +1591,153 @@ mod tests {
             panic!("accepted row should survive the reopen")
         };
         assert!(matches!(status.state, IndexOperationState::Accepted));
+        drop(journal);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn typed_compiler_refusal_survives_cold_status_and_wire_admission() {
+        use backend_library::interface::{CompilerTerminal, SourceAuthority};
+        use backend_semantic::vocabulary::{Language, NativeTool, Stage};
+        use backend_version::{ContentId, SourceFactDomain};
+
+        let failure = backend_library::PackageCompilerFailure::from_package_terminal(
+            "classes/comparator.d.ts",
+            &CompilerTerminal::Toolchain {
+                source: SourceAuthority {
+                    identity: ContentId::<SourceFactDomain>::from_canonical_bytes(
+                        b"exact declaration bytes",
+                    ),
+                    byte_len: 23,
+                },
+                language: Language::TypeScript,
+                stage: Stage::LowerIr,
+                selected: NativeTool::TypeScriptCompiler,
+                configured: None,
+            },
+        )
+        .expect("valid setup terminal")
+        .expect("typed setup refusal");
+        let exact = failure.encode_bounded_json().expect("bounded typed facts");
+        let path = path();
+        let mut journal = open(&path);
+        let operation = key(6);
+        journal
+            .accept(operation, package(), CompileExecutionIntent::Interactive)
+            .expect("durable acceptance");
+        journal
+            .bind_source_capture_base(operation, [20; 32], 9)
+            .expect("bind source capture base");
+        let capture = IndexOperationSourceCaptureReceipt::from_checked_parts(
+            operation,
+            [21; 32],
+            [22; 32],
+            10,
+            vec![backend_library::IndexOperationSourceProfile {
+                profile: backend_library::SemanticLanguageProfile::from_name("typescript")
+                    .expect("TypeScript profile"),
+                source_version: [23; 32],
+                input_digest: [24; 32],
+                observation_sequence: 25,
+                source_count: 42,
+                state: backend_library::IndexOperationSemanticProfileState::Unavailable {
+                    reason: backend_library::IndexOperationSemanticUnavailableReason::Toolchain,
+                },
+            }]
+            .into_boxed_slice(),
+        )
+        .expect("source captured, semantic compilation refused");
+        journal
+            .source_captured(operation, capture.clone())
+            .expect("durable source capture");
+        journal
+            .failed_with_compiler_failure(
+                operation,
+                IndexOperationFailureReason::Refused,
+                ProductText::from_static("compiler refused this package"),
+                Some(failure.clone()),
+            )
+            .expect("persist closed compiler facts");
+        let untyped = key(7);
+        journal
+            .accept(untyped, package(), CompileExecutionIntent::Interactive)
+            .expect("accept no-attempt failure");
+        // Even valid serialized compiler facts in human detail carry no typed
+        // authority. This path ended without a typed compilation terminal.
+        journal
+            .failed(
+                untyped,
+                IndexOperationFailureReason::WorkerFailed,
+                ProductText::new(std::str::from_utf8(&exact).expect("JSON UTF-8"))
+                    .expect("bounded human detail"),
+            )
+            .expect("persist untyped failure");
+        drop(journal);
+
+        let journal = open(&path);
+        let observation = journal
+            .observation(operation, None)
+            .expect("cold public status")
+            .expect("retained typed operation");
+        let IndexOperationObservation::Known(status) = &observation else {
+            panic!("cold compiler refusal remains known");
+        };
+        let IndexOperationState::Failed {
+            reason,
+            compiler_failure: Some(observed),
+            ..
+        } = &status.state
+        else {
+            panic!("cold status must retain typed failure");
+        };
+        assert_eq!(*reason, IndexOperationFailureReason::Refused);
+        assert_eq!(status.source_capture, Some(capture));
+        assert_eq!(observed, &failure);
+        assert_eq!(observed.encode_bounded_json().expect("cold facts"), exact);
+        assert_eq!(
+            observed.phase(),
+            backend_library::PackageCompilerFailurePhase::Setup
+        );
+        assert_eq!(
+            observed.required_native_tool(),
+            Some(backend_library::CompilerNativeToolFact::TypeScriptCompiler)
+        );
+        assert_eq!(observed.configured_native_tool(), None);
+        assert_eq!(observed.recipe_identity(), None);
+
+        let command = backend_library::CommandDto::new(
+            31,
+            backend_library::Command::Surface(
+                backend_library::SurfaceCommand::IndexOperationStatus {
+                    operation_key: operation,
+                },
+            ),
+        );
+        let reply = backend_library::ReplyDto::new(
+            31,
+            backend_library::CommandReply::Surface(SurfaceReply::IndexOperationStatus(
+                observation.clone(),
+            )),
+        );
+        let bytes = serde_json::to_vec(&reply).expect("public status wire");
+        let decoded = backend_library::decode_reply_body(&bytes).expect("decode cold status");
+        backend_library::admit_reply(&command, &decoded).expect("admit exact cold status route");
+        assert_eq!(decoded, reply);
+
+        let Some(IndexOperationObservation::Known(status)) = journal
+            .observation(untyped, None)
+            .expect("cold untyped status")
+        else {
+            panic!("retained untyped operation");
+        };
+        assert!(matches!(
+            status.state,
+            IndexOperationState::Failed {
+                reason: IndexOperationFailureReason::WorkerFailed,
+                compiler_failure: None,
+                ..
+            }
+        ));
         drop(journal);
         cleanup(&path);
     }

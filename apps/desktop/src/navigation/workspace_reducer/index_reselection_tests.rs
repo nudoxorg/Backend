@@ -11,6 +11,7 @@ fn terminal_failure_reselection_clears_only_the_finished_claim() -> Result<(), B
         backend_library::IndexOperationState::Failed {
             reason: backend_library::IndexOperationFailureReason::Refused,
             detail: backend_library::ProductText::from_static("compiler refused the exact attempt"),
+            compiler_failure: None,
         }));
     for phase in [ProjectPhase::Failed, ProjectPhase::Cancelled, ProjectPhase::Missing] {
         let mut workspace = initial.workspace().clone();
