@@ -10342,13 +10342,8 @@ mod deferred_clip_tests {
                 .relative()
                 .size_full()
                 .children(self.present.then(|| {
-                    self.part.clone().cached(crate::StyleRefinement {
-                        size: size(
-                            Some(crate::Length::from(px(300.0))),
-                            Some(crate::Length::from(px(80.0))),
-                        ),
-                        ..Default::default()
-                    })
+                    self.part.clone().cached(crate::StyleRefinement::default()
+                        .w(px(300.0)).h(px(80.0)))
                 }))
                 .child(
                     div()
