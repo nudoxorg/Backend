@@ -2415,16 +2415,28 @@ impl CommandAdapter {
             (Some(intent), Some(operation_key)) => Some(intent.with_operation_key(operation_key)?),
             (intent, _) => intent,
         };
-        let request_identity = intent
+        let prepared_intent = intent
             .as_ref()
-            .map(|intent| BuiltinModel.request_id(intent));
-        let (base_workspace_root, base_workspace_sequence) = {
-            let head = daemon.engine().daemon().owner().head();
-            (*head.root().as_bytes(), head.sequence())
-        };
-        let removals = intent
+            .map(|intent| prepare_builtin_intent(daemon, intent))
+            .transpose()?;
+        let request_identity = prepared_intent
             .as_ref()
-            .map(selected_semantic_removals)
+            .map(PreparedBuiltinIntent::request_identity);
+        let (base_workspace_root, base_workspace_sequence) = prepared_intent
+            .as_ref()
+            .map(|intent| {
+                (
+                    intent.base_workspace_root(),
+                    intent.base_workspace_sequence(),
+                )
+            })
+            .unwrap_or_else(|| {
+                let head = daemon.engine().daemon().owner().head();
+                (*head.root().as_bytes(), head.sequence())
+            });
+        let removals = prepared_intent
+            .as_ref()
+            .map(|intent| selected_semantic_removals(&intent.intent))
             .unwrap_or_default();
         let index_operations = &mut self.index_operations;
         let semantic_authority = &mut self.semantic_authority;
@@ -2455,9 +2467,10 @@ impl CommandAdapter {
                                 ))
                             })?;
                     }
-                    intent
-                        .map(|intent| {
-                            commit_builtin_intent(daemon, request_id, &intent).map_err(
+                    prepared_intent
+                        .map(|prepared| {
+                            let intent = prepared.intent.clone();
+                            commit_prepared_builtin_intent(daemon, request_id, prepared).map_err(
                                 |error| {
                                     BuiltinModelError(format!(
                                         "commit product source intent: {error}"
@@ -3984,6 +3997,14 @@ pub(in crate::builtin) struct PreparedBuiltinIntent {
 impl PreparedBuiltinIntent {
     pub(in crate::builtin) const fn request_identity(&self) -> [u8; 32] {
         self.request_identity
+    }
+
+    pub(in crate::builtin) const fn base_workspace_root(&self) -> [u8; 32] {
+        self.base_workspace_root
+    }
+
+    pub(in crate::builtin) const fn base_workspace_sequence(&self) -> u64 {
+        self.base_workspace_sequence
     }
 }
 
