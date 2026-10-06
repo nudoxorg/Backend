@@ -4666,6 +4666,7 @@ impl Window {
                     current_view,
                     rem_size,
                     absolute_offset,
+                    content_mask,
                     prepaint_range,
                     layer_transform,
                     opacities,
@@ -4685,6 +4686,7 @@ impl Window {
                         deferred_draw.current_view,
                         deferred_draw.rem_size,
                         deferred_draw.absolute_offset,
+                        deferred_draw.content_mask,
                         deferred_draw.prepaint_range.clone(),
                         deferred_draw.layer_transform,
                         (deferred_draw.element_opacity, deferred_draw.group_opacity),
@@ -4710,7 +4712,12 @@ impl Window {
                                                 viewport,
                                                 opacities.1,
                                                 |window| {
-                                                    window.with_native_activation_scope(native_activation_scope, |window| element.prepaint(window, cx));
+                                                    // Descendants may themselves defer their draw.
+                                                    // They must capture the same inherited clip
+                                                    // that this parent uses at paint time.
+                                                    window.with_content_mask(content_mask, |window| {
+                                                        window.with_native_activation_scope(native_activation_scope, |window| element.prepaint(window, cx));
+                                                    });
                                                 },
                                             );
                                         });
@@ -10128,6 +10135,66 @@ pub struct PaintedText {
     pub bounds: Bounds<Pixels>,
     /// The ink's effective alpha, 0..=1.
     pub alpha: f32,
+}
+
+#[cfg(all(test, feature = "test-support"))]
+mod deferred_clip_tests {
+    use super::*;
+    use crate::{IntoElement as _, ParentElement as _, Styled as _, TestAppContext, div};
+
+    struct NestedClip { inherit: bool }
+    impl Render for NestedClip {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let inherit = self.inherit;
+            crate::canvas(move |_, window, cx| {
+                let mut nested = crate::canvas(|_, window, cx| {
+                    let mut control = div().id("nested-deferred-control")
+                        .role(crate::Role::Button).aria_label("Nested clipped decision")
+                        .w(px(300.0)).h(px(80.0)).bg(crate::rgb(0xffffff))
+                        .child("Nested clipped decision").into_any_element();
+                    control.layout_as_root(size(px(300.0), px(80.0)).into(), window, cx);
+                    window.defer_draw(control, point(px(40.0), px(30.0)), 0,
+                        Some(window.content_mask()));
+                }, |_, _, _, _| {}).w(px(300.0)).h(px(80.0)).into_any_element();
+                nested.layout_as_root(size(px(300.0), px(80.0)).into(), window, cx);
+                let clip = ContentMask { bounds: Bounds::new(point(px(40.0), px(30.0)), size(px(120.0), px(60.0))) };
+                // None is the negative control: descendants capture viewport
+                // clipping, exactly as the old deferred-prepaint path did.
+                window.defer_draw(nested, point(px(40.0), px(30.0)), 0, inherit.then_some(clip));
+            }, |_, _, _, _| {}).size_full()
+        }
+    }
+
+    #[gpui::test]
+    fn nested_deferred_prepaint_preserves_parent_native_clip(cx: &mut TestAppContext) {
+        let (fixture, cx) = cx.add_window_view(|_, _| NestedClip { inherit: true });
+        cx.update(|window, cx| {
+            window.set_a11y_forced(true);
+            cx.set_global(TextTrace);
+            window.draw(cx).clear(cx);
+            let expected = Bounds::new(point(px(40.0), px(30.0)), size(px(120.0), px(60.0)));
+            let quad = window.rendered_scene_for_test().quads.first().expect("real native deferred background");
+            let clip = quad.content_mask.bounds.map(|p| px(f32::from(p) / window.scale_factor()));
+            assert_eq!(clip, expected, "nested native primitives retain their inherited clip");
+            assert!(window.painted_texts().iter().any(|text| text.text.as_ref() == "Nested clipped decision"));
+            for text in window.painted_texts() {
+                assert_eq!(text.bounds.intersect(&expected), text.bounds,
+                    "all actual deferred text ink is clipped: {text:?}");
+            }
+            let tree = window.a11y_tree().expect("native deferred decision tree");
+            let (id, _) = tree.nodes.iter().find(|(_, node)| node.label() == Some("Nested clipped decision"))
+                .expect("real native control survives nested deferral");
+            assert_eq!(window.a11y_node_bounds(*id).expect("native control geometry").intersect(&expected),
+                window.a11y_node_bounds(*id).unwrap());
+        });
+        fixture.update(cx, |fixture, cx| { fixture.inherit = false; cx.notify(); });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            let quad = window.rendered_scene_for_test().quads.first().expect("negative-control native primitive");
+            let clip = quad.content_mask.bounds.map(|p| px(f32::from(p) / window.scale_factor()));
+            assert!(clip.size.width > px(120.0), "the native clip assertion detects missing inheritance");
+        });
+    }
 }
 
 #[cfg(all(test, feature = "test-support"))]
