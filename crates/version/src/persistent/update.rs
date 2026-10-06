@@ -511,7 +511,19 @@ fn build_parent_levels<R: Relation, I: TreeInterner<R>>(
         nodes = next;
         level = level.checked_add(1).ok_or(TreeError::Overflow)?;
     }
-    nodes.pop().ok_or(TreeError::InvalidRoot)
+    nodes.pop().map(collapse_root).ok_or(TreeError::InvalidRoot)
+}
+
+fn collapse_root<R: Relation>(mut root: Node<R>) -> Node<R> {
+    // A multilevel shrink can rebuild unary branches below the old root.
+    // Remove the entire unary prefix, as the bulk canonical builder does,
+    // while retaining the exact admitted child and its immutable subtree.
+    while let Some(children) = root.children()
+        && children.len() == 1
+    {
+        root = children[0].clone();
+    }
+    root
 }
 
 pub(super) fn apply_structural<R: Relation, I: TreeInterner<R>>(
@@ -532,7 +544,7 @@ pub(super) fn apply_structural<R: Relation, I: TreeInterner<R>>(
         splice = advance_splice(root, splice, level, root_level, work, interner)?;
     }
     if splice.replacement.len() == 1 {
-        return Ok(splice.replacement.remove(0));
+        return Ok(collapse_root(splice.replacement.remove(0)));
     }
     build_parent_levels(
         splice.replacement,
