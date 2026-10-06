@@ -681,7 +681,12 @@ impl<P: Product> Server<P> {
         let reply = self
             .product
             .graph_page(coordinate.clone(), limit(arguments)?, continuation)
-            .map_err(|error| RpcError::tool(error.to_string()))?;
+            .map_err(|error| {
+                RpcError::from_fault(&Fault::from_client_error(
+                    &error,
+                    backend_present::Operand::Text(coordinate.clone()),
+                ))
+            })?;
         let backend_library::CommandReply::ProjectionPage(page) = reply.reply else {
             return Err(RpcError::tool("graph page reply changed shape"));
         };
@@ -835,8 +840,12 @@ impl<P: Product> Server<P> {
             .and_then(|arguments| arguments.get("query"))
             .and_then(Value::as_str)
             .map_or_else(|| "the relevant implementation".to_owned(), bounded_text);
-        let view = Engine::revision(&mut self.product)
-            .map_err(|error| RpcError::tool(error.to_string()))?;
+        let view = Engine::revision(&mut self.product).map_err(|error| {
+            RpcError::from_fault(&Fault::from_client_error(
+                &error,
+                backend_present::Operand::Text(self.project.clone()),
+            ))
+        })?;
         Ok(json!({
             "description": "Explore the current immutable code index.",
             "messages": [{
@@ -929,7 +938,12 @@ impl<P: Product> Server<P> {
             ContinuationCursor::Page(continuation) => self
                 .product
                 .encode_continuation(continuation)
-                .map_err(|error| RpcError::tool(error.to_string()))?,
+                .map_err(|error| {
+                    RpcError::from_fault(&Fault::from_client_error(
+                        &error,
+                        backend_present::Operand::Text(self.project.clone()),
+                    ))
+                })?,
             ContinuationCursor::IndexSearch(cursor) => cursor.as_str().to_owned(),
         };
         Ok(self.sign_cursor_token(&owner_token, context))

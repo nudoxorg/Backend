@@ -47,6 +47,10 @@ struct Fake {
     surface_reply: Option<SurfaceReply>,
     /// Typed client failure returned by the surface boundary.
     surface_error: Option<ClientError>,
+    /// Typed failure at graph-page, prompt-revision, or continuation-encoding admission.
+    adapter_error: Option<ClientError>,
+    /// Exact boundary reached by an adapter-error route.
+    adapter_boundary: Option<&'static str>,
     /// Exercise the opaque owner cursor family behind `backend.surface`.
     surface_index_search_pages: bool,
     /// Override the opaque owner cursor for size-boundary cases.
@@ -170,6 +174,10 @@ fn unreachable() -> ClientError {
 
 impl Engine for Fake {
     fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
+        self.adapter_boundary = Some("revision");
+        if let Some(error) = self.adapter_error.take() {
+            return Err(error);
+        }
         Ok(view_state_root(&[]))
     }
 
@@ -317,11 +325,27 @@ impl Product for Fake {
         &mut self,
         continuation: backend_library::PageContinuation,
     ) -> Result<String, ClientError> {
+        self.adapter_boundary = Some("encode_continuation");
+        if let Some(error) = self.adapter_error.take() {
+            return Err(error);
+        }
         if self.next_continuation == Some(continuation) {
             Ok("fixture-page-1".to_owned())
         } else {
             Err(ClientError::Protocol("unknown fixture cursor".to_owned()))
         }
+    }
+
+    fn graph_page(
+        &mut self,
+        _: String,
+        _: u16,
+        _: Option<PageContinuation>,
+    ) -> Result<ReplyDto, ClientError> {
+        self.adapter_boundary = Some("graph_page");
+        Err(self.adapter_error.take().unwrap_or_else(|| {
+            ClientError::Protocol("this product does not expose graph pagination".to_owned())
+        }))
     }
 
     fn decode_continuation(
@@ -494,17 +518,133 @@ fn compiler_error_routes() -> Vec<(&'static str, Value, &'static str)> {
     ]
 }
 
+fn compiler_client_error(failure: &backend_library::PackageCompilerFailure) -> ClientError {
+    ClientError::CommandFailed(backend_library::CommandFailure::CompilerRefused {
+        detail: "RAW SOURCE DIAGNOSTIC AND LEGACY JSON".repeat(2_000),
+        failure: failure.clone(),
+    })
+}
+
+fn adapter_error_routes() -> Vec<(&'static str, Value, &'static str, &'static str)> {
+    vec![
+        (
+            "tools/call",
+            json!({"name": "backend.graph", "arguments": {"coordinate": DECLARATION, "limit": 1}}),
+            DECLARATION,
+            "graph_page",
+        ),
+        (
+            "prompts/get",
+            json!({"name": "backend.explore", "arguments": {"query": "welcome"}}),
+            PROJECT,
+            "revision",
+        ),
+        (
+            "tools/call",
+            json!({"name": QUERY_TOOL, "arguments": {"query": "{ Declaration { coordinate @output } }", "limit": 1}}),
+            PROJECT,
+            "encode_continuation",
+        ),
+    ]
+}
+
+#[test]
+fn adapter_errors_preserve_typed_compiler_facts_at_exact_boundaries() {
+    let failure = setup_compiler_failure();
+    for (method, params, operand, boundary) in adapter_error_routes() {
+        let mut server = ready(Fake {
+            adapter_error: Some(compiler_client_error(&failure)),
+            graph_continue: true,
+            ..Fake::default()
+        });
+        let response = request(&mut server, method, &params);
+        let data = &response["error"]["data"];
+        let structured = &data["structuredContent"];
+        assert_eq!(server.product.adapter_boundary, Some(boundary));
+        assert_eq!(data["kind"], "compiler-refused", "{boundary}: {response}");
+        assert_eq!(
+            structured["compiler_failure"],
+            serde_json::to_value(&failure).expect("exact facts")
+        );
+        assert_eq!(structured["operand"], operand);
+        assert_eq!(
+            structured["compiler_tool_requirement"]["configuration_variable"],
+            "NUDOX_TSC"
+        );
+        let detail = data["detail"].as_str().expect("human detail");
+        assert!(detail.contains("src/main.ts: setup/toolchain_configuration_mismatch"));
+        assert!(!detail.contains("RAW SOURCE DIAGNOSTIC"));
+        assert!(!detail.contains("content:"));
+        assert!(detail.len() < 500);
+        assert_context_bounded(&response);
+    }
+}
+
+#[test]
+fn adapter_errors_keep_valid_json_and_coordinate_protocol_strings_unproven() {
+    let failure = setup_compiler_failure();
+    let encoded = failure
+        .encode_bounded_json()
+        .expect("bounded compiler JSON");
+    assert_eq!(
+        backend_library::PackageCompilerFailure::decode_bounded_json(&encoded)
+            .expect("valid compiler JSON"),
+        failure
+    );
+    for message in [
+        String::from_utf8(encoded).expect("compiler JSON is UTF-8"),
+        "/abs/trap::src/hidden.ts:12::Secret: library record not found".to_owned(),
+    ] {
+        for (method, params, operand, boundary) in adapter_error_routes() {
+            let mut server = ready(Fake {
+                adapter_error: Some(ClientError::Protocol(message.clone())),
+                graph_continue: true,
+                ..Fake::default()
+            });
+            let response = request(&mut server, method, &params);
+            let data = &response["error"]["data"];
+            let structured = &data["structuredContent"];
+            assert_eq!(server.product.adapter_boundary, Some(boundary));
+            assert_eq!(data["kind"], "protocol", "{boundary}: {response}");
+            assert_eq!(structured["cause"], "unproven");
+            assert_eq!(structured["operand"], operand);
+            assert!(structured.get("compiler_failure").is_none());
+            assert!(structured.get("compiler_tool_requirement").is_none());
+            assert_context_bounded(&response);
+        }
+    }
+}
+
+#[test]
+fn adapter_errors_keep_continuation_transport_refusal_separate_from_compiler_facts() {
+    let (method, params, operand, boundary) =
+        adapter_error_routes().pop().expect("continuation route");
+    let mut server = ready(Fake {
+        adapter_error: Some(ClientError::Transport(
+            "owner packet exceeds transport bound".to_owned(),
+        )),
+        graph_continue: true,
+        ..Fake::default()
+    });
+    let response = request(&mut server, method, &params);
+    let data = &response["error"]["data"];
+    let structured = &data["structuredContent"];
+    assert_eq!(server.product.adapter_boundary, Some(boundary));
+    assert_eq!(server.product.graph_query_calls, 1);
+    assert_eq!(data["kind"], "transport");
+    assert_eq!(structured["cause"], "oversized");
+    assert_eq!(structured["operand"], operand);
+    assert!(structured.get("compiler_failure").is_none());
+    assert!(structured.get("compiler_tool_requirement").is_none());
+    assert_context_bounded(&response);
+}
+
 #[test]
 fn surface_errors_preserve_typed_compiler_facts_across_all_job_routes() {
     let failure = setup_compiler_failure();
     for (tool, arguments, operand) in compiler_error_routes() {
         let mut server = ready(Fake {
-            surface_error: Some(ClientError::CommandFailed(
-                backend_library::CommandFailure::CompilerRefused {
-                    detail: "RAW SOURCE DIAGNOSTIC AND LEGACY JSON".repeat(2_000),
-                    failure: failure.clone(),
-                },
-            )),
+            surface_error: Some(compiler_client_error(&failure)),
             ..Fake::default()
         });
         let response = request(
