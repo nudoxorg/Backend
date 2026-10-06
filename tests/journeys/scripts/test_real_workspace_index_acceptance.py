@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import tarfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -1049,6 +1050,104 @@ class AcquiredSourceInventoryTests(unittest.TestCase):
             Path(case.acquisition["inventory_path"]).write_bytes(b"{}")
             with self.assertRaisesRegex(runner.AcceptanceError, "declared digest"):
                 runner.verify_acquired_source_inventory(case, "b" * 64)
+
+
+class RegistryArtifactOriginTests(unittest.TestCase):
+    def fixture(self, root: Path, ecosystem="pypi") -> tuple:
+        source = root / "source"
+        source.mkdir()
+        package = {"ecosystem": ecosystem, "id": "requests" if ecosystem == "pypi" else "typescript", "version": "1.2.3"}
+        source_files = {"source.py": b"class Session: pass\n"}
+        identity_file = "PKG-INFO" if ecosystem == "pypi" else "package.json"
+        source_files[identity_file] = (b"Name: Requests\nVersion: 1.2.3\n" if ecosystem == "pypi"
+            else runner.canonical_json({"name": package["id"], "version": package["version"]}))
+        prefix = "requests-1.2.3/" if ecosystem == "pypi" else "package/"
+        archive_stream = io.BytesIO()
+        with tarfile.open(fileobj=archive_stream, mode="w:gz") as archive:
+            for name, content in sorted(source_files.items()):
+                (source / name).write_bytes(content)
+                member = tarfile.TarInfo(prefix + name)
+                member.size = len(content)
+                archive.addfile(member, io.BytesIO(content))
+        archive_bytes = archive_stream.getvalue()
+        archive_path = root / "archive.tar.gz"
+        archive_path.write_bytes(archive_bytes)
+        archive_sha = hashlib.sha256(archive_bytes).hexdigest()
+        archive_url = ("https://files.pythonhosted.org/packages/archive.tar.gz" if ecosystem == "pypi"
+                       else "https://registry.npmjs.org/typescript/-/typescript-1.2.3.tgz")
+        if ecosystem == "pypi":
+            metadata = {"info": {"name": "Requests"}, "releases": {"1.2.3": [{
+                "packagetype": "sdist", "url": archive_url, "size": len(archive_bytes),
+                "digests": {"sha256": archive_sha}}]}}
+            metadata_url = "https://pypi.org/pypi/requests/json"
+        else:
+            import base64
+            metadata = {"name": "typescript", "versions": {"1.2.3": {
+                "name": "typescript", "version": "1.2.3", "dist": {"tarball": archive_url,
+                "integrity": "sha512-" + base64.b64encode(hashlib.sha512(archive_bytes).digest()).decode()}}}}
+            metadata_url = "https://registry.npmjs.org/typescript"
+        metadata_path = root / "metadata.json"
+        metadata_path.write_bytes(runner.canonical_json(metadata))
+        origin = {"schema": "nudox.registry-artifact-origin.v1", "package": package,
+                  "registry_metadata": {"path": str(metadata_path), "sha256": hashlib.sha256(metadata_path.read_bytes()).hexdigest(), "url": metadata_url},
+                  "archive": {"path": str(archive_path), "sha256": archive_sha, "url": archive_url},
+                  "unpack": {"strip_prefix": prefix}}
+        origin_path = root / "origin.json"
+        origin_path.write_bytes(runner.canonical_json(origin))
+        binding = {"receipt_path": str(origin_path), "receipt_sha256": hashlib.sha256(origin_path.read_bytes()).hexdigest()}
+        files = [{"path": name, "bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()}
+                 for name, content in sorted(source_files.items())]
+        return package, files, binding, origin, metadata
+
+    def test_registry_metadata_archive_identity_and_exact_file_membership_are_required(self) -> None:
+        for ecosystem in ("pypi", "npm"):
+            with self.subTest(ecosystem=ecosystem), tempfile.TemporaryDirectory() as directory:
+                package, files, binding, _, _ = self.fixture(Path(directory).resolve(), ecosystem)
+                proof = runner.verify_registry_origin(binding, package, files, runner.Deadline(1))
+                self.assertEqual(proof["origin_verification"], "verified-registry-artifact-v1")
+                self.assertEqual(proof["origin_evidence"]["archive_membership_sha256"], hashlib.sha256(runner.canonical_json(files)).hexdigest())
+                files.pop()
+                with self.assertRaisesRegex(runner.AcceptanceError, "actual acquired source tree"):
+                    runner.verify_registry_origin(binding, package, files, runner.Deadline(1))
+
+    def test_relabelled_package_cannot_reuse_real_metadata_and_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            package, files, binding, origin, _ = self.fixture(Path(directory).resolve())
+            package["id"] = "counterfeit"
+            origin["package"] = package
+            origin["registry_metadata"]["url"] = "https://pypi.org/pypi/counterfeit/json"
+            path = Path(binding["receipt_path"])
+            path.write_bytes(runner.canonical_json(origin))
+            binding["receipt_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            with self.assertRaisesRegex(runner.AcceptanceError, "another project"):
+                runner.verify_registry_origin(binding, package, files, runner.Deadline(1))
+            metadata_path = Path(origin["registry_metadata"]["path"])
+            metadata = json.loads(metadata_path.read_bytes())
+            metadata["info"]["name"] = "counterfeit"
+            metadata_path.write_bytes(runner.canonical_json(metadata))
+            origin["registry_metadata"]["sha256"] = hashlib.sha256(metadata_path.read_bytes()).hexdigest()
+            path.write_bytes(runner.canonical_json(origin))
+            binding["receipt_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            with self.assertRaisesRegex(runner.AcceptanceError, "sdist package metadata"):
+                runner.verify_registry_origin(binding, package, files, runner.Deadline(1))
+
+    def test_links_traversal_duplicate_members_and_uncompressed_limits_are_refused(self) -> None:
+        for bad_name, bad_type in [("package/../escape", tarfile.REGTYPE),
+                                    ("package/link", tarfile.SYMTYPE),
+                                    ("package/file", tarfile.REGTYPE)]:
+            archive_stream = io.BytesIO()
+            with tarfile.open(fileobj=archive_stream, mode="w") as archive:
+                for index in range(2 if bad_name == "package/file" else 1):
+                    member = tarfile.TarInfo(bad_name)
+                    member.type = bad_type
+                    member.size = 1 if bad_type == tarfile.REGTYPE else 0
+                    archive.addfile(member, io.BytesIO(b"x") if member.size else None)
+            with self.subTest(name=bad_name), self.assertRaises(runner.OriginError):
+                runner.archive_members(archive_stream.getvalue(), "package/", 10, 1024, 1024)
+        with tempfile.TemporaryDirectory() as directory:
+            _, _, _, origin, _ = self.fixture(Path(directory).resolve())
+            with self.assertRaises(runner.OriginError):
+                runner.archive_members(Path(origin["archive"]["path"]).read_bytes(), origin["unpack"]["strip_prefix"], 10, 1, 1024)
 
 
 class OperationObservationBoundaryTests(unittest.TestCase):

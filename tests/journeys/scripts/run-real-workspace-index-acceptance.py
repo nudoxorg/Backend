@@ -37,6 +37,7 @@ from runtime_build_receipt import (
     verify_architecture_parser_fixtures,
     verify_runtime_build_receipt,
 )
+from registry_artifact_origin import OriginError, archive_members, verify_registry_metadata
 
 
 MANIFEST_SCHEMA = "nudox.real-workspace-index-acceptance-manifest.v1"
@@ -1454,15 +1455,18 @@ def validate_corpus_manifest(
         package_metadata = validate_package_metadata(item["package"], language) if "package" in item else None
         acquisition = item.get("acquisition")
         if "acquisition" in item:
-            if package_metadata is None or not isinstance(acquisition, dict) or set(acquisition) != {
-                "inventory_path", "inventory_sha256", "target_subdir"
-            }:
+            acquisition_fields = {"inventory_path", "inventory_sha256", "target_subdir"}
+            if package_metadata is None or not isinstance(acquisition, dict) or not acquisition_fields <= set(acquisition) or set(acquisition) - acquisition_fields - {"origin"}:
                 raise Blocked("acquisition requires package metadata and one closed inventory binding")
             if not isinstance(acquisition["inventory_path"], str) or not os.path.isabs(acquisition["inventory_path"]):
                 raise Blocked("acquired inventory path must be absolute")
             if not isinstance(acquisition["inventory_sha256"], str) or re.fullmatch(r"[0-9a-f]{64}", acquisition["inventory_sha256"]) is None:
                 raise Blocked("acquired inventory digest is invalid")
             canonical_inventory_relative(acquisition["target_subdir"], allow_root=True)
+            if "origin" in acquisition:
+                origin = acquisition["origin"]
+                if not isinstance(origin, dict) or set(origin) != {"receipt_path", "receipt_sha256"} or not isinstance(origin["receipt_path"], str) or not os.path.isabs(origin["receipt_path"]) or not isinstance(origin["receipt_sha256"], str) or re.fullmatch(r"[0-9a-f]{64}", origin["receipt_sha256"]) is None:
+                    raise Blocked("registry origin requires a closed receipt path and digest")
         project_id = item["id"]
         raw_path = item["path"]
         large = item["large"]
@@ -1666,12 +1670,57 @@ def verify_acquired_source_inventory(case: ProjectCase, manifest_sha: str, deadl
     tree_sha = sha256_bytes(canonical_json(observed))
     if case.package["provenance"]["kind"] == "source-tree-sha256" and case.package["provenance"]["sha256"] != tree_sha:
         raise AcceptanceError("declared source-tree hash differs from the independently verified inventory")
-    return {"verification": "verified-source-inventory-v1", "package": package,
+    proof = {"verification": "verified-source-inventory-v1", "package": package,
+            "target_package": package,
             "origin_verification": "unverified-declared-package",
             "source_tree_sha256": tree_sha, "acquired_inventory_sha256": sha256_bytes(raw),
             "target_subdir": binding["target_subdir"],
             "target_root_identity_sha256": sha256_bytes(str(target).encode()),
             "corpus_manifest_sha256": manifest_sha, "declared": case.package}
+    if "origin" in binding:
+        proof.update(verify_registry_origin(binding["origin"], package, observed, deadline))
+    return proof
+
+
+def verify_registry_origin(binding: dict[str, Any], package: dict[str, Any], files: list[dict[str, Any]], deadline: Deadline | None) -> dict[str, Any]:
+    raw = read_bounded_regular(Path(binding["receipt_path"]), MAX_CORPUS_MANIFEST_BYTES, "registry origin receipt")
+    if sha256_bytes(raw) != binding["receipt_sha256"]:
+        raise AcceptanceError("registry origin receipt differs from its declared digest")
+    receipt = json_no_duplicate_keys(raw, "registry origin receipt")
+    fields = {"schema", "package", "registry_metadata", "archive", "unpack"}
+    if not isinstance(receipt, dict) or set(receipt) != fields or receipt["schema"] != "nudox.registry-artifact-origin.v1" or receipt["package"] != package:
+        raise Blocked("registry origin receipt has an invalid closed package binding")
+    payloads = {}
+    for name in ("registry_metadata", "archive"):
+        row = receipt[name]
+        if not isinstance(row, dict) or set(row) != {"path", "sha256", "url"} or not isinstance(row["path"], str) or not os.path.isabs(row["path"]) or not isinstance(row["sha256"], str) or re.fullmatch(r"[0-9a-f]{64}", row["sha256"]) is None:
+            raise Blocked("registry origin artifact binding is malformed")
+        payloads[name] = read_bounded_regular(Path(row["path"]), MAX_SOURCE_FILE_BYTES, "registry origin " + name)
+        if sha256_bytes(payloads[name]) != row["sha256"]:
+            raise AcceptanceError("registry origin artifact differs from its retained digest")
+    unpack = receipt["unpack"]
+    if not isinstance(unpack, dict) or set(unpack) != {"strip_prefix"}:
+        raise Blocked("registry origin extraction prefix is malformed")
+    metadata = json_no_duplicate_keys(payloads["registry_metadata"], "official registry metadata")
+    if not isinstance(metadata, dict):
+        raise Blocked("official registry metadata is not an object")
+    try:
+        members, special = archive_members(payloads["archive"], unpack["strip_prefix"], MAX_SOURCE_CANDIDATES,
+            MAX_SOURCE_FILE_BYTES, MAX_SOURCE_BYTES_TOTAL,
+            (lambda: deadline.check("registry archive membership verification")) if deadline else (lambda: None))
+        if members != files:
+            raise OriginError("registry archive membership differs from the actual acquired source tree")
+        verify_registry_metadata(package, metadata, receipt["registry_metadata"]["url"],
+                                 payloads["archive"], receipt["archive"]["url"], special)
+    except OriginError as error:
+        raise AcceptanceError(str(error)) from error
+    return {"origin_verification": "verified-registry-artifact-v1", "origin_evidence": {
+        "metadata_sha256": sha256_bytes(payloads["registry_metadata"]),
+        "archive_sha256": sha256_bytes(payloads["archive"]),
+        "archive_membership_sha256": sha256_bytes(canonical_json(members)),
+        "receipt_sha256": sha256_bytes(raw),
+        "verification_source": "retained official metadata, archive identity and exact acquired-file membership",
+    }}
 
 
 def read_source_file(
