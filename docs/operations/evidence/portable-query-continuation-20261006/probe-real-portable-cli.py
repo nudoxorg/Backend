@@ -60,10 +60,13 @@ def cli_walk(route,generation):
  return pages
 
 mcp_state={}
+mcp_serial=0
 def mcp_page(route,token,index,overrides=None,expect_error=False):
+ global mcp_serial
  new=not mcp_state
  if new:
-  argv=[str(mcp),*common];proc=subprocess.Popen(argv,cwd=project,env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=(out/'mcp.stderr').open('wb'),start_new_session=True);sel=selectors.DefaultSelector();sel.register(proc.stdout,selectors.EVENT_READ);mcp_state.update(proc=proc,sel=sel,buf=b'',seq=0)
+  mcp_serial+=1
+  argv=[str(mcp),*common];proc=subprocess.Popen(argv,cwd=project,env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=(out/('mcp-'+str(mcp_serial).zfill(3)+'.stderr')).open('wb'),start_new_session=True);sel=selectors.DefaultSelector();sel.register(proc.stdout,selectors.EVENT_READ);mcp_state.update(proc=proc,sel=sel,buf=b'',seq=0)
  proc=mcp_state['proc'];sel=mcp_state['sel'];buf=mcp_state['buf'];seq=mcp_state['seq']
  def rpc(method,params=None,notify=False):
   nonlocal seq,buf
@@ -118,7 +121,7 @@ try:
   ('zero-offset',lambda d:d['command']['data']['cursor'].__setitem__('query_offset',0)),
   ('forward-offset',lambda d:d['command']['data']['cursor'].__setitem__('query_offset',6)),
   ('forward-sequence',lambda d:d['command']['data']['cursor'].__setitem__('sequence',999999)),
-  ('manifest',lambda d:d['command']['data'].__setitem__('read_manifest',[])),
+  ('manifest',lambda d:d['command']['data'].__setitem__('read_manifest',{'reads':[]})),
   ('scope-context',lambda d:next(c for c in d['certificate']['claims'] if c['kind']=='coverage')['data'].__setitem__('context','12'*32)),
  ]:
   changed=mutate(token,change);d=cli_page('resolve',changed,label='tamper-'+label);passed=d['exit']!=0 and d['stdout_bytes']+d['stderr_bytes']<=8192;receipt['checks']['tamper-'+label]={'pass':passed,'exit':d['exit'],'body_bytes':d['stdout_bytes']+d['stderr_bytes']};assert passed,label
