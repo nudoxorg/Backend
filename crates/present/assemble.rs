@@ -278,7 +278,7 @@ pub fn record_list_from_rows(
     more: bool,
 ) -> RecordList {
     let line = CoverageLine::new(coverage, u64::try_from(rows.len()).ok());
-    let records = rows
+    let mut records = rows
         .iter()
         .map(|row| {
             let record = Record::from_row(row);
@@ -288,17 +288,19 @@ pub fn record_list_from_rows(
             }
         })
         .collect::<Vec<_>>();
+    // View rows are ordered by canonical identity for hashing and paging.
+    // Scored search rows carry the owner's absolute rank independently of
+    // that storage order. Restore it only in the readable projection; a
+    // stable sort leaves unscored rows and equal scores in their input order.
+    records.sort_by_key(|record| std::cmp::Reverse(record.score().map(crate::record::Score::get)));
     RecordList::new(query, line, records).with_more(more)
 }
 
 fn summary_of(row: &Row) -> Option<String> {
-    let text = row
-        .document
-        .iter()
-        .find_map(|fragment| match fragment {
-            backend_library::Fragment::Text(text) => Some(text.clone()),
-            _ => None,
-        })?;
+    let text = row.document.iter().find_map(|fragment| match fragment {
+        backend_library::Fragment::Text(text) => Some(text.clone()),
+        _ => None,
+    })?;
     let first = text.lines().next().unwrap_or_default().trim().to_owned();
     (!first.is_empty() && first != row.label).then_some(first)
 }
@@ -387,11 +389,9 @@ fn shelf_entry(row: &Row, counts: &BTreeMap<String, BTreeMap<Language, u64>>) ->
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let published = languages
-        .iter()
-        .fold(0_u64, |total, count| {
-            total.saturating_add(count.declarations().get())
-        });
+    let published = languages.iter().fold(0_u64, |total, count| {
+        total.saturating_add(count.declarations().get())
+    });
     ShelfEntry::new(identity, readiness_of(row, published)).with_languages(languages)
 }
 

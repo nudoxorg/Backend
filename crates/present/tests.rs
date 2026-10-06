@@ -20,6 +20,86 @@ fn basis() -> backend_library::Basis {
 }
 
 #[test]
+fn ranked_search_presentation_agrees_with_successor_pages_without_mutating_the_view() {
+    use backend_library::{Cursor, Frontier, Library, Query, QueryLimit, Row, ViewRoot, view_key};
+
+    let basis = basis();
+    let root = ViewRoot::new_incomplete(
+        view_key(b"ranked-presentation-control"),
+        basis,
+        Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+        ["controller", "external", "service"]
+            .into_iter()
+            .map(|label| Row::new(RowId::Symbol(symbol_key(label)), basis, label))
+            .collect(),
+        vec![Coverage::Unavailable {
+            lane: Lane::Exact,
+            reason: Reason::NoIndex,
+        }],
+    )
+    .expect("incomplete presentation fixture never claims compiler authority");
+    let canonical_ids = root.rows().iter().map(|row| row.id).collect::<Vec<_>>();
+    let ranked_ids = canonical_ids.iter().copied().rev().collect::<Vec<_>>();
+    let expected = ranked_ids
+        .iter()
+        .map(|id| root.row(*id).expect("selected row").label.clone())
+        .collect::<Vec<_>>();
+    let library = Library::from_view(root.clone(), Cursor::for_view_root(&root))
+        .expect("actual immutable library");
+    let full = library
+        .search_from_ranked_ids(
+            &Query::new("service", root.root(), QueryLimit::new(10).expect("credit")),
+            &ranked_ids,
+        )
+        .expect("actual owner ranked page");
+    let coordinates = |list: &RecordList| {
+        list.records()
+            .iter()
+            .map(|record| record.identity().coordinate().as_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(coordinates(&record_list("service", &full)), expected);
+
+    let mut query = Query::new("service", root.root(), QueryLimit::new(1).expect("credit"));
+    let mut paged = Vec::new();
+    for _ in 0..ranked_ids.len() {
+        let page = library
+            .search_from_ranked_ids(&query, &ranked_ids)
+            .expect("actual successor page");
+        paged.extend(coordinates(&record_list("service", &page)));
+        if let Some(cursor) = page.next {
+            query = query.with_cursor(cursor);
+        } else {
+            break;
+        }
+    }
+    assert_eq!(paged, expected, "page credit cannot change relevance order");
+    assert_eq!(
+        library
+            .view()
+            .rows()
+            .iter()
+            .map(|row| row.id)
+            .collect::<Vec<_>>(),
+        canonical_ids,
+        "presentation must preserve canonical relation and cursor proofs"
+    );
+    assert_eq!(
+        coordinates(&record_list_from_rows(
+            "names",
+            root.rows(),
+            root.coverage(),
+            false
+        )),
+        root.rows()
+            .iter()
+            .map(|row| row.label.clone())
+            .collect::<Vec<_>>(),
+        "unscored names and graph rows retain their original order"
+    );
+}
+
+#[test]
 fn declaration_coordinates_round_trip_exactly() {
     let identity = Identity::parse(DECLARATION);
     assert_eq!(identity.coordinate().as_str(), DECLARATION);
