@@ -152,6 +152,22 @@ fn settings_find_native_origin_survives_an_ask_cover_of_settings(cx: &mut TestAp
 }
 
 #[gpui::test]
+fn current_find_edit_survives_producer_authority_replacement(cx: &mut TestAppContext) {
+    use crate::navigation::{BrowseRoute, OrbitRoute, Route};
+    let mut rig = rig(cx, None, 1440.0, 900.0);
+    rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome))));
+    let query = focus_find(&mut rig);
+    rig.cx.simulate_input("authority draft");
+    let original = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let next = crate::core::VersionedRoot::synthetic(backend_library::view_state_root(&[("find".into(), "replacement".into())]), 8);
+    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(std::sync::Arc::new(original.with_key(next, None)), cx));
+    rig.cx.run_until_parked();
+    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), Some(query), "producer replacement does not replace the current local editing engine");
+    rig.keys("x enter");
+    assert!(matches!(rig.route(), Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(query))) if query.text.as_ref() == "authority draftx"), "actual local typing and Return retain the unsent edit across new producer authority");
+}
+
+#[gpui::test]
 fn closing_a_focused_settings_radio_keeps_global_shortcuts_reachable(cx: &mut TestAppContext) {
     let route = page_route("RelationLabel");
     let mut rig = rig(cx, Some(route.clone()), 900.0, 700.0);

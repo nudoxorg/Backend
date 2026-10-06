@@ -2702,8 +2702,12 @@ impl Reader {
         let leaves = {
             let symbol_disclosure = route_symbol(&place.route).map(|symbol| self.symbol_disclosure(&symbol)).unwrap_or_default();
             let find_state = if matches!(place.route, Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome | BrowseRoute::Find(_)))) {
+                // The edit belongs to the visit, independently of producer
+                // replacement. Its mounted/root receipt is refreshed only by
+                // the current frame's callback, so retaining text grants no
+                // old authority permission to return focus or invoke results.
                 if current && self.mounted_find_query.as_ref().is_none_or(|mounted|
-                    mounted.visit != place.visit || !mounted.root.same_authority(snapshot.key())) {
+                    mounted.visit != place.visit) {
                     self.mounted_find_query = Some(MountedFindQuery {
                         visit: place.visit, state: Default::default(), place: place.key,
                         route: place.route.clone(), root: snapshot.key(), focus: None,
