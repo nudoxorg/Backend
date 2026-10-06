@@ -33,13 +33,13 @@ def main [
     }
     let target_root = $env.CARGO_TARGET_DIR? | default ".local/target"
     let results = $targets | each {|triple|
-        print $"cross: cargo check --locked --workspace --all-targets --target ($triple)"
+        print $"cross: cargo check --locked --workspace --all-targets --target ($triple) --jobs 4"
         # Stream Cargo's own progress and diagnostics straight through. The
         # verdict comes out of the try itself: an env change such as
         # LAST_EXIT_CODE made inside the block does not survive it, so
         # reading it afterwards reported every clean target as failed.
         let status = (try {
-            run-external "cargo" "check" "--locked" "--workspace" "--all-targets" "--target" $triple
+            run-external "cargo" "check" "--locked" "--workspace" "--all-targets" "--target" $triple "--jobs" "4"
             0
         } catch {
             1
