@@ -223,7 +223,7 @@ impl Library {
         let recipe = QueryPageRecipe::names(self.revision_root(), query).identity();
         self.work.record_seek();
         let limit = usize::from(query.limit.get());
-        let start = self.check_query_cursor(query.cursor, recipe, limit, |offset| {
+        let fetch = |offset| {
             self.arrangement.names_page(
                 query.text(),
                 offset,
@@ -231,21 +231,25 @@ impl Library {
                 |id| self.view.row(id),
                 &self.work,
             )
-        })?;
-        let page = self.arrangement.names_page(
-            query.text(),
-            start,
-            limit,
-            |id| self.view.row(id),
-            &self.work,
-        );
+        };
+        // Canonical snapshots sort identities; absolute ordinal scores preserve
+        // the selected names order in presentation across every page size.
+        let ranked_row = |id, rank| {
+            let mut row = self.view.row(id)?;
+            row.score = Some(u32::MAX.checked_sub(u32::try_from(rank).ok()?)?);
+            Some(row)
+        };
+        let start =
+            self.check_query_cursor_with_rows(query.cursor, recipe, limit, fetch, ranked_row)?;
+        let page = fetch(start);
         if query.cursor.is_some() && page.ids.is_empty() {
             return Err(LibraryError::CursorMismatch);
         }
         let rows = page
             .ids
             .iter()
-            .filter_map(|&id| self.view.row(id))
+            .enumerate()
+            .filter_map(|(at, &id)| ranked_row(id, start + at))
             .collect::<Vec<_>>();
         self.work.record_output(rows.len());
         self.snapshot_with_recipe(
