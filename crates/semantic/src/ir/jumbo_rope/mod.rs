@@ -110,7 +110,7 @@ pub struct JumboValueContext {
 }
 
 impl JumboValueContext {
-    /// Creates the identity context for one documentation or source value.
+    /// Creates the identity context for one typed semantic row field.
     #[must_use]
     pub const fn new(
         owner: [u8; 32],

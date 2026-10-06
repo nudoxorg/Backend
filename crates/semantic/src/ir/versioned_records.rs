@@ -2081,7 +2081,7 @@ where
                         crate::ir::JumboValueEncoding::CoreMemberIdentityList,
                     ) => {
                         let mut validator =
-                            declarations::CoreMembersWireValidator::new(1_000_000, None);
+                            declarations::CoreMembersWireValidator::new(u64::MAX, None);
                         let verified = jumbo
                             .admit_stored_closure_to(source, &mut validator)
                             .map_err(map_jumbo_source_error)?;
@@ -4667,6 +4667,7 @@ mod tests {
         };
         let items: Vec<_> = (0..=entity_count)
             .map(|index| TreeItemInput {
+                anonymous_callable_anchor: None,
                 name: &names[index],
                 kind: if index == 0 {
                     ItemKind::Record
@@ -4729,6 +4730,7 @@ mod tests {
         };
         let items = [
             TreeItemInput {
+                anonymous_callable_anchor: None,
                 name: b"Package",
                 kind: ItemKind::Module,
                 visibility: Visibility::Public,
@@ -4742,6 +4744,7 @@ mod tests {
                 extension: None,
             },
             TreeItemInput {
+                anonymous_callable_anchor: None,
                 name: b"test_normalized_versions",
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
@@ -5021,6 +5024,7 @@ mod tests {
     fn core_named_image(name: &[u8]) -> (Ir, DeclarationIdentity) {
         let version = core_fixture_version(0);
         let item = TreeItemInput {
+            anonymous_callable_anchor: None,
             name,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
@@ -5095,6 +5099,104 @@ mod tests {
                 &bytes,
                 4096,
             ),
+            Err(SemanticPlaneRecordError::RowGrammar)
+        ));
+    }
+
+    fn single_core_record_segment(
+        key: [u8; 32],
+        tag: u8,
+        payload: &[u8],
+    ) -> (Vec<u8>, SemanticPlaneSegment) {
+        let kind = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"SPIR");
+        bytes.extend_from_slice(&VERSION.to_be_bytes());
+        bytes.push(ir_plane_code(kind).expect("Core plane code"));
+        bytes.extend_from_slice(&1_u32.to_be_bytes());
+        bytes.extend_from_slice(&key);
+        bytes.push(tag);
+        bytes.extend_from_slice(
+            &u32::try_from(payload.len())
+                .expect("test payload fits u32")
+                .to_be_bytes(),
+        );
+        bytes.extend_from_slice(payload);
+        let descriptor =
+            SemanticPlaneSegment::from_payload_with_witness(kind, key, key, 1, &bytes, witness())
+                .expect("one-row Core segment has a valid envelope");
+        (bytes, descriptor)
+    }
+
+    #[test]
+    fn core_overflow_rejects_reordered_member_and_attribute_descriptors() {
+        let (ir, identity) = core_members_image(185, None);
+        let (captured, _objects) = core_capture(&ir, 4096);
+        let key = declaration_plane_key(SemanticPlaneKind::Ir(SemanticIrPlane::Core), identity);
+        let (record, _) = core_row(&captured, key, 4096);
+        let mut payload = record.payload().to_vec();
+        let descriptor_bytes = crate::ir::JUMBO_VALUE_DESCRIPTOR_WIRE_BYTES;
+        let member_offset = payload.len() - descriptor_bytes * 2;
+        let members = payload[member_offset..member_offset + descriptor_bytes].to_vec();
+        let attributes = payload[member_offset + descriptor_bytes..].to_vec();
+        payload[member_offset..member_offset + descriptor_bytes].copy_from_slice(&attributes);
+        payload[member_offset + descriptor_bytes..].copy_from_slice(&members);
+        let (bytes, descriptor) = single_core_record_segment(key, record.tag(), &payload);
+        assert!(matches!(
+            decode_semantic_plane_segment_with_row_limit(
+                SemanticPlaneKind::Ir(SemanticIrPlane::Core),
+                &descriptor,
+                &bytes,
+                4096,
+            ),
+            Err(SemanticPlaneRecordError::RowGrammar)
+        ));
+    }
+
+    #[test]
+    fn core_overflow_refuses_a_missing_typed_value_closure() {
+        let (ir, _) = core_members_image(185, None);
+        let (captured, _) = core_capture(&ir, 4096);
+        let policy = CanonicalPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(512, 1024, 4096)
+            .expect("Core policy is valid");
+        let descriptors: Vec<_> = captured
+            .rows
+            .iter()
+            .map(|(descriptor, _)| *descriptor)
+            .collect();
+        let payloads: Vec<_> = captured
+            .rows
+            .iter()
+            .map(|(_, payload)| payload.as_slice())
+            .collect();
+        let error = verify_jumbo_plane_family_closures_with_policy(
+            SemanticPlaneKind::Ir(SemanticIrPlane::Core),
+            &descriptors,
+            &payloads,
+            policy,
+            &mut InMemoryJumboObjects::default(),
+        )
+        .expect_err("missing member/attribute leaves cannot produce a verified Core closure");
+        assert!(matches!(error, SemanticPlaneRecordError::JumboRope(_)));
+    }
+
+    #[test]
+    fn core_jumbo_reference_budget_and_attribute_trailing_bytes_are_rejected() {
+        let mut members = Vec::from([0, 0, 0, 1]);
+        members.extend_from_slice(&[0x5a; 32]);
+        let mut validator = declarations::CoreMembersWireValidator::new(0, None);
+        validator.write_all(&members).expect("member value drains");
+        assert!(matches!(
+            validator.finish(),
+            Err(SemanticPlaneRecordError::JumboReferenceLimitExceeded)
+        ));
+
+        let mut attributes = declarations::CoreAttributesWireValidator::new();
+        attributes
+            .write_all(&[0, 0, 0, 0, 0])
+            .expect("trailing attribute byte drains");
+        assert!(matches!(
+            attributes.finish(),
             Err(SemanticPlaneRecordError::RowGrammar)
         ));
     }

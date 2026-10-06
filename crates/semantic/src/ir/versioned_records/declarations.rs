@@ -773,12 +773,6 @@ pub(super) struct CoreJumboValueDescriptors {
     pub(super) attributes: CheckedJumboValueDescriptor,
 }
 
-impl CoreJumboValueDescriptors {
-    pub(super) fn iter(self) -> impl Iterator<Item = CheckedJumboValueDescriptor> {
-        self.name.into_iter().chain([self.members, self.attributes])
-    }
-}
-
 struct ParsedCoreJumboRow {
     identity: DeclarationIdentity,
     name: Option<CheckedJumboValueDescriptor>,
@@ -949,7 +943,10 @@ pub(super) fn core_jumbo_descriptors_for_record_with_row_limit(
     record: super::CanonicalSemanticPlaneRecordView<'_>,
     maximum_inline_row_bytes: usize,
 ) -> Result<Option<CoreJumboValueDescriptors>, SemanticPlaneRecordError> {
-    if !matches!(record.tag(), CORE_JUMBO_TAG | CORE_ANONYMOUS_CALLABLE_JUMBO_TAG) {
+    if !matches!(
+        record.tag(),
+        CORE_JUMBO_TAG | CORE_ANONYMOUS_CALLABLE_JUMBO_TAG
+    ) {
         return Ok(None);
     }
     let parsed = parse_core_jumbo_row(

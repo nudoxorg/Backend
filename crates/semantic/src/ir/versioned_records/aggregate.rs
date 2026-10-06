@@ -121,8 +121,6 @@ impl SemanticTypedPlaneVerificationLimitsV2 {
     }
 }
 
-const CORE_DECLARATION_TAG: u8 = 1;
-const CORE_JUMBO_DECLARATION_TAG: u8 = 3;
 const DOCUMENTATION_TAG: u8 = 2;
 const RELATION_TAG: u8 = 3;
 const OCCURRENCE_TAG: u8 = 4;
@@ -2462,14 +2460,18 @@ fn decode_core(
         for record in segment.records() {
             if !matches!(
                 record.tag(),
-                CORE_DECLARATION_TAG
+                super::declarations::CORE_TAG
                     | super::declarations::CORE_ANONYMOUS_CALLABLE_TAG
-                    | CORE_JUMBO_DECLARATION_TAG
+                    | super::declarations::CORE_JUMBO_TAG
                     | super::declarations::CORE_ANONYMOUS_CALLABLE_JUMBO_TAG
             ) {
                 return Err(SemanticPlaneRecordError::RowGrammar.into());
             }
-            let jumbo_row = matches!(record.tag(), CORE_JUMBO_DECLARATION_TAG | super::declarations::CORE_ANONYMOUS_CALLABLE_JUMBO_TAG);
+            let jumbo_row = matches!(
+                record.tag(),
+                super::declarations::CORE_JUMBO_TAG
+                    | super::declarations::CORE_ANONYMOUS_CALLABLE_JUMBO_TAG
+            );
             let mut cursor = Cursor::new(record.payload());
             let identity = identity_key(read_identity(&mut cursor)?);
             if jumbo_row {
@@ -3174,7 +3176,7 @@ mod tests {
         ]);
         payload.extend_from_slice(&0_u32.to_be_bytes()); // members
         payload.extend_from_slice(&0_u32.to_be_bytes()); // attributes
-        (identity, CORE_DECLARATION_TAG, payload)
+        (identity, super::super::declarations::CORE_TAG, payload)
     }
 
     fn documentation_row(identity: [u8; 32]) -> Row {
