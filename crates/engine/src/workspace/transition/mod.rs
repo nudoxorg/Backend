@@ -275,25 +275,26 @@ impl PreparedTransition {
         mut self,
         membership: backend_store::DurableClosureManifest,
     ) -> Result<Self, WorkspaceError> {
+        let auxiliary = self
+            .closure
+            .control_manifest()
+            .objects()
+            .iter()
+            .filter(|object| !self.payloads.contains(&object.id()))
+            .filter(|object| !membership.is_relation_schema(object.schema()))
+            .map(TypedObject::id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
         self.closure = self
             .closure
             .with_stored_membership(membership)
             .map_err(WorkspaceError::store)?;
         // Stored membership separates a small typed control frontier from
         // paged evidence. Keep every direct control pointer in the fixed
-        // recovery pack, including selected auxiliary relation roots whose
-        // references are not part of the workspace root-of-roots grammar.
-        self.auxiliary = Arc::from(
-            self.closure
-                .control_manifest()
-                .objects()
-                .iter()
-                .filter(|object| !self.payloads.contains(&object.id()))
-                .map(TypedObject::id)
-                .collect::<std::collections::BTreeSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>(),
-        );
+        // recovery pack. Relation roots stay in typed relation CAS and are
+        // reopened through these pointers and the checked root grammar.
+        self.auxiliary = Arc::from(auxiliary);
         let persisted = Arc::make_mut(&mut self.persisted);
         persisted.membership = Some(self.closure.membership_id());
         let mut encoded = Vec::from(&b"SCM1"[..]);
@@ -507,7 +508,7 @@ impl PreparedTransition {
             .iter()
             .filter(|object| !payloads.contains(&object.id()))
             .filter(|object| {
-                membership_id.is_some()
+                (membership_id.is_some() && !registry.contains_schema(object.schema()))
                     || closure_refs.iter().any(|reference| {
                         reference.kind() != backend_version::ClosureKind::Relation
                             && reference.schema() == object.schema()

@@ -180,6 +180,13 @@ impl DurableClosureManifest {
         self.index.object_count()
     }
 
+    /// Classifies a control schema through this store's immutable admission
+    /// registry, without reading any member objects or relation descendants.
+    #[must_use]
+    pub fn is_relation_schema(&self, schema: backend_version::SchemaIdentity) -> bool {
+        self.store.relation_registry().contains_schema(schema)
+    }
+
     /// Proves exact membership without reading an object's payload.
     pub fn contains(&self, id: ObjectId) -> Result<bool, StoreError> {
         self.index.contains_object_id(id)
