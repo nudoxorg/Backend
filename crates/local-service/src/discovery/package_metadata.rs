@@ -569,7 +569,10 @@ mod tests {
         let path = std::env::temp_dir().join(format!(
             "backend-point-metadata-{}-{}.journal",
             std::process::id(),
-            discovery_now()
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
         ));
         let (_sender, receiver) = mpsc::sync_channel(1);
         DiscoveryGateway {

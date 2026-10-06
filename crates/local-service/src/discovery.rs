@@ -2553,9 +2553,14 @@ mod tests {
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .expect("bounded fixture read");
-                let mut request = [0_u8; 4096];
-                let read = stream.read(&mut request).expect("read fixture request");
-                requests.push(String::from_utf8_lossy(&request[..read]).to_string());
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).expect("read fixture request");
+                    request.push(byte[0]);
+                    assert!(request.len() <= 16 * 1024, "bounded fixture headers");
+                }
+                requests.push(String::from_utf8(request).expect("HTTP request"));
                 write!(
                     stream,
                     "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
