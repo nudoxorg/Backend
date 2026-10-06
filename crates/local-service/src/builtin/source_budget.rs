@@ -1,8 +1,10 @@
 //! Validated, identity-bearing limits for local source admission.
 //!
-//! Project admission, retained compiler text, and concurrent parser input are
-//! separate budgets. A larger project quota must not silently enlarge the
-//! number of simultaneously parsed source buffers.
+//! Project admission, retained compiler text, and concurrent source bytes are
+//! separate budgets. The source-byte budgets do not bound frontend/parser
+//! allocation expansion or the aggregate in-memory source-record projection.
+//! A larger project quota must not silently enlarge the number of concurrent
+//! source reads.
 //!
 //! Operator overrides are decimal byte/item counts: `NUDOX_SOURCE_MAX_FILE_BYTES`
 //! (8 MiB), `NUDOX_SOURCE_MAX_PROJECT_BYTES` (512 MiB),
@@ -157,9 +159,9 @@ impl SourceAdmissionPolicy {
         self.identity
     }
 
-    /// Chooses a worker count that bounds both active parse buffers and the
-    /// one-worker-wide completed-result queue. Project-retained compiler text
-    /// is accounted separately by [`SourceAdmissionLedger`].
+    /// Chooses a worker count from the configured source-byte allowance.
+    /// This budgets two maximum source-file payloads per worker; it does not
+    /// measure parser allocation expansion or aggregate record memory.
     pub(super) fn worker_count(self, available: usize, path_count: usize) -> usize {
         let limits = self.limits;
         let per_worker = limits
@@ -236,12 +238,6 @@ impl SourceAdmissionPolicy {
 pub(super) struct AdmittedFile {
     actual_bytes: usize,
     policy_identity: [u8; 32],
-}
-
-impl AdmittedFile {
-    pub(super) const fn actual_bytes(self) -> usize {
-        self.actual_bytes
-    }
 }
 
 /// Deterministic project-wide source and persisted-row accounting.

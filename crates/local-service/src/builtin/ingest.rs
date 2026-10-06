@@ -3693,7 +3693,6 @@ mod tests {
         let source =
             format!("const Generated = <div>{generated}</div>;\nexport default Generated;\n");
         fs::write(root.join("Generated.tsx"), &source).map_err(|error| error.to_string())?;
-        let root_text = root.to_str().ok_or("non-UTF-8 scratch path")?;
         let policy = SourceAdmissionPolicy::new(SourceAdmissionLimits::default())
             .map_err(|error| error.to_string())?;
         assert!(source.len() > 512 * 1024);
