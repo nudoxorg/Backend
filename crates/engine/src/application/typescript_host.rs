@@ -665,7 +665,43 @@ fn collect_project_configs(
             },
         );
     }
+    validate_config_graph_acyclic(&captured)?;
     Ok(captured.into_values().collect())
+}
+
+fn validate_config_graph_acyclic(
+    configs: &std::collections::BTreeMap<PathBuf, TypeScriptConfigInput>,
+) -> Result<(), TypeScriptProjectHostError> {
+    fn visit(
+        path: &Path,
+        configs: &std::collections::BTreeMap<PathBuf, TypeScriptConfigInput>,
+        visiting: &mut std::collections::BTreeSet<PathBuf>,
+        visited: &mut std::collections::BTreeSet<PathBuf>,
+    ) -> Result<(), TypeScriptProjectHostError> {
+        if visited.contains(path) {
+            return Ok(());
+        }
+        if !visiting.insert(path.to_path_buf()) {
+            return Err(TypeScriptProjectHostError::ConfigCycle {
+                config: path.to_path_buf().into_boxed_path(),
+            });
+        }
+        if let Some(config) = configs.get(path) {
+            for dependency in config.extends.iter().chain(config.references.iter()) {
+                visit(dependency, configs, visiting, visited)?;
+            }
+        }
+        visiting.remove(path);
+        visited.insert(path.to_path_buf());
+        Ok(())
+    }
+
+    let mut visiting = std::collections::BTreeSet::new();
+    let mut visited = std::collections::BTreeSet::new();
+    for path in configs.keys() {
+        visit(path, configs, &mut visiting, &mut visited)?;
+    }
+    Ok(())
 }
 
 fn angular_build_config_paths(
@@ -1050,14 +1086,45 @@ fn config_paths_from_field(
             let config = resolve_relative_config(&candidate, workspace_root, module_root)?;
             resolved.push(config);
         } else {
-            let config = resolve_package_config(raw, source, workspace_root, module_root)?
-                .ok_or_else(|| TypeScriptProjectHostError::ConfigMissing {
-                    config: PathBuf::from(raw).into_boxed_path(),
-                })?;
+            let config = match resolve_package_config(raw, source, workspace_root, module_root)? {
+                Some(config) => Some(config),
+                None => resolve_config_from_module_root(raw, workspace_root, module_root)?,
+            }
+            .ok_or_else(|| TypeScriptProjectHostError::ConfigMissing {
+                config: PathBuf::from(raw).into_boxed_path(),
+            })?;
             resolved.push(config);
         }
     }
     Ok(resolved)
+}
+
+fn resolve_config_from_module_root(
+    raw: &str,
+    workspace_root: &Path,
+    module_root: &Path,
+) -> Result<Option<PathBuf>, TypeScriptProjectHostError> {
+    let candidate = module_root.join(raw);
+    for choice in [
+        candidate.clone(),
+        candidate.with_extension("json"),
+        candidate.join("tsconfig.json"),
+    ] {
+        match fs::symlink_metadata(&choice) {
+            Ok(metadata) if metadata.file_type().is_file() => {
+                return canonical_regular_config(&choice, workspace_root, module_root).map(Some);
+            }
+            Ok(_) => continue,
+            Err(source) if source.kind() == io::ErrorKind::NotFound => continue,
+            Err(source) => {
+                return Err(TypeScriptProjectHostError::PackagePath {
+                    path: choice.into_boxed_path(),
+                    source,
+                });
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn resolve_relative_config(
@@ -2057,6 +2124,8 @@ pub enum TypeScriptProjectHostError {
     },
     #[error("TypeScript configuration {config:?} does not exist")]
     ConfigMissing { config: Box<Path> },
+    #[error("TypeScript configuration graph contains a cycle at {config:?}")]
+    ConfigCycle { config: Box<Path> },
     #[error("TypeScript configuration {config:?} escapes workspace boundary {boundary:?}")]
     ConfigEscapesBoundary {
         config: Box<Path>,
@@ -2552,6 +2621,79 @@ printf 'Version 5.9.3\n'
     }
 
     #[test]
+    fn config_graph_cycles_and_workspace_escapes_are_typed_refusals() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        let module_root = fs::canonicalize(modules).expect("canonical module root");
+
+        fs::write(
+            fixture.0.join("tsconfig.json"),
+            r#"{"extends":"./configs/base","references":[{"path":"./child"}]}"#,
+        )
+        .expect("write root config");
+        fs::create_dir_all(fixture.0.join("configs")).expect("create config closure");
+        fs::write(
+            fixture.0.join("configs/base.json"),
+            r#"{"references":[{"path":"../tsconfig.json"}]}"#,
+        )
+        .expect("write config with mixed-edge cycle");
+        fs::create_dir_all(fixture.0.join("child")).expect("create child project");
+        fs::write(fixture.0.join("child/tsconfig.json"), "{}").expect("write child config");
+        assert!(matches!(
+            collect_project_configs(&fixture.0, &fixture.0, &module_root, &[]),
+            Err(TypeScriptProjectHostError::ConfigCycle { .. })
+        ));
+
+        fs::write(
+            fixture.0.join("tsconfig.json"),
+            r#"{"extends":"../outside-config.json"}"#,
+        )
+        .expect("write escaping extends edge");
+        fs::write(
+            fixture
+                .0
+                .parent()
+                .expect("fixture parent")
+                .join("outside-config.json"),
+            "{}",
+        )
+        .expect("write outside config");
+        assert!(matches!(
+            collect_project_configs(&fixture.0, &fixture.0, &module_root, &[]),
+            Err(TypeScriptProjectHostError::ConfigEscapesBoundary { .. })
+        ));
+    }
+
+    #[test]
+    fn package_config_extends_can_use_the_exact_admitted_module_root() {
+        let fixture = Fixture::new();
+        let app = fixture.0.join("repo/apps/web");
+        let modules = fixture.0.join("repo/node_modules");
+        fs::create_dir_all(&app).expect("create app package");
+        install_at(&modules, "5.9.3");
+        let base = modules.join("@tsconfig/node/tsconfig.json");
+        fs::create_dir_all(base.parent().expect("base config parent"))
+            .expect("create installed config package");
+        fs::write(&base, r#"{"compilerOptions":{"strict":true}}"#)
+            .expect("write installed package config");
+        fs::write(app.join("tsconfig.json"), r#"{"extends":"@tsconfig/node"}"#)
+            .expect("write app config");
+
+        let workspace_root = fs::canonicalize(&app).expect("canonical selected project root");
+        let module_root = fs::canonicalize(&modules).expect("canonical selected module root");
+        let configs = collect_project_configs(&app, &workspace_root, &module_root, &[])
+            .expect("resolve package config through exact selected module root");
+        let app_config = fs::canonicalize(app.join("tsconfig.json")).expect("canonical app config");
+        let base = fs::canonicalize(base).expect("canonical package config");
+        let input = configs
+            .iter()
+            .find(|config| config.path.as_ref() == app_config)
+            .expect("selected app config is retained");
+        assert_eq!(input.extends.as_ref(), [base.as_path()]);
+        assert!(configs.iter().any(|config| config.path.as_ref() == base));
+    }
+
+    #[test]
     fn angular_build_tsconfig_is_an_explicit_program_candidate() {
         let fixture = Fixture::new();
         let modules = fixture.install("5.9.3");
@@ -2642,6 +2784,115 @@ printf 'Version 5.9.3\n'
             Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })
         ));
         fs::remove_file(outside).expect("remove outside file");
+    }
+
+    #[test]
+    fn source_loader_admits_pnpm_store_symlinks_and_rejects_outside_targets() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        let ProjectTypeScriptSearch::Found(project) =
+            find_project_typescript(&fixture.0).expect("discover project TypeScript")
+        else {
+            panic!("local TypeScript package should be found");
+        };
+        let node = fixture.0.join("node");
+        fs::write(&node, b"node witness").expect("write fake Node bytes");
+        let node = fs::canonicalize(node).expect("canonical Node");
+        let package_root = fs::canonicalize(modules.join("typescript"))
+            .expect("canonical TypeScript package root");
+        let witness = TypeScriptProjectWitness::capture(
+            &fixture.0,
+            None,
+            &project,
+            &project.compiler,
+            &node,
+            &project.module_root,
+            &package_root,
+            project.workspace.as_ref(),
+        )
+        .expect("capture project witness");
+
+        let package = modules.join(".pnpm/dep@1.0.0/node_modules/@scope/dep");
+        fs::create_dir_all(&package).expect("create pnpm dependency package");
+        fs::write(package.join("index.d.ts"), "export interface Value {}")
+            .expect("write dependency declaration");
+        fs::create_dir_all(modules.join("@scope")).expect("create scoped dependency alias");
+        symlink(&package, modules.join("@scope/dep")).expect("link pnpm dependency");
+
+        let dependency = witness
+            .load_source(&modules.join("@scope/dep/index.d.ts"))
+            .expect("admit canonical dependency under the selected pnpm store");
+        assert!(dependency.path.starts_with(&project.module_root));
+        assert_eq!(
+            dependency.content_id,
+            ContentId::<SourceFactDomain>::from_canonical_bytes(&dependency.bytes)
+        );
+        witness
+            .validate_current()
+            .expect("unchanged pnpm dependency");
+
+        let outside = fixture.0.parent().expect("fixture parent").join(format!(
+            "typescript-pnpm-outside-{}.d.ts",
+            std::process::id()
+        ));
+        fs::write(&outside, "export {}; ").expect("write external declaration");
+        fs::remove_file(modules.join("@scope/dep")).expect("remove pnpm alias");
+        fs::create_dir(modules.join("@scope/dep")).expect("create dependency alias directory");
+        symlink(&outside, modules.join("@scope/dep/index.d.ts")).expect("link outside declaration");
+        assert!(matches!(
+            witness.load_source(&modules.join("@scope/dep/index.d.ts")),
+            Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })
+        ));
+        fs::remove_file(outside).expect("remove external declaration");
+    }
+
+    #[test]
+    fn explicit_compiler_uses_its_matching_module_root_ahead_of_project_installation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = Fixture::new();
+        fixture.install("5.9.3");
+        let explicit_modules = fixture.0.join("explicit/node_modules");
+        install_at(&explicit_modules, "5.8.4");
+        let compiler = fs::canonicalize(explicit_modules.join("typescript/bin/tsc"))
+            .expect("canonical explicit compiler");
+        let node_directory = fixture.0.join("host runtime");
+        fs::create_dir_all(&node_directory).expect("create Node parent");
+        let node = node_directory.join("node");
+        fs::write(
+            &node,
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'v22.0.0\\n'; elif [ \"$2\" = \"--version\" ]; then printf 'Version 5.8.4\\n'; else exit 9; fi\n",
+        )
+        .expect("write deterministic Node probe fixture");
+        fs::set_permissions(&node, fs::Permissions::from_mode(0o755))
+            .expect("make Node probe executable");
+
+        let admitted = TypeScriptProjectHost::new(
+            Some(compiler.clone()),
+            Some(node.clone()),
+            None,
+            None,
+            Fixture::limits(),
+        )
+        .admit(&fixture.0)
+        .expect("admit explicit compiler and matching installation")
+        .expect("local project installation is present");
+        let expected_module_root =
+            fs::canonicalize(explicit_modules).expect("canonical selected module root");
+        assert_eq!(admitted.compiler.as_ref(), compiler);
+        assert_eq!(
+            admitted.compiler_origin,
+            TypeScriptSelectionOrigin::ExplicitConfiguration
+        );
+        assert_eq!(
+            admitted.inputs().typescript_module_root,
+            expected_module_root
+        );
+        assert_eq!(admitted.inputs().compiler_version, b"Version 5.8.4\n");
+        assert_eq!(
+            admitted.inputs().node_origin,
+            TypeScriptSelectionOrigin::ExplicitConfiguration
+        );
     }
 
     fn install_at(modules: &Path, version: &str) {

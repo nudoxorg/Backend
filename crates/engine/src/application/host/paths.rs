@@ -662,22 +662,32 @@ mod tests {
         let home = root.join("home");
         let candidate = home.join(".local/bin/node");
         let explicit = root.join("chosen node");
+        let path_node = root.join("ordinary path/node");
         executable(&candidate);
         executable(&explicit);
+        executable(&path_node);
+        let search_path = std::env::join_paths([path_node.parent().expect("PATH directory")])
+            .expect("encode fixture PATH");
 
         let host = LocalCompilerHost::new(
             TestEnvironment {
                 home: home.clone(),
                 node: Some(explicit.clone()),
-                search_path: None,
+                search_path: Some(search_path),
             },
             LocalHostDiscovery::ExplicitOnly,
         );
+        let selection = host
+            .typescript_node_executable(Some(&home))
+            .expect("explicit node admission")
+            .expect("explicit Node is selected");
         assert_eq!(
-            host.typescript_node_executable(Some(&home))
-                .expect("explicit node admission")
-                .map(|selection| selection.path),
-            Some(fs::canonicalize(&explicit).expect("canonical explicit node")),
+            selection.path,
+            fs::canonicalize(&explicit).expect("canonical explicit node"),
+        );
+        assert_eq!(
+            selection.origin,
+            TypeScriptSelectionOrigin::ExplicitConfiguration
         );
 
         fs::remove_dir_all(root).expect("remove test directory");
