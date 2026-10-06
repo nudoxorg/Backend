@@ -1966,7 +1966,15 @@ mod tests {
                 status => panic!("generation B V3 publication did not succeed: {status:?}"),
             }
         };
-        assert_eq!(proof_b.parent_commits.as_ref(), [*commit_a.as_bytes()]);
+        assert_eq!(
+            proof_b
+                .images
+                .last()
+                .expect("package has image")
+                .parent_commits
+                .as_ref(),
+            [*commit_a.as_bytes()]
+        );
         assert_eq!(proof_b.reachable_commit, commit_b);
 
         let history = FileSemanticRangeStore::open(authority.store(), TransportLimits::default())

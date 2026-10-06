@@ -11,9 +11,9 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
 #[cfg(test)]
 use std::time::UNIX_EPOCH;
+use std::time::{Duration, SystemTime};
 
 use backend_semantic::ir::{
     FacetChange, GenerationId, MAX_SEMANTIC_SEGMENT_BYTES, MappedSemanticImage, SemanticDiff,
@@ -47,16 +47,17 @@ use super::ir_hydration_wire::{
 
 mod history_v2;
 mod history_v3;
-#[cfg(test)]
-pub(crate) use history_v2::{
-    positive_v2_history_fixture_for_test, positive_v2_history_fixture_for_test_with_variants,
-};
 pub use history_v2::{
     TypedV2HistoryResidencyCache, TypedV2HistoryResidencyMetrics, TypedV2HistoryResidencyReplay,
     TypedV2HistoryResidentReplay,
 };
+#[cfg(test)]
+pub(crate) use history_v2::{
+    positive_v2_history_fixture_for_test, positive_v2_history_fixture_for_test_with_variants,
+};
 pub use history_v3::{
-    SelectedNativeHistoryBinding, SelectedNativeHistoryImage, SelectedNativeImagePublicationFence,
+    SelectedNativeHistoryBinding, SelectedNativeHistoryImage, SelectedNativeHistoryPackageBinding,
+    SelectedNativeHistoryPackageImage, SelectedNativeImagePublicationFence,
     SelectedNativeImageSource, SelectedNativeImageSourceFailure, SelectedTypedV3HistoryError,
     SelectedTypedV3HistoryOperation, SelectedTypedV3HistoryRefusal,
 };
@@ -2143,9 +2144,7 @@ impl FileSemanticRangeStore {
                 super::ir_generation_store::AdmittedHistoryPayloadRoot { closure }
             }));
         }
-        let base_members = base
-            .as_ref()
-            .map_or(0, DurableManifest::object_count);
+        let base_members = base.as_ref().map_or(0, DurableManifest::object_count);
         let max_members = usize::try_from(base_members)
             .ok()
             .and_then(|count| count.checked_add(changes.len()))

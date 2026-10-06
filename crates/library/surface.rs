@@ -540,27 +540,80 @@ pub enum SemanticHistoryInputReplayStatus {
     Unproven,
 }
 
-/// Bounded public summary of the successful typed V3 branch publication.
+/// One image and its independently admitted V3 history commit inside a
+/// complete package publication.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticHistoryImagePublicationProof {
+    /// Full-image identity bound to this catalog member.
+    pub image: SemanticHistoryImageIdentity,
+    /// Immutable V3 history commit for this image.
+    pub history_commit: [u8; 32],
+    /// First-parent lineage recorded by this admitted commit (at most 2).
+    pub parent_commits: Box<[[u8; 32]]>,
+}
+
+/// Bounded public proof of an atomic complete-package V3 publication.
 ///
-/// It contains the exact owner selection, native image, ref CAS result, and
-/// parent lineage needed to investigate a published generation. The input
-/// field deliberately states `Unproven`; this summary does not recreate the
-/// compiler's source read frontier.
+/// Every selected catalog image is listed in canonical order with its own
+/// independently admitted history commit. The package identity commits the
+/// exact ordered set; the public reference CAS occurs only after all listed
+/// members have been verified. The input field deliberately states
+/// `Unproven`; this summary does not recreate compiler source-read authority.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SemanticHistoryPublicationProof {
     /// Exact committed product selection used by the publication fence.
     pub selection: SemanticHistorySelectionStamp,
-    /// Full-image identity bound to that selection.
-    pub image: SemanticHistoryImageIdentity,
-    /// Branch tip at the successful CAS or validated ancestry read.
+    /// Package name used by the native semantic target.
+    pub target_package: String,
+    /// Exact source/version coordinate used by the native semantic target.
+    pub target_coordinate: String,
+    /// Deterministic digest of the complete ordered image set and selection.
+    pub package_identity: [u8; 32],
+    /// Every full-image identity and V3 commit, in catalog order.
+    pub images: Box<[SemanticHistoryImagePublicationProof]>,
+    /// Public branch tip at the single successful package CAS.
     pub reference_tip: [u8; 32],
-    /// Commit proven reachable from `reference_tip`; equals the status commit.
+    /// Final package commit proven reachable from `reference_tip`.
     pub reachable_commit: [u8; 32],
-    /// First-parent lineage recorded by the admitted history commit (at most 2).
-    pub parent_commits: Box<[[u8; 32]]>,
-    /// Exact persisted input authority level.
+    /// Exact persisted input authority level for every listed member.
     pub input_replay_status: SemanticHistoryInputReplayStatus,
+}
+
+impl SemanticHistoryPublicationProof {
+    /// Recomputes the package-set identity from public proof fields. The
+    /// selected catalog root commits each complete manifest, including its
+    /// input claim and compiler recipe; the ordered images bind their exact
+    /// native bytes to those manifest entries.
+    #[must_use]
+    pub fn recompute_package_identity(&self) -> [u8; 32] {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"backend.replication.selected-native-history-package.v1\0");
+        for field in [
+            self.target_package.as_bytes(),
+            self.target_coordinate.as_bytes(),
+        ] {
+            hasher.update(&(field.len() as u64).to_le_bytes());
+            hasher.update(field);
+        }
+        hasher.update(&self.selection.profile.to_bytes());
+        hasher.update(&self.selection.namespace);
+        hasher.update(&self.selection.profile.to_bytes());
+        hasher.update(&self.selection.source_coordinate);
+        hasher.update(&self.selection.selection_revision.to_le_bytes());
+        hasher.update(&self.selection.selected_root);
+        hasher.update(&self.selection.closure_id);
+        hasher.update(&self.selection.catalog_root);
+        hasher.update(&(self.images.len() as u64).to_le_bytes());
+        for image in self.images.iter() {
+            hasher.update(&image.image.artifact_ordinal.to_le_bytes());
+            hasher.update(&image.image.semantic_generation);
+            hasher.update(&image.image.manifest_root);
+            hasher.update(&image.image.image_identity);
+        }
+        *hasher.finalize().as_bytes()
+    }
 }
 
 /// Typed status for derived native-image history publication.
@@ -675,7 +728,22 @@ impl SemanticVersionRecord {
         } = &self.history_status
             && (reference != "selected-native-v3"
                 || proof.reachable_commit != *commit
-                || proof.parent_commits.len() > 2
+                || proof.reference_tip != proof.reachable_commit
+                || proof.images.is_empty()
+                || proof.target_package.is_empty()
+                || proof.target_package.len() > MAX_PRODUCT_TEXT_BYTES
+                || proof.target_coordinate.is_empty()
+                || proof.target_coordinate.len() > MAX_PRODUCT_TEXT_BYTES
+                || proof.package_identity != proof.recompute_package_identity()
+                || usize::try_from(self.artifacts).ok() != Some(proof.images.len())
+                || proof.images.iter().enumerate().any(|(ordinal, image)| {
+                    usize::try_from(image.image.artifact_ordinal).ok() != Some(ordinal)
+                        || image.parent_commits.len() > 1
+                        || (ordinal > 0
+                            && image.parent_commits.as_ref()
+                                != [proof.images[ordinal - 1].history_commit])
+                })
+                || proof.images.last().map(|image| image.history_commit) != Some(*commit)
                 || proof.selection.profile != self.profile)
         {
             return Err(ProductAdmissionError::SemanticVersionShape);
