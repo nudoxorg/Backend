@@ -286,7 +286,7 @@ impl Engine for Fake {
             if let Some(cursor) = continuation {
                 query = query.with_cursor(cursor.cursor());
             }
-            catalog.search(&query).map(CommandReply::Search)
+            selected_search_page(catalog, &query).map(CommandReply::Search)
         }
         .map_err(|error| ClientError::Protocol(error.to_string()))?;
         Ok(ReplyDto::new(1, reply))
@@ -814,19 +814,31 @@ fn paging_catalog(count: usize) -> backend_library::Library {
     backend_library::Library::from_view(view, cursor).expect("catalog projection")
 }
 
+fn selected_search_page(
+    catalog: &backend_library::Library,
+    query: &backend_library::Query,
+) -> Result<ViewSnapshot, backend_library::LibraryError> {
+    // Use the same producer projection seam as the application search
+    // service: canonical row storage and relevance order remain distinct.
+    let prefix = catalog.search_ranked(&backend_library::Query::new(
+        query.text(),
+        catalog.revision_root(),
+        backend_library::QueryLimit::new(backend_library::QueryLimit::MAX).expect("bounded prefix"),
+    ))?;
+    catalog.search_from_ranked_ids(query, prefix.order())
+}
+
 #[test]
 fn default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapshots() {
     for tool in ["backend.search", "backend.resolve", "backend.graph"] {
         let catalog = paging_catalog(61);
         let credit = backend_library::QueryLimit::new(200).expect("bounded oracle page");
         let snapshot = match tool {
-            "backend.search" => catalog
-                .search(&backend_library::Query::new(
-                    "Session",
-                    catalog.revision_root(),
-                    credit,
-                ))
-                .expect("complete selected search"),
+            "backend.search" => selected_search_page(
+                &catalog,
+                &backend_library::Query::new("Session", catalog.revision_root(), credit),
+            )
+            .expect("complete selected search"),
             "backend.resolve" => catalog
                 .names(&backend_library::NameQuery::new(
                     "Session",
