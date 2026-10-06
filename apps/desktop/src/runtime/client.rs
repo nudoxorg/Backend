@@ -66,6 +66,7 @@ impl LocalEngineClient {
         }
     }
 
+
     fn session(&mut self) -> Result<&mut Session, EngineFault> {
         if self.session.is_none() {
             self.session = Some(Session::connect_with_timeouts(&self.endpoint, DESKTOP_CONNECT_TIMEOUT, Duration::from_secs(30))
@@ -177,12 +178,18 @@ impl LocalEngineClient {
         let EngineRequest::Root {
             request: request_id,
             basis,
+            project: captured_project,
             ..
         } = request
         else {
             unreachable!("root adapter called with a non-root request")
         };
-        let (view, revision) = self.bootstrap_root(true)?;
+        super::trace::mark("root.bootstrap-entered", "worker");
+        let (view, revision) = self.bootstrap_root(true).map_err(|error| {
+            super::trace::mark("root.bootstrap-failed", "proof-or-transport");
+            error
+        })?;
+        super::trace::mark("root.bootstrap-admitted", "exact-attachment");
         if revision.root() != view.root() {
             return Err(EngineFault::Failed(crate::core::ErrorValue::new(
                 FaultCode::Protocol,
@@ -201,9 +208,10 @@ impl LocalEngineClient {
                 RowId::Symbol(_) | RowId::Object(_) => None,
             })
             .collect::<Vec<_>>();
+        let context = captured_project.as_ref().unwrap_or(&self.project);
         let project = Some(ProjectDto {
-            id: self.project.clone(),
-            label: Arc::from(self.project.as_str()),
+            id: context.clone(),
+            label: Arc::from(context.as_str()),
             packages: packages.into(),
         });
         let catalog = Some(self.catalog()?);
@@ -354,22 +362,26 @@ impl LocalEngineClient {
         self.index_observation(*request_id, *basis, project, operation, observation)
     }
 
-    fn index_observation(&mut self, request: crate::navigation::RequestId, basis: VersionedRoot,
-        project: &LocalProjectId, operation: &crate::model::IndexOperationClaim,
-        observation: backend_library::IndexOperationObservation) -> Result<EngineDto, EngineFault>
-    {
+    fn index_observation(
+        &mut self,
+        request: crate::navigation::RequestId,
+        basis: VersionedRoot,
+        project: &LocalProjectId,
+        operation: &crate::model::IndexOperationClaim,
+        observation: backend_library::IndexOperationObservation,
+    ) -> Result<EngineDto, EngineFault> {
         if !operation.belongs_to(project) || !operation.admits_observation(&observation) {
-            return Err(EngineFault::IndexUnconfirmed { project: project.clone() });
+            return Err(EngineFault::IndexUnconfirmed {
+                project: project.clone(),
+            });
         }
-        if matches!(&observation, backend_library::IndexOperationObservation::Known(status)
-            if matches!(status.state, backend_library::IndexOperationState::Published(_)))
-        {
-            // The exact operation receipt settles the mutation independently
-            // of optional catalog/hydration reads. The regular root observer
-            // supplies current content under its own authority afterwards.
-            self.project = project.clone();
-        }
-        Ok(EngineDto::IndexOperation { request, basis, project: project.clone(), operation: operation.clone(), observation })
+        Ok(EngineDto::IndexOperation {
+            request,
+            basis,
+            project: project.clone(),
+            operation: operation.clone(),
+            observation,
+        })
     }
 
     /// A read may be retried once after a transport break, using a fresh
@@ -462,6 +474,13 @@ fn cancel_wake(
 }
 
 impl EngineClient for LocalEngineClient {
+
+    fn operation_observer(&self) -> Option<Box<dyn EngineClient>> {
+        let mut observer = Self::new(&self.endpoint, self.project.clone());
+        observer.gate = self.gate.clone();
+        Some(Box::new(observer))
+    }
+
     fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
         self.active_cancel = Some(request.cancellation().clone());
         let _lifetime = match request {
@@ -660,6 +679,20 @@ fn owner_fault(fault: OwnerFault) -> EngineFault {
 mod tests {
     use super::*;
     use crate::navigation::RequestId;
+
+    #[test]
+    fn production_observer_has_a_distinct_unopened_session() {
+        let original = LocalProjectId::new("/fixture/original-root-context").expect("project");
+        let client = LocalEngineClient::new("/unused-no-socket-connect", original);
+        assert!(
+            client.operation_observer().is_some(),
+            "production receipt session"
+        );
+        assert!(
+            client.session.is_none(),
+            "factory opens no foreground socket"
+        );
+    }
 
     #[test]
     fn a_real_adapter_refuses_missing_and_fixture_lifetimes_before_connection() -> Result<(), Box<dyn std::error::Error>> {

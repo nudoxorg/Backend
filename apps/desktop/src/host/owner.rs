@@ -400,6 +400,7 @@ mod tests {
         let submit_root = |request| {
             assert!(matches!(
                 actor.try_submit(EngineRequest::Root {
+                    project: None,
                     request: RequestId::new(request),
                     basis: VersionedRoot::unserved(),
                     cancel: CancellationToken::new(),

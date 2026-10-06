@@ -1145,7 +1145,12 @@ fn pager_controls(
         .items_center()
         .gap(measure.space(Space::Base))
         .min_w_0()
-        .child(quiet(ctx.say(range.clone()), &measure, palette).role(gpui::Role::Label).aria_label(range));
+        .child(
+            quiet(ctx.say(range.clone()), &measure, palette)
+                .keyed(SharedString::from(format!("source-page-{position}-range")))
+                .role(gpui::Role::Label)
+                .aria_label(range),
+        );
 
     let memory = Rc::clone(&pager.read(cx).state);
     let previous = memory

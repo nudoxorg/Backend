@@ -592,6 +592,19 @@ fn socket_path() -> PathBuf {
 }
 
 fn start_blocked_case() -> BlockedCase {
+    start_blocked_case_with_timing(ObservationTiming {
+        poll: Duration::from_millis(60),
+        io_tick: Duration::from_millis(20),
+        dial: Duration::from_millis(300),
+        freshness: Duration::from_millis(100),
+        ordinary_recovery: Duration::from_secs(3),
+        first_root: Duration::from_secs(2),
+        renew: Duration::from_secs(10),
+        max_reconnects: 2,
+    })
+}
+
+fn start_blocked_case_with_timing(timing: ObservationTiming) -> BlockedCase {
     let root = root();
     let cursor = Cursor::for_view_root_at(&root, 0);
     let gate = OwnerGate::ready(
@@ -623,16 +636,6 @@ fn start_blocked_case() -> BlockedCase {
     let server = thread::spawn(move || listener.run());
     let observer_gate = gate.clone();
     let endpoint = path.clone();
-    let timing = ObservationTiming {
-        poll: Duration::from_millis(60),
-        io_tick: Duration::from_millis(20),
-        dial: Duration::from_millis(300),
-        freshness: Duration::from_millis(100),
-        ordinary_recovery: Duration::from_secs(3),
-        first_root: Duration::from_secs(2),
-        renew: Duration::from_secs(10),
-        max_reconnects: 2,
-    };
     let ticks = Arc::new(AtomicUsize::new(0));
     let counting = Arc::clone(&ticks);
     let observer = thread::spawn(move || {
@@ -881,4 +884,64 @@ fn only_explicit_resume_refusal_reacquires_one_new_lease_and_certifies_same_root
     assert!(Arc::ptr_eq(&retained, &root));
     assert_eq!(retained_cursor, cursor);
     running.close();
+}
+
+#[test]
+fn provisional_timeout_recovers_on_a_new_socket_inside_the_original_window() {
+    let mut case = start_blocked_case_with_timing(ObservationTiming {
+        ordinary_recovery: Duration::from_secs(30),
+        freshness: Duration::from_millis(100),
+        io_tick: Duration::from_millis(50),
+        poll: Duration::from_millis(20),
+        renew: Duration::from_secs(60),
+        ..ObservationTiming::CANDIDATE
+    });
+    assert_eq!(await_suspension(&case), 2);
+    // The shared reset contract fixes this first response bound at ten
+    // seconds. Waiting on a quiet channel makes the held duration
+    // explicit and bounded; owner work remains blocked throughout it.
+    let (_sender, receiver) = mpsc::channel::<()>();
+    assert!(matches!(
+        receiver.recv_timeout(Duration::from_secs(11)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    assert_eq!(case.gate.ready_epoch(), None, "no proof has reopened reads");
+    assert!(
+        matches!(
+            case.gate.state(),
+            crate::runtime::owner::OwnerState::Ready { .. }
+        ),
+        "one provisional timeout must not turn a healthy owner into terminal failure"
+    );
+    let (lock, wake) = &*case.running.release;
+    *lock.lock().expect("release owner") = true;
+    wake.notify_all();
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while case.gate.ready_epoch().is_none() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert!(
+        case.gate.ready_epoch().is_some(),
+        "exact-cursor Resume certified recovery"
+    );
+    assert!(
+        case.resumes.load(Ordering::Acquire) >= 2,
+        "recovery must certify a Resume on the replacement socket"
+    );
+    case.running.close();
+    case.running
+        .observer
+        .take()
+        .expect("observer")
+        .join()
+        .expect("observer joined");
+    let report = case
+        .running
+        .server
+        .take()
+        .expect("server")
+        .join()
+        .expect("server joined")
+        .expect("listener run");
+    assert_eq!(report.connections, 2);
 }

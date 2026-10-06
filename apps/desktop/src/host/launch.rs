@@ -275,25 +275,56 @@ pub(crate) struct BootClient {
 }
 
 impl BootClient {
-    pub(crate) fn new(binding: Binding, gate: OwnerGate) -> Self { Self { binding, gate, local: None } }
+    pub(crate) fn new(binding: Binding, gate: OwnerGate) -> Self {
+        Self {
+            binding,
+            gate,
+            local: None,
+        }
+    }
 }
 
 impl EngineClient for BootClient {
+
+    fn operation_observer(&self) -> Option<Box<dyn EngineClient>> {
+        Some(Box::new(Self {
+            binding: self.binding.clone(),
+            gate: self.gate.clone(),
+            local: None,
+        }))
+    }
+
     fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
         if self.local.is_none() {
             let not_bound = |message: String| match request {
                 EngineRequest::IndexProject { project, .. } => EngineFault::IndexNotSent {
-                    project: project.clone(), error: ErrorValue::new(FaultCode::Transport,
-                        format!("The first-send workspace could not be admitted: {message}. Nothing was sent.")),
+                    project: project.clone(),
+                    error: ErrorValue::new(
+                        FaultCode::Transport,
+                        format!(
+                            "The first-send workspace could not be admitted: {message}. Nothing was sent."
+                        ),
+                    ),
                 },
                 _ if request.cancelled() => EngineFault::Cancelled,
                 _ => EngineFault::Failed(ErrorValue::new(FaultCode::Transport, message)),
             };
-            self.gate.wait_cancelled(request.cancellation()).map_err(|fault| not_bound(fault.to_string()))?;
-            let bound = self.binding.get().ok_or_else(|| not_bound("the owner answered without a local workspace binding".into()))?;
-            self.local = Some(Box::new(LocalEngineClient::gated(bound.paths.endpoint(), bound.project.clone(), self.gate.clone())));
+            self.gate
+                .wait_cancelled(request.cancellation())
+                .map_err(|fault| not_bound(fault.to_string()))?;
+            let bound = self.binding.get().ok_or_else(|| {
+                not_bound("the owner answered without a local workspace binding".into())
+            })?;
+            self.local = Some(Box::new(LocalEngineClient::gated(
+                bound.paths.endpoint(),
+                bound.project.clone(),
+                self.gate.clone(),
+            )));
         }
-        self.local.as_mut().expect("client installed after workspace admission").execute(request)
+        self.local
+            .as_mut()
+            .expect("client installed after workspace admission")
+            .execute(request)
     }
 }
 
@@ -475,5 +506,21 @@ mod tests {
         let kept = keep_for(seed).joined();
         assert!(kept.seed.is_none(), "no snapshot this launch");
         assert!(started.elapsed() < SNAPSHOT_WAIT, "and the window did not wait out the bound for a reader that was already gone");
+    }
+}
+
+#[cfg(test)]
+mod operation_observer_tests {
+    use super::*;
+
+    #[test]
+    fn production_boot_client_forks_an_unbound_read_only_session() {
+        let client = BootClient::new(Binding::default(), OwnerGate::starting());
+        assert!(client.local.is_none());
+        assert!(client.operation_observer().is_some(), "production observer");
+        assert!(
+            client.local.is_none(),
+            "constructing the observer opens no socket"
+        );
     }
 }

@@ -92,6 +92,33 @@ pub enum ObservationFailure {
     UnexpectedCancellation,
 }
 
+impl ObservationFailure {
+    /// A fixed trace vocabulary; producer text and filesystem paths stay out
+    /// of the lifecycle ledger.
+    pub(crate) fn category(&self) -> &'static str {
+        match self {
+            Self::InitialRoot(_) => "initial-root",
+            Self::Setup(_) => "setup",
+            Self::MissingInterrupt => "missing-interrupt",
+            Self::ResponseStalled { .. } => "response-stalled",
+            Self::PeerClosed { .. } => "peer-closed",
+            Self::TransportIo { .. } => "transport-io",
+            Self::InvalidFrame { .. } => "invalid-frame",
+            Self::InvalidAuthority(_) => "invalid-authority",
+            Self::ProducerRejected { .. } => "producer-rejected",
+            Self::RecoveryExpired(_) => "recovery-expired",
+            Self::ReacquisitionFailed(_) => "reacquisition-failed",
+            Self::ReconnectsExhausted(_) => "reconnects-exhausted",
+            Self::BudgetExpired {
+                kind: PublicationBudgetKind::Ordinary,
+                ..
+            } => "ordinary-budget",
+            Self::BudgetExpired { .. } => "authenticated-reset-budget",
+            Self::UnexpectedCancellation => "unexpected-cancellation",
+        }
+    }
+}
+
 impl fmt::Display for ObservationFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -668,6 +695,7 @@ impl OwnerGate {
     pub(crate) fn observation_failed(&self, expected: Epoch, reason: ObservationFailure) -> bool {
         // The publication worker is the only writer until this attachment is
         // withdrawn. Use one lock rather than a check followed by `publish`.
+        let category = reason.category();
         let (waker, cancel, mutation_cancel) = {
             let mut inner = self.lock();
             if inner.closed
@@ -686,6 +714,7 @@ impl OwnerGate {
             let mutation_cancel = std::mem::replace(&mut inner.mutation_cancel, super::actor::CancellationToken::new());
             (inner.waker.take(), cancel, mutation_cancel)
         };
+        crate::runtime::trace::mark("observation.failed", category);
         // Callbacks may reenter the gate; never invoke them under its mutex.
         cancel.cancel();
         mutation_cancel.cancel();

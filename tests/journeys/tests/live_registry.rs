@@ -1084,6 +1084,7 @@ fn assert_desktop_root(endpoint: &Path, workspace: &Path) -> (backend_library::V
     let mut desktop = LocalEngineClient::new(endpoint, project);
     let mapped = desktop
         .execute(&EngineRequest::Root {
+            project: None,
             request: RequestId::new(1),
             basis,
             cancel: CancellationToken::new(),

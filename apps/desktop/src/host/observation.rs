@@ -68,6 +68,7 @@ fn serve_with_timing(
         return gate.await_close_or_restart();
     };
     let first_root_at = Instant::now();
+    crate::runtime::trace::mark("observation.waiting-initial-root", "actor-admission");
     let mut confirmed_at: Option<Instant> = None;
     let mut lease: Option<PublicationLease> = None;
     let mut last_renew = Instant::now();
@@ -94,6 +95,9 @@ fn serve_with_timing(
             }
             continue;
         };
+        if confirmed_at.is_none() {
+            crate::runtime::trace::mark("observation.initial-root-admitted", "exact-attachment");
+        }
         let anchor = *confirmed_at.get_or_insert_with(Instant::now);
         if !fence_if_stale(
             gate,
@@ -160,9 +164,8 @@ fn serve_with_timing(
             // Select the initial operation before the progress callback may
             // suspend this attachment. A later suspension still cancels the
             // in-flight operation through `tick`.
-            let may_renew = !suspended
-                && reset_ceiling.get().is_none()
-                && last_renew.elapsed() >= timing.renew;
+            let may_renew =
+                !suspended && reset_ceiling.get().is_none() && last_renew.elapsed() >= timing.renew;
             let _wake = cancel.on_cancel(move || interrupt.interrupt());
             let cancelled = || {
                 cancel.is_cancelled()
@@ -203,12 +206,9 @@ fn serve_with_timing(
                 break;
             };
             let result = match lease.as_mut() {
-                Some(state) if may_renew =>
-                {
-                    transport
-                        .renew_publications_observed(state, &mut control)
-                        .map(|()| ObservedReply::Renewed)
-                }
+                Some(state) if may_renew => transport
+                    .renew_publications_observed(state, &mut control)
+                    .map(|()| ObservedReply::Renewed),
                 Some(state) => transport
                     .resume_publications_observed(state, &mut control)
                     .map(|()| ObservedReply::Resumed),
@@ -239,6 +239,7 @@ fn serve_with_timing(
                 reconnects = 0;
             }
             Ok(reply) => {
+                let acquired = matches!(&reply, ObservedReply::Acquired(_));
                 if let ObservedReply::Acquired(state) = reply {
                     lease = Some(state);
                 }
@@ -258,9 +259,21 @@ fn serve_with_timing(
                         if suspended && !gate.complete_observation(attachment) {
                             gate.observation_failed(
                                 attachment,
-                                invalid_authority("certified publication did not reopen its exact attachment"),
+                                invalid_authority(
+                                    "certified publication did not reopen its exact attachment",
+                                ),
                             );
                             break;
+                        }
+                        if acquired || suspended || state.cursor() != cursor {
+                            crate::runtime::trace::mark(
+                                "observation.certified",
+                                format!(
+                                    "sequence {} root {:?}",
+                                    state.cursor().sequence(),
+                                    state.cursor().root()
+                                ),
+                            );
                         }
                         suspended = false;
                         reacquiring = false;
@@ -273,7 +286,9 @@ fn serve_with_timing(
                     PublicationAdmission::Obsolete => {
                         gate.observation_failed(
                             attachment,
-                            invalid_authority("fresh publication regressed behind retained certified cursor"),
+                            invalid_authority(
+                                "fresh publication regressed behind retained certified cursor",
+                            ),
                         );
                         break;
                     }
@@ -319,7 +334,13 @@ fn serve_with_timing(
                     reconnects = 0;
                     continue;
                 }
-                let retry = recoverable(&error);
+                // Only a provisional ordinary timeout may retry. Its next
+                // exact-cursor Resume remains inside the original recovery
+                // deadline; an authenticated reset never receives a new clock.
+                let retry = recoverable(&error)
+                    && (!matches!(&error, PublicationExchangeError::BudgetExpired(_))
+                        || reset_ceiling.get().is_none())
+                    && Instant::now() < deadline;
                 let cause = classify(error);
                 if reacquiring {
                     gate.observation_failed(
@@ -329,6 +350,7 @@ fn serve_with_timing(
                     break;
                 }
                 if retry {
+                    crate::runtime::trace::mark("observation.reconnecting", cause.category());
                     connection = None;
                     // A lost Renew reply is resolved by exact-cursor Resume
                     // on the replacement socket, not by repeating Renew.
@@ -399,6 +421,9 @@ fn recoverable(error: &PublicationExchangeError) -> bool {
             exchange.failure,
             LocalControlExchangeFailure::Closed | LocalControlExchangeFailure::Io(_)
         ),
+        PublicationExchangeError::BudgetExpired(budget) => {
+            matches!(budget.kind(), PublicationBudgetKind::Ordinary)
+        }
         _ => false,
     }
 }

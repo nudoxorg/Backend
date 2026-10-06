@@ -478,6 +478,7 @@ pub fn desktop_probe(
     let mut desktop = LocalEngineClient::new(endpoint, project_id);
     let mapped = desktop
         .execute(&EngineRequest::Root {
+            project: None,
             request,
             basis,
             cancel: CancellationToken::new(),

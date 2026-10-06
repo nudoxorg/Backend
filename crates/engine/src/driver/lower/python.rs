@@ -5603,18 +5603,29 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 // no honest owner and is never synthesized onto another row.
                 continue;
             };
+            #[expect(
+                clippy::as_conversions,
+                reason = "the admitted u32 fact ordinal was derived from this target's usize fact arena"
+            )]
+            let fact = ordinal as usize;
+            let name_len = declaration.name.len();
+            let rejected = |cause| {
+                PythonCollectError::Rejected(FactRejection {
+                    fact,
+                    name_len,
+                    cause,
+                })
+            };
             // Ruff's declaration row owns an explicit docstring field; `None`
             // is an authority-backed empty documentation value for this row.
             self.facts
                 .mark_documentation_captured(ordinal)
-                .map_err(lane_rejected)?;
+                .map_err(rejected)?;
             let Some(docstring) = &declaration.docstring else {
                 continue;
             };
             for fragment in doc_fragments(self.source, docstring, &self.pushed)? {
-                self.facts
-                    .push_doc(ordinal, fragment)
-                    .map_err(lane_rejected)?;
+                self.facts.push_doc(ordinal, fragment).map_err(rejected)?;
             }
         }
         Ok(())

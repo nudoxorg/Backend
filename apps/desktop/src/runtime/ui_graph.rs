@@ -359,31 +359,53 @@ impl UiRootEntity {
             return;
         }
         let mut refresh_unsent = false;
+        let mut refresh_observation = false;
         for queued in pending {
             match queued {
                 QueuedIntent::Plain(intent) => self.dispatch(intent, cx),
                 QueuedIntent::Index { intent, attachment }
                     if matches!(&intent, Intent::IndexProject { project, operation, basis, .. }
                         if index_preflight_basis(&self.snapshot(), project, operation, *basis).is_ok()
-                            && matches!(attachment.admission(*basis), super::owner::MutationAdmission::Ready(_) | super::owner::MutationAdmission::Observing)) => {
-                        self.dispatch_index(intent, attachment, cx);
-                    }
+                            && matches!(attachment.admission(*basis), super::owner::MutationAdmission::Ready(_) | super::owner::MutationAdmission::Observing)) =>
+                {
+                    self.dispatch_index(intent, attachment, cx);
+                }
                 QueuedIntent::IndexStatus { intent, attachment }
-                    if self.store.as_ref().is_some_and(|store| store.read(cx).admits_owner_attachment(&attachment))
-                        && matches!(&intent, Intent::ReconcileIndexProject { project, operation, basis, .. }
+                    if self.store.as_ref().is_some_and(|store| {
+                        store.read(cx).admits_owner_attachment(&attachment)
+                    }) && matches!(&intent, Intent::ReconcileIndexProject { project, operation, basis, .. }
                             if self.snapshot().key().same_authority(*basis) && self.snapshot().workspace().projects.iter().any(|row|
-                                row.id == *project && row.request.is_none() && row.operation.as_ref() == Some(operation))) => self.dispatch_runtime(intent, cx),
-                QueuedIntent::IndexStatus { .. } => {},
+                                row.id == *project && row.request.is_none() && row.operation.as_ref() == Some(operation))) =>
+                {
+                    let events = self.runtime.dispatch_observation(intent, attachment);
+                    self.apply_events(events, cx);
+                }
+                QueuedIntent::IndexStatus { .. } => refresh_observation = true,
                 // The stale callback never reached the durable boundary. A
                 // current owner may admit this local row after the old callback
                 // is removed, even if its earlier ready event already settled.
                 QueuedIntent::Index { .. } => refresh_unsent = true,
-                QueuedIntent::Read { intent, lease, sequence } if sequence == self.graph_view_generation
-                    && self.store.as_ref().is_some_and(|store| lease.admits(store.read(cx))) => self.dispatch(intent, cx),
+                QueuedIntent::Read {
+                    intent,
+                    lease,
+                    sequence,
+                } if sequence == self.graph_view_generation
+                    && self
+                        .store
+                        .as_ref()
+                        .is_some_and(|store| lease.admits(store.read(cx))) =>
+                {
+                    self.dispatch(intent, cx)
+                }
                 QueuedIntent::Read { .. } => {}
             }
         }
-        if refresh_unsent { self.schedule_pending_indexes(cx); }
+        if refresh_unsent {
+            self.schedule_pending_indexes(cx);
+        }
+        if refresh_observation {
+            self.schedule_operation_observation(cx);
+        }
     }
 
     /// Close the durable queued/submitted boundary before crossing the actor.
@@ -899,16 +921,10 @@ impl UiRootEntity {
         if let Some(moved) = crate::host::aside::take() {
             self.dispatch(Intent::LibraryRebuilding { kept_at: Arc::from(moved.display().to_string()) }, cx);
         }
-        // One fresh owner observation may reconcile previously Unknown or
-        // Unresolved durable evidence. Their same-owner idle state does not poll.
-        let uncertain = self.snapshot().workspace().projects.iter().filter(|row|
-            row.phase == crate::model::ProjectPhase::Unconfirmed && row.operation.is_some() && row.request.is_none())
-            .map(|row| row.id.clone()).collect::<Vec<_>>();
-        for project in uncertain { self.schedule_index_check(project, cx); }
         self.schedule_operation_observation(cx);
         // Packages an earlier launch was still adding are added now.
         super::acquire::resume(&self.snapshot(), cx.weak_entity(), cx);
-        self.resume_indexes_after_owner(cx);
+        self.resume_indexes_after_owner(true, cx);
     }
 
     /// A certified publication for the existing attachment. This advances
@@ -931,7 +947,7 @@ impl UiRootEntity {
         self.connection_probe.clear();
         self.dispatch_runtime(Intent::OwnerReady { key, mode }, cx);
         self.refresh_root(cx);
-        self.resume_indexes_after_owner(cx);
+        self.resume_indexes_after_owner(attachment_changed, cx);
     }
 
     /// Reads the owner's root again: something outside the project lane
@@ -1018,10 +1034,34 @@ impl UiRootEntity {
     /// The owner watcher admits its root before renewing the store. Defer
     /// scheduling until both name the same live attachment; unsent projects
     /// stay local while the service starts or is unavailable.
-    fn resume_indexes_after_owner(&self, cx: &mut Context<Self>) {
+    fn resume_indexes_after_owner(&self, reconcile_uncertain: bool, cx: &mut Context<Self>) {
         let root = cx.weak_entity();
         cx.defer(move |cx| {
-            let _ = root.update(cx, |root, cx| { root.resume_saved_indexes(cx); root.schedule_pending_indexes(cx); });
+            let _ = root.update(cx, |root, cx| {
+                root.resume_saved_indexes(cx);
+                root.schedule_pending_indexes(cx);
+                if reconcile_uncertain {
+                    // Admission precedes store renewal in the watcher. Check
+                    // uncertain saved keys once after both name the live owner;
+                    // Unknown never starts a periodic idle polling loop.
+                    let projects = root
+                        .snapshot()
+                        .workspace()
+                        .projects
+                        .iter()
+                        .filter(|row| {
+                            row.phase == crate::model::ProjectPhase::Unconfirmed
+                                && row.operation.is_some()
+                                && row.request.is_none()
+                        })
+                        .map(|row| row.id.clone())
+                        .collect::<Vec<_>>();
+                    for project in projects {
+                        root.schedule_index_check(project, cx);
+                    }
+                }
+                root.schedule_operation_observation(cx);
+            });
         });
     }
 
@@ -1075,17 +1115,56 @@ impl UiRootEntity {
         self.schedule_flush(cx);
     }
 
-    fn schedule_index_check(&mut self, project: crate::core::LocalProjectId, cx: &mut Context<Self>) {
-        if self.quitting || self.index_preflights.contains_key(&project) { return; }
-        if self.pending.iter().any(|queued| matches!(queued.intent(), Intent::ReconcileIndexProject { project: candidate, .. } if candidate == &project)) { return; }
+    fn schedule_index_check(
+        &mut self,
+        project: crate::core::LocalProjectId,
+        cx: &mut Context<Self>,
+    ) {
+        if self.quitting || self.index_preflights.contains_key(&project) {
+            return;
+        }
         let snapshot = self.snapshot();
-        let Some(row) = snapshot.workspace().projects.iter().find(|row| row.id == project && row.request.is_none()) else { return; };
-        let Some(operation) = row.operation.as_ref().filter(|operation| operation.belongs_to(&project)).cloned() else { return; };
-        let Some(store) = self.store.as_ref() else { return; };
-        let Some(attachment) = store.read(cx).current_owner_attachment() else { return; };
+        let Some(row) = snapshot
+            .workspace()
+            .projects
+            .iter()
+            .find(|row| row.id == project && row.request.is_none())
+        else {
+            return;
+        };
+        let Some(operation) = row
+            .operation
+            .as_ref()
+            .filter(|operation| operation.belongs_to(&project))
+            .cloned()
+        else {
+            return;
+        };
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        let Some(attachment) = store.read(cx).current_owner_attachment() else {
+            return;
+        };
+        // A deferred owner recovery may run before the old queued callback.
+        // Only an exact current packet can suppress its one fresh observation.
+        self.pending.retain(|queued| {
+            !matches!(queued,
+            QueuedIntent::IndexStatus { intent: Intent::ReconcileIndexProject {
+                project: candidate, operation: saved, basis, .. }, attachment: captured }
+            if candidate == &project && (captured != &attachment
+                || !basis.same_authority(snapshot.key()) || saved != &operation))
+        });
+        if self.pending.iter().any(|queued| matches!(queued.intent(), Intent::ReconcileIndexProject { project: candidate, .. } if candidate == &project)) { return; }
         let request = self.runtime.allocate_request();
         self.pending.push(QueuedIntent::IndexStatus {
-            intent: Intent::ReconcileIndexProject { project, operation, basis: snapshot.key(), request }, attachment,
+            intent: Intent::ReconcileIndexProject {
+                project,
+                operation,
+                basis: snapshot.key(),
+                request,
+            },
+            attachment,
         });
         self.schedule_flush(cx);
     }
@@ -1184,6 +1263,8 @@ mod local_index_queue_tests;
 mod durable_writer_tests;
 #[cfg(test)]
 mod index_preflight_basis_tests;
+#[cfg(test)]
+mod operation_observation_tests;
 
 fn folder_picker_outcome(paths: Vec<PathBuf>) -> FolderPickerOutcome {
     let mut selected = Vec::new();

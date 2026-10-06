@@ -116,7 +116,8 @@ mod tests {
     use crate::{
         self as gpui, AppContext as _, Context, Entity, FocusHandle, InteractiveElement,
         KeyDownEvent, KeyUpEvent, Keystroke, MouseButton, ParentElement, Render,
-        StatefulInteractiveElement, StyleRefinement, Styled, TestAppContext, div, point, px,
+        StatefulInteractiveElement, StyleRefinement, Styled, TestAppContext, accesskit, div, point,
+        px,
     };
     use std::{
         cell::{Cell, RefCell},
@@ -178,6 +179,151 @@ mod tests {
                 div().id("stable-host").size_full().child(child),
             )
         }
+    }
+
+    struct PositionedControl {
+        clicks: Rc<Cell<usize>>,
+    }
+
+    impl Render for PositionedControl {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let clicks = self.clicks.clone();
+            div()
+                .id("positioned-native-control")
+                .debug_selector(|| "positioned-native-control".to_string())
+                .w(px(100.))
+                .h(px(40.))
+                .role(accesskit::Role::Button)
+                .aria_label("positioned native control")
+                .on_click(move |_, _, _| clicks.set(clicks.get() + 1))
+        }
+    }
+
+    struct PositionedHost {
+        child: Entity<PositionedControl>,
+        scope_depth: u8,
+        epoch: u64,
+    }
+
+    impl Render for PositionedHost {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let mut child: AnyElement = self
+                .child
+                .clone()
+                .cached(StyleRefinement::default().w(px(100.)).h(px(40.)))
+                .into_any_element();
+            if self.scope_depth >= 2 {
+                child = native_activation_scope(
+                    NativeActivationScope::new(self.child.entity_id(), Some(self.epoch)),
+                    child,
+                )
+                .into_any_element();
+            }
+            if self.scope_depth >= 1 {
+                child = native_activation_scope(
+                    NativeActivationScope::new(cx.entity_id(), Some(self.epoch)),
+                    child,
+                )
+                .into_any_element();
+            }
+            div()
+                .id("translated-native-parent")
+                .debug_selector(|| "translated-native-parent".to_string())
+                .size_full()
+                .pl(px(80.))
+                .pt(px(60.))
+                .child(child)
+        }
+    }
+
+    fn positioned_control_bounds(
+        visual: &mut crate::VisualTestContext,
+    ) -> (Bounds<Pixels>, Bounds<Pixels>) {
+        let visual_bounds = visual
+            .debug_bounds("positioned-native-control")
+            .expect("the native control has rendered bounds");
+        let accessibility_bounds = visual.update(|window, _| {
+            let node_id = window
+                .a11y_tree()
+                .expect("accessibility is enabled")
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("positioned native control"))
+                .map(|(id, _)| *id)
+                .expect("the native control is in the accessibility tree");
+            window
+                .a11y_node_bounds(node_id)
+                .expect("the native control has accessibility bounds")
+        });
+        (visual_bounds, accessibility_bounds)
+    }
+
+    #[gpui::test]
+    fn native_activation_scopes_preserve_translated_geometry_and_hit_target(
+        cx: &mut TestAppContext,
+    ) {
+        let clicks = Rc::new(Cell::new(0));
+        let (host, visual) = cx.add_window_view({
+            let clicks = clicks.clone();
+            move |_, cx| PositionedHost {
+                child: cx.new(|_| PositionedControl { clicks }),
+                scope_depth: 0,
+                epoch: 1,
+            }
+        });
+        visual.update(|window, cx| {
+            window.set_a11y_forced(true);
+            window.draw(cx).clear(cx);
+        });
+
+        let mut expected_bounds = None;
+        for scope_depth in 0..=2 {
+            visual.update(|_, cx| {
+                host.update(cx, |host, cx| {
+                    host.scope_depth = scope_depth;
+                    cx.notify();
+                })
+            });
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+
+            let parent_bounds = visual
+                .debug_bounds("translated-native-parent")
+                .expect("the padded parent has rendered bounds");
+            let (visual_bounds, accessibility_bounds) = positioned_control_bounds(visual);
+            assert_eq!(visual_bounds, accessibility_bounds);
+            assert_eq!(visual_bounds.size.width, px(100.));
+            assert_eq!(visual_bounds.size.height, px(40.));
+            assert_eq!(visual_bounds.origin.x, parent_bounds.origin.x + px(80.));
+            assert_eq!(visual_bounds.origin.y, parent_bounds.origin.y + px(60.));
+
+            if let Some(expected) = expected_bounds {
+                assert_eq!(visual_bounds, expected, "scope depth {scope_depth}");
+            } else {
+                expected_bounds = Some(visual_bounds);
+            }
+        }
+
+        let initial_bounds = expected_bounds.expect("the unwrapped geometry was measured");
+        let center = initial_bounds.center();
+        visual.simulate_mouse_down(center, MouseButton::Left, Default::default());
+        visual.update(|_, cx| {
+            host.update(cx, |host, cx| {
+                host.epoch = 2;
+                cx.notify();
+            })
+        });
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(positioned_control_bounds(visual).0, initial_bounds);
+        visual.simulate_mouse_up(center, MouseButton::Left, Default::default());
+        assert_eq!(clicks.get(), 0, "an epoch change retires the held press");
+
+        let current_bounds = positioned_control_bounds(visual).0;
+        visual.simulate_click(current_bounds.center(), Default::default());
+        assert_eq!(
+            clicks.get(),
+            1,
+            "the translated native hit target remains live"
+        );
     }
 
     #[gpui::test]
