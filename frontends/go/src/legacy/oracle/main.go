@@ -35,6 +35,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
@@ -89,7 +90,7 @@ import (
 // reference target with. `Decl.NameSpan` (serialize.go) now also carries
 // the declaration's own identifier extent. See `extractReferences` for the
 // walk, and `Reference.Class`/`Reference.Kind` for the closed vocabularies.
-const SchemaVersion = 4
+const SchemaVersion = 5
 
 // Output is the root of the emitted JSON document.
 type Output struct {
@@ -142,6 +143,10 @@ type Package struct {
 	// declarations they contain. go/types cannot expose these declarations
 	// because they are intentionally absent from the loaded package scope.
 	BuildConstraints []*BuildConstraint `json:"buildConstraints,omitempty"`
+	// CgoExcludedFiles lists source files selected out by CGO_ENABLED=0 because
+	// they import "C". Their paths are also retained in BuildConstraints with
+	// the explicit cgo-disabled-import-C selection reason.
+	CgoExcludedFiles []string `json:"cgoExcludedFiles,omitempty"`
 	// References is the resolved same-package function call graph.
 	References []*Reference `json:"references,omitempty"`
 	// UnresolvedCgo names incomplete cgo (or otherwise unexpandable) types
@@ -152,9 +157,12 @@ type Package struct {
 
 // BuildConstraint describes one excluded Go source file.
 type BuildConstraint struct {
-	File          string       `json:"file"`
-	Constraints   []string     `json:"constraints,omitempty"`
-	ExportedDecls []*BuildDecl `json:"exportedDecls,omitempty"`
+	File        string   `json:"file"`
+	Constraints []string `json:"constraints,omitempty"`
+	// ExcludedReason records a compiler selection reason that is not a source
+	// build-tag expression, such as cgo-disabled-import-C.
+	ExcludedReason string       `json:"excludedReason,omitempty"`
+	ExportedDecls  []*BuildDecl `json:"exportedDecls,omitempty"`
 }
 
 // BuildDecl identifies an exported declaration found in an excluded file.
@@ -487,6 +495,7 @@ func extractPackage(pkg *packages.Package, candidates []interfaceCandidate) *Pac
 		Files:      pkg.GoFiles,
 	}
 	p.BuildConstraints = scanBuildConstraints(pkg)
+	p.CgoExcludedFiles = scanCgoExcludedFiles(pkg)
 	p.References = extractReferences(pkg, docs)
 
 	scope := pkg.Types.Scope()
@@ -936,21 +945,75 @@ func scanBuildConstraints(pkg *packages.Package) []*BuildConstraint {
 			continue
 		}
 		expr, err := parseConstraint(source)
-		if err != nil || expr == nil {
+		if err != nil {
 			continue
 		}
-		decls := exportedDecls(path)
-		if len(decls) == 0 {
+		importsCgo, err := fileImportsCgo(path)
+		if err != nil {
 			continue
+		}
+		if expr == nil && !importsCgo {
+			continue
+		}
+		constraints := []string(nil)
+		if expr != nil {
+			constraints = append(constraints, expr.String())
+		}
+		reason := ""
+		if importsCgo {
+			reason = "cgo-disabled-import-C"
 		}
 		out = append(out, &BuildConstraint{
-			File:          path,
-			Constraints:   []string{expr.String()},
-			ExportedDecls: decls,
+			File:           path,
+			Constraints:    constraints,
+			ExcludedReason: reason,
+			ExportedDecls:  exportedDecls(path),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].File < out[j].File })
 	return out
+}
+
+// scanCgoExcludedFiles returns only import-C files Go excluded from this
+// package under the explicit CGO_ENABLED=0 authority environment. Active
+// files are compiled and type-checked; cgo files are retained as excluded
+// source facts instead of poisoning the transitive import closure.
+func scanCgoExcludedFiles(pkg *packages.Package) []string {
+	var out []string
+	for _, filename := range pkg.IgnoredFiles {
+		importsCgo, err := fileImportsCgo(filename)
+		if err == nil && importsCgo {
+			out = append(out, filename)
+		}
+	}
+	sort.Strings(out)
+	if len(out) < 2 {
+		return out
+	}
+	deduped := out[:1]
+	for _, filename := range out[1:] {
+		if filename != deduped[len(deduped)-1] {
+			deduped = append(deduped, filename)
+		}
+	}
+	return deduped
+}
+
+func fileImportsCgo(filename string) (bool, error) {
+	file, err := parser.ParseFile(token.NewFileSet(), filename, nil, parser.ImportsOnly)
+	if err != nil {
+		return false, err
+	}
+	for _, imported := range file.Imports {
+		path, err := strconv.Unquote(imported.Path.Value)
+		if err != nil {
+			return false, err
+		}
+		if path == "C" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // parseConstraint parses one build-constraint line from a source file.

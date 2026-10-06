@@ -634,7 +634,8 @@ fn go_phase(cause: &backend_frontend_go::legacy::OracleError) -> AuthorityPhase 
         | backend_frontend_go::legacy::OracleError::Pipe { .. }
         | backend_frontend_go::legacy::OracleError::WorkerPanic { .. }
         | backend_frontend_go::legacy::OracleError::GoOracleSourceDirectory(_)
-        | backend_frontend_go::legacy::OracleError::GoOracleSourceFile { .. } => {
+        | backend_frontend_go::legacy::OracleError::GoOracleSourceFile { .. }
+        | backend_frontend_go::legacy::OracleError::GoOracleHelperCache { .. } => {
             AuthorityPhase::Open
         }
     }
@@ -766,6 +767,9 @@ mod go_authority_projection_tests {
             OracleError::GoOracleSourceFile {
                 path: PathBuf::from("/tmp/nudox-go-oracle/main.go"),
                 source: std::io::Error::other("private source write denied"),
+            },
+            OracleError::GoOracleHelperCache {
+                detail: "offline helper build cache could not be installed".to_owned(),
             },
         ];
 
