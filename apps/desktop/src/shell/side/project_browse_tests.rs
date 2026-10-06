@@ -66,6 +66,11 @@ fn already_active_saved_project_opens_its_tree_by_native_click_and_return_withou
         let project = LocalProjectId::new("/fixture/shelf-browse-project").expect("saved local project");
         rig.go(Intent::AddProject { project: project.clone() });
         rig.go(Intent::ActivateProject(project.clone()));
+        // Adding a new project starts its initial index. Browsing this saved
+        // row must preserve that operation, rather than pretending setup did
+        // not submit it.
+        let initial_indexes = indexes.load(Ordering::SeqCst);
+        assert_eq!(initial_indexes, 1, "fixture admission starts exactly one initial index");
         let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().workspace().projects[0].clone());
         let library = tests::native_bounds(&mut rig, "Button", "Library", true).expect("native Shelf way out");
         rig.cx.simulate_click(library.center(), Modifiers::none());
@@ -104,6 +109,7 @@ fn already_active_saved_project_opens_its_tree_by_native_click_and_return_withou
         });
         assert_eq!((after.phase, after.request, after.operation), (before.phase, before.request, before.operation),
             "browsing preserves the saved index lifecycle and operation claim");
-        assert_eq!(indexes.load(Ordering::SeqCst), 0, "native project browsing never submits IndexProject");
+        assert_eq!(indexes.load(Ordering::SeqCst), initial_indexes,
+            "native project browsing never submits another IndexProject");
     }
 }

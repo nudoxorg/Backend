@@ -412,13 +412,10 @@ impl Shelf {
     ) -> AnyElement {
         let mut places = div()
             .flex()
-            .flex_wrap()
-            .items_center()
-            .gap_x(measure.space(Space::Snug));
+            .flex_col()
+            .w_full()
+            .gap(measure.space(Space::Snug));
         for (index, step) in steps.iter().enumerate() {
-            if index > 0 {
-                places = places.child(text(ty::MONO_SMALL, measure, palette.ink3).child("‹"));
-            }
             let route = step.route.clone();
             let guard = self.action_guard(cx);
             places = places.child(
@@ -427,11 +424,13 @@ impl Shelf {
                     .role(gpui::Role::Link)
                     .aria_label(step.label.clone())
                     .focusable()
+                    .w_full()
+                    .flex_none()
                     .min_w(px(0.0))
                     .max_w_full()
                     .cursor_pointer()
                     .child(text(ty::MONO_SMALL, measure, palette.ink3)
-                        .min_w(px(0.0)).overflow_hidden().whitespace_nowrap().text_ellipsis()
+                        .w_full().min_w(px(0.0)).overflow_hidden().whitespace_nowrap().text_ellipsis()
                         .child(step.label.clone()))
                     .on_click(cx.listener(move |shelf, _: &ClickEvent, _, cx| {
                         if !guard(cx) { return; }
@@ -1096,7 +1095,8 @@ pub(super) fn clipped_sticky_chain(pinned: impl IntoElement, viewport_height: Pi
     let covered = StickyGeometry::new(viewport_height, row_height, row_count).covered_height();
     div()
         .absolute().top_0().left_0().right_0().h(covered)
-        .child(div().id("shelf-sticky-clip").relative().h_full().overflow_hidden()
+        .child(div().id("shelf-sticky-clip").debug_selector(|| "shelf-sticky-clip".into())
+            .relative().h_full().overflow_hidden()
             // The full chain may exceed this frame's viewport. Keep the
             // *deepest* useful ancestors in the new clip, with each
             // native hitbox masked to the actual available height.
