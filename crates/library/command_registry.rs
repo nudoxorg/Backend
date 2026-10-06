@@ -97,7 +97,7 @@ pub enum CommandDomain {
 }
 
 /// The closed registry in stable display order.
-pub const COMMANDS: [CommandSpec; 52] = [
+pub const COMMANDS: [CommandSpec; 53] = [
     CommandSpec {
         id: CommandId::Advisory,
         name: "advisory",
