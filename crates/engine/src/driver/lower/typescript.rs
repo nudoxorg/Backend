@@ -11072,10 +11072,12 @@ mod lane_tests {
         let route_path = native
             .package_paths
             .get("src/app/api/route.ts")
+            .cloned()
             .ok_or(LaneError::Missing("exact alias importer TSZ path"))?;
         let scheduler_path = native
             .package_paths
             .get("src/lib/scheduler.ts")
+            .cloned()
             .ok_or(LaneError::Missing("exact aliased target TSZ path"))?;
         assert!(
             !native.options.checker.no_lib,
