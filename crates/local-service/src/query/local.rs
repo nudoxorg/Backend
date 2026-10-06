@@ -812,9 +812,7 @@ impl SearchSnapshotOwner {
             }
             Ok(None) => {}
             Err(error) => {
-                if matches!(error, QueryError::LexicalProvider { .. })
-                    && self.durable_root.is_none()
-                {
+                if error.permits_ephemeral_revision_rebuild() && self.durable_root.is_none() {
                     self.selected = None;
                 } else {
                     return Err(error);
@@ -1833,6 +1831,19 @@ pub enum LexicalFailureCause {
 }
 
 impl QueryError {
+    // A resident ephemeral provider failure may require rebuilding the
+    // projection. A rejected contract is terminal, as it was before provider
+    // failures retained their typed causes; rebuilding must not bypass it.
+    fn permits_ephemeral_revision_rebuild(&self) -> bool {
+        matches!(
+            self,
+            Self::LexicalProvider {
+                phase: LexicalPhase::MaintainProjection,
+                cause: LexicalFailureCause::Source(error),
+            } if !matches!(error, lexical::TantivySourceError::Contract(_))
+        )
+    }
+
     fn provider(phase: LexicalPhase, error: lexical::TantivySourceError) -> Self {
         Self::LexicalProvider {
             phase,
@@ -1916,6 +1927,39 @@ impl std::error::Error for QueryError {
 #[cfg(test)]
 mod lexical_failure_tests {
     use super::*;
+
+    #[test]
+    fn ephemeral_revision_recovery_keeps_contract_and_corpus_refusals_terminal() {
+        let rejected = QueryError::provider(
+            LexicalPhase::MaintainProjection,
+            lexical::TantivySourceError::Contract(lexical::Error::StaleRoot),
+        );
+        assert!(!rejected.permits_ephemeral_revision_rebuild());
+        let provider = QueryError::provider(
+            LexicalPhase::MaintainProjection,
+            lexical::TantivySourceError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "resident projection failed",
+            )),
+        );
+        assert!(provider.permits_ephemeral_revision_rebuild());
+        let durable = QueryError::provider(
+            LexicalPhase::AdvanceProjection,
+            lexical::TantivySourceError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "durable publication failed",
+            )),
+        );
+        assert!(!durable.permits_ephemeral_revision_rebuild());
+        let unjoined = QueryError::LexicalProvider {
+            phase: LexicalPhase::ComposeRows,
+            cause: LexicalFailureCause::HitCountMismatch {
+                provider: 1,
+                selected: 0,
+            },
+        };
+        assert!(!unjoined.permits_ephemeral_revision_rebuild());
+    }
 
     #[test]
     fn provider_failure_preserves_original_io_and_resource_causes() {
