@@ -493,7 +493,9 @@ fn semantic_shapes_actual_jsonrpc_preserves_full_view_in_summary_and_full() {
         "tools/call",
         &json!({"name":"backend.semantic_shapes","arguments":{"request":wrong}}),
     );
-    assert!(result.get("error").is_some(), "{result}");
+    assert_eq!(result["result"]["isError"], true, "{result}");
+    assert_eq!(result["result"]["structuredContent"]["slug"], "usage");
+    assert_eq!(result["result"]["structuredContent"]["cause"], "malformed");
     assert!(server.product.surface_commands.is_empty());
 }
 
