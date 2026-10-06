@@ -289,10 +289,10 @@ impl TypeScriptProjectWitness {
                     .into_boxed_path(),
                 source,
             })?;
-        if current_project.compiler != self.discovered_compiler
-            || current_project.module_root != self.discovered_module_root
-            || current_project.version != self.discovered_version
-            || package_root != self.package_root
+        if current_project.compiler.as_path() != self.discovered_compiler.as_ref()
+            || current_project.module_root.as_path() != self.discovered_module_root.as_ref()
+            || current_project.version.as_str() != self.discovered_version.as_ref()
+            || package_root.as_path() != self.package_root.as_ref()
             || current_project.workspace != self.workspace
         {
             return Err(TypeScriptProjectHostError::WitnessChanged {
@@ -1468,8 +1468,8 @@ impl TypeScriptProjectHost {
 
         let fingerprint = project_fingerprint(
             &project_root,
-            compiler,
-            node,
+            &compiler,
+            &node,
             &module_root,
             &expected_version,
             &node_version,
@@ -2616,8 +2616,10 @@ printf 'Version 5.9.3\n'
             .iter()
             .find(|config| config.path.as_ref() == root)
             .expect("root candidate is retained");
-        assert_eq!(root_input.extends.as_ref(), [base.as_path()]);
-        assert_eq!(root_input.references.as_ref(), [member_config.as_path()]);
+        assert_eq!(root_input.extends.len(), 1);
+        assert_eq!(root_input.extends[0].as_ref(), base.as_path());
+        assert_eq!(root_input.references.len(), 1);
+        assert_eq!(root_input.references[0].as_ref(), member_config.as_path());
     }
 
     #[test]
@@ -2689,7 +2691,8 @@ printf 'Version 5.9.3\n'
             .iter()
             .find(|config| config.path.as_ref() == app_config)
             .expect("selected app config is retained");
-        assert_eq!(input.extends.as_ref(), [base.as_path()]);
+        assert_eq!(input.extends.len(), 1);
+        assert_eq!(input.extends[0].as_ref(), base.as_path());
         assert!(configs.iter().any(|config| config.path.as_ref() == base));
     }
 
@@ -2729,7 +2732,7 @@ printf 'Version 5.9.3\n'
     #[test]
     fn admitted_project_source_loader_records_and_revalidates_content_identity() {
         let fixture = Fixture::new();
-        let modules = fixture.install("5.9.3");
+        fixture.install("5.9.3");
         let ProjectTypeScriptSearch::Found(project) =
             find_project_typescript(&fixture.0).expect("discover project TypeScript")
         else {
