@@ -1221,8 +1221,15 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&bytes).expect("wire JSON");
         let mut old_contract = json.clone();
         old_contract["version"] = serde_json::json!(21);
-        let refusal = ReplyDto::decode_with_certificate(&serde_json::to_vec(&old_contract).expect("old version"), capability.clone()).expect_err("incompatible document grammar");
-        assert!(refusal.contains("unsupported reply DTO version"), "{refusal}");
+        let refusal = ReplyDto::decode_with_certificate(
+            &serde_json::to_vec(&old_contract).expect("old version"),
+            capability.clone(),
+        )
+        .expect_err("incompatible document grammar");
+        assert!(
+            refusal.contains("unsupported reply DTO version"),
+            "{refusal}"
+        );
         for path in ["coordinate", "symbol", "version", "source"] {
             let mut forged = json.clone();
             forged["reply"]["data"]["selection"][path] = match path {
@@ -1311,6 +1318,112 @@ mod tests {
             document_certificate(&absent, &owner, None).is_err(),
             "coordinate hash is not a native membership witness"
         );
+    }
+
+    #[test]
+    fn document_selection_long_producer_address_is_bounded_and_selected_ids_stay_short() {
+        use backend_library::{CommandDto, Document, DocumentQuery, DocumentSelection, ReplyDto};
+        let (template, _) = super::super::initial_view().expect("template");
+        // A producer-shaped label combines a bounded full project path, an
+        // immutable semantic site, and a bounded declaration name. Their
+        // admitted composite legitimately exceeds free-form Name text.
+        let label = format!(
+            "/{}::semantic::{}::{}",
+            "p".repeat(4095),
+            "a".repeat(64),
+            "N".repeat(4096)
+        );
+        assert!(label.len() > backend_library::MAX_COMMAND_TEXT);
+        assert!(label.len() < DocumentSelection::MAX_COORDINATE_BYTES);
+        let native = backend_engine::symbol_key("long-native-row");
+        let other = backend_engine::symbol_key("long-other-native-row");
+        let row = backend_engine::Row::new(RowId::Symbol(native), template.basis(), label.clone());
+        let owner = checked_root(vec![row.clone()]);
+        let basis = backend_engine::Basis {
+            root: owner.root(),
+            ..owner.basis()
+        };
+        let selection =
+            DocumentSelection::from_row(owner.row_ref(row.id).expect("actual admitted row"), basis)
+                .expect("complete producer address");
+        let document = Document::new(native, owner.root(), Vec::<backend_engine::Fragment>::new())
+            .with_source_basis(basis)
+            .with_selection(selection)
+            .expect("native selected document");
+        let certificate =
+            document_certificate(&document, &owner, None).expect("exact source certificate");
+        let dto = ReplyDto::new(7, CommandReply::Document(document)).with_certificate(certificate);
+        let bytes = serde_json::to_vec(&dto).expect("long wire");
+        assert!(
+            bytes.len() < backend_library::MAX_REPLY_BODY,
+            "no transport bound is raised"
+        );
+        let decoded = ReplyDto::decode_with_certificate(&bytes, owner.capability())
+            .expect("native long row decoder");
+        backend_library::admit_reply(
+            &CommandDto::new(
+                7,
+                Command::Document(DocumentQuery::new(
+                    backend_engine::symbol_key(&label),
+                    owner.root(),
+                )),
+            ),
+            &decoded,
+        )
+        .expect("exact long locator");
+        let oversized_label = "x".repeat(DocumentSelection::MAX_COORDINATE_BYTES + 1);
+        let oversized = backend_engine::Row::new(
+            RowId::Symbol(native),
+            template.basis(),
+            oversized_label.clone(),
+        );
+        assert!(DocumentSelection::from_row(&oversized, basis).is_none());
+        let mut forged: serde_json::Value = serde_json::from_slice(&bytes).expect("long JSON");
+        forged["reply"]["data"]["selection"]["coordinate"] = serde_json::json!(oversized_label);
+        assert!(
+            ReplyDto::decode_with_certificate(
+                &serde_json::to_vec(&forged).expect("oversized wire"),
+                owner.capability()
+            )
+            .is_err()
+        );
+        // Native IDs select one exact row even when its text is ambiguous or
+        // exceeds the optional copied-coordinate witness's producer bound.
+        for rows in [
+            vec![
+                row,
+                backend_engine::Row::new(RowId::Symbol(other), template.basis(), label),
+            ],
+            vec![oversized],
+        ] {
+            let owner = checked_root(rows);
+            let basis = backend_engine::Basis {
+                root: owner.root(),
+                ..owner.basis()
+            };
+            let selected =
+                Document::new(native, owner.root(), Vec::<backend_engine::Fragment>::new())
+                    .with_source_basis(basis);
+            let certificate = document_certificate(&selected, &owner, None)
+                .expect("actual selected row membership");
+            let dto =
+                ReplyDto::new(8, CommandReply::Document(selected)).with_certificate(certificate);
+            let wire = serde_json::to_vec(&dto).expect("short selected wire");
+            assert!(
+                wire.len() < 4096,
+                "selected-ID route does not duplicate a long or ambiguous label"
+            );
+            let decoded = ReplyDto::decode_with_certificate(&wire, owner.capability())
+                .expect("selected native decoder");
+            backend_library::admit_reply(
+                &CommandDto::new(
+                    8,
+                    Command::Document(DocumentQuery::selected(native, owner.root())),
+                ),
+                &decoded,
+            )
+            .expect("copied native selector");
+        }
     }
 
     #[test]

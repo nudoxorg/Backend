@@ -526,13 +526,18 @@ pub struct DocumentSelection {
 }
 
 impl DocumentSelection {
+    /// Existing producer preimage bound for complete projected coordinates.
+    /// A copied source address can contain both a full path and qualified
+    /// declaration name, so the free-form Name query bound does not govern it.
+    pub const MAX_COORDINATE_BYTES: usize = MAX_ROW_IDENTITY_PREIMAGE_BYTES;
+
     /// Retains the exact label and native key of an already admitted row.
     #[must_use]
     pub fn from_row(row: &Row, source: Basis) -> Option<Self> {
         let RowId::Symbol(symbol) = row.id else {
             return None;
         };
-        if row.label.is_empty() || row.label.len() > crate::MAX_COMMAND_TEXT {
+        if row.label.is_empty() || row.label.len() > Self::MAX_COORDINATE_BYTES {
             return None;
         }
         Self::from_admitted_parts(symbol, source, row.label.clone()).ok()
@@ -543,7 +548,7 @@ impl DocumentSelection {
         source: Basis,
         coordinate: String,
     ) -> Result<Self, &'static str> {
-        if coordinate.is_empty() || coordinate.len() > crate::MAX_COMMAND_TEXT {
+        if coordinate.is_empty() || coordinate.len() > Self::MAX_COORDINATE_BYTES {
             return Err("document selection coordinate exceeds its bound");
         }
         Ok(Self {
