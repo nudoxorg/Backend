@@ -125,8 +125,9 @@ impl<E: gpui::Element> gpui::Element for LocalPaint<E> {
     ) -> Self::PrepaintState {
         let id = id.expect("local Flow paint has a stable element owner");
         window.with_local_deferred_draw_scope(id, |window| {
-            self.child
-                .prepaint(Some(id), inspector, bounds, state, window, cx)
+            let result = self.child.prepaint(Some(id), inspector, bounds, state, window, cx);
+            window.prepaint_local_deferred_draws(id, cx);
+            result
         })
     }
     fn paint(

@@ -1783,6 +1783,7 @@ pub(crate) struct DeferredDraw {
     local_scope: Option<LocalDeferredDrawScope>,
     /// Per-frame only. Cached replay resets this before contributing its ranges.
     painted: bool,
+    prepainted: bool,
 }
 
 pub(crate) struct Frame {
@@ -4686,50 +4687,93 @@ impl Window {
             traversal_order.sort_by_key(|ix| self.next_frame.deferred_draws[*ix].priority);
 
             for deferred_draw_ix in traversal_order {
-                let (
-                    element,
-                    parent_node,
-                    current_view,
-                    rem_size,
-                    absolute_offset,
-                    content_mask,
-                    local_scope,
-                    prepaint_range,
-                    layer_transform,
-                    opacities,
-                    inert_subtree,
-                    native_activation_scope,
-                    inert_boundaries,
-                    inert_owner_boundaries,
-                ) = {
-                    let deferred_draw = &mut self.next_frame.deferred_draws[deferred_draw_ix];
-                    self.element_id_stack
-                        .clone_from(&deferred_draw.element_id_stack);
-                    self.text_style_stack
-                        .clone_from(&deferred_draw.text_style_stack);
-                    (
-                        deferred_draw.element.take(),
-                        deferred_draw.parent_node,
-                        deferred_draw.current_view,
-                        deferred_draw.rem_size,
-                        deferred_draw.absolute_offset,
-                        deferred_draw.content_mask,
-                        deferred_draw.local_scope.clone(),
-                        deferred_draw.prepaint_range.clone(),
-                        deferred_draw.layer_transform,
-                        (deferred_draw.element_opacity, deferred_draw.group_opacity),
-                        deferred_draw.inert_subtree,
-                        deferred_draw.native_activation_scope,
-                        deferred_draw.inert_boundaries.clone(),
-                        deferred_draw.inert_owner_boundaries.clone(),
-                    )
-                };
-                self.next_frame.dispatch_tree.set_active_node(parent_node);
+                self.prepaint_deferred_draw_at(deferred_draw_ix, cx);
+            }
 
-                let prepaint_start = self.prepaint_index();
-                if let Some(mut element) = element {
-                    let mut prepaint = |window: &mut Window, element: &mut AnyElement| {
-                        window.with_deferred_draw_scope(local_scope.clone(), |window| window.with_rendered_view(current_view, |window| {
+            self.element_id_stack.clear();
+            self.text_style_stack.clear();
+            round_start = round_end;
+        }
+    }
+
+    fn prepaint_deferred_draw_at(&mut self, deferred_draw_ix: usize, cx: &mut App) {
+        if self.next_frame.deferred_draws[deferred_draw_ix].prepainted {
+            return;
+        }
+        self.next_frame.deferred_draws[deferred_draw_ix].prepainted = true;
+        let previous_ids = mem::take(&mut self.element_id_stack);
+        let previous_styles = mem::take(&mut self.text_style_stack);
+        let previous_node = self.next_frame.dispatch_tree.active_node_id();
+
+        let (
+            element,
+            parent_node,
+            current_view,
+            rem_size,
+            absolute_offset,
+            content_mask,
+            local_scope,
+            prepaint_range,
+            layer_transform,
+            opacities,
+            inert_subtree,
+            native_activation_scope,
+            inert_boundaries,
+            inert_owner_boundaries,
+        ) = {
+            let deferred_draw = &mut self.next_frame.deferred_draws[deferred_draw_ix];
+            self.element_id_stack
+                .clone_from(&deferred_draw.element_id_stack);
+            self.text_style_stack
+                .clone_from(&deferred_draw.text_style_stack);
+            (
+                deferred_draw.element.take(),
+                deferred_draw.parent_node,
+                deferred_draw.current_view,
+                deferred_draw.rem_size,
+                deferred_draw.absolute_offset,
+                deferred_draw.content_mask,
+                deferred_draw.local_scope.clone(),
+                deferred_draw.prepaint_range.clone(),
+                deferred_draw.layer_transform,
+                (deferred_draw.element_opacity, deferred_draw.group_opacity),
+                deferred_draw.inert_subtree,
+                deferred_draw.native_activation_scope,
+                deferred_draw.inert_boundaries.clone(),
+                deferred_draw.inert_owner_boundaries.clone(),
+            )
+        };
+        self.next_frame.dispatch_tree.set_active_node(parent_node);
+
+        let layer_transform = layer_transform.then(
+            self.layer_transform
+                .inverse()
+                .unwrap_or(LayerTransform::IDENTITY),
+        );
+        let ratio = |captured: f32, current: f32| {
+            if current > 0.0 {
+                captured / current
+            } else {
+                1.0
+            }
+        };
+        let opacities = (
+            ratio(opacities.0, self.element_opacity),
+            ratio(opacities.1, self.group_opacity),
+        );
+        let previous_transform = self.layer_transform;
+        let previous_opacity = self.element_opacity;
+        let previous_group_opacity = self.group_opacity;
+        let previous_offset = self.element_offset_stack.len();
+        let previous_masks = self.content_mask_stack.len();
+        let previous_rem = self.rem_size_override_stack.len();
+        let previous_views = self.rendered_entity_stack.len();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let prepaint_start = self.prepaint_index();
+            if let Some(mut element) = element {
+                let mut prepaint = |window: &mut Window, element: &mut AnyElement| {
+                    window.with_deferred_draw_scope(local_scope.clone(), |window| {
+                        window.with_rendered_view(current_view, |window| {
                             window.with_rem_size(Some(rem_size), |window| {
                                 window.with_absolute_element_offset(absolute_offset, |window| {
                                     window.with_layer_transform(layer_transform, |window| {
@@ -4743,54 +4787,77 @@ impl Window {
                                                     // Descendants may themselves defer their draw.
                                                     // They must capture the same inherited clip
                                                     // that this parent uses at paint time.
-                                                    window.with_content_mask(content_mask, |window| {
-                                                        window.with_native_activation_scope(native_activation_scope, |window| element.prepaint(window, cx));
-                                                    });
+                                                    window.with_content_mask(
+                                                        content_mask,
+                                                        |window| {
+                                                            window.with_native_activation_scope(
+                                                                native_activation_scope,
+                                                                |window| {
+                                                                    element.prepaint(window, cx)
+                                                                },
+                                                            );
+                                                        },
+                                                    );
                                                 },
                                             );
                                         });
                                     });
                                 });
                             });
-                        }));
-                    };
-                    if inert_subtree {
-                        self.with_inert_boundaries(
-                            &inert_boundaries,
-                            None,
-                            &inert_owner_boundaries,
-                            None,
-                            |window| prepaint(window, &mut element),
-                        );
-                    } else {
-                        prepaint(self, &mut element);
-                    }
-                    self.next_frame.deferred_draws[deferred_draw_ix].element = Some(element);
-                } else if inert_subtree {
+                        })
+                    });
+                };
+                if inert_subtree {
                     self.with_inert_boundaries(
                         &inert_boundaries,
                         None,
                         &inert_owner_boundaries,
                         None,
-                        |window| {
-                            window.with_deferred_draw_scope(local_scope.clone(), |window| {
-                                window.reuse_prepaint(prepaint_range)
-                            })
-                        },
+                        |window| prepaint(window, &mut element),
                     );
                 } else {
-                    self.with_deferred_draw_scope(local_scope, |window| {
-                        window.reuse_prepaint(prepaint_range)
-                    });
+                    prepaint(self, &mut element);
                 }
-                let prepaint_end = self.prepaint_index();
-                self.next_frame.deferred_draws[deferred_draw_ix].prepaint_range =
-                    prepaint_start..prepaint_end;
+                self.next_frame.deferred_draws[deferred_draw_ix].element = Some(element);
+            } else if inert_subtree {
+                self.with_inert_boundaries(
+                    &inert_boundaries,
+                    None,
+                    &inert_owner_boundaries,
+                    None,
+                    |window| {
+                        window.with_deferred_draw_scope(local_scope.clone(), |window| {
+                            window.reuse_prepaint(prepaint_range)
+                        })
+                    },
+                );
+            } else {
+                self.with_deferred_draw_scope(local_scope, |window| {
+                    window.reuse_prepaint(prepaint_range)
+                });
             }
-
-            self.element_id_stack.clear();
-            self.text_style_stack.clear();
-            round_start = round_end;
+            let prepaint_end = self.prepaint_index();
+            self.next_frame.deferred_draws[deferred_draw_ix].prepaint_range =
+                prepaint_start..prepaint_end;
+        }));
+        self.layer_transform = previous_transform;
+        self.element_opacity = previous_opacity;
+        self.group_opacity = previous_group_opacity;
+        self.element_offset_stack.truncate(previous_offset);
+        self.content_mask_stack.truncate(previous_masks);
+        self.rem_size_override_stack.truncate(previous_rem);
+        self.rendered_entity_stack.truncate(previous_views);
+        self.element_id_stack = previous_ids;
+        self.text_style_stack = previous_styles;
+        if let Some(node) = previous_node {
+            self.next_frame.dispatch_tree.set_active_node(node);
+        } else {
+            while self.next_frame.dispatch_tree.active_node_id().is_some() {
+                self.next_frame.dispatch_tree.pop_node();
+            }
+        }
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
         }
     }
 
@@ -4831,6 +4898,7 @@ impl Window {
             paint_range: entry.paint_range.clone(),
             local_scope: entry.local_scope.take(),
             painted: true,
+            prepainted: true,
         };
         let previous_ids = mem::replace(
             &mut self.element_id_stack,
@@ -5097,6 +5165,7 @@ impl Window {
                         paint_range: deferred_draw.paint_range.clone(),
                         local_scope: deferred_draw.local_scope.clone(),
                         painted: false,
+                        prepainted: false,
                     }),
             );
         } else {
@@ -5135,16 +5204,19 @@ impl Window {
                         paint_range: deferred_draw.paint_range.clone(),
                         local_scope: deferred_draw.local_scope.clone(),
                         painted: false,
+                        prepainted: false,
                     }),
             );
         }
         for ix in deferred_start..self.next_frame.deferred_draws.len() {
             let draw = &mut self.next_frame.deferred_draws[ix];
             if let Some(scope) = &draw.local_scope {
-                // An owner introduced inside a cached subtree already flushed
-                // into that subtree's paint range. An ambient owner flushes
-                // outside it and must stay pending. No scene-wide search.
+                // An owner introduced inside a cached subtree already prepared
+                // and painted its deferred children inside the cached ranges.
+                // An ambient owner flushes outside that subtree's ranges and
+                // must remain pending. No scene-wide search.
                 draw.painted = ambient_scope.as_ref() != Some(&scope.id);
+                draw.prepainted = draw.painted;
                 self.next_frame
                     .local_draw_scopes
                     .entry(scope.id.clone())
@@ -5732,12 +5804,17 @@ impl Window {
         let result = f(self);
         if result.is_err() {
             self.next_frame.hitboxes.truncate(index.hitboxes_index);
+            self.next_frame.hitbox_owners.truncate(index.hitbox_owners_index);
             self.next_frame
                 .tooltip_requests
                 .truncate(index.tooltips_index);
             self.next_frame
                 .deferred_draws
                 .truncate(index.deferred_draws_index);
+            self.next_frame.local_draw_scopes.retain(|_, entries| {
+                entries.retain(|ix| *ix < index.deferred_draws_index);
+                !entries.is_empty()
+            });
             self.next_frame
                 .dispatch_tree
                 .truncate(index.dispatch_tree_index);
@@ -6152,6 +6229,7 @@ impl Window {
             paint_range: PaintIndex::default()..PaintIndex::default(),
             local_scope: None,
             painted: false,
+            prepainted: false,
         });
     }
 
@@ -6224,6 +6302,34 @@ impl Window {
                 .push(ix);
         }
         self.next_frame.deferred_draws[ix].local_scope = scope;
+    }
+
+    /// Prepares this owner's deferred motion after its static children and
+    /// before later siblings, so native hit-test order matches local paint.
+    pub fn prepaint_local_deferred_draws(&mut self, id: &GlobalElementId, cx: &mut App) {
+        self.invalidator.debug_assert_prepaint();
+        let mut first = 0;
+        for _ in 0..10 {
+            let Some(entries) = self.next_frame.local_draw_scopes.get(id) else {
+                return;
+            };
+            if first == entries.len() {
+                return;
+            }
+            let mut order = entries[first..]
+                .iter()
+                .copied()
+                .collect::<SmallVec<[usize; 8]>>();
+            first = entries.len();
+            order.sort_by_key(|ix| self.next_frame.deferred_draws[*ix].priority);
+            for ix in order {
+                self.prepaint_deferred_draw_at(ix, cx);
+            }
+        }
+        if self.next_frame.local_draw_scopes.get(id).is_none_or(|entries| first == entries.len()) {
+            return;
+        }
+        panic!("Exceeded maximum (10) local deferred depth");
     }
 
     /// Paints this owner's deferred motion after its own static content and
@@ -10534,8 +10640,9 @@ mod deferred_clip_tests {
                     window.with_local_deferred_draw_scope(
                         id.expect("actual native owner"),
                         |window| {
-                            self.child
-                                .prepaint(id, inspector, bounds, state, window, cx)
+                            let result = self.child.prepaint(id, inspector, bounds, state, window, cx);
+                            window.prepaint_local_deferred_draws(id.expect("actual native owner"), cx);
+                            result
                         },
                     )
                 } else {
@@ -10780,6 +10887,225 @@ mod deferred_clip_tests {
                 "trace toggles cause one native repaint; unchanged frames replay the existing scene",
             );
             previous = tracing;
+        }
+    }
+
+    struct NativeHitProbe {
+        child: AnyElement,
+        hit: Rc<RefCell<Option<Hitbox>>>,
+        downs: Rc<Cell<usize>>,
+    }
+    impl IntoElement for NativeHitProbe {
+        type Element = Self;
+        fn into_element(self) -> Self {
+            self
+        }
+    }
+    impl Element for NativeHitProbe {
+        type RequestLayoutState = ();
+        type PrepaintState = Hitbox;
+        fn id(&self) -> Option<ElementId> {
+            None
+        }
+        fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+            None
+        }
+        fn request_layout(
+            &mut self,
+            _: Option<&GlobalElementId>,
+            _: Option<&InspectorElementId>,
+            window: &mut Window,
+            cx: &mut App,
+        ) -> (LayoutId, ()) {
+            (self.child.request_layout(window, cx), ())
+        }
+        fn prepaint(
+            &mut self,
+            _: Option<&GlobalElementId>,
+            _: Option<&InspectorElementId>,
+            bounds: Bounds<Pixels>,
+            _: &mut (),
+            window: &mut Window,
+            cx: &mut App,
+        ) -> Hitbox {
+            let before = window.prepaint_index();
+            let mut discarded = crate::Empty.into_any_element();
+            discarded.request_layout(window, cx);
+            let aborted: Result<(), ()> = window.transact(|window| {
+                window.insert_hitbox(bounds, HitboxBehavior::Normal);
+                window.defer_draw_local(
+                    discarded,
+                    window.element_offset(),
+                    0,
+                    Some(window.content_mask()),
+                );
+                Err(())
+            });
+            assert!(aborted.is_err());
+            assert_eq!(window.next_frame.hitboxes.len(), before.hitboxes_index);
+            assert_eq!(
+                window.next_frame.hitbox_owners.len(),
+                before.hitbox_owners_index
+            );
+            assert!(
+                window
+                    .next_frame
+                    .local_draw_scopes
+                    .values()
+                    .all(|entries| entries.iter().all(|ix| *ix < before.deferred_draws_index)),
+                "an aborted native prepaint cannot leave a queue index for later local flush"
+            );
+            self.child.prepaint(window, cx);
+            let hit = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+            *self.hit.borrow_mut() = Some(hit.clone());
+            hit
+        }
+        fn paint(
+            &mut self,
+            _: Option<&GlobalElementId>,
+            _: Option<&InspectorElementId>,
+            _: Bounds<Pixels>,
+            _: &mut (),
+            hit: &mut Hitbox,
+            window: &mut Window,
+            cx: &mut App,
+        ) {
+            self.child.paint(window, cx);
+            let hit = hit.clone();
+            let downs = self.downs.clone();
+            window.on_mouse_event(move |_: &MouseDownEvent, phase, window, _| {
+                if phase == DispatchPhase::Bubble && hit.is_hovered(window) {
+                    downs.set(downs.get() + 1);
+                }
+            });
+        }
+    }
+    struct CachedHitView {
+        inside: bool,
+        hit: Rc<RefCell<Option<Hitbox>>>,
+        downs: Rc<Cell<usize>>,
+        renders: Rc<Cell<usize>>,
+    }
+    impl Render for CachedHitView {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            self.renders.set(self.renders.get() + 1);
+            let body = div().w(px(300.0)).h(px(80.0)).child(DeferredNative::new(
+                NativeHitProbe {
+                    child: div()
+                        .w(px(300.0))
+                        .h(px(80.0))
+                        .bg(crate::rgb(0xffffff))
+                        .child("Native local hit target")
+                        .into_any_element(),
+                    hit: self.hit.clone(),
+                    downs: self.downs.clone(),
+                },
+                true,
+                Clip::Inherited,
+            ));
+            if self.inside {
+                local("native-hit-owner", body).into_any_element()
+            } else {
+                body.into_any_element()
+            }
+        }
+    }
+    struct NativeHitPlate {
+        part: Entity<CachedHitView>,
+        inside: bool,
+        covered: bool,
+    }
+    impl Render for NativeHitPlate {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let part = self
+                .part
+                .clone()
+                .cached(crate::StyleRefinement::default().w(px(300.0)).h(px(80.0)));
+            let part = if self.inside {
+                part.into_any_element()
+            } else {
+                local("native-hit-owner", part).into_any_element()
+            };
+            div()
+                .relative()
+                .size_full()
+                .child(part)
+                .children(self.covered.then(|| {
+                    div()
+                        .id("later-native-hit-plate")
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .w(px(300.0))
+                        .h(px(80.0))
+                        .bg(crate::rgb(0xff0000))
+                        .occlude()
+                }))
+        }
+    }
+    #[gpui::test]
+    fn local_motion_hit_testing_follows_native_plate_order_across_cached_frames(
+        cx: &mut TestAppContext,
+    ) {
+        for inside in [true, false] {
+            let hit = Rc::new(RefCell::new(None));
+            let downs = Rc::new(Cell::new(0));
+            let renders = Rc::new(Cell::new(0));
+            let (root, cx) = cx.add_window_view(|_, cx| NativeHitPlate {
+                part: cx.new(|_| CachedHitView {
+                    inside,
+                    hit: hit.clone(),
+                    downs: downs.clone(),
+                    renders: renders.clone(),
+                }),
+                inside,
+                covered: true,
+            });
+            let mut first_renders = None;
+            for covered in [true, true, false, true, false] {
+                root.update(cx, |root, cx| {
+                    root.covered = covered;
+                    cx.notify();
+                });
+                cx.update(|window, cx| {
+                    window.draw(cx).clear(cx);
+                    let hit = hit.borrow().clone().expect("actual native local hitbox");
+                    let at = point(px(100.0), px(40.0));
+                    assert_eq!(window.rendered_frame.hit_test(at).ids.contains(&hit.id), !covered,
+                        "later native occlusion masks the actual local hitbox exactly as it masks its pixels");
+                    let quads = &window.rendered_scene_for_test().quads;
+                    assert_eq!(quads.len(), if covered { 2 } else { 1 });
+                    if covered { assert!(quads[0].order < quads[1].order); }
+                });
+                if let Some(first) = first_renders {
+                    assert_eq!(
+                        renders.get(),
+                        first,
+                        "native child remains cached across cover changes"
+                    );
+                } else {
+                    first_renders = Some(renders.get());
+                }
+                let before = downs.get();
+                cx.simulate_event(MouseDownEvent {
+                    position: point(px(100.0), px(40.0)),
+                    button: MouseButton::Left,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                });
+                cx.simulate_event(MouseUpEvent {
+                    position: point(px(100.0), px(40.0)),
+                    button: MouseButton::Left,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                });
+                assert_eq!(
+                    downs.get(),
+                    before + usize::from(!covered),
+                    "native delivery reaches one current local listener only when the plate is uncovered"
+                );
+            }
         }
     }
 
