@@ -52,21 +52,26 @@ mod wire;
 
 pub use crate::ir_vocabulary::Confidence as OccurrenceConfidence;
 pub use crate::ir_vocabulary::{
-    AnnotationKind, AnonRecordForm, AnonRecordFormError, ChannelDirection, ChildCountLaw,
-    CvQualifiers, CvQualifiersError, DeclarationFamilyId, DeclarationIdentity, DeclarationKey,
-    DeclarationKeyFault, DeclarationPathFault, ExternalCoordinate, ExternalDeclarationIdentity,
-    ExternalEntityRef, ExternalFragmentId, ExternalProductRef, ExternalTypeRef,
-    ForeignDeclarationId, ForeignKey, ForeignKeyFault, ForeignOrigin, FunctionVariadicForm,
-    ListSpan, NominalRef, Occurrence, OccurrenceTarget, PackageLineage, PackageLineageFault,
-    PackageLineageView, PooledListError, PreimageOverflow, PrimitiveShape, PrimitiveShapeError,
-    Product, ProductChildRole, ProductChildRoleCodeError, ProductChildren, ProductConstructorFault,
-    ProductConstructorTag, ProductId, ProductList, ProductListId, ProductRef, ReferenceKind,
-    ReferenceKindCodeError, RelSpan, RelSpanFault, Resolution, SemanticAtom, SemanticProduct,
-    SemanticProductChild, SemanticProductConstructor, SemanticTypeChild, SemanticTypeFault,
-    SemanticTypeRecord, SemanticTypeTag, SemanticTypeTagError, StableRef,
-    TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM, TypeCell, TypeChildTarget, TypeChildren, TypeFactId,
-    TypeReason, TypeReasonError, TypeRef, TypeScriptSourceCoordinate, TypeWidth, TypeWidthError,
-    VariantAvailability, VariantFingerprint, typescript_program_identity,
+    AnnotationKind, AnonRecordForm, AnonRecordFormError, AnonymousCallableAnchor,
+    AnonymousCallableFamilyMultiplicity, CallableAnchorStep, CallableChildRole,
+    CallableParentShape, CallableParentShapeTag, ChannelDirection, ChildCountLaw, CvQualifiers,
+    CvQualifiersError, DeclarationFamilyId, DeclarationIdentity, DeclarationKey,
+    DeclarationKeyFault, DeclarationName, DeclarationPathFault, ExternalCoordinate,
+    ExternalDeclarationIdentity, ExternalEntityRef, ExternalFragmentId, ExternalProductRef,
+    ExternalTypeRef, ForeignDeclarationId, ForeignKey, ForeignKeyFault, ForeignOrigin,
+    FunctionVariadicForm, ListSpan, MAX_ANONYMOUS_CALLABLE_ANCHOR_BYTES,
+    MAX_ANONYMOUS_CALLABLE_ROUTE_STEPS, NominalRef, Occurrence, OccurrenceTarget, PackageLineage,
+    PackageLineageFault, PackageLineageView, PooledListError, PreimageOverflow, PrimitiveShape,
+    PrimitiveShapeError, Product, ProductChildRole, ProductChildRoleCodeError, ProductChildren,
+    ProductConstructorFault, ProductConstructorTag, ProductId, ProductList, ProductListId,
+    ProductRef, ReferenceKind, ReferenceKindCodeError, RelSpan, RelSpanFault, Resolution,
+    SemanticAtom, SemanticProduct, SemanticProductChild, SemanticProductConstructor,
+    SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord, SemanticTypeTag,
+    SemanticTypeTagError, StableRef, TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM, TypeCell, TypeChildTarget,
+    TypeChildren, TypeFactId, TypeReason, TypeReasonError, TypeRef,
+    TypeScriptCallableCoordinateFault, TypeScriptCallableSourceCoordinate,
+    TypeScriptSourceCoordinate, TypeWidth, TypeWidthError, TypedDeclarationKey,
+    TypedDeclarationKeyFault, VariantAvailability, VariantFingerprint, typescript_program_identity,
 };
 pub use crate::ir_vocabulary::{
     MappedModifier as LatticeMappedModifier, Variance as LatticeVariance,
@@ -89,7 +94,10 @@ pub use canonical_data::{
 pub use coordinate::{
     AtomId, AtomSpace, DenseId, Entity, EntityId, List, ListId, Text, TextId, Type, TypeId,
 };
-pub use declaration_identity::{DeclarationParentage, ScopedDeclarationKey};
+pub use declaration_identity::{
+    AnonymousCallableInstanceFault, AnonymousCallableInstanceKey, DeclarationParentage,
+    ScopedDeclarationKey, ScopedTypedDeclarationKey,
+};
 pub use discovery::{FragmentDiscovery, FragmentDiscoveryError, SemanticCensus};
 pub use docs_facts::{
     DecodedDocFact, DocFactCursor, DocFactFault, DocFactInput, DocFragmentInput, DocLinkTarget,
