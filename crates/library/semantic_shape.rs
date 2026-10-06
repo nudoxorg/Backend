@@ -806,13 +806,72 @@ pub struct SemanticCallableShape {
     pub unsafe_: bool,
 }
 
+/// One owned, validated structural anchor for an anonymous callable member.
+/// The encoding is semantic identity data, never source identifier text.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SemanticAnonymousCallableAnchor(Box<[u8]>);
+
+impl SemanticAnonymousCallableAnchor {
+    /// Copies a bounded encoded anchor after validating its semantic grammar.
+    pub fn new(encoded: &[u8]) -> Result<Self, SemanticShapeError> {
+        if encoded.len() > backend_semantic::ir::MAX_ANONYMOUS_CALLABLE_ANCHOR_BYTES
+            || backend_semantic::ir::AnonymousCallableAnchorView::try_from_encoded(encoded)
+                .is_none()
+        {
+            return Err(SemanticShapeError::InvalidShape);
+        }
+        Ok(Self(encoded.into()))
+    }
+
+    /// Returns the exact versioned anchor bytes.
+    #[must_use]
+    pub fn encoded_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    fn validate(&self) -> Result<(), SemanticShapeError> {
+        if self.0.len() > backend_semantic::ir::MAX_ANONYMOUS_CALLABLE_ANCHOR_BYTES
+            || backend_semantic::ir::AnonymousCallableAnchorView::try_from_encoded(&self.0)
+                .is_none()
+        {
+            return Err(SemanticShapeError::InvalidShape);
+        }
+        Ok(())
+    }
+}
+
+/// Typed member name that keeps structural anonymous identity out of source text.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum SemanticShapeMemberName {
+    /// Exact UTF-8 spelling written by the source declaration.
+    Named(SourceAtomText),
+    /// Exact structural identity for a source-anonymous callable declaration.
+    AnonymousCallable(SemanticAnonymousCallableAnchor),
+}
+
+impl SemanticShapeMemberName {
+    pub(crate) fn validate(&self) -> Result<(), SemanticShapeError> {
+        match self {
+            Self::Named(_) => Ok(()),
+            Self::AnonymousCallable(anchor) => anchor.validate(),
+        }
+    }
+}
+
 /// Member row retained on a record, object, enum, or module shape.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SemanticShapeMember {
     /// Exact compiler declaration family and variant.
     pub identity: SemanticDeclarationIdentity,
-    /// Exact compiler-owned member name.
-    pub name: SourceAtomText,
+    /// Exact source name or explicitly typed anonymous callable anchor.
+    pub name: SemanticShapeMemberName,
     /// Closed member-kind discriminant.
     pub kind: ItemKind,
     /// Member type fact; absence remains explicit.
@@ -1165,7 +1224,17 @@ impl SemanticShapeWalker {
                     SemanticDeclarationShape::Aggregate(members) => {
                         for member in members.iter() {
                             self.node(160)?;
-                            self.text(&member.name)?;
+                            member.name.validate()?;
+                            match &member.name {
+                                SemanticShapeMemberName::Named(text) => self.text(text)?,
+                                SemanticShapeMemberName::AnonymousCallable(anchor) => self.bytes(
+                                    anchor
+                                        .encoded_bytes()
+                                        .len()
+                                        .saturating_mul(6)
+                                        .saturating_add(16),
+                                )?,
+                            }
                             self.language(&member.language, 0)?;
                             self.fact(&member.ty, 0)?;
                         }
@@ -2199,6 +2268,74 @@ mod tests {
             entries: vec![entry].into_boxed_slice(),
         };
         assert_eq!(batch.admission_summary().map(|_| ()), Ok(()));
+    }
+
+    #[test]
+    fn aggregate_member_name_keeps_anonymous_anchor_typed_and_validated() {
+        let encoded = [b'N', b'A', b'C', 2, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0];
+        let name = SemanticShapeMemberName::AnonymousCallable(
+            SemanticAnonymousCallableAnchor::new(&encoded)
+                .expect("valid bounded anonymous-callable anchor"),
+        );
+        let wire = serde_json::to_vec(&name).expect("tagged member-name wire value");
+        assert!(
+            serde_json::from_slice::<SemanticShapeMemberName>(&wire)
+                .expect("member-name wire value round-trips")
+                == name
+        );
+
+        let member = SemanticShapeMember {
+            identity: SemanticDeclarationIdentity {
+                family: [41; 16],
+                variant: [42; 16],
+            },
+            name,
+            kind: backend_semantic::ir::ItemKind::Function,
+            ty: SemanticTypeFact::Unavailable(SemanticTypeUnavailable::MissingTypeCoordinate),
+            language: SemanticShapeLanguageFacts::CommonOnly {
+                profile: LanguageProfile::Rust(RustEdition::Rust2021),
+            },
+        };
+        let fact = SemanticShapeFact::Available {
+            shape: SemanticDeclarationShape::Aggregate(vec![member].into_boxed_slice()),
+            language: SemanticShapeLanguageFacts::CommonOnly {
+                profile: LanguageProfile::Rust(RustEdition::Rust2021),
+            },
+        };
+        let mut walker = SemanticShapeWalker::default();
+        walker
+            .shape_fact(&fact, 0)
+            .expect("valid anonymous member passes product admission");
+
+        let invalid = SemanticShapeFact::Available {
+            shape: SemanticDeclarationShape::Aggregate(
+                vec![SemanticShapeMember {
+                    identity: SemanticDeclarationIdentity {
+                        family: [43; 16],
+                        variant: [44; 16],
+                    },
+                    name: SemanticShapeMemberName::AnonymousCallable(
+                        SemanticAnonymousCallableAnchor(vec![0].into_boxed_slice()),
+                    ),
+                    kind: backend_semantic::ir::ItemKind::Function,
+                    ty: SemanticTypeFact::Unavailable(
+                        SemanticTypeUnavailable::MissingTypeCoordinate,
+                    ),
+                    language: SemanticShapeLanguageFacts::CommonOnly {
+                        profile: LanguageProfile::Rust(RustEdition::Rust2021),
+                    },
+                }]
+                .into_boxed_slice(),
+            ),
+            language: SemanticShapeLanguageFacts::CommonOnly {
+                profile: LanguageProfile::Rust(RustEdition::Rust2021),
+            },
+        };
+        let mut invalid_walker = SemanticShapeWalker::default();
+        assert_eq!(
+            invalid_walker.shape_fact(&invalid, 0),
+            Err(SemanticShapeError::InvalidShape),
+        );
     }
 
     #[test]
