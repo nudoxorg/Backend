@@ -10357,6 +10357,8 @@ mod lane_tests {
         Scalar,
         #[error("expected {0}")]
         Missing(&'static str),
+        #[error("configured TypeScript project authority failed: {0}")]
+        ConfiguredProject(String),
     }
 
     impl From<std::num::TryFromIntError> for LaneError {
@@ -11052,7 +11054,7 @@ mod lane_tests {
         let host = TypeScriptProjectHost::new(None, Some(node), None, None, limits);
         let admitted = host
             .admit(&root)
-            .map_err(|_| LaneError::Missing("installed project TypeScript authority"))?
+            .map_err(|error| LaneError::ConfiguredProject(format!("admit: {error:?}")))?
             .ok_or(LaneError::Missing("project-local TypeScript installation"))?;
         let inputs = admitted.inputs();
         let mut resolver = inputs.resolver();
@@ -11065,7 +11067,7 @@ mod lane_tests {
             deadline,
             &cancelled,
         )
-        .map_err(|_| LaneError::Missing("compiler-API-resolved configured program"))?;
+        .map_err(|error| LaneError::ConfiguredProject(format!("compiler API bridge: {error:?}")))?;
         resolver
             .validate_current()
             .map_err(|_| LaneError::Missing("unchanged compiler resolver witness"))?;
