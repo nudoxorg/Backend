@@ -1,0 +1,23 @@
+{
+  "source_commit": "989484ae58ced68bb7aa25221ceef20e746d4fde",
+  "tree": "23419460fe7e63476af86219fafce87e7660c4f2",
+  "cargo_lock_sha256": "3272e75a8996174bfb5693ae570ae5c204ef91c729032bd4e98348523489d715",
+  "started_at_utc": "2026-10-06T20:20:36.563490+00:00",
+  "supervisor_pid": 93243,
+  "managed_wrapper_pid": 93254,
+  "argv": [
+    "/Users/rmccrar6/codex-worktrees/sol61-python-authority-hardening-20261006/.local/python-hardening-managed/run",
+    "test",
+    "--locked",
+    "-p",
+    "backend-local-service",
+    "--lib",
+    "home_assistant_record_frontier_exceeds_the_old_default_without_widening_reads",
+    "-j4",
+    "--",
+    "--nocapture"
+  ],
+  "exclusive_lock": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/coordination/ts-native-primary-transferred-slot.lock",
+  "fleet_admission": "/private/tmp/python-record-quota-9894-fleet-20261006T2021Z.json",
+  "cargo_jobs": 4
+}

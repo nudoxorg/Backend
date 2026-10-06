@@ -1,0 +1,23 @@
+{
+  "schema": "nudox.large-python-record-admission-regression.v1",
+  "native_regression_passed": true,
+  "whole_home_assistant_passed": false,
+  "root_source_patch": "a92aca761c6c3bcf2ff02c7c85c450d33278dd81",
+  "private_coherent_test_union": "989484ae58ced68bb7aa25221ceef20e746d4fde",
+  "observed_record_bytes": 134270703,
+  "old_default_record_limit": 134217728,
+  "new_default_record_limit": 536870912,
+  "native_tests": {
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0
+  },
+  "proved": [
+    "Observed real application charge exceeds old default and is refused without partial ledger charge",
+    "Bounded new record default admits the observed charge",
+    "Source and worker read limits remain unchanged",
+    "Effective quota changes alter source-budget identity",
+    "Finite operator ceiling and overflow remain refused without ledger mutation"
+  ],
+  "limitation": "The regression charges the observed aggregate without allocating the full134MB payload. The actual application was refused on4c04; no complete public application indexing is claimed."
+}
