@@ -248,6 +248,81 @@ fn typed_named_identity_is_byte_identical_to_the_existing_v2_contract() -> Resul
 }
 
 #[test]
+fn existing_anonymous_routes_retain_the_v1_key_and_family_bytes() -> Result<(), TestFailure> {
+    let route = [
+        CallableAnchorStep {
+            child_role: CallableChildRole::CallArgument,
+            parent: CallableParentShape::Call,
+        },
+        CallableAnchorStep {
+            child_role: CallableChildRole::VariableInitializer,
+            parent: CallableParentShape::VariableBinding(b"binding"),
+        },
+        CallableAnchorStep {
+            child_role: CallableChildRole::PropertyValue,
+            parent: CallableParentShape::PropertyName(b"property"),
+        },
+        CallableAnchorStep {
+            child_role: CallableChildRole::ConditionalConsequent,
+            parent: CallableParentShape::Conditional,
+        },
+        CallableAnchorStep {
+            child_role: CallableChildRole::ConditionalAlternate,
+            parent: CallableParentShape::Conditional,
+        },
+        CallableAnchorStep {
+            child_role: CallableChildRole::ArrayElement,
+            parent: CallableParentShape::ArrayLiteral,
+        },
+        CallableAnchorStep {
+            child_role: CallableChildRole::ObjectMemberValue,
+            parent: CallableParentShape::ObjectMember(b"member"),
+        },
+    ];
+    let family = anonymous_family(&route)?;
+    let declaration = family.declaration();
+    let mut expected = Vec::new();
+    let cell = |out: &mut Vec<u8>, value: &[u8]| {
+        out.extend_from_slice(
+            &u32::try_from(value.len())
+                .expect("bounded golden cell")
+                .to_le_bytes(),
+        );
+        out.extend_from_slice(value);
+    };
+    cell(&mut expected, b"compiler.declaration.anonymous-callable.v1");
+    cell(&mut expected, b"npm");
+    cell(&mut expected, b"fixture");
+    cell(&mut expected, b"src/app.spec.ts");
+    expected.extend_from_slice(&u16::from(EntityKind::Function).to_le_bytes());
+    expected.extend_from_slice(&7_u32.to_le_bytes());
+    expected.extend_from_slice(&[0, 0, 1, 1]);
+    cell(&mut expected, b"binding");
+    expected.extend_from_slice(&[2, 2]);
+    cell(&mut expected, b"property");
+    expected.extend_from_slice(&[3, 3, 4, 3, 5, 4, 6, 5]);
+    cell(&mut expected, b"member");
+    let mut actual = vec![0; declaration.preimage_len()?];
+    declaration.write_preimage(&mut actual)?;
+    assert_eq!(
+        actual, expected,
+        "the complete original closed route vocabulary stays byte stable"
+    );
+    let mut expected_family = Vec::new();
+    cell(
+        &mut expected_family,
+        b"compiler.declaration-family.anonymous-callable.v1",
+    );
+    cell(&mut expected_family, &expected);
+    expected_family.extend_from_slice(&<[u8; 2]>::from(family.profile()));
+    expected_family.push(0); // The historical root-parentage wire tag.
+    let mut actual_family = vec![0; family.family_preimage_len()?];
+    family.write_family_preimage(&mut actual_family)?;
+    assert_eq!(actual_family, expected_family);
+    Ok(())
+}
+
+#[test]
 fn anonymous_family_is_structural_but_exact_instances_remain_separate() -> Result<(), TestFailure> {
     let route = [CallableAnchorStep {
         child_role: CallableChildRole::CallArgument,

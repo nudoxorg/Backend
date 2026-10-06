@@ -313,7 +313,7 @@ fn row(
     for symbol in symbols {
         if !names
             .iter()
-            .filter_map(|id| atom(*id))
+            .filter_map(|name| name.named_atom().and_then(atom))
             .any(|name| name == *symbol)
         {
             return Err(Error::Failure(format!(
@@ -624,7 +624,7 @@ fn production_go_authority_scopes_a_multi_package_module_to_its_owning_package()
     let atom = |id: backend_semantic::ir::AtomId| ir.ir.atom(id);
     if !names
         .iter()
-        .filter_map(|id| atom(*id))
+        .filter_map(|name| name.named_atom().and_then(atom))
         .any(|name| name == b"Group")
     {
         return Err(Error::Failure(

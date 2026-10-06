@@ -149,7 +149,10 @@ fn name_join<R: SemanticReader + ?Sized>(reader: &R, kind: ItemKind, name: &[u8]
     u32::try_from(
         reader
             .canonical_entities()
-            .filter(|entity| entity.kind == kind && reader.atom(entity.name) == Some(name))
+            .filter(|entity| {
+                entity.kind == kind
+                    && entity.name.named_atom().and_then(|atom| reader.atom(atom)) == Some(name)
+            })
             .count(),
     )
     .unwrap_or(u32::MAX)
@@ -184,7 +187,11 @@ fn declaration_joins<R: SemanticReader + ?Sized>(
 fn type_row_joins<R: SemanticReader + ?Sized>(reader: &R, row: &AuthorityTypeRow) -> bool {
     reader
         .canonical_entities()
-        .filter(|entity| entity.kind == row.kind && reader.atom(entity.name) == Some(&row.name[..]))
+        .filter(|entity| {
+            entity.kind == row.kind
+                && entity.name.named_atom().and_then(|atom| reader.atom(atom))
+                    == Some(&row.name[..])
+        })
         .any(|entity| type_shape_reader(reader, entity.semantic_type) == row.shape)
 }
 
@@ -196,9 +203,11 @@ fn target_names<R: SemanticReader + ?Sized>(
     expected: &[u8],
 ) -> bool {
     match target {
-        backend_semantic::ir::LinkTarget::Local(entity) => reader
-            .entity(entity)
-            .is_some_and(|entity| reader.atom(entity.name) == Some(expected)),
+        backend_semantic::ir::LinkTarget::Local(entity) => {
+            reader.entity(entity).is_some_and(|entity| {
+                entity.name.named_atom().and_then(|atom| reader.atom(atom)) == Some(expected)
+            })
+        }
         backend_semantic::ir::LinkTarget::External(external) => match reader.external(external) {
             Some(backend_semantic::ir::ExternalTarget::Foreign(foreign)) => {
                 reader.atom(foreign.display) == Some(expected)
@@ -293,7 +302,9 @@ fn join_primary<R: SemanticReader + ?Sized>(
     reader
         .canonical_entities()
         .find(|entity| {
-            entity.kind == primary.kind && reader.atom(entity.name) == Some(&primary.name[..])
+            entity.kind == primary.kind
+                && entity.name.named_atom().and_then(|atom| reader.atom(atom))
+                    == Some(&primary.name[..])
         })
         .map(|entity| entity.id)
 }
@@ -374,16 +385,22 @@ pub(super) fn check_authority_planes<R: SemanticReader + ?Sized>(
             for row in rows {
                 if !relation_holds(ir, row) || !relation_holds(reopened, row) {
                     if ts_scratch {
-                        let located_holds = relation_holds(reopened, &AuthorityRelation {
-                            target: row.target.clone(),
-                            site: row.site,
-                            located: true,
-                        });
-                        let name_only_holds = relation_holds(reopened, &AuthorityRelation {
-                            target: row.target.clone(),
-                            site: row.site,
-                            located: false,
-                        });
+                        let located_holds = relation_holds(
+                            reopened,
+                            &AuthorityRelation {
+                                target: row.target.clone(),
+                                site: row.site,
+                                located: true,
+                            },
+                        );
+                        let name_only_holds = relation_holds(
+                            reopened,
+                            &AuthorityRelation {
+                                target: row.target.clone(),
+                                site: row.site,
+                                located: false,
+                            },
+                        );
                         let mut spans: Vec<(u32, u32)> = reopened
                             .link_occurrences()
                             .filter_map(|(_, occurrence)| {
@@ -1438,14 +1455,15 @@ fn declarator_annotation(
         .nodes()
         .get_node(semantic.scoping().symbol_declaration(symbol));
     match declared.kind() {
-        AstKind::VariableDeclarator(declarator) => Some(match declarator.type_annotation.as_ref()
-        {
-            Some(annotation) => {
-                let span = annotation.type_annotation.span();
-                Some((span.start, span.end))
-            }
-            None => None,
-        }),
+        AstKind::VariableDeclarator(declarator) => {
+            Some(match declarator.type_annotation.as_ref() {
+                Some(annotation) => {
+                    let span = annotation.type_annotation.span();
+                    Some((span.start, span.end))
+                }
+                None => None,
+            })
+        }
         _ => None,
     }
 }
@@ -1527,8 +1545,10 @@ pub(super) fn typescript_authority(
                     let name = text
                         .get(name_bytes.start as usize..name_bytes.end as usize)
                         .unwrap_or_default();
-                    if matches!(name, "Key" | "ThisTag" | "KeyType" | "P" | "K" | "K2" | "k" | "regex" | "ctx")
-                        && span.start < 90000
+                    if matches!(
+                        name,
+                        "Key" | "ThisTag" | "KeyType" | "P" | "K" | "K2" | "k" | "regex" | "ctx"
+                    ) && span.start < 90000
                     {
                         let parent = nodes.get_node(nodes.parent_id(declared.id())).kind();
                         let prefix = |k: &_| {
@@ -1541,7 +1561,11 @@ pub(super) fn typescript_authority(
                             span.end,
                             prefix(&declared.kind()),
                             prefix(&parent),
-                            prefix(&nodes.get_node(nodes.parent_id(nodes.parent_id(declared.id()))).kind()),
+                            prefix(
+                                &nodes
+                                    .get_node(nodes.parent_id(nodes.parent_id(declared.id())))
+                                    .kind()
+                            ),
                         );
                     }
                 }
@@ -1561,8 +1585,9 @@ pub(super) fn typescript_authority(
                 // the lane's signature carriers and locals, which the
                 // authority never predicts.
                 let admitted = scope == root || scoping.scope_parent_id(scope) == Some(root);
-                let type_parameter =
-                    scoping.symbol_flags(symbol).contains(SymbolFlags::TypeParameter);
+                let type_parameter = scoping
+                    .symbol_flags(symbol)
+                    .contains(SymbolFlags::TypeParameter);
                 classified.push((
                     symbol,
                     (span.start, span.end),
@@ -1582,9 +1607,7 @@ pub(super) fn typescript_authority(
             // lexical owner, not only the module-scope predictions.
             let owner_candidates: Vec<(u32, u32)> = classified
                 .iter()
-                .filter(|(.., projection, _, _)| {
-                    *projection != TsLaneProjection::Unpublished
-                })
+                .filter(|(.., projection, _, _)| *projection != TsLaneProjection::Unpublished)
                 .map(|(_, _, declared_span, ..)| *declared_span)
                 .collect();
             let innermost_owner = |span: &(u32, u32), own: &(u32, u32)| -> (u32, u32) {
@@ -1717,7 +1740,14 @@ pub(super) fn typescript_authority(
                     oxc_resolved_spans.insert((span.start, span.end));
                 }
             }
-            (declarations, primary, owner_spans, lane_published, projection_by_span, oxc_resolved_spans)
+            (
+                declarations,
+                primary,
+                owner_spans,
+                lane_published,
+                projection_by_span,
+                oxc_resolved_spans,
+            )
         },
     );
     let Ok((

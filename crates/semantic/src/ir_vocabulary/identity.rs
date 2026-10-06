@@ -278,7 +278,8 @@ pub enum DeclarationKeyFault {
 pub enum DeclarationName<'bytes> {
     /// Exact source spelling used by the existing declaration-key encoding.
     Named(&'bytes [u8]),
-    /// A source-structural anchor for an anonymous function or arrow.
+    /// A source-structural anchor for an anonymous function, arrow, or
+    /// function type. This is not identifier text.
     AnonymousCallable(AnonymousCallableAnchor<'bytes>),
 }
 
@@ -325,7 +326,7 @@ impl AnonymousCallableFamilyMultiplicity {
 }
 
 /// One parent syntax shape and the callable's typed role within that shape.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct CallableAnchorStep<'bytes> {
     /// Syntactic role occupied by the callable child.
     pub child_role: CallableChildRole,
@@ -334,7 +335,7 @@ pub struct CallableAnchorStep<'bytes> {
 }
 
 /// Closed syntactic roles supported in a structural callable route.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum CallableChildRole {
     /// Callable is an argument to a source call expression.
     CallArgument,
@@ -350,10 +351,20 @@ pub enum CallableChildRole {
     ArrayElement,
     /// Callable is the value of a named object-literal property.
     ObjectMemberValue,
+    /// Callable type is the type annotation of a named signature parameter.
+    SignatureParameterType,
+    /// Callable type is a child of a typed type-expression node.
+    TypeExpression,
+    /// Callable type is the right-hand side of a named type alias.
+    TypeAliasValue,
+    /// Anonymous call signature is a member of a type container.
+    CallSignatureMember,
+    /// Anonymous construct signature is a member of a type container.
+    ConstructSignatureMember,
 }
 
 /// Source-backed shape of the syntax node that directly contains a callable.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum CallableParentShape<'bytes> {
     /// A call expression. Generic callee spellings and arguments are source
     /// values, not declaration identity operands.
@@ -368,6 +379,44 @@ pub enum CallableParentShape<'bytes> {
     ArrayLiteral,
     /// An object-literal property with its exact source-written key.
     ObjectMember(&'bytes [u8]),
+    /// A signature parameter with its exact source-written name.
+    SignatureParameter(&'bytes [u8]),
+    /// A typed type-syntax container that directly owns the callable child.
+    TypeContainer(CallableTypeContainerKind),
+    /// A type alias with its exact source-written name.
+    TypeAliasName(&'bytes [u8]),
+}
+
+/// Closed syntax kinds allowed as structural parents of anonymous type
+/// callables. This records node kind and exact AST membership, never a child
+/// ordinal.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum CallableTypeContainerKind {
+    /// `T[]` or another array type expression.
+    Array = 0,
+    /// Tuple type expression.
+    Tuple = 1,
+    /// Union type expression.
+    Union = 2,
+    /// Intersection type expression.
+    Intersection = 3,
+    /// Parenthesized type expression.
+    Parenthesized = 4,
+    /// Optional type expression.
+    Optional = 5,
+    /// Rest type expression.
+    Rest = 6,
+    /// Function type expression.
+    Function = 7,
+    /// Constructor type expression.
+    Constructor = 8,
+    /// Generic type reference containing an argument.
+    TypeReference = 9,
+    /// Anonymous type literal containing a call or construct signature.
+    TypeLiteral = 10,
+    /// Interface declaration containing a call or construct signature.
+    Interface = 11,
 }
 
 /// Exact validation failure for a typed declaration name or callable anchor.
@@ -419,6 +468,12 @@ pub enum CallableParentShapeTag {
     ArrayLiteral,
     /// Parent is an object member.
     ObjectMember,
+    /// Parent is a signature parameter.
+    SignatureParameter,
+    /// Parent is a typed type-syntax container.
+    TypeContainer,
+    /// Parent is a named type alias.
+    TypeAliasName,
 }
 
 impl CallableParentShape<'_> {
@@ -430,6 +485,9 @@ impl CallableParentShape<'_> {
             Self::Conditional => CallableParentShapeTag::Conditional,
             Self::ArrayLiteral => CallableParentShapeTag::ArrayLiteral,
             Self::ObjectMember(_) => CallableParentShapeTag::ObjectMember,
+            Self::SignatureParameter(_) => CallableParentShapeTag::SignatureParameter,
+            Self::TypeContainer(_) => CallableParentShapeTag::TypeContainer,
+            Self::TypeAliasName(_) => CallableParentShapeTag::TypeAliasName,
         }
     }
 }
@@ -449,7 +507,10 @@ pub struct TypedDeclarationKey<'bytes> {
     name: DeclarationName<'bytes>,
 }
 
+// The closed route grammar grows additively: existing tags and framed cells
+// retain their original identity bytes, while new tags cannot alias old routes.
 const ANONYMOUS_CALLABLE_KEY_PURPOSE: &[u8] = b"compiler.declaration.anonymous-callable.v1";
+const ANONYMOUS_CALLABLE_NAME_MAGIC: &[u8; 4] = b"NAC\x02";
 
 impl<'bytes> TypedDeclarationKey<'bytes> {
     /// Validates one typed name while leaving the existing named key intact.
@@ -605,6 +666,72 @@ impl<'bytes> TypedDeclarationKey<'bytes> {
     }
 }
 
+impl AnonymousCallableAnchor<'_> {
+    /// Validates the route independently of package and declaration scope.
+    pub fn validate(self) -> Result<(), TypedDeclarationKeyFault> {
+        validate_callable_anchor(self)
+    }
+
+    /// Bounded encoded width used by typed item-name storage. Callers must
+    /// validate this anchor through [`TypedDeclarationKey::new`] first.
+    pub fn storage_len(self) -> Result<usize, PreimageOverflow> {
+        let mut length = ANONYMOUS_CALLABLE_NAME_MAGIC.len() + 8;
+        for step in self.steps {
+            length = checked_anchor_storage_length(length, 2)?;
+            length =
+                checked_anchor_storage_length(length, callable_parent_payload_len(step.parent)?)?;
+        }
+        Ok(length)
+    }
+
+    /// Writes a versioned structural anchor plus its current family
+    /// multiplicity. The byte spelling is not a declaration name.
+    pub fn write_storage(
+        self,
+        multiplicity: AnonymousCallableFamilyMultiplicity,
+        out: &mut [u8],
+    ) -> Result<usize, PreimageOverflow> {
+        let needed = self.storage_len()?;
+        if out.len() < needed {
+            return Err(PreimageOverflow::OutputShort {
+                needed,
+                actual: out.len(),
+            });
+        }
+        out[..4].copy_from_slice(ANONYMOUS_CALLABLE_NAME_MAGIC);
+        let count = match multiplicity {
+            AnonymousCallableFamilyMultiplicity::Unique => 1,
+            AnonymousCallableFamilyMultiplicity::Ambiguous { instance_count } => instance_count,
+        };
+        out[4..8].copy_from_slice(&count.to_le_bytes());
+        let route_count =
+            u32::try_from(self.steps.len()).map_err(|_| PreimageOverflow::CellTooLong {
+                actual: self.steps.len(),
+            })?;
+        out[8..12].copy_from_slice(&route_count.to_le_bytes());
+        let mut cursor = 12;
+        for step in self.steps {
+            out[cursor] = callable_role_tag(step.child_role);
+            out[cursor + 1] = callable_parent_tag(step.parent);
+            cursor += 2;
+            cursor = write_callable_parent(out, cursor, step.parent)?;
+        }
+        Ok(cursor)
+    }
+}
+
+fn checked_anchor_storage_length(
+    accumulated: usize,
+    additional: usize,
+) -> Result<usize, PreimageOverflow> {
+    accumulated
+        .checked_add(additional)
+        .ok_or(PreimageOverflow::AggregateTooLong {
+            accumulated,
+            additional,
+        })
+}
+
 fn validate_path(path: &str) -> Result<(), DeclarationKeyFault> {
     if path.is_empty() {
         return Err(DeclarationKeyFault::Path(DeclarationPathFault::Empty));
@@ -653,6 +780,32 @@ fn validate_callable_anchor(
                     CallableChildRole::ObjectMemberValue,
                     CallableParentShape::ObjectMember(_)
                 )
+                | (
+                    CallableChildRole::SignatureParameterType,
+                    CallableParentShape::SignatureParameter(_)
+                )
+                | (
+                    CallableChildRole::TypeExpression,
+                    CallableParentShape::TypeContainer(_)
+                )
+                | (
+                    CallableChildRole::TypeAliasValue,
+                    CallableParentShape::TypeAliasName(_)
+                )
+                | (
+                    CallableChildRole::CallSignatureMember,
+                    CallableParentShape::TypeContainer(
+                        CallableTypeContainerKind::TypeLiteral
+                            | CallableTypeContainerKind::Interface
+                    )
+                )
+                | (
+                    CallableChildRole::ConstructSignatureMember,
+                    CallableParentShape::TypeContainer(
+                        CallableTypeContainerKind::TypeLiteral
+                            | CallableTypeContainerKind::Interface
+                    )
+                )
         );
         if !compatible {
             return Err(TypedDeclarationKeyFault::RoleShapeMismatch {
@@ -665,16 +818,22 @@ fn validate_callable_anchor(
             CallableParentShape::VariableBinding(name)
             | CallableParentShape::PropertyName(name)
             | CallableParentShape::ObjectMember(name)
+            | CallableParentShape::SignatureParameter(name)
+            | CallableParentShape::TypeAliasName(name)
                 if name.is_empty() =>
             {
                 return Err(TypedDeclarationKeyFault::EmptyStructuralToken);
             }
             CallableParentShape::VariableBinding(name)
             | CallableParentShape::PropertyName(name)
-            | CallableParentShape::ObjectMember(name) => {
+            | CallableParentShape::ObjectMember(name)
+            | CallableParentShape::SignatureParameter(name)
+            | CallableParentShape::TypeAliasName(name) => {
                 text_bytes = checked_anchor_text_add(text_bytes, name.len())?;
             }
-            CallableParentShape::Conditional | CallableParentShape::ArrayLiteral => {}
+            CallableParentShape::Conditional
+            | CallableParentShape::ArrayLiteral
+            | CallableParentShape::TypeContainer(_) => {}
         }
     }
     Ok(())
@@ -699,7 +858,10 @@ fn callable_parent_payload_len(parent: CallableParentShape<'_>) -> Result<usize,
         CallableParentShape::Call => Ok(0),
         CallableParentShape::VariableBinding(name)
         | CallableParentShape::PropertyName(name)
-        | CallableParentShape::ObjectMember(name) => cell_len(name),
+        | CallableParentShape::ObjectMember(name)
+        | CallableParentShape::SignatureParameter(name) => cell_len(name),
+        CallableParentShape::TypeAliasName(name) => cell_len(name),
+        CallableParentShape::TypeContainer(_) => Ok(1),
         CallableParentShape::Conditional | CallableParentShape::ArrayLiteral => Ok(0),
     }
 }
@@ -713,6 +875,11 @@ fn callable_role_tag(role: CallableChildRole) -> u8 {
         CallableChildRole::ConditionalAlternate => 4,
         CallableChildRole::ArrayElement => 5,
         CallableChildRole::ObjectMemberValue => 6,
+        CallableChildRole::SignatureParameterType => 7,
+        CallableChildRole::TypeExpression => 8,
+        CallableChildRole::TypeAliasValue => 9,
+        CallableChildRole::CallSignatureMember => 10,
+        CallableChildRole::ConstructSignatureMember => 11,
     }
 }
 
@@ -724,6 +891,9 @@ fn callable_parent_tag(parent: CallableParentShape<'_>) -> u8 {
         CallableParentShape::Conditional => 3,
         CallableParentShape::ArrayLiteral => 4,
         CallableParentShape::ObjectMember(_) => 5,
+        CallableParentShape::SignatureParameter(_) => 6,
+        CallableParentShape::TypeContainer(_) => 7,
+        CallableParentShape::TypeAliasName(_) => 8,
     }
 }
 
@@ -736,7 +906,13 @@ fn write_callable_parent(
         CallableParentShape::Call => Ok(cursor),
         CallableParentShape::VariableBinding(name)
         | CallableParentShape::PropertyName(name)
-        | CallableParentShape::ObjectMember(name) => write_str_cell(out, cursor, name),
+        | CallableParentShape::ObjectMember(name)
+        | CallableParentShape::SignatureParameter(name)
+        | CallableParentShape::TypeAliasName(name) => write_str_cell(out, cursor, name),
+        CallableParentShape::TypeContainer(kind) => {
+            out[cursor] = kind as u8;
+            Ok(cursor + 1)
+        }
         CallableParentShape::Conditional | CallableParentShape::ArrayLiteral => Ok(cursor),
     }
 }
@@ -1422,7 +1598,7 @@ pub(crate) fn write_str_cell(
 
 #[cfg(test)]
 mod typescript_source_coordinate_tests {
-    use super::TypeScriptSourceCoordinate;
+    use super::{TypeScriptSourceCoordinate, typescript_program_identity};
 
     #[test]
     fn source_coordinate_round_trips_colons_and_utf8_by_byte_length() {

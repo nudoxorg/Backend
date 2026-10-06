@@ -7,9 +7,11 @@
 //! edits do not remint declaration families.
 
 use backend_semantic::ir::{
-    CorePayloadHash, DeclarationFamilyId, DeclarationIdentity, DeclarationKey,
+    AnonymousCallableAnchor, AnonymousCallableAnchorView, AnonymousCallableInstanceKey,
+    CorePayloadHash, DeclarationFamilyId, DeclarationIdentity, DeclarationKey, DeclarationName,
     DeclarationParentage, EntityId, EntityKind, EntityVersion, NominalRef, ScopedDeclarationKey,
-    SemanticTypeRecord, VariantFingerprint,
+    ScopedTypedDeclarationKey, SemanticTypeRecord, TypeScriptCallableSourceCoordinate,
+    TypedDeclarationKey, VariantFingerprint,
 };
 use backend_semantic::vocabulary::LanguageProfile;
 
@@ -51,14 +53,12 @@ pub(super) fn versions(
     let mut type_visiting = vec![false; type_shapes.len()].into_boxed_slice();
     (0..count)
         .map(|ordinal| {
+            let identity = *identities
+                .get(ordinal)
+                .ok_or_else(|| dangling_entity(ordinal))?;
             Ok(EntityVersion {
-                family: identities
-                    .get(ordinal)
-                    .ok_or_else(|| dangling_entity(ordinal))?
-                    .family,
-                variant: *variants
-                    .get(ordinal)
-                    .ok_or_else(|| dangling_entity(ordinal))?,
+                family: identity.family,
+                variant: identity.variant,
                 core_payload: payload_for(
                     facts,
                     ordinal,
@@ -115,38 +115,136 @@ fn declaration_identities(
                         )
                     }
                 };
-                let key = DeclarationKey::new(
-                    scope.lineage(),
-                    scope.path(),
-                    facts.kinds[ordinal],
-                    facts.names[ordinal],
-                )
-                .map_err(|cause| {
-                    backend_semantic::ir::BuildError::DeclarationKey {
-                        entity: EntityId::new(u32::try_from(ordinal).unwrap_or(u32::MAX)),
-                        cause,
+                let entity = EntityId::new(u32::try_from(ordinal).unwrap_or(u32::MAX));
+                let identity = if let Some(anonymous) =
+                    facts.anonymous_callables.get(ordinal).copied().flatten()
+                {
+                    let encoded = facts.anonymous_callable_anchor_bytes(ordinal)?.ok_or(
+                        backend_semantic::ir::BuildError::AnonymousCallableAnchorInvalid { entity },
+                    )?;
+                    let anchor_view = AnonymousCallableAnchorView::try_from_encoded(encoded)
+                        .ok_or(
+                            backend_semantic::ir::BuildError::AnonymousCallableAnchorInvalid {
+                                entity,
+                            },
+                        )?;
+                    if anchor_view.family_multiplicity() != Some(anonymous) {
+                        return Err(
+                            backend_semantic::ir::BuildError::AnonymousCallableAnchorInvalid {
+                                entity,
+                            },
+                        );
                     }
-                })?;
-                let scoped = ScopedDeclarationKey::new(key, profile, parentage);
-                let length = scoped.family_preimage_len().map_err(|cause| {
-                    backend_semantic::ir::BuildError::ScopedDeclarationPreimage {
-                        entity: EntityId::new(u32::try_from(ordinal).unwrap_or(u32::MAX)),
-                        cause,
-                    }
-                })?;
-                let mut preimage = vec![0_u8; length];
-                let family = scoped.family_id(&mut preimage).map_err(|cause| {
-                    backend_semantic::ir::BuildError::ScopedDeclarationPreimage {
-                        entity: EntityId::new(u32::try_from(ordinal).unwrap_or(u32::MAX)),
-                        cause,
-                    }
-                })?;
-                values[ordinal] = Some(DeclarationIdentity {
-                    family: DeclarationFamilyId::from_content_id(family),
-                    variant: *variants
+                    let steps = anchor_view.steps().ok_or(
+                        backend_semantic::ir::BuildError::AnonymousCallableAnchorInvalid { entity },
+                    )?;
+                    let anchor = AnonymousCallableAnchor { steps: &steps };
+                    let program = facts.tsz_program_identity.ok_or(
+                        backend_semantic::ir::BuildError::AnonymousCallableSourceUnavailable {
+                            entity,
+                        },
+                    )?;
+                    let source = facts.tsz_source_identity.ok_or(
+                        backend_semantic::ir::BuildError::AnonymousCallableSourceUnavailable {
+                            entity,
+                        },
+                    )?;
+                    let span = facts
+                        .provenance
+                        .source_spans()
                         .get(ordinal)
-                        .ok_or_else(|| dangling_entity(ordinal))?,
-                });
+                        .copied()
+                        .flatten()
+                        .ok_or(
+                            backend_semantic::ir::BuildError::AnonymousCallableSourceUnavailable {
+                                entity,
+                            },
+                        )?;
+                    let declaration = TypedDeclarationKey::new(
+                        scope.lineage(),
+                        scope.path(),
+                        facts.kinds[ordinal],
+                        DeclarationName::AnonymousCallable(anchor),
+                    )
+                    .map_err(|cause| {
+                        backend_semantic::ir::BuildError::TypedDeclarationKey { entity, cause }
+                    })?;
+                    let scoped = ScopedTypedDeclarationKey::new(declaration, profile, parentage);
+                    let site = TypeScriptCallableSourceCoordinate::new(
+                        program,
+                        source,
+                        scope.path(),
+                        span.start,
+                        span.end,
+                    )
+                    .map_err(|cause| {
+                        backend_semantic::ir::BuildError::AnonymousCallableSourceCoordinate {
+                            entity,
+                            cause,
+                        }
+                    })?;
+                    let instance =
+                        AnonymousCallableInstanceKey::new(scoped, site).map_err(|cause| {
+                            backend_semantic::ir::BuildError::AnonymousCallableInstance {
+                                entity,
+                                cause,
+                            }
+                        })?;
+                    let length = scoped.family_preimage_len().map_err(|cause| {
+                        backend_semantic::ir::BuildError::ScopedDeclarationPreimage {
+                            entity,
+                            cause,
+                        }
+                    })?;
+                    let instance_length = instance.variant_preimage_len().map_err(|cause| {
+                        backend_semantic::ir::BuildError::ScopedDeclarationPreimage {
+                            entity,
+                            cause,
+                        }
+                    })?;
+                    let mut preimage = vec![0_u8; length.max(instance_length)];
+                    let identity =
+                        instance
+                            .declaration_identity(&mut preimage)
+                            .map_err(|cause| {
+                                backend_semantic::ir::BuildError::ScopedDeclarationPreimage {
+                                    entity,
+                                    cause,
+                                }
+                            })?;
+                    identity
+                } else {
+                    let key = DeclarationKey::new(
+                        scope.lineage(),
+                        scope.path(),
+                        facts.kinds[ordinal],
+                        facts.names[ordinal],
+                    )
+                    .map_err(|cause| {
+                        backend_semantic::ir::BuildError::DeclarationKey { entity, cause }
+                    })?;
+                    let scoped = ScopedDeclarationKey::new(key, profile, parentage);
+                    let length = scoped.family_preimage_len().map_err(|cause| {
+                        backend_semantic::ir::BuildError::ScopedDeclarationPreimage {
+                            entity,
+                            cause,
+                        }
+                    })?;
+                    let mut preimage = vec![0_u8; length];
+                    let family = scoped.family_id(&mut preimage).map_err(|cause| {
+                        backend_semantic::ir::BuildError::ScopedDeclarationPreimage {
+                            entity,
+                            cause,
+                        }
+                    })?;
+                    DeclarationIdentity {
+                        family: DeclarationFamilyId::from_content_id(family),
+                        variant: *variants
+                            .get(ordinal)
+                            .ok_or_else(|| dangling_entity(ordinal))?,
+                    }
+                };
+                values[ordinal] = Some(identity);
                 state[ordinal] = 2;
                 continue;
             }

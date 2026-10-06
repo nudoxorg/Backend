@@ -239,7 +239,7 @@ fn expect_exact_method_set(compiled: &CompiledSemantic<'_>, methods: usize) -> R
             compiled
                 .ir
                 .item(id)
-                .map(|item| item.name().to_vec())
+                .map(|item| item.name().named_bytes().expect("named item").to_vec())
                 .ok_or(Error::Row)
         })
         .collect::<Result<Vec<_>, Error>>()?;

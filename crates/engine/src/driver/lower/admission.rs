@@ -9,7 +9,8 @@ use backend_semantic::ir::{
     SemanticTypeTag, TypeCell,
 };
 use backend_semantic::vocabulary::{
-    ProjectionAdmissionFault, ProjectionChildRole, ProjectionConstructorFault,
+    ProjectionAdmissionFault, ProjectionAnonymousCallableAnchorFault,
+    ProjectionAnonymousCallableAnchorPool, ProjectionChildRole, ProjectionConstructorFault,
     ProjectionConstructorTag, ProjectionParentageState, ProjectionSemanticTypeFault,
     ProjectionSemanticTypeTag, ProjectionSpan, ProjectionTypeCell, ProjectionTypeChildLane,
 };
@@ -227,6 +228,39 @@ fn portable_span(span: SourceSpanFact) -> ProjectionSpan {
 pub(crate) fn portable_admission(fault: FactFault) -> ProjectionAdmissionFault {
     match fault {
         FactFault::EmptyName => ProjectionAdmissionFault::EmptyName,
+        FactFault::AnonymousCallableAnchor { .. } => {
+            ProjectionAdmissionFault::AnonymousCallableAnchor {
+                cause: ProjectionAnonymousCallableAnchorFault::InvalidRoute,
+            }
+        }
+        FactFault::AnonymousCallableAnchorEncoding { .. } => {
+            ProjectionAdmissionFault::AnonymousCallableAnchor {
+                cause: ProjectionAnonymousCallableAnchorFault::Encoding,
+            }
+        }
+        FactFault::AnonymousCallableAnchorPoolCapacity {
+            used,
+            requested,
+            capacity,
+        } => ProjectionAdmissionFault::AnonymousCallableAnchorPoolCapacity {
+            pool: ProjectionAnonymousCallableAnchorPool::Bytes,
+            used: portable_count(used),
+            requested: portable_count(requested),
+            capacity: portable_count(capacity),
+        },
+        FactFault::AnonymousCallableAnchorEntryCapacity { used, capacity } => {
+            ProjectionAdmissionFault::AnonymousCallableAnchorPoolCapacity {
+                pool: ProjectionAnonymousCallableAnchorPool::Entries,
+                used: portable_count(used),
+                requested: 1,
+                capacity: portable_count(capacity),
+            }
+        }
+        FactFault::AnonymousCallableSourceUnavailable => {
+            ProjectionAdmissionFault::AnonymousCallableAnchor {
+                cause: ProjectionAnonymousCallableAnchorFault::SourceIdentityUnavailable,
+            }
+        }
         FactFault::Capacity => ProjectionAdmissionFault::Capacity,
         FactFault::ChildCapacity => ProjectionAdmissionFault::ChildCapacity,
         FactFault::ProductChildPoolCapacity {

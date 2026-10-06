@@ -1992,7 +1992,9 @@ mod tests {
             )
             .expect("captured source scope is admitted");
         let item = Item {
-            name: builder.intern_atom(b"same declaration").expect("name atom"),
+            name: crate::ir::ItemName::Named(
+                builder.intern_atom(b"same declaration").expect("name atom"),
+            ),
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             parent: None,

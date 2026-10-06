@@ -3,8 +3,8 @@
 use crate::ir::{
     AtomId, CorePayloadHash, DeclarationFamilyId, DeclarationIdentity, EntityAuthorityFacts,
     EntityId, EntityKind, EntityVersion, FactAvailability, ForeignDeclarationId,
-    ForeignExternalTarget, ForeignTargetOrigin, Link, LinkKind, LinkOccurrence, LinkTarget,
-    ParentageAuthority, SemanticEntity, SourceSpan, UnrepresentedAuthorityOwner,
+    ForeignExternalTarget, ForeignTargetOrigin, ItemName, Link, LinkKind, LinkOccurrence,
+    LinkTarget, ParentageAuthority, SemanticEntity, SourceSpan, UnrepresentedAuthorityOwner,
     VariantAvailability, VariantFingerprint, Visibility,
 };
 use crate::ir_vocabulary::{ExternalCoordinate, ExternalDeclarationIdentity, StableRef};
@@ -14,7 +14,7 @@ use super::{
     fault::{FullSemanticImageFault, FullSemanticImageField, FullSemanticImageIdentityField},
     wire::{
         ENTITY_ROW_BYTES, EXTERNAL_ROW_BYTES, FullDirectoryKind, FullImageLayout, LINK_ROW_BYTES,
-        NONE, OCCURRENCE_ROW_BYTES, get_u16, get_u32, read_array,
+        NONE, OCCURRENCE_ROW_BYTES, SCHEMA_TYPED_NAMES, get_u16, get_u32, read_array,
     },
 };
 
@@ -47,7 +47,22 @@ pub(crate) fn entity(
         .ok_or(FullSemanticImageFault::LengthOverflow {
             field: FullSemanticImageField::Entities,
         })?;
-    let name = AtomId::new(get_u32(bytes, offset, FullSemanticImageField::Entities)?);
+    let name_atom = AtomId::new(get_u32(bytes, offset, FullSemanticImageField::Entities)?);
+    let name_tag = if layout.schema == SCHEMA_TYPED_NAMES {
+        *bytes
+            .get(offset + 32)
+            .ok_or(FullSemanticImageFault::Truncated {
+                field: FullSemanticImageField::Entities,
+                offset: offset + 32,
+            })?
+    } else {
+        0
+    };
+    let name = match name_tag {
+        0 => ItemName::Named(name_atom),
+        1 => ItemName::AnonymousCallable(name_atom),
+        observed => return Err(FullSemanticImageFault::EntityNameTag { row, observed }),
+    };
     let kind_raw = get_u16(bytes, offset + 4, FullSemanticImageField::Entities)?;
     let kind = EntityKind::try_from(kind_raw).map_err(|_| FullSemanticImageFault::EntityKind {
         row,

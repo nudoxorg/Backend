@@ -157,6 +157,7 @@ fn image_fixture(seed: u8) -> TestResult<ImageFixture> {
     let authority = entity_authority();
     let items = [b"alpha".as_slice(), b"beta".as_slice()].map(|name| TreeItemInput {
         name,
+        anonymous_callable_anchor: None,
         kind: ItemKind::Function,
         visibility: Visibility::Public,
         authority,

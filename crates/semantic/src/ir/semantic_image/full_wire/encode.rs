@@ -8,7 +8,8 @@ use super::{
     wire::{
         ATOM_ROW_BYTES, DIRECTORY_BYTES, FullDirectoryKind, HEADER_BYTES, HEADER_BYTES_U32, MAGIC,
         RANGE_ROW_BYTES, SCHEMA_CARRIER_BINDINGS, SCHEMA_CARRIER_ROLES, SCHEMA_LEGACY,
-        SPARSE_BINDING_ROW_BYTES, TYPED_EDGE_ROW_BYTES, TYPED_NODE_ROW_BYTES, put_u16, put_u32,
+        SCHEMA_TYPED_NAMES, SPARSE_BINDING_ROW_BYTES, TYPED_EDGE_ROW_BYTES, TYPED_NODE_ROW_BYTES,
+        put_u16, put_u32,
     },
 };
 
@@ -79,7 +80,10 @@ pub fn encode_full_semantic_image(
 fn write_plan(output: &mut [u8], plan: &FullSemanticImagePlan<'_>) {
     output[..plan.required].fill(0);
     output[..4].copy_from_slice(&MAGIC);
-    let (directory_kinds, directory_count) = if plan.layout.schema == SCHEMA_CARRIER_BINDINGS {
+    let (directory_kinds, directory_count) = if matches!(
+        plan.layout.schema,
+        SCHEMA_CARRIER_BINDINGS | SCHEMA_TYPED_NAMES
+    ) {
         (&FullDirectoryKind::ALL_WITH_CARRIER_BINDINGS[..], 29)
     } else if plan.layout.schema == SCHEMA_CARRIER_ROLES {
         (&FullDirectoryKind::ALL_WITH_CARRIER_ROLES[..], 27)

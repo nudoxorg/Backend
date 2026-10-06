@@ -106,6 +106,18 @@ pub enum BuildDerivationError {
         /// Atom coordinate that could not be recovered.
         name: AtomId,
     },
+    /// The compact legacy projection produced only named declarations but received an anonymous one.
+    #[error("legacy entity {entity:?} unexpectedly has an anonymous callable name")]
+    UnexpectedAnonymousEntity {
+        /// Entity with an impossible anonymous name.
+        entity: EntityId,
+    },
+    /// An anonymous declaration carried an invalid typed structural anchor.
+    #[error("entity {entity:?} has an invalid anonymous callable anchor")]
+    InvalidAnonymousCallableAnchor {
+        /// Entity carrying the malformed name anchor.
+        entity: EntityId,
+    },
     /// The validated entity's type was absent from the caller lookup region after collection.
     #[error(
         "entity {entity:?} type node {semantic_type:?} was not present in the collected fragment lane"

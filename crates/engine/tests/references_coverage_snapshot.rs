@@ -2872,7 +2872,12 @@ fn measure_fragment<'fragment>(
     // Entity inventory with names, parents, and source spans.
     let mut entities: Vec<EntityInfo> = Vec::new();
     for row in ir.canonical_entities() {
-        let name = ir.atom(row.name).unwrap_or(b"?").to_vec();
+        let name = row
+            .name
+            .named_atom()
+            .and_then(|atom| ir.atom(atom))
+            .unwrap_or(b"?")
+            .to_vec();
         let span = row.source.map(|span| SpanInfo {
             file: ir.atom(span.file()).unwrap_or(b"?").to_vec(),
             start: span.start(),

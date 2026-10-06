@@ -27,8 +27,8 @@ use super::{
     typed_decode,
     validate::{self, TypedLayout, ValidatedFullImage},
     wire::{
-        FullDirectoryKind, FullImageLayout, NONE, SCHEMA_CARRIER_BINDINGS,
-        SIGNATURE_CARRIER_RANGE_ROW_BYTES, SIGNATURE_CARRIER_TARGET_ROW_BYTES,
+        FullDirectoryKind, FullImageLayout, NONE, SCHEMA_CARRIER_BINDINGS, SCHEMA_LEGACY,
+        SCHEMA_TYPED_NAMES, SIGNATURE_CARRIER_RANGE_ROW_BYTES, SIGNATURE_CARRIER_TARGET_ROW_BYTES,
         SPARSE_BINDING_ROW_BYTES, get_u32,
     },
 };
@@ -594,10 +594,10 @@ impl<'bytes> SemanticReader for SemanticImageView<'bytes> {
     fn signature_carrier_role(&self, entity: EntityId) -> Option<SignatureCarrierRoleObservation> {
         self.entity(entity)?;
         let layout = self.layout();
-        if layout.schema == super::wire::SCHEMA_LEGACY {
+        let entry = layout.entry(FullDirectoryKind::SignatureCarrierRoles);
+        if layout.schema == SCHEMA_LEGACY || entry.count == 0 {
             return Some(SignatureCarrierRoleObservation::Unavailable);
         }
-        let entry = layout.entry(FullDirectoryKind::SignatureCarrierRoles);
         let offset = entry.offset.checked_add(entity.index() / 4)?;
         let packed = *self.bytes.get(offset)?;
         let bits = (packed >> ((entity.index() % 4) * 2)) & 0b11;
@@ -612,10 +612,12 @@ impl<'bytes> SemanticReader for SemanticImageView<'bytes> {
             return None;
         }
         let layout = self.layout();
-        if layout.schema != SCHEMA_CARRIER_BINDINGS {
+        let ranges = layout.entry(FullDirectoryKind::SignatureCarrierBindingRanges);
+        if layout.schema != SCHEMA_CARRIER_BINDINGS
+            && (layout.schema != SCHEMA_TYPED_NAMES || ranges.count == 0)
+        {
             return Some(SignatureCarrierBindingsObservation::Unavailable);
         }
-        let ranges = layout.entry(FullDirectoryKind::SignatureCarrierBindingRanges);
         let mut low = 0_u32;
         let mut high = ranges.count;
         let mut found = None;

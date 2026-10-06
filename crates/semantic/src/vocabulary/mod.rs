@@ -48,7 +48,8 @@ pub use self::profile::{
     RustEdition, TypeScriptSource, UnknownLanguageProfile,
 };
 pub use self::projection::{
-    ProjectionAdmissionFault, ProjectionChildRole, ProjectionConstructorFault,
+    ProjectionAdmissionFault, ProjectionAnonymousCallableAnchorFault,
+    ProjectionAnonymousCallableAnchorPool, ProjectionChildRole, ProjectionConstructorFault,
     ProjectionConstructorTag, ProjectionFactLane, ProjectionForeignKeyFault, ProjectionLineagePart,
     ProjectionPackageLineageFault, ProjectionParentageState, ProjectionSemanticTypeFault,
     ProjectionSemanticTypeTag, ProjectionSpan, ProjectionTypeCell, ProjectionTypeChildLane,

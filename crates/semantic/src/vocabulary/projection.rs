@@ -387,6 +387,26 @@ pub struct ProjectionSpan {
     pub end: u32,
 }
 
+/// Closed reason an anonymous callable anchor could not be admitted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectionAnonymousCallableAnchorFault {
+    /// The source-structural route is malformed or unsupported.
+    InvalidRoute,
+    /// The bounded structural encoding could not be measured or written.
+    Encoding,
+    /// The exact native project/source witness is unavailable.
+    SourceIdentityUnavailable,
+}
+
+/// Bounded resource whose anonymous callable anchor pool reached its limit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectionAnonymousCallableAnchorPool {
+    /// Maximum number of exact callable instances retained.
+    Entries,
+    /// Maximum encoded anchor bytes retained.
+    Bytes,
+}
+
 /// Closed, value-only mirror of the driver's fact-admission rejection.
 ///
 /// Native `usize` operands widen to `u64`, preserving their exact value while
@@ -396,6 +416,22 @@ pub struct ProjectionSpan {
 pub enum ProjectionAdmissionFault {
     /// An emitted declaration name was empty.
     EmptyName,
+    /// A typed anonymous callable name was malformed or lacked exact source identity.
+    AnonymousCallableAnchor {
+        /// Closed anchor-construction failure.
+        cause: ProjectionAnonymousCallableAnchorFault,
+    },
+    /// The bounded typed anchor storage reached its entry or byte limit.
+    AnonymousCallableAnchorPoolCapacity {
+        /// Bounded pool resource that was exhausted.
+        pool: ProjectionAnonymousCallableAnchorPool,
+        /// Existing retained entries or bytes.
+        used: u64,
+        /// Additional entries or bytes required.
+        requested: u64,
+        /// Maximum entries or bytes admitted.
+        capacity: u64,
+    },
     /// The bounded fact lane was full.
     Capacity,
     /// The fact's product-child lane was full.

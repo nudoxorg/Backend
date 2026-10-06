@@ -1,0 +1,439 @@
+{
+  "schema": "nudox.shared-observer-stratified-source-preflight.v1",
+  "observer_path": "/root/nudox-corpus-20261006/artifacts/report7/observer-163f022c2/run-real-workspace-index-acceptance.py",
+  "observer_sha256": "491f4ab662812bb98a2c29af31382c34e9b7ab189645b56f408aad63070250f2",
+  "dossier_summary_sha256": "5760fb86c5fae6c3db7fc28ecf579f9e77027dda579947738bfbbfa7bc766d2a",
+  "cases": [
+    {
+      "dossier": "/root/nudox-corpus-20261006/artifacts/stratified-framework-dossiers-20261006T1030Z/npm-astro/dossier.json",
+      "dossier_sha256": "98794231716619629571cea510a9ef955f87ed765616b58bc6d99377a773416b",
+      "proof": {
+        "verification": "verified-source-inventory-v1",
+        "package": {
+          "ecosystem": "npm",
+          "id": "astro",
+          "version": "7.3.5"
+        },
+        "target_package": {
+          "ecosystem": "npm",
+          "id": "astro",
+          "version": "7.3.5"
+        },
+        "origin_verification": "verified-registry-artifact-v1",
+        "source_tree_sha256": "0fdf862afbd40d2e10a95aa92f3f1a21ba680b2f5794f5d1ba0adc7b637ada98",
+        "acquired_inventory_sha256": "b7739f65a3d87bde943b9d744d785e691f2bad1f2c09d889ea86b0279b378128",
+        "target_subdir": ".",
+        "target_root_identity_sha256": "90dbce6113e128a0e1ebeadb49f032b6daffed07c47a5419238108c6d2190ecd",
+        "corpus_manifest_sha256": "5760fb86c5fae6c3db7fc28ecf579f9e77027dda579947738bfbbfa7bc766d2a",
+        "declared": {
+          "ecosystem": "npm",
+          "id": "astro",
+          "version": "7.3.5",
+          "provenance": {
+            "kind": "source-tree-sha256",
+            "sha256": "0fdf862afbd40d2e10a95aa92f3f1a21ba680b2f5794f5d1ba0adc7b637ada98"
+          }
+        },
+        "origin_evidence": {
+          "metadata_sha256": "a479ff7c092053e397f6d2fd419bc17cfcbf4da33ad328f408a027876de53a22",
+          "archive_sha256": "36d8881f2c3413754b39504f12b20c2ee5039c17804743bb2e97dfb360483110",
+          "archive_membership_sha256": "0fdf862afbd40d2e10a95aa92f3f1a21ba680b2f5794f5d1ba0adc7b637ada98",
+          "receipt_sha256": "2da013f0877abe127fe504bfefc447488abd15f1796b07af747261461429da09",
+          "verification_source": "retained official metadata, archive identity and exact acquired-file membership"
+        }
+      }
+    },
+    {
+      "dossier": "/root/nudox-corpus-20261006/artifacts/stratified-framework-dossiers-20261006T1030Z/npm-fastify/dossier.json",
+      "dossier_sha256": "d1eb1e5a38f0e92133639ffc3d5a255e46e91986d495f91b12d102cbca3f3531",
+      "proof": {
+        "verification": "verified-source-inventory-v1",
+        "package": {
+          "ecosystem": "npm",
+          "id": "fastify",
+          "version": "5.2.1"
+        },
+        "target_package": {
+          "ecosystem": "npm",
+          "id": "fastify",
+          "version": "5.2.1"
+        },
+        "origin_verification": "verified-registry-artifact-v1",
+        "source_tree_sha256": "6b18e11e149f8c737b872acb47dc43f4b32dde690859b02fbb442a2e902a2791",
+        "acquired_inventory_sha256": "c66ef5f6eeff95f22bb09242380c670a4b3b4ba7c85d472fd786a0cc5c8a4b1e",
+        "target_subdir": ".",
+        "target_root_identity_sha256": "27f89ac456a3d0fd15466c24715bc418f1412f5b2d33bc6bbceba29c38e9a350",
+        "corpus_manifest_sha256": "5760fb86c5fae6c3db7fc28ecf579f9e77027dda579947738bfbbfa7bc766d2a",
+        "declared": {
+          "ecosystem": "npm",
+          "id": "fastify",
+          "version": "5.2.1",
+          "provenance": {
+            "kind": "source-tree-sha256",
+            "sha256": "6b18e11e149f8c737b872acb47dc43f4b32dde690859b02fbb442a2e902a2791"
+          }
+        },
+        "origin_evidence": {
+          "metadata_sha256": "7aedd7e404bd5853866e22f49b71b7e6359256f6d75d85f9c8e9c6297dfe55d2",
+          "archive_sha256": "2dd949f389d412199fb0cf1141f2ed0aadccdee4d8e93f9597b2c3009aa424ac",
+          "archive_membership_sha256": "6b18e11e149f8c737b872acb47dc43f4b32dde690859b02fbb442a2e902a2791",
+          "receipt_sha256": "b08e5f6f47c6a867fa4f890be8e47fd46abf2386e7b162a7ac0a2d0641861496",
+          "verification_source": "retained official metadata, archive identity and exact acquired-file membership"
+        }
+      }
+    },
+    {
+      "dossier": "/root/nudox-corpus-20261006/artifacts/stratified-framework-dossiers-20261006T1030Z/npm-rxjs/dossier.json",
+      "dossier_sha256": "6174f5578d3f495df6c269d6d6f977eaa92c1124e6724a3cfa39d6bb49c32213",
+      "proof": {
+        "verification": "verified-source-inventory-v1",
+        "package": {
+          "ecosystem": "npm",
+          "id": "rxjs",
+          "version": "7.8.1"
+        },
+        "target_package": {
+          "ecosystem": "npm",
+          "id": "rxjs",
+          "version": "7.8.1"
+        },
+        "origin_verification": "verified-registry-artifact-v1",
+        "source_tree_sha256": "ba544117ec897e9a28e11cb467d955b5c9abc003fdbd81bd51042e03b8b869c7",
+        "acquired_inventory_sha256": "eb6fa6ee265c6b75ca1a28e8c6449ef08996c0bb39abe6500873a743ff2bdc0d",
+        "target_subdir": ".",
+        "target_root_identity_sha256": "8d392e28f1f7facf0805aeedd3cc087e9ee656eb2865ac42efa57e7fd2197c4d",
+        "corpus_manifest_sha256": "5760fb86c5fae6c3db7fc28ecf579f9e77027dda579947738bfbbfa7bc766d2a",
+        "declared": {
+          "ecosystem": "npm",
+          "id": "rxjs",
+          "version": "7.8.1",
+          "provenance": {
+            "kind": "source-tree-sha256",
+            "sha256": "ba544117ec897e9a28e11cb467d955b5c9abc003fdbd81bd51042e03b8b869c7"
+          }
+        },
+        "origin_evidence": {
+          "metadata_sha256": "2ff2063f24fa083bb273dccadd943f0c4a52ff648357e148ea477d84f6df7a5b",
+          "archive_sha256": "c532167725ab7d085123209156c93cef22f2479cb9c8527060f1cd903aa9d149",
+          "archive_membership_sha256": "ba544117ec897e9a28e11cb467d955b5c9abc003fdbd81bd51042e03b8b869c7",
+          "receipt_sha256": "910076f2d7265beab1c8655522c200156450217984f6ae740e8e7a6df6891576",
+          "verification_source": "retained official metadata, archive identity and exact acquired-file membership"
+        }
+      }
+    },
+    {
+      "dossier": "/root/nudox-corpus-20261006/artifacts/stratified-framework-dossiers-20261006T1030Z/npm-svelte/dossier.json",
+      "dossier_sha256": "fe9b667bdb42bf9ac9d7c797a79c4e777e2024eef3b7e1e0a33387ec4698973d",
+      "proof": {
+        "verification": "verified-source-inventory-v1",
+        "package": {
+          "ecosystem": "npm",
+          "id": "svelte",
+          "version": "5.57.1"
+        },
+        "target_package": {
+          "ecosystem": "npm",
+          "id": "svelte",
+          "version": "5.57.1"
+        },
+        "origin_verification": "verified-registry-artifact-v1",
+        "source_tree_sha256": "6e411a32353d3728c28baa4acfafbeb5eb5c26d4c9bae079629e0883f6962ccb",
+        "acquired_inventory_sha256": "80d89462a473b1a7b16c4bf421cb3196bf27aea2ae2a88e113aad154d3bb5552",
+        "target_subdir": ".",
+        "target_root_identity_sha256": "9550f991dfce9f03095316337f95ccc0b8b5b79bfc2193c0716d67c53b79b0aa",
+        "corpus_manifest_sha256": "5760fb86c5fae6c3db7fc28ecf579f9e77027dda579947738bfbbfa7bc766d2a",
+        "declared": {
+          "ecosystem": "npm",
+          "id": "svelte",
+          "version": "5.57.1",
+          "provenance": {
+            "kind": "source-tree-sha256",
+            "sha256": "6e411a32353d3728c28baa4acfafbeb5eb5c26d4c9bae079629e0883f6962ccb"
+          }
+        },
+        "origin_evidence": {
+          "metadata_sha256": "7c3145d2a8ed812f985f1958c86c5eafa5986e9488da26afa415955493435c73",
+          "archive_sha256": "62a37dd4a142537039f0389ee6f39812ad4554b19492d8f073bef6e52c71c3ce",
+          "archive_membership_sha256": "6e411a32353d3728c28baa4acfafbeb5eb5c26d4c9bae079629e0883f6962ccb",
+          "receipt_sha256": "c7877f8f3d32e771d224b67f4a55d6e1788faef1d6db481eec34cf3501f2255d",
+          "verification_source": "retained official metadata, archive identity and exact acquired-file membership"
+        }
+      }
+    },
+    {
+      "dossier": "/root/nudox-corpus-20261006/artifacts/stratified-framework-dossiers-20261006T1030Z/npm-vite/dossier.json",
+      "dossier_sha256": "39c224a178e1a278725ac3a23afdb98754ee56d262fd9faa9e13c7d76ba14781",
+      "proof": {
+        "verification": "verified-source-inventory-v1",
+        "package": {
+          "ecosystem": "npm",
+          "id": "vite",
+          "version": "8.3.3"
+        },
+        "target_package": {
+          "ecosystem": "npm",
+          "id": "vite",
+          "version": "8.3.3"
+        },
+        "origin_verification": "verified-registry-artifact-v1",
+        "source_tree_sha256": "97b2656805d13db6f4e71b1b1f42058f6a164066191e6c5f0b41444ad66658a9",
+        "acquired_inventory_sha256": "bb767c64ffadf78ea2c71a1cfbddedd2435a781c7513938a0f1178e7e3c20e7b",
+        "target_subdir": ".",
+        "target_root_identity_sha256": "bdcea6f1d08e4ca56cb9a99f62120fc330b865044afc83948db8bd814f754e15",
+        "corpus_manifest_sha256": "5760fb86c5fae6c3db7fc28ecf579f9e77027dda579947738bfbbfa7bc766d2a",
+        "declared": {
+          "ecosystem": "npm",
+          "id": "vite",
+          "version": "8.3.3",
+          "provenance": {
+            "kind": "source-tree-sha256",
+            "sha256": "97b2656805d13db6f4e71b1b1f42058f6a164066191e6c5f0b41444ad66658a9"
+          }
+        },
+        "origin_evidence": {
+          "metadata_sha256": "57086afe35a06f2f0f291665f6e3269148d34e659cd88621d76f66a6c4837ab7",
+          "archive_sha256": "a5895f70698d23dfef30418b563c9f369ab99703edf3503815bb5c2ee40baa40",
+          "archive_membership_sha256": "97b2656805d13db6f4e71b1b1f42058f6a164066191e6c5f0b41444ad66658a9",
+          "receipt_sha256": "1e3e256cb37c890e64a10fe9615267d90074408053a8fee6ca4bd4c32cd29740",
+          "verification_source": "retained official metadata, archive identity and exact acquired-file membership"
+        }
+      }
+    },
+    {
+      "dossier": "/root/nudox-corpus-20261006/artifacts/stratified-framework-dossiers-20261006T1030Z/npm-zod/dossier.json",
+      "dossier_sha256": "0aa57540ac93bfa34ebebe4352bb2f25adf52bebd64efcea6bb16c87c3953e39",
+      "proof": {
+        "verification": "verified-source-inventory-v1",
+        "package": {
+          "ecosystem": "npm",
+          "id": "zod",
+          "version": "3.25.76"
+        },
+        "target_package": {
+          "ecosystem": "npm",
+          "id": "zod",
+          "version": "3.25.76"
+        },
+        "origin_verification": "verified-registry-artifact-v1",
+        "source_tree_sha256": "4c4f494cce36d59399298b9ab8bd3c2275e364a3671dc3c55d8dd97341c9e6dc",
+        "acquired_inventory_sha256": "9cbd832aa6ede5d227d679368092e0e3dd674a7aaadc638dc1160bba041626c4",
+        "target_subdir": ".",
+        "target_root_identity_sha256": "b22f4a8fba70bb3a480aecaee871416adf80d5c634e70971173b763ed80e0ba3",
+        "corpus_manifest_sha256": "5760fb86c5fae6c3db7fc28ecf579f9e77027dda579947738bfbbfa7bc766d2a",
+        "declared": {
+          "ecosystem": "npm",
+          "id": "zod",
+          "version": "3.25.76",
+          "provenance": {
+            "kind": "source-tree-sha256",
+            "sha256": "4c4f494cce36d59399298b9ab8bd3c2275e364a3671dc3c55d8dd97341c9e6dc"
+          }
+        },
+        "origin_evidence": {
+          "metadata_sha256": "1c6c20be17d0b5776e1434517c7ab2ad137a8b659ef8285650b3fbc41b707ae1",
+          "archive_sha256": "9e1f1a05f0dd0c1dab64ee91ceb9bf55cd44d35368c70edda80a2fdc70a88377",
+          "archive_membership_sha256": "4c4f494cce36d59399298b9ab8bd3c2275e364a3671dc3c55d8dd97341c9e6dc",
+          "receipt_sha256": "2517364d609916abaa9618b78a3dc6f3dac50bb8be10ddce0869d44a656b1fa4",
+          "verification_source": "retained official metadata, archive identity and exact acquired-file membership"
+        }
+      }
+    },
+    {
+      "dossier": "/root/nudox-corpus-20261006/artifacts/stratified-framework-dossiers-20261006T1030Z/pypi-attrs/dossier.json",
+      "dossier_sha256": "235a69be6c9a97825cf7f0de49740662cc9d585973b2b11874f29f461e6e042f",
+      "proof": {
+        "verification": "verified-source-inventory-v1",
+        "package": {
+          "ecosystem": "pypi",
+          "id": "attrs",
+          "version": "26.1.0"
+        },
+        "target_package": {
+          "ecosystem": "pypi",
+          "id": "attrs",
+          "version": "26.1.0"
+        },
+        "origin_verification": "verified-registry-artifact-v1",
+        "source_tree_sha256": "d62088398d4af42aa346d6e5745269c9acd68af38e4622c5a352300fa7821edc",
+        "acquired_inventory_sha256": "7724b5baf828974ec40bbb0772c6638bb69050f1997cc798e1063e84d9b5dca6",
+        "target_subdir": ".",
+        "target_root_identity_sha256": "86dc89195f418aab17e7103a63db5d88c040e7583df30af811ea12007cec3d3a",
+        "corpus_manifest_sha256": "5760fb86c5fae6c3db7fc28ecf579f9e77027dda579947738bfbbfa7bc766d2a",
+        "declared": {
+          "ecosystem": "pypi",
+          "id": "attrs",
+          "version": "26.1.0",
+          "provenance": {
+            "kind": "source-tree-sha256",
+            "sha256": "d62088398d4af42aa346d6e5745269c9acd68af38e4622c5a352300fa7821edc"
+          }
+        },
+        "origin_evidence": {
+          "metadata_sha256": "2e33bd22386702899e76471b04f3211f7e108ee96b288699e58fd4bc2f01c1d6",
+          "archive_sha256": "d03ceb89cb322a8fd706d4fb91940737b6642aa36998fe130a9bc96c985eff32",
+          "archive_membership_sha256": "d62088398d4af42aa346d6e5745269c9acd68af38e4622c5a352300fa7821edc",
+          "receipt_sha256": "38012f05bde0894c3388e98c79fb2b52009be4d54331d86387d8e097813a25dc",
+          "verification_source": "retained official metadata, archive identity and exact acquired-file membership"
+        }
+      }
+    },
+    {
+      "dossier": "/root/nudox-corpus-20261006/artifacts/stratified-framework-dossiers-20261006T1030Z/pypi-fastapi/dossier.json",
+      "dossier_sha256": "3b5da9050fbd71164ba3d64e414c07e8609ef6f85532ae174ae1aab5180e2ed6",
+      "proof": {
+        "verification": "verified-source-inventory-v1",
+        "package": {
+          "ecosystem": "pypi",
+          "id": "fastapi",
+          "version": "0.142.2"
+        },
+        "target_package": {
+          "ecosystem": "pypi",
+          "id": "fastapi",
+          "version": "0.142.2"
+        },
+        "origin_verification": "verified-registry-artifact-v1",
+        "source_tree_sha256": "97d73091e6a8b4a1b488f3506d616d774d94c60892b7a0e06748326b26d55d81",
+        "acquired_inventory_sha256": "67776c103c1c5bc42d7d5e9a09e8c68821fc291ed543a1c8afc452dd09de548c",
+        "target_subdir": ".",
+        "target_root_identity_sha256": "3fcb30ec58d3d1d3085f296b9f8eca33f71f125ccfb5b7d09918d4be2165fe86",
+        "corpus_manifest_sha256": "5760fb86c5fae6c3db7fc28ecf579f9e77027dda579947738bfbbfa7bc766d2a",
+        "declared": {
+          "ecosystem": "pypi",
+          "id": "fastapi",
+          "version": "0.142.2",
+          "provenance": {
+            "kind": "source-tree-sha256",
+            "sha256": "97d73091e6a8b4a1b488f3506d616d774d94c60892b7a0e06748326b26d55d81"
+          }
+        },
+        "origin_evidence": {
+          "metadata_sha256": "38a2ffbb50b90600da63d6588be77c9781259edb1293f4d6acf66a34962b877c",
+          "archive_sha256": "06366626f2e70576367714d9ab2fe8472e6c8456dba69b399f9f797ab5e92570",
+          "archive_membership_sha256": "97d73091e6a8b4a1b488f3506d616d774d94c60892b7a0e06748326b26d55d81",
+          "receipt_sha256": "6b84612309a53bff004c084fed4168e4e0175c80795c32ec1ff4f07014b02a2a",
+          "verification_source": "retained official metadata, archive identity and exact acquired-file membership"
+        }
+      }
+    },
+    {
+      "dossier": "/root/nudox-corpus-20261006/artifacts/stratified-framework-dossiers-20261006T1030Z/pypi-flask/dossier.json",
+      "dossier_sha256": "d2ce2d7c4bc15f69d2e03443c4dd03b55563ac8903a35b1600e0c361524b0dc7",
+      "proof": {
+        "verification": "verified-source-inventory-v1",
+        "package": {
+          "ecosystem": "pypi",
+          "id": "flask",
+          "version": "3.1.3"
+        },
+        "target_package": {
+          "ecosystem": "pypi",
+          "id": "flask",
+          "version": "3.1.3"
+        },
+        "origin_verification": "verified-registry-artifact-v1",
+        "source_tree_sha256": "7a82a5554d80d5467192539417ec3fb8f343a5b9b0826cc57bed53fadc00d00d",
+        "acquired_inventory_sha256": "3ea2b0795d8b3f81b03aab0f2f32550e9268df7cc85293798735776de05ca129",
+        "target_subdir": ".",
+        "target_root_identity_sha256": "1fc376c350cfad0fda4f99c041a6d4be986608201d959b9109d1d663bb8cbdc3",
+        "corpus_manifest_sha256": "5760fb86c5fae6c3db7fc28ecf579f9e77027dda579947738bfbbfa7bc766d2a",
+        "declared": {
+          "ecosystem": "pypi",
+          "id": "flask",
+          "version": "3.1.3",
+          "provenance": {
+            "kind": "source-tree-sha256",
+            "sha256": "7a82a5554d80d5467192539417ec3fb8f343a5b9b0826cc57bed53fadc00d00d"
+          }
+        },
+        "origin_evidence": {
+          "metadata_sha256": "2bebc9ab169de02f525a8460feaedbb6f32960eb9125800d9afb83cd10c25a80",
+          "archive_sha256": "0ef0e52b8a9cd932855379197dd8f94047b359ca0a78695144304cb45f87c9eb",
+          "archive_membership_sha256": "7a82a5554d80d5467192539417ec3fb8f343a5b9b0826cc57bed53fadc00d00d",
+          "receipt_sha256": "d0f1eb73a6292776c847a7357da28ea25a0e26c20031b756931d7b7abd1e50d8",
+          "verification_source": "retained official metadata, archive identity and exact acquired-file membership"
+        }
+      }
+    },
+    {
+      "dossier": "/root/nudox-corpus-20261006/artifacts/stratified-framework-dossiers-20261006T1030Z/pypi-pydantic/dossier.json",
+      "dossier_sha256": "ee49e3fd0f4238b2a03cadb9fc26226440a7a9ed691d3b9db188258d156dce28",
+      "proof": {
+        "verification": "verified-source-inventory-v1",
+        "package": {
+          "ecosystem": "pypi",
+          "id": "pydantic",
+          "version": "2.13.5"
+        },
+        "target_package": {
+          "ecosystem": "pypi",
+          "id": "pydantic",
+          "version": "2.13.5"
+        },
+        "origin_verification": "verified-registry-artifact-v1",
+        "source_tree_sha256": "739f52410447f8258a81bd5eac6485559c7495b535aaaee5c117fc780d2d0bc2",
+        "acquired_inventory_sha256": "de5f9a1eaeb56a2ddfcb72cd98c9c61e9ec690b5fa6226a80efda94316768541",
+        "target_subdir": ".",
+        "target_root_identity_sha256": "98516e4fd6d44d5fb3669e8ca44b9e50b8744c9d11c8244d5f6db7d583d15834",
+        "corpus_manifest_sha256": "5760fb86c5fae6c3db7fc28ecf579f9e77027dda579947738bfbbfa7bc766d2a",
+        "declared": {
+          "ecosystem": "pypi",
+          "id": "pydantic",
+          "version": "2.13.5",
+          "provenance": {
+            "kind": "source-tree-sha256",
+            "sha256": "739f52410447f8258a81bd5eac6485559c7495b535aaaee5c117fc780d2d0bc2"
+          }
+        },
+        "origin_evidence": {
+          "metadata_sha256": "f2ede3cd4c36dc1d3051195cd5eb088b1f3db646473e0508fbe2c76e2131b405",
+          "archive_sha256": "51a9c5f7b2f8e636f04c6cada605d9b6a3bf1348fdf945a3d8869b19bba0ee08",
+          "archive_membership_sha256": "739f52410447f8258a81bd5eac6485559c7495b535aaaee5c117fc780d2d0bc2",
+          "receipt_sha256": "5b114bc413387d12410433f865a718958074d46376f0d0504428cde1a88d0169",
+          "verification_source": "retained official metadata, archive identity and exact acquired-file membership"
+        }
+      }
+    },
+    {
+      "dossier": "/root/nudox-corpus-20261006/artifacts/stratified-framework-dossiers-20261006T1030Z/pypi-zope-event/dossier.json",
+      "dossier_sha256": "43691e81e2ab3aa4f1458306a97b1aec0207e8453585f6485fd5ad8c6788af61",
+      "proof": {
+        "verification": "verified-source-inventory-v1",
+        "package": {
+          "ecosystem": "pypi",
+          "id": "zope-event",
+          "version": "6.2"
+        },
+        "target_package": {
+          "ecosystem": "pypi",
+          "id": "zope-event",
+          "version": "6.2"
+        },
+        "origin_verification": "verified-registry-artifact-v1",
+        "source_tree_sha256": "f7cbba79e740b313b70a9f1fb4dac42a3267a6c62437fbe76e31f65759c135e3",
+        "acquired_inventory_sha256": "eb9a80d975397cf6da5265b3d2fceef4b921387d34fd9be532e069f93edccee9",
+        "target_subdir": ".",
+        "target_root_identity_sha256": "c03cc55c85e5c7397f7a6bd35e73cbac97ad2f8561d8c02cced6807d13d07fa0",
+        "corpus_manifest_sha256": "5760fb86c5fae6c3db7fc28ecf579f9e77027dda579947738bfbbfa7bc766d2a",
+        "declared": {
+          "ecosystem": "pypi",
+          "id": "zope-event",
+          "version": "6.2",
+          "provenance": {
+            "kind": "source-tree-sha256",
+            "sha256": "f7cbba79e740b313b70a9f1fb4dac42a3267a6c62437fbe76e31f65759c135e3"
+          }
+        },
+        "origin_evidence": {
+          "metadata_sha256": "2470de15d947bd2c0197e6f54d2a905eef467f4d67f2574110abd5a07debc263",
+          "archive_sha256": "b97d5d6327067ee6b9dfcbdf606ade9ade70991e19c162e808ea39e5fcf0f8d3",
+          "archive_membership_sha256": "f7cbba79e740b313b70a9f1fb4dac42a3267a6c62437fbe76e31f65759c135e3",
+          "receipt_sha256": "e436f7e03c49127e5050d74dc21d1048d4ccd58a7ceb68da3f40ebd45e76804b",
+          "verification_source": "retained official metadata, archive identity and exact acquired-file membership"
+        }
+      }
+    }
+  ],
+  "package_code_executed": false,
+  "runtime_passes": 0
+}

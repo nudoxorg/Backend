@@ -257,20 +257,34 @@ fn authority_truth_survives_publication_reopen_discovery_render_and_index()
                 reopened,
             });
         }
-        let owned_name =
-            inputs[0]
-                .ir
-                .atom(owned.name)
+        let owned_name = inputs[0]
+            .ir
+            .atom(
+                owned
+                    .name
+                    .named_atom()
+                    .ok_or(SemanticJourneyError::MissingEntityName {
+                        ordinal,
+                        atom: owned.name.atom(),
+                    })?,
+            )
+            .ok_or(SemanticJourneyError::MissingEntityName {
+                ordinal,
+                atom: owned.name.atom(),
+            })?;
+        let reopened_name =
+            artifact
+                .semantic_image
+                .atom(reopened.name.named_atom().ok_or(
+                    SemanticJourneyError::MissingEntityName {
+                        ordinal,
+                        atom: reopened.name.atom(),
+                    },
+                )?)
                 .ok_or(SemanticJourneyError::MissingEntityName {
                     ordinal,
-                    atom: owned.name,
+                    atom: reopened.name.atom(),
                 })?;
-        let reopened_name = artifact.semantic_image.atom(reopened.name).ok_or(
-            SemanticJourneyError::MissingEntityName {
-                ordinal,
-                atom: reopened.name,
-            },
-        )?;
         if owned_name != reopened_name {
             return Err(SemanticJourneyError::EntityNameMismatch {
                 ordinal,

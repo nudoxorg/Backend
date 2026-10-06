@@ -501,12 +501,16 @@ fn compare_entity_facets<Before: SemanticReader + ?Sized, After: SemanticReader 
     let declaration_shape = facet_change(
         FacetCoverage::Complete,
         FacetCoverage::Complete,
-        match (
-            before_reader.atom(before.name),
-            after_reader.atom(after.name),
-        ) {
-            (Some(left), Some(right)) => Some(before.kind == after.kind && left == right),
-            _ => None,
+        match (before.name, after.name) {
+            (crate::ir::ItemName::Named(left), crate::ir::ItemName::Named(right))
+            | (
+                crate::ir::ItemName::AnonymousCallable(left),
+                crate::ir::ItemName::AnonymousCallable(right),
+            ) => match (before_reader.atom(left), after_reader.atom(right)) {
+                (Some(left), Some(right)) => Some(before.kind == after.kind && left == right),
+                _ => None,
+            },
+            _ => Some(false),
         },
     );
 
@@ -2813,6 +2817,7 @@ mod tests {
         }];
         let items = [TreeItemInput {
             name: b"plain",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: EntityAuthorityFacts {

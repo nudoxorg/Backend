@@ -75,6 +75,7 @@ fn full_image(reverse: bool) -> Result<Ir, crate::ir::BuildError> {
     let reverse_members = [TreeEntityId::new(0)];
     let alpha = TreeItemInput {
         name: b"alpha",
+        anonymous_callable_anchor: None,
         kind: ItemKind::Function,
         visibility: Visibility::Public,
         authority: authority(),
@@ -88,6 +89,7 @@ fn full_image(reverse: bool) -> Result<Ir, crate::ir::BuildError> {
     };
     let beta = TreeItemInput {
         name: b"beta",
+        anonymous_callable_anchor: None,
         kind: ItemKind::Record,
         visibility: Visibility::Private,
         authority: authority(),
@@ -297,6 +299,7 @@ fn shared_sparse_extension_fact_binds_each_canonical_entity_without_duplication(
     };
     let first = TreeItemInput {
         name: b"first",
+        anonymous_callable_anchor: None,
         kind: ItemKind::Record,
         visibility: Visibility::Private,
         authority,
@@ -310,6 +313,7 @@ fn shared_sparse_extension_fact_binds_each_canonical_entity_without_duplication(
     };
     let second = TreeItemInput {
         name: b"second",
+        anonymous_callable_anchor: None,
         ..first
     };
     let versions = [version(1), version(2)];

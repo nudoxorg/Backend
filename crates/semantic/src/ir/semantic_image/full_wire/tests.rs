@@ -9,21 +9,22 @@ use alloc::vec;
 #[cfg(feature = "mmap")]
 use crate::ir::DocInput;
 use crate::ir::{
-    BorrowedTree, BuiltinType, CSharpFacts, CSharpMemberEffects, CSharpNullability,
-    CSharpPartialRole, CSharpReferenceKind, CSharpVersion, ConcreteType, CorePayloadHash,
-    DeclarationFamilyId, EntityAuthorityFacts, EntityId, EntityVersion, FactAvailability,
-    FreePredicate, Ir, IrBuilder, ItemKind, LanguageExtensionInput, LanguageProfile,
-    ParentageAuthority, RustEdition, RustFacts, RustOwnership, SemanticCoreReader,
-    SemanticImageAuthority, SemanticImageEncodeError, SemanticReader, SignatureCarrierBinding,
-    SignatureCarrierBindingRole, SignatureCarrierBindingsObservation, SignatureCarrierOwnerInput,
-    SignatureCarrierRole, SignatureCarrierRoleObservation, TreeItemInput, TupleElement,
-    TupleElementKind, TypeExpr, TypeParameterBound, TypeScriptSource, VariadicForm,
-    VariantFingerprint, Visibility,
+    AnonymousCallableAnchor, AnonymousCallableFamilyMultiplicity, BorrowedTree, BuiltinType,
+    CSharpFacts, CSharpMemberEffects, CSharpNullability, CSharpPartialRole, CSharpReferenceKind,
+    CSharpVersion, CallableAnchorStep, CallableChildRole, CallableParentShape,
+    CallableTypeContainerKind, ConcreteType, CorePayloadHash, DeclarationFamilyId,
+    EntityAuthorityFacts, EntityId, EntityVersion, FactAvailability, FreePredicate, Ir, IrBuilder,
+    ItemKind, LanguageExtensionInput, LanguageProfile, ParentageAuthority, RustEdition, RustFacts,
+    RustOwnership, SemanticCoreReader, SemanticImageAuthority, SemanticImageEncodeError,
+    SemanticReader, SignatureCarrierBinding, SignatureCarrierBindingRole,
+    SignatureCarrierBindingsObservation, SignatureCarrierOwnerInput, SignatureCarrierRole,
+    SignatureCarrierRoleObservation, TreeItemInput, TupleElement, TupleElementKind, TypeExpr,
+    TypeParameterBound, TypeScriptSource, VariadicForm, VariantFingerprint, Visibility,
 };
 
 use super::wire::{
-    DIRECTORY_BYTES, ENTITY_ROW_BYTES, FullDirectoryKind, HEADER_BYTES, RANGE_ROW_BYTES,
-    SIGNATURE_CARRIER_RANGE_ROW_BYTES, SIGNATURE_CARRIER_TARGET_ROW_BYTES,
+    ATOM_ROW_BYTES, DIRECTORY_BYTES, ENTITY_ROW_BYTES, FullDirectoryKind, HEADER_BYTES,
+    RANGE_ROW_BYTES, SIGNATURE_CARRIER_RANGE_ROW_BYTES, SIGNATURE_CARRIER_TARGET_ROW_BYTES,
     SPARSE_BINDING_ROW_BYTES,
 };
 use super::{
@@ -54,6 +55,7 @@ fn authority() -> EntityAuthorityFacts {
 fn image(reversed: bool) -> Result<Ir, crate::ir::BuildError> {
     let alpha = TreeItemInput {
         name: b"alpha",
+        anonymous_callable_anchor: None,
         kind: ItemKind::Module,
         visibility: Visibility::Private,
         authority: authority(),
@@ -67,6 +69,7 @@ fn image(reversed: bool) -> Result<Ir, crate::ir::BuildError> {
     };
     let beta = TreeItemInput {
         name: b"beta",
+        anonymous_callable_anchor: None,
         ..alpha
     };
     let mut builder = IrBuilder::new();
@@ -96,6 +99,7 @@ fn carrier_image(
 ) -> Result<Ir, crate::ir::BuildError> {
     let parameter = TreeItemInput {
         name: b"a",
+        anonymous_callable_anchor: None,
         kind: ItemKind::Parameter,
         visibility: Visibility::Private,
         authority: authority(),
@@ -111,14 +115,17 @@ fn carrier_image(
         parameter,
         TreeItemInput {
             name: b"b",
+            anonymous_callable_anchor: None,
             ..parameter
         },
         TreeItemInput {
             name: b"c",
+            anonymous_callable_anchor: None,
             ..parameter
         },
         TreeItemInput {
             name: b"d",
+            anonymous_callable_anchor: None,
             ..parameter
         },
     ];
@@ -188,6 +195,7 @@ fn signature_binding_image(reversed: bool) -> Result<Ir, crate::ir::BuildError> 
     }))?;
     let item = |name, kind, semantic_type| TreeItemInput {
         name,
+        anonymous_callable_anchor: None,
         kind,
         visibility: Visibility::Private,
         authority: authority(),
@@ -302,9 +310,8 @@ fn large_mixed_tuple_signature_reopens_with_linear_binding_cell_advances()
     const PARAMETER_COUNT: usize = 64;
 
     let mut builder = IrBuilder::new();
-    let scalar = builder.intern_type(TypeExpr::Concrete(ConcreteType::Builtin(
-        BuiltinType::U32,
-    )))?;
+    let scalar =
+        builder.intern_type(TypeExpr::Concrete(ConcreteType::Builtin(BuiltinType::U32)))?;
     let argument_name = builder.intern_atom(b"argument")?;
     let result_name = builder.intern_atom(b"result")?;
     let mut parameters = Vec::with_capacity(PARAMETER_COUNT);
@@ -334,6 +341,7 @@ fn large_mixed_tuple_signature_reopens_with_linear_binding_cell_advances()
     }))?;
     let function = TreeItemInput {
         name: b"large",
+        anonymous_callable_anchor: None,
         kind: ItemKind::Function,
         visibility: Visibility::Private,
         authority: authority(),
@@ -347,6 +355,7 @@ fn large_mixed_tuple_signature_reopens_with_linear_binding_cell_advances()
     };
     let carrier = TreeItemInput {
         name: b"carrier",
+        anonymous_callable_anchor: None,
         kind: ItemKind::Parameter,
         semantic_type: Some(scalar),
         ..function
@@ -378,8 +387,10 @@ fn large_mixed_tuple_signature_reopens_with_linear_binding_cell_advances()
     );
 
     let entity_by_name = |name: &[u8]| {
-        view.canonical_entities()
-            .find_map(|entity| (view.atom(entity.name) == Some(name)).then_some(entity.id))
+        view.canonical_entities().find_map(|entity| {
+            (entity.name.named_atom().and_then(|atom| view.atom(atom)) == Some(name))
+                .then_some(entity.id)
+        })
     };
     let owner = entity_by_name(b"large").expect("canonical function owner");
     let carrier = entity_by_name(b"carrier").expect("canonical shared carrier");
@@ -422,9 +433,7 @@ fn large_mixed_tuple_signature_reopens_with_linear_binding_cell_advances()
         .collect::<Vec<_>>();
     assert_eq!(result_cells.len(), 1);
     assert_eq!(
-        result_cells[0]
-            .label
-            .and_then(|label| view.atom(label)),
+        result_cells[0].label.and_then(|label| view.atom(label)),
         Some(&b"result"[..])
     );
     assert_eq!(result_cells[0].kind, TupleElementKind::Required);
@@ -458,7 +467,9 @@ fn large_mixed_tuple_signature_reopens_with_linear_binding_cell_advances()
     );
     assert_eq!(
         SemanticReader::signature_carrier_role(&view, carrier),
-        Some(SignatureCarrierRoleObservation::Captured(SignatureCarrierRole::Both))
+        Some(SignatureCarrierRoleObservation::Captured(
+            SignatureCarrierRole::Both
+        ))
     );
     Ok(())
 }
@@ -498,12 +509,9 @@ fn signature_binding_size_preflight_checks_wire_width_without_allocating() {
         let max_wire_bytes = u32::MAX as usize;
         let largest_rows = max_wire_bytes / row_bytes;
         let largest_bytes = largest_rows * row_bytes;
-        let observed_bytes = super::plan::signature_binding_lane_bytes(
-            largest_rows,
-            row_bytes,
-            field,
-        )
-        .expect("largest whole-row count fits the wire width");
+        let observed_bytes =
+            super::plan::signature_binding_lane_bytes(largest_rows, row_bytes, field)
+                .expect("largest whole-row count fits the wire width");
         assert_eq!(observed_bytes, largest_bytes);
         assert!(matches!(
             super::plan::signature_binding_lane_bytes(largest_rows + 1, row_bytes, field),
@@ -529,6 +537,7 @@ fn large_encoded_image() -> Vec<u8> {
     let docs = [DocInput::Text(&large_documentation)];
     let item = TreeItemInput {
         name: b"mapped",
+        anonymous_callable_anchor: None,
         kind: ItemKind::Function,
         visibility: Visibility::Public,
         authority: authority(),
@@ -651,7 +660,9 @@ fn complete_carrier_roles_round_trip_in_canonical_entity_order() -> Result<(), c
     let image_owner = super::SemanticImageProofOwner::new(bytes.into_boxed_slice());
     let view = image_owner.reopen().expect("schema-2 image reopens");
     for entity in view.canonical_entities() {
-        let name = view.atom(entity.name).expect("canonical entity name");
+        let name = view
+            .atom(entity.name.named_atom().expect("named role entity"))
+            .expect("canonical entity name");
         let expected_role = if name == b"a" {
             expected[0]
         } else if name == b"b" {
@@ -788,8 +799,10 @@ fn exact_signature_bindings_preserve_owner_slots_empty_and_unavailable_states()
     assert_eq!(bytes, encoded(&signature_binding_image(true)?)?);
     let view = SemanticImageView::reopen(&bytes).expect("schema-3 image reopens");
     let find_borrowed = |name: &[u8]| {
-        view.canonical_entities()
-            .find_map(|entity| (view.atom(entity.name) == Some(name)).then_some(entity.id))
+        view.canonical_entities().find_map(|entity| {
+            (entity.name.named_atom().and_then(|atom| view.atom(atom)) == Some(name))
+                .then_some(entity.id)
+        })
     };
     let bind = find_borrowed(b"bind").expect("canonical bind owner");
     let unknown = find_borrowed(b"unknown").expect("canonical unknown owner");
@@ -907,9 +920,162 @@ fn exact_signature_bindings_preserve_owner_slots_empty_and_unavailable_states()
 }
 
 #[test]
+fn typed_anonymous_name_round_trips_and_rejects_bad_tags_atoms_and_anchors()
+-> Result<(), crate::ir::BuildError> {
+    let route = [
+        CallableAnchorStep {
+            child_role: CallableChildRole::TypeAliasValue,
+            parent: CallableParentShape::TypeAliasName(b"Handler"),
+        },
+        CallableAnchorStep {
+            child_role: CallableChildRole::TypeExpression,
+            parent: CallableParentShape::TypeContainer(CallableTypeContainerKind::Tuple),
+        },
+        CallableAnchorStep {
+            child_role: CallableChildRole::SignatureParameterType,
+            parent: CallableParentShape::SignatureParameter(b"callbackFunc"),
+        },
+        CallableAnchorStep {
+            child_role: CallableChildRole::CallSignatureMember,
+            parent: CallableParentShape::TypeContainer(CallableTypeContainerKind::TypeLiteral),
+        },
+    ];
+    let anchor = AnonymousCallableAnchor { steps: &route };
+    let mut anchor_bytes = [0_u8; 96];
+    let anchor_length = anchor
+        .write_storage(
+            AnonymousCallableFamilyMultiplicity::Unique,
+            &mut anchor_bytes,
+        )
+        .expect("valid small route fits its storage buffer");
+    let item = TreeItemInput {
+        name: b"",
+        anonymous_callable_anchor: Some(&anchor_bytes[..anchor_length]),
+        kind: ItemKind::Function,
+        visibility: Visibility::Private,
+        authority: authority(),
+        parent: None,
+        semantic_type: None,
+        members: &[],
+        docs: &[],
+        attributes: &[],
+        source: None,
+        extension: None,
+    };
+    let versions = [version(70)];
+    let mut builder = IrBuilder::new();
+    builder.add_borrowed_tree(BorrowedTree {
+        versions: &versions,
+        items: &[item],
+        links: &[],
+    })?;
+    let ir = builder.finish()?;
+    let bytes = encoded(&ir)?;
+    assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), 4);
+    let view = SemanticImageView::reopen(&bytes).expect("typed-name schema reopens");
+    let entity = SemanticCoreReader::core_entity(&view, EntityId::new(0))
+        .expect("one typed anonymous entity");
+    let anchor_atom = entity
+        .name
+        .anonymous_callable_anchor()
+        .expect("name tag survives reopen");
+    assert_eq!(
+        SemanticCoreReader::atom(&view, anchor_atom),
+        Some(&anchor_bytes[..anchor_length])
+    );
+    let anchor_view =
+        crate::ir::AnonymousCallableAnchorView::try_from_encoded(&anchor_bytes[..anchor_length])
+            .expect("new signature-parameter anchor is valid");
+    assert_eq!(anchor_view.steps().as_deref(), Some(&route[..]));
+    assert_eq!(&anchor_bytes[..4], b"NAC\x02");
+
+    let legacy_route = [CallableAnchorStep {
+        child_role: CallableChildRole::CallArgument,
+        parent: CallableParentShape::Call,
+    }];
+    let mut legacy_bytes = [0_u8; 32];
+    let legacy_length = AnonymousCallableAnchor {
+        steps: &legacy_route,
+    }
+    .write_storage(
+        AnonymousCallableFamilyMultiplicity::Unique,
+        &mut legacy_bytes,
+    )
+    .expect("legacy route fits the bounded buffer");
+    legacy_bytes[..4].copy_from_slice(b"NAC\x01");
+    let legacy =
+        crate::ir::AnonymousCallableAnchorView::try_from_encoded(&legacy_bytes[..legacy_length])
+            .expect("old v1 anchors remain readable");
+    assert_eq!(legacy.steps().as_deref(), Some(&legacy_route[..]));
+
+    let mut unsupported_v1 = anchor_bytes;
+    unsupported_v1[..4].copy_from_slice(b"NAC\x01");
+    assert!(
+        crate::ir::AnonymousCallableAnchorView::try_from_encoded(&unsupported_v1[..anchor_length],)
+            .is_none()
+    );
+
+    let entity_row = lane_payload_offset(&bytes, FullDirectoryKind::Entities);
+    let anchor_atom = u32::from_le_bytes(
+        bytes[entity_row..entity_row + 4]
+            .try_into()
+            .expect("entity atom index"),
+    );
+    let mut bad_tag = bytes.clone();
+    bad_tag[entity_row + 32] = 2;
+    assert!(matches!(
+        SemanticImageView::reopen(&bad_tag),
+        Err(crate::ir::FullSemanticImageError::Full(
+            FullSemanticImageFault::EntityNameTag {
+                row: 0,
+                observed: 2
+            }
+        ))
+    ));
+
+    let mut bad_index = bytes.clone();
+    set_u32(&mut bad_index, entity_row, u32::MAX);
+    assert!(matches!(
+        SemanticImageView::reopen(&bad_index),
+        Err(crate::ir::FullSemanticImageError::Full(
+            FullSemanticImageFault::Reference {
+                field: FullSemanticImageField::Entities,
+                row: 0,
+                observed: u32::MAX,
+                ..
+            }
+        ))
+    ));
+
+    let atom_row = lane_payload_offset(&bytes, FullDirectoryKind::Atoms)
+        + usize::try_from(anchor_atom).expect("atom index fits test address space")
+            * ATOM_ROW_BYTES;
+    let anchor_offset = u32::from_le_bytes(
+        bytes[atom_row..atom_row + 4]
+            .try_into()
+            .expect("atom payload offset"),
+    );
+    let anchor_offset = lane_payload_offset(&bytes, FullDirectoryKind::AtomBytes)
+        + usize::try_from(anchor_offset).expect("atom payload offset fits test address space");
+    let mut bad_anchor = bytes;
+    bad_anchor[anchor_offset] ^= 1;
+    assert!(matches!(
+        SemanticImageView::reopen(&bad_anchor),
+        Err(crate::ir::FullSemanticImageError::Full(
+            FullSemanticImageFault::EntityNameTag {
+                row: 0,
+                observed: 1
+            }
+        ))
+    ));
+    Ok(())
+}
+
+#[test]
 fn schema_two_function_has_role_but_no_binding_claim() -> Result<(), crate::ir::BuildError> {
     let function = TreeItemInput {
         name: b"historical",
+        anonymous_callable_anchor: None,
         kind: ItemKind::Function,
         visibility: Visibility::Private,
         authority: authority(),
@@ -952,6 +1118,7 @@ fn schema_one_function_reports_signature_bindings_unavailable() -> Result<(), cr
 {
     let function = TreeItemInput {
         name: b"historical",
+        anonymous_callable_anchor: None,
         kind: ItemKind::Function,
         visibility: Visibility::Private,
         authority: authority(),
@@ -1044,13 +1211,15 @@ fn signature_binding_cursor_is_exact_size_and_fused() -> Result<(), crate::ir::B
     let view = SemanticImageView::reopen(&bytes).expect("owned image reopens canonically");
     let canonical_entity = |name: &[u8], kind: ItemKind| {
         view.canonical_entities().find_map(|entity| {
-            (entity.kind == kind && view.atom(entity.name) == Some(name)).then_some(entity.id)
+            (entity.kind == kind
+                && entity.name.named_atom().and_then(|atom| view.atom(atom)) == Some(name))
+            .then_some(entity.id)
         })
     };
-    let reopened_bind = canonical_entity(b"bind", ItemKind::Function)
-        .expect("canonical remapped binding owner");
-    let reopened_carrier = canonical_entity(b"carrier", ItemKind::Parameter)
-        .expect("canonical remapped carrier");
+    let reopened_bind =
+        canonical_entity(b"bind", ItemKind::Function).expect("canonical remapped binding owner");
+    let reopened_carrier =
+        canonical_entity(b"carrier", ItemKind::Parameter).expect("canonical remapped carrier");
     let Some(SignatureCarrierBindingsObservation::Captured(mut reopened)) =
         SemanticReader::signature_carrier_bindings(&view, reopened_bind)
     else {
@@ -1096,8 +1265,10 @@ fn signature_binding_image_rejects_bad_owner_ranges_targets_and_role_union()
     let bytes = encoded(&signature_binding_image(false)?)?;
     let view = SemanticImageView::reopen(&bytes).expect("valid binding image");
     let id_by_name = |name: &[u8]| {
-        view.canonical_entities()
-            .find_map(|entity| (view.atom(entity.name) == Some(name)).then_some(entity.id))
+        view.canonical_entities().find_map(|entity| {
+            (entity.name.named_atom().and_then(|atom| view.atom(atom)) == Some(name))
+                .then_some(entity.id)
+        })
     };
     let bind = id_by_name(b"bind").expect("bind owner");
     let unknown = id_by_name(b"unknown").expect("unknown owner");
@@ -1529,6 +1700,7 @@ fn csharp_image() -> Result<Ir, crate::ir::BuildError> {
     };
     let first = TreeItemInput {
         name: b"first",
+        anonymous_callable_anchor: None,
         kind: ItemKind::Function,
         visibility: Visibility::Public,
         authority,
@@ -1542,6 +1714,7 @@ fn csharp_image() -> Result<Ir, crate::ir::BuildError> {
     };
     let second = TreeItemInput {
         name: b"second",
+        anonymous_callable_anchor: None,
         extension: Some(LanguageExtensionInput::CSharp(&alternate)),
         ..first
     };
@@ -1615,7 +1788,7 @@ fn full_image_is_canonical_reopens_complete_reader_and_keeps_borrowed_atoms()
         .map(|entity| {
             (
                 entity.version.identity(),
-                first.atom(entity.name).map(<[u8]>::to_vec),
+                first.atom(entity.name.atom()).map(<[u8]>::to_vec),
             )
         })
         .collect::<alloc::vec::Vec<_>>();
@@ -1624,7 +1797,7 @@ fn full_image_is_canonical_reopens_complete_reader_and_keeps_borrowed_atoms()
         .map(|entity| {
             (
                 entity.version.identity(),
-                view.atom(entity.name).map(<[u8]>::to_vec),
+                view.atom(entity.name.atom()).map(<[u8]>::to_vec),
             )
         })
         .collect::<alloc::vec::Vec<_>>();
@@ -1640,8 +1813,9 @@ fn full_image_is_canonical_reopens_complete_reader_and_keeps_borrowed_atoms()
     let entity = view.canonical_entities().next().expect("first entity");
     assert_eq!(entity.authority.members, FactAvailability::Captured);
     assert_eq!(entity.authority.documentation, FactAvailability::Captured);
-    let atom = view.atom(entity.name).expect("reopened atom");
-    let repeated = view.atom(entity.name).expect("repeated atom");
+    let name = entity.name.atom();
+    let atom = view.atom(name).expect("reopened atom");
+    let repeated = view.atom(name).expect("repeated atom");
     assert!(core::ptr::eq(atom.as_ptr(), repeated.as_ptr()));
     let start = bytes.as_ptr().addr();
     assert!(
@@ -1809,6 +1983,7 @@ fn rust_free_predicate_image() -> Result<Ir, crate::ir::BuildError> {
     };
     let item = TreeItemInput {
         name: b"owner",
+        anonymous_callable_anchor: None,
         kind: ItemKind::Function,
         visibility: Visibility::Public,
         authority: EntityAuthorityFacts {
@@ -1963,6 +2138,7 @@ fn grouped_decode_sweeps_ten_thousand_typed_rows_in_bounded_time()
         versions.push(distinct_version(index));
         items.push(TreeItemInput {
             name: spelling,
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Private,
             authority: crate::ir::EntityAuthorityFacts {

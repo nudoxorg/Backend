@@ -75,9 +75,8 @@ use backend_semantic::ir::{
 };
 use backend_semantic::vocabulary::{
     GoImageDeclarationKind, GoImageFault, GoImageFlagCell, GoImageHeaderFault, GoImagePlane,
-    GoImageTypeKind,
-    GoProjectionFault as PortableGoProjectionFault, GoProjectionIndexPhase, GoProjectionListPhase,
-    LoweringUnsupported, ProjectionForeignKeyFault, ProjectionLineagePart,
+    GoImageTypeKind, GoProjectionFault as PortableGoProjectionFault, GoProjectionIndexPhase,
+    GoProjectionListPhase, LoweringUnsupported, ProjectionForeignKeyFault, ProjectionLineagePart,
     ProjectionPackageLineageFault,
 };
 use core::str;
@@ -5243,12 +5242,7 @@ mod tests {
         let error = fix.named(b"", b"error", &[]);
         let brew = fix.func(&[int, string], &[int, error], false);
         fix.declaration(KIND_FUNC, b"Brew", Some(brew));
-        for (ordinal, name) in [
-            &b"count"[..],
-            &b"label"[..],
-            &b"total"[..],
-            &b"err"[..],
-        ]
+        for (ordinal, name) in [&b"count"[..], &b"label"[..], &b"total"[..], &b"err"[..]]
             .into_iter()
             .enumerate()
         {
@@ -7265,7 +7259,11 @@ mod tests {
         // Entities carry their authority-bound declaration spans.
         let mut lang_source = None;
         for row in ir.canonical_entities() {
-            let name = ir.atom(row.name).ok_or(TestError::Missing("entity atom"))?;
+            let name = row
+                .name
+                .named_atom()
+                .and_then(|atom| ir.atom(atom))
+                .ok_or(TestError::Missing("entity atom"))?;
             if name == b"Lang" {
                 lang_source = row.source;
             }

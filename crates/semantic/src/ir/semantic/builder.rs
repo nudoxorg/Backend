@@ -8,21 +8,21 @@ use super::columns::{
 use super::error::{BuildError, EntityRange, SemanticSpace};
 use super::ids::{
     AtomListId, DocId, EntityListId, External, ExternalId, FreePredicateListId, ItemKind, LinkId,
-    LinkOccurrenceId, ObjectMemberListId, TemplatePartListId,
-    TreeEntityId, TupleElementListId, TypeListId, TypeParameterBoundListId, TypeParameterListId,
+    LinkOccurrenceId, ObjectMemberListId, TemplatePartListId, TreeEntityId, TupleElementListId,
+    TypeListId, TypeParameterBoundListId, TypeParameterListId,
 };
 use super::image::Ir;
 use super::language_facts::{LanguageExtensionInput, SemanticImageAuthority};
 use super::packed_types::{
     ArrayShape, CallableElementRole, ComputedType, ConcreteType, FreePredicate, LiteralType,
-    ObjectMember, PropertyKey, QualifiedSegments, TemplatePart, TupleElement,
-    TupleElementKind, TypeInterner, TypeParameter, TypeParameterBound, TypeParameterKind,
-    TypeQuery, VariadicForm, WildcardBound,
+    ObjectMember, PropertyKey, QualifiedSegments, TemplatePart, TupleElement, TupleElementKind,
+    TypeInterner, TypeParameter, TypeParameterBound, TypeParameterKind, TypeQuery, VariadicForm,
+    WildcardBound,
 };
 use super::relations::{
     DeclarationLinkTarget, DocFragment, DocInput, EntityVersion, ExternalTarget,
-    ForeignTargetOrigin, Item, Link, LinkKey, LinkOccurrence,
-    LinkTarget, SourceSpan, canonical_relation_evidence_precedes,
+    ForeignTargetOrigin, Item, ItemName, Link, LinkKey, LinkOccurrence, LinkTarget, SourceSpan,
+    canonical_relation_evidence_precedes,
 };
 use super::tree::{BorrowedTree, FrontendTree, TreeItemInput, TreeLinkInput, TreeLinkTarget};
 use super::type_model::{
@@ -32,10 +32,10 @@ use super::type_model::{
 use crate::ir::{
     AtomId, AtomInterner, AuthorityFactFault, AuthorityFactPlane, CapacityError, CapacitySpace,
     DeclarationIdentity, DeclarationKey, DenseId, EntityAuthorityFacts, EntityId, FactAvailability,
-    ImageProvenance, ImageProvenanceClaim, Interner, ListId, ListInterner, OccurrenceAuthorityFacts,
-    PackageLineage, ParentageAuthority, SemanticScopeClaim, SemanticScopeFacts,
-    SignatureCarrierBindingRole, SignatureCarrierOwnerInput, SignatureCarrierRole, SourceIdentity,
-    TextId, TypeId,
+    ImageProvenance, ImageProvenanceClaim, Interner, ListId, ListInterner,
+    OccurrenceAuthorityFacts, PackageLineage, ParentageAuthority, SemanticScopeClaim,
+    SemanticScopeFacts, SignatureCarrierBindingRole, SignatureCarrierOwnerInput,
+    SignatureCarrierRole, SourceIdentity, TextId, TypeId,
     authority::{AuthorityColumns, OccurrenceAuthorityColumn},
     interner::{HashIndex, hash},
 };
@@ -882,7 +882,20 @@ impl IrBuilder {
         let range = EntityRange { start, len: count };
 
         for (input, version) in tree.items().zip(tree.versions()) {
-            let name = self.intern_atom(input.name)?;
+            let name = match input.anonymous_callable_anchor {
+                Some(anchor) if input.name.is_empty() && !anchor.is_empty() => {
+                    ItemName::AnonymousCallable(self.intern_atom(anchor)?)
+                }
+                Some(_) => return Err(BuildError::AnonymousCallableName),
+                None if !input.name.is_empty() => ItemName::Named(self.intern_atom(input.name)?),
+                None => return Err(BuildError::AnonymousCallableName),
+            };
+            if let Some(anchor) = input.anonymous_callable_anchor
+                && (input.kind != ItemKind::Function
+                    || anchor.len() > crate::ir::MAX_ANONYMOUS_CALLABLE_ANCHOR_BYTES)
+            {
+                return Err(BuildError::AnonymousCallableName);
+            }
             let parent = transpose_tree_id(range, input.parent)?;
 
             self.entity_scratch.clear();
@@ -1136,7 +1149,20 @@ impl IrBuilder {
         }
         for index in 0..self.items.len() {
             let entity = EntityId::new(index as u32);
-            atom(self, self.items.names[index])?;
+            atom(self, self.items.names[index].atom())?;
+            if let Some(anchor) = self.items.names[index].anonymous_callable_anchor() {
+                if self.items.kinds[index] != ItemKind::Function {
+                    return Err(BuildError::AnonymousCallableName);
+                }
+                let bytes = self.atoms.get(anchor).ok_or(BuildError::Dangling {
+                    space: SemanticSpace::Atom,
+                    raw: anchor.raw,
+                })?;
+                if bytes.is_empty() || bytes.len() > crate::ir::MAX_ANONYMOUS_CALLABLE_ANCHOR_BYTES
+                {
+                    return Err(BuildError::AnonymousCallableName);
+                }
+            }
             optional_id(
                 self.items.parents[index].get(),
                 self.items.len(),
@@ -1392,8 +1418,13 @@ impl BorrowedTreeCapacity {
         capacity.attribute_lists = has_items;
         capacity.doc_lists = has_items;
         for item in tree.items() {
-            capacity.atom_values = capacity.atom_values.saturating_add(1);
-            capacity.atom_bytes = capacity.atom_bytes.saturating_add(item.name.len());
+            if let Some(anchor) = item.anonymous_callable_anchor {
+                capacity.atom_values = capacity.atom_values.saturating_add(1);
+                capacity.atom_bytes = capacity.atom_bytes.saturating_add(anchor.len());
+            } else {
+                capacity.atom_values = capacity.atom_values.saturating_add(1);
+                capacity.atom_bytes = capacity.atom_bytes.saturating_add(item.name.len());
+            }
             capacity.member_values = capacity.member_values.saturating_add(item.members.len());
             capacity.attribute_values = capacity
                 .attribute_values

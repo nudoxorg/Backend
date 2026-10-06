@@ -126,8 +126,7 @@ impl ProjectCallableIndex {
                         .entry((path.clone(), name.to_owned()))
                         .or_default()
                         .push(identity);
-                    if let Some((immediate, chain)) =
-                        owner_chain_keys(&session, image, entity.entity.id)?
+                    if let Some((immediate, chain)) = owner_chain_keys(&session, entity.entity.id)?
                     {
                         by_owner_name
                             .entry((immediate.clone(), name.to_owned()))
@@ -157,8 +156,7 @@ impl ProjectCallableIndex {
                         .push(identity);
                 }
                 if entity.entity.kind == ItemKind::Field {
-                    if let Some((immediate, chain)) =
-                        owner_chain_keys(&session, image, entity.entity.id)?
+                    if let Some((immediate, chain)) = owner_chain_keys(&session, entity.entity.id)?
                     {
                         field_by_owner_name
                             .entry((immediate.clone(), name.to_owned()))
@@ -176,8 +174,7 @@ impl ProjectCallableIndex {
                     entity.entity.kind,
                     ItemKind::Constant | ItemKind::Static | ItemKind::Variant
                 ) {
-                    if let Some((immediate, chain)) =
-                        owner_chain_keys(&session, image, entity.entity.id)?
+                    if let Some((immediate, chain)) = owner_chain_keys(&session, entity.entity.id)?
                     {
                         value_by_owner_name_kind
                             .entry((immediate.clone(), name.to_owned(), entity.entity.kind))
@@ -459,7 +456,6 @@ impl ProjectCallableIndex {
 
 pub(crate) fn owner_chain_keys(
     session: &DocumentationSession<'_, SemanticImageView<'_>>,
-    image: &SemanticImageView<'_>,
     function: backend_semantic::ir::EntityId,
 ) -> Result<Option<(String, String)>, BuiltinModelError> {
     let mut names = Vec::new();
@@ -482,9 +478,9 @@ pub(crate) fn owner_chain_keys(
         let parent = session.entity(parent_id).map_err(|error| {
             BuiltinModelError(format!("read semantic graph callable ancestor: {error}"))
         })?;
-        let name_atom = image.atom(parent.entity.name).ok_or_else(|| {
-            BuiltinModelError("semantic graph ancestor name atom is missing".to_owned())
-        })?;
+        let Some(name_atom) = parent.name.named_bytes() else {
+            return Ok(None);
+        };
         let name = std::str::from_utf8(name_atom).map_err(|_| {
             BuiltinModelError("semantic graph ancestor name is not UTF-8".to_owned())
         })?;
