@@ -901,9 +901,17 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
         }],
     )
     .expect("decodeable legacy BPI6 capture intent");
+    let legacy_v7_source_facts = source_facts_changes
+        .iter()
+        .map(|change| BuiltinSourceFactsChange {
+            key: change.key,
+            expected: change.after.clone(),
+            after: change.after.clone(),
+        })
+        .collect();
     let legacy_v7 = legacy_v6
         .clone()
-        .with_source_facts(Vec::new())
+        .with_source_facts(legacy_v7_source_facts)
         .expect("decodeable legacy BPI7 capture intent");
     let legacy_v8 = BuiltinIntent::index_with_capture(
         package,
