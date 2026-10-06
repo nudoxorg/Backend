@@ -2550,6 +2550,8 @@ mod tests {
                         Err(error) => panic!("fixture request: {error}"),
                     }
                 };
+                stream.set_nonblocking(false).expect("blocking fixture stream");
+                stream.set_write_timeout(Some(Duration::from_secs(5))).expect("bounded fixture write");
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .expect("bounded fixture read");
@@ -2567,9 +2569,7 @@ mod tests {
                     body.len()
                 )
                 .expect("write fixture headers");
-                if stream.write_all(&body).is_err() {
-                    return requests;
-                }
+                stream.write_all(&body).expect("write full fixture body");
             }
             requests
         });

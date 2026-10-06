@@ -548,6 +548,9 @@ mod tests {
                     }
                 };
                 stream
+                    .set_nonblocking(false)
+                    .expect("blocking fixture stream");
+                stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .expect("read deadline");
                 let mut request = Vec::new();
