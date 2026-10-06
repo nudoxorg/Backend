@@ -782,6 +782,87 @@ class PackageProvenanceMetadataTests(unittest.TestCase):
                 runner.validate_corpus_manifest(manifest, root / "evidence", extensions, 2046)
 
 
+class AcquiredSourceInventoryTests(unittest.TestCase):
+    def fixture(self, root: Path, *, subdir: str = ".") -> tuple:
+        source = root / "acquired"
+        target = source if subdir == "." else source / subdir
+        target.mkdir(parents=True)
+        (target / "source.py").write_text("class Session:\n    pass\n")
+        (source / "LICENSE").write_text("License fixture\n")
+        files = [{"path": path.relative_to(source).as_posix(), "bytes": path.stat().st_size,
+                  "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+                 for path in sorted(source.rglob("*")) if path.is_file()]
+        inventory = {"schema": "nudox.acquired-package-source-inventory.v1",
+                     "package": {"ecosystem": "pypi", "id": "requests", "version": "2.34.2"},
+                     "source_root": str(source), "files": files}
+        inventory_path = root / "inventory.json"
+        inventory_path.write_bytes(runner.canonical_json(inventory))
+        tree_sha = hashlib.sha256(runner.canonical_json(files)).hexdigest()
+        package = {**inventory["package"], "provenance": {"kind": "source-tree-sha256", "sha256": tree_sha}}
+        case = runner.ProjectCase("requests", target, False, 0, (), package, {
+            "inventory_path": str(inventory_path),
+            "inventory_sha256": hashlib.sha256(inventory_path.read_bytes()).hexdigest(),
+            "target_subdir": subdir,
+        })
+        return case, inventory, tree_sha
+
+    def test_exact_acquired_tree_and_runtime_subdirectory_are_independently_hash_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            case, _, tree_sha = self.fixture(Path(directory).resolve(), subdir="src")
+            proof = runner.verify_acquired_source_inventory(case, "b" * 64)
+            self.assertEqual(proof["verification"], "verified-source-inventory-v1")
+            self.assertEqual(proof["source_tree_sha256"], tree_sha)
+            self.assertEqual(proof["package"], {"ecosystem": "pypi", "id": "requests", "version": "2.34.2"})
+            self.assertEqual(proof["target_root_identity_sha256"], hashlib.sha256(str(case.path).encode()).hexdigest())
+            self.assertEqual(proof["target_subdir"], "src")
+            # Git administrative metadata is not part of acquired package source.
+            (case.path.parent / ".git").mkdir()
+            (case.path.parent / ".git" / "index").write_bytes(b"Git metadata")
+            self.assertEqual(runner.verify_acquired_source_inventory(case, "b" * 64), proof)
+
+    def test_missing_extra_changed_or_symlink_files_cannot_reuse_a_verified_inventory(self) -> None:
+        for mutation in ["missing", "extra", "changed", "symlink"]:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                case, _, _ = self.fixture(Path(directory).resolve())
+                if mutation == "missing":
+                    (case.path / "source.py").unlink()
+                elif mutation == "extra":
+                    (case.path / "extra.txt").write_bytes(b"not recognized as source but must be verified")
+                elif mutation == "changed":
+                    (case.path / "LICENSE").write_text("Changed license\n")
+                else:
+                    (case.path / "link.py").symlink_to(case.path / "source.py")
+                with self.assertRaises(runner.AcceptanceError):
+                    runner.verify_acquired_source_inventory(case, "b" * 64)
+
+    def test_wrong_package_target_and_declared_tree_digest_are_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            case, _, _ = self.fixture(Path(directory).resolve(), subdir="src")
+            for field, bad_value in [("id", "other-package"), ("version", "0.0.0")]:
+                original = case.package[field]
+                case.package[field] = bad_value
+                with self.assertRaisesRegex(runner.AcceptanceError, "another package or version"):
+                    runner.verify_acquired_source_inventory(case, "b" * 64)
+                case.package[field] = original
+            case.acquisition["target_subdir"] = "."
+            with self.assertRaisesRegex(runner.AcceptanceError, "target subdirectory"):
+                runner.verify_acquired_source_inventory(case, "b" * 64)
+            case.acquisition["target_subdir"] = "src"
+            case.package["provenance"]["sha256"] = "a" * 64
+            with self.assertRaisesRegex(runner.AcceptanceError, "declared source-tree hash"):
+                runner.verify_acquired_source_inventory(case, "b" * 64)
+
+    def test_noncanonical_inventory_paths_and_changed_inventory_digest_are_refused(self) -> None:
+        for value in ["../escape.py", "/absolute.py", "a//b.py", "./a.py", "a\\b.py"]:
+            with self.subTest(value=value), self.assertRaises(runner.Blocked):
+                runner.canonical_inventory_relative(value)
+        with tempfile.TemporaryDirectory() as directory:
+            case, _, _ = self.fixture(Path(directory).resolve())
+            Path(case.acquisition["inventory_path"]).write_bytes(b"{}")
+            with self.assertRaisesRegex(runner.AcceptanceError, "declared digest"):
+                runner.verify_acquired_source_inventory(case, "b" * 64)
+
+
 class OperationObservationBoundaryTests(unittest.TestCase):
     """The actual 80543 TypeScript pilot used these two different envelopes."""
 

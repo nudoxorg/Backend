@@ -259,6 +259,7 @@ class ProjectCase:
     min_candidates: int
     symbols: tuple[dict[str, str], ...]
     package: dict[str, Any] | None = None
+    acquisition: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -1437,9 +1438,20 @@ def validate_corpus_manifest(
             "minimum_source_candidates",
             "symbols",
         }
-        if not isinstance(item, dict) or set(item) not in [project_fields, project_fields | {"package"}]:
+        if not isinstance(item, dict) or not project_fields <= set(item) or set(item) - project_fields - {"package", "acquisition"}:
             raise Blocked("a project manifest entry has missing or unknown fields")
         package_metadata = validate_package_metadata(item["package"], language) if "package" in item else None
+        acquisition = item.get("acquisition")
+        if "acquisition" in item:
+            if package_metadata is None or not isinstance(acquisition, dict) or set(acquisition) != {
+                "inventory_path", "inventory_sha256", "target_subdir"
+            }:
+                raise Blocked("acquisition requires package metadata and one closed inventory binding")
+            if not isinstance(acquisition["inventory_path"], str) or not os.path.isabs(acquisition["inventory_path"]):
+                raise Blocked("acquired inventory path must be absolute")
+            if not isinstance(acquisition["inventory_sha256"], str) or re.fullmatch(r"[0-9a-f]{64}", acquisition["inventory_sha256"]) is None:
+                raise Blocked("acquired inventory digest is invalid")
+            canonical_inventory_relative(acquisition["target_subdir"], allow_root=True)
         project_id = item["id"]
         raw_path = item["path"]
         large = item["large"]
@@ -1531,7 +1543,7 @@ def validate_corpus_manifest(
         project_ids.add(project_id)
         canonical_roots.add(root)
         total_symbols += len(symbols)
-        cases.append(ProjectCase(project_id, root, large, minimum, tuple(symbols), package_metadata))
+        cases.append(ProjectCase(project_id, root, large, minimum, tuple(symbols), package_metadata, acquisition))
 
     required_variants = set(PROFILE_LANGUAGE_VARIANT) if language is None else set()
     missing_variants = sorted(required_variants - variants)
@@ -1546,6 +1558,104 @@ def validate_corpus_manifest(
             f"{large_candidate_census_minimum} recognized source candidates"
         )
     return cases, raw
+
+
+def canonical_inventory_relative(value: Any, *, allow_root: bool = False) -> tuple[str, ...]:
+    if value == "." and allow_root:
+        return ()
+    if not isinstance(value, str) or not value or len(value.encode("utf-8")) > 4096:
+        raise Blocked("acquired inventory has an invalid relative path")
+    path = PurePosixPath(value)
+    if path.is_absolute() or path.as_posix() != value or "\\" in value or any(part in {".", ".."} for part in path.parts):
+        raise Blocked("acquired inventory path is not canonical and confined")
+    return path.parts
+
+
+def verify_acquired_source_inventory(case: ProjectCase, manifest_sha: str, deadline: Deadline | None = None) -> dict[str, Any]:
+    """Verify acquired bytes independently of recognized-source census and declarations."""
+    if case.package is None or case.acquisition is None:
+        raise Blocked("verified package source requires an acquired inventory")
+    binding = case.acquisition
+    inventory_path = Path(binding["inventory_path"])
+    raw = read_bounded_regular(inventory_path, 32 * 1024 * 1024, "acquired package inventory")
+    if sha256_bytes(raw) != binding["inventory_sha256"]:
+        raise AcceptanceError("acquired inventory differs from its declared digest")
+    inventory = json_no_duplicate_keys(raw, "acquired package inventory")
+    if not isinstance(inventory, dict) or set(inventory) != {"schema", "package", "source_root", "files"} or inventory["schema"] != "nudox.acquired-package-source-inventory.v1":
+        raise Blocked("acquired package inventory schema is unsupported")
+    package = {key: case.package[key] for key in ("ecosystem", "id", "version")}
+    if inventory["package"] != package:
+        raise AcceptanceError("acquired inventory belongs to another package or version")
+    root_value = inventory["source_root"]
+    if not isinstance(root_value, str) or not os.path.isabs(root_value):
+        raise Blocked("acquired source root must be absolute")
+    root = Path(root_value)
+    try:
+        if not root.is_dir() or root.resolve(strict=True) != root:
+            raise Blocked("acquired source root must be a canonical directory without symlinks")
+    except OSError as error:
+        raise Blocked("acquired source root is unavailable") from error
+    target = root.joinpath(*canonical_inventory_relative(binding["target_subdir"], allow_root=True))
+    if target != case.path:
+        raise AcceptanceError("runtime project root is not the acquired package target subdirectory")
+    files = inventory["files"]
+    if not isinstance(files, list) or not 1 <= len(files) <= MAX_SOURCE_CANDIDATES:
+        raise Blocked("acquired source inventory exceeds the file bound or is empty")
+    paths: list[str] = []
+    for row in files:
+        if not isinstance(row, dict) or set(row) != {"path", "bytes", "sha256"}:
+            raise Blocked("acquired source file record has unknown or missing fields")
+        parts = canonical_inventory_relative(row["path"])
+        if parts[0] == ".git":
+            raise Blocked("acquired source inventory must exclude root Git metadata")
+        if type(row["bytes"]) is not int or not 0 <= row["bytes"] <= MAX_SOURCE_FILE_BYTES or not isinstance(row["sha256"], str) or re.fullmatch(r"[0-9a-f]{64}", row["sha256"]) is None:
+            raise Blocked("acquired source file size or digest is invalid")
+        paths.append(row["path"])
+    if paths != sorted(set(paths)):
+        raise Blocked("acquired source inventory paths must be sorted and unique")
+    observed: list[dict[str, Any]] = []
+    stack = [root]
+    total = 0
+    directories = 0
+    while stack:
+        directory = stack.pop()
+        directories += 1
+        if directories > MAX_SOURCE_CANDIDATES:
+            raise Blocked("acquired package directory traversal exceeds its bound")
+        if deadline is not None:
+            deadline.check("acquired package source verification")
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if directory == root and entry.name == ".git":
+                    continue
+                if entry.is_symlink():
+                    raise AcceptanceError("acquired package tree contains a symlink")
+                path = Path(entry.path)
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(path)
+                    if len(stack) > MAX_SOURCE_CANDIDATES:
+                        raise Blocked("acquired package directory traversal exceeds its bound")
+                elif entry.is_file(follow_symlinks=False):
+                    size, digest, info = read_source_file(path, deadline)
+                    if info.st_nlink != 1:
+                        raise AcceptanceError("acquired package file has multiple links")
+                    total += size
+                    if total > MAX_SOURCE_BYTES_TOTAL or len(observed) >= MAX_SOURCE_CANDIDATES:
+                        raise Blocked("acquired package tree exceeds its byte or file bound")
+                    observed.append({"path": path.relative_to(root).as_posix(), "bytes": size, "sha256": digest.hex()})
+                else:
+                    raise AcceptanceError("acquired package tree contains a nonregular entry")
+    observed.sort(key=lambda row: row["path"])
+    if observed != files:
+        raise AcceptanceError("acquired package source inventory has missing, extra, or changed files")
+    tree_sha = sha256_bytes(canonical_json(observed))
+    if case.package["provenance"]["kind"] == "source-tree-sha256" and case.package["provenance"]["sha256"] != tree_sha:
+        raise AcceptanceError("declared source-tree hash differs from the independently verified inventory")
+    return {"verification": "verified-source-inventory-v1", "package": package,
+            "source_tree_sha256": tree_sha, "acquired_inventory_sha256": sha256_bytes(raw),
+            "target_subdir": binding["target_subdir"],
+            "target_root_identity_sha256": sha256_bytes(str(target).encode()),
+            "corpus_manifest_sha256": manifest_sha, "declared": case.package}
 
 
 def read_source_file(
@@ -2463,6 +2573,8 @@ def verify_inputs_unchanged(
     after: dict[str, Census] = {}
     for case in cases:
         census = project_census(case.path, deadline)
+        if case.acquisition is not None:
+            verify_acquired_source_inventory(case, corpus_manifest_sha, deadline)
         before = before_census[case.project_id]
         if (
             census.sha256 != before.sha256
@@ -2668,6 +2780,10 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
     if lock_before != source["cargo_lock_sha256"]:
         raise AcceptanceError("Cargo.lock changed after provenance capture")
     corpus_manifest_sha = sha256_bytes(corpus_bytes)
+    package_provenance = {
+        case.project_id: verify_acquired_source_inventory(case, corpus_manifest_sha, deadline)
+        for case in cases if case.acquisition is not None
+    }
     before_census = {
         case.project_id: project_census(case.path, deadline) for case in cases
     }
@@ -2711,11 +2827,11 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
             "accepted_project_membership_files_before_restart": None,
             "accepted_project_membership_files_after_restart": None,
             "symbols": list(case.symbols),
-            **({"package_provenance": {
+            **({"package_provenance": package_provenance.get(case.project_id, {
                 "declared": case.package,
                 "verification": "declared-by-corpus-manifest; artifact bytes not independently verified by this runner",
                 "corpus_manifest_sha256": corpus_manifest_sha,
-            }} if case.package is not None else {}),
+            })} if case.package is not None else {}),
         }
         for case in cases
     ]
