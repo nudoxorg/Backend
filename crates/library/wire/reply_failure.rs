@@ -133,8 +133,12 @@ mod tests {
             if let CommandFailure::CompilerRefused { failure, .. } = decoded {
                 let value = serde_json::to_value(failure).map_err(|error| error.to_string())?;
                 assert_eq!(value["phase"], "validate");
-                assert_eq!(value["cause"]["fault"]["facts"]["required"], 32);
-                assert_eq!(value["cause"]["fault"]["facts"]["actual"], 7);
+                assert_eq!(
+                    value["cause"]["fault"]["facts"],
+                    serde_json::to_value(fragment_failure.facts())
+                        .map_err(|error| error.to_string())?,
+                    "the complete typed nested operands survive the wire",
+                );
             }
         }
         assert!(display.contains("src/lib.ts"));
