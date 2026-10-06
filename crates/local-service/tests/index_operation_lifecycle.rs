@@ -826,7 +826,10 @@ fn wait_for_published(
             IndexOperationState::Failed { .. } | IndexOperationState::Unresolved { .. } => {
                 return Err(PhaseError::message(
                     "poll durable operation status while awaiting publication",
-                    "the real Cargo operation reached a non-published terminal state".to_owned(),
+                    format!(
+                        "the real Cargo operation reached a non-published terminal state: {:?}",
+                        status.state
+                    ),
                 ));
             }
         }
@@ -902,7 +905,10 @@ fn reject_failed_status(status: &backend_library::IndexOperationStatus) -> Resul
     ) {
         return Err(PhaseError::message(
             "poll durable operation status while awaiting publication",
-            "the real Cargo operation reached a non-published terminal state".to_owned(),
+            format!(
+                "the real Cargo operation reached a non-published terminal state: {:?}",
+                status.state
+            ),
         ));
     }
     Ok(())
