@@ -902,6 +902,46 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
         basis_after_unrelated.workspace_sequence(),
         "capture-only commits still advance the selected sequence"
     );
+    daemon
+        .engine()
+        .daemon()
+        .owner()
+        .snapshot()
+        .with_persisted_transition(|persisted, _| {
+            assert!(
+                persisted
+                    .delta_header()
+                    .expect("capture-only delta header")
+                    .relations()
+                    .is_empty(),
+                "the regression has no source or semantic relation delta to count"
+            );
+            let actual = super::admit_persisted_intent(persisted.closure_manifest().objects())
+                .expect("selected capture-only intent");
+            assert!(actual.changes().is_empty());
+            assert!(actual.semantic_changes().is_empty());
+            assert!(actual.source_facts_changes().is_empty());
+            assert_eq!(actual.capture_changes().len(), 1);
+            assert_eq!(actual.capture_basis(), Some(basis_before_unrelated));
+        })
+        .expect("inspect the exact selected capture-only transition");
+    drop(daemon);
+    let mut daemon = open_daemon(temp.0.path());
+    assert_eq!(
+        capture_basis_for_snapshot(&daemon.engine().daemon().owner().snapshot())
+            .expect("cold Pending capture-only basis"),
+        basis_after_unrelated,
+        "cold admission preserves the exact auxiliary-only publication, not just its unchanged manifest root"
+    );
+    assert_eq!(
+        semantic_capture_relation(&daemon.engine().daemon().owner().snapshot())
+            .expect("cold capture relation")
+            .expect("selected capture root")
+            .lookup(&capture_key)
+            .expect("cold pending source receipt"),
+        Some(pending_capture.clone()),
+        "cold Pending admission keeps the exact source receipt for the later compiler refusal"
+    );
     let legacy_v6 = BuiltinIntent::index_with_capture(
         package,
         label,
@@ -1044,7 +1084,32 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
         stale_snapshot.with_persisted_transition(|_, _| ()).is_err(),
         "a stale snapshot cannot lend a persisted transition with the current store"
     );
+    assert_eq!(
+        daemon.engine().daemon().owner().head().root(),
+        source_capture_root,
+        "the refused-compiler terminal changes only capture state and preserves both workspace relation roots"
+    );
     let terminal_snapshot = daemon.engine().daemon().owner().snapshot();
+    terminal_snapshot
+        .with_persisted_transition(|persisted, _| {
+            assert!(
+                persisted
+                    .delta_header()
+                    .expect("terminal capture delta header")
+                    .relations()
+                    .is_empty(),
+                "cold refusal recovery cannot rely on any ordinary relation delta"
+            );
+            let actual = super::admit_persisted_intent(persisted.closure_manifest().objects())
+                .expect("selected typed compiler refusal intent");
+            assert_eq!(actual.capture_changes().len(), 1);
+            assert_eq!(
+                actual.capture_changes()[0].compiler_failure.as_ref(),
+                Some(&failure)
+            );
+            assert_eq!(actual.capture_basis(), Some(basis_after_unrelated));
+        })
+        .expect("inspect the selected refused capture-only publication");
     let selected_base = terminal_snapshot
         .selected_base_publication()
         .expect("resolve exact selected base publication")
