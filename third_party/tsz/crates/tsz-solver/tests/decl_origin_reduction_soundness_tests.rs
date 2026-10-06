@@ -1,0 +1,360 @@
+//! Adversarial soundness gate for the #14345 WAVE-1 decl-origin-through-reduction
+//! consult (branch `green/wave1-cowalk`).
+//!
+//! The consult (`check_subtype`, `cache.rs`) accepts two reduced-body
+//! `TypeParameter` leaves when their carried `DeclScoped { file, node }` origins
+//! form a registered alpha-rename pair. The prior co-walk was UNSOUND; this
+//! module proves the origin-keyed consult does NOT register/accept a FALSE
+//! `T ≡ U` correspondence while still accepting the genuine same-decl `B ≡ A`
+//! alpha-rename.
+//!
+//! These tests exercise the REAL relation path (`SubtypeChecker::check_subtype`
+//! with a populated `type_param_equivalences` table), not just the isolated
+//! `matches_binders` helper. Each checker receives an explicit immutable
+//! `ProjectSemanticOptions` value; no process-global environment can change the
+//! policy under test.
+
+use crate::construction::TypeInterner;
+use crate::relations::subtype::{SubtypeChecker, TypeParamEquivalence};
+use crate::types::{TypeData, TypeId, TypeParamBinderKey, TypeParamInfo, TypeParamOrigin};
+use tsz_common::interner::Atom;
+
+fn decl(file: u32, node: u32) -> TypeParamOrigin {
+    TypeParamOrigin::DeclScoped {
+        file: Atom(file),
+        node,
+    }
+}
+
+/// Build a `TypeParameter` leaf whose surface name is `name` and whose origin is
+/// `origin`. Two leaves with the SAME name but DIFFERENT origin intern to
+/// DISTINCT ids (the decl-identity stamp differentiates the bare info), which is
+/// exactly the name-collision the WAVE-1 fix must survive.
+fn param_leaf(interner: &TypeInterner, name: &str, origin: TypeParamOrigin) -> TypeId {
+    interner.intern(TypeData::TypeParameter(param_info(interner, name, origin)))
+}
+
+fn fresh_param_leaf(interner: &TypeInterner, name: &str, origin: TypeParamOrigin) -> TypeId {
+    interner.fresh_type_param(param_info(interner, name, origin))
+}
+
+fn param_info(interner: &TypeInterner, name: &str, origin: TypeParamOrigin) -> TypeParamInfo {
+    TypeParamInfo {
+        name: interner.intern_string(name),
+        constraint: None,
+        default: None,
+        is_const: false,
+        origin,
+    }
+}
+
+fn binder_key(interner: &TypeInterner, type_id: TypeId) -> TypeParamBinderKey {
+    match interner.lookup(type_id) {
+        Some(TypeData::TypeParameter(info)) => info
+            .declaration_binder_key()
+            .expect("test parameter must have authoritative binder identity"),
+        other => panic!("expected type parameter, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (1) OVER-RELATE ORACLE
+// ---------------------------------------------------------------------------
+
+/// The core over-relate oracle: two structurally-identical-at-leaf but
+/// DECL-DISTINCT params (`T` from one decl site, `U` from another; and a THIRD
+/// pair `V`/`W`) must NOT be bridged by the origin consult unless their origin
+/// pair was actually registered by the alpha-rename.
+///
+/// Setup: the alpha-rename registered `(T_origin, U_origin)` — the two signatures'
+/// aligned params. The reduced bodies then present a DIFFERENT leaf pair whose
+/// origins were NEVER registered (`V`/`W`, the es5-Array-map-element-T vs
+/// result-U-via-HKT witnesses — distinct declaration sites). The consult must
+/// reject them (`SubtypeResult != True` from the equivalence branch).
+#[test]
+fn over_relate_oracle_rejects_unregistered_origin_pair() {
+    let interner = TypeInterner::new();
+    let query_cache = crate::caches::query_cache::QueryCache::new(&interner)
+        .with_project_semantic_options(
+            tsz_common::ProjectSemanticOptions::declaration_scoped()
+                .with_declaration_origin_reduction(true),
+        );
+    let mut checker = SubtypeChecker::new(&query_cache).with_query_db(&query_cache);
+
+    // Registered alpha-rename pair: signature params T (file 57, node 20) and
+    // U (file 5, node 20). These are the ONLY origins the co-walk registered.
+    let t_leaf = param_leaf(&interner, "T", decl(57, 20));
+    let u_leaf = param_leaf(&interner, "U", decl(5, 20));
+    checker.type_param_equivalences.push(TypeParamEquivalence {
+        source: t_leaf,
+        target: u_leaf,
+        binders: Some((binder_key(&interner, t_leaf), binder_key(&interner, u_leaf))),
+    });
+
+    // KNOWN-FALSE leaf pair: V (file 88, node 3) and W (file 91, node 7) —
+    // distinct declaration sites that were NEVER registered. In the
+    // over-relate witness these are the Array element-T of `map` vs the result-U
+    // reached via HKT: structurally two bare params, semantically unrelated.
+    let v_leaf = param_leaf(&interner, "T", decl(88, 3));
+    let w_leaf = param_leaf(&interner, "U", decl(91, 7));
+
+    // The equivalence consult must NOT relate V and W: their origin pair is not
+    // registered, and their ids are not registered either. `check_subtype` may
+    // still return False via ordinary structural rules — what matters is it does
+    // NOT return True, i.e. the origin consult did not mint a false T≡U.
+    let related = checker.check_subtype(v_leaf, w_leaf).is_true();
+    assert!(
+        !related,
+        "OVER-RELATE: unregistered decl-distinct params V/W must not relate \
+         via the origin consult (registered pair was T/U only)"
+    );
+}
+
+/// Sharper over-relate: one leaf DOES carry a registered origin, but the OTHER
+/// leaf carries a THIRD, unregistered origin. A half-match must be rejected — the
+/// origin consult requires BOTH sides to match the registered pair.
+#[test]
+fn over_relate_oracle_rejects_half_registered_origin_pair() {
+    let interner = TypeInterner::new();
+    let query_cache = crate::caches::query_cache::QueryCache::new(&interner)
+        .with_project_semantic_options(
+            tsz_common::ProjectSemanticOptions::declaration_scoped()
+                .with_declaration_origin_reduction(true),
+        );
+    let mut checker = SubtypeChecker::new(&query_cache).with_query_db(&query_cache);
+
+    let t_leaf = param_leaf(&interner, "T", decl(57, 20));
+    let u_leaf = param_leaf(&interner, "U", decl(5, 20));
+    checker.type_param_equivalences.push(TypeParamEquivalence {
+        source: t_leaf,
+        target: u_leaf,
+        binders: Some((binder_key(&interner, t_leaf), binder_key(&interner, u_leaf))),
+    });
+
+    // Source leaf carries the registered T origin; target leaf carries a THIRD
+    // origin (file 5, node 21 — same file as U but a DIFFERENT declaration node).
+    let src = param_leaf(&interner, "T", decl(57, 20));
+    let bad_target = param_leaf(&interner, "U", decl(5, 21));
+
+    let related = checker.check_subtype(src, bad_target).is_true();
+    assert!(
+        !related,
+        "OVER-RELATE: a half-registered origin pair (registered T vs unregistered \
+         node-21 param) must not relate"
+    );
+}
+
+/// `Carrier<{v:T}>` vs `Carrier<{v:U}>` at the leaf: when T and U are distinct
+/// declarations and NOTHING was registered, the params must not relate. This is
+/// the empty-registry control — the origin consult has no entry to fire on, so a
+/// leaf pair with distinct origins stays unrelated.
+#[test]
+fn over_relate_oracle_empty_registry_keeps_distinct_params_apart() {
+    let interner = TypeInterner::new();
+    let query_cache = crate::caches::query_cache::QueryCache::new(&interner)
+        .with_project_semantic_options(
+            tsz_common::ProjectSemanticOptions::declaration_scoped()
+                .with_declaration_origin_reduction(true),
+        );
+    let mut checker = SubtypeChecker::new(&query_cache).with_query_db(&query_cache);
+
+    let t_leaf = param_leaf(&interner, "T", decl(57, 20));
+    let u_leaf = param_leaf(&interner, "U", decl(5, 20));
+
+    // No equivalence registered at all.
+    let related = checker.check_subtype(t_leaf, u_leaf).is_true();
+    assert!(
+        !related,
+        "OVER-RELATE: with an empty equivalence registry, decl-distinct params \
+         T and U must not relate"
+    );
+}
+
+/// Even with a registered pair present, a leaf pair where BOTH leaves share the
+/// SAME origin as ONE registered side (i.e. both are `T`) must not be coerced
+/// into relating a `T`-vs-something-else via the origin table. Here we probe two
+/// `T` leaves against the registered `(T,U)` — the origin match requires the
+/// pair `(T,U)`, and `(T,T)` is not registered, so it must not fire.
+#[test]
+fn over_relate_oracle_same_origin_both_sides_not_registered_as_pair() {
+    let interner = TypeInterner::new();
+    let query_cache = crate::caches::query_cache::QueryCache::new(&interner)
+        .with_project_semantic_options(
+            tsz_common::ProjectSemanticOptions::declaration_scoped()
+                .with_declaration_origin_reduction(true),
+        );
+    let mut checker = SubtypeChecker::new(&query_cache).with_query_db(&query_cache);
+
+    let t_leaf = param_leaf(&interner, "T", decl(57, 20));
+    let u_leaf = param_leaf(&interner, "U", decl(5, 20));
+    checker.type_param_equivalences.push(TypeParamEquivalence {
+        source: t_leaf,
+        target: u_leaf,
+        binders: Some((binder_key(&interner, t_leaf), binder_key(&interner, u_leaf))),
+    });
+
+    // Two DISTINCT leaves both carrying the T origin but a third leaf carrying a
+    // never-registered origin. `(T_origin, X_origin)` is not a registered pair.
+    let another_t = param_leaf(&interner, "T", decl(57, 20));
+    let unregistered = param_leaf(&interner, "Z", decl(200, 200));
+
+    // Note: `another_t` and `t_leaf` are the SAME interned id (same info), so
+    // check them against a truly-unregistered origin.
+    let related = checker.check_subtype(another_t, unregistered).is_true();
+    assert!(
+        !related,
+        "OVER-RELATE: T paired with an unregistered origin Z must not relate"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (2) POSITIVE CONTROL — genuine same-decl B ≡ A alpha-rename accepted.
+// ---------------------------------------------------------------------------
+
+/// The genuine WAVE-1 positive case: two reduced-body leaves whose `(file, node)`
+/// origins equal the registered signature-param pair MUST relate through the
+/// origin consult under the explicitly selected declaration-origin policy.
+#[test]
+fn positive_control_genuine_same_decl_pair_relates() {
+    let interner = TypeInterner::new();
+    let query_cache = crate::caches::query_cache::QueryCache::new(&interner)
+        .with_project_semantic_options(
+            tsz_common::ProjectSemanticOptions::declaration_scoped()
+                .with_declaration_origin_reduction(true),
+        );
+    let mut checker = SubtypeChecker::new(&query_cache).with_query_db(&query_cache);
+
+    // Registered alpha-rename: A (file 57, node 20) ≡ B (file 5, node 20).
+    let a_leaf = param_leaf(&interner, "A", decl(57, 20));
+    let b_leaf = param_leaf(&interner, "B", decl(5, 20));
+    checker.type_param_equivalences.push(TypeParamEquivalence {
+        source: a_leaf,
+        target: b_leaf,
+        binders: Some((binder_key(&interner, a_leaf), binder_key(&interner, b_leaf))),
+    });
+
+    // Reduced-body leaves carry the SAME exact declaration binders but can have
+    // fresh TypeIds after reconstruction. The declared names remain part of the
+    // binder keys, which prevents sibling JSDoc parameters sharing one owner
+    // from aliasing through this consult.
+    let a_remint = fresh_param_leaf(&interner, "A", decl(57, 20));
+    let b_remint = fresh_param_leaf(&interner, "B", decl(5, 20));
+    assert_ne!(
+        a_remint, a_leaf,
+        "the re-minted A leaf must have a distinct id despite preserving its exact binder"
+    );
+    assert_ne!(
+        b_remint, b_leaf,
+        "the re-minted B leaf must have a distinct id despite preserving its exact binder"
+    );
+
+    let related = checker.check_subtype(a_remint, b_remint).is_true();
+    assert!(
+        related,
+        "the typed declaration-origin policy must relate the genuine registered pair"
+    );
+}
+
+/// Attribution guard: with the typed option ON but NO equivalence registered, the same
+/// re-minted `(A,B)` leaves must NOT relate. This proves the positive control's
+/// relation is attributable to the ORIGIN CONSULT (a registered origin pair) and
+/// not to some unrelated structural fallback that would relate two bare params.
+#[test]
+fn attribution_guard_no_registration_means_no_relation_even_flag_on() {
+    let interner = TypeInterner::new();
+    let query_cache = crate::caches::query_cache::QueryCache::new(&interner)
+        .with_project_semantic_options(
+            tsz_common::ProjectSemanticOptions::declaration_scoped()
+                .with_declaration_origin_reduction(true),
+        );
+    let mut checker = SubtypeChecker::new(&query_cache).with_query_db(&query_cache);
+
+    // Same leaves as the positive control, but nothing registered.
+    let a_remint = param_leaf(&interner, "renamedA", decl(57, 20));
+    let b_remint = param_leaf(&interner, "renamedB", decl(5, 20));
+
+    let related = checker.check_subtype(a_remint, b_remint).is_true();
+    assert!(
+        !related,
+        "ATTRIBUTION: without a registered equivalence, two decl-distinct bare \
+         params must not relate — so the positive control's relation is due to \
+         the origin consult, not a structural fallback"
+    );
+}
+
+/// Order-insensitivity of the genuine pair: (B,A) queried against a registered
+/// (A,B) must also relate (alpha-rename is symmetric).
+#[test]
+fn positive_control_genuine_pair_relates_both_orders() {
+    let interner = TypeInterner::new();
+    let query_cache = crate::caches::query_cache::QueryCache::new(&interner)
+        .with_project_semantic_options(
+            tsz_common::ProjectSemanticOptions::declaration_scoped()
+                .with_declaration_origin_reduction(true),
+        );
+    let mut checker = SubtypeChecker::new(&query_cache).with_query_db(&query_cache);
+
+    let a_leaf = param_leaf(&interner, "A", decl(57, 20));
+    let b_leaf = param_leaf(&interner, "B", decl(5, 20));
+    checker.type_param_equivalences.push(TypeParamEquivalence {
+        source: a_leaf,
+        target: b_leaf,
+        binders: Some((binder_key(&interner, a_leaf), binder_key(&interner, b_leaf))),
+    });
+
+    let a_remint = fresh_param_leaf(&interner, "A", decl(57, 20));
+    let b_remint = fresh_param_leaf(&interner, "B", decl(5, 20));
+
+    let related_reversed = checker.check_subtype(b_remint, a_remint).is_true();
+    assert!(
+        related_reversed,
+        "the typed declaration-origin policy must match the registered pair in either order"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Direct discriminator probe (mirrors the checker's own unit tests but at the
+// consult granularity): a registered origin pair matched against a genuine leaf
+// pair fires; against a false pair it does not. This proves the discriminator
+// itself is exact regardless of the process flag state.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn discriminator_matches_genuine_and_rejects_false() {
+    let interner = TypeInterner::new();
+    let source = param_info(&interner, "A", decl(57, 20));
+    let target = param_info(&interner, "B", decl(5, 20));
+    let eq = TypeParamEquivalence {
+        source: TypeId(100),
+        target: TypeId(200),
+        binders: Some((
+            source.declaration_binder_key().unwrap(),
+            target.declaration_binder_key().unwrap(),
+        )),
+    };
+
+    // Genuine exact-binder pair (either order) matches.
+    assert!(eq.matches_binders(source, target));
+    assert!(eq.matches_binders(target, source));
+
+    // False pairs: any differing owner or declared name on either side rejects.
+    assert!(!eq.matches_binders(param_info(&interner, "A", decl(57, 21)), target,));
+    assert!(!eq.matches_binders(source, param_info(&interner, "B", decl(5, 21)),));
+    assert!(!eq.matches_binders(param_info(&interner, "A", decl(58, 20)), target,));
+    assert!(!eq.matches_binders(param_info(&interner, "Sibling", decl(57, 20)), target,));
+    assert!(!eq.matches_binders(
+        param_info(&interner, "A", decl(1, 1)),
+        param_info(&interner, "B", decl(2, 2)),
+    ));
+
+    // User (unstamped) leaves never match — no declaration site.
+    let user_source = param_info(&interner, "A", TypeParamOrigin::User);
+    let user_target = param_info(&interner, "B", TypeParamOrigin::User);
+    assert!(!eq.matches_binders(user_source, target));
+    assert!(!eq.matches_binders(source, user_target));
+    assert!(!eq.matches_binders(user_source, user_target));
+
+    // An id-only equivalence (origins None) never matches on binders.
+    let id_only = TypeParamEquivalence::ids(TypeId(100), TypeId(200));
+    assert!(!id_only.matches_binders(source, target));
+}

@@ -1,0 +1,504 @@
+//! Tests for class `implements` with index signatures (TS2420/TS2411 interaction).
+//!
+//! When a class declares a compatible index signature and implements an interface
+//! whose only contract is that index signature, tsz must not emit TS2420.
+//! Extra class properties that violate the class's own index constraint produce
+//! TS2411 separately — they do not constitute a failure to implement.
+
+use tsz_checker::test_utils::check_source_code_messages as get_diagnostics;
+
+fn codes(source: &str) -> Vec<u32> {
+    get_diagnostics(source).iter().map(|(c, _)| *c).collect()
+}
+
+fn count_code(codes: &[u32], code: u32) -> usize {
+    codes.iter().filter(|&&actual| actual == code).count()
+}
+
+fn assert_index_key_spaces_are_clean(codes: &[u32], context: &str) {
+    assert!(
+        !codes.contains(&2322),
+        "{context}: string and symbol index values must stay split by key space; got {codes:?}",
+    );
+    assert!(
+        !codes.contains(&2538),
+        "{context}: symbol key access must not report TS2538; got {codes:?}",
+    );
+    assert!(
+        !codes.contains(&7053),
+        "{context}: indexed access must not report TS7053; got {codes:?}",
+    );
+}
+
+#[test]
+fn fbounded_implements_not_corrupted_by_recursive_alias_context() {
+    // Regression for issue #6557: recursive interface and recursive alias
+    // context must not corrupt the F-bounded Comparable<T> member lookup.
+    let source = r#"
+interface TreeNode2 {
+  value: number;
+  left?: TreeNode2;
+  right?: TreeNode2;
+}
+
+const tree: TreeNode2 = { value: 1, left: { value: 2 }, right: { value: 3, left: { value: 4 } } };
+
+type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
+
+const json: Json = { name: "test", values: [1, 2, { nested: true }], active: true };
+
+interface Comparable<T extends Comparable<T>> {
+  compareTo(other: T): number;
+}
+
+class MyNumber implements Comparable<MyNumber> {
+  constructor(public value: number) {}
+  compareTo(other: MyNumber): number { return this.value - other.value; }
+}
+"#;
+    let cs = codes(source);
+    assert!(
+        !cs.contains(&2420),
+        "expected no TS2420 for valid F-bounded implements; got codes: {cs:?}"
+    );
+}
+
+// ── Regression: issue #6370 ──────────────────────────────────────────────
+
+#[test]
+fn class_with_matching_string_index_sig_no_ts2420() {
+    // tsc emits only TS2411 for the `get` method violating the index constraint;
+    // it does NOT emit TS2420 because the class declares the matching index sig.
+    let source = r#"
+interface Dictionary {
+  [key: string]: string;
+}
+
+class StringDict implements Dictionary {
+  [key: string]: string;
+  get(key: string): string {
+    return this[key] ?? "";
+  }
+}
+"#;
+    let cs = codes(source);
+    assert!(
+        !cs.contains(&2420),
+        "expected no TS2420 when class declares a matching index signature; got codes: {cs:?}"
+    );
+    assert!(
+        cs.contains(&2411),
+        "expected TS2411 for `get` violating the string index constraint; got codes: {cs:?}"
+    );
+}
+
+#[test]
+fn class_with_matching_index_sig_and_extra_properties_no_ts2420() {
+    // Any number of extra named properties that violate the index constraint should
+    // produce TS2411 (one per property) but never TS2420.
+    let source = r#"
+interface Storage {
+  [key: string]: string;
+}
+
+class AppStorage implements Storage {
+  [key: string]: string;
+  serialize(): string { return ""; }
+  deserialize(): string { return ""; }
+}
+"#;
+    let cs = codes(source);
+    assert!(
+        !cs.contains(&2420),
+        "expected no TS2420 with multiple extra methods; got codes: {cs:?}"
+    );
+}
+
+#[test]
+fn class_with_number_index_sig_implements_number_indexed_interface() {
+    let source = r#"
+interface NumericStore {
+  [index: number]: number;
+}
+
+class NumberStore implements NumericStore {
+  [index: number]: number;
+  byName(key: string): number { return 0; }
+}
+"#;
+    let cs = codes(source);
+    assert!(
+        !cs.contains(&2420),
+        "expected no TS2420 for class with matching number index sig; got codes: {cs:?}"
+    );
+}
+
+#[test]
+fn class_with_matching_symbol_index_sig_no_ts2420() {
+    let source = r#"
+interface SymbolStore {
+  [key: symbol]: boolean;
+}
+
+class FlagStore implements SymbolStore {
+  [key: symbol]: boolean;
+  named(): string { return ""; }
+}
+"#;
+    let cs = codes(source);
+    assert!(
+        !cs.contains(&2420),
+        "expected no TS2420 for class with matching symbol index sig; got codes: {cs:?}"
+    );
+    assert!(
+        !cs.contains(&2411),
+        "symbol index must not constrain string-named class members; got codes: {cs:?}"
+    );
+}
+
+#[test]
+fn class_with_symbol_index_plus_named_props_satisfies_mixed_interface() {
+    let source = r#"
+interface SymbolNamedStore {
+  [key: symbol]: boolean;
+  name: string;
+}
+
+class NamedFlagStore implements SymbolNamedStore {
+  [key: symbol]: boolean;
+  name: string = "";
+}
+"#;
+    let cs = codes(source);
+    assert!(
+        !cs.contains(&2420),
+        "expected no TS2420 when class satisfies both named props and symbol index sig; got codes: {cs:?}"
+    );
+}
+
+#[test]
+fn class_with_string_and_symbol_indexes_suppresses_duplicate_ts2420() {
+    let source = r#"
+interface PropertyRegistry {
+  [key: string]: string;
+  [key: symbol]: boolean;
+}
+
+class Registry implements PropertyRegistry {
+  [key: string]: string;
+  [key: symbol]: boolean;
+  get(key: string): string {
+    return this[key] ?? "";
+  }
+}
+"#;
+    let cs = codes(source);
+    assert!(
+        !cs.contains(&2420),
+        "expected no duplicate TS2420 when class indexes satisfy interface indexes; got codes: {cs:?}"
+    );
+    assert_eq!(
+        count_code(&cs, 2411),
+        1,
+        "expected exactly one TS2411 for string-named method violating class string index constraint; got codes: {cs:?}"
+    );
+}
+
+#[test]
+fn private_field_index_access_uses_declared_type_over_empty_object_initializer() {
+    let source = r#"
+class Request {
+  readonly #subscribers: {
+    [key: string]: (event: "completed" | "error", error?: unknown) => void;
+  };
+
+  constructor() {
+    this.#subscribers = {};
+    const subscriptionKey = "onDone";
+    this.#subscribers[subscriptionKey] = (event, error) => {
+      delete this.#subscribers[subscriptionKey];
+    };
+  }
+}
+"#;
+    let cs = codes(source);
+    assert!(
+        !cs.contains(&7053),
+        "expected private field indexed access to use the declared index signature; got codes: {cs:?}"
+    );
+}
+
+#[test]
+fn private_field_index_access_uses_declared_mapped_record_over_empty_object_initializer() {
+    let source = r#"
+type Dict<T> = {
+  [P in string]: T;
+};
+
+class Request {
+  readonly #subscribers: Dict<
+    (event: "completed" | "error", error?: unknown) => void
+  >;
+
+  constructor() {
+    this.#subscribers = {};
+    const subscriptionKey = "onDone";
+    this.#subscribers[subscriptionKey] = (event, error) => {
+      delete this.#subscribers[subscriptionKey];
+    };
+  }
+}
+"#;
+    let cs = codes(source);
+    assert!(
+        !cs.contains(&7053),
+        "expected private mapped-record field indexed access to use the declared index signature; got codes: {cs:?}"
+    );
+}
+
+// ── Correct errors preserved ─────────────────────────────────────────────
+
+#[test]
+fn class_without_index_sig_gets_ts2420() {
+    // Class has no index signature at all → should still get TS2420.
+    let source = r#"
+interface Dictionary {
+  [key: string]: string;
+}
+
+class NoIndexSig implements Dictionary {
+  foo: string = "bar";
+}
+"#;
+    let cs = codes(source);
+    assert!(
+        cs.contains(&2420),
+        "expected TS2420 when class has no index signature; got codes: {cs:?}"
+    );
+}
+
+#[test]
+fn class_with_incompatible_index_sig_value_type_gets_ts2420() {
+    // Class declares `[key: string]: number` but interface requires `[key: string]: string`.
+    let source = r#"
+interface StringDict {
+  [key: string]: string;
+}
+
+class NumberDict implements StringDict {
+  [key: string]: number;
+}
+"#;
+    let cs = codes(source);
+    assert!(
+        cs.contains(&2420) || cs.iter().any(|&c| c == 2415 || c == 2416),
+        "expected a compatibility error when class index sig value type is incompatible; got codes: {cs:?}"
+    );
+}
+
+#[test]
+fn class_without_symbol_index_sig_gets_ts2420() {
+    let source = r#"
+interface SymbolDictionary {
+  [key: symbol]: boolean;
+}
+
+class NoSymbolIndexSig implements SymbolDictionary {
+  foo: boolean = true;
+}
+"#;
+    let cs = codes(source);
+    assert_eq!(
+        count_code(&cs, 2420),
+        1,
+        "expected exactly one TS2420 when class has no symbol index signature; got codes: {cs:?}"
+    );
+}
+
+#[test]
+fn class_with_string_index_sig_does_not_satisfy_symbol_index_sig() {
+    let source = r#"
+interface NeedsSymbols {
+  [key: symbol]: boolean;
+}
+
+class StringOnlyForSymbols implements NeedsSymbols {
+  [key: string]: boolean;
+}
+"#;
+    let cs = codes(source);
+    assert_eq!(
+        count_code(&cs, 2420),
+        1,
+        "expected exactly one TS2420 because a string index signature does not satisfy a symbol index signature; got codes: {cs:?}"
+    );
+}
+
+#[test]
+fn class_with_unique_symbol_member_does_not_satisfy_wide_symbol_index_sig() {
+    let source = r#"
+declare const tag: unique symbol;
+
+interface WideSymbols {
+  [key: symbol]: boolean;
+}
+
+class OneTag implements WideSymbols {
+  [tag]: boolean = true;
+}
+"#;
+    let cs = codes(source);
+    assert_eq!(
+        count_code(&cs, 2420),
+        1,
+        "expected exactly one TS2420 because one unique-symbol member is not a wide symbol index signature; got codes: {cs:?}"
+    );
+}
+
+#[test]
+fn class_with_incompatible_symbol_index_sig_value_type_gets_ts2420() {
+    let source = r#"
+interface SymbolFlags {
+  [key: symbol]: boolean;
+}
+
+class SymbolNumbers implements SymbolFlags {
+  [key: symbol]: number;
+}
+"#;
+    let cs = codes(source);
+    assert!(
+        cs.contains(&2420) || cs.iter().any(|&c| c == 2415 || c == 2416),
+        "expected a compatibility error when class symbol index value type is incompatible; got codes: {cs:?}"
+    );
+    assert!(
+        count_code(&cs, 2420) <= 1,
+        "symbol index value incompatibility should not duplicate TS2420; got codes: {cs:?}"
+    );
+}
+
+// ── Interaction: interface with both named properties and an index sig ────
+
+#[test]
+fn class_with_index_sig_plus_named_props_satisfies_mixed_interface() {
+    // When the interface has both named properties and an index sig, the class
+    // must satisfy all of them.  No TS2420 when everything lines up.
+    let source = r#"
+interface Named {
+  [key: string]: string;
+  name: string;
+}
+
+class Person implements Named {
+  [key: string]: string;
+  name: string = "Alice";
+  greet(): string { return "hi"; }
+}
+"#;
+    let cs = codes(source);
+    assert!(
+        !cs.contains(&2420),
+        "expected no TS2420 when class satisfies both named props and index sig; got codes: {cs:?}"
+    );
+}
+
+#[test]
+fn class_missing_named_prop_from_mixed_interface_gets_ts2420() {
+    // The class has the index sig but is missing the required named property.
+    let source = r#"
+interface Named {
+  [key: string]: string;
+  name: string;
+}
+
+class NoName implements Named {
+  [key: string]: string;
+}
+"#;
+    let cs = codes(source);
+    assert!(
+        cs.contains(&2420),
+        "expected TS2420 when class is missing a required named property; got codes: {cs:?}"
+    );
+}
+
+#[test]
+fn class_string_and_symbol_index_accesses_keep_key_spaces() {
+    let source = r#"
+declare const sym: symbol;
+
+class Registry {
+    [k: string]: number;
+    [k: symbol]: boolean;
+}
+
+declare const registry: Registry;
+const named: number = registry["name"];
+const keyed: boolean = registry[sym];
+"#;
+    let cs = codes(source);
+    assert_index_key_spaces_are_clean(&cs, "class own indexes");
+}
+
+#[test]
+fn derived_class_preserves_base_symbol_index_with_own_string_index() {
+    let source = r#"
+declare const sym: symbol;
+
+class Base {
+    [k: symbol]: boolean;
+}
+
+class Derived extends Base {
+    [k: string]: number;
+}
+
+declare const derived: Derived;
+const named: number = derived["name"];
+const keyed: boolean = derived[sym];
+"#;
+    let cs = codes(source);
+    assert_index_key_spaces_are_clean(&cs, "base symbol plus derived string index");
+}
+
+#[test]
+fn class_interface_merge_preserves_class_symbol_and_interface_string_indexes() {
+    let source = r#"
+declare const sym: symbol;
+
+class Registry {
+    [k: symbol]: boolean;
+}
+
+interface Registry {
+    [k: string]: number;
+}
+
+declare const registry: Registry;
+const named: number = registry["name"];
+const keyed: boolean = registry[sym];
+"#;
+    let cs = codes(source);
+    assert_index_key_spaces_are_clean(&cs, "class symbol plus interface string index");
+}
+
+#[test]
+fn class_interface_merge_preserves_interface_symbol_and_class_string_indexes() {
+    let source = r#"
+declare const sym: symbol;
+
+interface Bucket {
+    [k: symbol]: boolean;
+}
+
+class Bucket {
+    [k: string]: number;
+}
+
+declare const bucket: Bucket;
+const named: number = bucket["name"];
+const keyed: boolean = bucket[sym];
+"#;
+    let cs = codes(source);
+    assert_index_key_spaces_are_clean(&cs, "interface symbol plus class string index");
+}

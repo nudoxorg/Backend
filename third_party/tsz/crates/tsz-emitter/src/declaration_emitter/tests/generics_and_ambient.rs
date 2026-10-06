@@ -1,0 +1,1629 @@
+use super::*;
+
+// =============================================================================
+// 6. Generic Declarations
+// =============================================================================
+
+#[test]
+fn test_generic_function() {
+    let output = emit_dts("export function identity<T>(x: T): T { return x; }");
+    assert!(
+        output.contains("<T>"),
+        "Expected generic type parameter: {output}"
+    );
+    assert!(
+        output.contains("x: T"),
+        "Expected parameter with generic type: {output}"
+    );
+    assert!(
+        output.contains("): T;"),
+        "Expected return type with generic: {output}"
+    );
+}
+
+#[test]
+fn test_generic_interface_with_constraint() {
+    let output = emit_dts(
+        r#"
+    export interface Container<T extends object> {
+        value: T;
+    }
+    "#,
+    );
+    assert!(
+        output.contains("<T extends object>"),
+        "Expected generic type parameter with constraint: {output}"
+    );
+    assert!(
+        output.contains("value: T;"),
+        "Expected member with generic type: {output}"
+    );
+}
+
+#[test]
+fn test_generic_class_with_default() {
+    let output = emit_dts(
+        r#"
+    export class Box<T = string> {
+        content: T;
+        constructor(value: T) { this.content = value; }
+    }
+    "#,
+    );
+    assert!(
+        output.contains("<T = string>"),
+        "Expected generic type parameter with default: {output}"
+    );
+}
+
+#[test]
+fn test_generic_class_constructor_options_infer_object_member_type_arg() {
+    let output = emit_dts_with_binding(
+        r#"
+interface WidgetOptions<State, Computed> {
+    state?: State;
+    computed?: Computed;
+}
+
+declare class Widget<State, Computed> {
+    constructor(options: WidgetOptions<State, Computed>);
+}
+
+let widget = new Widget({
+    state: {
+        title: ""
+    }
+});
+"#,
+    );
+    assert!(
+        output.contains("declare let widget: Widget<{\n    title: string;\n}, unknown>;"),
+        "Expected constructor option object member to infer the matching class type argument: {output}"
+    );
+}
+
+#[test]
+fn test_generic_class_constructor_options_maps_option_type_params_by_position() {
+    let output = emit_dts_with_binding(
+        r#"
+interface SetupBox<Input, Output> {
+    payload?: Input;
+    result?: Output;
+}
+
+declare class Machine<Seed, Product> {
+    constructor(settings: SetupBox<Seed, Product>);
+}
+
+let machine = new Machine({
+    payload: {
+        enabled: true
+    }
+});
+"#,
+    );
+    assert!(
+        output.contains("declare let machine: Machine<{\n    enabled: boolean;\n}, unknown>;"),
+        "Expected option type parameter names to map to class type arguments by position: {output}"
+    );
+}
+
+#[test]
+fn test_namespace_qualified_generic_new_expression_preserves_explicit_type_arguments() {
+    let output = emit_dts_with_binding(
+        r#"
+namespace Outer {
+    export class Box<T> {}
+    export class Item {}
+}
+
+var value = new Outer.Box<Outer.Item>();
+"#,
+    );
+    assert!(
+        output.contains("declare var value: Outer.Box<Outer.Item>;"),
+        "Expected explicit type arguments on namespace-qualified new expression: {output}"
+    );
+}
+
+#[test]
+fn test_named_constructor_interface_uses_signature_type_parameter_defaults() {
+    let output = emit_dts_with_binding(
+        r#"
+interface Holder<Value> {
+    value: Value;
+}
+
+interface HolderFactory {
+    new <Payload = number>(value?: Payload): Holder<Payload>;
+}
+
+declare const Holder: HolderFactory;
+
+let inferredDefault = new Holder();
+let inferredArgument = new Holder("text");
+let explicitArgument = new Holder<boolean>();
+"#,
+    );
+
+    assert!(
+        output.contains("declare let inferredDefault: Holder<number>;"),
+        "Expected construct signature default type argument to be reused: {output}"
+    );
+    assert!(
+        output.contains("declare let inferredArgument: Holder<string>;"),
+        "Expected construct signature argument inference to be reused: {output}"
+    );
+    assert!(
+        output.contains("declare let explicitArgument: Holder<boolean>;"),
+        "Expected construct signature explicit type argument to be reused: {output}"
+    );
+}
+
+#[test]
+fn test_generic_call_this_type_descriptor_intersections_preserve_source_surfaces() {
+    let output = emit_dts_with_binding(
+        r#"
+type Point = {
+    x: number;
+    y: number;
+    moveBy(dx: number, dy: number): void;
+};
+
+type ObjectDescriptor<D, M> = {
+    data?: D;
+    methods?: M & ThisType<D & M>;
+};
+
+declare function makeObject<D, M>(desc: ObjectDescriptor<D, M>): D & M;
+
+let x = makeObject({
+    data: { x: 0, y: 0 },
+    methods: {
+        moveBy(dx: number, dy: number) {}
+    }
+});
+
+type PropDesc<T> = {
+    value?: T;
+    get?(): T;
+    set?(value: T): void;
+};
+
+declare function defineProp<T, K extends string, U>(obj: T, name: K, desc: PropDesc<U> & ThisType<T>): T & Record<K, U>;
+
+declare const point: Point;
+let p = defineProp(point, "foo", { value: 42 });
+"#,
+    );
+
+    assert!(
+        output.contains(
+            "declare let x: {\n    x: number;\n    y: number;\n} & {\n    moveBy(dx: number, dy: number): void;\n};"
+        ),
+        "Expected source object descriptor call to preserve `D & M`: {output}"
+    );
+    assert!(
+        output.contains("declare let p: Point & Record<\"foo\", number>;"),
+        "Expected descriptor intersection call to preserve alias and `Record`: {output}"
+    );
+}
+
+#[test]
+fn test_multiple_type_parameters() {
+    let output = emit_dts(
+        "export function map<T, U>(arr: T[], fn: (x: T) => U): U[] { return arr.map(fn); }",
+    );
+    assert!(
+        output.contains("<T, U>"),
+        "Expected multiple type parameters: {output}"
+    );
+}
+
+#[test]
+fn test_inferred_return_preserves_mapped_parameter_annotation() {
+    let output = emit_dts(
+        r#"
+    export function makeRecord<T, K extends string>(obj: { [P in K]: T }) {
+        return obj;
+    }
+
+    export function makeDictionary<T>(obj: { [x: string]: T }) {
+        return obj;
+    }
+
+    export function makeRecordRenamed<Value, Key extends string>(obj: { [X in Key]: Value }) {
+        return obj;
+    }
+
+    export function makeLookup<Value>(source: { [name: string]: Value }) {
+        return source;
+    }
+
+    export function makeMethod<Value>(source: { method(input: Value): void }) {
+        return source;
+    }
+    "#,
+    );
+
+    assert!(
+        output.contains("): { [P in K]: T; };"),
+        "Expected mapped parameter annotation to drive inferred return type: {output}"
+    );
+    assert!(
+        output.contains("): {\n    [x: string]: T;\n};"),
+        "Expected index signature parameter annotation to keep object return layout: {output}"
+    );
+    assert!(
+        output.contains("): { [X in Key]: Value; };"),
+        "Expected renamed mapped variables to use the same return annotation rule: {output}"
+    );
+    assert!(
+        output.contains("): {\n    [name: string]: Value;\n};"),
+        "Expected renamed index signature parameter annotation to keep object return layout: {output}"
+    );
+    assert!(
+        output.contains("): {\n    method(input: Value): void;\n};"),
+        "Expected method-signature parameter annotation to keep object return layout: {output}"
+    );
+}
+
+#[test]
+fn generic_call_returned_function_object_widens_callback_literals() {
+    let output = emit_dts_with_binding(
+        r#"
+type Func<Value> = (...args: any[]) => Value;
+type Spec<Shape> = {
+    [Field in keyof Shape]: Func<Shape[Field]> | Spec<Shape[Field]>;
+};
+declare function applySpec<Shape>(obj: Spec<Shape>): (...args: any[]) => Shape;
+
+export var g1 = applySpec({
+    sum: (a: any) => 3,
+    nested: {
+        mul: (b: any) => "n"
+    }
+});
+
+type Rule<Result> = {
+    [Name in keyof Result]: (() => Result[Name]) | Rule<Result[Name]>;
+};
+declare function makeRuleResult<Result>(rule: Rule<Result>): () => Result;
+
+export var g2 = makeRuleResult({
+    flag: () => true,
+    child: {
+        text: () => "ok"
+    }
+});
+"#,
+    );
+
+    assert!(
+        output.contains(
+            "export declare var g1: (...args: any[]) => {\n    sum: number;\n    nested: {\n        mul: string;\n    };\n};"
+        ),
+        "Expected callback literal returns to widen inside returned function object: {output}"
+    );
+    assert!(
+        output.contains(
+            "export declare var g2: () => {\n    flag: boolean;\n    child: {\n        text: string;\n    };\n};"
+        ),
+        "Expected renamed generic/mapped callback spec to use the same source-call rule: {output}"
+    );
+}
+
+#[test]
+fn generic_call_returned_function_object_requires_callback_leaves() {
+    let output = emit_dts(
+        r#"
+type Spec<Shape> = {
+    [Field in keyof Shape]: (() => Shape[Field]) | Spec<Shape[Field]>;
+};
+declare function applySpec<Shape>(obj: Spec<Shape>): () => Shape;
+
+export var g = applySpec({
+    value: 3
+});
+"#,
+    );
+
+    assert!(
+        !output.contains("export declare var g: () => {\n    value: number;\n};"),
+        "Non-callback leaves should fall back to the normal inferred call surface: {output}"
+    );
+}
+
+#[test]
+fn generic_call_pick_mapped_arguments_preserve_public_inference_surface() {
+    let output = emit_dts_with_binding(
+        r#"
+type Pick<T, K extends keyof T> = {
+    [P in K]: T[P];
+};
+type Box<T> = {
+    value: T;
+};
+type Boxified<T> = {
+    [P in keyof T]: Box<T[P]>;
+};
+declare function f20<T, K extends keyof T>(obj: Pick<T, K>): T;
+declare function f21<T, K extends keyof T>(obj: Pick<T, K>): K;
+declare function f22<T, K extends keyof T>(obj: Boxified<Pick<T, K>>): T;
+declare function f24<T, U, K extends keyof T | keyof U>(obj: Pick<T & U, K>): T & U;
+
+let x0 = f20({ foo: 42, bar: "hello" });
+let x1 = f21({ foo: 42, bar: "hello" });
+let x2 = f22({ foo: { value: 42 }, bar: { value: "hello" } });
+let x4 = f24({ foo: 42, bar: "hello" });
+
+function getProps<T, K extends keyof T>(obj: T, list: K[]): Pick<T, K> {
+    return {} as any;
+}
+const myAny: any = {};
+const o1 = getProps(myAny, ["foo", "bar"]);
+"#,
+    );
+
+    assert!(
+        output.contains("declare let x0: {\n    foo: number;\n    bar: string;\n};"),
+        "Expected Pick<T, K> object argument to infer the returned object surface: {output}"
+    );
+    assert!(
+        output.contains("declare let x1: \"bar\" | \"foo\";"),
+        "Expected Pick<T, K> object keys to infer K as a literal-key union in TypeScript 7 rank order: {output}"
+    );
+    assert!(
+        output.contains("declare let x2: {\n    foo: number;\n    bar: string;\n};"),
+        "Expected mapped wrapper over Pick<T, K> to unwrap one-property member values: {output}"
+    );
+    assert!(
+        output.contains(
+            "declare let x4: {\n    foo: number;\n    bar: string;\n} & {\n    foo: number;\n    bar: string;\n};"
+        ),
+        "Expected Pick<T & U, K> to preserve the intersection return surface: {output}"
+    );
+    assert!(
+        output.contains("declare const o1: Pick<any, \"bar\" | \"foo\">;"),
+        "Expected K[] literal argument to preserve Pick<any, literal-key-union>: {output}"
+    );
+}
+
+#[test]
+fn generic_call_non_mapped_wrapper_argument_does_not_infer_object_value_map() {
+    let output = emit_dts_with_usage_analysis(
+        r#"
+type Wrapper<V> = { value: V };
+type Options<S> = { computed?: Wrapper<S> };
+declare function make<S>(options: Options<S>): S;
+
+const result = make({
+    computed: {
+        total(): number {
+            return 1;
+        },
+        label: {
+            get() {
+                return "ready";
+            }
+        }
+    }
+});
+"#,
+    );
+
+    assert!(
+        output.contains("declare const result:"),
+        "Expected the call result declaration to be emitted: {output}"
+    );
+    assert!(
+        !output.contains("declare const result: {\n    total: number;\n    label: string;\n};"),
+        "Non-mapped wrapper aliases must not infer object value maps from argument shape: {output}"
+    );
+}
+
+#[test]
+fn construct_signature_non_mapped_wrapper_argument_does_not_infer_object_value_map() {
+    let output = emit_dts_with_usage_analysis(
+        r#"
+type Wrapper<V> = { value: V };
+type Options<S> = { computed?: Wrapper<S> };
+declare const Ctor: new <S>(options: Options<S>) => S;
+
+const result = new Ctor({
+    computed: {
+        total(): number {
+            return 1;
+        },
+        label: {
+            get() {
+                return "ready";
+            }
+        }
+    }
+});
+"#,
+    );
+
+    assert!(
+        output.contains("declare const result:"),
+        "Expected the construct result declaration to be emitted: {output}"
+    );
+    assert!(
+        !output.contains("declare const result: {\n    total: number;\n    label: string;\n};"),
+        "Construct signatures must not infer object value maps through non-mapped wrapper aliases: {output}"
+    );
+}
+
+#[test]
+fn generic_call_constrained_mapped_return_uses_concrete_constraint_surface() {
+    let output = emit_dts_with_binding(
+        r#"
+declare function f1<T1>(): { [P in keyof T1]: void };
+declare function f2<T1 extends string>(): { [P in keyof T1]: void };
+declare function f3<T1 extends number>(): { [P in keyof T1]: void };
+interface Number {
+    toString(): string;
+    toFixed(): string;
+    toExponential(): string;
+    toPrecision(): string;
+    valueOf(): number;
+    toLocaleString(): string;
+}
+declare function f4<T1 extends Number>(): { [P in keyof T1]: void };
+interface WrappedValue {
+    alpha(): string;
+    beta: number;
+}
+declare function f5<Value extends WrappedValue>(): { [Key in keyof Value]: boolean };
+
+let x1 = f1();
+let x2 = f2();
+let x3 = f3();
+let x4 = f4();
+let x5 = f5();
+"#,
+    );
+
+    assert!(
+        output.contains("declare let x2: string;"),
+        "Expected string-constrained mapped call result to expand to string: {output}"
+    );
+    assert!(
+        output.contains("declare let x3: number;"),
+        "Expected number-constrained mapped call result to expand to number: {output}"
+    );
+    assert!(
+        output.contains(
+            "declare let x4: {\n    toString: void;\n    toFixed: void;\n    toExponential: void;\n    toPrecision: void;\n    valueOf: void;\n    toLocaleString: void;\n};"
+        ),
+        "Expected object-wrapper mapped call result to expand public members: {output}"
+    );
+    assert!(
+        output.contains("declare let x5: {\n    alpha: boolean;\n    beta: boolean;\n};"),
+        "Expected renamed wrapper mapped call result to expand declared public members: {output}"
+    );
+}
+
+#[test]
+fn test_variadic_tuple_call_return_materializes_prefix_or_constraint() {
+    let output = emit_dts_with_binding(
+        r#"
+    declare function collect<Items extends readonly [string, ...string[]]>(
+        ...values: readonly [...Items, number]
+    ): [...Items, number];
+
+    export const one = collect("first", 1);
+    export const two = collect("first", "second", 1);
+    export const fallback = collect(1, 2);
+    "#,
+    );
+
+    assert!(
+        output.contains("export declare const one: [\"first\", number];"),
+        "Expected single literal prefix to materialize into the variadic tuple return: {output}"
+    );
+    assert!(
+        output.contains("export declare const two: [\"first\", \"second\", number];"),
+        "Expected multiple literal prefixes to materialize into the variadic tuple return: {output}"
+    );
+    assert!(
+        output.contains("export declare const fallback: [string, ...string[], number];"),
+        "Expected invalid or unmaterializable prefixes to fall back to the tuple constraint: {output}"
+    );
+}
+
+#[test]
+fn test_variadic_tuple_call_return_escapes_string_literal_prefixes() {
+    // The materialized prefix literal must carry TypeScript-compatible
+    // string-literal escaping derived from the cooked literal value, not from
+    // trimming the source token and re-wrapping it in quotes. The reported
+    // shapes that the source-slice approach mangled:
+    //   - a single-quoted string with an embedded double quote,
+    //   - a no-substitution template literal (backticks are not quote chars),
+    //   - a double-quoted string containing a backslash.
+    let output = emit_dts_with_binding(
+        r#"
+    declare function collect<Items extends readonly [string, ...string[]]>(
+        ...values: readonly [...Items, number]
+    ): [...Items, number];
+
+    export const sq = collect('a"b', 1);
+    export const tmpl = collect(`c"d`, 1);
+    export const bs = collect("e\\f", 1);
+    "#,
+    );
+
+    assert!(
+        output.contains(r#"export declare const sq: ["a\"b", number];"#),
+        "Single-quoted prefix with an embedded double quote must be re-escaped: {output}"
+    );
+    assert!(
+        output.contains(r#"export declare const tmpl: ["c\"d", number];"#),
+        "No-substitution template prefix must emit an escaped double-quoted literal: {output}"
+    );
+    assert!(
+        output.contains(r#"export declare const bs: ["e\\f", number];"#),
+        "Prefix containing a backslash must preserve the escaped backslash: {output}"
+    );
+}
+
+// =============================================================================
+// 7. Ambient / Declare Declarations
+// =============================================================================
+
+#[test]
+fn test_declare_class_passthrough() {
+    let output = emit_dts(
+        r#"
+    declare class Foo {
+        bar(): void;
+    }
+    "#,
+    );
+    assert!(
+        output.contains("declare class Foo"),
+        "Expected declare class: {output}"
+    );
+    assert!(
+        output.contains("bar(): void;"),
+        "Expected method signature: {output}"
+    );
+}
+
+#[test]
+fn test_declare_function_passthrough() {
+    let output = emit_dts("declare function greet(name: string): void;");
+    assert!(
+        output.contains("declare function greet(name: string): void;"),
+        "Expected declare function: {output}"
+    );
+}
+
+#[test]
+fn test_declare_var_passthrough() {
+    let output = emit_dts("declare var globalName: string;");
+    assert!(
+        output.contains("declare var globalName: string;"),
+        "Expected declare var: {output}"
+    );
+}
+
+// =============================================================================
+// 8. Module / Namespace Declarations
+// =============================================================================
+
+#[test]
+fn test_namespace_declaration() {
+    let output = emit_dts(
+        r#"
+    export declare namespace MyLib {
+        function create(): void;
+        class Widget {
+            name: string;
+        }
+    }
+    "#,
+    );
+    assert!(
+        output.contains("export declare namespace MyLib"),
+        "Expected namespace declaration: {output}"
+    );
+    assert!(
+        output.contains("function create(): void;"),
+        "Expected function in namespace: {output}"
+    );
+    assert!(
+        output.contains("class Widget"),
+        "Expected class in namespace: {output}"
+    );
+}
+
+#[test]
+fn test_nested_namespace() {
+    let output = emit_dts(
+        r#"
+    export declare namespace Outer {
+        namespace Inner {
+            const value: number;
+        }
+    }
+    "#,
+    );
+    assert!(
+        output.contains("namespace Outer"),
+        "Expected outer namespace: {output}"
+    );
+    assert!(
+        output.contains("namespace Inner"),
+        "Expected inner namespace: {output}"
+    );
+}
+
+// =============================================================================
+// 9. Enum Declarations
+// =============================================================================
+
+#[test]
+fn test_regular_enum() {
+    let output = emit_dts(
+        r#"
+    export enum Color {
+        Red,
+        Green,
+        Blue
+    }
+    "#,
+    );
+    assert!(
+        output.contains("export declare enum Color"),
+        "Expected exported declare enum: {output}"
+    );
+    assert!(output.contains("Red"), "Expected Red member: {output}");
+    assert!(output.contains("Green"), "Expected Green member: {output}");
+    assert!(output.contains("Blue"), "Expected Blue member: {output}");
+}
+
+#[test]
+fn test_const_enum() {
+    let output = emit_dts(
+        r#"
+    export const enum Direction {
+        Up = 0,
+        Down = 1,
+        Left = 2,
+        Right = 3
+    }
+    "#,
+    );
+    assert!(
+        output.contains("export declare const enum Direction"),
+        "Expected exported declare const enum: {output}"
+    );
+    assert!(output.contains("Up = 0"), "Expected Up = 0: {output}");
+    assert!(output.contains("Right = 3"), "Expected Right = 3: {output}");
+}
+
+#[test]
+fn test_invalid_const_enum_object_index_access_emits_any() {
+    let output = emit_dts_with_binding(
+        r#"
+const enum G {
+    A = 1,
+    B = 2,
+}
+let z1 = G[G.A];
+"#,
+    );
+
+    assert!(
+        output.contains("declare let z1: any;"),
+        "Expected invalid const enum object index access to emit any: {output}"
+    );
+}
+
+#[test]
+fn test_string_enum() {
+    let output = emit_dts(
+        r#"
+    export enum Status {
+        Active = "active",
+        Inactive = "inactive"
+    }
+    "#,
+    );
+    assert!(
+        output.contains("Active = \"active\""),
+        "Expected string enum value: {output}"
+    );
+    assert!(
+        output.contains("Inactive = \"inactive\""),
+        "Expected string enum value: {output}"
+    );
+}
+
+#[test]
+fn test_enum_auto_increment() {
+    let output = emit_dts(
+        r#"
+    export enum Seq {
+        A = 10,
+        B,
+        C
+    }
+    "#,
+    );
+    assert!(output.contains("A = 10"), "Expected A = 10: {output}");
+    assert!(
+        output.contains("B = 11"),
+        "Expected B = 11 (auto-increment): {output}"
+    );
+    assert!(
+        output.contains("C = 12"),
+        "Expected C = 12 (auto-increment): {output}"
+    );
+}
+
+// =============================================================================
+// Generic method return types with indexed access (issue #8520)
+// =============================================================================
+
+/// Build a minimal type cache for a generic class method where the checker has stored
+/// an `IndexAccess` type as the method's node type (as opposed to a function type).
+fn emit_dts_with_index_access_return(source: &str, method_name_str: &str) -> String {
+    use tsz_parser::parser::syntax_kind_ext;
+
+    let mut parser = tsz_parser::ParserState::new("test.ts".to_string(), source.to_string());
+    let root = parser.parse_source_file();
+    let mut binder = BinderState::new();
+    binder.bind_source_file(&parser.arena, root);
+
+    let interner = TypeInterner::new();
+
+    // Find the method declaration node.
+    let method_idx = parser
+        .arena
+        .nodes
+        .iter()
+        .enumerate()
+        .find_map(|(idx, node)| {
+            if node.kind != syntax_kind_ext::METHOD_DECLARATION {
+                return None;
+            }
+            let nidx = NodeIndex(idx as u32);
+            let decl = parser.arena.get_method_decl(parser.arena.get(nidx)?)?;
+            if parser.arena.get_identifier_text(decl.name)? == method_name_str {
+                Some(nidx)
+            } else {
+                None
+            }
+        })
+        .expect("method not found");
+
+    // Find the class node to get its type params.
+    let class_idx = parser
+        .arena
+        .nodes
+        .iter()
+        .enumerate()
+        .find_map(|(idx, node)| {
+            (node.kind == syntax_kind_ext::CLASS_DECLARATION).then_some(NodeIndex(idx as u32))
+        })
+        .expect("class not found");
+
+    // Collect all in-scope type parameter node indices (class + method).
+    let class_type_param_nodes: Vec<NodeIndex> = parser
+        .arena
+        .get(class_idx)
+        .and_then(|n| parser.arena.get_class(n))
+        .and_then(|c| c.type_parameters.as_ref())
+        .map(|list| list.nodes.clone())
+        .unwrap_or_default();
+
+    let method_decl = parser
+        .arena
+        .get(method_idx)
+        .and_then(|n| parser.arena.get_method_decl(n))
+        .expect("method decl not found");
+
+    let method_type_param_nodes: Vec<NodeIndex> = method_decl
+        .type_parameters
+        .as_ref()
+        .map(|list| list.nodes.clone())
+        .unwrap_or_default();
+
+    // Build TypeId for each type parameter by reading its name from the AST.
+    let mut param_type_ids: Vec<(String, TypeId)> = Vec::new();
+    for &idx in class_type_param_nodes
+        .iter()
+        .chain(method_type_param_nodes.iter())
+    {
+        let name = parser
+            .arena
+            .get(idx)
+            .and_then(|n| parser.arena.get_type_parameter(n))
+            .and_then(|p| parser.arena.get_identifier_text(p.name))
+            .expect("type param name");
+        let atom = interner.intern_string(&name);
+        let type_id = interner.type_param(tsz_solver::TypeParamInfo::simple(atom));
+        param_type_ids.push((name.to_string(), type_id));
+    }
+
+    // Build the IndexAccess type: <first_class_param>[<first_method_param>].
+    // For `getProperty<K>(key: K): PropType[K]` that is PropType[K].
+    let obj_type = param_type_ids.first().expect("class type param").1;
+    let idx_type = param_type_ids.last().expect("method type param").1;
+    let return_type_id = interner.index_access(obj_type, idx_type);
+
+    let mut node_types = FxHashMap::default();
+    node_types.insert(method_idx.0, return_type_id);
+
+    let type_cache = crate::type_cache_view::TypeCacheView {
+        node_types,
+        ..Default::default()
+    };
+
+    let mut emitter =
+        DeclarationEmitter::with_type_info(&parser.arena, type_cache, &interner, &binder);
+    emitter.emit(root)
+}
+
+fn emit_dts_with_method_node_return_type(
+    source: &str,
+    method_name_str: &str,
+    return_type_id: TypeId,
+) -> String {
+    use tsz_parser::parser::syntax_kind_ext;
+
+    let mut parser = tsz_parser::ParserState::new("test.ts".to_string(), source.to_string());
+    let root = parser.parse_source_file();
+    let mut binder = BinderState::new();
+    binder.bind_source_file(&parser.arena, root);
+
+    let interner = TypeInterner::new();
+    let method_idx = parser
+        .arena
+        .nodes
+        .iter()
+        .enumerate()
+        .find_map(|(idx, node)| {
+            if node.kind != syntax_kind_ext::METHOD_DECLARATION {
+                return None;
+            }
+            let nidx = NodeIndex(idx as u32);
+            let decl = parser.arena.get_method_decl(parser.arena.get(nidx)?)?;
+            (parser.arena.get_identifier_text(decl.name)? == method_name_str).then_some(nidx)
+        })
+        .expect("method not found");
+
+    let mut node_types = FxHashMap::default();
+    node_types.insert(method_idx.0, return_type_id);
+
+    let type_cache = crate::type_cache_view::TypeCacheView {
+        node_types,
+        ..Default::default()
+    };
+
+    let mut emitter =
+        DeclarationEmitter::with_type_info(&parser.arena, type_cache, &interner, &binder);
+    emitter.emit(root)
+}
+
+fn emit_dts_with_function_return_type(
+    source: &str,
+    function_name_str: &str,
+    return_type_id: TypeId,
+) -> String {
+    use tsz_parser::parser::syntax_kind_ext;
+
+    let mut parser = tsz_parser::ParserState::new("test.ts".to_string(), source.to_string());
+    let root = parser.parse_source_file();
+    let mut binder = BinderState::new();
+    binder.bind_source_file(&parser.arena, root);
+
+    let interner = TypeInterner::new();
+    let func_idx = parser
+        .arena
+        .nodes
+        .iter()
+        .enumerate()
+        .find_map(|(idx, node)| {
+            if node.kind != syntax_kind_ext::FUNCTION_DECLARATION {
+                return None;
+            }
+            let nidx = NodeIndex(idx as u32);
+            let func = parser.arena.get_function(parser.arena.get(nidx)?)?;
+            (parser.arena.get_identifier_text(func.name)? == function_name_str).then_some(nidx)
+        })
+        .expect("function not found");
+
+    let func_type = interner.function(FunctionShape::new(Vec::new(), return_type_id));
+    let mut node_types = FxHashMap::default();
+    node_types.insert(func_idx.0, func_type);
+
+    let type_cache = crate::type_cache_view::TypeCacheView {
+        node_types,
+        ..Default::default()
+    };
+
+    let mut emitter =
+        DeclarationEmitter::with_type_info(&parser.arena, type_cache, &interner, &binder);
+    emitter.emit(root)
+}
+
+fn preferred_function_body_return_text(source: &str, function_name_str: &str) -> Option<String> {
+    use tsz_parser::parser::syntax_kind_ext;
+
+    let mut parser = tsz_parser::ParserState::new("test.ts".to_string(), source.to_string());
+    let root = parser.parse_source_file();
+    let mut binder = BinderState::new();
+    binder.bind_source_file(&parser.arena, root);
+    let interner = TypeInterner::new();
+    let type_cache = crate::type_cache_view::TypeCacheView::default();
+
+    let function_idx = parser
+        .arena
+        .nodes
+        .iter()
+        .enumerate()
+        .find_map(|(idx, node)| {
+            if node.kind != syntax_kind_ext::FUNCTION_DECLARATION {
+                return None;
+            }
+            let nidx = NodeIndex(idx as u32);
+            let func = parser.arena.get_function(parser.arena.get(nidx)?)?;
+            (parser.arena.get_identifier_text(func.name)? == function_name_str).then_some(nidx)
+        })?;
+    let func = parser
+        .arena
+        .get(function_idx)
+        .and_then(|node| parser.arena.get_function(node))?;
+    let emitter = DeclarationEmitter::with_type_info(&parser.arena, type_cache, &interner, &binder);
+    emitter.function_body_preferred_return_type_text(func.body)
+}
+
+#[test]
+fn test_generic_class_method_indexed_access_return_class_param() {
+    // Method returns PropType[K] where PropType is the class type param and K is the method's.
+    let output = emit_dts_with_index_access_return(
+        r#"
+export class Component<PropType> {
+    props: PropType;
+    constructor(props: PropType) { this.props = props; }
+    getProperty<K extends keyof PropType>(key: K): PropType[K] {
+        return this.props[key];
+    }
+}
+"#,
+        "getProperty",
+    );
+    assert!(
+        output.contains("getProperty<K extends keyof PropType>(key: K): PropType[K]"),
+        "Expected indexed-access return type with class type param: {output}"
+    );
+}
+
+#[test]
+fn test_generic_class_method_indexed_access_return_different_names() {
+    // Same semantic rule, different type-parameter names — guards against hardcoded-name fixes.
+    let output = emit_dts_with_index_access_return(
+        r#"
+export class Store<TState> {
+    state: TState;
+    constructor(s: TState) { this.state = s; }
+    select<TKey extends keyof TState>(k: TKey): TState[TKey] {
+        return this.state[k];
+    }
+}
+"#,
+        "select",
+    );
+    assert!(
+        output.contains("select<TKey extends keyof TState>(k: TKey): TState[TKey]"),
+        "Expected indexed-access return type with renamed type params: {output}"
+    );
+}
+
+#[test]
+fn test_generic_class_method_indexed_access_non_generic_class_unaffected() {
+    // Non-generic class: the fix must not change output for plain methods.
+    let output = emit_dts(
+        r#"
+export class Plain {
+    get(key: string): string { return ""; }
+}
+"#,
+    );
+    assert!(
+        output.contains("get(key: string): string"),
+        "Non-generic class method should still emit correctly: {output}"
+    );
+}
+
+#[test]
+fn test_unannotated_method_indexed_access_return_preserves_declared_receiver_surface() {
+    let output = emit_dts_with_method_node_return_type(
+        r#"
+class Shape {
+    name: string;
+    width: number;
+    height: number;
+}
+export class Reader {
+    readShape<K extends keyof Shape>(shape: Shape, key: K) {
+        return shape[key];
+    }
+}
+"#,
+        "readShape",
+        TypeId::NUMBER,
+    );
+    assert!(
+        output.contains("readShape<K extends keyof Shape>(shape: Shape, key: K): Shape[K]"),
+        "Expected indexed-access return surface from declared receiver: {output}"
+    );
+}
+
+#[test]
+fn test_unannotated_method_indexed_access_return_preserves_renamed_key_surface() {
+    let output = emit_dts_with_method_node_return_type(
+        r#"
+type Store = {
+    title: string;
+    count: number;
+};
+export class Reader {
+    readStore<TKey extends keyof Store>(store: Store, key: TKey) {
+        return store[key];
+    }
+}
+"#,
+        "readStore",
+        TypeId::STRING,
+    );
+    assert!(
+        output
+            .contains("readStore<TKey extends keyof Store>(store: Store, key: TKey): Store[TKey]"),
+        "Expected indexed-access return surface with renamed key type: {output}"
+    );
+}
+
+#[test]
+fn test_unannotated_this_indexed_access_return_preserves_this_surface() {
+    let output = emit_dts_with_method_node_return_type(
+        r#"
+export class Bag {
+    value: number;
+    get<TKey extends keyof this>(key: TKey) {
+        return this[key];
+    }
+}
+"#,
+        "get",
+        TypeId::NUMBER,
+    );
+    assert!(
+        output.contains("get<TKey extends keyof this>(key: TKey): this[TKey]"),
+        "Expected this-indexed return surface: {output}"
+    );
+}
+
+#[test]
+fn test_full_emit_unannotated_this_indexed_access_return_preserves_key_param() {
+    let output = emit_dts(
+        r#"
+export class Bag {
+    value: number;
+    get<K extends keyof this>(key: K) {
+        return this[key];
+    }
+}
+"#,
+    );
+    assert!(
+        output.contains("get<K extends keyof this>(key: K): this[K]"),
+        "Expected full emit to preserve this-indexed key parameter: {output}"
+    );
+}
+
+#[test]
+fn test_unannotated_indexed_access_return_preserves_array_element_key_surface() {
+    let output = emit_dts_with_method_node_return_type(
+        r#"
+type Store<K extends string> = { [P in K]: 0 | 1 };
+export class Reader {
+    read<K extends string>(store: Store<K>, keys: K[]) {
+        return store[keys[0]];
+    }
+}
+"#,
+        "read",
+        TypeId::NUMBER,
+    );
+    assert!(
+        output.contains("read<K extends string>(store: Store<K>, keys: K[]): Store<K>[K]"),
+        "Expected indexed-access return surface from array element key: {output}"
+    );
+}
+
+#[test]
+fn test_unannotated_function_indexed_access_return_preserves_array_element_key_surface() {
+    let output = emit_dts_with_function_return_type(
+        r#"
+type Store<K extends string> = { [P in K]: 0 | 1 };
+export function read<K extends string>(store: Store<K>, keys: K[]) {
+    return store[keys[0]];
+}
+"#,
+        "read",
+        TypeId::NUMBER,
+    );
+    assert!(
+        output.contains("read<K extends string>(store: Store<K>, keys: K[]): Store<K>[K]"),
+        "Expected top-level indexed-access return surface from array element key: {output}"
+    );
+}
+
+#[test]
+fn test_unannotated_function_returning_local_indexed_helper_call_preserves_surface() {
+    let source = r#"
+interface Shape {
+    name: string;
+    width: number;
+    height: number;
+    visible: boolean;
+}
+function getProperty<T, K extends keyof T>(obj: T, key: K) {
+    return obj[key];
+}
+export function read<S extends Shape, K extends keyof S>(shape: S, key: K) {
+    let prop = getProperty(shape, key);
+    return prop;
+}
+"#;
+    assert_eq!(
+        preferred_function_body_return_text(source, "read").as_deref(),
+        Some("S[K]")
+    );
+    let output = emit_dts_with_function_return_type(source, "read", TypeId::NUMBER);
+    assert!(
+        output.contains("read<S extends Shape, K extends keyof S>(shape: S, key: K): S[K]"),
+        "Expected local helper-call indexed-access surface: {output}"
+    );
+}
+
+#[test]
+fn test_explicit_type_argument_indexed_member_call_result_uses_member_type() {
+    let output = emit_dts_with_binding(
+        r#"
+type MethodDescriptor = {
+    name: string;
+    args: any[];
+    returnValue: any;
+};
+declare function dispatchMethod<M extends MethodDescriptor>(
+    name: M["name"],
+    args: M["args"]
+): M["returnValue"];
+type StringMethodDescriptor = {
+    name: "stringMethod";
+    args: [string, number];
+    returnValue: string[];
+};
+let result = dispatchMethod<StringMethodDescriptor>("stringMethod", ["hello", 35]);
+"#,
+    );
+    assert!(
+        output.contains("declare let result: string[]"),
+        "Expected explicit type argument indexed member return to evaluate to member type: {output}"
+    );
+}
+
+#[test]
+fn test_generic_pipe_callback_contextual_length_return_is_number() {
+    let output = emit_dts_with_binding(
+        r#"
+declare function compose<Args extends any[], Value, Result>(
+    first: (...args: Args) => Value,
+    second: (value: Value) => Result
+): (...args: Args) => Result;
+
+let made = compose(input => "hello", value => value.length);
+"#,
+    );
+    assert!(
+        output.contains("declare let made: (input: any) => number;"),
+        "Expected contextual callback length return to infer number: {output}"
+    );
+}
+
+#[test]
+fn test_renamed_generic_pipe_callback_contextual_length_return_is_number() {
+    let output = emit_dts_with_binding(
+        r#"
+declare function flow<Items extends any[], Item, Output>(
+    left: (...parts: Items) => Item,
+    right: (source: Item) => Output
+): (...parts: Items) => Output;
+
+let result = flow(token => "x", renamed => renamed.length);
+"#,
+    );
+    assert!(
+        output.contains("declare let result: (token: any) => number;"),
+        "Expected renamed contextual callback length return to infer number: {output}"
+    );
+}
+
+#[test]
+fn test_unannotated_method_returning_indexed_helper_call_preserves_this_surface() {
+    let output = emit_dts_with_method_node_return_type(
+        r#"
+function read<TObj, TKey extends keyof TObj>(obj: TObj, key: TKey) {
+    return obj[key];
+}
+export class Person {
+    parts: number;
+    getParts() {
+        return read(this, "parts");
+    }
+}
+"#,
+        "getParts",
+        TypeId::NUMBER,
+    );
+    assert!(
+        output.contains("getParts(): this[\"parts\"]"),
+        "Expected helper call indexed-access surface: {output}"
+    );
+}
+
+#[test]
+fn test_unannotated_method_returning_inherited_this_indexed_method_call_preserves_surface() {
+    let output = emit_dts_with_method_node_return_type(
+        r#"
+export class Base {
+    get<TKey extends keyof this>(key: TKey) {
+        return this[key];
+    }
+}
+export class Person extends Base {
+    parts: number;
+    getParts() {
+        return this.get("parts");
+    }
+}
+"#,
+        "getParts",
+        TypeId::NUMBER,
+    );
+    assert!(
+        output.contains("getParts(): this[\"parts\"]"),
+        "Expected inherited this-indexed method call surface: {output}"
+    );
+}
+
+// #17430: a method whose body is a bare `return this.#privateField` has no
+// printable source-text return form (the private access is not reconstructable
+// from source text like `this.pub` or `store[key]` are), so the source-text
+// return-type fallback yields nothing. When the checker has stored the inferred
+// return type directly on the method node, that stored type must be emitted
+// rather than degrading to `any`.
+#[test]
+fn test_bare_private_field_return_emits_stored_return_type() {
+    let output = emit_dts_with_method_node_return_type(
+        r#"
+export class Counter {
+    #value = 1;
+    read() {
+        return this.#value;
+    }
+}
+"#,
+        "read",
+        TypeId::NUMBER,
+    );
+    assert!(
+        output.contains("read(): number;"),
+        "Expected the stored `number` return type, not `any`: {output}"
+    );
+    assert!(
+        !output.contains("read(): any"),
+        "Private-field-returning method must not fall back to `any`: {output}"
+    );
+}
+
+// =============================================================================
+// JS heritage references to imported / re-exported classes
+//
+// Structural rule: when a JS class `extends X` and `X` resolves (through an
+// import alias or `export =` re-export) to a class constructor — including the
+// classic `namespace N { class N {} } export = N` value-meaning merge — tsc
+// emits `extends X` directly instead of synthesizing a `declare const X_base`
+// alias. The synthetic `_base` alias is only for non-nameable heritage
+// expressions (mixin calls, anonymous constructors, `any` values, etc.).
+// =============================================================================
+
+#[test]
+fn test_js_extends_export_equals_namespace_class_merge_stays_nameable() {
+    // `import { EventEmitter }` resolves through `export = EventEmitter` to the
+    // namespace whose self-named member is `class EventEmitter`. Its value
+    // meaning is a class constructor, so no `_base` alias is synthesized.
+    let source = r#"
+declare module "events" {
+    namespace EventEmitter {
+        class EventEmitter {
+            constructor();
+        }
+    }
+    export = EventEmitter;
+}
+import { EventEmitter } from "events";
+export class Listener extends EventEmitter {
+}
+"#;
+    let output = emit_js_dts_with_usage_analysis(source);
+    assert!(
+        output.contains("export class Listener extends EventEmitter {"),
+        "Expected imported namespace+class merge heritage to stay nameable: {output}"
+    );
+    assert!(
+        !output.contains("Listener_base"),
+        "Did not expect a synthetic base alias for an imported class constructor: {output}"
+    );
+}
+
+#[test]
+fn test_js_extends_export_equals_namespace_class_merge_rename_independent() {
+    // Same rule, different identifier spellings: the match is structural
+    // (member name equals the namespace's own name), not keyed on a specific
+    // identifier such as `EventEmitter`.
+    let source = r#"
+declare module "ui-widget" {
+    namespace Gadget {
+        class Gadget {
+            constructor();
+        }
+    }
+    export = Gadget;
+}
+import { Gadget } from "ui-widget";
+export class Panel extends Gadget {
+}
+"#;
+    let output = emit_js_dts_with_usage_analysis(source);
+    assert!(
+        output.contains("export class Panel extends Gadget {"),
+        "Expected the rule to hold for arbitrary identifier spellings: {output}"
+    );
+    assert!(
+        !output.contains("Panel_base"),
+        "Did not expect a synthetic base alias for a renamed imported class: {output}"
+    );
+}
+
+#[test]
+fn test_js_extends_imported_nested_namespace_class_stays_nameable() {
+    // `import { Inner }` re-exported as `export = a.b` resolves to the class
+    // `Inner` declared in the nested namespace — a class constructor, so the
+    // heritage stays nameable.
+    let source = r#"
+declare module "nested-mod" {
+    namespace a.b {
+        class Inner { }
+    }
+    export = a.b;
+}
+import { Inner } from "nested-mod";
+export class Outer extends Inner {
+}
+"#;
+    let output = emit_js_dts_with_usage_analysis(source);
+    assert!(
+        output.contains("export class Outer extends Inner {"),
+        "Expected nested-namespace re-exported class heritage to stay nameable: {output}"
+    );
+    assert!(
+        !output.contains("Outer_base"),
+        "Did not expect a synthetic base alias for a nested re-exported class: {output}"
+    );
+}
+
+#[test]
+fn test_js_extends_imported_typeof_entity_heritage_stays_nameable() {
+    let source = r#"
+import { LitElement } from "lit";
+export class ElementB extends LitElement {
+}
+"#;
+    let mut parser = ParserState::new("index.js".to_string(), source.to_string());
+    let root = parser.parse_source_file();
+    let mut binder = BinderState::new();
+    binder.bind_source_file(&parser.arena, root);
+
+    let class_idx = find_class_node(
+        &parser,
+        "ElementB",
+        tsz_parser::parser::syntax_kind_ext::CLASS_DECLARATION,
+    );
+    let extends_expr_idx = find_class_extends_expression(&parser, class_idx);
+    let lit_element_sym = binder
+        .file_locals
+        .get("LitElement")
+        .expect("missing imported LitElement symbol");
+    let interner = TypeInterner::new();
+    let mut type_cache = crate::type_cache_view::TypeCacheView::default();
+    let typeof_lit_element = interner.type_query(SymbolRef(lit_element_sym.0));
+    type_cache
+        .node_types
+        .insert(extends_expr_idx.0, typeof_lit_element);
+    let current_arena = Arc::new(parser.arena.clone());
+    let mut emitter =
+        DeclarationEmitter::with_type_info(&parser.arena, type_cache, &interner, &binder);
+    emitter.set_current_arena(current_arena, "index.js".to_string());
+    let output = emitter.emit(root);
+
+    assert!(
+        output.contains("export class ElementB extends LitElement {"),
+        "Expected imported `typeof` entity heritage to stay nameable: {output}"
+    );
+    assert!(
+        !output.contains("ElementB_base"),
+        "Did not expect a synthetic base alias for nameable `typeof` heritage: {output}"
+    );
+}
+
+#[test]
+fn test_js_extends_imported_namespace_without_class_member_is_not_class_constructor() {
+    // Negative case: the imported namespace's self-named member is a *variable*,
+    // not a class, so its value meaning is NOT a class constructor. The new
+    // nameability rule keys on a class member, so it must not flip on here and
+    // produce a `class Probe` declaration in the heritage merge. (`tsc` would
+    // error on extending a non-constructor; we only assert tsz does not treat
+    // the value-meaning as a class.)
+    let with_class = emit_js_dts_with_usage_analysis(
+        r#"
+declare module "klass-mod" {
+    namespace Probe {
+        class Probe {
+            constructor();
+        }
+    }
+    export = Probe;
+}
+import { Probe } from "klass-mod";
+export class C1 extends Probe {
+}
+"#,
+    );
+    let with_value = emit_js_dts_with_usage_analysis(
+        r#"
+declare module "value-mod" {
+    namespace Probe {
+        let Probe: number;
+    }
+    export = Probe;
+}
+import { Probe } from "value-mod";
+export class C2 extends Probe {
+}
+"#,
+    );
+    // The class-member case stays nameable (no `_base` alias).
+    assert!(
+        with_class.contains("export class C1 extends Probe {") && !with_class.contains("C1_base"),
+        "Expected the class-member merge to keep heritage nameable: {with_class}"
+    );
+    // The non-class-member case must NOT be recognized by the class-constructor
+    // value-meaning rule: it does not get the nameable-class treatment that the
+    // class case does. The two outputs must differ in heritage handling.
+    assert!(
+        with_value.contains("C2_base") || !with_value.contains("extends Probe {"),
+        "Expected a non-class same-named member to not be treated as a class constructor: {with_value}"
+    );
+}
+
+// =============================================================================
+// Function-local type-alias nameability for inferred declaration emit.
+//
+// Rule: a type alias declared inside a function body is not visible at module
+// scope, so it can never be referenced by name in a `.d.ts`. When such an alias
+// appears in an inferred return type, tsc expands it structurally (eliding any
+// recursive arm to `/*elided*/ any`) rather than printing the bare local name.
+// The fix keys on this structural function-local fact, not on the spelling of
+// the alias or any enclosing type parameter. These tests exercise the structural
+// detector directly; the full inferred-emit pipeline is covered by the emit
+// corpus baseline `declarationEmitInferredTypeAlias4`.
+// =============================================================================
+
+fn function_local_alias_detector_for(source: &str, alias_name: &str) -> bool {
+    let mut parser = ParserState::new("test.ts".to_string(), source.to_string());
+    let root = parser.parse_source_file();
+    let mut binder = BinderState::new();
+    binder.bind_source_file(&parser.arena, root);
+
+    let interner = TypeInterner::new();
+    let type_cache = crate::type_cache_view::TypeCacheView::default();
+    let mut emitter =
+        DeclarationEmitter::with_type_info(&parser.arena, type_cache, &interner, &binder);
+    // `name_is_function_local_type_alias` only depends on the binder symbol table
+    // and AST parentage, so it does not require an emit pass; still drive `emit`
+    // so the emitter is in the same configured state as production callers.
+    let _ = emitter.emit(root);
+    emitter.name_is_function_local_type_alias(alias_name)
+}
+
+#[test]
+fn function_local_type_alias_is_detected_for_inferred_emit() {
+    // Alias declared inside a function body -> function-local -> must expand.
+    assert!(
+        function_local_alias_detector_for(
+            "function f<A>() {\n    type Foo<T> = T | { x: Foo<T> };\n    var x: Foo<A[]>;\n    return x;\n}\n",
+            "Foo",
+        ),
+        "a type alias declared inside a function body must be flagged function-local"
+    );
+}
+
+#[test]
+fn function_local_type_alias_detection_keys_on_scope_not_name() {
+    // Same structural scenario with every binder-bound name changed
+    // (Q/Bar/U/z instead of A/Foo/T/x). If the detector were keyed on the
+    // spelling `Foo`, this renamed variant would slip through.
+    assert!(
+        function_local_alias_detector_for(
+            "function g<Q>() {\n    type Bar<U> = U | { y: Bar<U> };\n    var z: Bar<Q[]>;\n    return z;\n}\n",
+            "Bar",
+        ),
+        "renaming the alias/type-parameter must not change the function-local verdict"
+    );
+}
+
+#[test]
+fn function_local_non_generic_type_alias_is_detected() {
+    // Non-generic function-local alias used in an inferred return must also be
+    // flagged so it is expanded structurally rather than named.
+    assert!(
+        function_local_alias_detector_for(
+            "export function makeWidget() {\n  type Local = { kind: \"widget\"; size: number };\n  const w: Local = { kind: \"widget\", size: 3 };\n  return w;\n}\n",
+            "Local",
+        ),
+        "a non-generic function-local alias must be flagged function-local"
+    );
+}
+
+#[test]
+fn module_level_type_alias_is_not_function_local() {
+    // Negative case: an identically shaped alias declared at module scope IS
+    // nameable in the `.d.ts` and must be preserved by name, so the detector
+    // must report it as NOT function-local.
+    assert!(
+        !function_local_alias_detector_for(
+            "type Foo<T> = T | { x: Foo<T> };\nexport function f<A>() {\n    var x: Foo<A[]>;\n    return x;\n}\n",
+            "Foo",
+        ),
+        "a module-level alias must not be treated as function-local"
+    );
+    assert!(
+        !function_local_alias_detector_for(
+            "type Widget = { kind: \"widget\"; size: number };\nexport function makeWidget() {\n  const w: Widget = { kind: \"widget\", size: 3 };\n  return w;\n}\n",
+            "Widget",
+        ),
+        "a module-level non-generic alias must not be treated as function-local"
+    );
+}
+
+#[test]
+fn unresolved_function_body_type_reference_is_not_function_local_alias() {
+    // A missing global type reference inside a function body may still have a
+    // binder symbol, but it is not a type-alias declaration. The function-local
+    // detector must not treat unresolved references as local aliases or
+    // transpileDeclaration emits a spurious TS7056.
+    assert!(
+        !function_local_alias_detector_for(
+            "export const fn = (a: MissingGlobalType) => null! as MissingGlobalType;\n",
+            "MissingGlobalType",
+        ),
+        "unresolved type references inside a function are not local aliases"
+    );
+}

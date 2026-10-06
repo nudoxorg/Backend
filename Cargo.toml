@@ -194,3 +194,19 @@ gpui_ce_scheduler = { path = "vendor/gpui_ce_scheduler" }
 ra_ap_hir_def = { path = "vendor/ra_ap_hir_def" }
 ra_ap_project_model = { path = "vendor/ra_ap_project_model" }
 ra_ap_toolchain = { path = "vendor/ra_ap_toolchain" }
+
+# Per-project TSZ semantic options are carried by QueryCache and every native
+# parallel checker instead of process-global identity environment variables.
+# The local source is pinned to the exact upstream revision recorded in
+# third_party/tsz/UPSTREAM_REVISION; upstream tests and licenses are retained.
+[patch."https://github.com/tsz-org/tsz.git"]
+tsz-core = { path = "third_party/tsz/crates/tsz-core" }
+tsz-common = { path = "third_party/tsz/crates/tsz-common" }
+tsz-scanner = { path = "third_party/tsz/crates/tsz-scanner" }
+tsz-parser = { path = "third_party/tsz/crates/tsz-parser" }
+tsz-binder = { path = "third_party/tsz/crates/tsz-binder" }
+tsz-solver = { path = "third_party/tsz/crates/tsz-solver" }
+tsz-lowering = { path = "third_party/tsz/crates/tsz-lowering" }
+tsz-checker = { path = "third_party/tsz/crates/tsz-checker" }
+tsz-emitter = { path = "third_party/tsz/crates/tsz-emitter" }
+tsz-lsp = { path = "third_party/tsz/crates/tsz-lsp" }

@@ -1,0 +1,823 @@
+use super::*;
+use tsz_parser::parser::ParserState;
+use tsz_parser::parser::syntax_kind_ext;
+
+fn emit_class(source: &str) -> String {
+    emit_class_with(source, false, false)
+}
+
+fn emit_class_with(
+    source: &str,
+    tc39_decorators: bool,
+    use_define_for_class_fields: bool,
+) -> String {
+    let mut parser = ParserState::new("test.ts".to_string(), source.to_string());
+    let root = parser.parse_source_file();
+
+    if let Some(root_node) = parser.arena.get(root)
+        && let Some(source_file) = parser.arena.get_source_file(root_node)
+    {
+        for &stmt_idx in &source_file.statements.nodes {
+            if let Some(node) = parser.arena.get(stmt_idx)
+                && node.kind == syntax_kind_ext::CLASS_DECLARATION
+            {
+                let mut emitter = ClassES5Emitter::new(&parser.arena);
+                emitter.set_source_text(source);
+                emitter.set_tc39_decorators(tc39_decorators);
+                emitter.set_use_define_for_class_fields(use_define_for_class_fields);
+                return emitter.emit_class(stmt_idx);
+            }
+        }
+    }
+    String::new()
+}
+
+#[test]
+fn test_derived_constructor_using_wraps_es5_super_and_initializers() {
+    let source = r#"
+class C extends A {
+    y = 1;
+    constructor(value) {
+        using x = null;
+        super();
+        this.y = value;
+    }
+}
+"#;
+    let output = emit_class(source);
+
+    assert!(
+        output.contains("var _this = this;"),
+        "Derived constructor with using should capture this before the resource region.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("var env_1 = { stack: [], error: void 0, hasError: false };"),
+        "Derived constructor with using should create a disposable env.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains(
+            "try {\n            var x = __addDisposableResource(env_1, null, false);\n            _this = _super.call(this) || this;\n            _this.y = 1;\n            _this.y = value;\n        }"
+        ),
+        "The resource region should wrap using registration, super lowering, field initializers, and remaining body statements.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains(
+            "catch (e_1) {\n            env_1.error = e_1;\n            env_1.hasError = true;\n        }"
+        ),
+        "Derived constructor resource region should preserve disposal errors.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("finally {\n            __disposeResources(env_1);\n        }"),
+        "Derived constructor resource region should dispose resources.\nOutput:\n{output}"
+    );
+    assert!(
+        !output.contains("var x = null;"),
+        "Using declarations inside the region must not fall back to plain var lowering.\nOutput:\n{output}"
+    );
+}
+
+#[test]
+fn test_async_resource_methods_use_disposable_context() {
+    let source = r#"
+class C {
+    a = async () => {
+        await using d = { async [Symbol.asyncDispose]() {} };
+    };
+
+    async am() {
+        await using d = { async [Symbol.asyncDispose]() {} };
+        await null;
+    }
+
+    async *ag() {
+        await using d = { async [Symbol.asyncDispose]() {} };
+        yield;
+        await null;
+    }
+}
+"#;
+    let mut parser = ParserState::new("test.ts".to_string(), source.to_string());
+    let root = parser.parse_source_file();
+    let source_file = parser
+        .arena
+        .get_source_file(parser.arena.get(root).expect("root node"))
+        .expect("source file");
+    let class_idx = source_file.statements.nodes[0];
+
+    let mut emitter = ClassES5Emitter::new(&parser.arena);
+    emitter.set_source_text(source);
+    emitter.set_disposable_env_context(21, Vec::<String>::new());
+    let mut inner_name_counts = rustc_hash::FxHashMap::default();
+    inner_name_counts.insert("ag".to_string(), 1);
+    emitter.set_async_generator_inner_name_counts(inner_name_counts);
+    let output = emitter.emit_class(class_idx);
+
+    assert!(
+        output.contains("var env_21, d, e_21, result_21;"),
+        "Async resource field initializer should consume env_21.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("var _this = this;"),
+        "Async arrow field initializers should capture lexical `this` once in the constructor.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("__awaiter(_this, void 0, void 0"),
+        "Async arrow field initializers should pass the captured class instance to __awaiter.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("var env_22, d, e_22, result_22;"),
+        "First async resource method should consume env_22.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("var env_23, d, e_23, result_23;"),
+        "Second async resource method should consume env_23.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("function ag_2()"),
+        "Class async generator inner names should continue the outer printer's suffix sequence.\nOutput:\n{output}"
+    );
+    assert_eq!(
+        emitter.disposable_env_counter(),
+        24,
+        "Class emitter should publish the next disposable env id"
+    );
+    assert_eq!(
+        emitter
+            .take_async_generator_inner_name_counts()
+            .get("ag")
+            .copied(),
+        Some(2),
+        "Class emitter should publish async generator inner-name counters"
+    );
+}
+
+#[test]
+fn test_simple_class() {
+    let output = emit_class("class Point { }");
+    assert!(
+        output.contains("var Point = /** @class */ (function ()"),
+        "Should have class IIFE: {output}"
+    );
+    assert!(
+        output.contains("function Point()"),
+        "Should have constructor: {output}"
+    );
+    assert!(
+        output.contains("return Point;"),
+        "Should return class name: {output}"
+    );
+}
+
+#[test]
+fn test_class_with_constructor() {
+    let output = emit_class(
+        r#"class Point {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+            }
+        }"#,
+    );
+    assert!(
+        output.contains("function Point(x, y)"),
+        "Should have constructor with params: {output}"
+    );
+}
+
+#[test]
+fn test_tc39_method_decorator_wraps_es5_class_and_initializes_parameter_property() {
+    let output = emit_class_with(
+        r#"class C {
+            constructor(private message: string) {}
+            @bound speak() {}
+        }"#,
+        true,
+        false,
+    );
+
+    assert!(
+        output.contains("var C = function () {"),
+        "Expected TC39 decorator wrapper around ES5 class.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("var _instanceExtraInitializers = [];"),
+        "Expected instance extra initializers.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains(
+            "this.message = (__runInitializers(this, _instanceExtraInitializers), message);"
+        ),
+        "Expected parameter property assignment to consume instance initializers.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("__esDecorate(_a, null, _speak_decorators, { kind: \"method\", name: \"speak\", static: false, private: false"),
+        "Expected TC39 method decorator application.\nOutput:\n{output}"
+    );
+}
+
+#[test]
+fn test_tc39_method_decorator_define_parameter_property_uses_initializer_value() {
+    let output = emit_class_with(
+        r#"class C {
+            constructor(private message: string) {}
+            @bound speak() {}
+        }"#,
+        true,
+        true,
+    );
+
+    assert!(
+        output.contains("Object.defineProperty(this, \"message\""),
+        "Expected parameter property to use defineProperty mode.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("value: (__runInitializers(this, _instanceExtraInitializers), message)"),
+        "Expected defineProperty value to consume instance initializers.\nOutput:\n{output}"
+    );
+}
+
+#[test]
+fn test_tc39_es5_public_field_decorators_schedule_instance_initializers() {
+    let output = emit_class_with(
+        r#"class C {
+            @dec(1) field1 = 1;
+            @dec(2) ["field2"] = 2;
+            @dec(3) [field3] = 3;
+        }"#,
+        true,
+        false,
+    );
+
+    assert!(
+        output.contains("var _field1_initializers = [];")
+            && output.contains("var _member_extraInitializers_1 = [];"),
+        "Decorated ES5 fields should declare per-field initializer arrays.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("this.field1 = __runInitializers(this, _field1_initializers, 1);")
+            && output.contains(
+                "this[_b] = (__runInitializers(this, _member_extraInitializers), __runInitializers(this, _member_initializers_1, 3));"
+            ),
+        "Instance field initializers should run decorator initializers in source order.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("__runInitializers(this, _member_extraInitializers_1);"),
+        "The last instance field extra initializers should run after all decorated fields.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("__esDecorate(null, null, _field1_decorators, { kind: \"field\"")
+            && output.contains("__esDecorate(null, null, _member_decorators_1, { kind: \"field\""),
+        "Field decorators should use the TC39 field helper shape.\nOutput:\n{output}"
+    );
+}
+
+#[test]
+fn test_tc39_es5_public_static_field_decorators_schedule_after_decoration() {
+    let output = emit_class_with(
+        r#"class C {
+            @dec(1) static field1 = 1;
+            @dec(2) static ["field2"] = 2;
+            @dec(3) static [field3] = 3;
+        }"#,
+        true,
+        true,
+    );
+
+    let decorate_pos = output
+        .find("__esDecorate(null, null, _static_field1_decorators")
+        .expect("expected static field decoration");
+    let init_pos = output
+        .find("Object.defineProperty(_a, \"field1\"")
+        .expect("expected static field initializer after decoration");
+    assert!(
+        decorate_pos < init_pos,
+        "Static decorated fields should initialize after decoration.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("value: __runInitializers(_a, _static_field1_initializers, 1)")
+            && output.contains(
+                "value: (__runInitializers(_a, _static_member_extraInitializers), __runInitializers(_a, _static_member_initializers_1, 3))"
+            ),
+        "Static defineProperty values should chain decorator field initializers.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("__runInitializers(_a, _static_member_extraInitializers_1);")
+            && !output.contains("C.field1 = 1;"),
+        "Static decorated fields should not also emit the undecorated static assignment.\nOutput:\n{output}"
+    );
+}
+
+#[test]
+fn test_legacy_accessor_decorator_metadata_uses_setter_parameter_type() {
+    let source = r#"class A {
+        @dec get x() { return 0; }
+        set x(value: number) {}
+    }"#;
+    let mut parser = ParserState::new("test.ts".to_string(), source.to_string());
+    let root = parser.parse_source_file();
+    let mut output = String::new();
+
+    if let Some(root_node) = parser.arena.get(root)
+        && let Some(source_file) = parser.arena.get_source_file(root_node)
+    {
+        for &stmt_idx in &source_file.statements.nodes {
+            if let Some(node) = parser.arena.get(stmt_idx)
+                && node.kind == syntax_kind_ext::CLASS_DECLARATION
+            {
+                let mut emitter = ClassES5Emitter::new(&parser.arena);
+                emitter.set_decorator_info(ClassDecoratorInfo {
+                    class_decorators: Vec::new(),
+                    has_member_decorators: true,
+                    emit_decorator_metadata: true,
+                });
+                output = emitter.emit_class(stmt_idx);
+                break;
+            }
+        }
+    }
+
+    assert!(
+        output.contains("__metadata(\"design:type\", Number),"),
+        "Expected accessor metadata design:type to come from the setter parameter.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("__metadata(\"design:paramtypes\", [Number])"),
+        "Expected accessor metadata paramtypes to include the setter parameter type.\nOutput:\n{output}"
+    );
+}
+
+#[test]
+fn test_legacy_async_method_decorator_metadata_without_annotation_uses_promise() {
+    let source = r#"class A {
+        @dec async inferred() {}
+        @dec async explicitAny(): any { return 1; }
+        @dec async *stream() { yield 1; }
+    }"#;
+    let mut parser = ParserState::new("test.ts".to_string(), source.to_string());
+    let root = parser.parse_source_file();
+    let mut output = String::new();
+
+    if let Some(root_node) = parser.arena.get(root)
+        && let Some(source_file) = parser.arena.get_source_file(root_node)
+    {
+        for &stmt_idx in &source_file.statements.nodes {
+            if let Some(node) = parser.arena.get(stmt_idx)
+                && node.kind == syntax_kind_ext::CLASS_DECLARATION
+            {
+                let mut emitter = ClassES5Emitter::new(&parser.arena);
+                emitter.set_decorator_info(ClassDecoratorInfo {
+                    class_decorators: Vec::new(),
+                    has_member_decorators: true,
+                    emit_decorator_metadata: true,
+                });
+                output = emitter.emit_class(stmt_idx);
+                break;
+            }
+        }
+    }
+
+    assert!(
+        output.contains("__metadata(\"design:returntype\", Promise)"),
+        "Inferred async ES5 method metadata should use Promise.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("__metadata(\"design:returntype\", Object)"),
+        "Explicit async `any` ES5 method metadata should serialize normally.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains("__metadata(\"design:returntype\", void 0)"),
+        "Unannotated async generator ES5 method metadata should stay void 0.\nOutput:\n{output}"
+    );
+}
+
+#[test]
+fn test_class_with_extends() {
+    let output = emit_class(
+        r#"class Dog extends Animal {
+            constructor(name) {
+                super(name);
+            }
+        }"#,
+    );
+    assert!(
+        output.contains("(function (_super)"),
+        "Should have _super parameter: {output}"
+    );
+    assert!(
+        output.contains("__extends(Dog, _super)"),
+        "Should have extends helper: {output}"
+    );
+    assert!(
+        output.contains("_super.call(this"),
+        "Should have super.call pattern: {output}"
+    );
+}
+
+#[test]
+fn test_arrow_body_computed_object_temp_is_function_scoped() {
+    let output = emit_class(
+        r#"class C extends Base {
+            constructor() {
+                super();
+                () => {
+                    var obj = {
+                        // computed key comment
+                        [(super(), "prop")]() { }
+                    };
+                };
+            }
+        }"#,
+    );
+
+    assert!(
+        output.contains("function () {\n            var _a;"),
+        "Computed object temp should be scoped to the lowered arrow body: {output}"
+    );
+    assert!(
+        !output.contains("function C() {\n        var _a;"),
+        "Computed object temp should not be hoisted to the constructor: {output}"
+    );
+}
+
+#[test]
+fn test_class_with_method() {
+    let output = emit_class(
+        r#"class Greeter {
+            greet() {
+                console.log("Hello");
+            }
+        }"#,
+    );
+    assert!(
+        output.contains("Greeter.prototype.greet = function ()"),
+        "Should have prototype method: {output}"
+    );
+}
+
+#[test]
+fn test_class_with_static_method() {
+    let output = emit_class(
+        r#"class Counter {
+            static count() {
+                return 0;
+            }
+        }"#,
+    );
+    assert!(
+        output.contains("Counter.count = function ()"),
+        "Should have static method: {output}"
+    );
+}
+
+#[test]
+fn test_class_with_private_field() {
+    let output = emit_class(
+        r#"class Container {
+            #value = 42;
+        }"#,
+    );
+    assert!(
+        output.contains("var _Container_value"),
+        "Should have WeakMap declaration: {output}"
+    );
+    assert!(
+        output.contains("_Container_value.set(this, 42)"),
+        "Private field initializer should store directly via WeakMap.set: {output}"
+    );
+}
+
+#[test]
+fn test_class_with_getter_setter() {
+    let output = emit_class(
+        r#"class Person {
+            _name: string = "";
+            get name() { return this._name; }
+            set name(value: string) { this._name = value; }
+        }"#,
+    );
+    assert!(
+        output.contains("Object.defineProperty"),
+        "Should have Object.defineProperty: {output}"
+    );
+    assert!(output.contains("get:"), "Should have getter: {output}");
+    assert!(output.contains("set:"), "Should have setter: {output}");
+}
+
+#[test]
+fn test_declare_class_ignored() {
+    let output = emit_class(
+        r#"declare class Foo {
+            bar(): void;
+        }"#,
+    );
+    assert!(output.is_empty(), "Declare class should produce no output");
+}
+
+#[test]
+fn test_constructor_trailing_comment_preserved() {
+    let output = emit_class(
+        r#"class C1 {
+            constructor(p3) {
+                this.p3 = p3;
+            } // OK
+        }"#,
+    );
+    assert!(
+        output.contains("} // OK"),
+        "Constructor trailing comment should be preserved: {output}"
+    );
+}
+
+#[test]
+fn test_empty_constructor_inner_comments_preserved() {
+    let output = emit_class(
+        r#"class C {
+            /** constructor comment
+            */
+            constructor() {
+                /** constructor comment2
+                */
+            }
+        }"#,
+    );
+
+    assert!(
+        output.contains("    /** constructor comment\n    */\n    function C() {"),
+        "Constructor leading block comment should keep TypeScript's ES5 indentation.\nOutput:\n{output}"
+    );
+    assert!(
+        output.contains(
+            "    function C() {\n        /** constructor comment2\n                */\n    }"
+        ),
+        "Detached block comment inside an empty constructor should be preserved.\nOutput:\n{output}"
+    );
+}
+
+#[test]
+fn test_empty_constructor_detached_line_comments_preserved() {
+    let output = emit_class(
+        r#"class C {
+            constructor() {
+                /// detached
+
+                // before close
+            }
+        }"#,
+    );
+
+    assert!(
+        output.contains("    function C() {\n        /// detached\n        // before close\n    }"),
+        "Detached line comments inside an empty constructor should be preserved.\nOutput:\n{output}"
+    );
+}
+
+#[test]
+fn test_var_function_recovery_supports_dollar_identifier() {
+    let output = emit_class(
+        r#"class C {
+            var $constructor() { }
+        }"#,
+    );
+    assert!(
+        output.contains("var $constructor;"),
+        "Recovery emit should keep `$` in identifier: {output}"
+    );
+}
+
+#[test]
+fn test_var_function_recovery_emits_canonical_tail() {
+    let output = emit_class("class C {\n    var constructor() { }\n}");
+    assert!(
+        output.contains("var C = /** @class */ (function () {"),
+        "Class IIFE should still be emitted before the recovery tail: {output}"
+    );
+    assert!(
+        output.ends_with("var constructor;\n(function () { });"),
+        "Recovered `var <name>() {{ }}` class member should emit tsc's canonical tail: {output}"
+    );
+}
+
+#[test]
+fn test_var_function_recovery_supports_renamed_binder() {
+    let output = emit_class("class Widget {\n    var myWidget_3() { }\n}");
+    assert!(
+        output.ends_with("var myWidget_3;\n(function () { });"),
+        "Recovery tail should use the recovered declaration name verbatim: {output}"
+    );
+}
+
+#[test]
+fn test_var_function_recovery_requires_var_keyword() {
+    let output = emit_class("class C {\n    let constructor() { }\n}");
+    assert!(
+        !output.contains("(function () { });"),
+        "`let` class-member recovery must not emit the var recovery tail: {output}"
+    );
+}
+
+#[test]
+fn test_var_function_recovery_requires_empty_parameter_list() {
+    let output = emit_class("class C {\n    var fn(a) { }\n}");
+    assert!(
+        !output.contains("var fn;"),
+        "Recovered member with parameters must not emit the recovery tail: {output}"
+    );
+}
+
+#[test]
+fn test_var_function_recovery_requires_empty_body() {
+    let output = emit_class("class C {\n    var fn() { run(); }\n}");
+    assert!(
+        !output.contains("var fn;"),
+        "Recovered member with a non-empty body must not emit the recovery tail: {output}"
+    );
+}
+
+#[test]
+fn test_var_function_recovery_skips_return_type_annotation() {
+    let output = emit_class("class C {\n    var fn(): void { }\n}");
+    assert!(
+        !output.contains("var fn;"),
+        "Recovered member with a return type must not emit the recovery tail: {output}"
+    );
+}
+
+#[test]
+fn test_var_initializer_member_has_no_recovery_tail() {
+    let output = emit_class("class C {\n    var x = 1;\n}");
+    assert!(
+        !output.contains("(function () { });"),
+        "`var x = 1` recovery is a property, not the var-function tail: {output}"
+    );
+}
+
+#[test]
+fn test_var_function_recovery_ignores_string_literal_text() {
+    // A healthy class must not gain a recovery tail just because a string
+    // literal inside it happens to contain the `var <name> () { }` shape.
+    let output = emit_class("class C {\n    m() { return \"var hijack () { }\"; }\n}");
+    assert!(
+        !output.contains("var hijack;"),
+        "String literal contents must not trigger the recovery tail: {output}"
+    );
+}
+
+// --- ES5 static private member down-leveling (#15302) --------------------
+//
+// At sub-ES2022 targets a static private field/method/accessor brands against
+// the class-value alias (`_a`, the `_a = C` binding) with its storage variable
+// threaded as the trailing `__classPrivateFieldGet(recv, _a, "<kind>",
+// <storage>)` argument, and a static `#name in obj` brand check lowers to
+// `__classPrivateFieldIn(_a, obj)`. Before the fix these left invalid output
+// (`C.()` for a call, raw `#name in obj`, and a 3-arg get that dropped the
+// storage box). All shapes below are verified byte-identical (modulo
+// whitespace) to `tsc` 6.0.2. Receivers use `this` so the assertions do not
+// depend on the separate class self-reference aliasing of an explicit class
+// name (a pre-existing, broader gap tracked apart from static privates).
+
+#[test]
+fn test_static_private_field_read_write_es5() {
+    let output = emit_class(
+        r#"class Registry {
+            static #slot = 1;
+            static read() { return this.#slot; }
+            static write() { this.#slot = 5; }
+        }"#,
+    );
+    assert!(
+        output.contains(r#"__classPrivateFieldGet(this, _a, "f", _Registry_slot)"#),
+        "static field read must brand against `_a` with the storage box as `f`: {output}"
+    );
+    assert!(
+        output.contains(r#"__classPrivateFieldSet(this, _a, 5, "f", _Registry_slot)"#),
+        "static field write must brand against `_a` with the storage box as `f`: {output}"
+    );
+    assert!(
+        output.contains("_a = Registry"),
+        "the class-value brand must be initialized `_a = Registry`: {output}"
+    );
+}
+
+#[test]
+fn test_static_private_method_call_es5() {
+    let output = emit_class(
+        r#"class Registry {
+            static #make() { return 2; }
+            static call() { return this.#make(); }
+        }"#,
+    );
+    assert!(
+        output.contains(r#"__classPrivateFieldGet(this, _a, "m", _Registry_make).call(this)"#),
+        "static method call must read the method value branded against `_a`, then `.call(this)`: {output}"
+    );
+    assert!(
+        !output.contains(".()"),
+        "static method call must never emit the broken `C.()` form: {output}"
+    );
+}
+
+#[test]
+fn test_static_private_accessor_es5() {
+    let output = emit_class(
+        r#"class Registry {
+            static get #view() { return 3; }
+            static set #view(v: number) {}
+            static getV() { return this.#view; }
+            static setV() { this.#view = 9; }
+        }"#,
+    );
+    assert!(
+        output.contains(r#"__classPrivateFieldGet(this, _a, "a", _Registry_view_get)"#),
+        "static getter must brand against `_a` with the getter fn as the trailing ref: {output}"
+    );
+    assert!(
+        output.contains(r#"__classPrivateFieldSet(this, _a, 9, "a", _Registry_view_set)"#),
+        "static setter must brand against `_a` with the setter fn as the trailing ref: {output}"
+    );
+}
+
+#[test]
+fn test_static_private_brand_check_es5() {
+    let output = emit_class(
+        r#"class Registry {
+            static #slot = 1;
+            static #make() { return 2; }
+            static brandF(o: any) { return #slot in o; }
+            static brandM(o: any) { return #make in o; }
+        }"#,
+    );
+    assert!(
+        output.contains("__classPrivateFieldIn(_a, o)"),
+        "a static `#name in obj` brand check must lower to `__classPrivateFieldIn(_a, obj)`: {output}"
+    );
+    assert!(
+        !output.contains("#slot in") && !output.contains("#make in"),
+        "the raw `#name in obj` operator must not survive down-leveling: {output}"
+    );
+}
+
+#[test]
+fn test_static_private_increment_temp_avoids_brand_collision_es5() {
+    // The `this.#slot++` read-modify-write needs a hoisted temp; it must not
+    // reuse the class-value brand `_a` (temp slot 0), which the same expression
+    // reads. tsc allocates `_b`; a `var _a;` here would shadow and clobber the
+    // brand.
+    let output = emit_class(
+        r#"class Registry {
+            static #slot = 0;
+            static inc() { this.#slot++; return this.#slot; }
+        }"#,
+    );
+    assert!(
+        output.contains("(_b = __classPrivateFieldGet(this, _a, \"f\", _Registry_slot), _b++, _b)"),
+        "the increment temp must be `_b`, distinct from the class brand `_a`: {output}"
+    );
+    assert!(
+        !output.contains("var _a;"),
+        "must not emit a member-local `var _a;` that shadows the class brand: {output}"
+    );
+}
+
+#[test]
+fn test_static_private_anti_hardcoding_renamed_binder_es5() {
+    // The brand/storage decision keys on the binding origin, never on the
+    // spelling: different class and member names must derive different storage
+    // vars while keeping the identical `_a`-branded shape.
+    let output = emit_class(
+        r#"class Vault {
+            static #secret = 1;
+            static peek() { return this.#secret; }
+        }"#,
+    );
+    assert!(
+        output.contains(r#"__classPrivateFieldGet(this, _a, "f", _Vault_secret)"#),
+        "storage var must derive from the actual class/field names (`_Vault_secret`): {output}"
+    );
+    assert!(
+        !output.contains("_Registry_"),
+        "no hardcoded name from other fixtures may leak: {output}"
+    );
+}
+
+#[test]
+fn test_instance_private_field_unchanged_by_static_slot_change_es5() {
+    // Routing static fields through read/write slots must not perturb the
+    // instance-field form: an instance private field still brands against its
+    // own `WeakMap` with the 3-arg get (no `_a`, no trailing ref).
+    let output = emit_class(
+        r#"class Box {
+            #value = 1;
+            static #shared = 2;
+            read() { return this.#value; }
+            static readShared() { return this.#shared; }
+        }"#,
+    );
+    assert!(
+        output.contains(r#"__classPrivateFieldGet(this, _Box_value, "f")"#),
+        "instance field read must keep the WeakMap-branded 3-arg get: {output}"
+    );
+    assert!(
+        output.contains(r#"__classPrivateFieldGet(this, _a, "f", _Box_shared)"#),
+        "static field read in the same class must still brand against `_a`: {output}"
+    );
+}

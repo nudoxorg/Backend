@@ -1,0 +1,1222 @@
+//! Tests for TS2430: Interface incorrectly extends interface
+//!
+//! Verifies correct behavior for interface extension compatibility,
+//! including scope-aware type resolution in ambient modules.
+
+use tsz_checker::test_utils::{
+    check_source_code_messages as get_diagnostics, diagnostics_with_code, has_diagnostic_code,
+};
+
+fn has_error_with_code(source: &str, code: u32) -> bool {
+    get_diagnostics(source).iter().any(|d| d.0 == code)
+}
+
+// =========================================================================
+// Basic TS2430: interface incorrectly extends interface
+// =========================================================================
+
+#[test]
+fn test_basic_incompatible_property_type() {
+    // Derived interface has incompatible property type
+    let source = r#"
+interface Base {
+    x: number;
+}
+interface Derived extends Base {
+    x: string;
+}
+"#;
+    assert!(
+        has_error_with_code(source, 2430),
+        "Should emit TS2430 when derived property type is incompatible"
+    );
+}
+
+#[test]
+fn test_compatible_extension_no_error() {
+    // Derived interface has compatible (same) property type
+    let source = r#"
+interface Base {
+    x: number;
+}
+interface Derived extends Base {
+    x: number;
+}
+"#;
+    assert!(
+        !has_error_with_code(source, 2430),
+        "Should NOT emit TS2430 when derived property type is compatible"
+    );
+}
+
+// =========================================================================
+// Module scope: same-name interface should not cause false TS2430
+// =========================================================================
+
+#[test]
+fn test_module_namespace_same_name_interface_no_false_positive() {
+    // This is the pattern from react16.d.ts that caused false TS2430.
+    // In the react16.d.ts structure:
+    //   declare module "react" {
+    //     type NativeClipboardEvent = ClipboardEvent;  // at module level
+    //     namespace React {
+    //       interface ClipboardEvent<T> extends SyntheticEvent<T> { ... } // in namespace
+    //     }
+    //   }
+    // The type alias at module level should resolve `ClipboardEvent` to the
+    // global one, NOT the namespace-scoped one. The flat file_locals lookup
+    // incorrectly shadowed the global with the namespace-local symbol.
+    let source = r#"
+interface Event {
+    type: string;
+}
+interface ClipboardEvent extends Event {
+    clipboardData: any;
+}
+
+declare module "mylib" {
+    type NativeClipboardEvent = ClipboardEvent;
+
+    namespace MyLib {
+        interface BaseSyntheticEvent {
+            nativeEvent: Event;
+        }
+
+        interface ClipboardEvent<T> extends BaseSyntheticEvent {
+            nativeEvent: NativeClipboardEvent;
+        }
+    }
+}
+"#;
+    assert!(
+        !has_error_with_code(source, 2430),
+        "Should NOT emit TS2430 for namespace-scoped interface with same name as global; \
+         type alias at module level should resolve to global ClipboardEvent. Got errors: {:?}",
+        get_diagnostics(source)
+    );
+}
+
+#[test]
+fn test_module_scoped_genuinely_incompatible() {
+    // Inside a module, a genuinely incompatible extension should still error.
+    let source = r#"
+declare module "mylib" {
+    interface Base {
+        x: number;
+    }
+    interface Derived extends Base {
+        x: string;
+    }
+}
+"#;
+    assert!(
+        has_error_with_code(source, 2430),
+        "Should emit TS2430 for genuinely incompatible extension inside module"
+    );
+}
+
+// =========================================================================
+// Type alias base: interface extends type alias
+// =========================================================================
+
+#[test]
+fn test_interface_extends_type_alias_incompatible() {
+    // Interface extends a type alias with incompatible property type
+    let source = r#"
+type T1 = { a: number };
+interface I1 extends T1 {
+    a: string;
+}
+"#;
+    assert!(
+        has_error_with_code(source, 2430),
+        "Should emit TS2430 when interface extends type alias with incompatible property. Got: {:?}",
+        get_diagnostics(source)
+    );
+}
+
+#[test]
+fn test_interface_extends_type_alias_compatible() {
+    // Interface extends a type alias with compatible property type — no error
+    let source = r#"
+type T1 = { a: number };
+interface I1 extends T1 {
+    a: number;
+}
+"#;
+    assert!(
+        !has_error_with_code(source, 2430),
+        "Should NOT emit TS2430 when interface extends type alias with compatible property. Got: {:?}",
+        get_diagnostics(source)
+    );
+}
+
+#[test]
+fn test_interface_extends_intersection_type_alias_incompatible() {
+    // Interface extends an intersection type alias with incompatible property
+    let source = r#"
+type T1 = { a: number };
+type T2 = T1 & { b: number };
+interface I2 extends T2 {
+    b: string;
+}
+"#;
+    assert!(
+        has_error_with_code(source, 2430),
+        "Should emit TS2430 when interface extends intersection type alias with incompatible property. Got: {:?}",
+        get_diagnostics(source)
+    );
+}
+
+#[test]
+fn test_interface_extends_mapped_type_alias_incompatible() {
+    // Interface extends a mapped type alias with incompatible property
+    let source = r#"
+type T5 = { [P in 'a' | 'b' | 'c']: string };
+interface I5 extends T5 {
+    c: number;
+}
+"#;
+    assert!(
+        has_error_with_code(source, 2430),
+        "Should emit TS2430 when interface extends mapped type alias with incompatible property. Got: {:?}",
+        get_diagnostics(source)
+    );
+}
+
+#[test]
+fn test_multi_base_both_incompatible_emits_two_ts2430() {
+    // When interface extends multiple bases and BOTH are incompatible,
+    // we must emit TS2430 for each incompatible base (not just the first).
+    let source = r#"
+interface Base1 {
+    x: { a: string; }
+}
+interface Base2 {
+    x: { b: string; }
+}
+interface Derived<T> extends Base1, Base2 {
+    x: { a: T; b: T; }
+}
+"#;
+    let diags = get_diagnostics(source);
+    let ts2430_count = diags.iter().filter(|d| d.0 == 2430).count();
+    assert_eq!(
+        ts2430_count, 2,
+        "Should emit TS2430 for BOTH incompatible bases, not just the first. Got: {diags:?}"
+    );
+}
+
+#[test]
+fn test_multi_base_one_compatible_emits_one_ts2430() {
+    // When only one of multiple bases is incompatible, emit exactly one TS2430.
+    let source = r#"
+interface Base1 {
+    x: { a: string; }
+}
+interface Base2 {
+    x: { b: string; }
+}
+interface Derived extends Base1, Base2 {
+    x: { a: string; b: number; }
+}
+"#;
+    let diags = get_diagnostics(source);
+    let ts2430_msgs: Vec<_> = diags
+        .iter()
+        .filter(|d| d.0 == 2430)
+        .map(|d| d.1.clone())
+        .collect();
+    assert_eq!(
+        ts2430_msgs.len(),
+        1,
+        "Should emit exactly one TS2430 (only Base2 is incompatible). Got: {ts2430_msgs:?}"
+    );
+    assert!(
+        ts2430_msgs[0].contains("Base2"),
+        "Error should mention Base2. Got: {:?}",
+        ts2430_msgs[0]
+    );
+}
+
+/// TODO: This test should emit TS2430 when interface extends array type alias with
+/// incompatible 'length' property, but array type resolution requires lib.d.ts
+/// (Array<T> interface) which is not available in the unit test environment.
+/// Once lib.d.ts is available in unit tests, update the assertion to expect TS2430.
+#[test]
+fn test_interface_extends_array_type_alias_incompatible() {
+    // Interface extends array type alias with incompatible length property
+    let source = r#"
+type T3 = number[];
+interface I3 extends T3 {
+    length: string;
+}
+"#;
+    // TODO: Should emit TS2430 but array type resolution requires lib.d.ts (Array<T>)
+    // which is not available in unit test env. Currently only TS2318 errors are produced.
+    let diags = get_diagnostics(source);
+    let ts2430_errors: Vec<_> = diags.iter().filter(|d| d.0 == 2430).collect();
+    assert!(
+        ts2430_errors.is_empty(),
+        "Expected no TS2430 (lib.d.ts not available in unit test env). Got: {ts2430_errors:?}"
+    );
+    // TS2318 is suppressed when no lib files are loaded and --noLib is not
+    // explicitly set (unit test environment without lib context).
+    let ts2318_errors: Vec<_> = diags.iter().filter(|d| d.0 == 2318).collect();
+    assert!(
+        ts2318_errors.is_empty(),
+        "Expected no TS2318 when lib files are not loaded and --noLib is not set. Got: {ts2318_errors:?}"
+    );
+}
+
+#[test]
+fn test_interface_extends_class_with_private_emits_at_name() {
+    // TS2430 for private member conflict should be reported at the interface name,
+    // not at the member that conflicts
+    let source = r#"
+class Base {
+    private x: number;
+}
+interface Foo extends Base {
+    x: number;
+}
+"#;
+    let diags = get_diagnostics(source);
+    let ts2430 = diags.iter().filter(|d| d.0 == 2430).collect::<Vec<_>>();
+    assert!(
+        !ts2430.is_empty(),
+        "Should emit TS2430 for interface extending class with private member. Got: {diags:?}"
+    );
+}
+
+// =========================================================================
+// TS2430: index signature incompatibility
+// =========================================================================
+
+#[test]
+fn test_index_signature_string_incompatible() {
+    // Derived interface has string index signature incompatible with base
+    let source = r#"
+interface E {
+    [a: string]: string;
+}
+interface F extends E {
+    [a: string]: number;
+}
+"#;
+    assert!(
+        has_error_with_code(source, 2430),
+        "Should emit TS2430 when derived string index type is not assignable to base"
+    );
+}
+
+#[test]
+fn test_index_signature_number_incompatible() {
+    // Derived interface has number index signature incompatible with base
+    let source = r#"
+interface G {
+    [a: number]: string;
+}
+interface H extends G {
+    [a: number]: number;
+}
+"#;
+    assert!(
+        has_error_with_code(source, 2430),
+        "Should emit TS2430 when derived number index type is not assignable to base"
+    );
+}
+
+#[test]
+fn test_index_signature_compatible_no_error() {
+    // Derived index signature is a subtype of base — no error
+    let source = r#"
+interface A {
+    [a: string]: number;
+}
+interface B extends A {
+    [a: string]: number;
+}
+"#;
+    assert!(
+        !has_error_with_code(source, 2430),
+        "Should NOT emit TS2430 when derived index type matches base"
+    );
+}
+
+#[test]
+fn test_inherited_index_signatures_conflict_across_bases() {
+    // Interface extends two bases with conflicting index signatures
+    // tsc emits TS2430 against the second base
+    let source = r#"
+interface A {
+    [s: string]: number;
+}
+interface D {
+    [s: string]: string;
+}
+interface E extends A, D { }
+"#;
+    assert!(
+        has_error_with_code(source, 2430),
+        "Should emit TS2430 when bases have conflicting index signatures"
+    );
+}
+
+#[test]
+fn test_inherited_index_signatures_compatible_across_bases() {
+    // Interface extends two bases with compatible index signatures — no error
+    let source = r#"
+interface A {
+    [s: string]: number;
+}
+interface B {
+    [s: string]: number;
+}
+interface C extends A, B { }
+"#;
+    assert!(
+        !has_error_with_code(source, 2430),
+        "Should NOT emit TS2430 when bases have compatible index signatures"
+    );
+}
+
+// =========================================================================
+// Overloaded generic callable property: tsc N×M erasure path
+// =========================================================================
+
+#[test]
+fn test_overloaded_generic_callable_property_no_false_ts2430() {
+    // When a property type is a callable object with overloaded generic signatures,
+    // the child interface may override it with a single generic function type.
+    // tsc's N×M signaturesRelatedTo path erases type params to `any`, making
+    // `{ <T extends Derived>(a: T): T; <T extends Base>(a: T): T; }` assignable
+    // to `<T>(a: T) => T`. This must not produce a false TS2430.
+    let source = r#"
+class Base { foo: string = ""; }
+class Derived extends Base { bar: string = ""; }
+
+interface Parent {
+    method: {
+        (x: {
+            <T extends Derived>(a: T): T;
+            <T extends Base>(a: T): T;
+        }): any[];
+    };
+}
+
+interface Child extends Parent {
+    method: (x: <T>(a: T) => T) => any[];
+}
+"#;
+    assert!(
+        !has_error_with_code(source, 2430),
+        "Should NOT emit TS2430 when overloaded generic callable property is \
+         overridden by a single generic function. tsc's N×M erasure path accepts this."
+    );
+}
+
+#[test]
+fn test_generic_member_call_signature_with_extra_type_param_no_false_ts2430() {
+    // Contextual generic signature instantiation can relate a derived member with
+    // extra type params to a base member after erasing both signatures.
+    let source = r#"
+type Base = { foo: string };
+
+interface A {
+    a11: <T>(x: { foo: T }, y: { foo: T; bar: T }) => Base;
+}
+
+interface I extends A {
+    a11: <T, U>(x: { foo: T }, y: { foo: U; bar: U }) => Base;
+}
+"#;
+    let diags = get_diagnostics(source);
+    let ts2430 = diags.iter().filter(|d| d.0 == 2430).collect::<Vec<_>>();
+    assert!(
+        ts2430.is_empty(),
+        "Should NOT emit TS2430 when the derived generic member call signature \
+         is accepted by erased contextual comparison. Got: {diags:?}"
+    );
+}
+
+#[test]
+fn test_generic_member_construct_signature_with_extra_type_param_no_false_ts2430() {
+    // The same erased contextual comparison is needed for construct signatures.
+    let source = r#"
+type Base = { foo: string };
+
+interface A {
+    a11: new <T>(x: { foo: T }, y: { foo: T; bar: T }) => Base;
+}
+
+interface I extends A {
+    a11: new <T, U>(x: { foo: T }, y: { foo: U; bar: U }) => Base;
+}
+"#;
+    let diags = get_diagnostics(source);
+    let ts2430 = diags.iter().filter(|d| d.0 == 2430).collect::<Vec<_>>();
+    assert!(
+        ts2430.is_empty(),
+        "Should NOT emit TS2430 when the derived generic member construct signature \
+         is accepted by erased contextual comparison. Got: {diags:?}"
+    );
+}
+
+#[test]
+fn test_overloaded_generic_callable_property_incompatible_still_errors() {
+    // The erasure path must NOT suppress genuine incompatibilities.
+    // Here the return type is wrong (number[] vs string[]).
+    let source = r#"
+interface Parent {
+    method: {
+        (x: number): string[];
+        (x: string): string[];
+    };
+}
+
+interface Child extends Parent {
+    method: (x: number) => number[];
+}
+"#;
+    assert!(
+        has_error_with_code(source, 2430),
+        "Should still emit TS2430 when overloaded property has genuinely incompatible types"
+    );
+}
+
+#[test]
+fn test_constructor_typed_property_with_outer_type_param_errors() {
+    // Mirrors conformance cases like subtypingWithConstructSignatures6.ts where
+    // the derived property uses an outer interface type parameter and the base
+    // property uses its own generic constructor signature.
+    let source = r#"
+interface Base {
+    make: new <T>() => T;
+    makeOptional: new <T>(x?: T) => T;
+    a: new <T>(x: T) => T[];
+}
+
+interface Derived<T> extends Base {
+    make: new () => T;
+    makeOptional: new (x?: T) => T;
+    a: new (x: T) => T[];
+}
+"#;
+
+    let diags = get_diagnostics(source);
+    assert!(
+        diags.iter().any(|(code, message)| *code == 2430
+            && message.contains("incorrectly extends interface 'Base'")
+            && message.contains("Types of property 'make' are incompatible.")),
+        "Should emit TS2430 when derived constructor-typed properties narrow base generic constructor properties. Got: {diags:?}"
+    );
+}
+
+#[test]
+fn test_generic_construct_property_required_param_against_optional_base_errors() {
+    let source = r#"
+interface Base {
+    make: new <T>(x?: T) => T;
+}
+
+interface Derived extends Base {
+    make: new <T>(x: T) => T;
+}
+"#;
+
+    let diags = get_diagnostics(source);
+    assert!(
+        diags.iter().any(|(code, message)| *code == 2430
+            && message.contains("Interface 'Derived' incorrectly extends interface 'Base'")),
+        "Should emit TS2430 when a derived generic construct property makes an optional generic base parameter required. Got: {diags:?}"
+    );
+}
+
+#[test]
+fn test_outer_type_param_call_property_against_generic_base_errors() {
+    let source = r#"
+interface Base {
+    make: <T>() => T;
+}
+
+interface Derived<T> extends Base {
+    make: () => T;
+}
+"#;
+
+    let diags = get_diagnostics(source);
+    assert!(
+        diags.iter().any(|(code, message)| *code == 2430
+            && message.contains("Interface 'Derived<T>' incorrectly extends interface 'Base'")),
+        "Should emit TS2430 when a derived call property uses an outer type parameter instead of the base generic signature. Got: {diags:?}"
+    );
+}
+
+// =========================================================================
+// Generic overloaded method trailing signature: derived return narrows base
+// =========================================================================
+
+#[test]
+fn test_overloaded_generic_method_derived_return_subtype_no_false_ts2430() {
+    // When a base interface has overloaded generic methods, the overload coverage
+    // pass compares the trailing (non-specialized) signatures. The locally-scoped
+    // type param `C` in the derived and base functions gets different TypeIds, so
+    // the no-erase-generics comparison fails. Standard assignability (with fresh
+    // instantiation) must be used as a fallback to accept valid subtype returns.
+    //
+    // Specialized overload: second parameter is a literal type (string), making
+    // it the specialized overload. Non-specialized is the trailing one.
+    let source = r#"
+interface Base<K, V> {
+    concat<C>(collections: { key: string; value: C }): Base<K | string, V | C>;
+    concat<C>(collections: Base<K, C>): Base<K, V | C>;
+}
+interface Derived<K, V> extends Base<K, V> {
+    concat<C>(collections: { key: string; value: C }): Derived<K | string, V | C>;
+    concat<C>(collections: Derived<K, C>): Derived<K, V | C>;
+}
+"#;
+    let diags = get_diagnostics(source);
+    let ts2430 = diags.iter().filter(|d| d.0 == 2430).collect::<Vec<_>>();
+    assert!(
+        ts2430.is_empty(),
+        "Should NOT emit TS2430 when derived overloaded generic method's trailing \
+         signature returns a subtype of the base trailing signature return. Got: {diags:?}"
+    );
+}
+
+#[test]
+fn test_overloaded_non_generic_method_specialized_overload_covers_general_no_ts2430() {
+    // tsc relates interface heritage with the full N×M overload rule: every base
+    // (target) overload must be matched by *some* derived (source) overload, with
+    // method signatures compared bivariantly. Here the derived's specialized
+    // `concat("literal"): number` overload covers the base's general
+    // `concat(string): number` overload (`"literal"` relates to `string`
+    // bivariantly, returns match), so even though the derived's own
+    // `concat(string)` overload returns `string`, the override is valid and tsc
+    // emits no TS2430. (Verified against `tsc --strict`.) The previous trailing-
+    // signature heuristic compared only the last signature on each side and
+    // over-reported here.
+    let source = r#"
+interface Base {
+    concat(x: "literal"): number;
+    concat(x: string): number;
+}
+interface Derived extends Base {
+    concat(x: "literal"): number;
+    concat(x: string): string;
+}
+"#;
+    let diags = get_diagnostics(source);
+    let ts2430 = diags.iter().filter(|d| d.0 == 2430).collect::<Vec<_>>();
+    assert!(
+        ts2430.is_empty(),
+        "Should NOT emit TS2430: derived's specialized overload covers the base's \
+         general overload (tsc parity). Got: {diags:?}"
+    );
+}
+
+#[test]
+fn test_overloaded_non_generic_method_uncovered_overload_still_errors() {
+    // Negative control: no derived overload can service the base's general
+    // `concat(string): number` overload — the only candidates are
+    // `concat(number)` (param `number` does not relate to `string`) and
+    // `concat(string): string` (return `string` ≠ `number`). tsc reports TS2430.
+    let source = r#"
+interface Base {
+    concat(x: number): number;
+    concat(x: string): number;
+}
+interface Derived extends Base {
+    concat(x: number): number;
+    concat(x: string): string;
+}
+"#;
+    let diags = get_diagnostics(source);
+    assert!(
+        diags.iter().any(|d| d.0 == 2430),
+        "Should emit TS2430 when no derived overload covers a base overload. Got: {diags:?}"
+    );
+}
+
+#[test]
+fn test_overloaded_generic_method_specialized_overload_covers_general_no_ts2430() {
+    // Generic analogue of the specialized-covers-general case: after method-local
+    // generic erasure, the derived's `merge("literal"): { value: T }` overload
+    // covers the base's general `merge(x: T): { value: T }` overload, so tsc emits
+    // no TS2430 even though the derived's own general overload returns
+    // `{ other: T }`. (Verified against `tsc --strict`.)
+    let source = r#"
+interface Base {
+    merge<T>(x: "literal"): { value: T };
+    merge<T>(x: T): { value: T };
+}
+interface Derived extends Base {
+    merge<T>(x: "literal"): { value: T };
+    merge<T>(x: T): { other: T };
+}
+"#;
+    let diags = get_diagnostics(source);
+    let ts2430 = diags.iter().filter(|d| d.0 == 2430).collect::<Vec<_>>();
+    assert!(
+        ts2430.is_empty(),
+        "Should NOT emit TS2430: derived's specialized generic overload covers the \
+         base's general overload (tsc parity). Got: {diags:?}"
+    );
+}
+
+#[test]
+fn test_overloaded_generic_method_dropped_overload_still_errors() {
+    // Negative control: the derived drops the base's one-argument overload and
+    // keeps only the two-argument one, which cannot be called with a single
+    // argument. tsc reports TS2430. (The old trailing-only heuristic missed this
+    // because both sides' trailing signatures matched.)
+    let source = r#"
+interface Base {
+    pipe<A>(op1: (x: number) => A): A;
+    pipe<A, B>(op1: (x: number) => A, op2: (x: A) => B): B;
+}
+interface Derived extends Base {
+    pipe<A, B>(op1: (x: number) => A, op2: (x: A) => B): B;
+}
+"#;
+    let diags = get_diagnostics(source);
+    assert!(
+        diags.iter().any(|d| d.0 == 2430),
+        "Should emit TS2430 when the derived drops a base overload it cannot service. \
+         Got: {diags:?}"
+    );
+}
+
+#[test]
+fn test_overloaded_generic_method_alternative_names_no_false_ts2430() {
+    // The fix must not be name-dependent: use different type param names
+    // (X, Y, Z instead of K, V, C) to prove the rule is structural.
+    let source = r#"
+interface Base<X, Y> {
+    merge<Z>(src: { key: string; val: Z }): Base<X | string, Y | Z>;
+    merge<Z>(src: Base<X, Z>): Base<X, Y | Z>;
+}
+interface Derived<X, Y> extends Base<X, Y> {
+    merge<Z>(src: { key: string; val: Z }): Derived<X | string, Y | Z>;
+    merge<Z>(src: Derived<X, Z>): Derived<X, Y | Z>;
+}
+"#;
+    let diags = get_diagnostics(source);
+    let ts2430 = diags.iter().filter(|d| d.0 == 2430).collect::<Vec<_>>();
+    assert!(
+        ts2430.is_empty(),
+        "Should NOT emit TS2430 regardless of type parameter names used. Got: {diags:?}"
+    );
+}
+
+// =========================================================================
+// Regression: `this` type substitution in whole-type assignability check
+// =========================================================================
+
+#[test]
+fn test_class_implements_interface_with_this_type_no_false_positive() {
+    // Interfaces using `this` type (e.g. `Vnode<A, this>`) must have `this`
+    // substituted with the class instance type in the whole-type assignability
+    // check, not just in per-property checks. Without this, the abstract `this`
+    // causes a false TS2420/TS2430.
+    //
+    // Reduced from TypeScript's subclassThisTypeAssignable02.ts
+    let source = r#"
+interface Lifecycle<Attrs, State extends Lifecycle<Attrs, State>> {
+    oninit?(vnode: Vnode<Attrs, State>): number;
+    [_: number]: any;
+}
+
+interface Vnode<Attrs, State extends Lifecycle<Attrs, State>> {
+    tag: Component<Attrs, State>;
+}
+
+interface Component<Attrs, State extends Lifecycle<Attrs, State>> {
+    view(this: State, vnode: Vnode<Attrs, State>): number;
+}
+
+interface ClassComponent<A> extends Lifecycle<A, ClassComponent<A>> {
+    oninit?(vnode: Vnode<A, this>): number;
+    view(vnode: Vnode<A, this>): number;
+}
+
+interface MyAttrs { id: number }
+class C implements ClassComponent<MyAttrs> {
+    view(v: Vnode<MyAttrs, C>) { return 0; }
+    [_: number]: unknown;
+}
+
+const test8: ClassComponent<any> = new C();
+"#;
+    let diags = get_diagnostics(source);
+    let ts2430 = diags.iter().filter(|d| d.0 == 2430).collect::<Vec<_>>();
+    assert!(
+        ts2430.is_empty(),
+        "Should NOT emit TS2430 for class implementing interface with `this` type references. Got: {ts2430:?}"
+    );
+    let ts2322 = diags.iter().filter(|d| d.0 == 2322).collect::<Vec<_>>();
+    assert!(
+        ts2322.is_empty(),
+        "Should NOT emit TS2322 for assigning a class instance to an interface with `this` type references. Got: {ts2322:?}"
+    );
+}
+
+#[test]
+fn test_this_in_callback_parameter_with_recursive_return_no_false_ts2430() {
+    // Reduced from immutable-style collection interfaces. A callback parameter
+    // using `this` must not make a derived method incompatible when the return
+    // type specializes the current interface family.
+    let source = r#"
+interface Boxed<T> {
+    value: T;
+}
+
+interface Collection<K, V> {
+    map<M>(mapper: (value: V, key: K, iter: this) => M): Collection<K, M>;
+    flatMap<M>(mapper: (value: V, key: K, iter: this) => Boxed<M>): Collection<K, M>;
+}
+
+interface Indexed<T> extends Collection<number, T> {
+    map<M>(mapper: (value: T, key: number, iter: this) => M): Indexed<M>;
+    flatMap<M>(mapper: (value: T, key: number, iter: this) => Boxed<M>): Indexed<M>;
+}
+"#;
+    let diags = get_diagnostics(source);
+    let ts2430 = diags.iter().filter(|d| d.0 == 2430).collect::<Vec<_>>();
+    assert!(
+        ts2430.is_empty(),
+        "Should NOT emit TS2430 for callback-parameter `this` with recursive return specialization. Got: {diags:?}"
+    );
+}
+
+#[test]
+fn test_direct_this_return_mismatch_still_emits_ts2430() {
+    // A base method returning direct `this` cannot be replaced by an arbitrary
+    // related interface return. This keeps the recursive-return suppression
+    // narrow enough to preserve tsc's real TS2430 cases.
+    let source = r#"
+interface Collection<K, V> {
+    toSeq(): this;
+}
+
+interface SeqKeyed<K, V> {
+    get(key: K): V;
+}
+
+interface Keyed<K, V> extends Collection<K, V> {
+    toSeq(): SeqKeyed<K, V>;
+}
+"#;
+    let diags = get_diagnostics(source);
+    let ts2430 = diags.iter().filter(|d| d.0 == 2430).collect::<Vec<_>>();
+    assert!(
+        !ts2430.is_empty(),
+        "Should still emit TS2430 when a direct `this` return is narrowed to a named interface. Got: {diags:?}"
+    );
+}
+
+#[test]
+fn test_ancestor_primitive_return_still_emits_ts2430() {
+    // Regression for PR #2571 review: the recursive-base suppression must NOT
+    // hide genuine TS2430 errors where an ancestor (grandparent) member's
+    // return type is an unrelated primitive like `string`. Only the worklist
+    // path inspects ancestor members, so without the target-side guard this
+    // false-suppression silently drops the error.
+    let source = r#"
+interface GrandBase {
+    method(): string;
+}
+interface Base extends GrandBase {}
+interface Derived extends Base {
+    method(): Derived;
+}
+"#;
+    let diags = get_diagnostics(source);
+    let ts2430 = diags.iter().filter(|d| d.0 == 2430).collect::<Vec<_>>();
+    assert!(
+        !ts2430.is_empty(),
+        "Should emit TS2430 when an ancestor member returns an unrelated primitive but the derived method narrows to the current interface. Got: {diags:?}"
+    );
+}
+
+// =========================================================================
+// Issue #9316: structurally identical generic method signatures must not
+// fire TS2430 when their constraints reference the outer type parameter.
+// The pre-fix `TypeSubstitution::is_identity` returned true whenever each
+// map entry mapped a name to *any* unconstrained TypeParameter with that
+// name, but fresh declaration-scoped TypeParameters with identical content
+// have distinct TypeIds, so substituting one for the other was wrongly
+// short-circuited. Cases below vary the user-chosen names to prove the
+// fix is structural.
+// =========================================================================
+
+#[test]
+fn test_generic_method_with_conditional_constraint_renamed_axis_no_false_ts2430() {
+    // Renamed-identifier axis of the test above (T→K, R→X, ThenArg→DeepUnwrap,
+    // InterfaceA→Foo, InterfaceB→Bar) — protects against name-keyed fixes.
+    let source = r#"
+type DeepUnwrap<K> = K extends any ? any : K extends PromiseLike<infer U> ? U : K;
+
+interface Foo<K> {
+    filter(callback: (newValue: K, oldValue: K) => boolean): Foo<K>;
+    map<D>(callback: (value: K) => D): Foo<D>;
+    awaitNext<X extends DeepUnwrap<K>>(): Foo<X>;
+}
+
+interface Bar<K> extends Foo<K> {
+    map<D>(callback: (value: K) => D): Bar<D>;
+    awaitNext<X extends DeepUnwrap<K>>(): Bar<X>;
+}
+"#;
+    let diags = get_diagnostics(source);
+    assert!(
+        diagnostics_with_code(&diags, 2430).is_empty(),
+        "Got: {diags:?}"
+    );
+}
+
+#[test]
+fn test_class_implements_generic_interface_returning_subclass_no_false_diagnostic() {
+    // End-to-end conformance shape — exercises the implements-check (TS2416)
+    // alongside the interface-extends check (TS2430).
+    let source = r#"
+type ThenArg<T> = T extends any ? any : T extends PromiseLike<infer U> ? U : T;
+
+interface InterfaceA<T> {
+    filter(callback: (newValue: T, oldValue: T) => boolean): InterfaceA<T>;
+    map<D>(callback: (value: T) => D): InterfaceA<D>;
+    await<R extends ThenArg<T>>(): InterfaceA<R>;
+}
+
+interface InterfaceB<T> extends InterfaceA<T> {
+    map<D>(callback: (value: T) => D): InterfaceB<D>;
+    await<R extends ThenArg<T>>(): InterfaceB<R>;
+}
+
+class A<T> implements InterfaceB<T> {
+    public filter(callback: (newValue: T, oldValue: T) => boolean): B<T> { return undefined as any; }
+    public map<D>(callback: (value: T) => D): B<D> { return undefined as any; }
+    public await<R extends ThenArg<T>>(): B<R> { return undefined as any; }
+}
+
+class B<T> extends A<T> {}
+"#;
+    let diags = get_diagnostics(source);
+    assert!(
+        diagnostics_with_code(&diags, 2430).is_empty()
+            && diagnostics_with_code(&diags, 2416).is_empty(),
+        "Got: {diags:?}"
+    );
+}
+
+#[test]
+fn test_real_return_type_mismatch_still_emits_ts2430() {
+    // Negative: an actually-incompatible derived return must still fire TS2430.
+    let source = r#"
+interface Base<T> {
+    map<D>(callback: (value: T) => D): D[];
+}
+interface Derived<T> extends Base<T> {
+    map<D>(callback: (value: T) => D): string;
+}
+"#;
+    let diags = get_diagnostics(source);
+    assert!(
+        !diagnostics_with_code(&diags, 2430).is_empty(),
+        "Got: {diags:?}"
+    );
+}
+
+// =========================================================================
+// TS2430 diagnostic count parity: one per violated base, no extras
+// =========================================================================
+
+#[test]
+fn test_multi_base_incompatible_emits_exactly_one_per_violated_base() {
+    // Guard against duplicates from separate internal code paths (worklist + direct).
+    let source = r#"
+interface A { f(x: string): number }
+interface B { f(x: number): string }
+interface I extends A, B { f(x: boolean): boolean }
+"#;
+    let diags = get_diagnostics(source);
+    assert_eq!(
+        diagnostics_with_code(&diags, 2430).len(),
+        2,
+        "Should emit exactly 1 TS2430 per violated base (2 total). Got: {diags:?}"
+    );
+}
+
+#[test]
+fn test_multi_base_incompatible_renamed_ids_still_one_per_base() {
+    // Renamed identifiers must produce the same count — fix must not be keyed on 'I'/'A'/'B'.
+    let source = r#"
+interface Base1 { f(x: string): number }
+interface Base2 { f(x: number): string }
+interface Derived extends Base1, Base2 { f(x: boolean): boolean }
+"#;
+    let diags = get_diagnostics(source);
+    assert_eq!(
+        diagnostics_with_code(&diags, 2430).len(),
+        2,
+        "Renamed identifiers should produce the same 2 TS2430s. Got: {diags:?}"
+    );
+}
+
+#[test]
+fn test_three_base_incompatible_emits_one_per_base() {
+    let source = r#"
+interface A { f(x: string): number }
+interface B { f(x: number): string }
+interface C { f(x: symbol): object }
+interface I extends A, B, C { f(x: boolean): boolean }
+"#;
+    let diags = get_diagnostics(source);
+    assert_eq!(
+        diagnostics_with_code(&diags, 2430).len(),
+        3,
+        "Should emit exactly 1 TS2430 per violated base (3 total). Got: {diags:?}"
+    );
+}
+
+#[test]
+fn test_call_sig_multi_base_overloads_no_false_ts2430() {
+    let source = r#"
+class C { foo: string; bar: number; }
+interface A { (x: C, y: string): C; }
+interface B { (x: C, y: number): C; }
+interface I extends A, B {
+    (x: C, y: string): C;
+    (x: C, y: number): C;
+}
+"#;
+    let diags = get_diagnostics(source);
+    assert!(
+        !has_diagnostic_code(&diags, 2430),
+        "Should NOT emit TS2430 when call-sig overloads satisfy both bases. Got: {diags:?}"
+    );
+}
+
+#[test]
+fn test_method_overloads_cover_both_bases_no_false_ts2430() {
+    let source = r#"
+interface A { foo(x: string, y: string): string; }
+interface B { foo(x: number, y: number): number; }
+interface I extends A, B {
+    foo(x: string, y: string): string;
+    foo(x: number, y: number): number;
+    foo(x: boolean, y: boolean): boolean;
+}
+"#;
+    let diags = get_diagnostics(source);
+    assert!(
+        !has_diagnostic_code(&diags, 2430),
+        "Should NOT emit TS2430 when method overloads satisfy both bases. Got: {diags:?}"
+    );
+}
+
+// =========================================================================
+// TS2430: Generic method with `T & Record<K, V>` return type (issue #10820)
+// =========================================================================
+
+#[test]
+fn test_generic_method_intersection_return_no_false_ts2430() {
+    // Derived extends Container<number, {}>, so the base return becomes
+    // `{} & Record<M, true>`. Derived's own return `Record<N, true>` must
+    // satisfy that: any mapped type is an object, hence assignable to `{}`.
+    let source = r#"
+interface Container<N, T> {
+  withOption<M extends string>(opt: M): Container<N, T & Record<M, true>>;
+}
+interface NumberContainer extends Container<number, {}> {
+  withOption<N extends string>(opt: N): Container<number, Record<N, true>>;
+}
+"#;
+    let diags = get_diagnostics(source);
+    assert!(
+        !has_diagnostic_code(&diags, 2430),
+        "Record<N, true> must be assignable to {{}} & Record<N, true>. Got: {diags:?}"
+    );
+}
+
+#[test]
+fn test_generic_method_intersection_return_renamed_param_no_false_ts2430() {
+    // Same rule, different type-parameter names — result must not depend on spelling.
+    let source = r#"
+interface Builder<A, B> {
+  tag<K extends string>(key: K): Builder<A, B & Record<K, true>>;
+}
+interface LogBuilder extends Builder<string, {}> {
+  tag<K extends string>(key: K): Builder<string, Record<K, true>>;
+}
+"#;
+    let diags = get_diagnostics(source);
+    assert!(
+        !has_diagnostic_code(&diags, 2430),
+        "Renamed type-param must not change the decision. Got: {diags:?}"
+    );
+}
+
+#[test]
+fn test_generic_method_intersection_return_wider_value_no_false_ts2430() {
+    // `Record<K, boolean>` satisfies `{} & Record<K, unknown>`.
+    let source = r#"
+interface Table<T> {
+  col<K extends string>(key: K): Table<T & Record<K, unknown>>;
+}
+interface StrictTable extends Table<{}> {
+  col<K extends string>(key: K): Table<Record<K, boolean>>;
+}
+"#;
+    let diags = get_diagnostics(source);
+    assert!(
+        !has_diagnostic_code(&diags, 2430),
+        "Record<K, boolean> must satisfy {{}} & Record<K, unknown>. Got: {diags:?}"
+    );
+}
+
+#[test]
+fn test_generic_method_completely_wrong_return_still_ts2430() {
+    // Negative: the derived override returns a totally unrelated type (`string`).
+    // No cycle issue — `string` is never coinductively assumed compatible with
+    // Container<...>.  The generic_method_override guard must NOT suppress this.
+    let source = r#"
+interface Container<N, T> {
+  withOption<M extends string>(opt: M): Container<N, T & Record<M, true>>;
+}
+interface BrokenContainer extends Container<number, {}> {
+  withOption<N extends string>(opt: N): string;
+}
+"#;
+    let diags = get_diagnostics(source);
+    assert!(
+        has_diagnostic_code(&diags, 2430),
+        "Return type `string` is wholly incompatible; must still error. Got: {diags:?}"
+    );
+}
+
+#[test]
+fn test_generic_method_wrong_primitive_return_still_ts2430() {
+    // Negative: derived generic method returns `number` where `string` is required.
+    // Tests that generic_method_override_is_valid_specialization uses assignability
+    // correctly and does not suppress genuine primitive-type mismatches.
+    let source = r#"
+interface Base {
+  make<K extends string>(key: K): string;
+}
+interface Broken extends Base {
+  make<K extends string>(key: K): number;
+}
+"#;
+    let diags = get_diagnostics(source);
+    assert!(
+        has_diagnostic_code(&diags, 2430),
+        "Return type `number` is not assignable to `string`; must still error. Got: {diags:?}"
+    );
+}
+
+// =========================================================================
+// Polymorphic `this` in interface heritage overrides
+//
+// When a derived interface re-declares an inherited member that uses the
+// polymorphic `this` type, tsc treats `this` as a covariant type variable:
+// `this` is assignable to a base `this` (directly and through positions such
+// as `this[]`), but a concrete self type written by name (`m(): B`) is NOT
+// assignable to a target `this`. The interface heritage check substitutes
+// `this` with the derived concrete self type for parameter-position needs,
+// which previously masked this distinction and produced false TS2430 for
+// valid `this`-returning overrides. These tests pin the structural rule and
+// vary binder names so the behavior cannot depend on identifier spelling.
+// =========================================================================
+
+#[test]
+fn test_this_return_method_override_no_false_ts2430() {
+    for (base, derived, method) in [("A", "B", "m"), ("Widget", "Button", "clone")] {
+        let source = format!(
+            r#"
+interface {base} {{ {method}(): this; }}
+interface {derived} extends {base} {{ {method}(): this; }}
+"#
+        );
+        assert!(
+            !has_error_with_code(&source, 2430),
+            "Re-declaring a `this`-returning method must not emit TS2430 (base={base})"
+        );
+    }
+}
+
+#[test]
+fn test_this_return_method_override_generic_chain_no_false_ts2430() {
+    // Multi-level generic chain re-declaring a `this`-returning method.
+    let source = r#"
+interface Seq<T> { self(): this; value: T; }
+interface Mid<T> extends Seq<T[]> { self(): this; }
+interface Leaf extends Mid<number> { self(): this; }
+"#;
+    assert!(
+        !has_error_with_code(source, 2430),
+        "`this`-returning override across a generic chain must not emit TS2430"
+    );
+}
+
+#[test]
+fn test_this_nested_in_array_return_override_no_false_ts2430() {
+    // `this` nested inside an array return position is still covariant.
+    let source = r#"
+interface Node { children(): this[]; }
+interface Branch extends Node { children(): this[]; }
+"#;
+    assert!(
+        !has_error_with_code(source, 2430),
+        "`this[]` override must not emit TS2430"
+    );
+}
+
+#[test]
+fn test_this_typed_property_override_no_false_ts2430() {
+    // A property typed as the polymorphic `this` re-declared in the derived
+    // interface is a valid override.
+    let source = r#"
+interface Cell { neighbor: this; }
+interface Corner extends Cell { neighbor: this; }
+"#;
+    assert!(
+        !has_error_with_code(source, 2430),
+        "`this`-typed property override must not emit TS2430"
+    );
+}
+
+#[test]
+fn test_concrete_self_return_instead_of_this_still_ts2430() {
+    // Negative: returning the derived type by name is NOT the polymorphic
+    // `this` and must still error, because a value of the concrete type is not
+    // guaranteed to be the eventual `this` type. tsc reports TS2430 here.
+    for (base, derived, method) in [("A", "B", "m"), ("Shape", "Circle", "dup")] {
+        let source = format!(
+            r#"
+interface {base} {{ {method}(): this; }}
+interface {derived} extends {base} {{ {method}(): {derived}; }}
+"#
+        );
+        assert!(
+            has_error_with_code(&source, 2430),
+            "Returning the concrete self type by name must still emit TS2430 (derived={derived})"
+        );
+    }
+}
+
+#[test]
+fn test_this_union_widened_return_still_ts2430() {
+    // Negative: `this | number` is wider than the base `this` return; the extra
+    // `number` member is not assignable to a target `this`, so TS2430 stands.
+    let source = r#"
+interface A { m(): this; }
+interface B extends A { m(): this | number; }
+"#;
+    assert!(
+        has_error_with_code(source, 2430),
+        "Widening a `this` return with an extra member must still emit TS2430"
+    );
+}
