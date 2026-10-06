@@ -323,6 +323,27 @@ pub type ResolvedModuleRequestPathMap = FxHashMap<
     ),
     usize,
 >;
+/// Outcome of an exact compiler-owned module-resolution request.
+///
+/// `External` is a successfully resolved request whose target is outside the
+/// admitted program file set. Its identity is retained so callers can bind the
+/// result to their compiler recipe. `Unresolved` is an authoritative negative
+/// result. Neither outcome may be replaced by filename-based guessing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResolvedModuleRequestOutcome {
+    File(usize),
+    External { identity: String },
+    Unresolved,
+}
+pub type ResolvedModuleRequestOutcomeMap = FxHashMap<
+    (
+        usize,
+        String,
+        Option<ResolutionModeOverride>,
+        ResolutionRequestKind,
+    ),
+    ResolvedModuleRequestOutcome,
+>;
 pub type ResolvedModuleRequestErrorMap = FxHashMap<
     (
         usize,

@@ -30,6 +30,9 @@ impl<'a> CheckerContext<'a> {
         source_file_idx: usize,
         specifier: &str,
     ) -> Option<usize> {
+        if self.project_module_resolution_outcomes.is_some() {
+            return self.project_module_file_target(source_file_idx, specifier);
+        }
         let is_bare_specifier = !specifier.starts_with("./")
             && !specifier.starts_with("../")
             && !specifier.starts_with('/')

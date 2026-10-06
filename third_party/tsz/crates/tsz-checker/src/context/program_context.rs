@@ -135,6 +135,9 @@ pub struct ProgramContext {
     pub resolved_module_paths: Arc<ResolvedModulePathMap>,
     /// Resolved module paths keyed by (`source_file_idx`, specifier, resolution-mode override).
     pub resolved_module_request_paths: Arc<ResolvedModuleRequestPathMap>,
+    /// Exact project compiler outcomes, including authoritative external and
+    /// unresolved results. `Some` disables filename-based fallback.
+    pub project_module_resolution_outcomes: Option<Arc<ResolvedModuleRequestOutcomeMap>>,
     /// `resolvedUsingTsExtension` flag per resolved import, mirroring tsc.
     /// Populated by the driver from `ModuleLookupResult.resolved_using_ts_extension`
     /// and consulted by the TS2877 emission gate.
@@ -207,6 +210,7 @@ impl Default for ProgramContext {
             program_alias_partners: None,
             resolved_module_paths: Arc::new(FxHashMap::default()),
             resolved_module_request_paths: Arc::new(FxHashMap::default()),
+            project_module_resolution_outcomes: None,
             resolved_module_ts_extension_flags: Arc::new(FxHashMap::default()),
             resolved_module_errors: Arc::new(FxHashMap::default()),
             untyped_module_paths: Arc::new(FxHashMap::default()),
@@ -355,6 +359,9 @@ impl ProgramContext {
         }
         ctx.set_resolved_module_paths(Arc::clone(&self.resolved_module_paths));
         ctx.set_resolved_module_request_paths(Arc::clone(&self.resolved_module_request_paths));
+        if let Some(outcomes) = self.project_module_resolution_outcomes.as_ref() {
+            ctx.set_project_module_resolution_outcomes(Arc::clone(outcomes));
+        }
         ctx.set_resolved_module_ts_extension_flags(Arc::clone(
             &self.resolved_module_ts_extension_flags,
         ));

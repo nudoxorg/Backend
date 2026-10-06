@@ -657,6 +657,7 @@ impl<'a> CheckerContext<'a> {
         self.program_alias_partners = parent.program_alias_partners.clone();
         self.global_symbol_file_index = parent.global_symbol_file_index.clone();
         self.resolved_module_paths = parent.resolved_module_paths.clone();
+        self.project_module_resolution_outcomes = parent.project_module_resolution_outcomes.clone();
         self.resolved_module_ts_extension_flags = parent.resolved_module_ts_extension_flags.clone();
         self.resolved_module_errors = parent.resolved_module_errors.clone();
         self.untyped_module_paths = parent.untyped_module_paths.clone();
@@ -934,6 +935,16 @@ impl<'a> CheckerContext<'a> {
         paths: Arc<crate::context::ResolvedModuleRequestPathMap>,
     ) {
         self.resolved_module_request_paths = Some(paths);
+    }
+
+    /// Install exact compiler-owned per-request outcomes. `Some(empty)` is an
+    /// explicit statement that this program has no supported requests and also
+    /// disables the standalone checker's filename-based fallback.
+    pub fn set_project_module_resolution_outcomes(
+        &mut self,
+        outcomes: Arc<crate::context::ResolvedModuleRequestOutcomeMap>,
+    ) {
+        self.project_module_resolution_outcomes = Some(outcomes);
     }
 
     /// Set resolved module specifiers (module names that exist in the project).

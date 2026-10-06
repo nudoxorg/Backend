@@ -1592,6 +1592,10 @@ pub struct CheckerContext<'a> {
     /// Resolved module paths keyed by the full driver request, including any
     /// explicit `resolution-mode` override from import attributes / import types.
     pub resolved_module_request_paths: Option<Arc<ResolvedModuleRequestPathMap>>,
+    /// Exact compiler-owned outcomes for a project program. `Some`, including
+    /// an empty map, marks resolution as authoritative and disables heuristic
+    /// filename fallback for requests not present in the map.
+    pub project_module_resolution_outcomes: Option<Arc<ResolvedModuleRequestOutcomeMap>>,
     /// `resolvedUsingTsExtension` flag per resolved import. See
     /// [`ResolvedModuleTsExtensionMap`] — consulted by the TS2877 emission gate
     /// to suppress the diagnostic when the package author's `exports`/`imports`

@@ -448,9 +448,30 @@ pub struct MergedProgram {
     /// before the merge consumes per-file data. This captures the pre-merge memory
     /// footprint so it can be compared to the post-merge `MergedProgram` residency.
     pub pre_merge_bind_total_bytes: usize,
+    /// Optional authoritative compiler-owned module-resolution outcomes.
+    /// When present, direct checker contexts and project-wide checks must use
+    /// this map and must not guess by filename.
+    pub project_module_resolution_outcomes:
+        Option<Arc<crate::checker::context::ResolvedModuleRequestOutcomeMap>>,
 }
 
 impl MergedProgram {
+    /// Attach exact compiler-owned module resolutions to this merged program.
+    ///
+    /// Replacing the map is allowed when rebuilding a project recipe. The
+    /// importer and in-program target paths must match files in this exact
+    /// merged program; the checker records `External` and `Unresolved`
+    /// outcomes as authoritative negatives for filename-based resolution.
+    pub fn set_project_module_resolutions(
+        &mut self,
+        resolutions: &[ProjectModuleResolution],
+    ) -> Result<(), super::ProjectModuleResolutionError> {
+        self.project_module_resolution_outcomes = Some(Arc::new(
+            build_project_module_resolution_outcomes(self, resolutions)?,
+        ));
+        Ok(())
+    }
+
     /// Return the topological file ordering from the dependency graph.
     ///
     /// Dependencies come before dependents. Files in cycles are appended

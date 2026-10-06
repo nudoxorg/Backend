@@ -351,6 +351,11 @@ impl CheckerContext<'_> {
         module_specifier: &str,
         import_name: &str,
     ) -> Option<tsz_binder::SymbolId> {
+        if self.project_module_resolution_outcomes.is_some()
+            && !self.project_module_request_is_external(self.current_file_idx, module_specifier)
+        {
+            return None;
+        }
         // Check current binder first
         if let Some(exports) = self.module_exports_for_module(self.binder, module_specifier)
             && let Some(sym_id) = exports.get(import_name)
@@ -378,6 +383,11 @@ impl CheckerContext<'_> {
         module_specifier: &str,
         import_name: &str,
     ) -> Option<(tsz_binder::SymbolId, usize)> {
+        if self.project_module_resolution_outcomes.is_some()
+            && !self.project_module_request_is_external(self.current_file_idx, module_specifier)
+        {
+            return None;
+        }
         // Check current binder first
         if let Some(exports) = self.module_exports_for_module(self.binder, module_specifier)
             && let Some(sym_id) = exports.get(import_name)

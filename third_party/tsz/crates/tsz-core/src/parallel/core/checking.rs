@@ -53,6 +53,131 @@ use crate::parser::syntax_kind_ext;
 use crate::tsz_solver::TypeId;
 use tsz_common::ProjectSemanticOptions;
 
+/// Syntactic form of a TypeScript module request supplied by an admitted
+/// compiler program.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ProjectModuleRequestKind {
+    EsmImport,
+    DynamicImport,
+    CjsRequire,
+    EsmReExport,
+    /// The compiler bridge saw a request kind TSZ does not model. Keeping it
+    /// explicit makes the unsupported case fail closed instead of falling
+    /// through to heuristic filename resolution.
+    Unsupported {
+        syntax_kind: String,
+    },
+}
+
+/// Exact result for one importer/specifier/request-kind/mode tuple.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ProjectModuleResolutionTarget {
+    /// Resolved to another file in this TSZ program. `path` uses the same
+    /// normalized virtual path as the corresponding `MergedProgram` file.
+    File { path: String },
+    /// Resolved successfully outside this program. `identity` is a stable,
+    /// compiler-derived external target identity, not merely a guessed path.
+    External { identity: String },
+    /// The compiler resolver authoritatively found no target.
+    Unresolved,
+}
+
+/// A compiler-owned module-resolution observation for one program request.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ProjectModuleResolution {
+    pub importer_path: String,
+    pub specifier: String,
+    pub request_kind: ProjectModuleRequestKind,
+    pub resolution_mode: Option<crate::checker::context::ResolutionModeOverride>,
+    pub target: ProjectModuleResolutionTarget,
+}
+
+/// A project-resolution input could not be applied without weakening its
+/// authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProjectModuleResolutionError {
+    InvalidVirtualPath {
+        path: String,
+    },
+    DuplicateProgramPath {
+        path: String,
+    },
+    ImporterNotInProgram {
+        path: String,
+    },
+    TargetNotInProgram {
+        path: String,
+    },
+    EmptySpecifier,
+    EmptyExternalIdentity,
+    UnsupportedRequestKind {
+        syntax_kind: String,
+    },
+    DuplicateRequest {
+        importer_path: String,
+        specifier: String,
+    },
+}
+
+impl std::fmt::Display for ProjectModuleResolutionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidVirtualPath { path } => {
+                write!(formatter, "invalid normalized project path: {path:?}")
+            }
+            Self::DuplicateProgramPath { path } => {
+                write!(formatter, "duplicate project program path: {path:?}")
+            }
+            Self::ImporterNotInProgram { path } => {
+                write!(
+                    formatter,
+                    "module importer is not in the project program: {path:?}"
+                )
+            }
+            Self::TargetNotInProgram { path } => {
+                write!(
+                    formatter,
+                    "module target is not in the project program: {path:?}"
+                )
+            }
+            Self::EmptySpecifier => formatter.write_str("module specifier must not be empty"),
+            Self::EmptyExternalIdentity => {
+                formatter.write_str("external module identity must not be empty")
+            }
+            Self::UnsupportedRequestKind { syntax_kind } => write!(
+                formatter,
+                "unsupported TypeScript module request kind: {syntax_kind}"
+            ),
+            Self::DuplicateRequest {
+                importer_path,
+                specifier,
+            } => write!(
+                formatter,
+                "duplicate module resolution request from {importer_path:?} for {specifier:?}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ProjectModuleResolutionError {}
+
+fn validate_project_virtual_path(path: &str) -> Result<(), ProjectModuleResolutionError> {
+    let components: Vec<&str> = path.split('/').collect();
+    if path.is_empty()
+        || path.starts_with('/')
+        || path.contains('\\')
+        || path.contains('\0')
+        || components
+            .iter()
+            .any(|component| component.is_empty() || *component == "." || *component == "..")
+    {
+        return Err(ProjectModuleResolutionError::InvalidVirtualPath {
+            path: path.to_owned(),
+        });
+    }
+    Ok(())
+}
+
 /// Result of type checking a single function body
 #[derive(Debug)]
 pub struct FunctionCheckResult {
@@ -234,7 +359,14 @@ pub fn check_functions_parallel_with_project_semantic_options(
         .map(|file| file.file_name.clone())
         .collect();
     let (resolved_module_paths, resolved_modules) =
-        crate::checker::module_resolution::build_module_resolution_maps(&file_names);
+        if let Some(outcomes) = program.project_module_resolution_outcomes.as_ref() {
+            (
+                unambiguous_project_file_path_map(outcomes),
+                FxHashSet::default(),
+            )
+        } else {
+            crate::checker::module_resolution::build_module_resolution_maps(&file_names)
+        };
     let resolved_module_paths = Arc::new(resolved_module_paths);
 
     let shared_binders: Vec<Arc<BinderState>> = program
@@ -325,6 +457,11 @@ pub fn check_functions_parallel_with_project_semantic_options(
                 .ctx
                 .set_resolved_module_paths(Arc::clone(&resolved_module_paths));
             checker.ctx.set_resolved_modules(resolved_modules.clone());
+            if let Some(outcomes) = program.project_module_resolution_outcomes.as_ref() {
+                checker
+                    .ctx
+                    .set_project_module_resolution_outcomes(Arc::clone(outcomes));
+            }
             checker
                 .ctx
                 .set_global_symbol_file_index(Arc::clone(&global_symbol_file_index));
@@ -407,6 +544,163 @@ pub fn check_files_parallel_with_project_semantic_options(
     lib_files: &[Arc<LibFile>],
     project_semantic_options: ProjectSemanticOptions,
 ) -> CheckResult {
+    check_files_parallel_with_optional_project_inputs(
+        program,
+        checker_options,
+        lib_files,
+        project_semantic_options,
+        program.project_module_resolution_outcomes.clone(),
+    )
+}
+
+/// Check a complete program using exact compiler-owned module resolutions.
+///
+/// Supplying this map puts the checker in authoritative project mode: every
+/// request is resolved only by its importer/specifier/kind/mode tuple. Missing
+/// entries and `Unresolved` entries remain unresolved; `External` entries are
+/// known successful resolutions without an in-program file. No filename or
+/// basename guessing is allowed in this mode.
+pub fn check_files_parallel_with_project_inputs(
+    program: &MergedProgram,
+    checker_options: &CheckerOptions,
+    lib_files: &[Arc<LibFile>],
+    project_semantic_options: ProjectSemanticOptions,
+    resolutions: &[ProjectModuleResolution],
+) -> Result<CheckResult, ProjectModuleResolutionError> {
+    let outcomes = build_project_module_resolution_outcomes(program, resolutions)?;
+    Ok(check_files_parallel_with_optional_project_inputs(
+        program,
+        checker_options,
+        lib_files,
+        project_semantic_options,
+        Some(Arc::new(outcomes)),
+    ))
+}
+
+fn build_project_module_resolution_outcomes(
+    program: &MergedProgram,
+    resolutions: &[ProjectModuleResolution],
+) -> Result<crate::checker::context::ResolvedModuleRequestOutcomeMap, ProjectModuleResolutionError>
+{
+    use crate::checker::context::{
+        ResolutionRequestKind, ResolvedModuleRequestOutcome, ResolvedModuleRequestOutcomeMap,
+    };
+
+    let mut file_indices = FxHashMap::default();
+    for (file_idx, file) in program.files.iter().enumerate() {
+        validate_project_virtual_path(&file.file_name)?;
+        if file_indices
+            .insert(file.file_name.as_str(), file_idx)
+            .is_some()
+        {
+            return Err(ProjectModuleResolutionError::DuplicateProgramPath {
+                path: file.file_name.clone(),
+            });
+        }
+    }
+
+    let mut outcomes = ResolvedModuleRequestOutcomeMap::default();
+    for resolution in resolutions {
+        validate_project_virtual_path(&resolution.importer_path)?;
+        let importer_idx = *file_indices
+            .get(resolution.importer_path.as_str())
+            .ok_or_else(|| ProjectModuleResolutionError::ImporterNotInProgram {
+                path: resolution.importer_path.clone(),
+            })?;
+        if resolution.specifier.is_empty() {
+            return Err(ProjectModuleResolutionError::EmptySpecifier);
+        }
+
+        let request_kind = match &resolution.request_kind {
+            ProjectModuleRequestKind::EsmImport => ResolutionRequestKind::EsmImport,
+            ProjectModuleRequestKind::DynamicImport => ResolutionRequestKind::DynamicImport,
+            ProjectModuleRequestKind::CjsRequire => ResolutionRequestKind::CjsRequire,
+            ProjectModuleRequestKind::EsmReExport => ResolutionRequestKind::EsmReExport,
+            ProjectModuleRequestKind::Unsupported { syntax_kind } => {
+                return Err(ProjectModuleResolutionError::UnsupportedRequestKind {
+                    syntax_kind: syntax_kind.clone(),
+                });
+            }
+        };
+        let outcome = match &resolution.target {
+            ProjectModuleResolutionTarget::File { path } => {
+                validate_project_virtual_path(path)?;
+                let target_idx = *file_indices.get(path.as_str()).ok_or_else(|| {
+                    ProjectModuleResolutionError::TargetNotInProgram { path: path.clone() }
+                })?;
+                ResolvedModuleRequestOutcome::File(target_idx)
+            }
+            ProjectModuleResolutionTarget::External { identity } => {
+                if identity.trim().is_empty() {
+                    return Err(ProjectModuleResolutionError::EmptyExternalIdentity);
+                }
+                ResolvedModuleRequestOutcome::External {
+                    identity: identity.clone(),
+                }
+            }
+            ProjectModuleResolutionTarget::Unresolved => ResolvedModuleRequestOutcome::Unresolved,
+        };
+        let key = (
+            importer_idx,
+            resolution.specifier.clone(),
+            resolution.resolution_mode,
+            request_kind,
+        );
+        if outcomes.insert(key, outcome).is_some() {
+            return Err(ProjectModuleResolutionError::DuplicateRequest {
+                importer_path: resolution.importer_path.clone(),
+                specifier: resolution.specifier.clone(),
+            });
+        }
+    }
+
+    Ok(outcomes)
+}
+
+/// Project legacy post-processing's `(file, specifier)` view only from exact
+/// compiler outcomes that agree across every request mode/kind. Conflicting,
+/// external, and unresolved requests are deliberately omitted.
+fn unambiguous_project_file_path_map(
+    outcomes: &crate::checker::context::ResolvedModuleRequestOutcomeMap,
+) -> FxHashMap<(usize, String), usize> {
+    let mut by_specifier: FxHashMap<(usize, String), Option<usize>> = FxHashMap::default();
+    let mut conflicts = FxHashSet::default();
+    for ((file_idx, specifier, _, _), outcome) in outcomes {
+        let key = (*file_idx, specifier.clone());
+        let target = match outcome {
+            crate::checker::context::ResolvedModuleRequestOutcome::File(target_idx) => {
+                Some(*target_idx)
+            }
+            crate::checker::context::ResolvedModuleRequestOutcome::External { .. }
+            | crate::checker::context::ResolvedModuleRequestOutcome::Unresolved => None,
+        };
+        if let Some(existing) = by_specifier.get(&key) {
+            if *existing != target {
+                conflicts.insert(key);
+            }
+        } else {
+            by_specifier.insert(key, target);
+        }
+    }
+    by_specifier
+        .into_iter()
+        .filter_map(|(key, target)| {
+            (!conflicts.contains(&key))
+                .then_some(target.map(|target_idx| (key, target_idx)))
+                .flatten()
+        })
+        .collect()
+}
+
+fn check_files_parallel_with_optional_project_inputs(
+    program: &MergedProgram,
+    checker_options: &CheckerOptions,
+    lib_files: &[Arc<LibFile>],
+    project_semantic_options: ProjectSemanticOptions,
+    project_module_resolution_outcomes: Option<
+        Arc<crate::checker::context::ResolvedModuleRequestOutcomeMap>,
+    >,
+) -> CheckResult {
     // Ensure Rayon global pool has adequate stack size for deep type-checking recursion.
     ensure_rayon_global_pool();
 
@@ -415,6 +709,7 @@ pub fn check_files_parallel_with_project_semantic_options(
         checker_options,
         lib_files,
         project_semantic_options,
+        project_module_resolution_outcomes,
     );
     plan.prime_module_augmentation_bodies();
     let mut file_results = plan.run_file_checks();
@@ -452,6 +747,8 @@ struct ParallelCheckPlan<'a> {
     program: &'a MergedProgram,
     checker_options: &'a CheckerOptions,
     project_semantic_options: ProjectSemanticOptions,
+    project_module_resolution_outcomes:
+        Option<Arc<crate::checker::context::ResolvedModuleRequestOutcomeMap>>,
     resolved_module_paths: Arc<FxHashMap<(usize, String), usize>>,
     resolved_modules: Arc<FxHashSet<String>>,
     checker_lib_files: Vec<Arc<LibFile>>,
@@ -477,6 +774,9 @@ impl<'a> ParallelCheckPlan<'a> {
         checker_options: &'a CheckerOptions,
         lib_files: &[Arc<LibFile>],
         project_semantic_options: ProjectSemanticOptions,
+        project_module_resolution_outcomes: Option<
+            Arc<crate::checker::context::ResolvedModuleRequestOutcomeMap>,
+        >,
     ) -> Self {
         let file_names: Vec<String> = program
             .files
@@ -484,7 +784,14 @@ impl<'a> ParallelCheckPlan<'a> {
             .map(|file| file.file_name.clone())
             .collect();
         let (resolved_module_paths, resolved_modules) =
-            crate::checker::module_resolution::build_module_resolution_maps(&file_names);
+            if let Some(outcomes) = project_module_resolution_outcomes.as_ref() {
+                (
+                    unambiguous_project_file_path_map(outcomes),
+                    FxHashSet::default(),
+                )
+            } else {
+                crate::checker::module_resolution::build_module_resolution_maps(&file_names)
+            };
         let resolved_module_paths = Arc::new(resolved_module_paths);
         let resolved_modules = Arc::new(resolved_modules);
 
@@ -509,8 +816,7 @@ impl<'a> ParallelCheckPlan<'a> {
         // every per-file checker, so type/value-position identifier resolution
         // can skip the per-identifier `O(num_lib_files)` lib scan for names no
         // lib declares (the common case for a project's own symbols).
-        let lib_file_local_names =
-            tsz_checker::context::build_lib_file_local_names(&lib_contexts);
+        let lib_file_local_names = tsz_checker::context::build_lib_file_local_names(&lib_contexts);
 
         // PERF: Pre-compute merged augmentation data ONCE instead of per-file.
         // This reduces augmentation merging from O(N_files^2) to O(N_files).
@@ -571,9 +877,9 @@ impl<'a> ParallelCheckPlan<'a> {
         let shared_declared_modules: Option<Arc<crate::checker::context::GlobalDeclaredModules>> =
             program.skeleton_index.as_ref().map(|skel| {
                 let (exact, patterns) = skel.build_declared_module_sets();
-                Arc::new(crate::checker::context::GlobalDeclaredModules::from_skeleton(
-                    exact, patterns,
-                ))
+                Arc::new(
+                    crate::checker::context::GlobalDeclaredModules::from_skeleton(exact, patterns),
+                )
             });
 
         // Initialize per-file delegation locks for parallel correctness.
@@ -607,6 +913,7 @@ impl<'a> ParallelCheckPlan<'a> {
             program,
             checker_options,
             project_semantic_options,
+            project_module_resolution_outcomes,
             resolved_module_paths,
             resolved_modules,
             checker_lib_files,
@@ -629,7 +936,10 @@ impl<'a> ParallelCheckPlan<'a> {
     /// overhead) for memoized `evaluate_type` / `is_subtype_of` calls.
     fn make_query_cache(&self) -> tsz_solver::construction::QueryCache<'_> {
         let cache = if let Some(ref shared) = self.shared_query_cache {
-            tsz_solver::construction::QueryCache::new_with_shared(&self.program.type_interner, shared)
+            tsz_solver::construction::QueryCache::new_with_shared(
+                &self.program.type_interner,
+                shared,
+            )
         } else {
             tsz_solver::construction::QueryCache::new(&self.program.type_interner)
         };
@@ -665,6 +975,11 @@ impl<'a> ParallelCheckPlan<'a> {
         checker
             .ctx
             .set_resolved_modules(Arc::clone(&self.resolved_modules));
+        if let Some(outcomes) = self.project_module_resolution_outcomes.as_ref() {
+            checker
+                .ctx
+                .set_project_module_resolution_outcomes(Arc::clone(outcomes));
+        }
         checker
             .ctx
             .set_global_symbol_file_index(Arc::clone(&self.global_symbol_file_index));
@@ -681,7 +996,9 @@ impl<'a> ParallelCheckPlan<'a> {
             checker
                 .ctx
                 .set_lib_file_local_names(self.lib_file_local_names.clone());
-            checker.ctx.set_actual_lib_file_count(self.lib_contexts.len());
+            checker
+                .ctx
+                .set_actual_lib_file_count(self.lib_contexts.len());
         }
 
         checker.prime_module_augmentation_bodies();
@@ -741,6 +1058,11 @@ impl<'a> ParallelCheckPlan<'a> {
         checker
             .ctx
             .set_resolved_modules(Arc::clone(&self.resolved_modules));
+        if let Some(outcomes) = self.project_module_resolution_outcomes.as_ref() {
+            checker
+                .ctx
+                .set_project_module_resolution_outcomes(Arc::clone(outcomes));
+        }
         checker
             .ctx
             .set_global_symbol_file_index(Arc::clone(&self.global_symbol_file_index));
@@ -752,7 +1074,9 @@ impl<'a> ParallelCheckPlan<'a> {
             checker
                 .ctx
                 .set_lib_file_local_names(self.lib_file_local_names.clone());
-            checker.ctx.set_actual_lib_file_count(self.lib_contexts.len());
+            checker
+                .ctx
+                .set_actual_lib_file_count(self.lib_contexts.len());
         }
 
         checker.check_source_file(file.source_file);
@@ -788,11 +1112,8 @@ impl<'a> ParallelCheckPlan<'a> {
             lib_file,
             &self.affected_lib_interfaces,
         );
-        let mut binder = create_binder_from_bound_file(
-            &lib_bound_file,
-            self.program,
-            self.program.files.len(),
-        );
+        let mut binder =
+            create_binder_from_bound_file(&lib_bound_file, self.program, self.program.files.len());
         // PERF: `build_lib_bound_file_for_interface_checks` always seeds
         // `lib_bound_file.semantic_defs` as empty, so the previous
         // clone-then-overlay collapsed to a deep clone of `program.semantic_defs`
@@ -830,6 +1151,11 @@ impl<'a> ParallelCheckPlan<'a> {
         checker
             .ctx
             .set_resolved_modules(Arc::clone(&self.resolved_modules));
+        if let Some(outcomes) = self.project_module_resolution_outcomes.as_ref() {
+            checker
+                .ctx
+                .set_project_module_resolution_outcomes(Arc::clone(outcomes));
+        }
         checker
             .ctx
             .set_global_symbol_file_index(Arc::clone(&self.global_symbol_file_index));
@@ -842,7 +1168,9 @@ impl<'a> ParallelCheckPlan<'a> {
             .map(|(_, ctx)| ctx.clone())
             .collect();
         checker.ctx.set_lib_contexts(other_lib_contexts);
-        checker.ctx.set_actual_lib_file_count(self.lib_contexts.len());
+        checker
+            .ctx
+            .set_actual_lib_file_count(self.lib_contexts.len());
         checker.prime_boxed_types();
 
         checker.check_source_file_interfaces_only_filtered_post_merge(
@@ -886,7 +1214,9 @@ impl<'a> ParallelCheckPlan<'a> {
             .map(|(_, ctx)| ctx.clone())
             .collect();
         checker.ctx.set_lib_contexts(other_lib_contexts);
-        checker.ctx.set_actual_lib_file_count(self.lib_contexts.len());
+        checker
+            .ctx
+            .set_actual_lib_file_count(self.lib_contexts.len());
         checker.prime_boxed_types();
         checker.check_source_file_interfaces_only_filtered_post_merge(
             lib_file.root_index,
@@ -978,7 +1308,10 @@ impl<'a> ParallelCheckPlan<'a> {
             self.resolved_module_paths.as_ref(),
             &mut file_results,
         );
-        add_parallel_global_augmentation_member_conflict_diagnostics(self.program, &mut file_results);
+        add_parallel_global_augmentation_member_conflict_diagnostics(
+            self.program,
+            &mut file_results,
+        );
 
         let diagnostic_count: usize = file_results.iter().map(|r| r.diagnostics.len()).sum();
 
@@ -987,6 +1320,221 @@ impl<'a> ParallelCheckPlan<'a> {
             function_count: 0,
             diagnostic_count,
         }
+    }
+}
+
+#[cfg(test)]
+mod project_module_resolution_tests {
+    use super::*;
+    use crate::checker::context::{
+        ResolutionModeOverride, ResolutionRequestKind, ResolvedModuleRequestOutcome,
+        ResolvedModuleRequestOutcomeMap,
+    };
+
+    #[test]
+    fn explicit_project_resolution_preserves_outcomes_and_disables_filename_guessing() {
+        let mut program = compile_files_with_libs(
+            vec![
+                (
+                    "src/main.ts".to_owned(),
+                    "import { value } from './dep'; export const result = value;".to_owned(),
+                ),
+                (
+                    "src/dep.ts".to_owned(),
+                    "export const value = 1;".to_owned(),
+                ),
+            ],
+            &[],
+        );
+        let importer_idx = program
+            .files
+            .iter()
+            .position(|file| file.file_name == "src/main.ts")
+            .unwrap();
+        let target_idx = program
+            .files
+            .iter()
+            .position(|file| file.file_name == "src/dep.ts")
+            .unwrap();
+        let binders: Arc<Vec<Arc<BinderState>>> = Arc::new(
+            program
+                .files
+                .iter()
+                .enumerate()
+                .map(|(file_idx, file)| {
+                    Arc::new(create_binder_from_bound_file(file, &program, file_idx))
+                })
+                .collect(),
+        );
+        let arenas = Arc::new(
+            program
+                .files
+                .iter()
+                .map(|file| Arc::clone(&file.arena))
+                .collect::<Vec<_>>(),
+        );
+        let mut checker = CheckerState::new(
+            &program.files[importer_idx].arena,
+            &binders[importer_idx],
+            &program.type_interner,
+            "src/main.ts".to_owned(),
+            CheckerOptions::default(),
+        );
+        checker.ctx.set_all_arenas(Arc::clone(&arenas));
+        checker.ctx.set_all_binders(Arc::clone(&binders));
+        checker.ctx.set_current_file_idx(importer_idx);
+
+        assert_eq!(
+            checker
+                .ctx
+                .resolve_import_target_from_file(importer_idx, "./dep"),
+            Some(target_idx),
+            "the standalone checker fixture should demonstrate its filename fallback"
+        );
+        drop(checker);
+
+        program
+            .set_project_module_resolutions(&[ProjectModuleResolution {
+                importer_path: "src/main.ts".to_owned(),
+                specifier: "./dep".to_owned(),
+                request_kind: ProjectModuleRequestKind::EsmImport,
+                resolution_mode: None,
+                target: ProjectModuleResolutionTarget::Unresolved,
+            }])
+            .unwrap();
+        let mut checker = CheckerState::new(
+            &program.files[importer_idx].arena,
+            &binders[importer_idx],
+            &program.type_interner,
+            "src/main.ts".to_owned(),
+            CheckerOptions::default(),
+        );
+        checker.ctx.set_all_arenas(Arc::clone(&arenas));
+        checker.ctx.set_all_binders(Arc::clone(&binders));
+        checker.ctx.set_current_file_idx(importer_idx);
+        let outcomes = Arc::clone(program.project_module_resolution_outcomes.as_ref().unwrap());
+        checker.ctx.set_project_module_resolution_outcomes(outcomes);
+        assert_eq!(
+            checker
+                .ctx
+                .resolve_import_target_from_file(importer_idx, "./dep"),
+            None,
+            "an explicit unresolved result must not guess the same-directory file"
+        );
+        assert!(
+            !checker
+                .ctx
+                .module_resolved_without_program_file_for_request(
+                    "./dep",
+                    None,
+                    ResolutionRequestKind::EsmImport,
+                )
+        );
+
+        let mut file_outcomes = ResolvedModuleRequestOutcomeMap::default();
+        file_outcomes.insert(
+            (
+                importer_idx,
+                "./dep".to_owned(),
+                None,
+                ResolutionRequestKind::EsmImport,
+            ),
+            ResolvedModuleRequestOutcome::File(target_idx),
+        );
+        checker
+            .ctx
+            .set_project_module_resolution_outcomes(Arc::new(file_outcomes));
+        assert_eq!(
+            checker.ctx.resolve_import_target_from_file_for_request(
+                importer_idx,
+                "./dep",
+                None,
+                ResolutionRequestKind::EsmImport,
+            ),
+            Some(target_idx),
+            "the exact compiler-owned file target must be used"
+        );
+
+        let mut exact_outcomes = ResolvedModuleRequestOutcomeMap::default();
+        exact_outcomes.insert(
+            (
+                importer_idx,
+                "./dep".to_owned(),
+                Some(ResolutionModeOverride::Import),
+                ResolutionRequestKind::DynamicImport,
+            ),
+            ResolvedModuleRequestOutcome::External {
+                identity: "workspace-ambient:./dep".to_owned(),
+            },
+        );
+        checker
+            .ctx
+            .set_project_module_resolution_outcomes(Arc::new(exact_outcomes));
+        assert!(
+            checker
+                .ctx
+                .module_resolved_without_program_file_for_request(
+                    "./dep",
+                    Some(ResolutionModeOverride::Import),
+                    ResolutionRequestKind::DynamicImport,
+                )
+        );
+        assert!(
+            !checker
+                .ctx
+                .module_resolved_without_program_file_for_request(
+                    "./dep",
+                    None,
+                    ResolutionRequestKind::EsmImport,
+                )
+        );
+        assert_eq!(
+            checker.ctx.resolve_import_target_from_file_for_request(
+                importer_idx,
+                "./dep",
+                Some(ResolutionModeOverride::Import),
+                ResolutionRequestKind::DynamicImport,
+            ),
+            None,
+            "external is not an in-program file target"
+        );
+    }
+
+    #[test]
+    fn explicit_project_resolution_rejects_unsupported_and_conflicting_requests() {
+        let program = compile_files_with_libs(
+            vec![("src/main.ts".to_owned(), "export {};".to_owned())],
+            &[],
+        );
+        let unsupported = ProjectModuleResolution {
+            importer_path: "src/main.ts".to_owned(),
+            specifier: "pkg".to_owned(),
+            request_kind: ProjectModuleRequestKind::Unsupported {
+                syntax_kind: "ImportType".to_owned(),
+            },
+            resolution_mode: None,
+            target: ProjectModuleResolutionTarget::Unresolved,
+        };
+        assert!(matches!(
+            build_project_module_resolution_outcomes(&program, &[unsupported.clone()]),
+            Err(ProjectModuleResolutionError::UnsupportedRequestKind { .. })
+        ));
+        assert!(matches!(
+            build_project_module_resolution_outcomes(&program, &[unsupported.clone(), unsupported]),
+            Err(ProjectModuleResolutionError::UnsupportedRequestKind { .. })
+        ));
+
+        let exact = ProjectModuleResolution {
+            importer_path: "src/main.ts".to_owned(),
+            specifier: "pkg".to_owned(),
+            request_kind: ProjectModuleRequestKind::EsmImport,
+            resolution_mode: None,
+            target: ProjectModuleResolutionTarget::Unresolved,
+        };
+        assert!(matches!(
+            build_project_module_resolution_outcomes(&program, &[exact.clone(), exact]),
+            Err(ProjectModuleResolutionError::DuplicateRequest { .. })
+        ));
     }
 }
 

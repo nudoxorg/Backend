@@ -256,6 +256,22 @@ impl<'a> CheckerContext<'a> {
         resolution_mode_override: Option<ResolutionModeOverride>,
         request_kind: ResolutionRequestKind,
     ) -> bool {
+        if let Some(outcomes) = self.project_module_resolution_outcomes.as_ref() {
+            for candidate in module_specifier_candidates(specifier) {
+                if let Some(outcome) = outcomes.get(&(
+                    self.current_file_idx,
+                    candidate,
+                    resolution_mode_override,
+                    request_kind,
+                )) {
+                    return matches!(
+                        outcome,
+                        crate::context::ResolvedModuleRequestOutcome::External { .. }
+                    );
+                }
+            }
+            return false;
+        }
         let Some(resolved) = self.resolved_modules.as_ref() else {
             return false;
         };
@@ -386,6 +402,12 @@ impl<'a> CheckerContext<'a> {
             return Some((target_sym, target_idx));
         }
 
+        if self.project_module_resolution_outcomes.is_some()
+            && !self.project_module_request_is_external(source_file_idx, module_specifier)
+        {
+            return None;
+        }
+
         let &(target_idx, target_sym) = self
             .global_module_exports_index
             .as_ref()
@@ -432,6 +454,9 @@ impl<'a> CheckerContext<'a> {
             return Some(target_idx);
         }
 
+        if self.project_module_resolution_outcomes.is_some() {
+            return None;
+        }
         self.resolve_import_target_from_file(source_file_idx, specifier)
     }
 
@@ -443,6 +468,21 @@ impl<'a> CheckerContext<'a> {
         resolution_mode_override: Option<ResolutionModeOverride>,
         request_kind: ResolutionRequestKind,
     ) -> Option<usize> {
+        if let Some(outcomes) = self.project_module_resolution_outcomes.as_ref() {
+            for candidate in module_specifier_candidates(specifier) {
+                if let Some(crate::context::ResolvedModuleRequestOutcome::File(target_idx)) =
+                    outcomes.get(&(
+                        source_file_idx,
+                        candidate,
+                        resolution_mode_override,
+                        request_kind,
+                    ))
+                {
+                    return Some(*target_idx);
+                }
+            }
+            return None;
+        }
         if let Some(paths) = self.resolved_module_request_paths.as_ref() {
             for candidate in module_specifier_candidates(specifier) {
                 if let Some(target_idx) = paths.get(&(
@@ -458,6 +498,68 @@ impl<'a> CheckerContext<'a> {
         }
 
         self.resolve_import_target_from_file(source_file_idx, specifier)
+    }
+
+    /// Whether every explicit outcome for this source/specifier pair is an
+    /// external resolution with the same stable identity. Generic TSZ paths
+    /// that have lost request-kind information may use this only for ambient
+    /// module declarations; they never infer an in-program file target.
+    pub(crate) fn project_module_request_is_external(
+        &self,
+        source_file_idx: usize,
+        specifier: &str,
+    ) -> bool {
+        let Some(outcomes) = self.project_module_resolution_outcomes.as_ref() else {
+            return false;
+        };
+        let mut identity: Option<&str> = None;
+        let mut saw_request = false;
+        for candidate in module_specifier_candidates(specifier) {
+            for ((file_idx, request_specifier, _, _), outcome) in outcomes.iter() {
+                if *file_idx != source_file_idx || request_specifier != &candidate {
+                    continue;
+                }
+                saw_request = true;
+                let crate::context::ResolvedModuleRequestOutcome::External { identity: current } =
+                    outcome
+                else {
+                    return false;
+                };
+                if identity.is_some_and(|known| known != current) {
+                    return false;
+                }
+                identity = Some(current);
+            }
+        }
+        saw_request && identity.is_some()
+    }
+
+    /// Return a file target only when every explicit request for this
+    /// source/specifier pair agrees on the same in-program file.
+    pub(crate) fn project_module_file_target(
+        &self,
+        source_file_idx: usize,
+        specifier: &str,
+    ) -> Option<usize> {
+        let outcomes = self.project_module_resolution_outcomes.as_ref()?;
+        let mut target: Option<usize> = None;
+        let mut saw_request = false;
+        for candidate in module_specifier_candidates(specifier) {
+            for ((file_idx, request_specifier, _, _), outcome) in outcomes.iter() {
+                if *file_idx != source_file_idx || request_specifier != &candidate {
+                    continue;
+                }
+                let crate::context::ResolvedModuleRequestOutcome::File(current) = outcome else {
+                    return None;
+                };
+                if target.is_some_and(|known| known != *current) {
+                    return None;
+                }
+                target = Some(*current);
+                saw_request = true;
+            }
+        }
+        if saw_request { target } else { None }
     }
 
     /// Compute the checker-side resolution-mode key used by the CLI driver for a request.

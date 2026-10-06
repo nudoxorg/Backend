@@ -72,15 +72,19 @@ impl ProjectSemanticOptions {
     /// Whether the independently selected declaration-origin reduction is enabled.
     #[must_use]
     pub const fn declaration_origin_reduction(self) -> bool {
-        self.type_param_origin == TypeParamOriginMode::DeclarationScoped
-            && self.declaration_origin_reduction
+        matches!(
+            self.type_param_origin,
+            TypeParamOriginMode::DeclarationScoped
+        ) && self.declaration_origin_reduction
     }
 
     /// Whether the independently selected HKT return-context recovery is enabled.
     #[must_use]
     pub const fn hkt_application_unknown_drop(self) -> bool {
-        self.type_param_origin == TypeParamOriginMode::DeclarationScoped
-            && self.hkt_application_unknown_drop
+        matches!(
+            self.type_param_origin,
+            TypeParamOriginMode::DeclarationScoped
+        ) && self.hkt_application_unknown_drop
     }
 }
 

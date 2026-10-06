@@ -216,6 +216,7 @@ program_cross_file_node_symbols = { lifetime = "ProgramStable", capability = "Pr
 program_alias_partners = { lifetime = "ProgramStable", capability = "ProgramLookupContext", reason = "shared immutable program data; valid until the compilation or project version changes" }
 resolved_module_paths = { lifetime = "ProgramStable", capability = "ProgramLookupContext", reason = "shared immutable program data; valid until the compilation or project version changes" }
 resolved_module_request_paths = { lifetime = "ProgramStable", capability = "ProgramLookupContext", reason = "shared immutable program data; valid until the compilation or project version changes" }
+project_module_resolution_outcomes = { lifetime = "ProgramStable", capability = "ProgramLookupContext", reason = "exact compiler-owned per-request outcomes; valid until the admitted project program changes" }
 resolved_module_ts_extension_flags = { lifetime = "ProgramStable", capability = "ProgramLookupContext", reason = "shared immutable program data; valid until the compilation or project version changes" }
 lib_file_local_names = { lifetime = "ProgramStable", capability = "ProgramLookupContext", reason = "shared immutable lib file-local name index; valid until the compilation or loaded lib set changes" }
 current_file_idx = { lifetime = "FileLocalReset", capability = "CheckerInputs", reason = "checker-local mutable state tied to the active file or traversal; reset at file-session boundary" }

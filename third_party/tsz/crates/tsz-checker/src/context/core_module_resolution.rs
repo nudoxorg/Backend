@@ -130,6 +130,21 @@ impl CheckerContext<'_> {
         binder: &'b tsz_binder::BinderState,
         module_key: &str,
     ) -> Option<&'b tsz_binder::SymbolTable> {
+        if self.project_module_resolution_outcomes.is_some() {
+            let is_program_file_key = self.all_arenas.as_ref().is_some_and(|arenas| {
+                arenas.iter().any(|arena| {
+                    arena
+                        .source_files
+                        .first()
+                        .is_some_and(|source| source.file_name == module_key)
+                })
+            });
+            let is_exact_external =
+                self.project_module_request_is_external(self.current_file_idx, module_key);
+            if !is_program_file_key && !is_exact_external {
+                return None;
+            }
+        }
         let map: &'b rustc_hash::FxHashMap<String, tsz_binder::SymbolTable> =
             if let Some(ref idx) = self.program_module_exports {
                 idx.as_ref()
