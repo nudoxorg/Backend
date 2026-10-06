@@ -3453,7 +3453,14 @@ mod tests {
             let mut members = owner
                 .members()
                 .iter()
-                .map(|member| ir.item(*member).expect("native member").name().to_vec())
+                .map(|member| {
+                    ir.item(*member)
+                        .expect("native member")
+                        .name()
+                        .named_bytes()
+                        .expect("native inventory fixture member is named")
+                        .to_vec()
+                })
                 .collect::<Vec<_>>();
             members.sort();
             let mut expected = expected

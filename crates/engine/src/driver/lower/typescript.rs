@@ -11033,7 +11033,14 @@ mod lane_tests {
             let mut names = item
                 .members()
                 .iter()
-                .map(|member| ir.item(*member).expect("captured member").name().to_vec())
+                .map(|member| {
+                    ir.item(*member)
+                        .expect("captured member")
+                        .name()
+                        .named_bytes()
+                        .expect("TypeScript inventory fixture member is named")
+                        .to_vec()
+                })
                 .collect::<Vec<_>>();
             names.sort();
             let mut expected = expected
@@ -12951,7 +12958,12 @@ describe('suite', () => {\n\
                 source
                     .get(usize::try_from(start).ok()?..usize::try_from(end).ok()?)
                     .map(str::as_bytes)
-            }) != Some(result_alias.name())
+            }) != Some(
+                result_alias
+                    .name()
+                    .named_bytes()
+                    .ok_or(LaneError::Missing("named Result alias"))?,
+            )
             || ir.ty(results[0].ty)
                 != Some(backend_semantic::ir::TypeExpr::Concrete(
                     backend_semantic::ir::ConcreteType::Nominal(result_alias.id()),
@@ -13073,7 +13085,7 @@ describe('suite', () => {\n\
             })
             .ok_or(LaneError::Missing("OXC number overload result spelling"))?;
         let exact_alias = |name: &[u8], declaration: &str| {
-            let start = u32::try_from(source.find(declaration).ok()?).ok()?;
+            let start = u32::try_from(source.find(declaration)?).ok()?;
             let end = start.checked_add(u32::try_from(declaration.len()).ok()?)?;
             ir.items().find(|item| {
                 item.name() == name

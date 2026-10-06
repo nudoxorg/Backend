@@ -5527,7 +5527,14 @@ mod tests {
             let mut names = item
                 .members()
                 .iter()
-                .map(|id| ir.item(*id).expect("member").name().to_vec())
+                .map(|id| {
+                    ir.item(*id)
+                        .expect("member")
+                        .name()
+                        .named_bytes()
+                        .expect("Go inventory fixture member is named")
+                        .to_vec()
+                })
                 .collect::<Vec<_>>();
             names.sort();
             let mut expected = expected
