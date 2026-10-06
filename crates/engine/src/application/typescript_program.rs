@@ -144,7 +144,7 @@ struct ProgramResolution {
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct ProgramAccess {
-    kind: String,
+    kind: ProgramAccessKind,
     path: String,
     #[serde(default)]
     exists: Option<bool>,
@@ -182,7 +182,19 @@ struct ProgramAccess {
     entries: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize, serde::Serialize)]
+/// Closed Compiler API filesystem operations retained in the authority ledger.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+enum ProgramAccessKind {
+    File,
+    Exists,
+    Directory,
+    Realpath,
+    ReadDirectory,
+    GetDirectories,
+}
+
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct ProgramDirectoryView {
     path: String,
@@ -819,6 +831,14 @@ try {
 "#;
 
 /// Resolves one checked TypeScript program using only the exact admitted compiler installation.
+///
+/// The production caller is `PackageSemanticCompiler`'s configured-TypeScript branch in
+/// `application/compiler.rs`: it obtains `AdmittedTypeScriptProject::inputs()`, creates the
+/// project-scoped resolver capability, and passes the package's complete source frontier here.
+/// This function consumes that resolver ledger when it seals `NativeTypeScriptInputs`; the
+/// caller retains the resulting closure witness in staged compilation and validates it before
+/// staging, preparation, and publication. Thus the captured TypeScript query closure stays
+/// attached to the full package result, rather than ending with this adapter call.
 pub(crate) fn build_native_inputs(
     inputs: &TypeScriptProjectInputs<'_>,
     resolver: &mut TypeScriptResolverCapability<'_>,
@@ -1377,7 +1397,12 @@ fn replay_observations(
     let mut view_entries = 0_usize;
     let query_accesses = accesses
         .iter()
-        .filter(|access| matches!(access.kind.as_str(), "readDirectory" | "getDirectories"))
+        .filter(|access| {
+            matches!(
+                access.kind,
+                ProgramAccessKind::ReadDirectory | ProgramAccessKind::GetDirectories
+            )
+        })
         .count();
     if metrics.access_operations < accesses.len()
         || metrics.directory_queries < query_accesses
@@ -1459,8 +1484,8 @@ fn replay_observations(
                 "compiler filesystem observation used a non-canonical query path",
             ));
         }
-        match access.kind.as_str() {
-            "file" | "exists" => {
+        match access.kind {
+            ProgramAccessKind::File | ProgramAccessKind::Exists => {
                 let source = resolver.try_load_source(path)?;
                 if source.is_some() != access.exists.unwrap_or(false) {
                     return Err(closure_mismatch(&format!(
@@ -1477,7 +1502,7 @@ fn replay_observations(
                     )));
                 }
             }
-            "directory" => {
+            ProgramAccessKind::Directory => {
                 if resolver.directory_exists(path)? != access.exists.unwrap_or(false) {
                     return Err(closure_mismatch(&format!(
                         "compiler directory result changed at {:?}",
@@ -1485,7 +1510,7 @@ fn replay_observations(
                     )));
                 }
             }
-            "realpath" => {
+            ProgramAccessKind::Realpath => {
                 let observed_path = resolver.realpath(path)?;
                 let expected = access
                     .realpath
@@ -1499,7 +1524,7 @@ fn replay_observations(
                     )));
                 }
             }
-            "readDirectory" | "getDirectories" => {
+            ProgramAccessKind::ReadDirectory | ProgramAccessKind::GetDirectories => {
                 let entries = access.entries.as_deref().ok_or_else(|| {
                     closure_mismatch("compiler API omitted a directory query result set")
                 })?;
@@ -1526,7 +1551,7 @@ fn replay_observations(
                         "compiler directory realpath transcript is not strictly sorted and unique",
                     ));
                 }
-                if access.kind == "readDirectory" {
+                if access.kind == ProgramAccessKind::ReadDirectory {
                     if access.recursive.is_none()
                         || access.current_directory.as_deref().is_none_or(|current| {
                             let current = Path::new(current);
@@ -1698,7 +1723,7 @@ fn replay_observations(
                             "compiler directory query returned a non-canonical path",
                         ));
                     }
-                    let admitted = if access.kind == "readDirectory" {
+                    let admitted = if access.kind == ProgramAccessKind::ReadDirectory {
                         access_files.contains(&normalize_path(entry_path))
                     } else {
                         entry_path.parent() == Some(path)
@@ -1710,11 +1735,6 @@ fn replay_observations(
                         )));
                     }
                 }
-            }
-            other => {
-                return Err(closure_mismatch(&format!(
-                    "compiler reported unsupported filesystem operation {other:?}"
-                )));
             }
         }
     }
@@ -1746,7 +1766,7 @@ fn validate_matcher_transcript(
             "compiler directory query result differs from its complete matchFiles replay",
         ));
     }
-    if access.kind == "getDirectories" {
+    if access.kind == ProgramAccessKind::GetDirectories {
         if !access.matcher_arguments.is_empty() {
             return Err(closure_mismatch(
                 "compiler getDirectories transcript contains unsupported extra arguments",
@@ -2093,6 +2113,22 @@ const outputs = {
   no_matching_extension:run('no_matching_extension', {extensions:['.__nudox_no_such_extension__']}),
   depth_one:run('depth_one', {depth:1})
 };
+// This captured in-memory filesystem models Linux's case-sensitive sys setting.
+// It deliberately has two names differing only by case and no ambient FS callback.
+const caseRoot = '/case-sensitive-fixture';
+const caseViews = new Map([[caseRoot, {files:['Widget.ts', 'widget.ts'], directories:[], read_succeeded:true}]]);
+const caseSensitiveResult = ts.matchFiles(caseRoot, ['.ts'], undefined, ['**/widget.ts'], true,
+  caseRoot, undefined, directory => {
+    const view = caseViews.get(path.resolve(directory));
+    if (!view) throw new Error(`uncaptured case-sensitive fixture directory: ${directory}`);
+    return view;
+  }, absolutePath => {
+    const normalized = path.resolve(absolutePath);
+    if (normalized !== caseRoot) throw new Error(`uncaptured case-sensitive fixture realpath: ${absolutePath}`);
+    return normalized;
+  });
+outputs.linux_case_sensitive = caseSensitiveResult
+  .map(item => path.isAbsolute(item) ? path.resolve(item) : path.resolve(caseRoot, item)).sort();
 process.stdout.write(JSON.stringify(outputs));
 "#;
 
@@ -2125,6 +2161,29 @@ process.stdout.write(JSON.stringify(outputs));
     }
 
     #[test]
+    fn compiler_filesystem_operation_set_is_closed() {
+        assert!(
+            serde_json::from_value::<ProgramAccess>(json!({
+                "kind": "unrecognizedOperation",
+                "path": "/workspace/app"
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn selected_typescript_path_order_matches_utf16_for_non_bmp_basenames() {
+        let astral = "a😀.ts";
+        let private_use = "a\u{e000}.ts";
+        assert!(private_use < astral, "Rust scalar-value order is different");
+        assert_eq!(
+            super::typescript_string_cmp(astral, private_use),
+            std::cmp::Ordering::Less,
+            "TypeScript sorts names by UTF-16 code units"
+        );
+    }
+
+    #[test]
     fn compiler_directory_transcript_binds_exact_matcher_parameters() {
         let access = |extensions: Option<Vec<&str>>,
                       excludes: Option<Vec<&str>>,
@@ -2135,7 +2194,7 @@ process.stdout.write(JSON.stringify(outputs));
             let entries = vec!["/workspace/app/src/a.ts".to_owned()];
             let depth_value = depth;
             ProgramAccess {
-                kind: "readDirectory".to_owned(),
+                kind: super::ProgramAccessKind::ReadDirectory,
                 path: "/workspace/app".to_owned(),
                 exists: None,
                 sha256: None,
@@ -2458,7 +2517,7 @@ process.stdout.write(JSON.stringify(outputs));
             .compiler_accesses
             .iter()
             .find(|access| {
-                access.kind == "readDirectory"
+                access.kind == super::ProgramAccessKind::ReadDirectory
                     && super::normalize_path(Path::new(&access.path)) == project_root
                     && access
                         .entries
@@ -2466,11 +2525,50 @@ process.stdout.write(JSON.stringify(outputs));
                         .is_some_and(|entries| !entries.is_empty())
             })
             .expect("configured project root readDirectory query");
-        assert_eq!(access.use_case_sensitive_file_names, Some(false));
+        assert!(
+            access.use_case_sensitive_file_names.is_some(),
+            "use the selected TypeScript sys value rather than host assumptions"
+        );
         assert_eq!(
             access.current_directory.as_deref(),
             Some(access.path.as_str())
         );
+
+        let mut changed_views = native.closure_witness.directory_views.to_vec();
+        let changed_view = changed_views
+            .iter_mut()
+            .find(|view| access.directory_view_paths.contains(&view.path))
+            .expect("one captured view from the exact matcher query");
+        changed_view
+            .files
+            .push("unexpected-from-mutated-snapshot.ts".to_owned());
+        changed_view
+            .files
+            .sort_unstable_by(|left, right| super::typescript_string_cmp(left, right));
+        let mut changed_resolver = inputs.resolver();
+        assert!(matches!(
+            super::replay_observations(
+                &mut changed_resolver,
+                &native.closure_witness.compiler_accesses,
+                &changed_views,
+                native.closure_witness.metrics
+            ),
+            Err(crate::application::typescript_host::TypeScriptProjectHostError::CompilerIoClosureMismatch { .. })
+        ));
+
+        let mut undercounted_metrics = native.closure_witness.metrics;
+        undercounted_metrics.directory_visited_entries = 0;
+        let mut undercounted_resolver = inputs.resolver();
+        assert!(matches!(
+            super::replay_observations(
+                &mut undercounted_resolver,
+                &native.closure_witness.compiler_accesses,
+                &native.closure_witness.directory_views,
+                undercounted_metrics
+            ),
+            Err(crate::application::typescript_host::TypeScriptProjectHostError::CompilerIoClosureMismatch { .. })
+        ));
+
         let view_paths = access
             .directory_view_paths
             .iter()
@@ -2543,6 +2641,11 @@ process.stdout.write(JSON.stringify(outputs));
         // TypeScript decrements depth before checking its stop condition, so
         // depth=1 is the exact boundary that visits the root and skips children.
         assert_eq!(output["depth_one"], json!([]));
+        assert_eq!(
+            output["linux_case_sensitive"],
+            json!(["/case-sensitive-fixture/widget.ts"]),
+            "explicit Linux-style case-sensitive sys value excludes differently-cased name"
+        );
     }
 }
 

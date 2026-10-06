@@ -4480,6 +4480,76 @@ printf 'Version 5.9.3\n'
     }
 
     #[test]
+    fn resolver_deduplicates_symlinked_source_bytes_but_binds_each_alias() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        let source_dir = fixture.0.join("src");
+        fs::create_dir_all(&source_dir).expect("create source directory");
+        let source = source_dir.join("shared.d.ts");
+        fs::write(&source, b"export interface Shared {}").expect("write shared source");
+        let first_alias = source_dir.join("first.d.ts");
+        let second_alias = source_dir.join("second.d.ts");
+        symlink(&source, &first_alias).expect("create first source alias");
+        symlink(&source, &second_alias).expect("create second source alias");
+
+        let ProjectTypeScriptSearch::Found(project) =
+            find_project_typescript(&fixture.0).expect("discover project TypeScript")
+        else {
+            panic!("local TypeScript package should be found");
+        };
+        let node = fixture.0.join("node");
+        fs::write(&node, b"node witness").expect("write fake Node bytes");
+        let node = fs::canonicalize(node).expect("canonical Node");
+        let package_root = fs::canonicalize(modules.join("typescript"))
+            .expect("canonical TypeScript package root");
+        let witness = TypeScriptProjectWitness::capture(
+            &fixture.0,
+            None,
+            &project,
+            &project.compiler,
+            &node,
+            &project.module_root,
+            &package_root,
+            project.workspace.as_ref(),
+        )
+        .expect("capture project witness");
+        let mut capability = TypeScriptResolverCapability {
+            witness: &witness,
+            observations: ResolverObservationLedger::default(),
+        };
+
+        let admitted = capability
+            .try_load_source(&source)
+            .expect("load canonical source")
+            .expect("canonical source exists");
+        let content_id = admitted.content_id;
+        for alias in [&first_alias, &second_alias] {
+            let aliased = capability
+                .try_load_source(alias)
+                .expect("load symlinked source")
+                .expect("alias resolves to source");
+            assert_eq!(aliased.content_id, content_id);
+            assert_eq!(aliased.path.as_ref(), fs::canonicalize(&source).unwrap());
+            assert!(capability.observations.realpaths.contains_key(alias));
+        }
+        assert_eq!(
+            capability.loaded_sources().len(),
+            1,
+            "canonical source bytes enter the project closure only once"
+        );
+        assert_eq!(
+            capability.observations.realpaths.len(),
+            3,
+            "canonical path and both lexical aliases remain separately witnessed"
+        );
+        capability
+            .seal()
+            .expect("seal exact canonical source plus lexical alias observations")
+            .validate_current(&witness)
+            .expect("the deduplicated source closure revalidates");
+    }
+
+    #[test]
     fn resolver_capability_witnesses_only_absent_ancestor_node_modules_candidates() {
         let outer = Fixture::new();
         let project_root = outer.0.join("workspace/app");
