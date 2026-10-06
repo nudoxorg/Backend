@@ -1057,6 +1057,59 @@ fn typed_anonymous_name_round_trips_and_rejects_bad_tags_atoms_and_anchors()
     );
     let anchor_offset = lane_payload_offset(&bytes, FullDirectoryKind::AtomBytes)
         + usize::try_from(anchor_offset).expect("atom payload offset fits test address space");
+    let mut orphan_targets = bytes.clone();
+    let targets_entry =
+        HEADER_BYTES + FullDirectoryKind::SignatureCarrierBindingTargets.index() * DIRECTORY_BYTES;
+    assert_eq!(
+        directory(
+            &orphan_targets,
+            FullDirectoryKind::SignatureCarrierBindingTargets
+        )
+        .1,
+        0
+    );
+    orphan_targets.extend_from_slice(&0_u32.to_le_bytes());
+    let orphan_length = u32::try_from(orphan_targets.len()).expect("bounded test image");
+    set_u32(&mut orphan_targets, 8, orphan_length);
+    set_u32(&mut orphan_targets, targets_entry + 8, 4);
+    set_u32(&mut orphan_targets, targets_entry + 12, 1);
+    assert!(matches!(
+        SemanticImageView::reopen(&orphan_targets),
+        Err(crate::ir::FullSemanticImageError::Full(
+            FullSemanticImageFault::SignatureCarrierBindingTargetCount {
+                expected: 0,
+                observed: 1
+            }
+        ))
+    ));
+
+    let mut absent_role_payload = bytes.clone();
+    let role_kind = FullDirectoryKind::SignatureCarrierRoles;
+    let role_offset = lane_payload_offset(&bytes, role_kind);
+    absent_role_payload.insert(role_offset, 0);
+    let absent_role_length = u32::try_from(absent_role_payload.len()).expect("bounded test image");
+    set_u32(&mut absent_role_payload, 8, absent_role_length);
+    set_u32(
+        &mut absent_role_payload,
+        HEADER_BYTES + role_kind.index() * DIRECTORY_BYTES + 8,
+        1,
+    );
+    for kind in &FullDirectoryKind::ALL_WITH_CARRIER_BINDINGS[role_kind.index() + 1..] {
+        let entry = HEADER_BYTES + kind.index() * DIRECTORY_BYTES;
+        let old_offset =
+            u32::try_from(lane_payload_offset(&bytes, *kind)).expect("bounded test offset");
+        set_u32(&mut absent_role_payload, entry + 4, old_offset + 1);
+    }
+    assert!(matches!(
+        SemanticImageView::reopen(&absent_role_payload),
+        Err(crate::ir::FullSemanticImageError::Full(
+            FullSemanticImageFault::SignatureCarrierRoleLength {
+                expected: 0,
+                observed: 1
+            }
+        ))
+    ));
+
     let mut bad_anchor = bytes;
     bad_anchor[anchor_offset] ^= 1;
     assert!(matches!(

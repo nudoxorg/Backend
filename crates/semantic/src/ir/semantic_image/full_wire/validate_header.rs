@@ -156,6 +156,23 @@ pub(super) fn directory(bytes: &[u8]) -> Result<FullImageLayout, FullSemanticIma
 }
 
 pub(super) fn validate_lane_widths(layout: FullImageLayout) -> Result<(), FullSemanticImageFault> {
+    if layout.schema == SCHEMA_TYPED_NAMES {
+        let roles = layout.entry(FullDirectoryKind::SignatureCarrierRoles);
+        if roles.count == 0 && roles.length != 0 {
+            return Err(FullSemanticImageFault::SignatureCarrierRoleLength {
+                expected: 0,
+                observed: roles.length_wire,
+            });
+        }
+        let ranges = layout.entry(FullDirectoryKind::SignatureCarrierBindingRanges);
+        let targets = layout.entry(FullDirectoryKind::SignatureCarrierBindingTargets);
+        if ranges.count == 0 && targets.count != 0 {
+            return Err(FullSemanticImageFault::SignatureCarrierBindingTargetCount {
+                expected: 0,
+                observed: targets.count,
+            });
+        }
+    }
     fixed(layout, FullDirectoryKind::Atoms, ATOM_ROW_BYTES)?;
     fixed(layout, FullDirectoryKind::Entities, ENTITY_ROW_BYTES)?;
     fixed(layout, FullDirectoryKind::TypedNodes, TYPED_NODE_ROW_BYTES)?;

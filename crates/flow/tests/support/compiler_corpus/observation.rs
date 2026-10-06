@@ -2566,8 +2566,10 @@ fn member_order_digest_reader<R: SemanticReader + ?Sized>(
         member_id.raw.hash(&mut hasher);
         if let Some(member) = reader.entity(member_id) {
             member.kind.hash(&mut hasher);
-            reader
-                .atom(member.name.named_atom().unwrap_or_default())
+            member
+                .name
+                .named_atom()
+                .and_then(|name| reader.atom(name))
                 .unwrap_or_default()
                 .hash(&mut hasher);
         }
