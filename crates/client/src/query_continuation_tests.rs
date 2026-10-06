@@ -35,6 +35,9 @@ fn owner(context: u8, count: usize, sequence: u64) -> Library {
     owner_with_label(context, count, sequence, "Thing repeated")
 }
 fn owner_with_label(context: u8, count: usize, sequence: u64, label: &str) -> Library {
+    owner_with_labels(context, count, sequence, &[label])
+}
+fn owner_with_labels(context: u8, count: usize, sequence: u64, labels: &[&str]) -> Library {
     let object = object_version(b"library-source-v1");
     let scope = ScopeRoot::from_bytes(object.to_bytes());
     let observation = admit_producer_observation(
@@ -52,12 +55,12 @@ fn owner_with_label(context: u8, count: usize, sequence: u64, label: &str) -> Li
     )
     .expect("evidence");
     let basis = Basis::new(view_state_root(&[]), object);
-    let rows = (0..count)
-        .map(|i| {
+    let rows = labels.iter().cycle().take(count).enumerate()
+        .map(|(i, label)| {
             Row::new(
                 RowId::Symbol(symbol_key(&format!("pkg::Thing{i:03}"))),
                 basis,
-                label,
+                *label,
             )
         })
         .collect();
@@ -670,7 +673,8 @@ fn portable_compact_proof_rejects_expansion_truncation_and_trailing_bytes() {
 
 #[test]
 fn portable_names_public_rank_reproduces_full_rows_across_fresh_pages() {
-    let (owner, requests) = fixture();
+    let owner = Arc::new(Mutex::new(owner_with_labels(1, 37, 0, &["Thing", "Thing repeated", "ThingZZ", "anotherThing", "Thingα路径"])));
+    let requests = Arc::new(Mutex::new(vec![]));
     let reference = owner.lock().expect("owner");
     let mut expected = reference
         .names(&NameQuery::new(
@@ -683,7 +687,9 @@ fn portable_names_public_rank_reproduces_full_rows_across_fresh_pages() {
         .rows()
         .to_vec();
     drop(reference);
+    let storage_order = expected.iter().map(|row| row.id).collect::<Vec<_>>();
     expected.sort_by_key(|row| std::cmp::Reverse(row.score));
+    assert_ne!(storage_order, expected.iter().map(|row| row.id).collect::<Vec<_>>(), "fixture must exercise names order different from canonical storage");
     let mut seen = Vec::new();
     let mut token = None;
     loop {
