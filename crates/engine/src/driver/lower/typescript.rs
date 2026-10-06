@@ -4147,19 +4147,32 @@ fn native_tsz_type_query_symbol(
             continue;
         }
         let node_index = TszNodeIndex(u32::try_from(raw_node).ok()?);
-        if bound_file.arena.pos_end_at(node_index) != Some((query_span.start, query_span.end)) {
-            continue;
-        }
+        let candidate_query_span = bound_file.arena.pos_end_at(node_index);
         let node = bound_file.arena.get(node_index)?;
-        let query = bound_file.arena.get_type_query(node)?;
-        if bound_file.arena.pos_end_at(query.expr_name) != Some((name_span.start, name_span.end)) {
+        let Some(query) = bound_file.arena.get_type_query(node) else {
+            #[cfg(test)]
+            eprintln!(
+                "TSZ_TYPEQUERY_NODE_TRACE missing_type_data node={node_index:?} span={candidate_query_span:?}"
+            );
+            continue;
+        };
+        let candidate_name_span = bound_file.arena.pos_end_at(query.expr_name);
+        let name = bound_file.arena.get(query.expr_name)?;
+        let identifier = bound_file.arena.get_identifier(name).is_some();
+        let symbol = bound_file.node_symbols.get(&query.expr_name.0).copied();
+        #[cfg(test)]
+        eprintln!(
+            "TSZ_TYPEQUERY_NODE_TRACE node={node_index:?} span={candidate_query_span:?} expr={candidate_name_span:?} identifier={identifier} symbol={symbol:?} expected_query={query_span:?} expected_name={name_span:?}",
+        );
+        if candidate_query_span != Some((query_span.start, query_span.end))
+            || candidate_name_span != Some((name_span.start, name_span.end))
+        {
             continue;
         }
-        let name = bound_file.arena.get(query.expr_name)?;
-        if bound_file.arena.get_identifier(name).is_none() {
+        if !identifier {
             return None;
         }
-        let symbol = *bound_file.node_symbols.get(&query.expr_name.0)?;
+        let symbol = symbol?;
         if found.is_some_and(|existing| existing != symbol) {
             return None;
         }
