@@ -258,6 +258,7 @@ fn prepare_index_project_at(
         owner_cluster.is_some(),
         Arc::new(AtomicBool::new(false)),
     )?;
+    let mut committed_captures = BTreeMap::new();
     finish_index_scan(
         daemon,
         run_index_scan(work).map_err(IndexScanFailure::into_model_error)?,
@@ -267,6 +268,7 @@ fn prepare_index_project_at(
         pending_stored_acks,
         defer,
         None,
+        &mut committed_captures,
         None,
     )
 }
@@ -425,6 +427,7 @@ pub(super) fn finish_index_scan(
     pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
     defer: bool,
     operation_key: Option<backend_library::IndexOperationKey>,
+    committed_captures: &mut BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
     mut index_operations: Option<&mut IndexOperationJournal>,
 ) -> Result<PreparedIndex, BuiltinModelError> {
     let current_root = daemon.engine().daemon().owner().head().root();
@@ -692,11 +695,11 @@ pub(super) fn finish_index_scan(
                 None => capture_intent,
             };
             let capture_request = super::adapter::prepare_builtin_intent(daemon, &capture_intent)?;
-            let capture_request_identity =
-                backend_engine::WorkspaceModel::request_id(&BuiltinModel, &capture_request);
-            semantic_authority.commit_product_selection_transaction(Vec::new(), || {
-                super::adapter::commit_builtin_intent(daemon, request_id, &capture_request)
+            let capture_request_identity = capture_request.request_identity();
+            semantic_authority.commit_product_selection_transaction(Vec::new(), move || {
+                super::adapter::commit_prepared_builtin_intent(daemon, request_id, capture_request)
             })?;
+            *committed_captures = captures.clone();
             if let (Some(operation_key), Some(index_operations)) =
                 (operation_key, index_operations.as_deref_mut())
             {

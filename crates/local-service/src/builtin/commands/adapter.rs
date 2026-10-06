@@ -1932,6 +1932,7 @@ impl CommandAdapter {
                             self.pending_stored_acks.as_ref(),
                             true,
                             indexing.operation_key,
+                            &mut indexing.captures,
                             Some(&mut self.index_operations),
                         ) {
                             Ok(PreparedIndex::Ready(prepared)) => {
@@ -3965,9 +3966,47 @@ pub(in crate::builtin) fn commit_builtin_intent(
     request_id: u64,
     intent: &BuiltinIntent,
 ) -> Result<(), BuiltinModelError> {
-    let intent = prepare_builtin_intent(daemon, intent)?;
-    let request = BuiltinModel.request_id(&intent);
-    let expected = daemon.engine().daemon().owner().head().expectation();
+    let prepared = prepare_builtin_intent(daemon, intent)?;
+    commit_prepared_builtin_intent(daemon, request_id, prepared)
+}
+
+/// A canonical intent together with the selected base against which any
+/// capture basis was prepared. Its private fields prevent callers from
+/// changing the intent after deriving the request identity.
+pub(in crate::builtin) struct PreparedBuiltinIntent {
+    intent: BuiltinIntent,
+    request_identity: [u8; 32],
+    base_workspace_root: [u8; 32],
+    base_workspace_sequence: u64,
+    base_closure_id: [u8; 32],
+}
+
+impl PreparedBuiltinIntent {
+    pub(in crate::builtin) const fn request_identity(&self) -> [u8; 32] {
+        self.request_identity
+    }
+}
+
+/// Commits the exact prepared intent and refuses if the workspace selection
+/// changed after its request identity and capture basis were bound.
+pub(in crate::builtin) fn commit_prepared_builtin_intent(
+    daemon: &mut ProductDaemon,
+    request_id: u64,
+    prepared: PreparedBuiltinIntent,
+) -> Result<(), BuiltinModelError> {
+    let owner = daemon.engine().daemon().owner();
+    let snapshot = owner.snapshot();
+    if *snapshot.root().as_bytes() != prepared.base_workspace_root
+        || snapshot.sequence() != prepared.base_workspace_sequence
+        || *snapshot.closure().binding().closure().as_bytes() != prepared.base_closure_id
+    {
+        return Err(BuiltinModelError(
+            "prepared builtin intent base changed before commit".to_owned(),
+        ));
+    }
+    let expected = owner.head().expectation();
+    let request = prepared.request_identity;
+    let intent = prepared.intent;
     let receiver = daemon
         .client()
         .request(
@@ -4004,16 +4043,23 @@ pub(in crate::builtin) fn commit_builtin_intent(
 pub(in crate::builtin) fn prepare_builtin_intent(
     daemon: &ProductDaemon,
     intent: &BuiltinIntent,
-) -> Result<BuiltinIntent, BuiltinModelError> {
+) -> Result<PreparedBuiltinIntent, BuiltinModelError> {
+    let snapshot = daemon.engine().daemon().owner().snapshot();
     let intent = if intent.has_capture_changes() && intent.capture_basis().is_none() {
-        let snapshot = daemon.engine().daemon().owner().snapshot();
         intent
             .clone()
             .with_capture_basis(capture_basis_for_snapshot(&snapshot)?)?
     } else {
         intent.clone()
     };
-    Ok(intent)
+    let request_identity = BuiltinModel.request_id(&intent);
+    Ok(PreparedBuiltinIntent {
+        intent,
+        request_identity,
+        base_workspace_root: *snapshot.root().as_bytes(),
+        base_workspace_sequence: snapshot.sequence(),
+        base_closure_id: *snapshot.closure().binding().closure().as_bytes(),
+    })
 }
 
 fn symbol_row_by_label<'a>(

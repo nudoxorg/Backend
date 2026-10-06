@@ -24,7 +24,10 @@ fn product_store_registry_admits_every_persisted_product_relation() {
             backend_engine::builtin::ProductSourceFileFactsRelation,
         >(),
     ] {
-        assert!(registry.contains_schema(schema), "missing product relation {schema:?}");
+        assert!(
+            registry.contains_schema(schema),
+            "missing product relation {schema:?}"
+        );
     }
 }
 
@@ -801,6 +804,7 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
     .expect("atomic complete facts update");
 
     let mut daemon = open_daemon(temp.0.path());
+    let unbound_intent = intent.clone();
     let initial_basis = capture_basis_for_snapshot(&daemon.engine().daemon().owner().snapshot())
         .expect("exact selected genesis basis");
     let intent = intent
@@ -815,7 +819,15 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
         .expect("source-facts composition preserves authenticated basis");
     assert_eq!(recomposed.encode()[4], 9);
     assert_eq!(recomposed.capture_basis(), Some(initial_basis));
-    super::super::commands::commit_builtin_intent(&mut daemon, 1, &intent)
+    let prepared = super::super::commands::prepare_builtin_intent(&daemon, &unbound_intent)
+        .expect("bind request identity to the exact prepared BPI9 source intent");
+    let prepared_request_identity = prepared.request_identity();
+    assert_ne!(
+        prepared_request_identity,
+        backend_engine::WorkspaceModel::request_id(&BuiltinModel, &unbound_intent),
+        "adding the capture basis changes the canonical request identity"
+    );
+    super::super::commands::commit_prepared_builtin_intent(&mut daemon, 1, prepared)
         .expect("atomically commit structural source facts and pending capture");
     let source_capture_root = daemon.engine().daemon().owner().head().root();
     let pending_capture = semantic_capture_relation(&daemon.engine().daemon().owner().snapshot())
@@ -827,6 +839,11 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
     assert_eq!(
         pending_capture.outcome(),
         ProductSemanticCaptureOutcome::Pending { prior: None }
+    );
+    assert_eq!(
+        pending_capture.request_identity(),
+        &prepared_request_identity,
+        "the durable capture marker binds the exact committed BPI9 request identity"
     );
     let source_capture_sequence = pending_capture.source_workspace_sequence();
     let basis_before_unrelated =
