@@ -139,6 +139,9 @@ pub(crate) struct TypeScriptDirectoryEntry {
     pub(crate) path: Box<Path>,
     pub(crate) canonical_path: Option<Box<Path>>,
     pub(crate) kind: TypeScriptDirectoryEntryKind,
+    /// Kind observed through `stat`, which follows a symbolic link like Node's
+    /// TypeScript system adapter does while enumerating a directory.
+    pub(crate) effective_kind: Option<TypeScriptDirectoryEntryKind>,
     pub(crate) identity: FileIdentity,
 }
 
@@ -446,6 +449,56 @@ impl TypeScriptResolverCapability<'_> {
         Ok(output)
     }
 
+    /// Admits one exact directory enumeration observed by the TypeScript system
+    /// adapter and returns its canonical directory key. No recursive walk or
+    /// extension filtering is performed here.
+    pub(crate) fn observe_program_directory(
+        &mut self,
+        path: &Path,
+    ) -> Result<Option<PathBuf>, TypeScriptProjectHostError> {
+        let lexical = self.witness.admit_lexical_path(path)?;
+        let Some((canonical, identity)) = self.capture_realpath(&lexical)? else {
+            self.record_missing(lexical, None)?;
+            return Ok(None);
+        };
+        if !self.witness.path_is_admitted(&canonical) {
+            return Err(TypeScriptProjectHostError::SourceOutsideCapability {
+                path: canonical.into_boxed_path(),
+            });
+        }
+        let metadata =
+            fs::metadata(&canonical).map_err(|source| TypeScriptProjectHostError::PackagePath {
+                path: canonical.clone().into_boxed_path(),
+                source,
+            })?;
+        self.record_realpath(lexical, Some(canonical.clone()), identity)?;
+        if !metadata.is_dir() {
+            return Ok(None);
+        }
+        self.observe_directory(&canonical)?;
+        Ok(Some(canonical))
+    }
+
+    pub(crate) fn observed_program_directory_entries(
+        &self,
+        canonical_path: &Path,
+    ) -> Option<&[TypeScriptDirectoryEntry]> {
+        self.observations
+            .directories
+            .get(canonical_path)
+            .map(|snapshot| snapshot.entries.as_ref())
+    }
+
+    pub(crate) fn program_directory_entry_is_admitted(
+        &self,
+        entry: &TypeScriptDirectoryEntry,
+    ) -> bool {
+        entry
+            .canonical_path
+            .as_deref()
+            .is_none_or(|path| self.witness.path_is_admitted(path))
+    }
+
     pub(crate) fn loaded_sources(
         &self,
     ) -> &std::collections::BTreeMap<PathBuf, TypeScriptFileInput> {
@@ -520,6 +573,13 @@ impl TypeScriptResolverCapability<'_> {
                     TypeScriptDirectoryEntryKind::Directory => 2,
                     TypeScriptDirectoryEntryKind::Symlink => 3,
                     TypeScriptDirectoryEntryKind::Other => 4,
+                }]);
+                digest.update(&[match entry.effective_kind {
+                    Some(TypeScriptDirectoryEntryKind::RegularFile) => 1,
+                    Some(TypeScriptDirectoryEntryKind::Directory) => 2,
+                    Some(TypeScriptDirectoryEntryKind::Symlink) => 3,
+                    Some(TypeScriptDirectoryEntryKind::Other) => 4,
+                    None => 0,
                 }]);
                 match entry.canonical_path.as_deref() {
                     Some(path) => {
@@ -1292,10 +1352,29 @@ fn capture_directory_snapshot(
                 });
             }
         };
+        let effective_kind = match canonical_path.as_deref() {
+            Some(path) => {
+                let metadata = fs::metadata(path).map_err(|source| {
+                    TypeScriptProjectHostError::PackagePath {
+                        path: path.to_path_buf().into_boxed_path(),
+                        source,
+                    }
+                })?;
+                Some(if metadata.is_dir() {
+                    TypeScriptDirectoryEntryKind::Directory
+                } else if metadata.is_file() {
+                    TypeScriptDirectoryEntryKind::RegularFile
+                } else {
+                    TypeScriptDirectoryEntryKind::Other
+                })
+            }
+            None => None,
+        };
         entries.push(TypeScriptDirectoryEntry {
             path: entry_path.into_boxed_path(),
             canonical_path,
             kind,
+            effective_kind,
             identity: entry_identity,
         });
     }
@@ -3281,6 +3360,12 @@ pub enum TypeScriptProjectHostError {
     },
     #[error("TypeScript configuration {config:?} does not exist")]
     ConfigMissing { config: Box<Path> },
+    #[error("the admitted TypeScript compiler API rejected its program input: {message}")]
+    CompilerApiBridge { message: Box<str> },
+    #[error("TypeScript compiler I/O closure exceeded its {phase} budget: {detail}")]
+    CompilerIoClosureLimit { phase: Box<str>, detail: Box<str> },
+    #[error("TypeScript compiler I/O closure did not match admitted directory state: {detail}")]
+    CompilerIoClosureMismatch { detail: Box<str> },
     #[error("TypeScript configuration graph contains a cycle at {config:?}")]
     ConfigCycle { config: Box<Path> },
     #[error("TypeScript configuration {config:?} escapes workspace boundary {boundary:?}")]
@@ -4107,6 +4192,140 @@ printf 'Version 5.9.3\n'
         fs::write(&missing, b"declare const missing: string;")
             .expect("materialize formerly missing candidate");
         assert!(matches!(
+            closure.validate_current(&witness),
+            Err(TypeScriptProjectHostError::WitnessChanged { .. })
+        ));
+    }
+
+    #[test]
+    fn resolver_deduplicates_symlinked_source_bytes_but_binds_each_alias() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        let source_dir = fixture.0.join("src");
+        fs::create_dir_all(&source_dir).expect("create source directory");
+        let source = source_dir.join("shared.d.ts");
+        fs::write(&source, b"export interface Shared {}").expect("write shared source");
+        let first_alias = source_dir.join("first.d.ts");
+        let second_alias = source_dir.join("second.d.ts");
+        symlink(&source, &first_alias).expect("create first source alias");
+        symlink(&source, &second_alias).expect("create second source alias");
+
+        let ProjectTypeScriptSearch::Found(project) =
+            find_project_typescript(&fixture.0).expect("discover project TypeScript")
+        else {
+            panic!("local TypeScript package should be found");
+        };
+        let node = fixture.0.join("node");
+        fs::write(&node, b"node witness").expect("write fake Node bytes");
+        let node = fs::canonicalize(node).expect("canonical Node");
+        let package_root = fs::canonicalize(modules.join("typescript"))
+            .expect("canonical TypeScript package root");
+        let witness = TypeScriptProjectWitness::capture(
+            &fixture.0,
+            None,
+            &project,
+            &project.compiler,
+            &node,
+            &project.module_root,
+            &package_root,
+            project.workspace.as_ref(),
+        )
+        .expect("capture project witness");
+        let mut capability = TypeScriptResolverCapability {
+            witness: &witness,
+            observations: ResolverObservationLedger::default(),
+        };
+
+        let admitted = capability
+            .try_load_source(&source)
+            .expect("load canonical source")
+            .expect("canonical source exists");
+        let content_id = admitted.content_id;
+        for alias in [&first_alias, &second_alias] {
+            let aliased = capability
+                .try_load_source(alias)
+                .expect("load symlinked source")
+                .expect("alias resolves to source");
+            assert_eq!(aliased.content_id, content_id);
+            assert_eq!(aliased.path.as_ref(), fs::canonicalize(&source).unwrap());
+            assert!(capability.observations.realpaths.contains_key(alias));
+        }
+        assert_eq!(
+            capability.loaded_sources().len(),
+            1,
+            "canonical source bytes enter the project closure only once"
+        );
+        assert_eq!(
+            capability.observations.realpaths.len(),
+            3,
+            "canonical path and both lexical aliases remain separately witnessed"
+        );
+        capability
+            .seal()
+            .expect("seal exact canonical source plus lexical alias observations")
+            .validate_current(&witness)
+            .expect("the deduplicated source closure revalidates");
+    }
+
+    #[test]
+    fn resolver_capability_witnesses_only_absent_ancestor_node_modules_candidates() {
+        let outer = Fixture::new();
+        let project_root = outer.0.join("workspace/app");
+        fs::create_dir_all(&project_root).expect("create project root");
+        let package_fixture = Fixture(project_root.clone());
+        package_fixture.install("5.9.3");
+        let modules = fs::canonicalize(project_root.join("node_modules"))
+            .expect("canonical local module root");
+        let ProjectTypeScriptSearch::Found(project) =
+            find_project_typescript(&project_root).expect("discover local compiler")
+        else {
+            panic!("local compiler should be selected");
+        };
+        let node = project_root.join("node");
+        fs::write(&node, b"node witness").expect("write Node witness");
+        let node = fs::canonicalize(node).expect("canonical Node");
+        let package_root = fs::canonicalize(modules.join("typescript"))
+            .expect("canonical TypeScript package root");
+        let witness = TypeScriptProjectWitness::capture(
+            &project_root,
+            None,
+            &project,
+            &project.compiler,
+            &node,
+            &modules,
+            &package_root,
+            project.workspace.as_ref(),
+        )
+        .expect("capture project witness");
+        let mut capability = TypeScriptResolverCapability {
+            witness: &witness,
+            observations: ResolverObservationLedger::default(),
+        };
+        let ancestor_modules = outer.0.join("workspace/node_modules");
+        assert!(
+            !capability
+                .directory_exists(&ancestor_modules)
+                .expect("observe bounded absent ancestor module root")
+        );
+        assert!(
+            capability
+                .read_directory(&ancestor_modules, &[".d.ts"], true, 8, 64)
+                .expect("enumerate absent ancestor candidate")
+                .is_empty()
+        );
+        assert!(
+            capability
+                .resolver_witness()
+                .expect("fingerprint negative candidate")
+                != [0; 32]
+        );
+        capability
+            .validate_current()
+            .expect("negative ancestor candidate remains absent");
+
+        fs::create_dir_all(&ancestor_modules).expect("materialize ancestor module root");
+        assert!(matches!(
+
             capability.validate_current(),
             Err(TypeScriptProjectHostError::WitnessChanged { .. })
         ));

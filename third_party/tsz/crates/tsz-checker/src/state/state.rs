@@ -117,6 +117,21 @@ pub struct CheckerState<'a> {
     pub ctx: CheckerContext<'a>,
 }
 
+/// A symbol resolved from one file-local identifier together with the file
+/// whose binder owns that symbol.
+///
+/// `SymbolId` values are binder-relative. Keeping the file index beside the
+/// ID prevents consumers from accidentally interpreting an imported symbol
+/// through the caller's binder, where an unrelated symbol may have the same
+/// numeric ID.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProjectSymbolOwner {
+    /// Binder-relative symbol ID in `owner_file_idx`.
+    pub symbol_id: SymbolId,
+    /// Exact merged-program file index whose binder contains `symbol_id`.
+    pub owner_file_idx: usize,
+}
+
 /// RAII scope for cross-arena delegation depth.
 ///
 /// Holding this guard represents one live child-checker delegation frame. Drop
@@ -1172,6 +1187,50 @@ impl<'a> CheckerState<'a> {
     /// Get the symbol for a node index.
     pub fn get_symbol_at_node(&self, idx: NodeIndex) -> Option<SymbolId> {
         self.ctx.binder.get_node_symbol(idx)
+    }
+
+    /// Resolve a file-local identifier through the exact project import map,
+    /// retaining the terminal symbol's owning binder.
+    ///
+    /// This deliberately starts with the current file's binder. It does not
+    /// search unrelated project or library binders by name. Import aliases
+    /// are followed only through the project's explicit module-resolution
+    /// outcomes, with the context's bounded cycle/depth handling. An
+    /// unresolved, external, cyclic, or otherwise unsupported alias returns
+    /// `None`.
+    pub fn resolve_project_identifier_with_owner(
+        &self,
+        idx: NodeIndex,
+    ) -> Option<ProjectSymbolOwner> {
+        let symbol_id = self.resolve_identifier_symbol_without_tracking(idx)?;
+        // The checker may also resolve ambient/global library declarations.
+        // A project owner witness is emitted only when the exact identifier
+        // is independently bound in this file's binder; this avoids assigning
+        // a caller-file owner to a same-numbered library symbol.
+        let local_symbol_id = self.ctx.binder.resolve_identifier(self.ctx.arena, idx)?;
+        if local_symbol_id != symbol_id {
+            return None;
+        }
+        let symbol = self.ctx.binder.get_symbol(local_symbol_id)?;
+        if (symbol.flags & tsz_binder::symbol_flags::ALIAS) != 0 {
+            let (symbol_id, owner_file_idx) = self
+                .ctx
+                .resolve_import_alias_chain_with_owner_and_register(local_symbol_id)?;
+            let owner_binder = self.ctx.get_binder_for_file(owner_file_idx)?;
+            let terminal = owner_binder.get_symbol(symbol_id)?;
+            if (terminal.flags & tsz_binder::symbol_flags::ALIAS) != 0 {
+                return None;
+            }
+            return Some(ProjectSymbolOwner {
+                symbol_id,
+                owner_file_idx,
+            });
+        }
+
+        Some(ProjectSymbolOwner {
+            symbol_id: local_symbol_id,
+            owner_file_idx: self.ctx.current_file_idx,
+        })
     }
 
     /// Get the symbol by name from file locals.
