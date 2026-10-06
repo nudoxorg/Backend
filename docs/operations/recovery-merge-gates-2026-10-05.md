@@ -28,7 +28,7 @@ does not establish installed acceptance.
 - The package Python suite passes: 32 tests.
 - The pinned-shell six-package Rust all-target check passes (including GPUI
   with test support). Five recovered test compilation errors were corrected:
-  recovered test compilation errors: the `CompilerAttempt` namespace, two stale
+  the `CompilerAttempt` namespace, two stale
   declaration accessor calls, and two omitted optional source-capture fields.
   Three native clip tests also use the existing scaled-pixel accessor rather
   than an unsupported conversion. Their clip assertions and negative control
@@ -74,6 +74,10 @@ nix develop .#compiler --command cargo test --locked --offline --jobs 2 \
    PR #24's capture-only cold-recovery failure is repaired and its regression
    passes here. That focused structural/replay proof does not close complete
    configured semantic indexing or installed native acceptance.
+   The concurrently updated ledger also describes a stronger before-capture
+   witness packet (`4d2d0d46c` and follow-up) for Pending A, unrelated commit B,
+   then terminal A. Its joined runtime gate is still pending; retain that
+   requirement rather than treating the simple cold-reopen test as its proof.
 3. Test matched installed CLI/MCP/GUI binaries outside the Nix shell and source
    checkout. A normal project-local TypeScript installation must work. The full
    Plural reproduction needs its exact checkout, successful semantic publication,
