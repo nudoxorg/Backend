@@ -10401,6 +10401,117 @@ mod deferred_clip_tests {
         });
     }
 
+    struct NestedLocalAndPlate;
+    impl Render for NestedLocalAndPlate {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .relative()
+                .size_full()
+                .child(
+                    crate::canvas(
+                        |_, window, cx| {
+                            let clip = ContentMask {
+                                bounds: Bounds::new(
+                                    point(px(40.0), px(30.0)),
+                                    size(px(120.0), px(60.0)),
+                                ),
+                            };
+                            window.with_local_deferred_draw_scope(&local_id(), |window| {
+                                let mut moving = crate::canvas(
+                                    |_, window, cx| {
+                                        let inner = GlobalElementId(Arc::from([ElementId::Name(
+                                            "nested-motion".into(),
+                                        )]));
+                                        window.with_local_deferred_draw_scope(&inner, |window| {
+                                            let mut child = div()
+                                                .id("nested-local-control")
+                                                .role(crate::Role::Button)
+                                                .aria_label("Nested local prose")
+                                                .w(px(300.0))
+                                                .h(px(80.0))
+                                                .bg(crate::rgb(0xffffff))
+                                                .child("Nested local prose")
+                                                .into_any_element();
+                                            child.layout_as_root(
+                                                size(px(300.0), px(80.0)).into(),
+                                                window,
+                                                cx,
+                                            );
+                                            window.defer_draw_local(
+                                                child,
+                                                point(px(40.0), px(30.0)),
+                                                0,
+                                                Some(window.content_mask()),
+                                            );
+                                        });
+                                    },
+                                    |_, _, window, cx| {
+                                        let inner = GlobalElementId(Arc::from([ElementId::Name(
+                                            "nested-motion".into(),
+                                        )]));
+                                        window.paint_local_deferred_draws(&inner, cx);
+                                    },
+                                )
+                                .w(px(300.0))
+                                .h(px(80.0))
+                                .into_any_element();
+                                moving.layout_as_root(size(px(300.0), px(80.0)).into(), window, cx);
+                                window.defer_draw_local(moving, Point::default(), 0, Some(clip));
+                            });
+                        },
+                        |_, _, window, cx| window.paint_local_deferred_draws(&local_id(), cx),
+                    )
+                    .size_full(),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .w(px(300.0))
+                        .h(px(80.0))
+                        .bg(crate::rgb(0xff0000)),
+                )
+        }
+    }
+
+    #[gpui::test]
+    fn nested_local_motion_keeps_its_clip_and_paints_beneath_the_later_plate(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| cx.set_global(TextTrace));
+        let (_, cx) = cx.add_window_view(|_, _| NestedLocalAndPlate);
+        cx.update(|window, cx| {
+            window.set_a11y_forced(true);
+            window.draw(cx).clear(cx);
+            let quads = &window.rendered_scene_for_test().quads;
+            assert_eq!(quads.len(), 2, "each nested native draw is issued once");
+            assert!(
+                quads[0].order < quads[1].order,
+                "the nested moving child is below the later plate"
+            );
+            assert!(
+                f32::from(quads[0].content_mask.bounds.size.width) / window.scale_factor() <= 120.0,
+                "the inner local scope inherits the deferred parent's clip"
+            );
+            let runs: Vec<_> = window
+                .painted_texts()
+                .iter()
+                .filter(|run| run.text.as_ref() == "Nested local prose")
+                .collect();
+            assert_eq!(
+                runs.len(),
+                1,
+                "the actual nested native text is recorded once"
+            );
+            assert!(runs[0].bounds.size.width <= px(120.0));
+            let native = window
+                .debug_a11y_tree_json()
+                .expect("nested local native tree");
+            assert!(native.contains("Nested local prose") && native.contains("Button"));
+        });
+    }
+
     #[gpui::test]
     fn local_motion_scope_restores_owner_when_nested_work_unwinds(cx: &mut TestAppContext) {
         let (_, cx) = cx.add_window_view(|_, _| crate::Empty);
