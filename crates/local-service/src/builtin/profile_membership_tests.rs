@@ -643,17 +643,16 @@ fn paged_source_facts_and_typed_semantic_refusal_survive_cold_capture_reopen() {
     let source_version = source_version(&frontier);
     let project_record = BuiltinPackageRecord::project(label, source_version, vec![file_key])
         .expect("one-file project frontier");
-    let file_record = backend_engine::ProductSourceRecord::file_within_row_capacity(
+    let file_record = backend_engine::ProductSourceRecord::identified_file_within_row_capacity(
         project_key,
         path,
         SourceLanguage::TypeScript,
         content_version,
         analysis_version,
         declarations.clone(),
+        source_identity,
     )
-    .expect("bounded compact file row")
-    .with_source_identity(source_identity)
-    .expect("exact source content identity");
+    .expect("bounded compact file row with exact source identity");
     assert!(
         !file_record
             .file_fields()

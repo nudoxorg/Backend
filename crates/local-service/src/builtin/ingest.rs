@@ -2363,19 +2363,17 @@ fn scan_one(
     let record = if let Some(record) = reusable_record {
         record.clone()
     } else {
-        ProductSourceRecord::file_within_row_capacity(
+        // Bind identity before compaction: its final wire format also encodes
+        // containment per declaration, so reserving only a header is insufficient.
+        ProductSourceRecord::identified_file_within_row_capacity(
             project,
             relative.clone(),
             analyzed.language(),
             analyzed.content().to_bytes(),
             analysis,
             analyzed.declarations().clone(),
+            source_fact_identity,
         )
-        .map_err(SourceFault::Fatal)?
-        // Persist the exact `SourceFactDomain` identity the semantic compiler
-        // derives from these bytes, so the view can detect an in-place edit by
-        // comparing content identity instead of path sets.
-        .with_source_identity(source_fact_identity)
         .map_err(SourceFault::Fatal)?
     };
     if reusable_record.is_some() {
