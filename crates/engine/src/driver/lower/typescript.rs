@@ -3913,13 +3913,6 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 let Some(name) = class.id.as_ref().map(|id| id.span) else {
                     continue;
                 };
-                if self.parameter_properties.iter().any(|ordinal| {
-                    self.decl_starts
-                        .get(*ordinal as usize)
-                        .is_some_and(|start| *start >= class.span.start && *start < class.span.end)
-                }) {
-                    continue;
-                }
                 (
                     name,
                     class.body.body.iter().map(|member| member.span()).collect(),
@@ -3950,6 +3943,13 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             let Some(owner) = self.fact_at_name_start(name.start) else {
                 continue;
             };
+            if self
+                .parameter_properties
+                .iter()
+                .any(|ordinal| self.member_parents.get(*ordinal as usize) == Some(&owner))
+            {
+                continue;
+            }
             // Legal declaration merging widens the emitted owner's span.
             // One merge part cannot prove the whole merged inventory.
             let declaration = kind.span();
@@ -8401,6 +8401,7 @@ mod lane_tests {
                 "class Empty {}\n",
                 "class Runtime { static { const local = 1; } }\n",
                 "class ParameterProperty { constructor(public field: number) {} }\n",
+                "class Outer { run() { class Nested { constructor(public nested: number) {} } return Nested; } }\n",
                 "interface Written { value: number; run(arg: string): void; }\n",
                 "interface Merged { first: number; } interface Merged { second: number; }\n",
                 "enum Choice { First, Second }\n",
@@ -8412,6 +8413,7 @@ mod lane_tests {
             (&b"Empty"[..], &[][..]),
             (&b"Written"[..], &[&b"value"[..], &b"run"[..]][..]),
             (&b"Choice"[..], &[&b"First"[..], &b"Second"[..]][..]),
+            (&b"Outer"[..], &[&b"run"[..]][..]),
         ] {
             let item = ir
                 .items()
