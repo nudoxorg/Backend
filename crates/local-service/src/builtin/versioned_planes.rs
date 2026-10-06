@@ -2223,7 +2223,7 @@ mod tests {
         let directory = path();
         let store = FileStore::open(&directory, 8 * 1024 * 1024).expect("open history CAS");
         let history_limits = TransportLimits {
-            max_chunk: MAX_RANGE_BYTES,
+            max_chunk: OBJECT_READ_CHUNK_BYTES,
             ..TransportLimits::default()
         };
         let history = FileSemanticRangeStore::open(store.clone(), history_limits)
