@@ -3936,14 +3936,17 @@ mod tests {
         }
         fs::write(root.join("b_changed.ts"), declarations(500))
             .map_err(|error| error.to_string())?;
-        let grown = scan_with_source_policy(root, project, &reusable, default)?;
+        // A distinct cache coordinate keeps the tight-policy frontier intact.
+        // The following refusal must exercise cached unchanged pages, rather
+        // than a full fallback caused by switching this coordinate's policy.
+        let grown = scan_with_source_policy(root, [0x73; 32], &BTreeMap::new(), default)?;
         assert!(encoded_rows(&grown) > tight.limits().max_project_record_bytes);
         // The changed file alone fits; only accounting the unchanged file's
         // complete pages makes the aggregate refusal correct.
         let changed_charge = grown
             .encoded_fact_bytes
             .iter()
-            .find(|(key, _)| *key == product_source_file_key(project, "b_changed.ts"))
+            .find(|(key, _)| *key == product_source_file_key([0x73; 32], "b_changed.ts"))
             .ok_or("changed file charge")?
             .1;
         assert!(changed_charge < tight.limits().max_project_record_bytes);
