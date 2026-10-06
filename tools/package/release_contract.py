@@ -276,6 +276,7 @@ class GitHub:
         except urllib.error.HTTPError as error:
             if error.code != 404:
                 raise
+            error.close()
         # GitHub's tag endpoint finds published releases. Include drafts when
         # retrying staging or a partially uploaded stable release.
         matches = []
