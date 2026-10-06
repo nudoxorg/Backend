@@ -304,3 +304,71 @@ fn compiled_python_authority_is_ready_with_empty_path_and_no_external_tools() {
         "inspection does not create durable setup state"
     );
 }
+
+#[test]
+fn compiled_python_authority_lowers_missing_external_imports_with_empty_path() {
+    use backend_engine::application::{OwnedPackageSource, OwnedPackageSourceSet};
+    use backend_library::interface::{
+        CorrelationId, GenerateTarget, PackageCompileRequest, PackageUrl,
+    };
+    use backend_semantic::vocabulary::Stage;
+
+    let root = fresh_root("native-python-package");
+    let package_root = root.join("project");
+    fs::create_dir_all(package_root.join("src/sample")).expect("source root");
+    let modules = [
+        (
+            "setup.py",
+            "import sys\n\nif sys.version_info < (3, 10):\n    sys.stderr.write('Requires Python 3.10 or later.\\n')\n    sys.exit(1)\n\nfrom setuptools import setup\n\nsetup()\n",
+        ),
+        ("src/sample/__init__.py", "from .session import Session\n"),
+        (
+            "src/sample/session.py",
+            "from absent_dependency import missing\n\nclass Session:\n    def label(self):\n        return 'session'\n",
+        ),
+    ];
+    for (path, source) in &modules {
+        fs::write(package_root.join(path), source).expect("exact source bytes");
+    }
+    let host = LocalCompilerHost::new(
+        PythonToolEnvironment {
+            root: root.join("compiler"),
+            python: None,
+            pyrefly: None,
+            search_path: OsString::new(),
+        },
+        LocalHostDiscovery::ExplicitOnly,
+    );
+    let client = host
+        .open()
+        .expect("compiled native owner without external tools");
+    let request = PackageCompileRequest::new(
+        GenerateTarget {
+            correlation: CorrelationId(97),
+            profile: LanguageProfile::Python(PythonVersion::Python314),
+            stage: Stage::LowerIr,
+        },
+        PackageUrl::try_from("pkg:pypi/sample@1.0.0".to_owned()).expect("package URL"),
+    )
+    .expect("package profile");
+    let sources = modules
+        .iter()
+        .map(|(path, source)| OwnedPackageSource::new(path, source).expect("exact module source"))
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    let staged = client
+        .compile_package_sources_staged(
+            OwnedPackageSourceSet::new(request, package_root, sources)
+                .expect("complete selected frontier"),
+        )
+        .unwrap_or_else(|error| {
+            panic!("compiled native package must retain unavailable dependency coverage: {error:?}")
+        });
+    assert!(
+        staged.output_object_count() > 0,
+        "real canonical staged output"
+    );
+    drop(staged);
+    drop(client);
+    fs::remove_dir_all(root).expect("the stopped owner releases its exact fixture root");
+}
