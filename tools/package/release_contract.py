@@ -22,7 +22,7 @@ from pathlib import Path
 ASSET = "nudox-macos-arm64.zip"
 QA_CASES = {"finder_launch", "project_index_search", "bundled_helpers", "preferences", "cold_restart", "clean_environment", "gatekeeper", "minimum_os"}
 LINUX_ASSET_RE = re.compile(r"nudox-linux-x86_64-[a-f0-9]{10,40}\.tar\.gz\Z")
-LINUX_QA_CASES = {"cli_version", "mcp_help", "locald_sibling_discovery", "clean_environment_without_nix_paths", "ubuntu_glibc_floor"}
+LINUX_QA_CASES = {"cli_version", "project_add_search", "mcp_help", "mcp_session", "locald_sibling_discovery", "clean_environment_without_nix_paths", "ubuntu_glibc_floor"}
 
 
 def sha256(path):
