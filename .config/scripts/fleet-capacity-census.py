@@ -40,7 +40,7 @@ DEFAULT_HOSTS = {
     "ilo": {
         "limit": 8,
         "ssh_target": "root@95.217.56.147",
-        "python": "/nix/store/xkz9p0a8m6p08l79mciidsgc8irvy86n-python3-3.14.6-env/bin/python3",
+        "python": "/root/nudox-corpus-20261006/tool-recovery/roots/fleet-census-python3-3.14.6/bin/python3",
     },
     "h16001mac": {
         "limit": 8,

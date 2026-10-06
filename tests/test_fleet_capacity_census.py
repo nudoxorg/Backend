@@ -75,6 +75,12 @@ class FleetCapacityTests(unittest.TestCase):
             now=self.now,
         )
 
+    def test_ilo_python_uses_the_durable_nix_gc_root(self) -> None:
+        self.assertEqual(
+            fleet.DEFAULT_HOSTS["ilo"]["python"],
+            "/root/nudox-corpus-20261006/tool-recovery/roots/fleet-census-python3-3.14.6/bin/python3",
+        )
+
     def test_complete_fresh_empty_fleet_allows_advisory_without_reserving_slot(self) -> None:
         result = self.evaluate()
         self.assertTrue(result["advisory_allowed"])
