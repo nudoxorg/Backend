@@ -2044,10 +2044,57 @@ fn sha256_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::{
         ProgramAccess, ProgramClosureMetrics, ProgramDirectoryView, ProgramMatcherArgument,
-        ProgramPathResolution, compiler_access_digest, matcher_path_list_digest,
-        normalize_compiler_api_lib_names, validate_matcher_transcript,
+        ProgramPathResolution, build_native_inputs, compiler_access_digest,
+        matcher_path_list_digest, normalize_compiler_api_lib_names, validate_matcher_transcript,
     };
     use serde_json::json;
+
+    /// Re-runs TypeScript 5.9's own matcher against the complete directory
+    /// snapshots retained from an installed configured project. Every probe
+    /// must remain inside that captured closure; an uncaptured traversal is an
+    /// error instead of an ambient filesystem fallback.
+    const MATCHER_NEGATIVE_PROBE_SCRIPT: &str = r#"
+'use strict';
+const path = require('path');
+const ts = require(process.argv[1]);
+const input = JSON.parse(process.argv[2]);
+const views = new Map(input.views.map(view => [path.resolve(view.path), view]));
+const realpaths = new Map(input.realpaths.filter(item => item.succeeded)
+  .map(item => [path.resolve(item.path), item.target]));
+const argument = index => {
+  const value = input.matcher_arguments[index];
+  if (!value || value.kind === 'undefined') return undefined;
+  if (value.kind === 'null') return null;
+  if (value.kind !== 'value') throw new Error('unknown matcher argument encoding');
+  return value.value;
+};
+const run = (name, overrides = {}) => {
+  const extensions = Object.hasOwn(overrides, 'extensions') ? overrides.extensions : argument(0);
+  const excludes = Object.hasOwn(overrides, 'excludes') ? overrides.excludes : argument(1);
+  const includes = Object.hasOwn(overrides, 'includes') ? overrides.includes : argument(2);
+  const depth = Object.hasOwn(overrides, 'depth') ? overrides.depth : argument(3);
+  const result = ts.matchFiles(input.path, extensions, excludes, includes,
+    input.case_sensitive, input.current_directory, depth, directory => {
+      const view = views.get(path.resolve(directory));
+      if (!view) throw new Error(`uncaptured directory: ${directory}`);
+      if (!view.read_succeeded) throw new Error(`incomplete directory: ${directory}`);
+      return {files:view.files, directories:view.directories};
+    }, absolutePath => {
+      const target = realpaths.get(path.resolve(absolutePath));
+      if (!target) throw new Error(`uncaptured realpath: ${absolutePath}`);
+      return target;
+    });
+  return result.map(item => path.isAbsolute(item) ? path.resolve(item) : path.resolve(input.path, item)).sort();
+};
+const outputs = {
+  original:run('original'),
+  exclude_all:run('exclude_all', {excludes:['**/*']}),
+  include_one_directory:run('include_one_directory', {includes:['src/lib/*.ts']}),
+  no_matching_extension:run('no_matching_extension', {extensions:['.__nudox_no_such_extension__']}),
+  depth_one:run('depth_one', {depth:1})
+};
+process.stdout.write(JSON.stringify(outputs));
+"#;
 
     #[test]
     fn compiler_api_library_filenames_map_to_tsconfig_library_names() {
@@ -2336,6 +2383,166 @@ mod tests {
             )
             .expect("hash changed closure work accounting")
         );
+    }
+
+    #[test]
+    #[ignore = "requires a fully installed configured TypeScript corpus and admitted Node path"]
+    fn selected_typescript_matcher_negative_probes_stay_inside_captured_next_closure() {
+        use std::{
+            collections::BTreeSet,
+            ffi::OsString,
+            num::NonZeroUsize,
+            path::{Path, PathBuf},
+            sync::atomic::AtomicBool,
+            time::{Duration, Instant},
+        };
+
+        use crate::application::{
+            PackageSource, ToolchainProbeLimits, TypeScriptProjectHost,
+            toolchain_probe::run_typescript_program_bridge,
+        };
+
+        let root = PathBuf::from(
+            std::env::var_os("TSZ_CONFIGURED_CORPUS_ROOT")
+                .expect("set TSZ_CONFIGURED_CORPUS_ROOT to the installed Next corpus"),
+        );
+        let node = PathBuf::from(
+            std::env::var_os("TSZ_CONFIGURED_NODE")
+                .expect("set TSZ_CONFIGURED_NODE to the admitted Node executable"),
+        );
+        let source_paths = [
+            "src/app/api/route.ts",
+            "src/app/page.tsx",
+            "src/app/tutorial/page.tsx",
+            "src/components/NavBar.tsx",
+            "src/lib/scheduler.ts",
+        ];
+        let source_texts = source_paths
+            .iter()
+            .map(|path| std::fs::read_to_string(root.join(path)).expect("installed source"))
+            .collect::<Vec<_>>();
+        let package_sources = source_paths
+            .iter()
+            .zip(&source_texts)
+            .map(|(path, source)| PackageSource::new(path, source).expect("package source"))
+            .collect::<Vec<_>>();
+        let limits = ToolchainProbeLimits::new(
+            Duration::from_secs(900),
+            NonZeroUsize::new(1024 * 1024).expect("nonzero output limit"),
+        )
+        .expect("bounded test probe");
+        let host = TypeScriptProjectHost::new(None, Some(node), None, None, limits);
+        let admitted = host
+            .admit(&root)
+            .expect("admit installed configured project")
+            .expect("project-local TypeScript installation");
+        let inputs = admitted.inputs();
+        let mut resolver = inputs.resolver();
+        let cancelled = AtomicBool::new(false);
+        let native = build_native_inputs(
+            &inputs,
+            &mut resolver,
+            &package_sources,
+            Instant::now() + Duration::from_secs(900),
+            &cancelled,
+        )
+        .expect("construct exact configured compiler program and closure");
+        native
+            .closure_witness
+            .validate_current(admitted.witness.as_ref())
+            .expect("captured compiler and resolver closure still matches");
+
+        let project_root = super::normalize_path(&root);
+        let access = native
+            .closure_witness
+            .compiler_accesses
+            .iter()
+            .find(|access| {
+                access.kind == "readDirectory"
+                    && super::normalize_path(Path::new(&access.path)) == project_root
+                    && access
+                        .entries
+                        .as_ref()
+                        .is_some_and(|entries| !entries.is_empty())
+            })
+            .expect("configured project root readDirectory query");
+        assert_eq!(access.use_case_sensitive_file_names, Some(false));
+        assert_eq!(
+            access.current_directory.as_deref(),
+            Some(access.path.as_str())
+        );
+        let view_paths = access
+            .directory_view_paths
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let views = native
+            .closure_witness
+            .directory_views
+            .iter()
+            .filter(|view| view_paths.contains(view.path.as_str()))
+            .map(|view| {
+                json!({
+                    "path": view.path,
+                    "files": view.files,
+                    "directories": view.directories,
+                    "read_succeeded": view.read_succeeded
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            views.len(),
+            view_paths.len(),
+            "retain each complete query view"
+        );
+        let matcher_input = json!({
+            "path": access.path,
+            "current_directory": access.current_directory,
+            "case_sensitive": access.use_case_sensitive_file_names,
+            "matcher_arguments": access.matcher_arguments,
+            "views": views,
+            "realpaths": access.directory_realpaths,
+        });
+        let serialized = serde_json::to_string(&matcher_input).expect("serialize exact snapshots");
+        let compiler_api_path = inputs
+            .typescript_module_root
+            .join("typescript/lib/typescript.js");
+        let arguments = [
+            OsString::from(compiler_api_path.as_os_str()),
+            OsString::from(serialized),
+        ];
+        let output = run_typescript_program_bridge(
+            inputs.node_path,
+            MATCHER_NEGATIVE_PROBE_SCRIPT,
+            &arguments,
+            &root,
+            ToolchainProbeLimits::new(
+                Duration::from_secs(30),
+                NonZeroUsize::new(1024 * 1024).expect("nonzero probe output limit"),
+            )
+            .expect("bounded matcher probe"),
+            &cancelled,
+        )
+        .expect("selected TypeScript matchFiles probes");
+        let output: serde_json::Value =
+            serde_json::from_slice(&output).expect("matcher probe JSON output");
+        assert_eq!(
+            output["original"],
+            json!(access.entries.as_ref().expect("complete original query")),
+            "the selected runtime reproduces the captured full result"
+        );
+        assert_eq!(output["exclude_all"], json!([]));
+        assert_eq!(
+            output["include_one_directory"],
+            json!([project_root
+                .join("src/lib/scheduler.ts")
+                .to_string_lossy()
+                .to_string()])
+        );
+        assert_eq!(output["no_matching_extension"], json!([]));
+        // TypeScript decrements depth before checking its stop condition, so
+        // depth=1 is the exact boundary that visits the root and skips children.
+        assert_eq!(output["depth_one"], json!([]));
     }
 }
 
