@@ -1591,13 +1591,19 @@ pub fn main_entry() -> ExitCode {
 
 fn print_help() {
     println!(
-        "usage: backend-locald [--endpoint PATH] [--workspace PATH] [--profile builtin|builtin-echo] [--worker-endpoint PATH] [--authority-secret-file PATH] [--registry-source ECO=URL]... [--registry-auth-for URL=TOKEN]... [--registry-endpoint URL] [--registry-ecosystem NAME] [--registry-auth VALUE|--registry-auth-file PATH] [--registry-native] [--registry-offline] [--advisory-osv PATH|URL] [--advisory-osv-scope all|cargo|npm|pypi|maven|nuget|go] [--advisory-rustsec PATH|URL] [--advisory-ghsa PATH|URL] [--advisory-offline] [--advisory-max-age-secs SECONDS] [--forge-offline] [--forge-auth-file PATH] [--forge-auth-file-for PROVIDER=PATH]... [--forge-max-archive-bytes BYTES] [--forge-max-metadata-bytes BYTES] [--forge-max-readme-bytes BYTES] [--forge-max-entries COUNT] [--forge-max-tree-bytes BYTES] [--forge-max-path-bytes BYTES] [--forge-max-entry-bytes BYTES] [--max-frame BYTES] [--max-clients COUNT] [--timeout-ms MS] [--idle-timeout-ms MS]"
+        "usage: backend-locald [--endpoint PATH] [--workspace PATH] [--profile builtin|builtin-echo] [--worker-endpoint PATH] [--authority-secret-file PATH] [--registry-source ECO=URL]... [--registry-auth-for URL=TOKEN]... [--registry-endpoint URL] [--registry-ecosystem NAME] [--registry-auth VALUE|--registry-auth-file PATH] [--registry-native] [--registry-offline] [--registry-discovery-source ECO=URL]... [--registry-discovery-offline] [--registry-discovery-max-pages COUNT] [--advisory-osv PATH|URL] [--advisory-osv-scope all|cargo|npm|pypi|maven|nuget|go] [--advisory-rustsec PATH|URL] [--advisory-ghsa PATH|URL] [--advisory-offline] [--advisory-max-age-secs SECONDS] [--forge-offline] [--forge-auth-file PATH] [--forge-auth-file-for PROVIDER=PATH]... [--forge-max-archive-bytes BYTES] [--forge-max-metadata-bytes BYTES] [--forge-max-readme-bytes BYTES] [--forge-max-entries COUNT] [--forge-max-tree-bytes BYTES] [--forge-max-path-bytes BYTES] [--forge-max-entry-bytes BYTES] [--max-frame BYTES] [--max-clients COUNT] [--timeout-ms MS] [--idle-timeout-ms MS]"
     );
     println!(
         "without paths, locald opens this project's private per-user app-data root and derives a short local endpoint"
     );
     println!(
         "locald retires itself after --idle-timeout-ms with no connected client (default 600000); 0 never times out"
+    );
+    println!(
+        "catalog discovery runs asynchronously from official feeds for all seven ecosystems; repeat --registry-discovery-source to select feeds, or use --registry-discovery-offline to read only the cached index"
+    );
+    println!(
+        "--registry-source configures package metadata and archive acquisition; --registry-discovery-source configures the catalog feeds used by index-search"
     );
 }
 
