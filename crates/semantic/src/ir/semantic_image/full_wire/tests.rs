@@ -193,12 +193,19 @@ fn signature_binding_image(reversed: bool) -> Result<Ir, crate::ir::BuildError> 
         variadic: VariadicForm::None,
         unsafe_: false,
     }))?;
-    let item = |name, kind, semantic_type| TreeItemInput {
+    let item = |name, kind, semantic_type: Option<crate::ir::TypeId>| TreeItemInput {
         name,
         anonymous_callable_anchor: None,
         kind,
         visibility: Visibility::Private,
-        authority: authority(),
+        authority: EntityAuthorityFacts {
+            semantic_type: if semantic_type.is_some() {
+                FactAvailability::Captured
+            } else {
+                FactAvailability::Unavailable
+            },
+            ..authority()
+        },
         parent: None,
         semantic_type,
         members: &[],
@@ -344,7 +351,10 @@ fn large_mixed_tuple_signature_reopens_with_linear_binding_cell_advances()
         anonymous_callable_anchor: None,
         kind: ItemKind::Function,
         visibility: Visibility::Private,
-        authority: authority(),
+        authority: EntityAuthorityFacts {
+            semantic_type: FactAvailability::Captured,
+            ..authority()
+        },
         parent: None,
         semantic_type: Some(function_type),
         members: &[],
