@@ -108,16 +108,7 @@ def load_release() -> tuple[dict, dict, str]:
         tag = PINNED_RELEASE_TAG
         manifest_url = "https://github.com/" + GITHUB_REPO + "/releases/download/" + urllib.parse.quote(tag, safe=".-") + "/release-manifest-linux-x64.json"
         raw_manifest = fetch_bytes(manifest_url, MAX_METADATA, "immutable Linux release manifest")
-        if hashlib.sha256(raw_manifest).hexdigest() != PINNED_MANIFEST_SHA256:
-            raise InstallError("immutable Linux release manifest SHA-256 mismatch")
-        try:
-            release_manifest = validate_release_manifest(json.loads(raw_manifest))
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise InstallError(f"immutable Linux release manifest is not valid JSON: {error}") from error
-        if not tag.endswith("-" + release_manifest["source_sha"][:10] + "-linux-x64"):
-            raise InstallError("checkpoint release tag does not match the manifest source revision")
-        entry = {key: release_manifest[key] for key in ("version", "source_sha", "asset", "sha256", "minimum_glibc")}
-        entry["tag"] = tag
+        entry, release_manifest = parse_pinned_manifest(tag, raw_manifest)
     else:
         try:
             catalog = json.loads(fetch_bytes(CATALOG_URL, MAX_METADATA, "release catalog"))
@@ -152,6 +143,61 @@ def load_release() -> tuple[dict, dict, str]:
             raise InstallError("Linux release catalog glibc floor differs from immutable release metadata")
     archive_url = "https://github.com/" + GITHUB_REPO + "/releases/download/" + urllib.parse.quote(tag, safe=".-") + "/" + urllib.parse.quote(entry["asset"], safe=".-")
     return entry, release_manifest, archive_url
+
+
+def parse_pinned_manifest(tag: str, raw_manifest: bytes) -> tuple[dict, dict]:
+    if not CHECKPOINT_TAG_RE.fullmatch(tag) or not SHA_RE.fullmatch(PINNED_MANIFEST_SHA256):
+        raise InstallError("installer checkpoint pin is invalid")
+    if len(raw_manifest) > MAX_METADATA or hashlib.sha256(raw_manifest).hexdigest() != PINNED_MANIFEST_SHA256:
+        raise InstallError("immutable Linux release manifest SHA-256 mismatch")
+    try:
+        release_manifest = validate_release_manifest(json.loads(raw_manifest))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise InstallError(f"immutable Linux release manifest is not valid JSON: {error}") from error
+    if not tag.endswith("-" + release_manifest["source_sha"][:10] + "-linux-x64"):
+        raise InstallError("checkpoint release tag does not match the manifest source revision")
+    entry = {key: release_manifest[key] for key in ("version", "source_sha", "asset", "sha256", "minimum_glibc")}
+    entry["tag"] = tag
+    return entry, release_manifest
+
+
+def load_local_candidate(directory: Path, temp_directory: Path) -> tuple[dict, dict, Path]:
+    """Stage a local archive only when it matches this pinned installer exactly."""
+    if not PINNED_RELEASE_TAG or not PINNED_MANIFEST_SHA256:
+        raise InstallError("--candidate-directory is available only in a digest-pinned checkpoint installer")
+    directory = directory.expanduser().resolve()
+    manifest_path = directory / "release-manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file() or manifest_path.stat().st_size > MAX_METADATA:
+        raise InstallError("candidate directory has no regular release-manifest.json under the metadata size limit")
+    raw_manifest = manifest_path.read_bytes()
+    entry, manifest = parse_pinned_manifest(PINNED_RELEASE_TAG, raw_manifest)
+    archive_source = directory / entry["asset"]
+    sidecar = directory / (entry["asset"] + ".sha256")
+    if archive_source.is_symlink() or not archive_source.is_file():
+        raise InstallError("candidate directory is missing its regular Linux archive")
+    if sidecar.is_symlink() or not sidecar.is_file() or sidecar.read_text() != f'{manifest["sha256"]}  {entry["asset"]}\n':
+        raise InstallError("candidate archive SHA-256 sidecar does not match the pinned release manifest")
+    if archive_source.stat().st_size != manifest["size_bytes"]:
+        raise InstallError("candidate archive size differs from the pinned release manifest")
+    staged = temp_directory / entry["asset"]
+    digest = hashlib.sha256()
+    count = 0
+    try:
+        with archive_source.open("rb") as source, staged.open("xb") as target:
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+                count += len(chunk)
+                if count > MAX_ARCHIVE_BYTES:
+                    raise InstallError("candidate archive exceeds the 2 GiB safety limit")
+                target.write(chunk)
+                digest.update(chunk)
+    except OSError as error:
+        raise InstallError(f"could not stage the local candidate archive: {error}") from error
+    if count != manifest["size_bytes"] or digest.hexdigest() != manifest["sha256"]:
+        raise InstallError("candidate archive size or SHA-256 differs from the pinned release manifest")
+    return entry, manifest, staged
 
 
 def download_archive(url: str, expected_sha256: str, expected_size: int, destination: Path) -> None:
@@ -266,7 +312,10 @@ def _file_sha256(path: Path) -> str:
 
 
 def _glibc_version() -> tuple[int, int] | None:
-    value = os.confstr("CS_GNU_LIBC_VERSION")
+    try:
+        value = os.confstr("CS_GNU_LIBC_VERSION")
+    except (OSError, ValueError):
+        return None
     match = re.search(r"([0-9]+)\.([0-9]+)", value or "")
     return (int(match.group(1)), int(match.group(2))) if match else None
 
@@ -418,6 +467,7 @@ def install(prefix: Path, entry: dict, manifest: dict, archive: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prefix", type=Path, help="user install prefix (default: ~/.local)")
+    parser.add_argument("--candidate-directory", type=Path, help="install the exact digest-pinned package output for native QA")
     args = parser.parse_args(argv)
     if sys.platform != "linux" or not (os.uname().machine.lower() in {"x86_64", "amd64"}):
         raise InstallError("this installer supports Linux x86_64 only")
@@ -426,10 +476,13 @@ def main(argv: list[str] | None = None) -> int:
         raise InstallError("HOME is unset; pass --prefix with a user-writable directory")
     home = Path(raw_home).expanduser()
     prefix = (args.prefix or Path(os.environ.get("NUDOX_INSTALL_PREFIX", home / ".local"))).expanduser().resolve()
-    entry, manifest, url = load_release()
     with tempfile.TemporaryDirectory(prefix="nudox-download-") as temp_dir:
-        archive = Path(temp_dir) / entry["asset"]
-        download_archive(url, manifest["sha256"], manifest["size_bytes"], archive)
+        if args.candidate_directory:
+            entry, manifest, archive = load_local_candidate(args.candidate_directory, Path(temp_dir))
+        else:
+            entry, manifest, url = load_release()
+            archive = Path(temp_dir) / entry["asset"]
+            download_archive(url, manifest["sha256"], manifest["size_bytes"], archive)
         install(prefix, entry, manifest, archive)
     print(f"Installed NuDox {entry['version']} CLI, MCP server and local daemon in {prefix}.")
     print("Commands: nudox, nudox-mcp, nudox-locald")
