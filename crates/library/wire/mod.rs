@@ -12,6 +12,7 @@ mod codec;
 mod command;
 mod event;
 mod event_dto;
+mod journal_grammar;
 mod reply;
 mod reply_admission;
 mod reply_capability;
@@ -37,6 +38,7 @@ pub use codec::{
 };
 pub use command::{CommandDto, ReplyDto, ViewDto};
 pub use event_dto::EventDto;
+pub use journal_grammar::JournalViewGrammarV3;
 pub use reply::{SemanticShapeExport, semantic_shape_batch_key};
 pub use subscription::{SubscriptionDto, encode_compact_subscription};
 pub use subscription_snapshot::{

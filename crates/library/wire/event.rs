@@ -379,6 +379,26 @@ pub fn decode_compact_view_event(
     let envelope: CompactEventEnvelopeWire =
         serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
     ensure_version(envelope.version, "compact view event")?;
+    decode_admitted_compact_view_event(envelope, previous, base)
+}
+
+pub(crate) fn decode_journal_compact_view_event(
+    bytes: &[u8],
+    previous: Cursor,
+    base: &ViewRoot,
+    grammar: super::JournalViewGrammarV3,
+) -> Result<(Cursor, CommittedViewDelta), String> {
+    let envelope: CompactEventEnvelopeWire =
+        serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    grammar.check_envelope_version(envelope.version)?;
+    decode_admitted_compact_view_event(envelope, previous, base)
+}
+
+fn decode_admitted_compact_view_event(
+    envelope: CompactEventEnvelopeWire,
+    previous: Cursor,
+    base: &ViewRoot,
+) -> Result<(Cursor, CommittedViewDelta), String> {
     let CompactEventWire::View(value) = envelope.event;
     let certificate = required_certificate(envelope.certificate.as_ref())?;
     if previous.query_offset() != 0

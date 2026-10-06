@@ -496,6 +496,13 @@ impl ViewDto {
         let envelope: ViewEnvelopeWire =
             serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
         ensure_version(envelope.version, "view")?;
+        Self::decode_admitted_envelope(envelope, capability)
+    }
+
+    fn decode_admitted_envelope(
+        envelope: ViewEnvelopeWire,
+        capability: Option<CoverageCapability>,
+    ) -> Result<Self, String> {
         let certificate = required_certificate(envelope.certificate.as_ref())?;
         let root = view_root_from_wire(&envelope.snapshot.root, certificate, capability)?;
         let freshness = freshness_from_wire(envelope.snapshot.freshness, certificate)?;
@@ -517,6 +524,17 @@ impl ViewDto {
             certificate: envelope.certificate,
         })
     }
+}
+
+pub(crate) fn decode_journal_view(
+    bytes: &[u8],
+    capability: CoverageCapability,
+    grammar: super::JournalViewGrammarV3,
+) -> Result<ViewDto, String> {
+    let envelope: ViewEnvelopeWire =
+        serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    grammar.check_envelope_version(envelope.version)?;
+    ViewDto::decode_admitted_envelope(envelope, Some(capability))
 }
 
 pub(crate) fn ensure_version(version: u16, kind: &str) -> Result<(), String> {
