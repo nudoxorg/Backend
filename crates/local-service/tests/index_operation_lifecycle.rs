@@ -587,13 +587,15 @@ fn selected_symbol_by_name_and_kind(
             RowId::Symbol(symbol) => Some(symbol),
             RowId::Package(_) | RowId::Object(_) => None,
         })
+        // A function and its synthetic result carrier can share the same
+        // spelling; name ranking may return only the function on this query.
         .map_or_else(
-            || find_symbol_in_all_names(session, name, kind, package),
+            || find_symbol_in_package_semantics(session, name, kind, package),
             Ok,
         )
 }
 
-fn find_symbol_in_all_names(
+fn find_symbol_in_package_semantics(
     session: &mut Session,
     name: &str,
     kind: DeclarationKind,
@@ -602,7 +604,7 @@ fn find_symbol_in_all_names(
     let semantic_name_suffix = format!("::{name}");
     let mut continuation = None;
     loop {
-        let reply = session.names_page("", 200, continuation)?;
+        let reply = session.names_page("::semantic::", 200, continuation)?;
         let CommandReply::Names(snapshot) = reply.reply else {
             return Err(io::Error::other("all-name page returned another reply shape").into());
         };
