@@ -9,6 +9,13 @@ use backend_frontend_python::legacy::checker::{
 };
 use backend_semantic::vocabulary::PythonVersion;
 
+fn publication_control(cancelled: &AtomicBool) -> PythonProjectControl<'_> {
+    PythonProjectControl {
+        cancelled,
+        deadline: Instant::now() + Duration::from_secs(30),
+    }
+}
+
 #[test]
 fn native_project_restores_cross_module_definitions_preserving_utf8() {
     let root =
@@ -121,12 +128,15 @@ fn native_project_restores_cross_module_definitions_preserving_utf8() {
         && matches!(&inference.observed, InferredType::Named(name) if name.as_ref() == "pkg.models.Point")));
     report
         .witness()
-        .validate_current()
+        .validate_current(publication_control(&cancelled))
         .expect("unchanged witness");
     std::fs::write(root.join("setup.cfg"), "[metadata]\nname = changed\n")
         .expect("new negative config probe");
     assert!(
-        report.witness().validate_current().is_err(),
+        report
+            .witness()
+            .validate_current(publication_control(&cancelled))
+            .is_err(),
         "new config invalidates admitted negative probe"
     );
     let changed_configuration = checker
@@ -290,7 +300,10 @@ fn native_project_cannot_bind_uncaptured_files_or_external_configured_roots() {
     );
     std::fs::write(root.join("omitted.py"), "value = 42\n").expect("new candidate");
     assert!(
-        report.witness().validate_current().is_err(),
+        report
+            .witness()
+            .validate_current(publication_control(&cancelled))
+            .is_err(),
         "new candidate invalidates admitted negative import probe"
     );
     std::fs::remove_file(root.join("omitted.py")).expect("restore candidate absence");
@@ -397,7 +410,10 @@ fn namespace_and_wildcard_frontiers_refuse_unselected_internal_children() {
     std::fs::write(root.join("namespace/new_module.py"), "value = 42\n")
         .expect("new namespace member");
     assert!(
-        report.witness().validate_current().is_err(),
+        report
+            .witness()
+            .validate_current(publication_control(&cancelled))
+            .is_err(),
         "namespace membership absence is revalidated"
     );
     std::fs::remove_dir_all(root).expect("remove namespace fixture");
@@ -445,6 +461,61 @@ fn native_unsupported_projection_keeps_its_constructor_and_original_range() {
     assert_eq!(
         &sources[0].source[diagnostic.span.start as usize..diagnostic.span.end as usize],
         "unknown"
+    );
+    std::fs::remove_dir_all(root).expect("remove fixture");
+}
+
+#[cfg(unix)]
+#[test]
+fn source_frontier_ignores_asset_links_but_refuses_python_and_directory_aliases() {
+    let root = std::env::temp_dir().join(format!("nudox-python-link-test-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("vendor")).expect("excluded source directory");
+    std::fs::write(root.join("vendor/omitted.py"), "value = 1\n").expect("excluded source");
+    std::fs::write(root.join("image.png"), b"asset").expect("asset");
+    std::os::unix::fs::symlink("image.png", root.join("asset-link.png")).expect("asset link");
+    let checker = NativePythonProjectAuthority::admit().expect("compiled native producer");
+    let cancelled = AtomicBool::new(false);
+    let sources = [PythonProjectSource {
+        relative_path: "core.py",
+        source: "value = 1\n",
+    }];
+    let report = checker
+        .analyze_project(
+            &root,
+            "pkg",
+            &sources,
+            PythonVersion::Python314,
+            publication_control(&cancelled),
+        )
+        .expect("irrelevant asset is outside Python coverage");
+    report
+        .witness()
+        .validate_current(publication_control(&cancelled))
+        .expect("asset remains irrelevant");
+    let expired = PythonProjectControl {
+        cancelled: &cancelled,
+        deadline: Instant::now() - Duration::from_secs(1),
+    };
+    assert!(matches!(
+        report.witness().validate_current(expired),
+        Err(CheckerError::Deadline { phase: "project" })
+    ));
+    cancelled.store(true, std::sync::atomic::Ordering::Release);
+    assert!(matches!(
+        report
+            .witness()
+            .validate_current(publication_control(&cancelled)),
+        Err(CheckerError::Cancelled { phase: "project" })
+    ));
+    cancelled.store(false, std::sync::atomic::Ordering::Release);
+    std::os::unix::fs::symlink("image.png", root.join("unsafe.py")).expect("source alias");
+    assert!(
+        matches!(checker.analyze_project(&root, "pkg", &sources, PythonVersion::Python314, publication_control(&cancelled)), Err(CheckerError::UncapturedDependency { path }) if path == root.join("unsafe.py"))
+    );
+    std::fs::remove_file(root.join("unsafe.py")).expect("remove source alias");
+    std::os::unix::fs::symlink("vendor", root.join("unsafe_namespace")).expect("namespace alias");
+    assert!(
+        matches!(checker.analyze_project(&root, "pkg", &sources, PythonVersion::Python314, publication_control(&cancelled)), Err(CheckerError::UncapturedDependency { path }) if path == root.join("unsafe_namespace"))
     );
     std::fs::remove_dir_all(root).expect("remove fixture");
 }

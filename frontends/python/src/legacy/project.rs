@@ -119,10 +119,18 @@ pub struct PythonProjectControl<'control> {
 pub enum PythonTypeProjectionFault {
     /// Nested constructors exceed the retained output depth contract.
     #[error("type depth {observed} exceeds {limit}")]
-    Depth { observed: usize, limit: usize },
+    Depth {
+        /// Depth of the rejected borrowed constructor.
+        observed: usize,
+        /// Maximum admitted structural output depth.
+        limit: usize,
+    },
     /// The shared transaction projection work allowance is exhausted.
     #[error("type projection work exceeds {limit} nodes")]
-    Work { limit: usize },
+    Work {
+        /// Maximum scheduled native nodes shared by the transaction.
+        limit: usize,
+    },
     /// A borrowed native type refers to an active ancestor.
     #[error("native type graph contains a cycle")]
     Cycle,
@@ -250,6 +258,16 @@ struct FileWitness {
 
 impl FileWitness {
     fn capture(path: PathBuf) -> Result<Self, CheckerError> {
+        Self::capture_controlled(path, None)
+    }
+
+    fn capture_controlled(
+        path: PathBuf,
+        control: Option<PythonProjectControl<'_>>,
+    ) -> Result<Self, CheckerError> {
+        if let Some(control) = control {
+            checkpoint(control)?;
+        }
         let digest = match std::fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.is_file() || metadata.file_type().is_symlink() => {
                 let target = std::fs::metadata(&path).map_err(workspace_error)?;
@@ -264,6 +282,9 @@ impl FileWitness {
                 let mut bytes = [0u8; 65536];
                 let mut size = 0u64;
                 loop {
+                    if let Some(control) = control {
+                        checkpoint(control)?;
+                    }
                     let count =
                         std::io::Read::read(&mut file, &mut bytes).map_err(workspace_error)?;
                     if count == 0 {
@@ -289,7 +310,14 @@ impl FileWitness {
     }
 
     fn validate_current(&self) -> Result<(), CheckerError> {
-        let current = Self::capture(self.path.clone())?;
+        self.validate_controlled(None)
+    }
+
+    fn validate_controlled(
+        &self,
+        control: Option<PythonProjectControl<'_>>,
+    ) -> Result<(), CheckerError> {
+        let current = Self::capture_controlled(self.path.clone(), control)?;
         if self.digest != current.digest {
             return Err(project_error(
                 &self.path.to_string_lossy(),
@@ -406,28 +434,9 @@ impl DirectoryWitness {
 /// discovery owner's generated/cache directory policy. An explicitly configured
 /// root is inspected even when its own name is excluded; exclusions affect its
 /// descendants only.
-pub(super) fn ignored_source_directory(name: &std::ffi::OsStr) -> bool {
-    matches!(
-        name.to_str(),
-        Some(
-            ".git"
-                | ".hg"
-                | ".svn"
-                | ".venv"
-                | "venv"
-                | "__pycache__"
-                | ".local"
-                | ".mypy_cache"
-                | ".pytest_cache"
-                | ".tox"
-                | ".ruff_cache"
-                | "node_modules"
-                | "target"
-                | "build"
-                | "dist"
-                | ".cache"
-        )
-    )
+#[must_use]
+pub fn is_ignored_python_source_directory(name: &std::ffi::OsStr) -> bool {
+    backend_discovery::is_hard_ignored_directory(name) || name == ".local"
 }
 
 /// Exact original directory membership for the configured finite module roots.
@@ -470,7 +479,7 @@ impl SourceDirectoryWitness {
             checkpoint(control)?;
             let entry = entry.map_err(workspace_error)?;
             let name = entry.file_name();
-            if ignored_source_directory(&name) {
+            if is_ignored_python_source_directory(&name) {
                 continue;
             }
             let kind = entry.file_type().map_err(workspace_error)?;
@@ -478,7 +487,13 @@ impl SourceDirectoryWitness {
                 .path()
                 .extension()
                 .is_some_and(|ext| ext == "py" || ext == "pyi");
-            if kind.is_symlink() || (!kind.is_file() && !kind.is_dir()) {
+            if kind.is_symlink() {
+                if python || std::fs::metadata(entry.path()).is_ok_and(|target| target.is_dir()) {
+                    return Err(CheckerError::UncapturedDependency { path: entry.path() });
+                }
+                continue;
+            }
+            if python && !kind.is_file() {
                 return Err(CheckerError::UncapturedDependency { path: entry.path() });
             }
             if kind.is_dir() || python {
@@ -578,16 +593,8 @@ impl PythonProjectWitness {
     ///
     /// # Errors
     /// Refuses any changed selected source, configuration probe, or executable.
-    pub fn validate_current(&self) -> Result<(), CheckerError> {
-        let cancelled = AtomicBool::new(false);
-        let control = PythonProjectControl {
-            cancelled: &cancelled,
-            deadline: Instant::now() + super::DEFAULT_TIMEOUT,
-        };
-        self.validate_with_control(control)
-    }
-
-    fn validate_with_control(&self, control: PythonProjectControl<'_>) -> Result<(), CheckerError> {
+    pub fn validate_current(&self, control: PythonProjectControl<'_>) -> Result<(), CheckerError> {
+        checkpoint(control)?;
         for directory in &self.frontier {
             directory.validate_current(control)?;
         }
@@ -597,9 +604,9 @@ impl PythonProjectWitness {
         }
         for file in &self.files {
             checkpoint(control)?;
-            file.validate_current()?;
+            file.validate_controlled(Some(control))?;
         }
-        Ok(())
+        checkpoint(control)
     }
 }
 
@@ -832,7 +839,7 @@ impl NativePythonProjectAuthority {
             directory.fingerprint(&mut identity);
         }
         witness.fingerprint = PythonProjectFingerprint(*identity.finalize().as_bytes());
-        witness.validate_with_control(control)?;
+        witness.validate_current(control)?;
         for directory in native.mirror_tree {
             checkpoint(control)?;
             directory.validate_current()?;

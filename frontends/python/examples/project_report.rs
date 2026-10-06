@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use backend_frontend_python::legacy::checker::{
     NativePythonProjectAuthority, PYTHON_NATIVE_PROJECT_SOURCE_REVISION, PythonProjectControl,
-    PythonProjectSource, SymbolOutcome,
+    PythonProjectSource, SymbolOutcome, is_ignored_python_source_directory,
 };
 use backend_semantic::vocabulary::PythonVersion;
 use serde_json::json;
@@ -20,10 +20,7 @@ fn files(root: &Path, directory: &Path, output: &mut Vec<PathBuf>) -> std::io::R
         }
         let path = entry.path();
         if metadata.is_dir() {
-            if matches!(
-                entry.file_name().to_str(),
-                Some(".git" | ".venv" | "__pycache__" | ".local")
-            ) {
+            if is_ignored_python_source_directory(&entry.file_name()) {
                 continue;
             }
             files(root, &path, output)?;
@@ -81,7 +78,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 deadline: started + Duration::from_secs(60),
             },
         )?;
-        report.witness().validate_current()?;
+        report.witness().validate_current(PythonProjectControl {
+            cancelled: &cancelled,
+            deadline: started + Duration::from_secs(60),
+        })?;
         let mut modules = Vec::new();
         for source in &sources {
             let module = report

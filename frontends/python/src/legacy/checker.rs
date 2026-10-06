@@ -40,7 +40,7 @@ pub use project::{
     DefinitionTarget, NativePythonProducerIdentity, NativePythonProjectAuthority,
     PythonProjectControl, PythonProjectCoverageGap, PythonProjectCoverageGapKind,
     PythonProjectDiagnostic, PythonProjectFingerprint, PythonProjectReport, PythonProjectSource,
-    PythonProjectWitness, PythonTypeProjectionFault,
+    PythonProjectWitness, PythonTypeProjectionFault, is_ignored_python_source_directory,
 };
 
 use std::path::{Path, PathBuf};

@@ -526,11 +526,28 @@ pub(super) fn analyze(
             .iter()
             .map(|import| {
                 let resolved = read
-                    .get_type_at_preserving_declaration(
-                        handle,
-                        TextSize::new(import.binding_span.start),
-                    )
-                    .is_some_and(|ty| !matches!(ty, Type::Any(_)));
+                    .import_handle(handle, import.module, None)
+                    .finding()
+                    .is_some()
+                    && read
+                        .get_type_at_preserving_declaration(
+                            handle,
+                            TextSize::new(import.binding_span.start),
+                        )
+                        .is_some_and(|ty| match ty {
+                            Type::Any(_) => false,
+                            Type::Module(module) => read
+                                .import_handle(
+                                    handle,
+                                    ModuleName::from_parts(
+                                        module.parts().iter().map(|part| part.as_str()),
+                                    ),
+                                    None,
+                                )
+                                .finding()
+                                .is_some(),
+                            _ => true,
+                        });
                 if !resolved {
                     coverage_gaps.push(PythonProjectCoverageGap {
                         relative_path: source.relative_path.into(),
