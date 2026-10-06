@@ -106,7 +106,7 @@ const COMPILER_API_PROGRAM_SCRIPT: &str = r#"
 'use strict';
 const path = require('path');
 const crypto = require('crypto');
-const compilerPath = process.argv[1];
+const compilerApiPath = process.argv[1];
 const configPath = process.argv[2];
 const workspaceRoot = process.argv[3];
 const observations = new Map();
@@ -115,7 +115,7 @@ const digest = value => crypto.createHash('sha256').update(Buffer.isBuffer(value
 const add = value => { const k = JSON.stringify(value); observations.set(k, value); };
 const result = value => { process.stdout.write(JSON.stringify(value)); };
 try {
-  const ts = require(compilerPath);
+  const ts = require(compilerApiPath);
   const wrapSystem = sys => {
     for (const name of ['readFile', 'fileExists', 'directoryExists', 'realpath', 'readDirectory', 'getDirectories']) {
       if (typeof sys[name] !== 'function') continue;
@@ -282,7 +282,28 @@ pub(crate) fn build_native_inputs(
     cancelled: &AtomicBool,
 ) -> Result<NativeTypeScriptInputs, TypeScriptProjectHostError> {
     let config = select_config(inputs)?;
-    let report = run_program_bridge(inputs, config.path.as_ref(), deadline, cancelled)?;
+    // The admitted `compiler_path` is the executable CLI shim (`bin/tsc`). It
+    // is probed separately to establish the selected tool identity, but it is
+    // not the Compiler API module. Resolve that module only from the exact
+    // captured TypeScript package closure so `require` cannot silently select
+    // a different install from Node's module search path.
+    let compiler_api_path = inputs
+        .typescript_module_root
+        .join("typescript/lib/typescript.js");
+    let compiler_api = inputs
+        .typescript_files
+        .iter()
+        .find(|file| normalize_path(&file.path) == normalize_path(&compiler_api_path))
+        .ok_or_else(|| {
+            bridge_error("the admitted TypeScript package has no witnessed Compiler API module")
+        })?;
+    let report = run_program_bridge(
+        inputs,
+        config.path.as_ref(),
+        &compiler_api_path,
+        deadline,
+        cancelled,
+    )?;
     if report.schema != 1 {
         return Err(bridge_error("unsupported compiler API report schema"));
     }
@@ -496,6 +517,7 @@ pub(crate) fn build_native_inputs(
         &report.version,
         &report.compiler_options,
         &content_ids,
+        &compiler_api.content_id,
         &resolutions,
         &resolver_digest,
     )?;
@@ -518,6 +540,7 @@ pub(crate) fn build_native_inputs(
 fn run_program_bridge(
     inputs: &TypeScriptProjectInputs<'_>,
     config_path: &Path,
+    compiler_api_path: &Path,
     deadline: Instant,
     cancelled: &AtomicBool,
 ) -> Result<ProgramReport, TypeScriptProjectHostError> {
@@ -533,7 +556,7 @@ fn run_program_bridge(
     )
     .map_err(|error| bridge_error(&error.to_string()))?;
     let arguments = [
-        OsString::from(inputs.compiler_path.as_os_str()),
+        OsString::from(compiler_api_path.as_os_str()),
         OsString::from(config_path.as_os_str()),
         OsString::from(inputs.workspace_root.as_os_str()),
     ];
@@ -742,6 +765,7 @@ fn program_environment_fingerprint(
     compiler_version: &str,
     options: &serde_json::Value,
     content_ids: &BTreeMap<String, ContentId<SourceFactDomain>>,
+    compiler_api_content_id: &ContentId<SourceFactDomain>,
     resolutions: &[TszProjectModuleResolution],
     resolver_digest: &[u8; 32],
 ) -> Result<TszEnvironmentFingerprint, TypeScriptProjectHostError> {
@@ -750,6 +774,7 @@ fn program_environment_fingerprint(
     digest.update(&inputs.fingerprint);
     digest.update(compiler_version.as_bytes());
     digest.update(config.content_id.as_ref());
+    digest.update(compiler_api_content_id.as_ref());
     digest.update(resolver_digest);
     let options = serde_json::to_vec(options).map_err(|error| {
         bridge_error(&format!(
