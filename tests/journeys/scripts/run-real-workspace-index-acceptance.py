@@ -64,6 +64,11 @@ DEFAULT_DEADLINE_SECONDS = 5_400
 MAX_DEADLINE_SECONDS = 21_600
 POLL_SECONDS = 1.0
 OWNER_STOP_GRACE_SECONDS = 8.0
+LANGUAGE_CORPUS_PROFILES = {
+    "typescript": frozenset({"typescript", "tsx", "javascript"}),
+    "python": frozenset({"python"}),
+    "go": frozenset({"go"}),
+}
 
 IGNORED_DIRECTORIES = frozenset(
     {
@@ -1355,7 +1360,10 @@ def validate_corpus_manifest(
     output: Path,
     extension_languages: dict[str, str],
     large_candidate_census_minimum: int,
+    language: str | None = None,
 ) -> tuple[list[ProjectCase], bytes]:
+    if language is not None and language not in LANGUAGE_CORPUS_PROFILES:
+        raise Blocked("language corpus scope must be typescript, python, or go")
     if (
         type(large_candidate_census_minimum) is not int
         or large_candidate_census_minimum <= 0
@@ -1434,6 +1442,8 @@ def validate_corpus_manifest(
             name = symbol["name"]
             if profile not in PROFILE_LANGUAGE_VARIANT:
                 raise Blocked(f"project {project_id} uses an unsupported profile")
+            if language is not None and profile not in LANGUAGE_CORPUS_PROFILES[language]:
+                raise Blocked(f"project {project_id} symbol is outside the explicit {language} scope")
             if not isinstance(relative, str) or not isinstance(name, str) or not name.strip():
                 raise Blocked(f"project {project_id} has an empty symbol expectation")
             relative_path = PurePosixPath(relative)
@@ -1469,19 +1479,23 @@ def validate_corpus_manifest(
                 raise Blocked(f"project {project_id} expected source is not a regular file")
             symbols.append({"profile": profile, "path": relative, "name": name})
             variants.add(profile)
+        if language == "typescript" and not any(
+            symbol["profile"] in {"typescript", "tsx"} for symbol in symbols
+        ):
+            raise Blocked(f"project {project_id} has no TypeScript symbol expectation")
         project_ids.add(project_id)
         canonical_roots.add(root)
         total_symbols += len(symbols)
         cases.append(ProjectCase(project_id, root, large, minimum, tuple(symbols)))
 
-    required_variants = set(PROFILE_LANGUAGE_VARIANT)
+    required_variants = set(PROFILE_LANGUAGE_VARIANT) if language is None else set()
     missing_variants = sorted(required_variants - variants)
     if missing_variants:
         raise Blocked(
             "real corpus manifest is missing supported-profile cases: "
             + ", ".join(missing_variants)
         )
-    if not large_count:
+    if language is None and not large_count:
         raise Blocked(
             f"real corpus manifest must identify a large project with at least "
             f"{large_candidate_census_minimum} recognized source candidates"
@@ -2411,6 +2425,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--corpus-manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
+        "--language", choices=sorted(LANGUAGE_CORPUS_PROFILES),
+        help="explicit language corpus shard; default retains all-profile and large-project gates",
+    )
+    parser.add_argument(
         "--deadline-seconds",
         type=int,
         default=DEFAULT_DEADLINE_SECONDS,
@@ -2481,6 +2499,11 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
     started_at = utc_now()
     result: dict[str, Any] = {
         "schema": RESULT_SCHEMA,
+        "scope": {
+            "kind": "all-profiles" if args.language is None else "language-corpus",
+            "language": args.language,
+            "large_project_required": args.language is None,
+        },
         "status": "RUNNING",
         "started_at": started_at,
         "finished_at": None,
@@ -2564,6 +2587,7 @@ def run_acceptance(args: argparse.Namespace, output: Path) -> dict[str, Any]:
         output,
         extension_languages,
         source_capacity["large_project_candidate_census_minimum"],
+        args.language,
     )
     deadline.check("real corpus admission")
     compiler_snapshot, selected_tools, snapshot_sha = parse_closed_snapshot(

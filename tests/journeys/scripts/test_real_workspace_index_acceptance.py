@@ -315,6 +315,64 @@ class SelectedProjectFrontierTests(unittest.TestCase):
 
 
 class CorpusManifestCandidateFloorTests(unittest.TestCase):
+    def test_language_shards_are_explicit_and_do_not_weaken_default_gates(self) -> None:
+        extensions, _ = runner.parse_language_contract(REPOSITORY)
+        floor = runner.source_capacity_contract(REPOSITORY)["large_project_candidate_census_minimum"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "package"
+            project.mkdir()
+            output = root / "evidence"
+            manifest = root / "manifest.json"
+            for language, extension in [("typescript", ".ts"), ("python", ".py"), ("go", ".go")]:
+                (project / ("source" + extension)).write_text("FixtureSymbol\n")
+                manifest.write_text(json.dumps({
+                    "schema": runner.MANIFEST_SCHEMA,
+                    "projects": [{
+                        "id": "package", "path": str(project), "large": False,
+                        "minimum_source_candidates": 0,
+                        "symbols": [{"profile": language, "path": "source" + extension,
+                                     "name": "FixtureSymbol"}],
+                    }],
+                }))
+                cases, _ = runner.validate_corpus_manifest(manifest, output, extensions, floor, language)
+                self.assertEqual(len(cases), 1)
+                self.assertFalse(cases[0].large)
+                with self.assertRaises(runner.Blocked):
+                    runner.validate_corpus_manifest(manifest, output, extensions, floor)
+                with self.assertRaises(runner.Blocked):
+                    runner.validate_corpus_manifest(manifest, output, extensions, floor, "unsupported")
+                other = "go" if language != "go" else "python"
+                with self.assertRaises(runner.Blocked):
+                    runner.validate_corpus_manifest(manifest, output, extensions, floor, other)
+
+    def test_javascript_only_shard_cannot_count_as_typescript_coverage(self) -> None:
+        extensions, _ = runner.parse_language_contract(REPOSITORY)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "package"
+            project.mkdir()
+            (project / "index.js").write_text("function FixtureSymbol() {}\n")
+            manifest = root / "manifest.json"
+            value = {
+                "schema": runner.MANIFEST_SCHEMA,
+                "projects": [{
+                    "id": "js-package", "path": str(project), "large": False,
+                    "minimum_source_candidates": 0,
+                    "symbols": [{"profile": "javascript", "path": "index.js", "name": "FixtureSymbol"}],
+                }],
+            }
+            manifest.write_text(json.dumps(value))
+            with self.assertRaisesRegex(runner.Blocked, "no TypeScript symbol"):
+                runner.validate_corpus_manifest(manifest, root / "evidence", extensions, 2046, "typescript")
+            (project / "index.tsx").write_text("function FixtureSymbol() {}\n")
+            value["projects"][0]["symbols"].append({
+                "profile": "tsx", "path": "index.tsx", "name": "FixtureSymbol",
+            })
+            manifest.write_text(json.dumps(value))
+            cases, _ = runner.validate_corpus_manifest(manifest, root / "evidence", extensions, 2046, "typescript")
+            self.assertEqual(len(cases[0].symbols), 2)
+
     def test_large_candidate_floor_is_source_derived_and_manifest_can_raise_it(self) -> None:
         extension_languages, _ = runner.parse_language_contract(REPOSITORY)
         source_capacity = runner.source_capacity_contract(REPOSITORY)

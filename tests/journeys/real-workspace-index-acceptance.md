@@ -6,6 +6,10 @@ The runner is not a file-count benchmark. Its recognized source-candidate census
 
 ## Inputs
 
+For the TypeScript, Python and Go package corpus, pass `--language typescript`, `--language python`, or `--language go`. This is an explicit language shard, recorded in the result's `scope`; it does not establish all-language or large-project acceptance. Each project still needs real symbol expectations for its selected language, exact artifact provenance, complete semantic publication, CLI/MCP queries, and a cold restart. A TypeScript shard may also contain JavaScript expectations, but each project must have a TypeScript or TSX expectation; JavaScript-only packages cannot inflate TypeScript coverage. Large projects selected within a shard retain their original membership-capacity gates. Omitting `--language` retains every existing all-profile and large-project requirement.
+
+Run independent packages in fresh output directories and bounded parallel processes. Keep pinned registry/forge coordinates and source checksums beside the result. Ten thousand versions of a smaller set of packages do not establish ten thousand distinct packages, and catalog acquisition, compiler prerequisites, structured failures, and empty query parity do not count as a passing package. Results from different build manifests must remain separate.
+
 Use a clean checkout matching the build receipt, a Root-produced receipt and its verified runtime manifest, the exact three executable paths from that receipt, the canonical versioned closed compiler-host snapshot, and a real corpus manifest prepared from actual local projects. Keep the corpus manifest and result directory outside every listed project. The runner checks this before creating output files and rechecks source, artifacts, manifest, snapshot, and corpus content during the run.
 
 The corpus manifest is duplicate-free JSON with schema `nudox.real-workspace-index-acceptance-manifest.v1` and this shape:
