@@ -147,6 +147,10 @@ class CompletePackageHistoryTests(unittest.TestCase):
             {"typescript": (1, 0)}, 100, 1000, "fixture",
             package_hash=hash_function or golden_digest)
 
+    def test_actual_recomputed_identity_encoding_is_stable(self):
+        self.assertEqual(hashlib.sha256(self.encoded).hexdigest(),
+                         "4202f603601cd5c2bf580bb751c56ad08ae77d0676ac719ed835b30692a3e655")
+
     def test_real_three_image_global_frontier_is_admitted(self):
         admitted = self.check()
         self.assertEqual(admitted["history_state"], "published")
