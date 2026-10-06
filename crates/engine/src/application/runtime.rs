@@ -273,16 +273,82 @@ pub enum LocalCompilerCapabilityState {
     Ready,
 }
 
-/// Admission state of the Python checker, independent of the Python interpreter row.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum LocalRuntimePythonCheckerState {
+/// Bounded, non-sensitive cause retained when the Pyrefly version probe fails.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LocalRuntimePythonCheckerProbeFailure {
+    /// The configured executable path was relative.
+    RelativeExecutable,
+    /// The selected executable could not be started.
+    ExecutableStart,
+    /// A bounded probe or stream worker could not be started.
+    WorkerStart,
+    /// The child process could not be observed or reaped.
+    ProcessObservation,
+    /// A promised stdout or stderr stream was unavailable.
+    MissingStream,
+    /// Reading stdout or stderr failed.
+    StreamRead,
+    /// The child exceeded the admitted time limit.
+    TimedOut,
+    /// The child exceeded the admitted output limit.
+    OutputLimit,
+    /// The child exited unsuccessfully; only its bounded exit code is retained.
+    ProcessExit {
+        /// Exit status code when the operating system reported one.
+        code: Option<i32>,
+    },
+    /// The child completed without an exit status.
+    MissingStatus,
+    /// The child succeeded but returned no version bytes.
+    EmptyVersion,
+    /// The executable identity could not be bound to the selected path.
+    IdentityResolution,
+    /// Process cleanup failed after a probe terminal.
+    Cleanup(super::toolchain_probe::ToolchainProbeCleanupAction),
+}
+
+/// One closed Python checker admission state.
+///
+/// `Ready` always carries both the adapter and its bounded version proof, so callers cannot
+/// accidentally pair a checker with a missing or unrelated identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LocalRuntimePythonCheckerAdmission<Adapter> {
     /// No explicit Pyrefly path was selected.
-    #[default]
     Unconfigured,
     /// The explicit Pyrefly executable failed its bounded version probe.
-    ProbeFailed,
-    /// The explicit Pyrefly executable and exact version output were admitted.
-    Ready,
+    ProbeFailed {
+        /// Typed cause with no raw command output or unbounded operating-system detail.
+        cause: LocalRuntimePythonCheckerProbeFailure,
+    },
+    /// The adapter and exact version-output identity were admitted together.
+    Ready {
+        /// Checker bound to the selected absolute executable.
+        adapter: Adapter,
+        /// Exact bounded `pyrefly --version` output identity.
+        proof: PyreflyToolchainIdentity,
+    },
+}
+
+impl<Adapter> Default for LocalRuntimePythonCheckerAdmission<Adapter> {
+    fn default() -> Self {
+        Self::Unconfigured
+    }
+}
+
+impl<Adapter> LocalRuntimePythonCheckerAdmission<Adapter> {
+    /// Borrows the checker adapter while preserving the same single admission state.
+    pub fn as_ref(&self) -> LocalRuntimePythonCheckerAdmission<&Adapter> {
+        match self {
+            Self::Unconfigured => LocalRuntimePythonCheckerAdmission::Unconfigured,
+            Self::ProbeFailed { cause } => {
+                LocalRuntimePythonCheckerAdmission::ProbeFailed { cause: *cause }
+            }
+            Self::Ready { adapter, proof } => LocalRuntimePythonCheckerAdmission::Ready {
+                adapter,
+                proof: *proof,
+            },
+        }
+    }
 }
 
 /// One compiler-owned semantic capability bound to the exact runtime configuration.
@@ -1004,11 +1070,14 @@ fn package_authority_fingerprint(
             }
         }
         Language::Python => {
-            identity.update(&authority.python.as_ref()?.local_configuration_fingerprint());
-            identity.update(&[u8::from(authority.python_toolchain_identity.is_some())]);
-            if let Some(pyrefly_toolchain) = authority.python_toolchain_identity {
-                identity.update(pyrefly_toolchain.content_id().as_ref());
-            }
+            let LocalRuntimePythonCheckerAdmission::Ready { adapter, proof } =
+                &authority.python_checker
+            else {
+                return None;
+            };
+            identity.update(&adapter.local_configuration_fingerprint());
+            identity.update(&[1]);
+            identity.update(proof.content_id().as_ref());
         }
         Language::Go => {
             identity.update(&authority.go.as_ref()?.local_configuration_fingerprint());
@@ -1203,24 +1272,16 @@ fn capability_setup_issue(
         return None;
     }
     let checker = CompilerToolRequirement::PythonChecker;
-    match authority.python_checker_state {
-        LocalRuntimePythonCheckerState::Unconfigured => Some(CompilerToolIssue {
+    match &authority.python_checker {
+        LocalRuntimePythonCheckerAdmission::Unconfigured => Some(CompilerToolIssue {
             requirement: checker,
             failure: CompilerToolFailure::Missing,
         }),
-        LocalRuntimePythonCheckerState::ProbeFailed => Some(CompilerToolIssue {
+        LocalRuntimePythonCheckerAdmission::ProbeFailed { .. } => Some(CompilerToolIssue {
             requirement: checker,
             failure: CompilerToolFailure::ProbeFailed,
         }),
-        LocalRuntimePythonCheckerState::Ready
-            if authority.python.is_none() || authority.python_toolchain_identity.is_none() =>
-        {
-            Some(CompilerToolIssue {
-                requirement: checker,
-                failure: CompilerToolFailure::ProbeFailed,
-            })
-        }
-        LocalRuntimePythonCheckerState::Ready => None,
+        LocalRuntimePythonCheckerAdmission::Ready { .. } => None,
     }
 }
 
@@ -1284,13 +1345,16 @@ fn portable_invocation_options_digest(
             options.update(runtime.invocation_identity()?.as_ref());
         }
         Language::Python => {
-            let checker = authority.python.as_ref()?;
-            let pyrefly_toolchain = authority.python_toolchain_identity?;
+            let LocalRuntimePythonCheckerAdmission::Ready { adapter, proof } =
+                &authority.python_checker
+            else {
+                return None;
+            };
             options.update(b"python-pyrefly-v1\0");
-            options.update(pyrefly_toolchain.content_id().as_ref());
+            options.update(proof.content_id().as_ref());
             update_owned_string_identity(
                 &mut options,
-                checker.portable_invocation_options().arguments(),
+                adapter.portable_invocation_options().arguments(),
             );
         }
         Language::Go => {
@@ -2150,13 +2214,8 @@ pub struct LocalRuntimePackageAuthority {
     pub clang: Option<backend_frontend_clang::ClangAuthorityEnvironment>,
     /// TypeScript checker authority.
     pub typescript: Option<ExplicitTypeScriptChecker>,
-    /// Python Pyrefly authority.
-    pub python: Option<Pyrefly>,
-    /// Separate bounded version identity for the configured Pyrefly executable.
-    /// Missing identity keeps Python semantic capability unavailable.
-    pub python_toolchain_identity: Option<PyreflyToolchainIdentity>,
-    /// Explicit Pyrefly selection and bounded version-probe result, separate from Python itself.
-    pub python_checker_state: LocalRuntimePythonCheckerState,
+    /// Closed explicit Pyrefly selection, probe result, or admitted adapter and version proof.
+    pub python_checker: LocalRuntimePythonCheckerAdmission<Pyrefly>,
     /// Rust Analyzer/Cargo authority.
     pub rust: Option<LocalRuntimeRustAuthority>,
     /// Go package oracle authority.
@@ -3453,8 +3512,7 @@ fn run_worker_generation(
         clang: configuration.package_authority.clang.as_ref(),
         typescript: configuration.package_authority.typescript.as_ref(),
         typescript_project_host: configuration.typescript_project_host.as_ref(),
-        python: configuration.package_authority.python.as_ref(),
-        python_checker_state: configuration.package_authority.python_checker_state,
+        python_checker: configuration.package_authority.python_checker.as_ref(),
         rust,
         go: configuration.package_authority.go.as_ref(),
         csharp,
@@ -4653,15 +4711,14 @@ mod portable_recipe_tests {
         pyrefly_version: &[u8],
         arguments: Vec<String>,
     ) -> ContentId<CompileRecipeDomain> {
-        let checker = Pyrefly::from_executable(pyrefly.to_path_buf())
+        let adapter = Pyrefly::from_executable(pyrefly.to_path_buf())
             .expect("absolute Pyrefly executable")
             .with_arguments(arguments);
         let authority = LocalRuntimePackageAuthority {
-            python: Some(checker),
-            python_toolchain_identity: Some(PyreflyToolchainIdentity::from_version_output(
-                pyrefly_version,
-            )),
-            python_checker_state: LocalRuntimePythonCheckerState::Ready,
+            python_checker: LocalRuntimePythonCheckerAdmission::Ready {
+                adapter,
+                proof: PyreflyToolchainIdentity::from_version_output(pyrefly_version),
+            },
             ..LocalRuntimePackageAuthority::default()
         };
         let runtime = LocalRuntimeToolchain::resolved(
@@ -4684,6 +4741,62 @@ mod portable_recipe_tests {
         )
         .expect("portable invocation recipe")
         .identity()
+    }
+
+    #[test]
+    fn python_checker_admission_is_closed_and_reports_each_required_tool() {
+        let profile = LanguageProfile::Python(PythonVersion::Python314);
+        let interpreter = LocalRuntimeToolchain::resolved(
+            NativeTool::Python,
+            host_path("/test/bin/python").to_path_buf(),
+            b"python 3.14.0",
+        )
+        .expect("absolute selected toolchain");
+        let mut authority = LocalRuntimePackageAuthority::default();
+        assert_eq!(
+            capability_setup_issue(profile, None, &authority),
+            Some(CompilerToolIssue {
+                requirement: CompilerToolRequirement::Native(NativeTool::Python),
+                failure: CompilerToolFailure::Missing,
+            }),
+            "a missing interpreter remains the native Python requirement",
+        );
+        assert_eq!(
+            capability_setup_issue(profile, Some(&interpreter), &authority),
+            Some(CompilerToolIssue {
+                requirement: CompilerToolRequirement::PythonChecker,
+                failure: CompilerToolFailure::Missing,
+            }),
+            "a missing checker is surfaced separately from a ready interpreter",
+        );
+
+        authority.python_checker = LocalRuntimePythonCheckerAdmission::ProbeFailed {
+            cause: LocalRuntimePythonCheckerProbeFailure::TimedOut,
+        };
+        assert_eq!(
+            capability_setup_issue(profile, Some(&interpreter), &authority),
+            Some(CompilerToolIssue {
+                requirement: CompilerToolRequirement::PythonChecker,
+                failure: CompilerToolFailure::ProbeFailed,
+            }),
+            "a failed checker probe retains the actionable checker requirement",
+        );
+
+        let adapter = Pyrefly::from_executable(host_path("/test/bin/pyrefly").to_path_buf())
+            .expect("absolute explicit Pyrefly executable");
+        let proof = PyreflyToolchainIdentity::from_version_output(b"pyrefly 1.2.0-dev.1");
+        authority.python_checker = LocalRuntimePythonCheckerAdmission::Ready { adapter, proof };
+        assert_eq!(
+            capability_setup_issue(profile, Some(&interpreter), &authority),
+            None
+        );
+        match authority.python_checker.as_ref() {
+            LocalRuntimePythonCheckerAdmission::Ready {
+                adapter: _,
+                proof: observed,
+            } => assert_eq!(observed, proof),
+            other => panic!("ready checker admission lost its paired adapter/proof: {other:?}"),
+        }
     }
 
     #[test]

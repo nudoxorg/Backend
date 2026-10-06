@@ -22,12 +22,15 @@ use super::{
     AUTHORITY_IMAGE_BYTES, LocalCompilerHost, LocalCompilerHostError, LocalHostEnvironment,
     LocalHostPathRole, LocalHostVariable, PACKAGE_SOURCE_BYTES, nonzero,
 };
-use crate::application::toolchain_probe::{ToolchainProbeLimits, probe_command};
+use crate::application::toolchain_probe::{
+    ToolchainProbeError, ToolchainProbeLimits, ToolchainProbePrimary, probe_command,
+};
 use crate::application::typescript_host::TypeScriptProjectHost;
 use crate::application::{
     LocalRuntimeCSharpAuthority, LocalRuntimeJavaAuthority, LocalRuntimePackageAuthority,
-    LocalRuntimePackageRoot, LocalRuntimePythonCheckerState, LocalRuntimeRustAuthority,
-    LocalRuntimeToolchain, PyreflyToolchainIdentity,
+    LocalRuntimePackageRoot, LocalRuntimePythonCheckerAdmission,
+    LocalRuntimePythonCheckerProbeFailure, LocalRuntimeRustAuthority, LocalRuntimeToolchain,
+    PyreflyToolchainIdentity,
 };
 
 impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
@@ -117,23 +120,19 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             LocalHostPathRole::Pyrefly,
             self.auxiliary_candidates(home, "pyrefly"),
         )?;
-        let (python_toolchain_identity, python_checker_state) = match pyrefly.as_deref() {
+        let python_checker = match pyrefly.as_deref() {
             Some(executable) => {
                 match probe_command(NativeTool::Python, executable, &["--version"], probe_limits) {
-                    Ok(output) => (
-                        Some(PyreflyToolchainIdentity::from_version_output(&output)),
-                        LocalRuntimePythonCheckerState::Ready,
-                    ),
-                    Err(_) => (None, LocalRuntimePythonCheckerState::ProbeFailed),
+                    Ok(output) => LocalRuntimePythonCheckerAdmission::Ready {
+                        adapter: Pyrefly::from_executable(executable.to_path_buf())?,
+                        proof: PyreflyToolchainIdentity::from_version_output(&output),
+                    },
+                    Err(error) => LocalRuntimePythonCheckerAdmission::ProbeFailed {
+                        cause: python_checker_probe_failure(&error),
+                    },
                 }
             }
-            None => (None, LocalRuntimePythonCheckerState::Unconfigured),
-        };
-        let python = match (executables.python.as_ref(), pyrefly, python_checker_state) {
-            (Some(_), Some(executable), LocalRuntimePythonCheckerState::Ready) => {
-                Some(Pyrefly::from_executable(executable)?)
-            }
-            _ => None,
+            None => LocalRuntimePythonCheckerAdmission::Unconfigured,
         };
         let rust = match (
             executables.rustc.as_deref(),
@@ -200,9 +199,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             LocalRuntimePackageAuthority {
                 clang,
                 typescript,
-                python,
-                python_toolchain_identity,
-                python_checker_state,
+                python_checker,
                 rust,
                 go,
                 csharp,
@@ -294,6 +291,90 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             });
         }
         self.validate_directory(LocalHostPathRole::GoRoot, LocalHostVariable::NudoxGo, path)
+    }
+}
+
+fn python_checker_probe_failure(
+    error: &ToolchainProbeError,
+) -> LocalRuntimePythonCheckerProbeFailure {
+    match error {
+        ToolchainProbeError::RelativeExecutable { .. } => {
+            LocalRuntimePythonCheckerProbeFailure::RelativeExecutable
+        }
+        ToolchainProbeError::Spawn { .. } => LocalRuntimePythonCheckerProbeFailure::ExecutableStart,
+        ToolchainProbeError::ProbeWorkerSpawn { .. } | ToolchainProbeError::ReaderSpawn { .. } => {
+            LocalRuntimePythonCheckerProbeFailure::WorkerStart
+        }
+        ToolchainProbeError::MissingStream { .. } => {
+            LocalRuntimePythonCheckerProbeFailure::MissingStream
+        }
+        ToolchainProbeError::Wait { .. } => {
+            LocalRuntimePythonCheckerProbeFailure::ProcessObservation
+        }
+        ToolchainProbeError::Cleanup { action, .. } => {
+            LocalRuntimePythonCheckerProbeFailure::Cleanup(*action)
+        }
+        ToolchainProbeError::Stream { .. } | ToolchainProbeError::Streams { .. } => {
+            LocalRuntimePythonCheckerProbeFailure::StreamRead
+        }
+        ToolchainProbeError::Bounded {
+            primary: ToolchainProbePrimary::Deadline { .. },
+            ..
+        } => LocalRuntimePythonCheckerProbeFailure::TimedOut,
+        ToolchainProbeError::Bounded {
+            primary: ToolchainProbePrimary::OutputLimit { .. },
+            ..
+        } => LocalRuntimePythonCheckerProbeFailure::OutputLimit,
+        ToolchainProbeError::MissingStatus { .. } => {
+            LocalRuntimePythonCheckerProbeFailure::MissingStatus
+        }
+        ToolchainProbeError::Exit { status, .. } => {
+            LocalRuntimePythonCheckerProbeFailure::ProcessExit {
+                code: status.code(),
+            }
+        }
+        ToolchainProbeError::Empty { .. } => LocalRuntimePythonCheckerProbeFailure::EmptyVersion,
+        ToolchainProbeError::Resolution { .. } => {
+            LocalRuntimePythonCheckerProbeFailure::IdentityResolution
+        }
+    }
+}
+
+#[cfg(test)]
+mod python_checker_probe_tests {
+    use super::*;
+
+    #[test]
+    fn pyrefly_probe_failure_projection_keeps_only_bounded_typed_causes() {
+        let timeout = ToolchainProbeError::Bounded {
+            tool: NativeTool::Python,
+            primary: ToolchainProbePrimary::Deadline {
+                timeout: std::time::Duration::from_secs(2),
+            },
+        };
+        assert_eq!(
+            python_checker_probe_failure(&timeout),
+            LocalRuntimePythonCheckerProbeFailure::TimedOut,
+        );
+        let output_limit = ToolchainProbeError::Bounded {
+            tool: NativeTool::Python,
+            primary: ToolchainProbePrimary::OutputLimit {
+                worker: backend_semantic::vocabulary::NativeWorker::StandardOutputReader,
+                observed: 4097,
+                maximum: 4096,
+            },
+        };
+        assert_eq!(
+            python_checker_probe_failure(&output_limit),
+            LocalRuntimePythonCheckerProbeFailure::OutputLimit,
+        );
+        let empty = ToolchainProbeError::Empty {
+            tool: NativeTool::Python,
+        };
+        assert_eq!(
+            python_checker_probe_failure(&empty),
+            LocalRuntimePythonCheckerProbeFailure::EmptyVersion,
+        );
     }
 }
 
