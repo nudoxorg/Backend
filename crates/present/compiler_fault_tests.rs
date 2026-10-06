@@ -95,7 +95,7 @@ fn compiler_setup_fault_retains_exact_facts_and_actionable_tool_requirement() {
 }
 
 #[test]
-fn compiler_unavailable_tool_does_not_promise_configuration_will_add_capability() {
+fn compiler_unavailable_tool_preserves_the_selected_native_setup_requirement() {
     let failure = PackageCompilerFailure::from_package_terminal(
         "src/main.ts",
         &CompilerTerminal::ToolingUnavailable {
@@ -108,15 +108,11 @@ fn compiler_unavailable_tool_does_not_promise_configuration_will_add_capability(
     .expect("valid terminal")
     .expect("unavailable tool projected");
     let fault = compiler_fault(&failure);
+    assert_eq!(fault.compiler_failure(), Some(&failure));
+    assert!(fault.cause().sentence().contains("requires tsc"));
+    assert!(fault.cause().sentence().contains("Set NUDOX_TSC"));
     assert!(
-        fault
-            .cause()
-            .sentence()
-            .contains("unavailable to this deployment")
-    );
-    assert!(!fault.cause().sentence().contains("Set NUDOX_TSC"));
-    assert!(
-        !FaultDto::new(&fault)
+        FaultDto::new(&fault)
             .compiler_tool_requirement
             .expect("required tool remains visible")
             .configuration_required
