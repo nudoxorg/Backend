@@ -2332,6 +2332,7 @@ mod owner_fairness_tests {
         LocaldOwner, NoCompletionAdmission, OwnerService, ReplicationAdmission,
         SubscriptionLeaseLimits,
     };
+    use backend_client::monotonic::ManualClock;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
@@ -2484,11 +2485,14 @@ mod owner_fairness_tests {
             pending: AtomicUsize::new(8),
             polled: AtomicUsize::new(0),
         });
+        let clock = ManualClock::new();
         let (mut owner, cursor, client) = owner(&directory, Arc::clone(&remote_progress));
-        owner = owner.with_subscription_lease_limits(
-            SubscriptionLeaseLimits::new(4, Duration::from_secs(5), 1, Duration::from_secs(5))
-                .expect("small finite lease bounds"),
-        );
+        owner = owner
+            .with_subscription_lease_limits(
+                SubscriptionLeaseLimits::new(4, Duration::from_secs(5), 1, Duration::from_secs(5))
+                    .expect("small finite lease bounds"),
+            )
+            .with_lease_clock(clock.clone());
 
         let opened = prepared_status(
             &mut owner,
@@ -2551,7 +2555,7 @@ mod owner_fairness_tests {
         else {
             panic!("short lease open must return its owner-issued lease");
         };
-        std::thread::sleep(Duration::from_millis(20));
+        clock.advance(Duration::from_millis(5));
 
         // This is a real queued daemon request. The owner must continue
         // admitting productive remote work, yet service this request on its
@@ -2584,6 +2588,7 @@ mod owner_fairness_tests {
         }
         assert_eq!(remote_progress.polled.load(Ordering::Acquire), 8);
         assert_eq!(remote_progress.pending.load(Ordering::Acquire), 0);
+        assert_eq!(owner.lease_test_state(), (1, 1));
         assert!(
             !OwnerService::serve_one(&mut owner),
             "the expired lease was already swept on a productive turn, so the next idle turn does no work"
@@ -2603,6 +2608,7 @@ mod owner_fairness_tests {
                 "unknown subscription lease"
             ))
         ));
+        assert_eq!(owner.lease_test_state(), (1, 1));
 
         let renewed = prepared_status(
             &mut owner,
@@ -2625,15 +2631,17 @@ mod owner_fairness_tests {
                 ..
             }) if renewed_lease == lease
         ));
-        std::thread::sleep(Duration::from_millis(120));
+        clock.advance(Duration::from_millis(100));
         assert!(
-            OwnerService::serve_one(&mut owner),
-            "an otherwise idle owner turn reports the one expired lease"
+            !OwnerService::serve_one(&mut owner),
+            "lease expiry is idle housekeeping, not productive owner work"
         );
+        assert_eq!(owner.lease_test_state(), (0, 2));
         assert!(
             !OwnerService::serve_one(&mut owner),
             "the expired lease is reclaimed only once"
         );
+        assert_eq!(owner.lease_test_state(), (0, 2));
         assert!(matches!(
             prepared_status(
                 &mut owner,
@@ -2647,6 +2655,7 @@ mod owner_fairness_tests {
                 "unknown subscription lease"
             ))
         ));
+        assert_eq!(owner.lease_test_state(), (0, 2));
         OwnerService::close(&mut owner);
     }
 }

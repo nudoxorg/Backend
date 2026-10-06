@@ -64,6 +64,26 @@ pub struct LocalControlExchangeError {
     pub progress: LocalControlExchangeProgress,
 }
 
+impl LocalControlExchangeError {
+    /// Whether this terminal exchange stopped before touching the stream.
+    ///
+    /// A typed stall or cancellation in the initial sending phase with zero
+    /// request and response offsets leaves the connection at its previous
+    /// frame boundary. Every other terminal state may have admitted a request
+    /// or consumed only part of a response and must retire the stream.
+    #[must_use]
+    pub const fn request_was_not_sent(self) -> bool {
+        matches!(
+            self.failure,
+            LocalControlExchangeFailure::Stalled | LocalControlExchangeFailure::Cancelled
+        ) && matches!(self.progress.phase, LocalControlExchangePhase::Sending)
+            && self.progress.write_offset == 0
+            && self.progress.header_offset == 0
+            && self.progress.body_len.is_none()
+            && self.progress.body_offset == 0
+    }
+}
+
 impl std::fmt::Display for LocalControlExchangeError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.failure {
@@ -103,7 +123,8 @@ impl std::error::Error for LocalControlExchangeError {}
 pub enum LocalControlExchangeDecision {
     /// Continue the same request at its current byte offsets.
     Continue,
-    /// Stop and retire this stream; no automatic replay is performed.
+    /// Stop this exchange without replay. The stream remains usable only if
+    /// the terminal progress proves that no bytes touched it.
     Cancel,
 }
 
@@ -111,8 +132,8 @@ pub enum LocalControlExchangeDecision {
 ///
 /// The mutable borrow prevents another request from sharing the stream until
 /// this exchange completes or is dropped. An incomplete drop poisons the
-/// underlying client so its legacy APIs fail closed.
-#[must_use = "dropping an incomplete exchange retires its client stream"]
+/// underlying client unless a typed stop proves that no bytes touched it.
+#[must_use = "dropping an incomplete exchange may retire its client stream"]
 pub struct PendingLocalControlExchange<'a, S> {
     client: &'a mut LocalControlClient<S>,
     request_id: u64,
@@ -351,7 +372,11 @@ impl<'a, S: Read + Write> PendingLocalControlExchange<'a, S> {
 
 impl<S> Drop for PendingLocalControlExchange<'_, S> {
     fn drop(&mut self) {
-        if !self.complete {
+        if !self.complete
+            && !self
+                .terminal
+                .is_some_and(LocalControlExchangeError::request_was_not_sent)
+        {
             self.client.poisoned = true;
         }
     }
@@ -588,8 +613,8 @@ mod exchange_tests {
     }
 
     #[test]
-    fn elapsed_deadline_is_a_typed_zero_offset_stall() {
-        let stream = PausingStream::new(Vec::new());
+    fn elapsed_deadline_is_a_typed_zero_offset_stall_that_leaves_the_stream_usable() {
+        let stream = PausingStream::new(wire_response(19));
         let mut client = LocalControlClient::new(stream, limits());
         let request = make_request(19);
         let mut exchange = client
@@ -600,9 +625,60 @@ mod exchange_tests {
             .expect_err("expired fixed deadline");
         assert_eq!(error.failure, LocalControlExchangeFailure::Stalled);
         assert_eq!(error.progress.write_offset, 0);
+        assert!(error.request_was_not_sent());
         drop(exchange);
         assert!(client.stream().writes.is_empty());
+        assert!(!client.requires_reconnect());
+        let mut retry = client
+            .begin_exchange(&request, Instant::now() + Duration::from_secs(1))
+            .expect("begin request at untouched boundary");
+        assert_eq!(
+            retry
+                .wait_with(|_| LocalControlExchangeDecision::Continue)
+                .expect("request succeeds on preserved stream"),
+            response(19)
+        );
+        drop(retry);
+        assert!(!client.requires_reconnect());
+    }
+
+    #[test]
+    fn cancellation_after_a_partial_request_still_poisons_the_stream() {
+        let mut stream = PausingStream::new(wire_response(20));
+        stream.chunk = 2;
+        stream.write_stall_after = Some(2);
+        let mut client = LocalControlClient::new(stream, limits());
+        let request = make_request(20);
+        let mut exchange = client
+            .begin_exchange(&request, Instant::now() + Duration::from_secs(1))
+            .expect("begin exchange");
+        let error = exchange
+            .wait_with(|progress| {
+                if progress.write_offset == 0 {
+                    LocalControlExchangeDecision::Continue
+                } else {
+                    LocalControlExchangeDecision::Cancel
+                }
+            })
+            .expect_err("cancel after the first request fragment");
+        assert_eq!(error.failure, LocalControlExchangeFailure::Cancelled);
+        assert_eq!(error.progress.phase, LocalControlExchangePhase::Sending);
+        assert_eq!(error.progress.write_offset, 2);
+        assert!(!error.request_was_not_sent());
+        drop(exchange);
         assert!(client.requires_reconnect());
+        let written = client.stream().writes.len();
+        assert!(matches!(
+            client.request(&request),
+            Err(LocalControlError::Invalid(
+                "local control client retired after incomplete exchange"
+            ))
+        ));
+        assert_eq!(
+            client.stream().writes.len(),
+            written,
+            "no second frame is sent"
+        );
     }
 
     #[test]

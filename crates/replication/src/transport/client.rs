@@ -157,10 +157,11 @@ impl<S: Read + Write> LocalControlClient<S> {
     ///
     /// `deadline` is absolute and applies to the complete exchange, including
     /// sending, flushing, and receiving. It does not extend when an I/O tick
-    /// or partial frame makes progress. Dropping the returned exchange before
-    /// it completes retires this client: once any request bytes may have been
-    /// sent, another request on the same stream could duplicate an admitted
-    /// mutation or parse bytes at the wrong frame boundary.
+    /// or partial frame makes progress. Dropping an incomplete exchange
+    /// retires this client unless its typed terminal state proves that no
+    /// request or response bytes touched the stream. Once any request bytes
+    /// may have been sent, another request on the same stream could duplicate
+    /// an admitted mutation or parse bytes at the wrong frame boundary.
     ///
     /// # Errors
     ///

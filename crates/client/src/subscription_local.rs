@@ -606,11 +606,11 @@ impl LocalSubscriptionTransport {
     /// The stream's configured I/O timeout controls tick granularity. The
     /// callback runs before each potentially blocking socket operation and
     /// after readiness timeouts; keep it short and nonblocking. A stalled,
-    /// cancelled, closed, or malformed in-flight exchange retires this socket
-    /// immediately, so a later request must reconnect instead of reusing an
-    /// ambiguous frame boundary. A stall does not prove the producer rejected
-    /// the request; subscription callers must resume their exact retained
-    /// lease or reacquire and fully admit a root.
+    /// cancelled, closed, or malformed exchange retires this socket unless
+    /// typed progress proves it stopped before any request or response bytes
+    /// touched the stream. A stall after any I/O does not prove the producer
+    /// rejected the request; subscription callers must resume their exact
+    /// retained lease or reacquire and fully admit a root.
     ///
     /// # Errors
     ///
@@ -642,7 +642,9 @@ impl LocalSubscriptionTransport {
                 Ok(response)
             }
             Err(error) => {
-                self.retire_connection();
+                if !error.request_was_not_sent() {
+                    self.retire_connection();
+                }
                 Err(LocalSubscriptionExchangeError::Exchange(error))
             }
         }
@@ -1458,9 +1460,10 @@ mod exchange_tests {
     }
 
     #[test]
-    fn terminal_exchange_closes_exact_socket_and_fails_closed_without_endpoint() {
+    fn cancellation_before_writing_keeps_the_exact_socket_usable() {
         let (stream, mut peer) = UnixStream::pair().expect("local socket pair");
         let mut transport = LocalSubscriptionTransport::from_stream(stream);
+        let connection = transport.connection();
         let request = LocalControlRequest::Subscribe {
             request_id: 42,
             cursor: Box::from(*b"cursor"),
@@ -1477,16 +1480,32 @@ mod exchange_tests {
                 if exchange.failure == LocalControlExchangeFailure::Cancelled
                     && exchange.progress.phase == LocalControlExchangePhase::Sending
                     && exchange.progress.write_offset == 0
+                    && exchange.request_was_not_sent()
         ));
-        let mut byte = [0_u8; 1];
-        assert_eq!(peer.read(&mut byte).expect("peer observes close"), 0);
+        let server = std::thread::spawn(move || {
+            let frame = read_frame(&mut peer, control_limits()).expect("next request on socket");
+            let observed = decode_request(&frame, control_limits()).expect("decode next request");
+            assert_eq!(observed.request_id(), 42);
+            write_frame(
+                &mut peer,
+                &encode_response(
+                    &LocalControlResponse::Accepted { request_id: 42 },
+                    control_limits(),
+                )
+                .expect("encode next response"),
+                control_limits(),
+            )
+            .expect("write next response");
+        });
         let next =
             transport.request_with_tick(&request, Instant::now() + Duration::from_secs(1), |_| {
                 LocalControlExchangeDecision::Continue
             });
-        assert!(matches!(
-            next,
-            Err(LocalSubscriptionExchangeError::Setup(ClientError::Io(_)))
-        ));
+        assert_eq!(
+            next.expect("same socket remains at a frame boundary"),
+            LocalControlResponse::Accepted { request_id: 42 }
+        );
+        assert_eq!(transport.connection(), connection);
+        server.join().expect("owner response");
     }
 }

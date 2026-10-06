@@ -67,6 +67,8 @@ pub(crate) use runtime::{
 
 #[cfg(test)]
 use backend_client::monotonic::MonotonicClock;
+#[cfg(test)]
+use lease::ReleaseReason;
 use lease::{LeaseHost, LeaseTable, OwnerSource};
 #[cfg(test)]
 use std::sync::Arc;
@@ -199,6 +201,14 @@ where
     pub(crate) fn with_lease_clock(mut self, clock: Arc<dyn MonotonicClock>) -> Self {
         self.leases.set_clock(clock);
         self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn lease_test_state(&self) -> (usize, u64) {
+        (
+            self.leases.len(),
+            self.leases.released().count(ReleaseReason::Expired),
+        )
     }
 
     fn durable_subscription_prepared(
