@@ -15,8 +15,8 @@ use backend_frontend_typescript::legacy::{
     syntax_mapped_modifier, with_analysis, with_analysis_declaration,
 };
 use backend_frontend_typescript::{
-    TszAtom, TszAuthorityError, TszBoundFile, TszCheckerState, TszNodeIndex, TszProject,
-    TszSymbolId, TszTypeDatabase,
+    TszAtom, TszAuthorityError, TszBoundFile, TszCheckerState, TszNodeArena, TszNodeIndex,
+    TszProject, TszSymbolId, TszSyntaxKind, TszTypeDatabase,
     tsz_type_handles::{
         ConditionalType, FunctionShape, IndexSignature as TszIndexSignature, IntrinsicKind,
         LiteralValue as TszLiteral, MappedModifier as TszMappedModifier, MappedType,
@@ -29,12 +29,14 @@ use backend_semantic::ir::{
     ExternalEntityRef, ExternalFragmentId, ForeignKey, ForeignOrigin, LatticeMappedModifier,
     NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget, PackageLineage, PrimitiveShape,
     ProductChildRole, ReferenceKind, RelSpan, SemanticProductConstructor, SemanticTypeChild,
-    SemanticTypeRecord, SemanticTypeTag, TypeId, TypeParameterListId, TypeReason, TypeWidth,
+    SemanticTypeRecord, SemanticTypeTag, TypeId, TypeParameterListId, TypeReason,
+    TypeScriptSourceCoordinate, TypeWidth, typescript_program_identity,
 };
 use backend_semantic::vocabulary::{
     ProjectionForeignKeyFault, ProjectionLineagePart, ProjectionPackageLineageFault,
     TypeScriptProjectionFault, TypeScriptSource,
 };
+use backend_version::{ContentId, SourceFactDomain};
 
 use crate::driver::{
     lower::{
@@ -3962,6 +3964,173 @@ pub(crate) fn collect_with_checker<'source, 'report>(
 /// into the existing TypeScript fact lanes. The checker and type database are
 /// borrowed only inside TSZ's file transaction; no JSON report or parallel
 /// type tree is materialized.
+fn native_tsz_program_identity(files: &[TszBoundFile]) -> Option<[u8; 32]> {
+    let mut sources = Vec::with_capacity(files.len());
+    for file in files {
+        let source = file
+            .arena
+            .get_source_file_at(file.source_file)?
+            .text
+            .as_bytes();
+        let identity = ContentId::<SourceFactDomain>::from_canonical_bytes(source);
+        sources.push((file.file_name.clone(), *identity));
+    }
+    typescript_program_identity(&sources)
+}
+
+#[derive(Clone, Debug)]
+struct NativeTszDeclarationCoordinate {
+    file_index: u32,
+    path: String,
+    source_identity: [u8; 32],
+    declaration_start: u32,
+    declaration_end: u32,
+    name_start: u32,
+    kind: EntityKind,
+}
+
+/// Resolves a property name through the receiver's exact checker type and
+/// that type symbol's member table. No project-wide name scan participates in
+/// this operation, so same-spelled members on unrelated receivers stay apart.
+fn native_tsz_member_symbol(
+    checker: &mut TszCheckerState<'_>,
+    binder: &backend_frontend_typescript::TszBinderState,
+    arena: &TszNodeArena,
+    receiver: TszNodeIndex,
+    member_name: TszNodeIndex,
+) -> Option<TszSymbolId> {
+    let member_name = arena.get_identifier_at(member_name)?.escaped_text.as_str();
+    let receiver_type = checker.get_type_of_node(receiver);
+    let owner = checker.ctx.resolve_type_to_symbol_id(receiver_type)?;
+    let owner = binder.resolve_import_symbol(owner).unwrap_or(owner);
+    let owner = binder.symbols.get(owner)?;
+    owner
+        .members
+        .as_ref()
+        .and_then(|members| members.get(member_name))
+        .or_else(|| {
+            owner
+                .exports
+                .as_ref()
+                .and_then(|exports| exports.get(member_name))
+        })
+}
+
+/// Uses TSZ's exact bound symbol and stable declaration file/span to identify
+/// one declaration that the compiler actually emits. Overload groups prefer
+/// their unique implementation; signature-only groups must contain exactly
+/// one declaration. Unassigned, external, stale, or ambiguous declarations
+/// produce no coordinate.
+fn native_tsz_declaration_coordinate(
+    binder: &backend_frontend_typescript::TszBinderState,
+    symbol_id: TszSymbolId,
+    program_files: &[TszBoundFile],
+    callable: bool,
+) -> Option<NativeTszDeclarationCoordinate> {
+    let symbol_id = binder.resolve_import_symbol(symbol_id).unwrap_or(symbol_id);
+    let symbol = binder.symbols.get(symbol_id)?;
+    if symbol.declarations.is_empty()
+        || symbol.declarations.len() != symbol.stable_declarations.len()
+    {
+        return None;
+    }
+    let mut functions = Vec::<(NativeTszDeclarationCoordinate, bool)>::new();
+    let mut fields = Vec::<NativeTszDeclarationCoordinate>::new();
+    for (declaration, stable) in symbol
+        .declarations
+        .iter()
+        .zip(symbol.stable_declarations.iter())
+    {
+        if stable.file_idx == u32::MAX || stable.pos >= stable.end {
+            continue;
+        }
+        let file = program_files.get(usize::try_from(stable.file_idx).ok()?)?;
+        let arena = &file.arena;
+        if arena.pos_end_at(*declaration) != Some((stable.pos, stable.end)) {
+            continue;
+        }
+        let Some(node) = arena.get(*declaration) else {
+            continue;
+        };
+        let (name_node, kind, has_body) = if let Some(method) = arena.get_method_decl(node) {
+            (method.name, EntityKind::Function, !method.body.is_none())
+        } else if let Some(function) = arena.get_function(node) {
+            (
+                function.name,
+                EntityKind::Function,
+                !function.body.is_none(),
+            )
+        } else if let Some(property) = arena.get_property_decl(node) {
+            (property.name, EntityKind::Field, false)
+        } else if let Some(accessor) = arena.get_accessor(node) {
+            (accessor.name, EntityKind::Field, !accessor.body.is_none())
+        } else {
+            continue;
+        };
+        if callable && kind != EntityKind::Function {
+            continue;
+        }
+        let Some((name_start, name_end)) = arena.pos_end_at(name_node) else {
+            continue;
+        };
+        if name_start < stable.pos || name_end > stable.end || name_start >= name_end {
+            continue;
+        }
+        let Some(identifier) = arena.get_identifier_at(name_node) else {
+            continue;
+        };
+        if identifier.escaped_text.is_empty() {
+            continue;
+        }
+        let Some(source) = arena.get_source_file_at(file.source_file) else {
+            continue;
+        };
+        if source
+            .text
+            .get(name_start as usize..name_end as usize)
+            .is_none()
+        {
+            continue;
+        }
+        let identity = ContentId::<SourceFactDomain>::from_canonical_bytes(source.text.as_bytes());
+        let coordinate = NativeTszDeclarationCoordinate {
+            file_index: stable.file_idx,
+            path: file.file_name.clone(),
+            source_identity: *identity,
+            declaration_start: stable.pos,
+            declaration_end: stable.end,
+            name_start,
+            kind,
+        };
+        if kind == EntityKind::Function {
+            functions.push((coordinate, has_body));
+        } else {
+            fields.push(coordinate);
+        }
+    }
+    if !functions.is_empty() {
+        let implementations = functions
+            .iter()
+            .filter(|(_, has_body)| *has_body)
+            .map(|(coordinate, _)| coordinate.clone())
+            .collect::<Vec<_>>();
+        if implementations.len() == 1 {
+            return implementations.into_iter().next();
+        }
+        if implementations.is_empty() && functions.len() == 1 {
+            return functions
+                .into_iter()
+                .next()
+                .map(|(coordinate, _)| coordinate);
+        }
+        return None;
+    }
+    if callable || fields.len() != 1 {
+        return None;
+    }
+    fields.into_iter().next()
+}
+
 pub(crate) fn collect_with_tsz<'source>(
     profile: TypeScriptSource,
     source: &'source [u8],
@@ -3990,8 +4159,10 @@ pub(crate) fn collect_with_tsz<'source>(
     let declaration_file = source_path.ends_with(".d.ts")
         || source_path.ends_with(".d.mts")
         || source_path.ends_with(".d.cts");
+    let program_files = &project.program().files;
+    let program_identity = native_tsz_program_identity(program_files);
     let lowered = project
-        .with_file_checker_and_types(file_index, |checker, _binder, bound_file, database| {
+        .with_file_checker_and_types(file_index, |checker, binder, bound_file, database| {
             let build = |module: OxcModule<'_>| {
                 let mut projector = Projector {
                     semantic: &module.semantic,
@@ -4031,6 +4202,14 @@ pub(crate) fn collect_with_tsz<'source>(
                     owner_ancestor: Vec::new(),
                 };
                 projector.run()?;
+                projector.pass_native_tsz_occurrences(
+                    checker,
+                    binder,
+                    bound_file,
+                    program_files,
+                    file_index,
+                    program_identity,
+                )?;
                 projector.pass_native_tsz(checker, bound_file, database, project)
             };
             if declaration_file {
@@ -5053,6 +5232,261 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         Ok(())
     }
 
+    /// Adds occurrence facts resolved by the exact borrowed TSZ program.
+    /// OXC's source occurrences remain the fallback for unsupported syntax;
+    /// only a binder/checker-resolved member or identifier with a unique
+    /// stable declaration coordinate upgrades that existing site.
+    fn pass_native_tsz_occurrences(
+        &mut self,
+        checker: &mut TszCheckerState<'_>,
+        binder: &backend_frontend_typescript::TszBinderState,
+        bound_file: &TszBoundFile,
+        program_files: &[TszBoundFile],
+        current_file_index: usize,
+        program_identity: Option<[u8; 32]>,
+    ) -> Result<(), TypeScriptCollectError> {
+        let current_file_index = u32::try_from(current_file_index).map_err(|_| lane_rejection())?;
+        if program_files
+            .get(current_file_index as usize)
+            .map(|file| file.file_name.as_str())
+            != Some(bound_file.file_name.as_str())
+        {
+            return Ok(());
+        }
+        let arena = &bound_file.arena;
+        let mut called_member_accesses = std::collections::HashSet::<u32>::new();
+        for (raw_node, node) in arena.nodes.iter().enumerate() {
+            if node.kind != TszSyntaxKind::CALL_EXPRESSION {
+                continue;
+            }
+            let Ok(raw_node) = u32::try_from(raw_node) else {
+                continue;
+            };
+            let call_node = TszNodeIndex(raw_node);
+            let Some(call) = arena.get_call_expr_at(call_node) else {
+                continue;
+            };
+            let Some(callee_node) = arena.get(call.expression) else {
+                continue;
+            };
+            let (site_node, target_symbol, reference_kind) =
+                if callee_node.kind == TszSyntaxKind::PROPERTY_ACCESS_EXPRESSION {
+                    let Some(access) = arena.get_access_expr_at(call.expression) else {
+                        continue;
+                    };
+                    if arena.get_identifier_at(access.name_or_argument).is_none() {
+                        continue;
+                    }
+                    called_member_accesses.insert(call.expression.0);
+                    let Some(target) = native_tsz_member_symbol(
+                        checker,
+                        binder,
+                        arena,
+                        access.expression,
+                        access.name_or_argument,
+                    ) else {
+                        continue;
+                    };
+                    (access.name_or_argument, target, ReferenceKind::MethodCall)
+                } else if arena.get_identifier_at(call.expression).is_some() {
+                    let Some(target) = binder.resolve_identifier(arena, call.expression) else {
+                        continue;
+                    };
+                    (call.expression, target, ReferenceKind::FunctionCall)
+                } else {
+                    continue;
+                };
+            let Some((site_start, site_end)) = arena.pos_end_at(site_node) else {
+                continue;
+            };
+            let Some(owner) = self.owning_fact(site_start) else {
+                continue;
+            };
+            let Some(target) =
+                native_tsz_declaration_coordinate(binder, target_symbol, program_files, true)
+            else {
+                continue;
+            };
+            self.commit_native_tsz_occurrence(
+                owner,
+                Span::new(site_start, site_end),
+                reference_kind,
+                target,
+                current_file_index,
+                program_identity,
+            )?;
+        }
+
+        // Property-name occurrences are emitted independently of calls, so
+        // method and field reads share the exact same receiver-owned lookup.
+        for (raw_node, node) in arena.nodes.iter().enumerate() {
+            if node.kind != TszSyntaxKind::PROPERTY_ACCESS_EXPRESSION {
+                continue;
+            }
+            let Ok(raw_node) = u32::try_from(raw_node) else {
+                continue;
+            };
+            if called_member_accesses.contains(&raw_node) {
+                continue;
+            }
+            let access_node = TszNodeIndex(raw_node);
+            let Some(access) = arena.get_access_expr_at(access_node) else {
+                continue;
+            };
+            if arena.get_identifier_at(access.name_or_argument).is_none() {
+                continue;
+            }
+            let Some(target_symbol) = native_tsz_member_symbol(
+                checker,
+                binder,
+                arena,
+                access.expression,
+                access.name_or_argument,
+            ) else {
+                continue;
+            };
+            let Some((site_start, site_end)) = arena.pos_end_at(access.name_or_argument) else {
+                continue;
+            };
+            let Some(owner) = self.owning_fact(site_start) else {
+                continue;
+            };
+            let Some(target) =
+                native_tsz_declaration_coordinate(binder, target_symbol, program_files, false)
+            else {
+                continue;
+            };
+            self.commit_native_tsz_occurrence(
+                owner,
+                Span::new(site_start, site_end),
+                ReferenceKind::FieldAccess,
+                target,
+                current_file_index,
+                program_identity,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Replaces an OXC name/import placeholder with one exact TSZ target.
+    /// Same-file declarations bind directly to their registered fact;
+    /// cross-file targets retain a typed source/program coordinate in the
+    /// existing foreign-key operand until the common query join admits it.
+    fn commit_native_tsz_occurrence(
+        &mut self,
+        owner: u32,
+        span: Span,
+        reference_kind: ReferenceKind,
+        target: NativeTszDeclarationCoordinate,
+        current_file_index: u32,
+        program_identity: Option<[u8; 32]>,
+    ) -> Result<(), TypeScriptCollectError> {
+        if span.start >= span.end
+            || self
+                .source
+                .get(span.start as usize..span.end as usize)
+                .is_none()
+        {
+            return Ok(());
+        }
+        let occurrence_index = self.occurrence_index(Utf8Span {
+            start: span.start,
+            end: span.end,
+        })?;
+        let owner_index = usize::try_from(owner).map_err(|_| lane_rejection())?;
+        let Some(owner_start) = self.decl_starts.get(owner_index).copied() else {
+            return Ok(());
+        };
+        let Some(owner_end) = self.decl_ends.get(owner_index).copied() else {
+            return Ok(());
+        };
+        let (Some(relative_start), Some(relative_end)) = (
+            span.start.checked_sub(owner_start),
+            span.end.checked_sub(owner_start),
+        ) else {
+            return Ok(());
+        };
+        if relative_end > owner_end.saturating_sub(owner_start) {
+            return Ok(());
+        }
+        let relative = RelSpan::new(relative_start, relative_end).map_err(|_| {
+            TypeScriptCollectError::Span {
+                start: relative_start,
+                end: relative_end,
+            }
+        })?;
+        let confidence = OccurrenceConfidence::Oracle;
+        if target.file_index == current_file_index {
+            let Some(local) = self.fact_at_name_start(target.name_start) else {
+                return Ok(());
+            };
+            let local_index = usize::try_from(local).map_err(|_| lane_rejection())?;
+            if self.fact_kinds.get(local_index) != Some(&target.kind) {
+                return Ok(());
+            }
+            let occurrence = Occurrence {
+                target: OccurrenceTarget::Local(EntityId::new(local)),
+                kind: reference_kind,
+                confidence,
+                span: relative,
+            };
+            if let Some(index) = occurrence_index {
+                self.facts
+                    .replace_occurrence(index, owner, occurrence)
+                    .map_err(fault)?;
+            } else {
+                self.facts
+                    .push_occurrence(owner, occurrence)
+                    .map_err(fault)?;
+            }
+            return Ok(());
+        }
+        let Some(program) = program_identity else {
+            return Ok(());
+        };
+        let Some(encoded) = (TypeScriptSourceCoordinate {
+            program,
+            source: target.source_identity,
+            path: &target.path,
+            declaration_start: target.declaration_start,
+            declaration_end: target.declaration_end,
+            name_start: target.name_start,
+        })
+        .encode() else {
+            return Ok(());
+        };
+        let Some(display) = self.text_span(span) else {
+            return Ok(());
+        };
+        if let Some(index) = occurrence_index {
+            self.facts
+                .replace_with_owned_tsz_source_occurrence(
+                    index,
+                    owner,
+                    encoded,
+                    display,
+                    target.kind,
+                    reference_kind,
+                    confidence,
+                    relative,
+                )
+                .map_err(fault)?;
+        } else {
+            self.facts
+                .push_owned_tsz_source_occurrence(
+                    owner,
+                    encoded,
+                    display,
+                    target.kind,
+                    reference_kind,
+                    confidence,
+                    relative,
+                )
+                .map_err(fault)?;
+        }
+        Ok(())
+    }
+
     /// Pass three for the native authority: resolve each exact source name
     /// span to the TSZ binder symbol, ask the in-process checker for its
     /// `TypeId`, and map that live structural type directly into the existing
@@ -5922,6 +6356,13 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     /// Reports whether a committed occurrence already names the exact
     /// absolute source span.
     fn occurrence_covers(&self, span: Utf8Span) -> Result<bool, TypeScriptCollectError> {
+        Ok(self.occurrence_index(span)?.is_some())
+    }
+
+    /// Returns the first occurrence row at one exact absolute source span.
+    /// Native TSZ uses this to upgrade, rather than duplicate, the syntax-only
+    /// row that the ordinary OXC pass already emitted.
+    fn occurrence_index(&self, span: Utf8Span) -> Result<Option<usize>, TypeScriptCollectError> {
         let count = self.facts.occurrence_len;
         for index in 0..count {
             let owner = *self
@@ -5941,10 +6382,10 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             if base.checked_add(occurrence.span.start) == Some(span.start)
                 && base.checked_add(occurrence.span.end) == Some(span.end)
             {
-                return Ok(true);
+                return Ok(Some(index));
             }
         }
-        Ok(false)
+        Ok(None)
     }
 
     /// Resolves the target, confidence, and kind of one checker-only
@@ -9615,12 +10056,13 @@ mod lane_tests {
     use crate::driver::lower::{AdmissionFault, FactSet, admit};
     use backend_frontend_typescript::legacy::{Reference, Report, source_digest};
     use backend_frontend_typescript::{
-        TszCheckerOptions, TszEnvironmentFingerprint, TszFileInput, TszProjectAuthority,
-        TszProjectOptions, TszProjectSemanticOptions,
+        TszCheckerOptions, TszEnvironmentFingerprint, TszFileInput, TszProject,
+        TszProjectAuthority, TszProjectOptions, TszProjectSemanticOptions,
     };
     use backend_semantic::ir::{
-        ComputedType, EntityKind, FragmentError, FragmentView, OccurrenceFault, SemanticReader,
-        TypeExpr, TypeId, TypeQuery,
+        ComputedType, EntityKind, FragmentError, FragmentView, OccurrenceFault, OccurrenceTarget,
+        ReferenceKind, SemanticReader, TypeExpr, TypeId, TypeQuery,
+        TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM, TypeScriptSourceCoordinate,
     };
     use backend_semantic::vocabulary::{
         CompileRecipeFact, LanguageProfile, NativeTool, Stage, TypeScriptSource,
@@ -9788,6 +10230,203 @@ mod lane_tests {
                 crate::driver::types::DeclarationScope::fixture(),
             )
             .map_err(LaneError::from)
+    }
+
+    fn native_tsz_project(files: &[(&str, &str)]) -> Result<TszProjectAuthority, LaneError> {
+        let mut checker = TszCheckerOptions::default();
+        checker.no_lib = true;
+        let options = TszProjectOptions {
+            checker,
+            environment: TszEnvironmentFingerprint::from_sha256([0x71; 32]),
+        };
+        let mut authority = TszProjectAuthority::new();
+        authority
+            .update(
+                files
+                    .iter()
+                    .map(|(path, source)| TszFileInput {
+                        path: (*path).to_owned(),
+                        source: (*source).to_owned(),
+                    })
+                    .collect(),
+                options,
+                &[],
+            )
+            .map_err(|_| LaneError::Missing("multi-file native TSZ project admission"))?;
+        Ok(authority)
+    }
+
+    fn collect_native_tsz_file<'source>(
+        project: &TszProject,
+        path: &str,
+        source: &'source str,
+    ) -> Result<FactSet<'source>, LaneError> {
+        let mut facts = FactSet::new();
+        collect_with_tsz(
+            TypeScriptSource::TypeScript,
+            source.as_bytes(),
+            project,
+            path,
+            &mut facts,
+        )
+        .map_err(LaneError::from)?;
+        Ok(facts)
+    }
+
+    fn staged_tsz_coordinates(
+        facts: &FactSet<'_>,
+    ) -> Result<Vec<(ReferenceKind, String, u32, u32, u32, u32)>, LaneError> {
+        let mut coordinates = Vec::new();
+        for index in 0..facts.occurrence_len {
+            let Some(slot) = facts.occurrence_source_coordinate_slot[index] else {
+                continue;
+            };
+            if !matches!(
+                facts.occurrences[index].target,
+                OccurrenceTarget::Foreign(key)
+                    if matches!(
+                        key.origin,
+                        backend_semantic::ir::ForeignOrigin::Universe { ecosystem }
+                            if ecosystem == TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM
+                    )
+            ) {
+                return Err(LaneError::Missing("typed TSZ foreign target key"));
+            }
+            let encoded = facts
+                .foreign_source_coordinate_text
+                .get(slot as usize)
+                .ok_or(LaneError::Missing("staged TSZ target coordinate"))?;
+            let coordinate = TypeScriptSourceCoordinate::decode(encoded)
+                .ok_or(LaneError::Missing("decodable TSZ target coordinate"))?;
+            coordinates.push((
+                facts.occurrences[index].kind,
+                coordinate.path.to_owned(),
+                coordinate.declaration_start,
+                coordinate.declaration_end,
+                coordinate.name_start,
+                facts.occurrence_owners[index],
+            ));
+        }
+        Ok(coordinates)
+    }
+
+    #[test]
+    fn native_tsz_joins_real_nest_controller_and_spec_calls_by_exact_owner() -> Result<(), LaneError>
+    {
+        let controller =
+            include_str!("../../../tests/fixtures/typescript_nest_reference/src/app.controller.ts");
+        let service =
+            include_str!("../../../tests/fixtures/typescript_nest_reference/src/app.service.ts");
+        let spec = include_str!(
+            "../../../tests/fixtures/typescript_nest_reference/src/app.controller.spec.ts"
+        );
+        let authority = native_tsz_project(&[
+            ("src/app.controller.ts", controller),
+            ("src/app.service.ts", service),
+            ("src/app.controller.spec.ts", spec),
+        ])?;
+        let project = authority
+            .project()
+            .ok_or(LaneError::Missing("Nest TSZ project"))?;
+
+        let controller_facts =
+            collect_native_tsz_file(project, "src/app.controller.ts", controller)?;
+        let controller_targets = staged_tsz_coordinates(&controller_facts)?;
+        let service_start = u32::try_from(
+            service
+                .find("getHello(): string")
+                .ok_or(LaneError::Missing("Nest service method source coordinate"))?,
+        )?;
+        let service_name_start = service_start;
+        let service_body_end = service
+            .get(service_start as usize..)
+            .and_then(|body| body.find("\n  }").map(|end| end + 4))
+            .ok_or(LaneError::Missing("Nest service method end coordinate"))?;
+        let service_end = service_start + u32::try_from(service_body_end)?;
+        assert!(
+            controller_targets
+                .iter()
+                .any(|(kind, path, start, end, name, _)| {
+                    *kind == ReferenceKind::MethodCall
+                        && path == "src/app.service.ts"
+                        && *start == service_start
+                        && *end == service_end
+                        && *name == service_name_start
+                }),
+            "controller call must name the exact service declaration: {controller_targets:?}"
+        );
+
+        let spec_facts = collect_native_tsz_file(project, "src/app.controller.spec.ts", spec)?;
+        let spec_targets = staged_tsz_coordinates(&spec_facts)?;
+        let controller_start = u32::try_from(controller.find("getHello(): string").ok_or(
+            LaneError::Missing("Nest controller method source coordinate"),
+        )?)?;
+        assert!(
+            spec_targets
+                .iter()
+                .any(|(kind, path, start, end, name, _)| {
+                    *kind == ReferenceKind::MethodCall
+                        && path == "src/app.controller.ts"
+                        && *start == controller_start
+                        && *end > *start
+                        && *name == controller_start
+                }),
+            "spec call must name the exact controller declaration: {spec_targets:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_preserves_reexport_owner_and_overload_implementation() -> Result<(), LaneError> {
+        let implementation = "export class Service {\n  getHello(value: string): string;\n  getHello(value: number): string;\n  getHello(value: string | number): string { return ''; }\n}\n";
+        let reexport = "export { Service as RenamedService } from './impl.js';\n";
+        let dependency = "export declare class DependencyService { getHello(): string; }\n";
+        let caller = "import { RenamedService } from './barrel.js';\nimport { DependencyService } from '../node_modules/@fixture/lib/index.js';\nconst local = new RenamedService();\nconst dependency = new DependencyService();\nexport function useLocal() { return local.getHello('local'); }\nexport function useDependency() { return dependency.getHello(); }\n";
+        let authority = native_tsz_project(&[
+            ("src/impl.ts", implementation),
+            ("src/barrel.ts", reexport),
+            ("node_modules/@fixture/lib/index.d.ts", dependency),
+            ("src/caller.ts", caller),
+        ])?;
+        let project = authority
+            .project()
+            .ok_or(LaneError::Missing("alias TSZ project"))?;
+        let caller_facts = collect_native_tsz_file(project, "src/caller.ts", caller)?;
+        let targets = staged_tsz_coordinates(&caller_facts)?;
+        let implementation_start = u32::try_from(
+            implementation
+                .find("getHello(value: string | number)")
+                .ok_or(LaneError::Missing("overload implementation coordinate"))?,
+        )?;
+        assert!(
+            targets.iter().any(|(kind, path, start, end, name, _)| {
+                *kind == ReferenceKind::MethodCall
+                    && path == "src/impl.ts"
+                    && *start == implementation_start
+                    && *end > *start
+                    && *name == implementation_start
+            }),
+            "re-exported alias call must bind the implementation overload: {targets:?}"
+        );
+        assert!(
+            targets.iter().any(|(kind, path, start, end, name, _)| {
+                *kind == ReferenceKind::MethodCall
+                    && path == "node_modules/@fixture/lib/index.d.ts"
+                    && *start < *end
+                    && *name >= *start
+                    && *name < *end
+            }),
+            "same-named dependency member must keep its own receiver owner: {targets:?}"
+        );
+        assert_eq!(
+            targets
+                .iter()
+                .filter(|(kind, _, _, _, _, _)| *kind == ReferenceKind::MethodCall)
+                .count(),
+            2,
+            "each call site has one exact target, without a global name-only guess"
+        );
+        Ok(())
     }
 
     #[test]

@@ -24,6 +24,10 @@ pub use package::{
 };
 /// One merged source file and its TSZ-owned syntax/binder spans.
 pub use tsz::parallel::BoundFile as TszBoundFile;
+/// Native TSZ syntax arena used by exact source-coordinate occurrence joins.
+pub use tsz::parser::node::NodeArena as TszNodeArena;
+/// Native TSZ syntax-kind constants used by the compiler's exact source joins.
+pub use tsz::parser::syntax_kind_ext as TszSyntaxKind;
 /// Read-only view over the native TSZ type interner, exposed so consumers can
 /// map checker results directly into their existing typed IR.
 pub use tsz::tsz_solver::construction::TypeDatabase as TszTypeDatabase;

@@ -27,8 +27,9 @@ use backend_semantic::ir::{
     ExtensionRefList, ExtensionSectionInput, ExtensionSectionPlane, ExtensionTypeParameter,
     ExtensionTypeParameterRange, ForeignKey, ForeignOrigin, Occurrence, OccurrenceConfidence,
     OccurrenceInput, OccurrenceLane, OccurrenceTarget, PackageLineage, PrepareError,
-    PreparedFragment, RecipeFact, ReferenceKind, RelSpan, SourceIdentity, TypeFactInput,
-    TypeFactLane, TypeNode, WriteError, canonicalize_data_with_budget,
+    PreparedFragment, RecipeFact, ReferenceKind, RelSpan, SourceIdentity,
+    TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM, TypeFactInput, TypeFactLane, TypeNode, WriteError,
+    canonicalize_data_with_budget,
 };
 use backend_semantic::vocabulary::ProjectionFactLane;
 use core::mem::size_of;
@@ -720,6 +721,10 @@ pub(super) struct FactSet<'source> {
     computed_child_pending: u8,
     foreign_text: Vec<Box<str>>,
     occurrence_package_slot: Box<[Option<u32>]>,
+    /// Owned, versioned TSZ source-coordinate paths for exact cross-file
+    /// reference joins. Ordinary occurrence paths continue to borrow source.
+    foreign_source_coordinate_text: Vec<Box<str>>,
+    occurrence_source_coordinate_slot: Box<[Option<u32>]>,
 }
 
 /// One documentation fragment that may borrow selected source or own RA-expanded text.
@@ -1134,6 +1139,8 @@ impl<'source> FactSet<'source> {
             computed_child_pending: 0,
             foreign_text: Vec::new(),
             occurrence_package_slot: vec![None; plan.occurrences].into_boxed_slice(),
+            foreign_source_coordinate_text: Vec::new(),
+            occurrence_source_coordinate_slot: vec![None; plan.occurrences].into_boxed_slice(),
         }
     }
 
@@ -2275,6 +2282,129 @@ impl<'source> FactSet<'source> {
         Ok(())
     }
 
+    /// Replaces one occurrence already recorded at an exact source site.
+    /// The typed producer can upgrade a syntax/import placeholder without
+    /// duplicating the same site in the canonical occurrence lane.
+    pub(super) fn replace_occurrence(
+        &mut self,
+        index: usize,
+        owner: u32,
+        occurrence: Occurrence<'source>,
+    ) -> Result<(), FactFault> {
+        if index >= self.occurrence_len {
+            return Err(FactFault::OccurrenceCapacity);
+        }
+        if owner >= self.len as u32 {
+            return Err(FactFault::OccurrenceOwner {
+                owner,
+                fact_count: self.len,
+            });
+        }
+        self.occurrence_owners[index] = owner;
+        self.occurrences[index] = occurrence;
+        self.occurrence_package_slot[index] = None;
+        self.occurrence_source_coordinate_slot[index] = None;
+        Ok(())
+    }
+
+    /// Appends an exact TSZ-owned source-coordinate occurrence. The existing
+    /// typed foreign-key lane carries the source path and declaration-name
+    /// byte coordinate; query joins may resolve it only against that exact
+    /// project source site.
+    pub(super) fn push_owned_tsz_source_occurrence(
+        &mut self,
+        owner: u32,
+        coordinate: String,
+        display: &'source str,
+        entity_kind: EntityKind,
+        kind: ReferenceKind,
+        confidence: OccurrenceConfidence,
+        span: RelSpan,
+    ) -> Result<(), FactFault> {
+        if self.occurrence_len == self.plan.occurrences
+            || self.foreign_source_coordinate_text.len() >= self.plan.occurrences
+        {
+            return Err(FactFault::OccurrenceCapacity);
+        }
+        let path_slot = u32::try_from(self.foreign_source_coordinate_text.len())
+            .map_err(|_| FactFault::OccurrenceCapacity)?;
+        let key = ForeignKey::new(
+            ForeignOrigin::Universe {
+                ecosystem: TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM,
+            },
+            "tsz-source-coordinate-pending",
+            display,
+            Some(entity_kind),
+        )
+        .map_err(|_| FactFault::EmptyName)?;
+        self.foreign_source_coordinate_text
+            .push(coordinate.into_boxed_str());
+        if let Err(fault) = self.push_occurrence(
+            owner,
+            Occurrence {
+                target: OccurrenceTarget::Foreign(key),
+                kind,
+                confidence,
+                span,
+            },
+        ) {
+            self.foreign_source_coordinate_text.pop();
+            return Err(fault);
+        }
+        let index = self.occurrence_len - 1;
+        self.occurrence_package_slot[index] = None;
+        self.occurrence_source_coordinate_slot[index] = Some(path_slot);
+        Ok(())
+    }
+
+    /// Replaces one source-span occurrence with a TSZ-proven exact target.
+    /// This upgrades the older syntax-only placeholder in place, preserving
+    /// one occurrence per source site.
+    pub(super) fn replace_with_owned_tsz_source_occurrence(
+        &mut self,
+        index: usize,
+        owner: u32,
+        coordinate: String,
+        display: &'source str,
+        entity_kind: EntityKind,
+        kind: ReferenceKind,
+        confidence: OccurrenceConfidence,
+        span: RelSpan,
+    ) -> Result<(), FactFault> {
+        if index >= self.occurrence_len || owner >= self.len as u32 {
+            return Err(FactFault::OccurrenceOwner {
+                owner,
+                fact_count: self.len,
+            });
+        }
+        if self.foreign_source_coordinate_text.len() >= self.plan.occurrences {
+            return Err(FactFault::OccurrenceCapacity);
+        }
+        let path_slot = u32::try_from(self.foreign_source_coordinate_text.len())
+            .map_err(|_| FactFault::OccurrenceCapacity)?;
+        let key = ForeignKey::new(
+            ForeignOrigin::Universe {
+                ecosystem: TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM,
+            },
+            "tsz-source-coordinate-pending",
+            display,
+            Some(entity_kind),
+        )
+        .map_err(|_| FactFault::EmptyName)?;
+        self.foreign_source_coordinate_text
+            .push(coordinate.into_boxed_str());
+        self.occurrence_owners[index] = owner;
+        self.occurrences[index] = Occurrence {
+            target: OccurrenceTarget::Foreign(key),
+            kind,
+            confidence,
+            span,
+        };
+        self.occurrence_package_slot[index] = None;
+        self.occurrence_source_coordinate_slot[index] = Some(path_slot);
+        Ok(())
+    }
+
     /// Appends one occurrence whose cargo package name is owned until admit.
     pub(super) fn push_owned_package_occurrence(
         &mut self,
@@ -2337,32 +2467,50 @@ impl<'source> FactSet<'source> {
         if index >= self.occurrence_len {
             return Err((0, self.foreign_text.len()));
         }
-        let Some(slot) = self.occurrence_package_slot[index] else {
-            return Ok(self.occurrences[index]);
+        let package_slot = self.occurrence_package_slot[index];
+        let source_coordinate_slot = self.occurrence_source_coordinate_slot[index];
+        let path_slot_count = if source_coordinate_slot.is_some() {
+            self.foreign_source_coordinate_text.len()
+        } else {
+            self.foreign_text.len()
         };
+        if package_slot.is_none() && source_coordinate_slot.is_none() {
+            return Ok(self.occurrences[index]);
+        }
         let stored = self.occurrences[index];
         let OccurrenceTarget::Foreign(stored_key) = stored.target else {
-            return Err((slot, self.foreign_text.len()));
+            return Err((
+                package_slot.or(source_coordinate_slot).unwrap_or(0),
+                path_slot_count,
+            ));
         };
-        let ForeignOrigin::Package(staging_lineage) = stored_key.origin else {
-            return Err((slot, self.foreign_text.len()));
+        let origin = if let Some(slot) = package_slot {
+            let ForeignOrigin::Package(staging_lineage) = stored_key.origin else {
+                return Err((slot, self.foreign_text.len()));
+            };
+            let package_text = match self.foreign_text.get(slot as usize) {
+                Some(text) => text.as_ref(),
+                None => return Err((slot, self.foreign_text.len())),
+            };
+            let lineage = match PackageLineage::new(staging_lineage.ecosystem, package_text) {
+                Ok(lineage) => lineage,
+                Err(_) => return Err((slot, self.foreign_text.len())),
+            };
+            ForeignOrigin::Package(lineage)
+        } else {
+            stored_key.origin
         };
-        let package_text = match self.foreign_text.get(slot as usize) {
-            Some(text) => text.as_ref(),
-            None => return Err((slot, self.foreign_text.len())),
+        let path = if let Some(slot) = source_coordinate_slot {
+            match self.foreign_source_coordinate_text.get(slot as usize) {
+                Some(path) => path.as_ref(),
+                None => return Err((slot, self.foreign_source_coordinate_text.len())),
+            }
+        } else {
+            stored_key.path
         };
-        let lineage = match PackageLineage::new(staging_lineage.ecosystem, package_text) {
-            Ok(lineage) => lineage,
-            Err(_) => return Err((slot, self.foreign_text.len())),
-        };
-        let key = match ForeignKey::new(
-            ForeignOrigin::Package(lineage),
-            stored_key.path,
-            stored_key.display,
-            stored_key.kind,
-        ) {
+        let key = match ForeignKey::new(origin, path, stored_key.display, stored_key.kind) {
             Ok(key) => key,
-            Err(_) => return Err((slot, self.foreign_text.len())),
+            Err(_) => return Err((0, path_slot_count)),
         };
         Ok(Occurrence {
             target: OccurrenceTarget::Foreign(key),
