@@ -984,9 +984,10 @@ fn a_references_reply_renders_sites_with_their_provenance() {
     assert!(tags.contains(&"calls".to_owned()), "tags are {tags:?}");
     assert!(tags.contains(&"compiler".to_owned()), "tags are {tags:?}");
     assert!(
-        tags.iter().any(|tag| tag == "src/main.rs:40-46"),
+        tags.iter().any(|tag| tag == "src/main.rs [bytes40..46)"),
         "the source span must survive rendering, tags are {tags:?}"
     );
+    assert!(!tags.iter().any(|tag| tag == "src/main.rs:40-46"));
 }
 
 #[test]

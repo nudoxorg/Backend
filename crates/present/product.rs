@@ -1949,7 +1949,7 @@ fn reference_row(record: &backend_library::ReferenceRecord) -> ProductRecord {
     ];
     match record.evidence.source.as_ref() {
         Some(span) => tags.push(format!(
-            "{}:{}-{}",
+            "{} [bytes{}..{})",
             span.file.as_str(),
             span.start,
             span.end
