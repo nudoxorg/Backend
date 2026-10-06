@@ -15,6 +15,7 @@ use std::{
     io,
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
@@ -62,11 +63,29 @@ pub(crate) struct NamespaceFence {
     file: File,
     identity: FileIdentity,
     directory: DirectoryCapability,
+    namespace_identity: Arc<()>,
     namespace_path: PathBuf,
     kind: NamespaceFenceKind,
 }
 
 impl NamespaceFence {
+    fn verify_pinned(&self) -> io::Result<()> {
+        if !self.file.metadata()?.is_file() || FileIdentity::of_file(&self.file)? != self.identity {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "namespace fence handle identity changed",
+            ));
+        }
+        let named = self.directory.open_file_read(self.kind.file_name())?;
+        if FileIdentity::of_file(&named)? != self.identity {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "namespace fence name identity changed",
+            ));
+        }
+        Ok(())
+    }
+
     fn verify(&self) -> io::Result<()> {
         self.directory.verify_path(&self.namespace_path)?;
         if !self.file.metadata()?.is_file()
@@ -98,6 +117,18 @@ impl NamespaceFence {
         }
         namespace.verify_path()?;
         self.verify()
+    }
+
+    fn verify_pinned_for(&self, namespace: &PrivateNamespace) -> io::Result<()> {
+        if self.namespace_path != namespace.path
+            || !Arc::ptr_eq(&self.namespace_identity, &namespace.identity)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "namespace fence belongs to another pinned namespace",
+            ));
+        }
+        self.verify_pinned()
     }
 }
 
@@ -231,6 +262,7 @@ where
 pub(crate) struct PrivateNamespace {
     path: PathBuf,
     directory: DirectoryCapability,
+    identity: Arc<()>,
 }
 
 impl PrivateNamespace {
@@ -241,7 +273,11 @@ impl PrivateNamespace {
         let directory = DirectoryCapability::open(&path)?;
         directory.validate_private()?;
         directory.verify_path(&path)?;
-        Ok(Self { path, directory })
+        Ok(Self {
+            path,
+            directory,
+            identity: Arc::new(()),
+        })
     }
 
     pub(crate) fn path(&self) -> &Path {
@@ -265,15 +301,19 @@ impl PrivateNamespace {
         kind: NamespaceFenceKind,
         wait: Duration,
     ) -> io::Result<NamespaceFence> {
-        self.verify_path()?;
-        let file = self
-            .directory
-            .open_private_file_read_write(kind.file_name(), true)?;
+        let file = self.open_fence_file(
+            || {
+                self.directory
+                    .open_private_file_read_write(kind.file_name(), true)
+            },
+            thread::sleep,
+        )?;
         let identity = FileIdentity::of_file(&file)?;
         let fence = NamespaceFence {
             file,
             identity,
             directory: self.directory.clone(),
+            namespace_identity: self.identity.clone(),
             namespace_path: self.path.clone(),
             kind,
         };
@@ -297,6 +337,25 @@ impl PrivateNamespace {
                 Err(TryLockError::Error(error)) => return Err(error),
             }
         }
+    }
+
+    fn open_fence_file(
+        &self,
+        mut open: impl FnMut() -> io::Result<File>,
+        mut pause: impl FnMut(Duration),
+    ) -> io::Result<File> {
+        // A simultaneous first creation can lose its pathname lookup before
+        // any handle exists. Retry only that pre-admission absence; once a
+        // handle is held, every identity failure remains terminal.
+        for delay in DENIAL_BACKOFF {
+            self.verify_path()?;
+            match open() {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => pause(delay),
+                result => return result,
+            }
+        }
+        self.verify_path()?;
+        open()
     }
 
     /// Verifies a raw direct-child path against the namespace and child handles.
@@ -748,7 +807,7 @@ impl PreparedStage {
         if !self.armed {
             return Ok(());
         }
-        if let Err(source) = self.verify_fence_and_lease(fence) {
+        if let Err(source) = self.verify_pinned_fence_and_lease(fence) {
             self.disposition = StageDisposition::PreservedForRecovery;
             return Err(StageCleanupFailure {
                 disposition: self.disposition,
@@ -779,12 +838,27 @@ impl PreparedStage {
         }
     }
 
-    fn prepare_for_publication(&mut self, fence: &NamespaceFence) -> io::Result<()> {
-        self.verify_fence_and_lease(fence)?;
-        self.remove_lease_under(fence)?;
-        self.created.capability().sync_all()?;
-        self.parent.sync_all()?;
-        fence.verify_for(&self.namespace)
+    fn prepare_for_publication(
+        &mut self,
+        fence: &NamespaceFence,
+    ) -> Result<(), PublicationFailure> {
+        // Identity admission failures are terminal ownership changes, not a
+        // retryable rename refusal. Preserve that distinction for callers even
+        // when receipt-authorized cleanup must also report a failure.
+        self.verify_fence_and_lease(fence)
+            .map_err(PublicationFailure::OwnershipChanged)?;
+        self.remove_lease_under(fence)
+            .map_err(PublicationFailure::NotCommitted)?;
+        self.created
+            .capability()
+            .sync_all()
+            .map_err(PublicationFailure::NotCommitted)?;
+        self.parent
+            .sync_all()
+            .map_err(PublicationFailure::NotCommitted)?;
+        fence
+            .verify_for(&self.namespace)
+            .map_err(PublicationFailure::OwnershipChanged)
     }
 
     /// Publishes this stage under `destination`, using an identity-fenced
@@ -818,10 +892,9 @@ impl PreparedStage {
         backoff: &[Duration],
         mut pause: impl FnMut(Duration),
     ) -> Result<DirectoryPublication, PublicationFailure> {
-        if let Err(source) = self.prepare_for_publication(fence) {
-            let operation = PublicationFailure::NotCommitted(source);
+        if let Err(operation) = self.prepare_for_publication(fence) {
             if self.armed {
-            if let Err(cleanup) = self.discard_inner(fence) {
+                if let Err(cleanup) = self.discard_inner(fence) {
                     return Err(PublicationFailure::Cleanup {
                         operation: Some(Box::new(operation)),
                         source: cleanup.into_io_error(),
@@ -896,8 +969,39 @@ impl PreparedStage {
         Ok(())
     }
 
+    /// Confirms only identities reachable through the held namespace and
+    /// stage capabilities. Cleanup may use this proof after the raw namespace
+    /// path was replaced, but still refuses a replaced child name.
+    fn verify_pinned_fence_and_lease(&self, fence: &NamespaceFence) -> io::Result<()> {
+        if fence.namespace_path != self.namespace_path || fence.kind != self.fence_kind {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "stage and cleanup fence belong to different namespaces",
+            ));
+        }
+        fence.verify_pinned_for(&self.namespace)?;
+        self.created.verify_named()?;
+        if let Some(file) = &self.lease_file {
+            if FileIdentity::of_file(file)? != self.lease_identity {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "stage active-lease handle changed identity during cleanup",
+                ));
+            }
+            let named = self.parent.open_file_read(&self.lease_name)?;
+            if FileIdentity::of_file(&named)? != self.lease_identity {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "stage active-lease name changed identity during cleanup",
+                ));
+            }
+            verify_stage_lease_token(&mut file.try_clone()?, &self.name)?;
+        }
+        Ok(())
+    }
+
     fn remove_lease_under(&mut self, fence: &NamespaceFence) -> io::Result<()> {
-        fence.verify_for(&self.namespace)?;
+        fence.verify_pinned_for(&self.namespace)?;
         if let Some(file) = &self.lease_file {
             if FileIdentity::of_file(file)? != self.lease_identity {
                 return Err(io::Error::new(
@@ -907,11 +1011,11 @@ impl PreparedStage {
             }
             verify_stage_lease_token(&mut file.try_clone()?, &self.name)?;
         }
-        match FileIdentity::of_path_nofollow(&self.namespace_path.join(&self.lease_name)) {
-            Ok(identity) if identity == self.lease_identity => {
+        match self.parent.open_file_read(&self.lease_name) {
+            Ok(named) if FileIdentity::of_file(&named)? == self.lease_identity => {
                 self.parent.remove_file(&self.lease_name)?;
                 self.lease_file.take();
-                fence.verify_for(&self.namespace)
+                fence.verify_pinned_for(&self.namespace)
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 self.lease_file.take();
@@ -1666,6 +1770,9 @@ mod tests {
         let root = scratch("replaced-stage-parent");
         let namespace = namespace(&root);
         let candidate = stage(&namespace, ".stage", "original staged bytes");
+        let fence = namespace
+            .acquire_fence(NamespaceFenceKind::DurableCache)
+            .expect("held publication fence");
         let namespace_path = namespace.path().to_path_buf();
         let moved_namespace = root.join("moved-private-v1");
         let original_parent_identity =
@@ -1690,14 +1797,19 @@ mod tests {
         drop(replacement);
         drop(replacement_parent);
 
-        let failure = publish(candidate, "generation")
+        let failure = candidate
+            .publish("generation", &fence)
             .expect_err("raw stage path must still reach its retained parent");
-        assert!(matches!(failure, PublicationFailure::OwnershipChanged(_)));
+        assert!(
+            matches!(&failure, PublicationFailure::OwnershipChanged(_)),
+            "unexpected parent-replacement result: {failure:?}"
+        );
         assert!(!moved_namespace.join(".stage").exists());
         assert_eq!(
             fs::read(namespace_path.join(".stage/payload")).expect("replacement bytes survive"),
             b"replacement bytes"
         );
+        drop(fence);
         drop(namespace);
         fs::remove_dir_all(root).expect("cleanup");
     }
@@ -1975,6 +2087,88 @@ mod tests {
             b"winner"
         );
         assert!(namespace.path().join("entry").is_dir());
+        drop(namespace);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn first_fence_open_retries_only_absence_before_handle_admission() {
+        let root = scratch("first-fence-create-race");
+        let namespace = namespace(&root);
+        let mut attempts = 0;
+        let mut pauses = Vec::new();
+        let file = namespace
+            .open_fence_file(
+                || {
+                    attempts += 1;
+                    if attempts == 1 {
+                        // Schedule the first lookup before the peer creates the
+                        // control entry. This is a real failed pathname lookup,
+                        // with no admitted inode to retry or accidentally retain.
+                        return namespace.directory.open_private_file_read_write(
+                            NamespaceFenceKind::DurableCache.file_name(),
+                            false,
+                        );
+                    }
+                    namespace.directory.open_private_file_read_write(
+                        NamespaceFenceKind::DurableCache.file_name(),
+                        true,
+                    )
+                },
+                |delay| {
+                    pauses.push(delay);
+                    let peer = namespace
+                        .directory
+                        .open_private_file_read_write(
+                            NamespaceFenceKind::DurableCache.file_name(),
+                            true,
+                        )
+                        .expect("peer creates the first named gate between lookups");
+                    drop(peer);
+                },
+            )
+            .expect("first gate lookup settles");
+        assert_eq!(attempts, 2);
+        assert_eq!(pauses, vec![DENIAL_BACKOFF[0]]);
+        assert_eq!(
+            FileIdentity::of_file(&file).expect("held identity"),
+            FileIdentity::of_path_nofollow(
+                &namespace
+                    .path
+                    .join(NamespaceFenceKind::DurableCache.file_name())
+            )
+            .expect("named identity")
+        );
+        drop(file);
+
+        for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::InvalidData] {
+            let mut attempts = 0;
+            let error = namespace
+                .open_fence_file(
+                    || {
+                        attempts += 1;
+                        Err(io::Error::from(kind))
+                    },
+                    |_| panic!("ownership and real I/O failures are terminal"),
+                )
+                .expect_err("terminal admission failure");
+            assert_eq!(error.kind(), kind);
+            assert_eq!(attempts, 1);
+        }
+        let mut attempts = 0;
+        let mut pauses = Vec::new();
+        let error = namespace
+            .open_fence_file(
+                || {
+                    attempts += 1;
+                    Err(io::Error::from(io::ErrorKind::NotFound))
+                },
+                |delay| pauses.push(delay),
+            )
+            .expect_err("absence is bounded");
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(attempts, DENIAL_BACKOFF.len() + 1);
+        assert_eq!(pauses, DENIAL_BACKOFF);
         drop(namespace);
         fs::remove_dir_all(root).expect("cleanup");
     }
