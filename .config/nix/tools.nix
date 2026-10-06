@@ -31,6 +31,8 @@ let
     # All vendored path dependencies (gpui-ce, components, scheduler, …):
     # whitelisting the whole vendor tree keeps future vendored crates working.
     "vendor"
+    # Native TSZ is a workspace path dependency in this separate source tree.
+    "third_party"
     # Embedded by local-service's browse.rs (include_bytes!).
     ".config/scripts/cargo-rustc-cache.sh"
   ];
@@ -66,7 +68,8 @@ let
   # A bounded pool of Cargo 1.97 build directories shares intermediate
   # artifacts without making parallel worktrees wait on one build lock.
   # sccache shares immutable third-party library compilation results across
-  # the four isolated lanes; callers wait or fail with status 75 when every
+  # isolated lanes (four by default, at most six configured); callers wait or
+  # fail with status 75 when every
   # lane is occupied.
   # writeShellScript appends its own final newline. local-service's browse.rs
   # admits this wrapper only if its body ends exactly like the template, so
