@@ -46,7 +46,7 @@ pub struct ProductRecord {
     forge_package_detail: Option<ForgePackageDetailRecord>,
     discovery_details: Option<RegistryDiscoveryCandidate>,
     package_group: Option<RegistryPackageSearchGroup>,
-    history_status: Option<SemanticHistoryPublicationStatus>,
+    history_status: Option<ProductSemanticHistoryStatus>,
     compiler_profile: Option<SemanticLanguageProfile>,
 }
 
@@ -103,11 +103,11 @@ impl ProductRecord {
         self
     }
 
-    /// Attaches the exact owner-reported derived-history state for one
-    /// immutable semantic generation.
+    /// Attaches a concise typed projection of the owner-reported history state.
+    /// The complete publication proof remains in the exact semantic data facet.
     #[must_use]
-    pub fn with_history_status(mut self, status: SemanticHistoryPublicationStatus) -> Self {
-        self.history_status = Some(status);
+    pub fn with_history_status(mut self, status: &SemanticHistoryPublicationStatus) -> Self {
+        self.history_status = Some(ProductSemanticHistoryStatus::from(status));
         self
     }
 
@@ -166,9 +166,9 @@ impl ProductRecord {
         self.package_group.as_ref()
     }
 
-    /// Returns the exact owner-reported derived-history state, when present.
+    /// Returns the concise derived-history state shown beside this row.
     #[must_use]
-    pub fn history_status(&self) -> Option<&SemanticHistoryPublicationStatus> {
+    pub fn history_status(&self) -> Option<&ProductSemanticHistoryStatus> {
         self.history_status.as_ref()
     }
 
@@ -176,6 +176,117 @@ impl ProductRecord {
     #[must_use]
     pub const fn compiler_profile(&self) -> Option<SemanticLanguageProfile> {
         self.compiler_profile
+    }
+}
+
+/// Readable publication state copied from the immutable semantic version reply.
+///
+/// A row needs status, retry/refusal detail, and the published reference. The
+/// complete selected catalog and per-image proofs belong to
+/// [`ProductSemanticData::Versions`], where callers copy the exact source
+/// operand. Keeping that catalog out of this projection prevents duplicating
+/// it in the same answer. This value never re-reads mutable owner state.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ProductSemanticHistoryStatus {
+    /// This version is not the committed selection.
+    NotSelected,
+    /// The selection has not been reconciled with derived history.
+    NotRequested {
+        /// Exact committed selection identity.
+        selection_id: [u8; 32],
+    },
+    /// A worker is producing derived history for the selection.
+    Pending {
+        /// Exact committed selection identity.
+        selection_id: [u8; 32],
+    },
+    /// The selection is waiting for a bounded worker slot.
+    Deferred {
+        /// Exact committed selection identity.
+        selection_id: [u8; 32],
+        /// Owner-reported retry detail.
+        reason: String,
+    },
+    /// Complete package history has been published at the exact reference.
+    Published {
+        /// Exact committed selection identity.
+        selection_id: [u8; 32],
+        /// Commit containing the derived history.
+        commit: [u8; 32],
+        /// Reference containing the published commit.
+        reference: String,
+        /// Concise proof status for the readable row.
+        proof: ProductSemanticHistoryProofSummary,
+    },
+    /// Derived history production or admission was refused.
+    Refused {
+        /// Exact committed selection identity.
+        selection_id: [u8; 32],
+        /// Owner-reported refusal detail.
+        reason: String,
+    },
+    /// The selected marker advanced while the worker ran.
+    Superseded {
+        /// Exact superseded selection identity.
+        selection_id: [u8; 32],
+    },
+}
+
+/// Publication facts needed by a readable row, without its per-image catalog.
+///
+/// Older product DTOs carried the complete proof here. Deserialization accepts
+/// those additional fields; the exact proof in new DTOs lives in `semantic_data`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ProductSemanticHistoryProofSummary {
+    /// Exact public branch tip verified by the publication proof.
+    pub reference_tip: [u8; 32],
+    /// Persisted input replay authority reported by the proof.
+    pub input_replay_status: backend_library::SemanticHistoryInputReplayStatus,
+}
+
+impl From<&SemanticHistoryPublicationStatus> for ProductSemanticHistoryStatus {
+    fn from(status: &SemanticHistoryPublicationStatus) -> Self {
+        match status {
+            SemanticHistoryPublicationStatus::NotSelected => Self::NotSelected,
+            SemanticHistoryPublicationStatus::NotRequested { selection_id } => Self::NotRequested {
+                selection_id: *selection_id,
+            },
+            SemanticHistoryPublicationStatus::Pending { selection_id } => Self::Pending {
+                selection_id: *selection_id,
+            },
+            SemanticHistoryPublicationStatus::Deferred {
+                selection_id,
+                reason,
+            } => Self::Deferred {
+                selection_id: *selection_id,
+                reason: reason.clone(),
+            },
+            SemanticHistoryPublicationStatus::Published {
+                selection_id,
+                commit,
+                reference,
+                proof,
+            } => Self::Published {
+                selection_id: *selection_id,
+                commit: *commit,
+                reference: reference.clone(),
+                proof: ProductSemanticHistoryProofSummary {
+                    reference_tip: proof.reference_tip,
+                    input_replay_status: proof.input_replay_status,
+                },
+            },
+            SemanticHistoryPublicationStatus::Refused {
+                selection_id,
+                reason,
+            } => Self::Refused {
+                selection_id: *selection_id,
+                reason: reason.clone(),
+            },
+            SemanticHistoryPublicationStatus::Superseded { selection_id } => Self::Superseded {
+                selection_id: *selection_id,
+            },
+        }
     }
 }
 
@@ -2173,7 +2284,7 @@ fn semantic_row(record: &SemanticVersionRecord) -> ProductRecord {
         Some(encode_id(&record.generation.to_bytes())),
         tags,
     )
-    .with_history_status(record.history_status.clone())
+    .with_history_status(&record.history_status)
     .with_compiler_profile(record.profile)
 }
 
@@ -2191,22 +2302,21 @@ fn semantic_history_label(status: &SemanticHistoryPublicationStatus) -> &'static
     }
 }
 
-/// Renders bounded-cardinality semantic publication status as one readable
-/// line while retaining exact identifiers and references in the typed DTO.
-pub(crate) fn semantic_history_details(status: &SemanticHistoryPublicationStatus) -> String {
+/// Renders the typed status projection; the exact proof stays in the facet.
+pub(crate) fn semantic_history_details(status: &ProductSemanticHistoryStatus) -> String {
     match status {
-        SemanticHistoryPublicationStatus::NotSelected => {
+        ProductSemanticHistoryStatus::NotSelected => {
             "Derived history is not selected for this compiler generation.".to_owned()
         }
-        SemanticHistoryPublicationStatus::NotRequested { selection_id } => format!(
+        ProductSemanticHistoryStatus::NotRequested { selection_id } => format!(
             "Derived history has not been requested for committed selection {}.",
             full_digest(selection_id),
         ),
-        SemanticHistoryPublicationStatus::Pending { selection_id } => format!(
+        ProductSemanticHistoryStatus::Pending { selection_id } => format!(
             "Derived history publication is pending for committed selection {}.",
             full_digest(selection_id),
         ),
-        SemanticHistoryPublicationStatus::Deferred {
+        ProductSemanticHistoryStatus::Deferred {
             selection_id,
             reason,
         } => format!(
@@ -2214,7 +2324,7 @@ pub(crate) fn semantic_history_details(status: &SemanticHistoryPublicationStatus
             full_digest(selection_id),
             single_line(reason),
         ),
-        SemanticHistoryPublicationStatus::Published {
+        ProductSemanticHistoryStatus::Published {
             selection_id,
             commit,
             reference,
@@ -2226,7 +2336,7 @@ pub(crate) fn semantic_history_details(status: &SemanticHistoryPublicationStatus
             single_line(reference),
             full_digest(&proof.reference_tip),
         ),
-        SemanticHistoryPublicationStatus::Refused {
+        ProductSemanticHistoryStatus::Refused {
             selection_id,
             reason,
         } => format!(
@@ -2234,7 +2344,7 @@ pub(crate) fn semantic_history_details(status: &SemanticHistoryPublicationStatus
             full_digest(selection_id),
             single_line(reason),
         ),
-        SemanticHistoryPublicationStatus::Superseded { selection_id } => format!(
+        ProductSemanticHistoryStatus::Superseded { selection_id } => format!(
             "Derived history publication was superseded for selection {}; the owner will reconcile the current selection.",
             full_digest(selection_id),
         ),
@@ -2979,17 +3089,28 @@ mod tests {
             ),
         ];
         for (status, selected, label) in cases {
-            let view = semantic_versions_view(semantic_version(
+            let record = semantic_version(
                 status.clone(),
                 selected,
                 false,
                 SemanticVersionFreshness::Unverified,
-            ));
+            );
+            let view = semantic_versions_view(record.clone());
             let row = view.records().first().expect("semantic generation row");
-            assert_eq!(row.history_status(), Some(&status));
+            assert_eq!(
+                row.history_status(),
+                Some(&ProductSemanticHistoryStatus::from(&status))
+            );
             assert!(row.tags().iter().any(|tag| tag == label));
             let dto = crate::dto::ProductDto::new(&view);
-            assert_eq!(dto.records[0].history_status, Some(status));
+            assert_eq!(
+                dto.records[0].history_status,
+                Some(ProductSemanticHistoryStatus::from(&status))
+            );
+            assert_eq!(
+                dto.semantic_data,
+                Some(ProductSemanticData::Versions(Box::new([record])))
+            );
         }
     }
 
@@ -3006,7 +3127,10 @@ mod tests {
             SemanticVersionFreshness::Unverified,
         ));
         let row = view.records().first().expect("semantic generation row");
-        assert_eq!(row.history_status(), Some(&status));
+        assert_eq!(
+            row.history_status(),
+            Some(&ProductSemanticHistoryStatus::from(&status))
+        );
         assert!(row.tags().iter().any(|tag| tag == "partial"));
         assert!(
             row.tags()
@@ -3060,7 +3184,10 @@ mod tests {
             SemanticVersionFreshness::Unverified,
         ));
         let row = view.records().first().expect("semantic generation row");
-        assert_eq!(row.history_status(), Some(&status));
+        assert_eq!(
+            row.history_status(),
+            Some(&ProductSemanticHistoryStatus::from(&status))
+        );
         assert!(row.tags().iter().any(|tag| tag == "partial"));
         assert!(row.tags().iter().any(|tag| tag == "freshness unverified"));
         assert!(
@@ -3071,12 +3198,15 @@ mod tests {
         assert!(!row.tags().iter().any(|tag| tag == "complete"));
         assert!(!row.tags().iter().any(|tag| tag == "current source input"));
         assert!(crate::markdown::product(&view).contains(&reference));
-        let details = semantic_history_details(&status);
+        let details = semantic_history_details(&ProductSemanticHistoryStatus::from(&status));
         assert!(details.contains(&format!("verified tip: {}", "7c".repeat(32))));
         assert!(details.contains("Compiler input replay remains unproven"));
 
         let dto = crate::dto::ProductDto::new(&view);
-        assert_eq!(dto.records[0].history_status, Some(status.clone()));
+        assert_eq!(
+            dto.records[0].history_status,
+            Some(ProductSemanticHistoryStatus::from(&status))
+        );
         let value = serde_json::to_value(&dto).expect("semantic product DTO");
         assert_eq!(value["records"][0]["history_status"]["state"], "published");
         assert_eq!(
@@ -3084,8 +3214,32 @@ mod tests {
             reference
         );
         let decoded: crate::dto::ProductDto =
-            serde_json::from_value(value).expect("typed status DTO round trip");
-        assert_eq!(decoded.records[0].history_status, Some(status));
+            serde_json::from_value(value.clone()).expect("typed status DTO round trip");
+        assert_eq!(
+            decoded.records[0].history_status,
+            Some(ProductSemanticHistoryStatus::from(&status))
+        );
+        assert!(
+            value["records"][0]["history_status"]["proof"]
+                .get("images")
+                .is_none()
+        );
+        assert_eq!(
+            value["semantic_data"]["value"][0]["history_status"],
+            serde_json::to_value(&status).expect("complete immutable history proof")
+        );
+
+        // A previous row DTO contains the full proof. It still decodes to the
+        // readable projection, with all exact operand fields in the facet.
+        let mut older = value;
+        older["records"][0]["history_status"] =
+            serde_json::to_value(&status).expect("previous complete row status");
+        let decoded: crate::dto::ProductDto =
+            serde_json::from_value(older).expect("previous full proof row DTO");
+        assert_eq!(
+            decoded.records[0].history_status,
+            Some(ProductSemanticHistoryStatus::from(&status))
+        );
     }
 
     #[test]
@@ -3108,7 +3262,10 @@ mod tests {
             .records()
             .first()
             .expect("selected compiler generation remains");
-        assert_eq!(row.history_status(), Some(&status));
+        assert_eq!(
+            row.history_status(),
+            Some(&ProductSemanticHistoryStatus::from(&status))
+        );
         assert!(row.tags().iter().any(|tag| tag == "partial"));
         assert!(
             row.tags()

@@ -872,10 +872,10 @@ pub struct ProductRecordDto {
     /// Source-scoped, version-specific lineage group for index search.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub package_group: Option<backend_library::RegistryPackageSearchGroup>,
-    /// Exact owner-reported derived-history state for an immutable semantic
-    /// compiler generation.
+    /// Concise typed derived-history state for the readable generation row.
+    /// The complete immutable proof remains in `semantic_data`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub history_status: Option<backend_library::SemanticHistoryPublicationStatus>,
+    pub history_status: Option<crate::product::ProductSemanticHistoryStatus>,
     /// Exact canonical two-byte profile of an immutable semantic generation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compiler_profile: Option<backend_library::SemanticLanguageProfile>,

@@ -1033,6 +1033,103 @@ fn semantic_shapes_cli_and_mcp_grammar_preserve_exact_selected_operands_and_egre
 }
 
 #[test]
+fn captured_semver_history_fits_once_and_preserves_the_complete_source_operand() {
+    // Actual successful public egress from the stopped configured Semver
+    // owner, not a fabricated wire certificate or a compiler-authority fixture.
+    let packet: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/semantic-versions-semver-public.json"
+    ))
+    .expect("captured complete public packet");
+    let reply: backend_library::SurfaceReply = serde_json::from_value(packet["surface"].clone())
+        .expect("complete source SurfaceReply, without removing any DTO fields");
+    assert_eq!(
+        serde_json::to_value(&reply).expect("source DTO"),
+        packet["surface"]
+    );
+    let backend_library::SurfaceReply::SemanticVersions(records) = &reply else {
+        panic!("captured semantic versions")
+    };
+    let source = &packet["surface"]["data"][0];
+    assert_eq!(
+        serde_json::to_vec(source).expect("source bytes").len(),
+        32_645
+    );
+    assert_eq!(
+        serde_json::to_vec(&source["history_status"])
+            .expect("history bytes")
+            .len(),
+        31_131
+    );
+    assert_eq!(
+        source["history_status"]["proof"]["images"]
+            .as_array()
+            .expect("catalog")
+            .len(),
+        42
+    );
+    let view = product_view(&reply);
+    let answer = Answer::Product(Box::new(view.clone()));
+    for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+        let payload = encode_answer(&answer, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES)
+            .expect("one exact Semver catalog fits the unchanged budget");
+        assert_eq!(payload.budget.bytes, payload.bytes.len());
+        let value: serde_json::Value =
+            serde_json::from_slice(&payload.bytes).expect("product JSON");
+        assert_eq!(value["semantic_data"]["kind"], "versions");
+        assert_eq!(value["semantic_data"]["value"], packet["surface"]["data"]);
+        assert!(
+            value["records"][0]["history_status"]["proof"]
+                .get("images")
+                .is_none()
+        );
+        assert_eq!(
+            value["records"][0]["history_status"]["proof"]["reference_tip"],
+            source["history_status"]["proof"]["reference_tip"]
+        );
+        let decoded: ProductDto = serde_json::from_value(value.clone()).expect("typed product DTO");
+        assert_eq!(
+            decoded.semantic_data,
+            Some(ProductSemanticData::Versions(records.clone()))
+        );
+
+        // Copy the exact operand returned by the named surface into the shared
+        // shape grammar. This proves operand transport, not shape authority.
+        let mut operands: serde_json::Value =
+            serde_json::from_str(include_str!("../library/fixtures/semantic-shape-read.json"))
+                .expect("complete request grammar fixture");
+        operands["source"] = value["semantic_data"]["value"][0].clone();
+        let request: backend_library::SemanticShapeReadRequest = serde_json::from_value(operands)
+            .expect("exact published source remains a usable operand");
+        assert_eq!(request.source(), &records[0]);
+        assert_eq!(
+            serde_json::to_value(request.source()).expect("shape source DTO"),
+            *source
+        );
+
+        // Reproduce the old duplication at the display seam. It is the same
+        // complete source proof twice, not a larger or truncated fixture.
+        let mut duplicated = value;
+        duplicated["records"][0]["history_status"] = source["history_status"].clone();
+        assert!(encode_value(&duplicated, DEFAULT_RESPONSE_BUDGET_BYTES).is_err());
+    }
+
+    // A repeated captured display packet is only a budget control. It does not
+    // assert that an owner published two copies of the same selected version.
+    let oversized = Answer::Product(Box::new(product_view(
+        &backend_library::SurfaceReply::SemanticVersions(
+            vec![records[0].clone(), records[0].clone()].into_boxed_slice(),
+        ),
+    )));
+    for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+        let error = encode_answer(&oversized, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES)
+            .expect_err("complete exact operands that exceed the budget remain refused");
+        assert!(error.bytes > DEFAULT_RESPONSE_BUDGET_BYTES);
+        assert_eq!(error.budget, DEFAULT_RESPONSE_BUDGET_BYTES);
+        assert_eq!(oversized_fault(error).cause().slug(), CauseSlug::Oversized);
+    }
+}
+
+#[test]
 fn every_registry_row_is_reachable_by_both_a_cli_spelling_and_a_tool_name() {
     // The two surfaces address the same rows through different vocabularies.
     // Neither vocabulary is maintained by hand, and this is what says so: a row

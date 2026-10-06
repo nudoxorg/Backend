@@ -973,6 +973,45 @@ fn markdown_output_is_the_shared_renderer_and_json_is_the_typed_dto() {
     );
 }
 
+#[test]
+fn cli_named_versions_preserves_the_captured_semver_operand_at_every_detail() {
+    let packet: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../crates/present/fixtures/semantic-versions-semver-public.json"
+    ))
+    .expect("complete captured public source packet");
+    let reply: backend_library::SurfaceReply = serde_json::from_value(packet["surface"].clone())
+        .expect("complete source DTO; no wire certificate is fabricated");
+    let view = backend_present::product_view(&reply);
+    let answer = Answer::Product(Box::new(view));
+    for detail in [
+        backend_present::Detail::Summary,
+        backend_present::Detail::Standard,
+        backend_present::Detail::Full,
+    ] {
+        let rendered = render::json_with_detail(&answer, detail);
+        let value: serde_json::Value = serde_json::from_str(&rendered).expect("public CLI JSON");
+        assert_eq!(value["answer"], "product");
+        assert_eq!(value["semantic_data"]["value"], packet["surface"]["data"]);
+        assert!(
+            value["records"][0]["history_status"]["proof"]
+                .get("images")
+                .is_none()
+        );
+        let shared = backend_present::encode_answer(
+            &answer,
+            detail,
+            None,
+            backend_present::DEFAULT_RESPONSE_BUDGET_BYTES,
+        )
+        .expect("shared CLI/MCP projection");
+        assert_eq!(rendered.as_bytes(), shared.bytes.as_ref());
+    }
+    assert_eq!(
+        render::markdown_text(&answer),
+        backend_present::bounded_text(&backend_present::markdown::answer(&answer))
+    );
+}
+
 #[cfg(any(unix, windows))]
 #[test]
 fn cli_keeps_bounded_graph_page_without_exporting_a_query_proof() {

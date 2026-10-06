@@ -515,6 +515,101 @@ fn semantic_shapes_actual_jsonrpc_preserves_full_view_in_summary_and_full() {
 }
 
 #[test]
+fn semantic_versions_jsonrpc_preserves_captured_semver_and_matches_the_cli_projection() {
+    let packet: Value = serde_json::from_str(include_str!(
+        "../../../../crates/present/fixtures/semantic-versions-semver-public.json"
+    ))
+    .expect("complete captured public source packet");
+    let reply: SurfaceReply = serde_json::from_value(packet["surface"].clone())
+        .expect("complete source DTO; no wire certificate is fabricated");
+    let answer = Answer::Product(Box::new(backend_present::product_view(&reply)));
+    let package = packet["surface"]["data"][0]["package"]["value"]
+        .as_str()
+        .expect("exact captured local package");
+    for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+        let mut server = ready(Fake {
+            surface_reply: Some(reply.clone()),
+            ..Fake::default()
+        });
+        let response = request(
+            &mut server,
+            "tools/call",
+            &json!({"name":"backend.semantic_versions","arguments":{"package":package,"detail":detail.name()}}),
+        );
+        assert_context_bounded(&response);
+        let result = &response["result"];
+        assert_eq!(result["isError"], false, "{response}");
+        assert_eq!(
+            result["structuredContent"]["semantic_data"]["value"],
+            packet["surface"]["data"]
+        );
+        assert!(
+            result["structuredContent"]["records"][0]["history_status"]["proof"]
+                .get("images")
+                .is_none()
+        );
+        // The CLI adapter regression compares its actual JSON bytes to this
+        // same production encoder and its Markdown to this shared renderer.
+        let cli_projection = backend_present::encode_answer(
+            &answer,
+            detail,
+            None,
+            backend_present::DEFAULT_RESPONSE_BUDGET_BYTES,
+        )
+        .expect("shared CLI/MCP product projection");
+        let cli_projection: Value =
+            serde_json::from_slice(&cli_projection.bytes).expect("CLI JSON");
+        assert_eq!(result["structuredContent"], cli_projection);
+        assert_eq!(
+            text_of(result),
+            backend_present::bounded_text(&backend_present::markdown::answer(&answer))
+        );
+        assert!(
+            matches!(&server.product.surface_commands[0], SurfaceCommand::SemanticVersions { package: observed } if observed.as_str() == package)
+        );
+    }
+}
+
+#[test]
+fn semantic_versions_jsonrpc_keeps_true_oversize_refusals_atomic() {
+    let packet: Value = serde_json::from_str(include_str!(
+        "../../../../crates/present/fixtures/semantic-versions-semver-public.json"
+    ))
+    .expect("complete captured public source packet");
+    let reply: SurfaceReply =
+        serde_json::from_value(packet["surface"].clone()).expect("complete public source DTO");
+    let SurfaceReply::SemanticVersions(records) = reply else {
+        panic!("captured semantic versions")
+    };
+    // Repeating an actual display operand exercises only egress budgeting. It
+    // does not assert that a compiler owner published duplicate generations.
+    for detail in ["summary", "standard", "full"] {
+        let mut server = ready(Fake {
+            surface_reply: Some(SurfaceReply::SemanticVersions(
+                vec![records[0].clone(), records[0].clone()].into_boxed_slice(),
+            )),
+            ..Fake::default()
+        });
+        let response = request(
+            &mut server,
+            "tools/call",
+            &json!({"name":"backend.semantic_versions","arguments":{"package":records[0].package.as_str(),"detail":detail}}),
+        );
+        assert_context_bounded(&response);
+        assert_eq!(response["result"]["isError"], true);
+        assert_eq!(
+            response["result"]["structuredContent"]["cause"],
+            "oversized"
+        );
+        assert!(
+            response["result"]["structuredContent"]
+                .get("semantic_data")
+                .is_none()
+        );
+    }
+}
+
+#[test]
 fn semantic_shapes_jsonrpc_refuses_oversized_view_without_dropping_required_facts() {
     // This is an untrusted egress fixture at the surface budget seam, not a
     // synthetic certificate-admitted compiler product or a corpus pass.
