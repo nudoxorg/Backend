@@ -1,0 +1,51 @@
+{
+  "schema": "nudox.native-python-record-call-regression.v1",
+  "native_regression_passed": true,
+  "public_project_acceptance": false,
+  "source_base": "4c04d0984c9853a8c1892ca52c3d68a406033423",
+  "source_changes": [
+    "c2ba7641124432871d9727ebf2e79e11fe6a5e38",
+    "4091a85f4e6f7d981b8bacd4deaa4e4c48caf971"
+  ],
+  "successful_receipt": {
+    "source_commit": "4091a85f4e6f7d981b8bacd4deaa4e4c48caf971",
+    "tree": "269216ee7158cb9f808837d735a36becc4372d09",
+    "cargo_lock_sha256": "3272e75a8996174bfb5693ae570ae5c204ef91c729032bd4e98348523489d715",
+    "started_at_utc": "2026-10-06T20:16:25.586795+00:00",
+    "supervisor_pid": 85914,
+    "managed_wrapper_pid": 85917,
+    "argv": [
+      "/Users/rmccrar6/codex-worktrees/sol61-python-authority-hardening-20261006/.local/python-hardening-managed/run",
+      "test",
+      "--locked",
+      "-p",
+      "backend-local-service",
+      "--lib",
+      "python_native_call_tests",
+      "-j4",
+      "--",
+      "--nocapture"
+    ],
+    "exclusive_lock": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/coordination/ts-native-primary-transferred-slot.lock",
+    "fleet_admission": "/private/tmp/python-record-call-4091-fleet-20261006T2017Z.json",
+    "cargo_jobs": 4,
+    "exit_code": 0,
+    "completed_at_utc": "2026-10-06T20:18:31.599791+00:00",
+    "source_clean_after": true
+  },
+  "tests": {
+    "passed": 2,
+    "failed": 0,
+    "ignored": 0,
+    "seconds": 1.4
+  },
+  "native_producer_proof": [
+    "LocalCompilerHost ExplicitOnly with empty PATH and no Python/Pyrefly settings",
+    "Actual three-file package captured from original source files and compiled to canonical semantic images",
+    "Foreign Record requests.models.Request Calls retained Confidence::Compiler",
+    "Compiler-observed Request token byte span after UTF-8 caf\u00e9 matched actual source bytes",
+    "Published unique Record class was joined; distinct __init__ Function identity retained",
+    "Absent target paths and unpublished class were not joined"
+  ],
+  "predecessor_attempt": "attempt01 failed Rust compilation with E0621/E0716; no tests ran and no pass is credited. Its unlocked Cargo invocation sorted two unchanged lockfile package blocks; that owned ordering mutation was restored before the source-clean --locked successor."
+}
