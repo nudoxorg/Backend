@@ -26,6 +26,7 @@ struct CachedObject {
     observed: Instant,
     observed_at_millis: u64,
     encoded_bytes: usize,
+    admitted_sequence: u64,
 }
 
 #[derive(Default)]
@@ -115,6 +116,7 @@ impl PreparedPackageMetadata {
                 observed: Instant::now(),
                 observed_at_millis: discovery_now(),
                 encoded_bytes: 0,
+                admitted_sequence: 0,
             })
         })();
         FetchedPackageMetadata {
@@ -261,6 +263,7 @@ impl DiscoveryGateway {
             Err(observation) => return PackageMetadataPreparation::Cached(Some(observation)),
         };
         if let Some(cached) = &request.cached
+            && cached.admitted_sequence == request.progress.sequence
             && cached.observed.elapsed() < DISCOVERY_REFRESH_INTERVAL
         {
             let observation = if cached
@@ -432,6 +435,7 @@ impl DiscoveryGateway {
             ));
         }
         self.store.mark_failed(source, false);
+        object.admitted_sequence = self.store.progress_token(source).sequence;
         if self.cancelled.load(Ordering::Acquire) {
             return Some(unavailable(
                 Some(source.id()),
@@ -974,5 +978,33 @@ mod tests {
         assert!(owner.store.facts().next().is_none());
         assert!(owner.package_metadata.objects.is_empty());
         assert_eq!(server.join().expect("server").len(), 1);
+    }
+
+    #[test]
+    fn package_metadata_cache_hit_requires_the_current_point_source_sequence() {
+        let (endpoint, server) = server(vec![("200 OK", REQUESTS), ("200 OK", REQUESTS)]);
+        let mut owner = gateway(endpoint);
+        let absent = PackageCoordinate::parse("pkg:pypi/requests@0.0.0").expect("absent version");
+        assert!(matches!(
+            owner.observe_package(&absent),
+            Some(RegistryPackageDiscoveryObservation::Missing { .. })
+        ));
+        assert!(matches!(
+            owner.prepare_package(&absent, [1; 16], 2),
+            PackageMetadataPreparation::Cached(Some(
+                RegistryPackageDiscoveryObservation::Missing { .. }
+            ))
+        ));
+        let present =
+            PackageCoordinate::parse("pkg:pypi/requests@2.34.2").expect("present version");
+        assert!(owner.observe_package(&present).is_none());
+        assert!(
+            matches!(
+                owner.prepare_package(&absent, [1; 16], 3),
+                PackageMetadataPreparation::Fetch(_)
+            ),
+            "an older negative cache entry cannot claim the newer selected source observation"
+        );
+        assert_eq!(server.join().expect("server").len(), 2);
     }
 }
