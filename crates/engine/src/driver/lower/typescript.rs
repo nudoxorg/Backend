@@ -80,6 +80,29 @@ fn lane_rejection() -> TypeScriptCollectError {
     TypeScriptCollectError::Lowering(LoweringUnsupported::NoSupportedDeclaration)
 }
 
+/// Grows one projection sidecar only as far as admitted facts currently need.
+/// The protocol maximum stays a hard ceiling, while small source files no
+/// longer reserve every maximum-sized metadata lane up front.
+fn grow_side_lane<T: Clone>(
+    lane: &mut Vec<T>,
+    required: usize,
+    maximum: usize,
+    fill: T,
+) -> Result<(), TypeScriptCollectError> {
+    if required <= lane.len() {
+        return Ok(());
+    }
+    if required > maximum {
+        return Err(lane_rejection());
+    }
+    let doubled = lane.len().max(8).saturating_mul(2);
+    let next_len = required.max(doubled).min(maximum);
+    lane.try_reserve(next_len - lane.len())
+        .map_err(|_| lane_rejection())?;
+    lane.resize(next_len, fill);
+    Ok(())
+}
+
 /// Maps one collector-internal lane rejection onto the coarse lane terminal.
 /// The declaration-lane path now retains the full [`FactFault`] through
 /// [`TypeScriptCollectError::Rejected`]; this fold remains only for the
@@ -435,15 +458,15 @@ struct Projector<'x, 'report, 'source> {
     source: &'source str,
     facts: &'x mut FactSet<'source>,
     /// Binding-name span start per pushed fact (`UNSET` when unregistered).
-    name_starts: Box<[u32]>,
-    name_ends: Box<[u32]>,
+    name_starts: Vec<u32>,
+    name_ends: Vec<u32>,
     /// Declaring-node span start per pushed fact.
-    decl_starts: Box<[u32]>,
-    decl_ends: Box<[u32]>,
-    fact_kinds: Box<[EntityKind]>,
+    decl_starts: Vec<u32>,
+    decl_ends: Vec<u32>,
+    fact_kinds: Vec<EntityKind>,
     /// One row per import-binding fact: the module and imported-name spans
     /// its foreign keys are built from.
-    import_modules: Box<[ImportModule]>,
+    import_modules: Vec<ImportModule>,
     import_module_len: usize,
     /// The span-bound checker report, when the authority ran.
     checker: Option<CheckerIndex<'report>>,
@@ -452,14 +475,14 @@ struct Projector<'x, 'report, 'source> {
     pending_type_parameters: u32,
     /// Pooled type-parameter start per pushed fact, retained so the checker
     /// pass can re-attach a completed extension with the computed cell.
-    extension_type_parameters: Box<[u32]>,
+    extension_type_parameters: Vec<u32>,
     /// Every object-literal member fact in push order. Lowering stages each
     /// member before its embodying fact exists, so claim sites bind staged
     /// suffixes to the embodiment they just pushed.
     staged_members: Vec<u32>,
     /// Claimed embodiment per member fact (`UNSET` when the span-containment
     /// parent stands). Indexed by fact ordinal.
-    member_parents: Box<[u32]>,
+    member_parents: Vec<u32>,
     /// Constructor parameter-property field facts whose declaration span sits
     /// inside the constructor function rather than the class body.
     parameter_properties: Vec<u32>,
@@ -469,8 +492,8 @@ struct Projector<'x, 'report, 'source> {
     /// Synthetic facts register no declaration span, but span containment still
     /// binds them to the innermost enclosing declaration: identical anonymous
     /// spellings under distinct owners must not share a parentless family.
-    synthetic_starts: Box<[u32]>,
-    synthetic_ends: Box<[u32]>,
+    synthetic_starts: Vec<u32>,
+    synthetic_ends: Vec<u32>,
     /// Registered fact ordinals per exact binding-name bytes. Declaration
     /// merge checks consult only same-name facts instead of rescanning the
     /// whole lane, keeping the reducer linear in duplicate density.
@@ -527,10 +550,71 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let pending = self.pending_type_parameters;
         let ordinal = push_fact(self.facts, fact).map_err(TypeScriptCollectError::Rejected)?;
         let ordinal = coordinate(ordinal)?;
-        if let Some(slot) = self.extension_type_parameters.get_mut(ordinal as usize) {
-            *slot = pending;
-        }
+        let index = usize::try_from(ordinal).map_err(|_| lane_rejection())?;
+        let required = index.checked_add(1).ok_or_else(lane_rejection)?;
+        self.ensure_fact_sidecars(required)?;
+        *self
+            .extension_type_parameters
+            .get_mut(index)
+            .ok_or_else(lane_rejection)? = pending;
         Ok(ordinal)
+    }
+
+    fn ensure_fact_sidecars(&mut self, required: usize) -> Result<(), TypeScriptCollectError> {
+        grow_side_lane(&mut self.name_starts, required, MAX_EMISSION_FACTS, UNSET)?;
+        grow_side_lane(&mut self.name_ends, required, MAX_EMISSION_FACTS, UNSET)?;
+        grow_side_lane(&mut self.decl_starts, required, MAX_EMISSION_FACTS, UNSET)?;
+        grow_side_lane(&mut self.decl_ends, required, MAX_EMISSION_FACTS, UNSET)?;
+        grow_side_lane(
+            &mut self.fact_kinds,
+            required,
+            MAX_EMISSION_FACTS,
+            EntityKind::Function,
+        )?;
+        grow_side_lane(
+            &mut self.extension_type_parameters,
+            required,
+            MAX_EMISSION_FACTS,
+            0,
+        )?;
+        grow_side_lane(
+            &mut self.member_parents,
+            required,
+            MAX_EMISSION_FACTS,
+            UNSET,
+        )?;
+        grow_side_lane(
+            &mut self.synthetic_starts,
+            required,
+            MAX_EMISSION_FACTS,
+            UNSET,
+        )?;
+        grow_side_lane(
+            &mut self.synthetic_ends,
+            required,
+            MAX_EMISSION_FACTS,
+            UNSET,
+        )?;
+        Ok(())
+    }
+
+    fn push_import_module(&mut self, module: ImportModule) -> Result<(), TypeScriptCollectError> {
+        let required = self
+            .import_module_len
+            .checked_add(1)
+            .ok_or_else(lane_rejection)?;
+        grow_side_lane(
+            &mut self.import_modules,
+            required,
+            MAX_EMISSION_FACTS,
+            ImportModule::unset(),
+        )?;
+        *self
+            .import_modules
+            .get_mut(self.import_module_len)
+            .ok_or_else(lane_rejection)? = module;
+        self.import_module_len = required;
+        Ok(())
     }
 
     /// Builds the TypeScript extension fact for the fact about to be pushed:
@@ -584,21 +668,11 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             },
         )?;
         self.facts.attach_source_span(fact, staged).map_err(fault)?;
-        if let Some(slot) = self.name_starts.get_mut(index) {
-            *slot = name.start;
-        }
-        if let Some(slot) = self.name_ends.get_mut(index) {
-            *slot = name.end;
-        }
-        if let Some(slot) = self.decl_starts.get_mut(index) {
-            *slot = declaration.start;
-        }
-        if let Some(slot) = self.decl_ends.get_mut(index) {
-            *slot = declaration.end;
-        }
-        if let Some(slot) = self.fact_kinds.get_mut(index) {
-            *slot = kind;
-        }
+        *self.name_starts.get_mut(index).ok_or_else(lane_rejection)? = name.start;
+        *self.name_ends.get_mut(index).ok_or_else(lane_rejection)? = name.end;
+        *self.decl_starts.get_mut(index).ok_or_else(lane_rejection)? = declaration.start;
+        *self.decl_ends.get_mut(index).ok_or_else(lane_rejection)? = declaration.end;
+        *self.fact_kinds.get_mut(index).ok_or_else(lane_rejection)? = kind;
         if let Some(bytes) = self.slice_span(name) {
             self.facts_by_name.entry(bytes).or_default().push(fact);
         }
@@ -1814,16 +1888,13 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             .with_extension(extension);
         let ordinal = self.push(fact)?;
         self.register(ordinal, declaration, local, EntityKind::Reexport)?;
-        if let Some(slot) = self.import_modules.get_mut(self.import_module_len) {
-            *slot = ImportModule {
-                fact: ordinal,
-                module_start: module.start,
-                module_end: module.end,
-                display_start: display.start,
-                display_end: display.end,
-            };
-            self.import_module_len += 1;
-        }
+        self.push_import_module(ImportModule {
+            fact: ordinal,
+            module_start: module.start,
+            module_end: module.end,
+            display_start: display.start,
+            display_end: display.end,
+        })?;
         let relative_start = local.start.checked_sub(declaration.start);
         let relative_end = local.end.checked_sub(declaration.start);
         if let (Some(relative_start), Some(relative_end)) = (relative_start, relative_end) {
@@ -3842,22 +3913,22 @@ pub(crate) fn collect_with_checker<'source, 'report>(
             },
             source,
             facts,
-            name_starts: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
-            name_ends: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
-            decl_starts: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
-            decl_ends: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
-            fact_kinds: vec![EntityKind::Function; MAX_EMISSION_FACTS].into_boxed_slice(),
-            import_modules: vec![ImportModule::unset(); MAX_EMISSION_FACTS].into_boxed_slice(),
+            name_starts: Vec::new(),
+            name_ends: Vec::new(),
+            decl_starts: Vec::new(),
+            decl_ends: Vec::new(),
+            fact_kinds: Vec::new(),
+            import_modules: Vec::new(),
             import_module_len: 0,
             checker: index,
             pending_type_parameters: 0,
-            extension_type_parameters: vec![0; MAX_EMISSION_FACTS].into_boxed_slice(),
+            extension_type_parameters: Vec::new(),
             staged_members: Vec::new(),
-            member_parents: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
+            member_parents: Vec::new(),
             parameter_properties: Vec::new(),
             setters: Vec::new(),
-            synthetic_starts: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
-            synthetic_ends: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
+            synthetic_starts: Vec::new(),
+            synthetic_ends: Vec::new(),
             facts_by_name: HashMap::new(),
             fact_at_name: HashMap::new(),
             binding_init_spans: HashMap::new(),
@@ -3929,23 +4000,22 @@ pub(crate) fn collect_with_tsz<'source>(
                     },
                     source,
                     facts,
-                    name_starts: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
-                    name_ends: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
-                    decl_starts: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
-                    decl_ends: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
-                    fact_kinds: vec![EntityKind::Function; MAX_EMISSION_FACTS].into_boxed_slice(),
-                    import_modules: vec![ImportModule::unset(); MAX_EMISSION_FACTS]
-                        .into_boxed_slice(),
+                    name_starts: Vec::new(),
+                    name_ends: Vec::new(),
+                    decl_starts: Vec::new(),
+                    decl_ends: Vec::new(),
+                    fact_kinds: Vec::new(),
+                    import_modules: Vec::new(),
                     import_module_len: 0,
                     checker: None,
                     pending_type_parameters: 0,
-                    extension_type_parameters: vec![0; MAX_EMISSION_FACTS].into_boxed_slice(),
+                    extension_type_parameters: Vec::new(),
                     staged_members: Vec::new(),
-                    member_parents: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
+                    member_parents: Vec::new(),
                     parameter_properties: Vec::new(),
                     setters: Vec::new(),
-                    synthetic_starts: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
-                    synthetic_ends: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
+                    synthetic_starts: Vec::new(),
+                    synthetic_ends: Vec::new(),
                     facts_by_name: HashMap::new(),
                     fact_at_name: HashMap::new(),
                     binding_init_spans: HashMap::new(),
@@ -9266,13 +9336,44 @@ fn checker_primitive(name: &str) -> Result<SemanticTypeRecord<'static>, TypeScri
 
 #[cfg(test)]
 mod projection_tests {
-    use super::{TypeScriptCollectError, foreign_fault, lineage_fault};
+    use super::{TypeScriptCollectError, foreign_fault, grow_side_lane, lineage_fault};
     use backend_frontend_typescript::legacy::Span;
     use backend_semantic::ir::{ForeignKeyFault, PackageLineageFault};
     use backend_semantic::vocabulary::{
         ProjectionForeignKeyFault, ProjectionLineagePart, ProjectionPackageLineageFault,
         TypeScriptProjectionFault,
     };
+
+    #[test]
+    fn projector_sidecars_grow_with_fact_demand_and_keep_the_protocol_ceiling() {
+        let mut lane = Vec::new();
+        grow_side_lane(&mut lane, 1, super::MAX_EMISSION_FACTS, u32::MAX)
+            .expect("first fact reserves a small sidecar prefix");
+        assert_eq!(lane.len(), 8);
+        assert_ne!(lane.len(), super::MAX_EMISSION_FACTS);
+
+        grow_side_lane(&mut lane, 9, super::MAX_EMISSION_FACTS, u32::MAX)
+            .expect("growing demand extends the lane geometrically");
+        assert_eq!(lane.len(), 16);
+
+        grow_side_lane(
+            &mut lane,
+            super::MAX_EMISSION_FACTS,
+            super::MAX_EMISSION_FACTS,
+            u32::MAX,
+        )
+        .expect("the exact protocol maximum remains admissible");
+        assert_eq!(lane.len(), super::MAX_EMISSION_FACTS);
+        assert!(matches!(
+            grow_side_lane(
+                &mut lane,
+                super::MAX_EMISSION_FACTS + 1,
+                super::MAX_EMISSION_FACTS,
+                u32::MAX,
+            ),
+            Err(TypeScriptCollectError::Lowering(_))
+        ));
+    }
 
     /// A cross-package key grammar failure must remain distinguishable from
     /// an unsupported declaration at the TypeScript compile boundary.
