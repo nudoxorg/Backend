@@ -1548,6 +1548,8 @@ dependencies = [
  "backend-advisory",
  "backend-client",
  "backend-library",
+ "backend-semantic",
+ "backend-version",
  "serde",
  "serde_json",
 ]
