@@ -1,0 +1,4 @@
+# The reported 16 GiB Linux host exhausted memory with four parallel jobs.
+# CARGO_BUILD_JOBS and the command-line --jobs/-j option override this default.
+[build]
+jobs = 2

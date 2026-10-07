@@ -2,6 +2,32 @@
 
 ## Purpose: bound concurrent compiler memory use.
 
+The repository defaults to two Cargo jobs in `.cargo/config.toml`. This applies
+to ordinary debug builds as well as release builds. `CARGO_BUILD_JOBS` or an
+explicit `--jobs`/`-j` overrides the default; choose that value from the host's
+available memory and other workloads. Two jobs are a conservative starting
+point, not a memory guarantee.
+
+Linux Build Failures 10 reports an OOM kill of `backend-engine` during a four-job
+debug build on a 16 GiB Parrot host with the GUI open. Immediately starting a
+two-job retry while the first build was still finishing then produced undefined
+hidden symbols from that crate's incremental objects. The reported recovery was
+to wait for the failed invocation to terminate, clean the affected crate, and
+retry with two jobs:
+
+```sh
+# After the killed build has fully exited, in the same checkout and target dir:
+cargo clean -p backend-engine
+cargo build --locked -j 2 -p backend-locald -p backend-cli -p backend-mcp -p backend-desktop
+```
+
+Use the affected crate name and preserve the original target-directory/profile
+options. A SIGKILL alone does not establish an OOM cause: inspect kernel or cgroup
+OOM evidence when available. Do not start a concurrent retry against the same
+mutable build graph. Cleaning the affected crate discards its generated build
+objects; source files and Nudox project state are retained. Whole-workspace
+cache deletion is unnecessary for the reported failure.
+
 ## Evidence: eight-job SIGKILL; two-job desktop build completed.
 
 On the reported Linux host with 15 GiB of RAM and no swap, an eight-job release build ended with a `rustc` SIGKILL. The report did not include kernel evidence, so the OOM diagnosis remains unconfirmed. On 2026-10-03, a release build of `76587b45c` plus the worker's `.parse::<u64>().ok()?` fix completed with two Cargo jobs in 18m 27s. The follow-up report at `6cf083681` still failed with two jobs because of source errors. The historical success does not validate the current source or guarantee that two jobs fit every release build.
