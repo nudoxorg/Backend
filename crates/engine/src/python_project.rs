@@ -37,9 +37,14 @@ pub fn extract_python_project(
             documents.insert(path, bytes);
         }
     }
-    if let Some(bytes) = documents.get("pyproject.toml") {
-        let root: toml::Value = toml::from_str(text(bytes)?)
-            .map_err(|error| format!("parse pyproject.toml: {error}"))?;
+    let pyproject = documents
+        .get("pyproject.toml")
+        .map(|bytes| {
+            toml::from_str::<toml::Value>(text(bytes)?)
+                .map_err(|error| format!("parse pyproject.toml: {error}"))
+        })
+        .transpose()?;
+    if let (Some(bytes), Some(root)) = (documents.get("pyproject.toml"), pyproject.as_ref()) {
         if let Some(project) = root.get("project") {
             let project = project
                 .as_table()
@@ -78,14 +83,7 @@ pub fn extract_python_project(
                     )?;
                 }
             }
-            if let Some(build_system) = root.get("build-system") {
-                let build_system = build_system
-                    .as_table()
-                    .ok_or("pyproject.toml build-system is not a table")?;
-                if let Some(requires) = build_system.get("requires") {
-                    toml_requirements(requires, DependencyScope::Build, None, &mut declarations)?;
-                }
-            }
+            declarations.extend(pyproject_build_requirements(root)?);
             metadata.dependencies = recorded(declarations, &evidence);
             if let Some(dynamic) = project.get("dynamic") {
                 let dynamic = dynamic
@@ -147,6 +145,13 @@ pub fn extract_python_project(
             return Ok(Some(metadata));
         }
     }
+    let supplementary_build = match (documents.get("pyproject.toml"), pyproject.as_ref()) {
+        (Some(bytes), Some(root)) if root.get("build-system").is_some() => Some((
+            evidence("pyproject.toml", bytes),
+            pyproject_build_requirements(root)?,
+        )),
+        _ => None,
+    };
     if let Some(bytes) = documents.get("setup.cfg") {
         let options = ini_options(text(bytes)?)?;
         if options.keys().any(|(section, _)| {
@@ -284,6 +289,7 @@ pub fn extract_python_project(
                     }
                 }
             }
+            append_build_observations(&mut metadata, supplementary_build.as_ref());
             metadata.admit().map_err(|error| error.to_string())?;
             return Ok(Some(metadata));
         }
@@ -348,10 +354,66 @@ pub fn extract_python_project(
             }
             PackagingSyntax::Literal { setup: None, .. } => {}
         }
+        append_build_observations(&mut metadata, supplementary_build.as_ref());
         metadata.admit().map_err(|error| error.to_string())?;
         return Ok(Some(metadata));
     }
     Ok(None)
+}
+
+fn pyproject_build_requirements(
+    root: &toml::Value,
+) -> Result<Vec<PythonDependencyDeclaration>, String> {
+    let mut declarations = Vec::new();
+    if let Some(build_system) = root.get("build-system") {
+        let build_system = build_system
+            .as_table()
+            .ok_or("pyproject.toml build-system is not a table")?;
+        if let Some(requires) = build_system.get("requires") {
+            toml_requirements(requires, DependencyScope::Build, None, &mut declarations)?;
+        }
+    }
+    Ok(declarations)
+}
+
+fn append_build_observations(
+    metadata: &mut PythonProjectMetadata,
+    supplementary: Option<&(PythonMetadataEvidence, Vec<PythonDependencyDeclaration>)>,
+) {
+    let Some((source, declarations)) = supplementary else {
+        return;
+    };
+    metadata.evidence.push(source.clone());
+    match &mut metadata.dependencies {
+        PythonMetadataFact::Recorded { value, evidence }
+        | PythonMetadataFact::Partial {
+            value, evidence, ..
+        } => {
+            value.extend(declarations.iter().cloned());
+            evidence.push(source.clone());
+        }
+        PythonMetadataFact::Dynamic { reason, evidence } if !declarations.is_empty() => {
+            let mut combined = evidence.clone();
+            combined.push(source.clone());
+            metadata.dependencies = PythonMetadataFact::Partial {
+                value: declarations.clone(),
+                reason: reason.clone(),
+                evidence: combined,
+            };
+        }
+        PythonMetadataFact::Omitted { evidence } if !declarations.is_empty() => {
+            let mut combined = evidence.clone();
+            combined.push(source.clone());
+            metadata.dependencies = PythonMetadataFact::Partial {
+                value: declarations.clone(),
+                reason: "runtime declarations are omitted while pyproject.toml declares build dependencies".to_owned(),
+                evidence: combined,
+            };
+        }
+        PythonMetadataFact::Dynamic { evidence, .. } | PythonMetadataFact::Omitted { evidence } => {
+            evidence.push(source.clone());
+        }
+    }
 }
 
 fn mark_dynamic_metadata(
@@ -532,6 +594,7 @@ type IniOptions = BTreeMap<(String, String), String>;
 
 fn ini_options(input: &str) -> Result<IniOptions, String> {
     let mut options: IniOptions = BTreeMap::new();
+    let mut sections = std::collections::BTreeSet::new();
     let mut section = String::new();
     let mut pending: Option<(String, String)> = None;
     for line in input.lines() {
@@ -544,7 +607,12 @@ fn ini_options(input: &str) -> Result<IniOptions, String> {
             if value.is_empty() || value.contains(['[', ']']) {
                 return Err("invalid setup.cfg section".to_owned());
             }
-            section = value.to_ascii_lowercase();
+            if !sections.insert(value.to_owned()) {
+                return Err("duplicate setup.cfg section".to_owned());
+            }
+            // ConfigParser sections are case sensitive; only the recognized
+            // setuptools spellings select metadata/options semantics.
+            section = value.to_owned();
             pending = None;
             continue;
         }
@@ -572,7 +640,12 @@ fn ini_options(input: &str) -> Result<IniOptions, String> {
         if key.is_empty() || key.chars().any(char::is_whitespace) {
             return Err("invalid setup.cfg key".to_owned());
         }
-        let key = (section.clone(), key.replace('-', "_").to_ascii_lowercase());
+        let option = if section == "options.extras_require" {
+            key.to_owned()
+        } else {
+            key.replace('-', "_").to_ascii_lowercase()
+        };
+        let key = (section.clone(), option);
         if options
             .insert(key.clone(), value.trim().to_owned())
             .is_some()
@@ -910,6 +983,93 @@ mod tests {
             .find(|row| row.target.requirement.as_str() == "requests[socks] >=2.22.0")
             .ok_or("missing exact HTTPie declaration")?;
         assert_eq!(requests.target.name.as_str(), "requests");
+        Ok(())
+    }
+
+    #[test]
+    fn supporting_pyproject_build_rows_and_evidence_survive_cfg_setup_selection()
+    -> Result<(), &'static str> {
+        let pyproject = b"[build-system]\nrequires=['wheel>=1']\n";
+        for (path, bytes) in [
+            ("setup.cfg", b"[metadata]\nname=sample\nversion=1\n[options]\ninstall_requires=requests\n".as_slice()),
+            ("setup.py", b"from setuptools import setup\nsetup(name='sample', version='1', install_requires=['requests'])\n".as_slice()),
+        ] {
+            let metadata = extract(&[("pyproject.toml", pyproject), (path, bytes)])
+                .map_err(|_| "static supporting build document must extract")?
+                .ok_or("selected cfg/setup metadata")?;
+            assert_eq!(metadata.manifest_path, path);
+            let PythonMetadataFact::Recorded { value, evidence } = &metadata.dependencies else {
+                return Err("complete literal collections must remain recorded");
+            };
+            assert_eq!(value.len(), 2);
+            assert!(value.iter().any(|row| row.scope == DependencyScope::Runtime && row.requirement == "requests"));
+            assert!(value.iter().any(|row| row.scope == DependencyScope::Build && row.requirement == "wheel>=1"));
+            let witness = metadata.evidence.iter().find(|row| row.path == "pyproject.toml")
+                .ok_or("supporting document byte evidence")?;
+            assert_eq!(witness.digest, *blake3::hash(pyproject).as_bytes());
+            assert_eq!(witness.bytes, pyproject.len() as u64);
+            assert!(evidence.contains(witness));
+            let changed = extract(&[("pyproject.toml", b"[build-system]\nrequires=['wheel>=2']\n"), (path, bytes)])
+                .map_err(|_| "changed supporting document")?
+                .ok_or("changed selected metadata")?;
+            assert_ne!(metadata.digest(), changed.digest());
+        }
+        for (path, bytes) in [
+            (
+                "setup.cfg",
+                b"[metadata]\nname=sample\nversion=1\n".as_slice(),
+            ),
+            (
+                "setup.py",
+                b"import os\nfrom setuptools import setup\nsetup(name=os.getenv('NAME'))\n"
+                    .as_slice(),
+            ),
+        ] {
+            let metadata = extract(&[("pyproject.toml", pyproject), (path, bytes)])
+                .map_err(|_| "incomplete collection must retain supporting declarations")?
+                .ok_or("incomplete metadata")?;
+            let PythonMetadataFact::Partial { value, .. } = &metadata.dependencies else {
+                return Err("supporting build rows cannot establish runtime completeness");
+            };
+            assert_eq!(value.len(), 1);
+            assert_eq!(value[0].scope, DependencyScope::Build);
+        }
+        assert!(
+            extract(&[
+                ("pyproject.toml", b"[build-system]\nrequires=42\n"),
+                ("setup.cfg", b"[metadata]\nname=sample\nversion=1\n")
+            ])
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cfg_rejects_duplicate_sections_and_preserves_section_and_extra_spelling()
+    -> Result<(), &'static str> {
+        for cfg in [
+            "[metadata]\nname=sample\n[metadata]\nversion=1\n",
+            "[options]\ninstall_requires=requests\n[options]\npython_requires=>=3\n",
+            "[unrecognized]\na=1\n[unrecognized]\nb=2\n",
+        ] {
+            let error = extract(&[("setup.cfg", cfg.as_bytes())])
+                .err()
+                .ok_or("duplicate section must fail")?;
+            assert!(error.contains("duplicate setup.cfg section"));
+        }
+        let cfg = b"[metadata]\nname=sample\nversion=1\n[Metadata]\nversion=99\n[options]\ninstall_requires=requests\n[options.extras_require]\nDocs_Test=pytest\n";
+        let metadata = extract(&[("setup.cfg", cfg)])
+            .map_err(|_| "distinct case-sensitive sections")?
+            .ok_or("metadata")?;
+        assert_eq!(metadata.version.recorded().map(String::as_str), Some("1"));
+        let rows = metadata
+            .dependencies
+            .recorded()
+            .ok_or("static dependencies")?;
+        assert!(
+            rows.iter()
+                .any(|row| row.group.as_deref() == Some("Docs_Test"))
+        );
         Ok(())
     }
 

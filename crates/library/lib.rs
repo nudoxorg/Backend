@@ -42,7 +42,8 @@ mod package_graph_page;
 mod progress;
 mod python_project;
 pub use python_project::{
-    PythonDependencyDeclaration, PythonMetadataEvidence, PythonMetadataFact, PythonProjectMetadata,
+    PYTHON_PROJECT_EXTRACTION_POLICY, PythonDependencyDeclaration, PythonMetadataEvidence,
+    PythonMetadataFact, PythonProjectMetadata,
 };
 /// Bounded transport decoding and presentation for thin CLI and MCP consumers.
 pub mod protocol;

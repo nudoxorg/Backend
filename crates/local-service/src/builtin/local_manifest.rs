@@ -670,8 +670,15 @@ fn python_metadata_read(project_root: &Path) -> PythonMetadataRead {
         return cached;
     }
     let mut inputs = blake3::Hasher::new();
-    inputs.update(b"nudox.local-python.inputs.v1\0");
+    inputs.update(b"nudox.local-python.inputs.v2\0");
+    let policy = backend_library::PYTHON_PROJECT_EXTRACTION_POLICY;
+    inputs.update(&(policy.len() as u64).to_le_bytes());
+    inputs.update(policy);
     let outcome = read_python_metadata_uncached(project_root, &mut inputs);
+    if let Ok(Some(metadata)) = &outcome {
+        inputs.update(b"selected-metadata\0");
+        inputs.update(&metadata.digest());
+    }
     if let Err(error) = &outcome {
         inputs.update(b"rejected\0");
         inputs.update(error.as_bytes());

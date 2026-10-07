@@ -449,6 +449,50 @@ mod tests {
     }
 
     #[test]
+    fn supporting_python_build_source_invalidates_resident_dependency_facts()
+    -> Result<(), &'static str> {
+        let root = fixture("python-supporting-build");
+        write(
+            &root.join("setup.cfg"),
+            "[metadata]\nname=sample\nversion=1\n[options]\ninstall_requires=requests\n",
+        );
+        write(
+            &root.join("pyproject.toml"),
+            "[build-system]\nrequires=['wheel>=1']\n",
+        );
+        let mut residence = LocalManifestResidence::default();
+        residence
+            .refresh([root.as_path()])
+            .map_err(|_| "first source parse")?;
+        let first_witness = residence.witness();
+        residence
+            .refresh([root.as_path()])
+            .map_err(|_| "unchanged source refresh")?;
+        assert_eq!(residence.parses(), 1);
+        write(
+            &root.join("pyproject.toml"),
+            "[build-system]\nrequires=['wheel>=2']\n",
+        );
+        residence
+            .refresh([root.as_path()])
+            .map_err(|_| "changed supporting source")?;
+        assert_eq!(residence.parses(), 2);
+        assert_ne!(first_witness, residence.witness());
+        let fact = residence.facts().next().ok_or("resident fact")?;
+        let backend_library::DependencyFacts::Known(rows) = &fact.1 else {
+            return Err("literal runtime and supporting build declarations must parse");
+        };
+        assert_eq!(rows.len(), 2);
+        assert!(
+            rows.iter()
+                .any(|row| row.scope == backend_library::DependencyScope::Build
+                    && row.target.requirement.as_str() == "wheel>=2")
+        );
+        fs::remove_dir_all(root).map_err(|_| "remove fixture")?;
+        Ok(())
+    }
+
+    #[test]
     fn python_attribute_source_change_invalidates_cached_dependency_identity() {
         let root = fixture("python-attr");
         write(

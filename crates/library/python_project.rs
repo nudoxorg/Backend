@@ -3,6 +3,10 @@
 use crate::DependencyScope;
 use serde::{Deserialize, Serialize};
 
+/// Static extraction semantics bound into metadata and local input identities.
+/// Changes to manifest selection or interpretation require a new policy ID.
+pub const PYTHON_PROJECT_EXTRACTION_POLICY: &[u8] = b"nudox.python-project.static.v2";
+
 /// Content evidence for a static packaging observation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -187,11 +191,19 @@ impl PythonProjectMetadata {
         Ok(())
     }
 
-    /// Identity of the exact documents consumed by static extraction.
+    /// Identity of selection, extraction policy and exact consumed documents.
     #[must_use]
     pub fn digest(&self) -> [u8; 32] {
+        self.digest_with_policy(PYTHON_PROJECT_EXTRACTION_POLICY)
+    }
+
+    fn digest_with_policy(&self, policy: &[u8]) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"nudox.python-project.metadata.v1\0");
+        hasher.update(b"nudox.python-project.metadata.v2\0");
+        hasher.update(&(policy.len() as u64).to_le_bytes());
+        hasher.update(policy);
+        hasher.update(&(self.manifest_path.len() as u64).to_le_bytes());
+        hasher.update(self.manifest_path.as_bytes());
         for evidence in &self.evidence {
             hasher.update(&(evidence.path.len() as u64).to_le_bytes());
             hasher.update(evidence.path.as_bytes());
@@ -270,6 +282,31 @@ mod tests {
                 evidence: vec![evidence],
             },
         }
+    }
+
+    #[test]
+    fn metadata_identity_binds_manifest_selection_and_extraction_policy() {
+        let mut cfg = metadata();
+        cfg.evidence.push(PythonMetadataEvidence {
+            path: "setup.py".to_owned(),
+            digest: [8; 32],
+            bytes: 43,
+        });
+        let mut setup = cfg.clone();
+        setup.manifest_path = "setup.py".to_owned();
+        cfg.admit().expect("cfg selection admitted");
+        setup
+            .admit()
+            .expect("setup selection admitted with identical byte evidence");
+        assert_ne!(cfg.digest(), setup.digest());
+        assert_ne!(
+            cfg.digest(),
+            cfg.digest_with_policy(b"nudox.python-project.static.v1")
+        );
+        assert_eq!(
+            cfg.digest(),
+            cfg.digest_with_policy(PYTHON_PROJECT_EXTRACTION_POLICY)
+        );
     }
 
     #[test]
