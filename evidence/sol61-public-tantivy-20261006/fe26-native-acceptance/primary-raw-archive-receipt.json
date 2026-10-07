@@ -1,0 +1,23 @@
+{
+  "schema": "nudox.actual-public-raw-archive.v1",
+  "source": "fe26d8326ad07911a3d3e2cb9e548dbbc05c559d",
+  "phases": [
+    "initial",
+    "retry",
+    "unicode",
+    "unicode-cold-1",
+    "unicode-cold-2"
+  ],
+  "archive": {
+    "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-fe26-primary-public-raw.zip",
+    "bytes": 179053739,
+    "sha256": "cfc91c4561f24de36ca35c78f639e33813011a233259a5306c8c821f7e506cce"
+  },
+  "inventory": {
+    "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-fe26-primary-public-raw-inventory.json",
+    "files": 31531,
+    "bytes": 4858358,
+    "sha256": "11abb1efbfba449d898b336638776487bfa5a77c6addccdcf90804051f4578cf"
+  },
+  "elapsed_seconds": 12.71668815612793
+}

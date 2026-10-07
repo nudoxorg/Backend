@@ -1,0 +1,36 @@
+{
+  "schema": "nudox.actual-public-phase-summary.v1",
+  "phase": "retry",
+  "source": {
+    "commit": "fe26d8326ad07911a3d3e2cb9e548dbbc05c559d",
+    "tree": "428ad1f552295ce4b63787a2956b4283b1b4ea3b",
+    "clean": true
+  },
+  "pass": true,
+  "error": null,
+  "owner_pid": 30323,
+  "eligible_inputs": 23,
+  "elapsed_seconds": 10.694169998168945,
+  "receipt": {
+    "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/retry/receipt.json",
+    "bytes": 20344,
+    "sha256": "bdadd5e59b4895ccf92d06b196e7b31746c3ebd7768bae5a1f4405d4de7438b6"
+  },
+  "wire": {
+    "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/retry/wire.jsonl",
+    "bytes": 445597,
+    "sha256": "710c21d14d3e41e7aff84d594642b3657ad25907952b28caee24276355f75442"
+  },
+  "old_token_new_owner_replays": [],
+  "contract_negatives": 0,
+  "stale_root_refusals": 0,
+  "surface_checks": 0,
+  "issued_token_sets": [
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/retry-late.json",
+      "sha256": "4cc62a301380d8e3d0c3d8f6acfdca75885c44241f046a900e3a20b91cba03bb",
+      "cases": 8,
+      "issued_at_unix": 1791332624.932283
+    }
+  ]
+}

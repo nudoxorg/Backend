@@ -1,0 +1,72 @@
+{
+  "schema": "nudox.actual-public-phase-summary.v1",
+  "phase": "removed-verify",
+  "source": {
+    "commit": "fe26d8326ad07911a3d3e2cb9e548dbbc05c559d",
+    "tree": "428ad1f552295ce4b63787a2956b4283b1b4ea3b",
+    "clean": true
+  },
+  "pass": true,
+  "error": null,
+  "owner_pid": 25665,
+  "eligible_inputs": 23,
+  "elapsed_seconds": 2.091783046722412,
+  "receipt": {
+    "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/removed-verify/receipt.json",
+    "bytes": 11385,
+    "sha256": "ef49a82f9e5db4111febec5a88b4f2059d6de2a921e8e4d511eaef26e560546d"
+  },
+  "wire": {
+    "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/removed-verify/wire.jsonl",
+    "bytes": 51608,
+    "sha256": "987456612a2922cedb9841655dab3f85d0578e2b5b1e13ad3f6278b8e2eb8bff"
+  },
+  "old_token_new_owner_replays": [],
+  "contract_negatives": 0,
+  "stale_root_refusals": 8,
+  "surface_checks": 0,
+  "issued_token_sets": [],
+  "retained_mcp_token_expiry_observations": [
+    {
+      "route": "resolve",
+      "query": "cached",
+      "issued_at_unix": 1791334625.636179,
+      "request_at_unix": 1791334782.850785,
+      "expires_at_unix": 1791335525,
+      "before_expiry": true,
+      "age_seconds": 157.21460604667664
+    },
+    {
+      "route": "resolve",
+      "query": "__getitem__",
+      "issued_at_unix": 1791334625.636179,
+      "request_at_unix": 1791334782.916435,
+      "expires_at_unix": 1791335525,
+      "before_expiry": true,
+      "age_seconds": 157.28025603294373
+    },
+    {
+      "route": "search",
+      "query": "cached",
+      "issued_at_unix": 1791334625.636179,
+      "request_at_unix": 1791334782.972041,
+      "expires_at_unix": 1791335526,
+      "before_expiry": true,
+      "age_seconds": 157.33586192131042
+    },
+    {
+      "route": "search",
+      "query": "__getitem__",
+      "issued_at_unix": 1791334625.636179,
+      "request_at_unix": 1791334783.035862,
+      "expires_at_unix": 1791335526,
+      "before_expiry": true,
+      "age_seconds": 157.39968299865723
+    }
+  ],
+  "token_file": {
+    "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/unicode-retry-late.json",
+    "bytes": 366656,
+    "sha256": "3444667f61247d4b5a913123e8293354336fdba63fc3f3783e6800be66dbbc92"
+  }
+}

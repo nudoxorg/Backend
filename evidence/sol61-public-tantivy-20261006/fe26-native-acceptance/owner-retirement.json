@@ -1,0 +1,195 @@
+{
+  "source": "fe26d8326ad07911a3d3e2cb9e548dbbc05c559d",
+  "sampled_at_unix": 1791336958.350956,
+  "retirements": [
+    {
+      "phase": "initial",
+      "owners": [
+        8568
+      ],
+      "retired": [
+        {
+          "pid": 8650,
+          "exit": -15
+        },
+        {
+          "pid": 8568,
+          "exit": -15
+        }
+      ]
+    },
+    {
+      "phase": "readded",
+      "owners": [
+        30968
+      ],
+      "retired": [
+        {
+          "pid": 31465,
+          "exit": -15
+        },
+        {
+          "pid": 30968,
+          "exit": -15
+        }
+      ]
+    },
+    {
+      "phase": "readded-cold",
+      "owners": [
+        73360
+      ],
+      "retired": [
+        {
+          "pid": 73393,
+          "exit": -15
+        },
+        {
+          "pid": 73360,
+          "exit": -15
+        }
+      ]
+    },
+    {
+      "phase": "removed",
+      "owners": [
+        18635
+      ],
+      "retired": [
+        {
+          "pid": 18635,
+          "exit": -15
+        }
+      ]
+    },
+    {
+      "phase": "removed-verify",
+      "owners": [
+        25665
+      ],
+      "retired": [
+        {
+          "pid": 25801,
+          "exit": -15
+        },
+        {
+          "pid": 25665,
+          "exit": -15
+        }
+      ]
+    },
+    {
+      "phase": "restored",
+      "owners": [
+        74483
+      ],
+      "retired": [
+        {
+          "pid": 74587,
+          "exit": -15
+        },
+        {
+          "pid": 74483,
+          "exit": -15
+        }
+      ]
+    },
+    {
+      "phase": "restored-cold",
+      "owners": [
+        90824
+      ],
+      "retired": [
+        {
+          "pid": 90914,
+          "exit": -15
+        },
+        {
+          "pid": 90824,
+          "exit": -15
+        }
+      ]
+    },
+    {
+      "phase": "retry",
+      "owners": [
+        30323
+      ],
+      "retired": [
+        {
+          "pid": 30603,
+          "exit": -15
+        },
+        {
+          "pid": 30323,
+          "exit": -15
+        }
+      ]
+    },
+    {
+      "phase": "unicode",
+      "owners": [
+        33766
+      ],
+      "retired": [
+        {
+          "pid": 33992,
+          "exit": -15
+        },
+        {
+          "pid": 33766,
+          "exit": -15
+        }
+      ]
+    },
+    {
+      "phase": "unicode-cold-1",
+      "owners": [
+        49275
+      ],
+      "retired": [
+        {
+          "pid": 49308,
+          "exit": -15
+        },
+        {
+          "pid": 49275,
+          "exit": -15
+        }
+      ]
+    },
+    {
+      "phase": "unicode-cold-2",
+      "owners": [
+        91178
+      ],
+      "retired": [
+        {
+          "pid": 91248,
+          "exit": -15
+        },
+        {
+          "pid": 91178,
+          "exit": -15
+        }
+      ]
+    },
+    {
+      "phase": "unicode-retry",
+      "owners": [
+        1194
+      ],
+      "retired": [
+        {
+          "pid": 1289,
+          "exit": -15
+        },
+        {
+          "pid": 1194,
+          "exit": -15
+        }
+      ]
+    }
+  ],
+  "owned_runtime_rows": []
+}
