@@ -216,7 +216,7 @@ mod tests {
                 expected: 7,
                 observed: 8
             })
-        ));
+        ), "wrong-final-id returned: {result:?}");
         let (result, _) = exchange("bad-final", Duration::from_millis(60));
         assert!(matches!(result, Err(ClientError::Protocol(_))));
     }
@@ -265,7 +265,9 @@ mod tests {
                     .expect("grammar")
                     .is_none()
             );
-            let ack = DeferredCommandAck::admitted(&original, [7; 32], Duration::from_secs(1))
+            let wrapped = wrap_deferred_command(&original, backend_library::DTO_VERSION)
+                .expect("well-formed untrusted opt-in claim");
+            let ack = DeferredCommandAck::admitted(&wrapped, [7; 32], Duration::from_secs(1))
                 .expect("claim")
                 .encode(backend_library::DTO_VERSION);
             write_body(&mut peer, &ack).expect("untrusted ACK");
@@ -273,10 +275,9 @@ mod tests {
         raw.set_read_timeout(Some(Duration::from_millis(60)))
             .expect("initial lease");
         let mut transport = UnixCommandTransport::from_stream(raw);
-        assert!(matches!(
-            transport.request(request()),
-            Err(ClientError::Protocol(_))
-        ));
+        let unverified = transport.request(request());
+        assert!(matches!(unverified, Err(ClientError::Protocol(_))),
+            "unverified stream returned: {unverified:?}");
         worker.join().expect("retire peer");
 
         let (mut raw, mut peer) = backend_replication::LocalStream::pair().expect("trickle pair");
