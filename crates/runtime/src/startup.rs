@@ -32,6 +32,9 @@ impl fmt::Display for StartupDiagnostic {
 
 pub(crate) struct StartupAttempt {
     path: PathBuf,
+    directory: backend_platform::DirectoryCapability,
+    name: String,
+    file: File,
 }
 
 impl StartupAttempt {
@@ -46,8 +49,29 @@ impl StartupAttempt {
             nonce,
             ATTEMPT.fetch_add(1, Ordering::Relaxed),
         ));
-        backend_platform::durable::write_private_atomic(&path, MAGIC.as_bytes())?;
-        Ok(Self { path })
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "startup failure channel needs a Unicode file name",
+                )
+            })?
+            .to_owned();
+        let directory = backend_platform::DirectoryCapability::open(workspace)?;
+        directory.validate_private()?;
+        let file = directory.create_file_exclusive(&name)?;
+        let mut attempt = Self {
+            path,
+            directory,
+            name,
+            file,
+        };
+        attempt.file.write_all(MAGIC.as_bytes())?;
+        attempt.file.sync_all()?;
+        attempt.directory.sync_all()?;
+        Ok(attempt)
     }
 
     pub(crate) fn configure(&self, command: &mut Command) {
@@ -55,7 +79,15 @@ impl StartupAttempt {
     }
 
     pub(crate) fn failure(&self) -> Option<StartupDiagnostic> {
-        let mut file = open_channel_file(&self.path).ok()?;
+        let mut file = self
+            .directory
+            .open_private_file_read_write(&self.name, false)
+            .ok()?;
+        if backend_platform::FileIdentity::of_file(&file).ok()?
+            != backend_platform::FileIdentity::of_file(&self.file).ok()?
+        {
+            return None;
+        }
         let bytes = read_locked(&mut file).ok()?;
         terminal_cause(&bytes)
             .ok()?
@@ -66,7 +98,27 @@ impl StartupAttempt {
 
 impl Drop for StartupAttempt {
     fn drop(&mut self) {
-        let _ = backend_platform::durable::remove_private(&self.path);
+        if self.file.lock().is_err() {
+            return;
+        }
+
+        let cleanup = (|| {
+            let original = backend_platform::FileIdentity::of_file(&self.file)?;
+            let named = self
+                .directory
+                .open_private_file_read_write(&self.name, false)?;
+            if backend_platform::FileIdentity::of_file(&named)? != original {
+                return Ok(());
+            }
+
+            // The parent capability was admitted as a private owner-only directory.
+            // Removal is still name-based: Unix has no unlink-by-open-file operation,
+            // so this identity check and unlink rely on that private-parent namespace
+            // boundary and do not claim atomic protection from a same-user rename.
+            self.directory.remove_file(&self.name)
+        })();
+        let _ = self.file.unlock();
+        let _ = cleanup;
     }
 }
 
@@ -133,12 +185,15 @@ fn open_channel_file(path: &Path) -> io::Result<File> {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    let name = path.file_name().and_then(|name| name.to_str()).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "startup failure channel needs a Unicode file name",
-        )
-    })?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "startup failure channel needs a Unicode file name",
+            )
+        })?;
     let directory = backend_platform::DirectoryCapability::open(parent)?;
     directory.validate_private()?;
     directory.open_private_file_read_write(name, false)
@@ -203,7 +258,10 @@ fn terminal_cause(record: &[u8]) -> io::Result<Option<String>> {
         )
     };
     let terminal = record.strip_prefix(MAGIC.as_bytes()).ok_or_else(invalid)?;
-    let header_end = terminal.iter().position(|byte| *byte == b'\n').ok_or_else(invalid)?;
+    let header_end = terminal
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .ok_or_else(invalid)?;
     let header = std::str::from_utf8(&terminal[..header_end]).map_err(|_| invalid())?;
     let declared_len = header.strip_prefix(TERMINAL_PREFIX).ok_or_else(invalid)?;
     if declared_len.is_empty()
@@ -336,29 +394,41 @@ mod tests {
         let replacement = b"replacement remains byte-for-byte unchanged";
         backend_platform::durable::write_private_atomic(&path, replacement)
             .expect("replace the path after the reporter opened its file");
-        let replacement_identity = FileIdentity::of_path_nofollow(&path)
-            .expect("replacement identity");
+        let replacement_identity =
+            FileIdentity::of_path_nofollow(&path).expect("replacement identity");
 
         reporter
             .report(&"original owner cause")
             .expect("write only through the original descriptor");
 
+        drop(attempt);
         assert_eq!(
             FileIdentity::of_path_nofollow(&path).expect("replacement remains named"),
-            replacement_identity
+            replacement_identity,
+            "attempt cleanup must preserve a different named identity"
         );
-        assert_eq!(std::fs::read(&path).expect("read replacement"), replacement);
-        drop(attempt);
+        assert_eq!(
+            std::fs::read(&path).expect("read replacement after cleanup"),
+            replacement
+        );
         std::fs::remove_dir_all(root).expect("remove workspace");
     }
 
     #[test]
     fn incomplete_terminal_record_is_never_reported_as_a_cause() {
         let root = workspace();
-        let attempt = StartupAttempt::prepare(&root).expect("attempt");
+        let mut attempt = StartupAttempt::prepare(&root).expect("attempt");
         let incomplete = format!("{MAGIC}{TERMINAL_PREFIX}30\npartial");
-        backend_platform::durable::write_private_atomic(&attempt.path, incomplete.as_bytes())
+        attempt.file.set_len(0).expect("truncate pending frame");
+        attempt
+            .file
+            .seek(SeekFrom::Start(0))
+            .expect("rewind pending frame");
+        attempt
+            .file
+            .write_all(incomplete.as_bytes())
             .expect("write deliberately incomplete terminal frame");
+        attempt.file.sync_all().expect("flush incomplete frame");
 
         assert!(attempt.failure().is_none());
         let noncanonical = format!("{MAGIC}{TERMINAL_PREFIX}01\nx{TERMINAL_FOOTER}");
@@ -374,23 +444,25 @@ mod tests {
         let path = attempt.path.clone();
         let first = StartupFailureReporter::open(path.clone()).expect("first reporter");
         let second = StartupFailureReporter::open(path).expect("second reporter");
-        let mut reader = open_channel_file(&attempt.path).expect("reader descriptor");
+        let reader = open_channel_file(&attempt.path).expect("reader descriptor");
 
-        first.file.lock().expect("hold the reporter's exclusive lease");
-        assert_eq!(
-            second.file.try_lock().expect_err("duplicate writer must wait").kind(),
-            io::ErrorKind::WouldBlock
+        first
+            .file
+            .lock()
+            .expect("hold the reporter's exclusive lease");
+        assert!(
+            second.file.try_lock().is_err(),
+            "duplicate writer must wait"
         );
-        assert_eq!(
-            reader
-                .try_lock_shared()
-                .expect_err("reader must wait for the writer")
-                .kind(),
-            io::ErrorKind::WouldBlock
+        assert!(
+            reader.try_lock_shared().is_err(),
+            "reader must wait for the writer"
         );
         first.file.unlock().expect("release exclusive lease");
 
-        first.report(&"first original cause").expect("first terminal report");
+        first
+            .report(&"first original cause")
+            .expect("first terminal report");
         assert!(second.report(&"second cause").is_err());
         assert_eq!(
             attempt.failure().expect("complete cause").to_string(),
