@@ -6283,7 +6283,7 @@ mod tests {
     }
 
     #[test]
-    fn cold_search_owner_shares_bounded_preparation_and_serves_control() {
+    fn preparation_cold_search_owner_shares_bounded_preparation_and_serves_control() {
         let mut fixture = AdapterFixture::new();
         let (adapter, daemon) = fixture.parts();
         let (entered, release) = adapter.search_lane.hold_next();
@@ -6348,7 +6348,7 @@ mod tests {
             serde_json::from_slice(&refused).expect("typed queue refusal");
         assert_eq!(refusal["reply"]["data"]["kind"], "invalid_query");
         assert!(
-            refusal["reply"]["data"]["text"]
+            refusal["reply"]["data"]["data"]["text"]
                 .as_str()
                 .expect("capacity class")
                 .starts_with("search_preparation_over_capacity:")
@@ -6374,7 +6374,7 @@ mod tests {
     }
 
     #[test]
-    fn cold_search_owner_superseded_view_rejects_stale_preparation() {
+    fn preparation_cold_search_owner_superseded_view_rejects_stale_preparation() {
         let mut fixture = AdapterFixture::new();
         let new_project = fixture.root.0.join("other-project");
         fs::create_dir_all(&new_project).expect("other project");
@@ -6413,8 +6413,8 @@ mod tests {
                 .expect("typed stale refusal");
         assert_eq!(wrong_basis["reply"]["data"]["kind"], "wrong_basis");
         assert_ne!(
-            wrong_basis["reply"]["data"]["expected"],
-            wrong_basis["reply"]["data"]["observed"]
+            wrong_basis["reply"]["data"]["data"]["expected"],
+            wrong_basis["reply"]["data"]["data"]["observed"]
         );
         assert_eq!(wrong_basis["request_id"], 301);
         let busy = defer_search_body(adapter, daemon, 303, 1303)
@@ -6446,7 +6446,7 @@ mod tests {
     }
 
     #[test]
-    fn cold_search_owner_abandonment_and_failure_allow_retry_and_restart() {
+    fn preparation_cold_search_owner_abandonment_and_failure_allow_retry_and_restart() {
         let mut fixture = AdapterFixture::new();
         let durable = fixture.root.0.join("workspace/search-index-v2");
         {
@@ -6545,7 +6545,7 @@ mod tests {
         );
     }
     #[test]
-    fn cold_search_owner_completes_and_invalidates_while_index_scan_stays_pending() {
+    fn preparation_cold_search_owner_completes_and_invalidates_while_index_scan_stays_pending() {
         let mut fixture = AdapterFixture::new();
         let new_project = fixture.root.0.join("concurrent-project");
         fs::create_dir_all(&new_project).expect("concurrent project");

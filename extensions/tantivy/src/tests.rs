@@ -3520,7 +3520,7 @@ fn damaged_inactive_binding_remains_charged_without_poisoning_selected_search() 
 }
 
 #[test]
-fn cancelled_cold_preparation_does_not_publish_and_can_retry() {
+fn preparation_cancellation_cold_does_not_publish_and_can_retry() {
     use std::sync::atomic::{AtomicBool, Ordering};
     let documents = vec![(document(1), vec![("body".into(), "alpha".into())])];
     let (binding, coverage) = binding(&documents);
