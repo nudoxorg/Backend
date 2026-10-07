@@ -2307,6 +2307,7 @@ mod tests {
                 visibility: FactAvailability::Captured,
                 ..EntityAuthorityFacts::default()
             },
+            anonymous_callable_anchor: None,
             parent: None,
             semantic_type: None,
             members: &[],
