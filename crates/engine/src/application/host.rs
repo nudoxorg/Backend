@@ -39,7 +39,7 @@ use crate::application::{
 };
 
 pub use capture::CapturedLocalHostEnvironment;
-pub use rust_selection::{InstalledRustInputs, InstalledRustToolchain, InstalledToolPlace, find_installed_rust, installed_rust_system_locations};
+pub use rust_selection::{InstalledRustInputs, InstalledRustSelectionSource, InstalledRustToolchain, InstalledToolPlace, find_installed_rust, installed_rust_system_locations};
 pub use error::LocalCompilerHostError;
 pub use paths::{LocalHostDirectory, LocalHostPathKind, LocalHostPathRole};
 pub use snapshot::{
