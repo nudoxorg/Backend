@@ -291,7 +291,7 @@ def safe_extract(archive: Path, destination: Path) -> None:
                 source = bundle.extractfile(member)
                 if source is None:
                     raise InstallError(f"archive member could not be read: {member.name!r}")
-                mode = 0o755 if relative in allowed_bin else 0o644
+                mode = 0o755 if relative in allowed_bin or relative == "share/nudox/typescript/node/bin/node" else 0o644
                 flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
                 descriptor = os.open(target, flags, mode)
                 with os.fdopen(descriptor, "wb") as output, source:
@@ -319,6 +319,74 @@ def _glibc_version() -> tuple[int, int] | None:
     match = re.search(r"([0-9]+)\.([0-9]+)", value or "")
     return (int(match.group(1)), int(match.group(2))) if match else None
 
+
+
+def verify_typescript_sdk(root: Path, package: dict) -> None:
+    """Recheck the installed SDK before promotion or reuse; never run project setup."""
+    sdk = package.get("typescript_sdk")
+    if sdk is None or (isinstance(sdk, dict) and sdk.get("bundled") is False):
+        return  # Legacy packages make no bundled SDK claim.
+    if not isinstance(sdk, dict) or sdk.get("schema") != "nudox.typescript-sdk.v1" or sdk.get("bundled") is not True or sdk.get("root") != "share/nudox/typescript":
+        raise InstallError("package has an invalid bundled TypeScript SDK contract")
+    files = sdk.get("files")
+    if not isinstance(files, dict) or not files or len(files) > 512:
+        raise InstallError("SDK has no bounded complete file inventory")
+    expected_directories = set()
+    for relative, record in files.items():
+        if not isinstance(relative, str):
+            raise InstallError("SDK inventory contains a non-string path")
+        path = PurePosixPath(relative)
+        if not relative.startswith("share/nudox/typescript/") or path.as_posix() != relative or "\\" in relative or any(part in {".", ".."} for part in path.parts):
+            raise InstallError("SDK inventory contains an unsafe path")
+        expected_directories.update(parent.as_posix() for parent in path.parents if parent.parts)
+        if not isinstance(record, dict) or record.get("kind") != "file" or not isinstance(record.get("sha256"), str) or not SHA_RE.fullmatch(record["sha256"]):
+            raise InstallError("SDK inventory contains an invalid file record")
+    observed = set()
+    total = 0
+    pending = [root / "share/nudox/typescript"]
+    while pending:
+        for path in pending.pop().iterdir():
+            relative = path.relative_to(root).as_posix()
+            if path.is_symlink() or not (path.is_file() or path.is_dir()):
+                raise InstallError("installed SDK contains a link or special file")
+            if path.is_dir():
+                if relative not in expected_directories:
+                    raise InstallError("installed SDK contains an unreceipted directory")
+                pending.append(path)
+                continue
+            record = files.get(relative)
+            total += path.stat().st_size
+            if record is None or total > 512 * 1024 * 1024 or len(observed) >= 512:
+                raise InstallError("installed SDK differs from its bounded inventory")
+            if record["sha256"] != _file_sha256(path) or record.get("size_bytes") != path.stat().st_size:
+                raise InstallError("installed SDK file differs from its receipt: " + relative)
+            observed.add(relative)
+    if observed != set(files):
+        raise InstallError("installed SDK has missing or unreceipted files")
+    node_relative = "share/nudox/typescript/node/bin/node"
+    required = {node_relative, "share/nudox/typescript/node/LICENSE",
+                "share/nudox/typescript/node_modules/typescript/package.json",
+                "share/nudox/typescript/node_modules/typescript/bin/tsc",
+                "share/nudox/typescript/node_modules/typescript/lib/typescript.js",
+                "share/nudox/typescript/node_modules/typescript/LICENSE.txt",
+                "share/nudox/typescript/node_modules/typescript/ThirdPartyNoticeText.txt"}
+    if not required.issubset(observed):
+        raise InstallError("SDK omits its runtime, compiler API, or license notices")
+    node = root / node_relative
+    record = sdk.get("node")
+    if not isinstance(record, dict) or record.get("packaged_path") != node_relative or record.get("packaged_sha256") != files[node_relative]["sha256"] or not os.access(node, os.X_OK):
+        raise InstallError("SDK Node executable differs from its relocated identity")
+    clean_environment = {key: value for key, value in os.environ.items()
+                         if key not in {"LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT", "NIX_LD", "NIX_LD_LIBRARY_PATH", "NODE_PATH", "NODE_OPTIONS"}}
+    for arguments, expected in [(["--version"], sdk.get("node_version")),
+        (["-e", "process.stdout.write(require(process.argv[1]).version)", str(root / "share/nudox/typescript/node_modules/typescript/lib/typescript.js")], sdk.get("typescript_version"))]:
+        try:
+            result = subprocess.run([str(node), *arguments], env=clean_environment, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True, timeout=15)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise InstallError(f"installed SDK could not start without loader overrides: {error}") from error
+        if not isinstance(expected, str) or result.returncode != 0 or result.stdout.strip() != expected:
+            raise InstallError("installed SDK does not reproduce its recorded Node/Compiler API identity")
 
 def verify_package(root: Path, entry: dict, manifest: dict) -> None:
     if not (root / "bin/backend-cli").is_file() or not os.access(root / "bin/backend-cli", os.X_OK):
@@ -367,6 +435,7 @@ def verify_package(root: Path, entry: dict, manifest: dict) -> None:
         binary = root / "bin" / name
         if not binary.is_file() or not os.access(binary, os.X_OK):
             raise InstallError(f"package omits executable {name}")
+    verify_typescript_sdk(root, package)
     # Run harmless entrypoint checks with build-machine loader overrides removed.
     clean_env = {key: value for key, value in os.environ.items() if key not in {"LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT", "NIX_LD", "NIX_LD_LIBRARY_PATH"}}
     for name, args in (("backend-cli", ["--version"]), ("backend-mcp", ["--help"])):
