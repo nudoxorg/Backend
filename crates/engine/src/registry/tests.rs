@@ -5592,7 +5592,14 @@ fn deferred_registry_tail_process_worker() {
         RegistryEndpoint::new(RegistryEcosystem::Cargo, "http://127.0.0.1:9/deferred-tail")
             .expect("endpoint");
     let journal_path = storage_root(&root, &endpoint).join("registry.journal");
-    fs::create_dir_all(journal_path.parent().expect("journal parent")).expect("journal directory");
+    let (owner, _) = RegistryOwner::open(
+        &root,
+        endpoint.clone(),
+        AcquisitionPolicy::Offline,
+        limits(),
+    )
+    .expect("prepare private registry namespace");
+    drop(owner);
 
     let source_path = root.join("complete-frame.journal");
     let (mut source, _) =

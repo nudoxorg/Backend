@@ -13,6 +13,7 @@ use std::{
 };
 
 use backend_execution::WorkKey;
+use backend_platform::OwnedWorkspaceDirectory;
 
 use super::identity::{ID_BYTES, PublicationRootId, RawArchiveObjectId, now_millis};
 
@@ -115,11 +116,12 @@ pub struct LeaseStore {
 impl LeaseStore {
     /// Opens/creates a private acquisition root.
     pub fn open(root: impl Into<PathBuf>) -> io::Result<Self> {
-        let root = root.into();
-        fs::create_dir_all(root.join("leases"))?;
-        fs::create_dir_all(root.join("objects"))?;
-        fs::create_dir_all(root.join("temps"))?;
-        let root = fs::canonicalize(root)?;
+        let root_directory = OwnedWorkspaceDirectory::open(root.into())?;
+        for name in ["leases", "objects", "temps"] {
+            root_directory.child(name)?;
+        }
+        root_directory.verify_path()?;
+        let root = fs::canonicalize(root_directory.path())?;
         Ok(Self {
             root: Arc::new(root),
         })

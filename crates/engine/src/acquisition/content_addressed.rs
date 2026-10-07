@@ -13,6 +13,7 @@ use super::{
     owned_file::{self, OwnedFile, Reclaimed},
 };
 use blake3::Hasher;
+use backend_platform::OwnedWorkspaceDirectory;
 use std::{
     collections::BTreeSet,
     fmt,
@@ -423,19 +424,17 @@ impl ContentAddressedStore {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, ContentStoreError> {
         let requested_root = root.into();
         let root_existed = requested_root.is_dir();
-        fs::create_dir_all(&requested_root)?;
-        // Resolve configured root aliases once. All store-owned children are
-        // then checked relative to this trusted root without following links.
-        let root = fs::canonicalize(&requested_root)?;
+        let root_directory = OwnedWorkspaceDirectory::open(&requested_root)?;
+        // Resolve the checked root once. All store-owned children are opened
+        // relative to its pinned capability, created with 0700, and admitted
+        // without following links.
+        let root = fs::canonicalize(root_directory.path())?;
         for directory in ["objects", "temps", "transfers", "quarantine"] {
-            let path = root.join(directory);
-            match fs::create_dir(&path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error.into()),
-            }
-            validate_store_directory(&root, &path)?;
+            let child = root_directory.child(directory)?;
+            child.verify_path()?;
+            validate_store_directory(&root, &root.join(directory))?;
         }
+        root_directory.verify_path()?;
         sync_directory(&root)?;
         if !root_existed {
             let parent = root

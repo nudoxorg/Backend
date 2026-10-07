@@ -22,7 +22,7 @@ use backend_engine::registry::{
     parse_npm_packument_document, parse_nuget_catalog_index, parse_nuget_catalog_leaf,
     parse_nuget_catalog_page, parse_pypi_project_list, parse_pypi_project_metadata,
 };
-use backend_platform::durable;
+use backend_platform::{OwnedWorkspaceDirectory, durable};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -204,7 +204,11 @@ impl DiscoveryGateway {
                 "registry discovery supports at most {DISCOVERY_SOURCE_LIMIT} sources"
             ));
         }
-        let store = DiscoveryStore::open(root.join("catalog.journal"))
+        let root = OwnedWorkspaceDirectory::open(root)
+            .map_err(|error| format!("open private registry discovery root: {error}"))?;
+        root.verify_path()
+            .map_err(|error| format!("verify registry discovery root: {error}"))?;
+        let store = DiscoveryStore::open(root.path().join("catalog.journal"))
             .map_err(|error| format!("open discovery journal: {error:?}"))?;
         let (sender, receiver) = mpsc::sync_channel(DISCOVERY_MESSAGE_CAPACITY);
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -2367,6 +2371,40 @@ mod tests {
                 .expect("clock")
                 .as_nanos()
         ))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovery_gateway_root_is_private_and_survives_reopen() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = std::env::temp_dir().join(format!(
+            "backend-registry-discovery-root-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        let config = RegistryDiscoveryConfig {
+            sources: Vec::new(),
+            offline: true,
+            max_pages: 1,
+        };
+
+        let gateway = DiscoveryGateway::open(root.clone(), config.clone())
+            .expect("open private discovery root");
+        let mode = fs::metadata(&root)
+            .expect("discovery root metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700);
+        drop(gateway);
+        let reopened = DiscoveryGateway::open(root.clone(), config)
+            .expect("reopen existing private discovery journal");
+        drop(reopened);
+        fs::remove_dir_all(root).expect("remove discovery fixture");
     }
 
     fn source() -> DiscoverySourceIdentity {

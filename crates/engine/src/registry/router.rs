@@ -712,6 +712,8 @@ mod tests {
             source.id().as_bytes()[0]
         ));
         let _ = fs::remove_dir_all(&root);
+        let _root_directory = backend_platform::OwnedWorkspaceDirectory::open(&root)
+            .expect("create private router cache root");
         let versioned = root.join(REGISTRY_SOURCE_ROOT_VERSION);
         let objects = versioned.join("cas").join("objects");
         let (_, recovery) = super::super::owner::RegistryOwner::open_with_shared_objects(
