@@ -359,7 +359,7 @@ mod tests {
             ),
             (
                 "snapshot page",
-                crate::SnapshotPageDto::decode(bytes, cursor, None, None)
+                crate::SnapshotPageDto::decode_against(bytes, cursor, &root.descriptor())
                     .expect_err("old snapshot page"),
             ),
         ] {
