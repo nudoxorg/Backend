@@ -1,0 +1,11 @@
+
+running 1 test
+test tests::concurrent_initializers_publish_one_complete_authority_secret ... FAILED
+
+failures:
+
+failures:
+    tests::concurrent_initializers_publish_one_complete_authority_secret
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 38 filtered out; finished in 0.03s
+

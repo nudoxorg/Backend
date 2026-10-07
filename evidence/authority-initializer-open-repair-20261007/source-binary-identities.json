@@ -1,0 +1,43 @@
+{
+  "schema": "nudox.authority-initializer-open-repair-proof.v1",
+  "remote_host": "h16001mac",
+  "remote_worktree": "/Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006",
+  "tested_remote_commit": "7f255a0e54a0f48e4a5914ea522165452e01f7e6",
+  "tested_remote_tree": "c7529ba25035f5652f55990cf2e594615e597669",
+  "equivalent_local_commit_before_evidence": "f35c57d98768798e4805acc81eef553e361ddf48",
+  "equivalent_local_tree_before_evidence": "c7529ba25035f5652f55990cf2e594615e597669",
+  "source": {
+    "path": "crates/platform/directory.rs",
+    "git_blob": "6b3cfb97f875757fbda1ef59f84d693f78b0055b",
+    "sha256": "e9e14f40dc3545696a1c49d4366198593289988e448fe13374f08a0fc06543f1"
+  },
+  "cargo_lock": {
+    "git_blob": "49e3cc50cc3424d6d0eee338eca0863cfb176819",
+    "sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+  },
+  "test_executables": [
+    {
+      "test_gate": "backend-platform native library suite",
+      "source_path": "/Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/.local/build/point-metadata-test/.nudox-cargo/slot-0/debug/deps/backend_platform-13d074c9dc81c8ba",
+      "bytes": 3221296,
+      "sha256": "68f359cc476781caa4eb9c022f813b6732981831fa6577b11635ea9ada492800"
+    },
+    {
+      "test_gate": "isolated and full backend-runtime library suites",
+      "source_path": "/Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/.local/build/point-metadata-test/.nudox-cargo/slot-0/debug/deps/backend_runtime-f403b30f5a909ec5",
+      "bytes": 3219072,
+      "sha256": "f9f15c56c2d1deb7de17f71388143ba351627193ec6efac150e94e90488abb88"
+    }
+  ],
+  "receipts": {
+    "platform": "receipts/startup-native-startup-private-open-backend-platform-20261007/completion.json",
+    "isolated_runtime": "receipts/startup-native-startup-private-open-isolated-runtime-repeat-20261007-attempt02/completion.json",
+    "full_runtime": "receipts/startup-native-startup-private-open-full-runtime-20261007/completion.json",
+    "baseline_runtime_red": "receipts/startup-native-0bd-runtime-lib-stocktmp-attempt01/completion.json",
+    "direct_openat_red": "receipts/startup-native-813-pinned-open-trace-attempt01/completion.json",
+    "initializer_stage_red": "receipts/startup-native-2d9-authority-stage-trace-attempt01/completion.json"
+  },
+  "source_clean_before_and_after_each_passing_job": true,
+  "cargo_lock_unchanged": true,
+  "no_local_cargo_or_native_builds": true
+}

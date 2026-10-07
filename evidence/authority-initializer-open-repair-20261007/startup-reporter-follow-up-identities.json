@@ -1,0 +1,123 @@
+{
+  "schema": "nudox.startup-reporter-descriptor-follow-up.v1",
+  "remote_host": "h16001mac",
+  "remote_worktree": "/Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006",
+  "remote_test_commit": "f11fdab20d7197616a38fb389752d8a4dba9619a",
+  "remote_test_tree": "f835bc5e1c4c2497adeaa903379a34decf45a061",
+  "local_equivalent_branch": "codex/startup-reporter-source-equivalent-20261007",
+  "local_equivalent_commit": "584629e0bb989de051aa5ea9384dd04594115817",
+  "local_equivalent_tree": "f835bc5e1c4c2497adeaa903379a34decf45a061",
+  "tree_equivalent": true,
+  "source_base": {
+    "local_commit": "f35c57d98768798e4805acc81eef553e361ddf48",
+    "remote_commit": "7f255a0e54a0f48e4a5914ea522165452e01f7e6",
+    "tree": "c7529ba25035f5652f55990cf2e594615e597669"
+  },
+  "changed_source": {
+    "path": "crates/runtime/src/startup.rs",
+    "git_blob": "9232f099d6263e136bbaa79f49b4ec0a0cdc883f",
+    "sha256": "a0c77a663c0557f11a789d52f6fc5e941272db60f26dd43c57e5f05565840a96"
+  },
+  "related_platform_source": {
+    "path": "crates/platform/directory.rs",
+    "git_blob": "6b3cfb97f875757fbda1ef59f84d693f78b0055b",
+    "unchanged_from_platform_native_gate": true
+  },
+  "cargo_lock": {
+    "git_blob": "49e3cc50cc3424d6d0eee338eca0863cfb176819",
+    "sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+  },
+  "native_gates": [
+    {
+      "phase": "startup-reporter-focused-attempt03",
+      "receipt": "receipts/startup-native-startup-reporter-focused-attempt03/completion.json",
+      "command": "test --locked -p backend-runtime --lib startup::tests:: -- --test-threads=1",
+      "result": "7 passed, 0 failed, 0 ignored",
+      "exit": 0,
+      "remote_commit": "f11fdab20d7197616a38fb389752d8a4dba9619a",
+      "remote_tree": "f835bc5e1c4c2497adeaa903379a34decf45a061"
+    },
+    {
+      "phase": "startup-reporter-isolated-initializer-attempt01",
+      "receipt": "receipts/startup-native-startup-reporter-isolated-initializer-attempt01/completion.json",
+      "command": "test --locked -p backend-runtime --lib tests::concurrent_initializers_publish_one_complete_authority_secret -- --exact --test-threads=1",
+      "result": "1 passed, 0 failed, 0 ignored",
+      "exit": 0,
+      "remote_commit": "f11fdab20d7197616a38fb389752d8a4dba9619a",
+      "remote_tree": "f835bc5e1c4c2497adeaa903379a34decf45a061"
+    },
+    {
+      "phase": "startup-reporter-runtime-full-attempt01",
+      "receipt": "receipts/startup-native-startup-reporter-runtime-full-attempt01/completion.json",
+      "command": "test --locked -p backend-runtime --lib -- --test-threads=1",
+      "result": "42 passed, 0 failed, 1 ignored",
+      "exit": 0,
+      "remote_commit": "f11fdab20d7197616a38fb389752d8a4dba9619a",
+      "remote_tree": "f835bc5e1c4c2497adeaa903379a34decf45a061"
+    },
+    {
+      "phase": "startup-private-open-backend-platform-20261007",
+      "receipt": "receipts/startup-native-startup-private-open-backend-platform-20261007/completion.json",
+      "command": "test --locked -p backend-platform --lib -- --test-threads=1",
+      "result": "76 passed, 0 failed, 0 ignored",
+      "exit": 0,
+      "remote_commit": "7f255a0e54a0f48e4a5914ea522165452e01f7e6",
+      "remote_tree": "c7529ba25035f5652f55990cf2e594615e597669",
+      "applicable_because": "platform source and Cargo.lock are unchanged in the reporter follow-up"
+    }
+  ],
+  "test_executables": [
+    {
+      "gate": "backend-platform native library suite",
+      "name": "backend_platform-13d074c9dc81c8ba",
+      "path": "/Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/.local/build/point-metadata-test/.nudox-cargo/slot-0/debug/deps/backend_platform-13d074c9dc81c8ba",
+      "bytes": 3221296,
+      "format": "Mach-O 64-bit executable arm64",
+      "sha256": "68f359cc476781caa4eb9c022f813b6732981831fa6577b11635ea9ada492800"
+    },
+    {
+      "gate": "startup-focused, isolated-initializer, and full-runtime native suites",
+      "name": "backend_runtime-f403b30f5a909ec5",
+      "path": "/Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/.local/build/point-metadata-test/.nudox-cargo/slot-0/debug/deps/backend_runtime-f403b30f5a909ec5",
+      "bytes": 3335376,
+      "format": "Mach-O 64-bit executable arm64",
+      "sha256": "c285c953811a51ca709d1e8e3e04f582b6e1d7e5e7118e6e827fc034b93f1932"
+    }
+  ],
+  "toolchain": {
+    "cargo": {
+      "path": "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+      "version": "cargo 1.97.1 (c980f4866 2026-06-30)",
+      "sha256": "ad6923e08f2383443d5258a5b4896136e46305730347618ea18808ba8d9b85ac"
+    },
+    "rustc": {
+      "path": "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/rustc",
+      "version": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+      "sha256": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da"
+    },
+    "managed_cargo_runner": {
+      "path": "/Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/.local/fcb-managed-runner/cargo",
+      "sha256": "3cea69645eddc2571221b7e76718d7bd302171bba16130435c5874427829e10d"
+    }
+  },
+  "non_credit_attempts": [
+    {
+      "phase": "startup-reporter-focused-20261007",
+      "receipt": "receipts/startup-native-startup-reporter-focused-20261007/",
+      "tested_remote_commit": "113c2f39b39b947851904bb209cc9a96e95635d6",
+      "result": "Compilation failed because the tests called kind() on std::fs::TryLockError; no native test started.",
+      "pass_credit": false
+    },
+    {
+      "phase": "startup-reporter-focused-attempt02",
+      "receipt": "receipts/startup-native-startup-reporter-focused-attempt02/",
+      "tested_remote_commit": "f11fdab20d7197616a38fb389752d8a4dba9619a",
+      "result": "Supervisor rejected a fleet census at 34.1335 seconds, beyond its 30-second admission limit, before lock acquisition or Cargo launch.",
+      "pass_credit": false
+    }
+  ],
+  "source_clean_before_and_after_each_passing_remote_job": true,
+  "all_cargo_runs_remote": true,
+  "local_cargo_or_native_builds": false,
+  "original_dirty_backend_config_preserved": true
+}
