@@ -15,6 +15,8 @@ pub enum InstalledToolPlace {
     Homebrew,
     /// A Nix profile.
     Nix,
+    /// Exact Rust path supplied by a closed compiler environment, without rediscovery.
+    ClosedSnapshot,
 }
 
 #[cfg(all(test, unix))]
@@ -195,11 +197,21 @@ impl InstalledToolPlace {
             Self::Rustup => "from rustup",
             Self::Homebrew => "from Homebrew",
             Self::Nix => "from Nix",
+            Self::ClosedSnapshot => "from the closed compiler environment",
         }
     }
 }
 
-/// The Rust the owner compiles with, as this launch found it.
+/// Whether absence was discovered or explicitly sealed by a closed launch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InstalledRustSelectionSource {
+    /// The installed-tool policy inspected its finite search locations.
+    InstalledTools,
+    /// The incoming closed environment omitted Rust; no search was performed.
+    ClosedSnapshot,
+}
+
+/// The Rust selected by this launch. This report does not assert compiler capability readiness.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InstalledRustToolchain {
     /// A `rustc` with its `cargo` beside it.
@@ -210,16 +222,41 @@ pub enum InstalledRustToolchain {
         version: Option<String>,
     },
     /// No directory it looked in held both; each looked-in directory, in order.
-    Missing { looked: Vec<PathBuf> },
+    Missing {
+        /// Exact finite directories inspected; empty for a closed launch.
+        looked: Vec<PathBuf>,
+        /// Whether absence came from discovery or the sealed incoming selection.
+        source: InstalledRustSelectionSource,
+    },
 }
 
 impl InstalledRustToolchain {
+    /// Reports only the incoming selection, without filesystem discovery or version probes.
+    /// Closed snapshots do not record a Rust version proof, so the version remains absent.
+    #[must_use]
+    pub fn from_closed_snapshot(snapshot: &super::ClosedLocalHostEnvironmentSnapshot) -> Self {
+        match snapshot.path(LocalHostVariable::NudoxRustc) {
+            Some(rustc) => Self::Found {
+                rustc: rustc.to_path_buf(),
+                place: InstalledToolPlace::ClosedSnapshot,
+                version: None,
+            },
+            None => Self::Missing {
+                looked: Vec::new(),
+                source: InstalledRustSelectionSource::ClosedSnapshot,
+            },
+        }
+    }
+
     /// What the window says about it.
     pub fn words(&self) -> String {
         match self {
             Self::Found { rustc, place, version } => {
                 let name = version.as_deref().and_then(|version| version.split_whitespace().nth(1)).map_or_else(|| "Rust".to_owned(), |number| format!("Rust {number}"));
                 format!("{name} at {} ({})", rustc.display(), place.words())
+            }
+            Self::Missing { source: InstalledRustSelectionSource::ClosedSnapshot, .. } => {
+                "Rust is absent from the closed compiler environment.".to_owned()
             }
             Self::Missing { .. } => {
                 "No Rust toolchain was found. Install one with rustup (rustup.rs) or Homebrew (brew install rust), then quit and reopen Nudox.".to_owned()
@@ -337,7 +374,10 @@ pub fn find_installed_rust(
         }
         looked.push(dir);
     }
-    InstalledRustToolchain::Missing { looked }
+    InstalledRustToolchain::Missing {
+        looked,
+        source: InstalledRustSelectionSource::InstalledTools,
+    }
 }
 
 use super::{

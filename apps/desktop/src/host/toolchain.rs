@@ -18,8 +18,9 @@ use std::path::Path;
 use std::sync::{PoisonError, RwLock};
 
 // Installed Rust pair discovery is shared with CLI/MCP host capture.
+pub(crate) use backend_local_service::InstalledRustToolchain as Rust;
 use backend_local_service::{
-    InstalledRustInputs, InstalledRustToolchain as Rust, InstalledToolPlace as Place,
+    InstalledRustInputs, InstalledToolPlace as Place,
 };
 
 #[cfg(test)]
@@ -179,6 +180,7 @@ impl CompilerSelection {
 /// owner the same typed paths that a later MCP client configuration exports.
 pub(crate) fn prepared_by_the_process() -> io::Result<ClosedLocalHostEnvironmentSnapshot> {
     if let Some(snapshot) = incoming_closed_snapshot()? {
+        record_closed_report(&snapshot);
         return Ok(snapshot);
     }
     let captured = process_variables();
@@ -188,6 +190,10 @@ pub(crate) fn prepared_by_the_process() -> io::Result<ClosedLocalHostEnvironment
     *REPORT.write().unwrap_or_else(PoisonError::into_inner) = Some(found);
     let snapshot = installed_snapshot(&captured)?;
     Ok(snapshot)
+}
+
+fn record_closed_report(snapshot: &ClosedLocalHostEnvironmentSnapshot) {
+    *REPORT.write().unwrap_or_else(PoisonError::into_inner) = Some(Rust::from_closed_snapshot(snapshot));
 }
 
 /// Attaching does not discover tools or create caches. The local registry
@@ -421,6 +427,22 @@ mod tests {
             captured.remove(name);
         }
         std::fs::remove_dir_all(machine.root).unwrap();
+    }
+
+    #[test]
+    fn closed_report_replaces_stale_rust_without_ambient_discovery_or_version_claims() {
+        let path = std::env::temp_dir().join("closed-selection-does-not-probe/rustc");
+        let snapshot = ClosedLocalHostEnvironmentSnapshot::from_paths([
+            (LocalHostVariable::NudoxRustc, path.clone()),
+        ]).unwrap();
+        record_closed_report(&snapshot);
+        let selected = report().unwrap();
+        assert!(matches!(selected, Rust::Found { rustc, place: Place::ClosedSnapshot, version: None } if rustc == path));
+        assert!(!path.exists(), "reporting cannot realize or probe a closed selection");
+        record_closed_report(&ClosedLocalHostEnvironmentSnapshot::from_paths([]).unwrap());
+        let absent = report().unwrap();
+        assert!(matches!(absent, Rust::Missing { source: backend_local_service::InstalledRustSelectionSource::ClosedSnapshot, .. }));
+        assert_eq!(absent.words(), "Rust is absent from the closed compiler environment.");
     }
 
     /// A toolchain directory and a home, on disk, under a scratch root.
@@ -697,7 +719,7 @@ mod tests {
         let finder = env(&finder_vars);
         let system = [(empty.clone(), Place::Homebrew)];
         let found = find_rust(&finder, &system);
-        let Rust::Missing { looked } = &found else { panic!("no rustc anywhere: {found:?}") };
+        let Rust::Missing { looked, .. } = &found else { panic!("no rustc anywhere: {found:?}") };
         let [first, second] = path_dirs;
         assert_eq!(
             looked,

@@ -15,3 +15,12 @@ mod host {
         ))
     }
 }
+
+// The product's onboarding/settings consumers use this sibling-visible alias.
+#[test]
+fn rust_report_type_remains_visible_to_desktop_sibling_consumers() {
+    let selection: Option<toolchain::Rust> = toolchain::report();
+    match selection {
+        Some(toolchain::Rust::Found { .. }) | Some(toolchain::Rust::Missing { .. }) | None => {}
+    }
+}
