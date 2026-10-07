@@ -1357,6 +1357,17 @@ fn stored_extension_installs_auxiliary_children_before_membership_rebind() {
             &registry,
         ),
     );
+    // Exercise the actual durable stage with a large admitted physical
+    // frontier. The bound includes version/CAS verification and serialization;
+    // it rules out a pairwise identity union without relying on wall time.
+    closure::take_object_commitment_work();
+    must(store.stage_workspace_frontier(&next));
+    let identity_work = closure::take_object_commitment_work();
+    let frontier_count = u64::try_from(frontier.len() + 3).unwrap_or(u64::MAX);
+    assert!(
+        identity_work <= frontier_count.saturating_mul(64),
+        "frontier staging rehashed {identity_work} objects for {frontier_count} nodes"
+    );
     assert_eq!(next.control_manifest().objects().len(), 3);
     assert_eq!(present(next.stored_membership()).object_count(), 3);
     assert!(must(next.contains(target_auxiliary_object.id())));
