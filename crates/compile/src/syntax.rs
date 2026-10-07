@@ -1129,9 +1129,9 @@ fn declaration_signature(language: SourceLanguage, node: Node<'_>, source: &str)
         // prefix and multiline header; exclude every docstring/body token.
         let end = if let Some(body) = root.child_by_field_name("body") {
             let mut cursor = root.walk();
-            root.children(&mut cursor)
-                .find(|child| child.kind() == ":" && child.end_byte() <= body.start_byte())
-                .map(|colon| colon.end_byte().saturating_sub(root.start_byte()))
+            let separator = root.children(&mut cursor)
+                .find(|child| child.kind() == ":" && child.end_byte() <= body.start_byte());
+            separator.map(|colon| colon.end_byte().saturating_sub(root.start_byte()))
                 .unwrap_or_else(|| body.start_byte().saturating_sub(root.start_byte()))
         } else {
             source_text.len()
