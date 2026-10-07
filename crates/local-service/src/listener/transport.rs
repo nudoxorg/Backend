@@ -123,7 +123,7 @@ fn serve_one_frame(
     ) {
         Ok(Some(original)) => {
             let ack = backend_replication::DeferredCommandAck::admitted(
-                original,
+                &payload,
                 windows.owner_binding,
                 windows
                     .owner_reply

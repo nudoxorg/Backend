@@ -286,6 +286,8 @@ impl AuthenticatedLocalPeer {
 
     /// Admits exactly one deferred command ACK on this authenticated channel.
     /// The principal is derived from this affine token, never from an ACK field.
+    /// `original` is the exact fresh-nonce request envelope sent on this stream;
+    /// this is OS-channel authority, not a cryptographic signer proof.
     /// # Errors
     /// Refuses a foreign request, owner, envelope version, or unbounded deadline.
     pub fn admit_deferred_command_ack(

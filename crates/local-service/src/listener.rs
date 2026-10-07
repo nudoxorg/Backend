@@ -945,11 +945,14 @@ mod tests {
         let wrapped =
             backend_replication::wrap_deferred_command(&original, backend_library::DTO_VERSION)
                 .expect("opt in");
-        for client in [&mut keeper, &mut abandoned] {
+        let second_wrapped =
+            backend_replication::wrap_deferred_command(&original, backend_library::DTO_VERSION)
+                .expect("separate fresh nonce");
+        for (client, request) in [(&mut keeper, &wrapped), (&mut abandoned, &second_wrapped)] {
             client
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .expect("test lease");
-            write_frame(client, &wrapped, limits()).expect("request");
+            write_frame(client, request, limits()).expect("request");
         }
         let deadline = Instant::now() + Duration::from_secs(2);
         while state.accepted.load(Ordering::Acquire) < 2 {
@@ -958,12 +961,12 @@ mod tests {
         }
         let ack = read_frame(&mut keeper, limits()).expect("accepted ACK");
         assert_eq!(
-            peer.admit_deferred_command_ack(&ack, &original, backend_library::DTO_VERSION)
+            peer.admit_deferred_command_ack(&ack, &wrapped, backend_library::DTO_VERSION)
                 .expect("authenticated exact ACK"),
             DEFAULT_OWNER_REPLY_TIMEOUT
         );
         let second = read_frame(&mut abandoned, limits()).expect("second ACK");
-        assert_eq!(ack, second);
+        assert_ne!(ack, second, "identical DTOs carry distinct request nonces");
         drop(abandoned);
         let mut control = backend_engine::LocalStream::connect(&path).expect("control");
         control

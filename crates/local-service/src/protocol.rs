@@ -7,10 +7,10 @@
 //! `backend-engine`; this module does not define a second replication codec.
 //!
 //! Authenticated command clients may explicitly opt into the separate `LDQ1`
-//! version-1 envelope defined by backend-replication. The listener unwraps
+//! version-2 envelope defined by backend-replication. The listener unwraps
 //! that exact command body before strict owner admission. Only a deferred
 //! acceptance emits one `LDA1` acknowledgement on the same private, kernel-
-//! authenticated channel; its exact-body digest and owner endpoint instance
+//! authenticated channel; its fresh nonce, exact-body digest, and owner endpoint instance
 //! authorize one finite response wait. Legacy command frames receive only
 //! terminal DTOs. Terminal certificates, correlation, and DTO admission are
 //! unchanged; unknown envelope/DTO versions fail closed without fallback.

@@ -2,6 +2,10 @@
 //!
 //! This envelope is independent of the terminal library DTO grammar. The
 //! exact original DTO bytes include its identity, root, query, and certificate.
+//! A fresh OS-random 32-byte request nonce precedes those bytes. The ACK binds
+//! the complete request envelope, so even identical DTO repeats cannot reuse
+//! an earlier response registration. This is channel authentication, not a
+//! cryptographic signer proof.
 //! An ACK has authority only after admission by the affine local peer token;
 //! decoding a frame, matching a claimed principal, or seeing busy is insufficient.
 
@@ -12,10 +16,11 @@ pub const DEFERRED_COMMAND_REQUEST_MAGIC: [u8; 4] = *b"LDQ1";
 /// Deferred admission response magic, distinct from JSON and control frames.
 pub const DEFERRED_COMMAND_ACK_MAGIC: [u8; 4] = *b"LDA1";
 /// Closed envelope version; unknown versions never renew a read lease.
-pub const DEFERRED_COMMAND_VERSION: u8 = 1;
+pub const DEFERRED_COMMAND_VERSION: u8 = 2;
 /// Existing finite owner deadline; this protocol never grants more.
 pub const MAX_DEFERRED_COMMAND_WAIT: Duration = Duration::from_secs(15 * 60);
 const HEADER: usize = 8;
+const REQUEST_HEADER: usize = HEADER + 32;
 const ACK_BYTES: usize = 80;
 
 /// Failure to decode or correlate a deferred command envelope.
@@ -42,22 +47,42 @@ fn header(bytes: &[u8], magic: [u8; 4], dto_version: u16) -> Result<(), Deferred
     Ok(())
 }
 
-/// Wraps an exact admitted library request, explicitly opting into one ACK.
+/// Wraps an exact admitted library request with a fresh 32-byte OS nonce,
+/// explicitly opting into one ACK.
 /// # Errors
-/// Refuses an empty or oversized body.
+/// Refuses an empty/oversized body or unavailable OS entropy.
 pub fn wrap_deferred_command(
     body: &[u8],
     dto_version: u16,
 ) -> Result<Vec<u8>, DeferredCommandError> {
-    if body.is_empty() || body.len() > crate::LOCAL_CONTROL_MAX_FRAME - HEADER {
+    if body.is_empty() || body.len() > crate::LOCAL_CONTROL_MAX_FRAME - REQUEST_HEADER {
         return Err(DeferredCommandError(
             "deferred command body exceeds frame bound",
         ));
     }
-    let mut bytes = Vec::with_capacity(HEADER + body.len());
+    let mut bytes = Vec::with_capacity(REQUEST_HEADER + body.len());
     bytes.extend_from_slice(&DEFERRED_COMMAND_REQUEST_MAGIC);
     bytes.extend_from_slice(&[DEFERRED_COMMAND_VERSION, 0]);
     bytes.extend_from_slice(&dto_version.to_be_bytes());
+    let mut nonce = [0; 32];
+    #[cfg(unix)]
+    {
+        use std::io::Read as _;
+        std::fs::File::open("/dev/urandom")
+            .and_then(|mut source| source.read_exact(&mut nonce))
+            .map_err(|_| DeferredCommandError("deferred request OS entropy unavailable"))?;
+    }
+    #[cfg(windows)]
+    backend_platform::win32::random::fill(&mut nonce)
+        .map_err(|_| DeferredCommandError("deferred request OS entropy unavailable"))?;
+    #[cfg(not(any(unix, windows)))]
+    return Err(DeferredCommandError(
+        "deferred request OS entropy unsupported",
+    ));
+    if nonce == [0; 32] {
+        return Err(DeferredCommandError("deferred request nonce is empty"));
+    }
+    bytes.extend_from_slice(&nonce);
     bytes.extend_from_slice(body);
     Ok(bytes)
 }
@@ -73,12 +98,15 @@ pub fn unwrap_deferred_command(
         return Ok(None);
     }
     header(bytes, DEFERRED_COMMAND_REQUEST_MAGIC, dto_version)?;
-    if bytes.len() <= HEADER || bytes.len() > crate::LOCAL_CONTROL_MAX_FRAME {
+    if bytes.len() <= REQUEST_HEADER
+        || bytes.len() > crate::LOCAL_CONTROL_MAX_FRAME
+        || bytes[HEADER..REQUEST_HEADER] == [0; 32]
+    {
         return Err(DeferredCommandError(
             "deferred command body exceeds frame bound",
         ));
     }
-    Ok(Some(&bytes[HEADER..]))
+    Ok(Some(&bytes[REQUEST_HEADER..]))
 }
 
 /// One owner's admitted response wait. The wire claim alone conveys no authority.
@@ -90,6 +118,8 @@ pub struct DeferredCommandAck {
 }
 impl DeferredCommandAck {
     /// Creates an ACK only after the owner has accepted the exact request.
+    /// `original` is the complete opt-in frame: version, DTO guard, fresh nonce,
+    /// and unchanged original DTO bytes. It is never reconstructed from fields.
     /// # Errors
     /// Refuses a zero or unbounded admitted deadline.
     pub fn admitted(
@@ -154,12 +184,13 @@ mod tests {
     use super::*;
     #[test]
     fn deferred_command_ack_closed_grammar_binds_all_original_bytes_and_finite_budget() {
+        const DTO: u16 = u16::MAX;
         let original = br#"{"request_id":7,"basis":"root","query":"needle","certificate":"exact"}"#;
         let ack = DeferredCommandAck::admitted(original, [9; 32], Duration::from_secs(90))
             .expect("finite ack")
-            .encode(22);
+            .encode(DTO);
         assert_eq!(
-            DeferredCommandAck::admit(&ack, original, [9; 32], 22).expect("exact"),
+            DeferredCommandAck::admit(&ack, original, [9; 32], DTO).expect("exact"),
             Duration::from_secs(90)
         );
         for changed in [
@@ -170,10 +201,10 @@ mod tests {
                 .as_slice(),
             br#"{"request_id":7,"basis":"root","query":"needle","certificate":"other"}"#.as_slice(),
         ] {
-            assert!(DeferredCommandAck::admit(&ack, changed, [9; 32], 22).is_err());
+            assert!(DeferredCommandAck::admit(&ack, changed, [9; 32], DTO).is_err());
         }
-        assert!(DeferredCommandAck::admit(&ack, original, [8; 32], 22).is_err());
-        assert!(DeferredCommandAck::admit(&ack, original, [9; 32], 23).is_err());
+        assert!(DeferredCommandAck::admit(&ack, original, [8; 32], DTO).is_err());
+        assert!(DeferredCommandAck::admit(&ack, original, [9; 32], DTO - 1).is_err());
         assert!(DeferredCommandAck::admitted(original, [9; 32], Duration::ZERO).is_err());
         assert!(
             DeferredCommandAck::admitted(
@@ -183,17 +214,33 @@ mod tests {
             )
             .is_err()
         );
-        let wrapped = wrap_deferred_command(original, 22).expect("opt in");
+        let wrapped = wrap_deferred_command(original, DTO).expect("opt in");
         assert_eq!(
-            unwrap_deferred_command(&wrapped, 22).expect("closed request"),
+            unwrap_deferred_command(&wrapped, DTO).expect("closed request"),
             Some(original.as_slice())
         );
-        assert!(unwrap_deferred_command(&wrapped, 23).is_err());
+        assert!(unwrap_deferred_command(&wrapped, DTO - 1).is_err());
         assert!(
-            unwrap_deferred_command(original, 22)
+            unwrap_deferred_command(original, DTO)
                 .expect("legacy")
                 .is_none()
         );
-        assert!(unwrap_deferred_command(&wrapped[..7], 22).is_err());
+        assert!(unwrap_deferred_command(&wrapped[..7], DTO).is_err());
+        let mut legacy = wrapped.clone();
+        legacy[4] = 1;
+        assert!(unwrap_deferred_command(&legacy, DTO).is_err());
+        let mut empty_nonce = wrapped.clone();
+        empty_nonce[HEADER..REQUEST_HEADER].fill(0);
+        assert!(unwrap_deferred_command(&empty_nonce, DTO).is_err());
+        let repeated = wrap_deferred_command(original, DTO).expect("fresh repeated DTO");
+        assert_ne!(
+            wrapped[HEADER..REQUEST_HEADER],
+            repeated[HEADER..REQUEST_HEADER]
+        );
+        let ack = DeferredCommandAck::admitted(&wrapped, [9; 32], Duration::from_secs(90))
+            .expect("nonce-bound ack")
+            .encode(DTO);
+        assert!(DeferredCommandAck::admit(&ack, &repeated, [9; 32], DTO).is_err());
+        assert!(DeferredCommandAck::admit(&ack, &wrapped, [9; 32], DTO).is_ok());
     }
 }

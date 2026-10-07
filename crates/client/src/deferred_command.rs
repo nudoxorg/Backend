@@ -39,7 +39,11 @@ impl UnixCommandTransport {
                 ClientError::Protocol("deferred ACK requires authenticated owner".to_owned())
             })?;
             let budget = peer
-                .admit_deferred_command_ack(&body, original, backend_library::DTO_VERSION)
+                .admit_deferred_command_ack(
+                    &body,
+                    wrapped.as_deref().unwrap_or(original),
+                    backend_library::DTO_VERSION,
+                )
                 .map_err(|error| ClientError::Protocol(error.to_string()))?;
             // An ACK never renews its budget: both phases share the original
             // request start, and even byte-by-byte reads consume that deadline.
@@ -136,7 +140,7 @@ mod tests {
                 .expect("request grammar")
                 .expect("explicit opt in");
             let mut ack =
-                DeferredCommandAck::admitted(original, principal, Duration::from_millis(500))
+                DeferredCommandAck::admitted(&frame, principal, Duration::from_millis(500))
                     .expect("finite admission")
                     .encode(backend_library::DTO_VERSION);
             let mut replacement = None;
@@ -146,6 +150,15 @@ mod tests {
                     return;
                 }
                 "wrong-request" => ack[40] ^= 1,
+                "replayed-nonce" => {
+                    let prior = wrap_deferred_command(original, backend_library::DTO_VERSION)
+                        .expect("previous identical DTO request");
+                    assert_ne!(prior, frame);
+                    ack =
+                        DeferredCommandAck::admitted(&prior, principal, Duration::from_millis(500))
+                            .expect("prior ack")
+                            .encode(backend_library::DTO_VERSION);
+                }
                 "foreign-owner" => ack[8] ^= 1,
                 "wrong-version" => ack[4] += 1,
                 "wrong-dto" => ack[7] += 1,
@@ -212,6 +225,7 @@ mod tests {
     fn deferred_command_ack_invalid_silent_and_retired_owners_never_extend_read_lease() {
         for case in [
             "wrong-request",
+            "replayed-nonce",
             "foreign-owner",
             "wrong-version",
             "wrong-dto",
