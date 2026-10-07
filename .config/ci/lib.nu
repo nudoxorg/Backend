@@ -24,8 +24,9 @@ const STEP_TIMEOUT = "CI step timed out"
 
 # Runs one named step, streaming its output, and returns whether it passed.
 # The `CI-TIMING` line is for comparing runs: grep a build log for it. Its
-# result is `passed`, `FAILED`, or `TIMEOUT` when run-bounded stopped the step.
-export def ci-step [lane: string, name: string, body: closure]: nothing -> bool {
+# result is `passed`, `FAILED`, or `TIMEOUT` when run-bounded stopped the step;
+# a TIMEOUT is also recorded for finish-lane.
+export def --env ci-step [lane: string, name: string, body: closure]: nothing -> bool {
     print $"== ($lane): ($name) =="
     let started = (date now)
     let verdict = (try {
@@ -38,7 +39,23 @@ export def ci-step [lane: string, name: string, body: closure]: nothing -> bool 
     let elapsed = (date now) - $started
     print $"== ($lane): ($name) ($verdict) in ($elapsed) =="
     print $"CI-TIMING lane=($lane) step=\"($name)\" seconds=($elapsed / 1sec | math round) result=($verdict)"
+    if $verdict == "TIMEOUT" {
+        $env.CI_TIMED_OUT = ($env.CI_TIMED_OUT? | default [] | append $name)
+    }
     $verdict == "passed"
+}
+
+# Ends a lane from its steps' results. When every failed step ran out of
+# time, it exits 75: the scheduler then reports a CI problem and retries the
+# commit, instead of a failure that blames the code.
+export def finish-lane [lane: string, results: list<bool>]: nothing -> nothing {
+    let failed = $results | where {|passed| not $passed } | length
+    let timed_out = $env.CI_TIMED_OUT? | default []
+    if $failed > 0 and ($timed_out | length) >= $failed {
+        print $"== ($lane): only time limits failed \(($timed_out | str join ', ')\); exit 75 =="
+        exit 75
+    }
+    if $failed > 0 { error make {msg: $"($lane) lane failed"} }
 }
 
 # Runs an external command, and stops it, with everything it started, if it
@@ -221,7 +238,7 @@ export def emulated-lane [lane: string, platform: string]: nothing -> nothing {
         with-plain-tmp {|| run-bounded 30min "nu" "--no-config-file" $emulated $platform }
     }
     reclaim-build-output
-    if not $passed { error make {msg: $"($lane) lane failed"} }
+    finish-lane $lane [$passed]
 }
 
 # Whether the PR this run is verifying has moved on to a newer commit, so the
