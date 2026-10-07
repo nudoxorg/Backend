@@ -36,7 +36,8 @@ use std::fmt;
 use std::path::Path;
 
 pub use backend_engine::application::{
-    ClosedLocalHostEnvironmentSnapshot, ClosedLocalHostEnvironmentSnapshotError, LocalHostVariable,
+    ClosedLocalHostEnvironmentSnapshot, ClosedLocalHostEnvironmentSnapshotError, LocalCompilerHost,
+    LocalHostDiscovery, LocalHostEnvironment, LocalHostVariable,
     MAX_CLOSED_LOCAL_HOST_ENVIRONMENT_BYTES,
 };
 pub use embedded::{EmbeddedLocalService, ServiceStart, start_or_attach};

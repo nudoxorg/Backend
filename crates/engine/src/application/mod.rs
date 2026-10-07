@@ -70,6 +70,7 @@ pub use self::embedding_provision::{
     inspect_embedding_runtime, install_embedding_runtime, remove_embedding_runtime,
 };
 pub use self::host::{
+    CapturedLocalHostEnvironment,
     ClosedLocalHostEnvironmentSnapshot, ClosedLocalHostEnvironmentSnapshotError, LocalCompilerHost,
     LocalCompilerHostError, LocalCompilerHostSelection, LocalCompilerHostSelectionIssue,
     LocalCompilerHostSelectionSource, LocalHostDirectory, LocalHostDiscovery, LocalHostEnvironment,

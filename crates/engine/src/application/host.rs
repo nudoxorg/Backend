@@ -6,6 +6,7 @@
 //! process environment.
 
 mod authority;
+mod capture;
 mod error;
 mod paths;
 mod snapshot;
@@ -36,6 +37,7 @@ use crate::application::{
     LocalRuntimeGoAuthorityFailure, ToolchainProbeLimits,
 };
 
+pub use capture::CapturedLocalHostEnvironment;
 pub use error::LocalCompilerHostError;
 pub use paths::{LocalHostDirectory, LocalHostPathKind, LocalHostPathRole};
 pub use snapshot::{
@@ -353,6 +355,18 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             return Err(LocalCompilerHostError::InstalledSelectionRequiresCapturePolicy);
         }
 
+        // Read ambient inputs exactly once. Discovery and the closed receipt must describe
+        // the same launch, even when an embedding host supplies a mutable environment reader.
+        LocalCompilerHost::new(
+            CapturedLocalHostEnvironment::capture(&self.environment),
+            LocalHostDiscovery::InstalledTools,
+        )
+        .capture_frozen_installed_selection()
+    }
+
+    fn capture_frozen_installed_selection(
+        &self,
+    ) -> Result<LocalCompilerHostSelection, LocalCompilerHostError> {
         let home = self.optional_absolute_path(LocalHostVariable::Home)?;
         let mut paths =
             Vec::with_capacity(LocalHostVariable::CLOSED_ENVIRONMENT_SNAPSHOT_ROLE_COUNT);

@@ -1,9 +1,9 @@
 //! The compiler paths the desktop supplies to the owner it embeds.
 //!
-//! The owner finds its compilers only through explicit absolute paths
-//! (`NUDOX_*`, never `PATH`): "an operator can opt into a toolchain by
-//! supplying its absolute typed path". The desktop that embeds an owner is that
-//! operator. Since the index merge the owner needs, for Rust, a Cargo and a
+//! The desktop freezes its launch inputs and uses the engine's shared installed
+//! tool selection, as CLI/MCP locald does. Only canonical selected paths enter
+//! the closed owner environment; PATH never enters compiler children. For Rust,
+//! the owner needs a Cargo and a
 //! Cargo home as well as `NUDOX_RUSTC` (a lone `NUDOX_RUSTC` used to be enough
 //! and the development shell still exports only that), and for Go a module
 //! cache. Without them the owner's Rust and Go adapters are absent and every
@@ -29,7 +29,10 @@
 //! [`report`]ed, so the window can say it in words instead of every Rust
 //! package being refused as unavailable.
 
-use backend_local_service::{ClosedLocalHostEnvironmentSnapshot, LocalHostVariable};
+use backend_local_service::{
+    ClosedLocalHostEnvironmentSnapshot, LocalCompilerHost, LocalHostDiscovery,
+    LocalHostEnvironment, LocalHostVariable,
+};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io;
@@ -324,19 +327,29 @@ impl CompilerSelection {
 /// Freeze operator variables once, realize only inferred state, and hand the
 /// owner the same typed paths that a later MCP client configuration exports.
 pub(crate) fn prepared_by_the_process() -> io::Result<ClosedLocalHostEnvironmentSnapshot> {
+    if let Some(snapshot) = incoming_closed_snapshot()? {
+        return Ok(snapshot);
+    }
     let captured = process_variables();
     let variable = |name: &str| captured.get(name).cloned();
-    let system = SYSTEM_BINS.iter().map(|(dir, place)| (PathBuf::from(dir), *place)).collect::<Vec<_>>();
+    let system = SYSTEM_BINS
+        .iter()
+        .map(|(dir, place)| (PathBuf::from(dir), *place))
+        .collect::<Vec<_>>();
     let found = match find_rust(&variable, &system) {
         Rust::Found { rustc, place, .. } => {
             let version = version_of(&rustc);
-            Rust::Found { rustc, place, version }
+            Rust::Found {
+                rustc,
+                place,
+                version,
+            }
         }
         missing @ Rust::Missing { .. } => missing,
     };
     *REPORT.write().unwrap_or_else(PoisonError::into_inner) = Some(found);
     let selected = CompilerSelection::derive(&variable, &system);
-    let snapshot = closed_snapshot(selected.paths.clone())?;
+    let snapshot = installed_snapshot(&captured, &selected)?;
     selected.realize()?;
     Ok(snapshot)
 }
@@ -345,15 +358,72 @@ pub(crate) fn prepared_by_the_process() -> io::Result<ClosedLocalHostEnvironment
 /// source may use this client's existing Cargo cache, without claiming that
 /// these are the attached owner's compiler or policy settings.
 pub(crate) fn captured_by_the_process() -> io::Result<ClosedLocalHostEnvironmentSnapshot> {
-    if let Some(encoded) = std::env::var_os(backend_local_service::COMPILER_ENVIRONMENT_ENV) {
-        let encoded = encoded.to_str().ok_or_else(|| io::Error::new(
-            io::ErrorKind::InvalidInput, "closed compiler environment must be UTF-8",
-        ))?;
-        return ClosedLocalHostEnvironmentSnapshot::parse(encoded)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error));
+    if let Some(snapshot) = incoming_closed_snapshot()? {
+        return Ok(snapshot);
     }
     let captured = process_variables();
     closed_snapshot(closed_paths(&|name| captured.get(name).cloned()))
+}
+
+fn incoming_closed_snapshot() -> io::Result<Option<ClosedLocalHostEnvironmentSnapshot>> {
+    if let Some(encoded) = std::env::var_os(backend_local_service::COMPILER_ENVIRONMENT_ENV) {
+        let encoded = encoded.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "closed compiler environment must be UTF-8",
+            )
+        })?;
+        return ClosedLocalHostEnvironmentSnapshot::parse(encoded)
+            .map(Some)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error));
+    }
+    Ok(None)
+}
+
+/// The desktop supplies its Rust pair, then delegates installed authority selection to the
+/// same engine policy as CLI/MCP locald composition. This reader is already frozen and never
+/// falls back to the live process, including for absent and explicitly empty variables.
+struct DesktopLaunchEnvironment<'a> {
+    captured: &'a BTreeMap<&'static str, OsString>,
+    selected: &'a CompilerSelection,
+}
+
+impl LocalHostEnvironment for DesktopLaunchEnvironment<'_> {
+    fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
+        self.selected
+            .paths
+            .iter()
+            .find(|(key, _)| *key == variable)
+            .map(|(_, path)| path.as_os_str().to_owned())
+    }
+
+    fn search_path(&self) -> Option<OsString> {
+        self.captured.get("PATH").cloned()
+    }
+    fn go_module_cache(&self) -> Option<OsString> {
+        self.captured.get("GOMODCACHE").cloned()
+    }
+    fn go_path(&self) -> Option<OsString> {
+        self.captured.get("GOPATH").cloned()
+    }
+}
+
+fn installed_snapshot(
+    captured: &BTreeMap<&'static str, OsString>,
+    selected: &CompilerSelection,
+) -> io::Result<ClosedLocalHostEnvironmentSnapshot> {
+    LocalCompilerHost::new(
+        DesktopLaunchEnvironment { captured, selected },
+        LocalHostDiscovery::InstalledTools,
+    )
+    .capture_installed_selection()
+    .map(|selection| selection.snapshot().clone())
+    .map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("capture installed compiler selection: {error}"),
+        )
+    })
 }
 
 fn process_variables() -> BTreeMap<&'static str, OsString> {
@@ -391,6 +461,73 @@ fn closed_snapshot(paths: Vec<(LocalHostVariable, PathBuf)>) -> io::Result<Close
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[cfg(unix)]
+    #[test]
+    fn desktop_and_locald_capture_the_same_global_npm_symlink_and_node() {
+        use std::os::unix::{fs::PermissionsExt as _, fs::symlink};
+        let machine = machine("typescript-shared");
+        let home = machine.root.join("home");
+        let module_root = home.join(".local/lib/node_modules");
+        let package = module_root.join("typescript");
+        let compiler = package.join("bin/tsc");
+        std::fs::create_dir_all(compiler.parent().expect("compiler parent")).expect("package");
+        std::fs::write(&compiler, "#!/usr/bin/env node\n").expect("compiler");
+        std::fs::set_permissions(&compiler, std::fs::Permissions::from_mode(0o700))
+            .expect("compiler permissions");
+        let bin = home.join(".local/bin");
+        std::fs::create_dir_all(&bin).expect("user bin");
+        symlink(&compiler, bin.join("tsc")).expect("npm tsc symlink");
+        let node = bin.join("node");
+        std::fs::write(&node, "#!/bin/sh\nexit 0\n").expect("node");
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o700))
+            .expect("node permissions");
+        let mut captured = BTreeMap::from([
+            ("HOME", home.into_os_string()),
+            ("PATH", bin.into_os_string()),
+        ]);
+        let selected = CompilerSelection::derive(&|name| captured.get(name).cloned(), &[]);
+        let desktop = installed_snapshot(&captured, &selected).expect("desktop capture");
+        let locald = LocalCompilerHost::new(
+            DesktopLaunchEnvironment {
+                captured: &captured,
+                selected: &selected,
+            },
+            LocalHostDiscovery::InstalledTools,
+        )
+        .capture_installed_selection()
+        .expect("locald capture");
+        assert_eq!(&desktop, locald.snapshot());
+        assert_eq!(
+            desktop.path(LocalHostVariable::NudoxTypeScriptDefaultCompiler),
+            Some(compiler.as_path())
+        );
+        assert_eq!(
+            desktop.path(LocalHostVariable::NudoxTypeScriptCompiler),
+            None,
+            "discovered host fallback cannot override project-local SDK precedence"
+        );
+        assert_eq!(
+            desktop.path(LocalHostVariable::NudoxTypeScriptModuleRoot),
+            Some(module_root.as_path())
+        );
+        assert_eq!(
+            desktop.path(LocalHostVariable::NudoxTypeScriptNode),
+            Some(node.as_path())
+        );
+
+        // Explicit invalid settings must not be repaired by the working PATH pair.
+        for value in [
+            OsString::new(),
+            OsString::from("relative/tsc"),
+            machine.root.join("missing/tsc").into_os_string(),
+        ] {
+            captured.insert("NUDOX_TSC", value);
+            let selected = CompilerSelection::derive(&|name| captured.get(name).cloned(), &[]);
+            assert!(installed_snapshot(&captured, &selected).is_err());
+        }
+        std::fs::remove_dir_all(machine.root).expect("owned fixture cleanup");
+    }
 
     /// A toolchain directory and a home, on disk, under a scratch root.
     struct Machine {
