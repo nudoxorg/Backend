@@ -1,6 +1,7 @@
 """Data and filesystem regressions for the Linux installer; no product ELF is faked."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import tarfile
 import tempfile
@@ -54,6 +55,26 @@ class InstallerMetadataTests(unittest.TestCase):
 
 
 class InstallerFilesystemTests(unittest.TestCase):
+    def test_existing_package_aliases_are_refused_even_when_bytes_are_unchanged(self):
+        for relative, directory in (("share", True), ("share/nudox/typescript", True),
+                                    ("lib", True), ("lib/libgcc_s.so.1", False)):
+            with self.subTest(relative=relative), tempfile.TemporaryDirectory() as temporary:
+                base = Path(temporary).resolve()
+                root = base / "package"
+                (root / "share/nudox/typescript").mkdir(parents=True)
+                (root / "lib").mkdir()
+                (root / "lib/libgcc_s.so.1").write_bytes(b"unchanged installed bytes")
+                original = root / relative
+                outside = base / "outside"
+                original.rename(outside)
+                os.symlink(outside, original)
+                with self.assertRaisesRegex(installer.InstallError, "link or invalid"):
+                    installer._verified_package_path(root, relative, directory=directory)
+                # Descendants cannot make a linked parent acceptable either.
+                if directory:
+                    with self.assertRaisesRegex(installer.InstallError, "link or invalid"):
+                        installer._verified_package_path(root, relative + "/member")
+
     def test_existing_marker_does_not_skip_rechecking_installed_files(self):
         marker = {"version": "0.2.0", "tag": "checkpoint-test", "source_sha": "a" * 40, "asset": "release.tar.gz", "sha256": "b" * 64}
         entry = {"tag": marker["tag"]}

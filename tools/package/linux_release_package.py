@@ -20,10 +20,9 @@ BINARIES = ("backend-cli", "backend-mcp", "backend-locald")
 TARGET = "x86_64-unknown-linux-gnu"
 INTERPRETER = "/lib64/ld-linux-x86-64.so.2"
 TAG_RE = re.compile(r"checkpoint-[0-9]{8}-[a-f0-9]{10}-linux-x64\Z")
-GLIBC_SONAMES = {
-    "libc.so.6", "libm.so.6", "libdl.so.2", "libpthread.so.0", "librt.so.1",
-    "libresolv.so.2", "libutil.so.1", "libanl.so.1", "ld-linux-x86-64.so.2",
-}
+# Shared with native standalone SDK admission; one finite loader classification.
+GLIBC_SONAMES = frozenset(Path(__file__).with_name("linux_system_sonames.txt").read_text().splitlines())
+
 NEEDED = re.compile(r"^\s*(\S+) => (\S+) \(", re.MULTILINE)
 GLIBC_VERSION = re.compile(r"GLIBC_([0-9]+\.[0-9]+)")
 

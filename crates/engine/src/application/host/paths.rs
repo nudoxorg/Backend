@@ -1650,6 +1650,24 @@ fn standalone_package_root(executable: &Path) -> Option<PathBuf> {
     .then(|| root.to_path_buf())
 }
 
+#[derive(Clone, Copy)]
+enum LinuxLoaderDependency {
+    System,
+    Bundled,
+}
+
+fn linux_loader_dependency(name: &str) -> Option<LinuxLoaderDependency> {
+    if name.is_empty() || name.contains('/') || name.contains('\\') || matches!(name, "." | "..") {
+        return None;
+    }
+    Some(if include_str!("../../../../../tools/package/linux_system_sonames.txt")
+        .lines().any(|system| system == name) {
+        LinuxLoaderDependency::System
+    } else {
+        LinuxLoaderDependency::Bundled
+    })
+}
+
 struct StandaloneTypeScriptResources {
     root: PathBuf,
     manifest_path: PathBuf,
@@ -1836,21 +1854,10 @@ impl StandaloneTypeScriptResources {
             let name = dependency
                 .as_str()
                 .ok_or_else(|| refuse("invalid Node dependency identity"))?;
-            if matches!(
-                name,
-                "libc.so.6"
-                    | "libm.so.6"
-                    | "libpthread.so.0"
-                    | "libdl.so.2"
-                    | "librt.so.1"
-                    | "libresolv.so.2"
-                    | "libutil.so.1"
-                    | "ld-linux-x86-64.so.2"
-            ) {
-                continue;
-            }
-            if name.contains('/') || name.contains('\\') || matches!(name, "." | "..") {
-                return Err(refuse("Node dependency contains an unsafe loader path"));
+            match linux_loader_dependency(name) {
+                Some(LinuxLoaderDependency::System) => continue,
+                Some(LinuxLoaderDependency::Bundled) => {},
+                None => return Err(refuse("Node dependency contains an unsafe loader path")),
             }
             if !seen.insert(name.to_owned()) {
                 continue;
@@ -2782,6 +2789,37 @@ mod tests {
             Err(LocalCompilerHostError::BundleManifest { .. })
         ));
         fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
+    fn standalone_node_receipt_uses_shared_system_loader_classification() {
+        // Admission controls only; these fixture bytes are never executed as an SDK.
+        let root = private_test_directory("standalone-system-loader");
+        let node = root.join("share/nudox/typescript/node/bin/node");
+        executable(&node);
+        let (bytes, digest) = sha256_file(&node, MAX_BUNDLED_NODE_BYTES).unwrap();
+        let manifest_path = root.join("packaging-manifest.json");
+        let mut manifest = serde_json::json!({
+            "typescript_sdk": {
+                "node_version": "v24.18.0",
+                "files": {"share/nudox/typescript/node/bin/node": {
+                    "kind":"file", "size_bytes":bytes, "sha256":digest}},
+                "node": {"packaged_path":"share/nudox/typescript/node/bin/node",
+                         "packaged_sha256":digest, "packaged_elf":{"needed":["libanl.so.1"]}}
+            },
+            "libraries": {}
+        });
+        let metadata = serde_json::to_vec(&manifest).unwrap();
+        fs::write(&manifest_path, &metadata).unwrap();
+        let mut resources = StandaloneTypeScriptResources {
+            root: root.clone(), manifest_path: manifest_path.clone(), manifest: manifest.clone(),
+            proof: BundleTypeScriptResourceProof::from_bytes(&manifest_path, MAX_BUNDLE_MANIFEST_BYTES, &metadata).unwrap(),
+        };
+        assert_eq!(resources.admit_node().unwrap(), node);
+        manifest["typescript_sdk"]["node"]["packaged_elf"]["needed"] = serde_json::json!(["libgcc_s.so.1"]);
+        resources.manifest = manifest;
+        assert!(matches!(resources.admit_node(), Err(LocalCompilerHostError::BundleManifest { .. })));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[derive(Clone, Default)]

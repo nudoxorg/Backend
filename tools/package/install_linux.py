@@ -321,6 +321,27 @@ def _glibc_version() -> tuple[int, int] | None:
 
 
 
+def _verified_package_path(root: Path, relative: str, *, directory: bool = False) -> Path:
+    """Admit real package descendants, including every parent, before reuse or execution."""
+    try:
+        if root.is_symlink() or not root.is_dir() or root.resolve(strict=True) != root:
+            raise InstallError("package root is not a canonical real directory")
+        parts = PurePosixPath(relative).parts
+        if "\\" in relative or any(part in {".", "..", "/"} for part in parts):
+            raise InstallError("package path contains an unsafe component")
+        path = root
+        for index, part in enumerate(parts):
+            path = path / part
+            last = index == len(parts) - 1
+            if path.is_symlink() or (not last or directory) and not path.is_dir() or last and not directory and not path.is_file():
+                raise InstallError("package path contains a link or invalid file/directory boundary: " + relative)
+        if path.resolve(strict=True) != path or not path.is_relative_to(root):
+            raise InstallError("package path leaves its canonical root: " + relative)
+        return path
+    except OSError as error:
+        raise InstallError("package path is unreadable: " + relative) from error
+
+
 def verify_typescript_sdk(root: Path, package: dict) -> None:
     """Recheck the installed SDK before promotion or reuse; never run project setup."""
     sdk = package.get("typescript_sdk")
@@ -343,10 +364,11 @@ def verify_typescript_sdk(root: Path, package: dict) -> None:
             raise InstallError("SDK inventory contains an invalid file record")
     observed = set()
     total = 0
-    pending = [root / "share/nudox/typescript"]
+    pending = [_verified_package_path(root, "share/nudox/typescript", directory=True)]
     while pending:
         for path in pending.pop().iterdir():
             relative = path.relative_to(root).as_posix()
+            _verified_package_path(root, relative, directory=path.is_dir())
             if path.is_symlink() or not (path.is_file() or path.is_dir()):
                 raise InstallError("installed SDK contains a link or special file")
             if path.is_dir():
@@ -389,6 +411,9 @@ def verify_typescript_sdk(root: Path, package: dict) -> None:
             raise InstallError("installed SDK does not reproduce its recorded Node/Compiler API identity")
 
 def verify_package(root: Path, entry: dict, manifest: dict) -> None:
+    _verified_package_path(root, "", directory=True)
+    for relative in ("build-manifest.json", "packaging-manifest.json", *("bin/" + name for name in REQUIRED_BINARIES)):
+        _verified_package_path(root, relative)
     if not (root / "bin/backend-cli").is_file() or not os.access(root / "bin/backend-cli", os.X_OK):
         raise InstallError("installed stage does not contain an executable backend-cli")
     if any((root / name).stat().st_size > 16 * 1024 * 1024 for name in ("build-manifest.json", "packaging-manifest.json")):
@@ -423,7 +448,9 @@ def verify_package(root: Path, entry: dict, manifest: dict) -> None:
     for soname, record in libraries.items():
         if not isinstance(record, dict) or record.get("packaged_path") != f"lib/{soname}":
             raise InstallError(f"package manifest has an invalid shared-library record for {soname}")
-        library = root / "lib" / soname
+        if not isinstance(soname, str) or PurePosixPath(soname).name != soname or "\\" in soname or soname in {".", ".."}:
+            raise InstallError("package has an unsafe shared-library name")
+        library = _verified_package_path(root, "lib/" + soname)
         if not library.is_file() or record.get("packaged_sha256") != _file_sha256(library):
             raise InstallError(f"package manifest does not attest shared library {soname}")
     minimum = tuple(int(part) for part in manifest["minimum_glibc"].split("."))
