@@ -101,6 +101,9 @@ mod tests {
             .expect("shared default pair");
         assert!(paths.contains(&(LocalHostVariable::NudoxRustc, bin.join("rustc"))));
         assert!(paths.contains(&(LocalHostVariable::NudoxCargo, bin.join("cargo"))));
+        make(None, None)
+            .realize_installed_rust_cache(&paths, Some(&home))
+            .expect("realize selected default");
         let cache = home.join(".cargo");
         assert_eq!(
             std::fs::metadata(&cache).unwrap().permissions().mode() & 0o777,
@@ -286,6 +289,47 @@ use backend_semantic::vocabulary::NativeTool;
 use std::path::Path;
 
 impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
+    /// Realize only the inferred Cargo home after every launch path has been admitted.
+    pub(super) fn realize_installed_rust_cache(
+        &self,
+        paths: &[(LocalHostVariable, PathBuf)],
+        home: Option<&Path>,
+    ) -> Result<(), LocalCompilerHostError> {
+        if self
+            .environment
+            .value(LocalHostVariable::NudoxCargoHome)
+            .is_some()
+            || self.environment.cargo_home().is_some()
+        {
+            return Ok(());
+        }
+        let selected = |variable| {
+            paths
+                .iter()
+                .find(|(key, _)| *key == variable)
+                .map(|(_, path)| path.as_path())
+        };
+        let (Some(rustc), Some(cargo), Some(cache), Some(home)) = (
+            selected(LocalHostVariable::NudoxRustc),
+            selected(LocalHostVariable::NudoxCargo),
+            selected(LocalHostVariable::NudoxCargoHome),
+            home,
+        ) else {
+            return Ok(());
+        };
+        if cache != home.join(".cargo") || cache.exists() || !rustc.is_file() || !cargo.is_file() {
+            return Ok(());
+        }
+        backend_platform::durable::ensure_private_child_directory(cache).map_err(|source| {
+            LocalCompilerHostError::ConfiguredPath {
+                role: LocalHostPathRole::CargoHome,
+                variable: LocalHostVariable::NudoxCargoHome,
+                path: cache.to_path_buf().into_boxed_path(),
+                source,
+            }
+        })
+    }
+
     /// Complete the same installed Rust pair for every local service surface.
     pub(super) fn capture_installed_rust_paths(
         &self,
@@ -340,7 +384,6 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         {
             let configured = self.environment.cargo_home();
             let cargo_home = configured
-                .clone()
                 .map(PathBuf::from)
                 .or_else(|| home.map(|home| home.join(".cargo")));
             if let Some(cargo_home) = cargo_home {
@@ -349,21 +392,6 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                         variable: LocalHostVariable::NudoxCargoHome,
                         path: cargo_home.into_boxed_path(),
                     });
-                }
-                // Only the inferred cache beneath an existing user home can be created.
-                // Explicit paths and existing cache permissions/content are retained exactly.
-                if configured.is_none()
-                    && !cargo_home.exists()
-                    && rustc.is_file()
-                    && cargo.is_file()
-                {
-                    backend_platform::durable::ensure_private_child_directory(&cargo_home)
-                        .map_err(|source| LocalCompilerHostError::ConfiguredPath {
-                            role: LocalHostPathRole::CargoHome,
-                            variable: LocalHostVariable::NudoxCargoHome,
-                            path: cargo_home.clone().into_boxed_path(),
-                            source,
-                        })?;
                 }
                 paths.push((LocalHostVariable::NudoxCargoHome, cargo_home));
             }

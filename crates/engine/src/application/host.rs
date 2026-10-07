@@ -494,8 +494,9 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             }
         }
 
-        let snapshot = ClosedLocalHostEnvironmentSnapshot::from_paths(paths)
+        let snapshot = ClosedLocalHostEnvironmentSnapshot::from_paths(paths.clone())
             .map_err(LocalCompilerHostError::HostSnapshot)?;
+        self.realize_installed_rust_cache(&paths, home.as_deref())?;
         LocalCompilerHostSelection::captured_installed_tools(snapshot, go_failure)
             .map_err(LocalCompilerHostError::HostSnapshot)
     }
