@@ -102,7 +102,7 @@ class SDKReceiptAdmissionTests(unittest.TestCase):
             del receipt["files"]["../outside"]
             receipt_path.write_text(json.dumps(receipt))
             member = root / "node_modules/typescript/lib/typescript.js"
-            original = member.with_suffix(".saved")
+            original = root.parent / "typescript-api.saved"
             member.rename(original)
             os.symlink(original, member)
             with self.assertRaisesRegex(ValueError, "link or special file"):
