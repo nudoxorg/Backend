@@ -28,6 +28,8 @@ pub use tsz::checker::context::ResolutionModeOverride as TszResolutionModeOverri
 pub use tsz::lib_loader::LibFile as TszLibFile;
 /// One merged source file and its TSZ-owned syntax/binder spans.
 pub use tsz::parallel::BoundFile as TszBoundFile;
+/// Exact native complete-project check terminal, retained by package refusal projection.
+pub use tsz::parallel::ProjectProgramCheckError as TszProjectProgramCheckError;
 /// Native TSZ syntax arena used by exact source-coordinate occurrence joins.
 pub use tsz::parser::node::NodeArena as TszNodeArena;
 /// Native TSZ syntax-kind constants used by the compiler's exact source joins.

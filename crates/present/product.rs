@@ -947,6 +947,15 @@ fn index_operation_view(observation: &backend_library::IndexOperationObservation
                     let _published_root = receipt.view_root();
                     "published".to_owned()
                 }
+                backend_library::IndexOperationState::PartiallyPublished {
+                    refused_profiles,
+                    ..
+                } => {
+                    format!(
+                        "partially published; {} language profiles unavailable; inspect package-profile for toolchain guidance",
+                        refused_profiles.len()
+                    )
+                }
                 backend_library::IndexOperationState::Failed {
                     detail,
                     compiler_failure,
@@ -3557,7 +3566,9 @@ mod tests {
                 observation: observation.clone(),
             };
             assert_eq!(reply.id(), backend_library::CommandId::Package);
-            reply.admit(backend_library::CommandId::Package).expect("admitted metadata reply");
+            reply
+                .admit(backend_library::CommandId::Package)
+                .expect("admitted metadata reply");
             let view = product_view(&reply);
             let dto = crate::dto::ProductDto::new(&view);
             let encoded = serde_json::to_value(&dto).expect("shared JSON");

@@ -1362,12 +1362,12 @@ fn journal_v3_v21_payload(bytes: &[u8], field: &str) -> Vec<u8> {
 }
 
 #[test]
-fn journal_v3_known_v21_snapshots_events_chain_to_v22_without_replacing_history() {
+fn journal_v3_known_v21_snapshots_events_chain_to_current_without_replacing_history() {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock")
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("backend-journal-v21-to-v22-{stamp}"));
+    let path = std::env::temp_dir().join(format!("backend-journal-v21-to-current-{stamp}"));
     let head = super::super::genesis().expect("head");
     let capability = super::super::test_builtin_view_capability().expect("coverage");
     let (base, cursor) = super::super::initial_view().expect("base");
@@ -1408,7 +1408,7 @@ fn journal_v3_known_v21_snapshots_events_chain_to_v22_without_replacing_history(
             Some(capability.clone())
         )
         .is_err(),
-        "live view peers stay strict22"
+        "live view peers stay strict-current"
     );
     assert!(
         backend_engine::decode_compact_view_event(
@@ -1417,17 +1417,22 @@ fn journal_v3_known_v21_snapshots_events_chain_to_v22_without_replacing_history(
             &first
         )
         .is_err(),
-        "live compact codec stays strict22"
+        "live compact codec stays strict-current"
     );
-    let (third, third_cursor, checked_v22_event) = journal_v3_test_advance(
+    let (third, third_cursor, checked_current_event) = journal_v3_test_advance(
         recovered.view,
         recovered.cursor,
         &capability,
         "current::third",
     );
     journal
-        .persist(head.root(), &third, third_cursor, Some(&checked_v22_event))
-        .expect("append checked v22 event");
+        .persist(
+            head.root(),
+            &third,
+            third_cursor,
+            Some(&checked_current_event),
+        )
+        .expect("append checked current event");
     let updated_bytes = fs::read(&path).expect("mixed journal");
     assert!(
         updated_bytes.starts_with(&legacy_bytes),
@@ -1449,7 +1454,7 @@ fn journal_v3_known_v21_snapshots_events_chain_to_v22_without_replacing_history(
             Ok(())
         })
         .expect("scan mixed history");
-    assert_eq!(versions, [21, 21, 22]);
+    assert_eq!(versions, [21, 21, u64::from(backend_library::DTO_VERSION)]);
     for _ in 0..2 {
         let cold = ViewJournal::open(&path).expect("cold open");
         let recovered = cold
@@ -1555,8 +1560,8 @@ fn journal_v3_refuses_unknown_versions_fields_proof_basis_and_descriptor_changes
 }
 
 #[test]
-fn journal_v3_native_v21_fixture_appends_checked_v22_and_reopens_twice() {
-    assert_eq!(backend_library::DTO_VERSION, 22);
+fn journal_v3_native_v21_fixture_appends_checked_current_and_reopens_twice() {
+    assert_eq!(backend_library::DTO_VERSION, 23);
     // Exact historical codec output: native ARM64 source 9b0001b3af, whose
     // production persisted grammar is still v21. No field/version rewrite.
     let native = include_bytes!("fixtures/view-journal-v3-native-v21.bin");
@@ -1568,7 +1573,7 @@ fn journal_v3_native_v21_fixture_appends_checked_v22_and_reopens_twice() {
         .duration_since(UNIX_EPOCH)
         .expect("clock")
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("backend-native-journal-v21-v22-{stamp}"));
+    let path = std::env::temp_dir().join(format!("backend-native-journal-v21-current-{stamp}"));
     fs::write(&path, native).expect("copy historical operands into private test journal");
     let head = super::super::genesis().expect("checked head");
     let capability = super::super::test_builtin_view_capability().expect("coverage");
@@ -1617,7 +1622,7 @@ fn journal_v3_native_v21_fixture_appends_checked_v22_and_reopens_twice() {
             versions.push(value[field]["version"].as_u64().expect("native version"));
             assert!(
                 live_refused,
-                "historical bytes cannot enter the live v22 codec"
+                "historical bytes cannot enter the live current codec"
             );
             Ok(())
         })
@@ -1631,7 +1636,7 @@ fn journal_v3_native_v21_fixture_appends_checked_v22_and_reopens_twice() {
     );
     journal
         .persist(head.root(), &third, third_cursor, Some(&event))
-        .expect("append checked native v22 transition");
+        .expect("append checked native current transition");
     let mixed = fs::read(&path).expect("mixed grammar journal");
     assert!(
         mixed.starts_with(native),
@@ -1646,7 +1651,7 @@ fn journal_v3_native_v21_fixture_appends_checked_v22_and_reopens_twice() {
             Ok(())
         })
         .expect("mixed native frames");
-    assert_eq!(versions, [21, 21, 22]);
+    assert_eq!(versions, [21, 21, u64::from(backend_library::DTO_VERSION)]);
     drop(journal);
     for _ in 0..2 {
         let cold = ViewJournal::open(&path).expect("independent cold journal");

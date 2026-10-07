@@ -1285,6 +1285,100 @@ impl IndexOperationSourceCaptureReceipt {
         )
         .map(|_| ())
     }
+
+    /// Admits the complete terminal partition planned before a partial commit.
+    ///
+    /// # Errors
+    /// Rejects missing, duplicate, foreign, pending or contradictory outcomes.
+    /// The receipt retains every exact source/input/observation tuple; this
+    /// check establishes profile shape, never workspace publication authority.
+    pub fn admit_partial_refusals(
+        &self,
+        refused_profiles: &[IndexOperationProfileRefusal],
+    ) -> Result<(), ProductAdmissionError> {
+        self.admit(self.operation_key)?;
+        let profiles = self.profiles();
+        let published = profiles
+            .iter()
+            .filter(|profile| {
+                matches!(
+                    profile.state,
+                    IndexOperationSemanticProfileState::Published { .. }
+                )
+            })
+            .count();
+        if published == 0
+            || published == profiles.len()
+            || refused_profiles.len() != profiles.len() - published
+            || refused_profiles
+                .windows(2)
+                .any(|pair| pair[0].profile >= pair[1].profile)
+        {
+            return Err(ProductAdmissionError::IndexOperationShape);
+        }
+        for profile in profiles {
+            let expected_reason = match profile.state {
+                IndexOperationSemanticProfileState::Published { .. } => continue,
+                IndexOperationSemanticProfileState::Unavailable { reason }
+                | IndexOperationSemanticProfileState::Failed { reason, .. } => reason,
+                IndexOperationSemanticProfileState::Pending { .. } => {
+                    return Err(ProductAdmissionError::IndexOperationShape);
+                }
+            };
+            let refusal = refused_profiles
+                .iter()
+                .find(|refusal| refusal.profile == profile.profile)
+                .ok_or(ProductAdmissionError::IndexOperationShape)?;
+            if refusal.reason != expected_reason
+                || refusal.reason == IndexOperationSemanticUnavailableReason::Cancelled
+            {
+                return Err(ProductAdmissionError::IndexOperationShape);
+            }
+            if let Some(failure) = &refusal.compiler_failure {
+                if refusal.reason != IndexOperationSemanticUnavailableReason::Rejected {
+                    return Err(ProductAdmissionError::IndexOperationShape);
+                }
+                failure.encode_bounded_json()?;
+                if let PackageCompilerFailureCause::Authority {
+                    diagnostic: Some(facts),
+                    ..
+                } = failure.cause()
+                {
+                    let language = profile.profile.profile()?.language();
+                    if (facts.python_failure.is_some()
+                        && language != backend_semantic::vocabulary::Language::Python)
+                        || (facts.typescript_failure.is_some()
+                            && language != backend_semantic::vocabulary::Language::TypeScript)
+                        || matches!(
+                            facts.python_failure,
+                            Some(crate::interface::PythonAuthorityFailureKind::Cancelled)
+                        )
+                        || facts
+                            .typescript_failure
+                            .is_some_and(|failure| failure.is_cancelled())
+                    {
+                        return Err(ProductAdmissionError::IndexOperationShape);
+                    }
+                }
+                if let PackageCompilerFailureCause::Toolchain {
+                    language, stage, ..
+                }
+                | PackageCompilerFailureCause::ToolingUnavailable {
+                    language, stage, ..
+                }
+                | PackageCompilerFailureCause::RequiredTool {
+                    language, stage, ..
+                } = failure.cause()
+                    && (*language
+                        != CompilerLanguageFact::from(profile.profile.profile()?.language())
+                        || *stage != CompilerStageFact::LowerIr)
+                {
+                    return Err(ProductAdmissionError::IndexOperationShape);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 fn valid_index_operation_profile_state(state: IndexOperationSemanticProfileState) -> bool {
@@ -1316,6 +1410,19 @@ fn valid_index_operation_profile_state(state: IndexOperationSemanticProfileState
     }
 }
 
+/// One unavailable profile retained in an exact partial publication receipt.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexOperationProfileRefusal {
+    /// Closed profile identity from the committed source capture.
+    pub profile: SemanticLanguageProfile,
+    /// Closed reason this profile did not publish a refreshed generation.
+    pub reason: IndexOperationSemanticUnavailableReason,
+    /// Source-bound compiler refusal when the compiler supplied one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiler_failure: Option<PackageCompilerFailure>,
+}
+
 /// Durable state retained for one caller-owned index operation key.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", content = "detail", rename_all = "kebab-case")]
@@ -1331,6 +1438,15 @@ pub enum IndexOperationState {
     },
     /// The admitted workspace intent and its derived product view were durably published.
     Published(IndexOperationPublicationReceipt),
+    /// The exact workspace/view commit selected useful profile generations
+    /// and explicitly refused other captured profiles. This is terminal but
+    /// never establishes complete semantic coverage of the application.
+    PartiallyPublished {
+        /// Exact committed workspace and derived view receipt.
+        receipt: IndexOperationPublicationReceipt,
+        /// Every failed/unavailable captured profile, in canonical order.
+        refused_profiles: Box<[IndexOperationProfileRefusal]>,
+    },
     /// The operation ended without publishing its requested mutation.
     Failed {
         /// Stable terminal failure category.
@@ -1487,6 +1603,22 @@ impl IndexOperationObservation {
                         _ => {}
                     }
                 }
+                if let IndexOperationState::PartiallyPublished {
+                    receipt,
+                    refused_profiles,
+                } = &status.state
+                {
+                    let capture = status
+                        .source_capture
+                        .as_ref()
+                        .ok_or(ProductAdmissionError::IndexOperationShape)?;
+                    capture.admit_partial_refusals(refused_profiles)?;
+                    if receipt.workspace_sequence() <= capture.workspace_sequence()
+                        || receipt.request_identity().is_none()
+                    {
+                        return Err(ProductAdmissionError::IndexOperationShape);
+                    }
+                }
                 if let IndexOperationState::Failed {
                     reason,
                     compiler_failure: Some(failure),
@@ -1505,6 +1637,7 @@ impl IndexOperationObservation {
                         return Err(ProductAdmissionError::IndexOperationShape);
                     }
                     IndexOperationState::Published(receipt)
+                    | IndexOperationState::PartiallyPublished { receipt, .. }
                         if IndexOperationPublicationReceipt::from_checked_parts(
                             receipt.request_identity().copied(),
                             *receipt.commit_identity(),
@@ -2325,6 +2458,17 @@ fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, boo
     {
         return sanitize_package_compiler_detail(failure.detail(), false);
     }
+    if let PackageCompilerFailureCause::Authority {
+        diagnostic:
+            Some(CompilerAuthorityDiagnosticFacts {
+                typescript_failure: Some(failure),
+                ..
+            }),
+        ..
+    } = cause
+    {
+        return sanitize_package_compiler_detail(failure.detail(), false);
+    }
     let prefix = match cause {
         PackageCompilerFailureCause::Fragment(_) => "compact fragment fault",
         PackageCompilerFailureCause::Toolchain {
@@ -2415,8 +2559,14 @@ fn package_cause_is_valid(cause: &PackageCompilerFailureCause) -> bool {
         } => configured.is_none_or(|configured| *selected != configured),
         PackageCompilerFailureCause::ToolingUnavailable { .. }
         | PackageCompilerFailureCause::RequiredTool { .. }
-        | PackageCompilerFailureCause::Lowering(_)
-        | PackageCompilerFailureCause::Authority { .. } => true,
+        | PackageCompilerFailureCause::Lowering(_) => true,
+        PackageCompilerFailureCause::Authority {
+            diagnostic: Some(facts),
+            ..
+        } => !(facts.python_failure.is_some() && facts.typescript_failure.is_some()),
+        PackageCompilerFailureCause::Authority {
+            diagnostic: None, ..
+        } => true,
     }
 }
 
@@ -5768,6 +5918,85 @@ mod tests {
     }
 
     #[test]
+    fn typescript_authority_failure_preserves_exact_cause_without_native_text() {
+        use crate::interface::{
+            AuthorityDiagnosticClass, AuthorityPhase, CompilerAttempt, CompilerCause,
+            CompilerDiagnostic, CompilerTerminal, SourceAuthority,
+            TypeScriptAuthorityFailureKind as F,
+        };
+        for kind in [
+            F::HostCompilerApiBridge,
+            F::HostCompilerIoClosureMismatch,
+            F::CheckerPackageSourceMissing,
+            F::CheckerExit,
+            F::NativeProjectCheckDeadline,
+            F::NativeProjectCheckWorkBudgetExhausted,
+        ] {
+            let private = b"private absolute path /home/user/app/node_modules; native stderr";
+            let terminal = CompilerTerminal::Compile {
+                attempted: CompilerAttempt {
+                    source: SourceAuthority {
+                        identity: ContentId::<SourceFactDomain>::from_canonical_bytes(
+                            b"export const x = 1",
+                        ),
+                        byte_len: 18,
+                    },
+                    recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(
+                        b"actual-typed-ts-cause-control",
+                    ),
+                },
+                cause: CompilerCause::Authority {
+                    phase: AuthorityPhase::TypeCheck,
+                    class: AuthorityDiagnosticClass::Authority,
+                    diagnostic: CompilerDiagnostic::from_native(private, private.len(), false)
+                        .map(|value| value.with_typescript_failure(kind)),
+                },
+            };
+            let failure =
+                PackageCompilerFailure::from_package_terminal("eslint.config.mjs", &terminal)
+                    .expect("closed projection")
+                    .expect("authority refusal");
+            assert_eq!(failure.kind_tag(), kind.kind_tag());
+            assert_eq!(failure.detail(), kind.detail());
+            assert!(!failure.cause().requires_tool_configuration());
+            assert_eq!(
+                failure.retained_diagnostic_for_local_debug(),
+                Some(private.as_slice())
+            );
+            let encoded = failure
+                .encode_bounded_json()
+                .expect("bounded typed public refusal");
+            assert!(!String::from_utf8_lossy(&encoded).contains("/home/user"));
+            assert!(!String::from_utf8_lossy(&encoded).contains("native stderr"));
+            let reopened = PackageCompilerFailure::decode_bounded_json(&encoded)
+                .expect("strict cold wire refusal");
+            assert_eq!(reopened, failure);
+            assert!(reopened.retained_diagnostic_for_local_debug().is_none());
+            let mut json: serde_json::Value =
+                serde_json::from_slice(&encoded).expect("control JSON");
+            json["cause"]["fault"]["diagnostic"]["python_failure"] =
+                serde_json::json!("project_panic");
+            assert!(
+                PackageCompilerFailure::decode_bounded_json(
+                    &serde_json::to_vec(&json).expect("mutant")
+                )
+                .is_err(),
+                "contradictory language markers refused"
+            );
+            json["cause"]["fault"]["diagnostic"]["python_failure"] = serde_json::Value::Null;
+            json["cause"]["fault"]["diagnostic"]["typescript_failure"] =
+                serde_json::json!("invented_cause");
+            assert!(
+                PackageCompilerFailure::decode_bounded_json(
+                    &serde_json::to_vec(&json).expect("mutant")
+                )
+                .is_err(),
+                "unknown closed TS causes refused"
+            );
+        }
+    }
+
+    #[test]
     fn package_reference_kind_preserves_explicit_local_identity() {
         let text = "pkg:cargo/widget@1.0.0";
         let purl = PackageReference::from_kind(PackageReferenceKind::Purl, text)
@@ -6185,6 +6414,250 @@ mod tests {
             )
             .expect("operation status request decode"),
             lookup
+        );
+    }
+
+    #[test]
+    fn partial_operation_requires_exact_terminal_profile_partition_and_receipt() {
+        let key = IndexOperationKey::from_bytes([0x61; 32]).expect("operation key");
+        let mut profiles = vec![
+            IndexOperationSourceProfile {
+                profile: SemanticLanguageProfile::from_name("python").expect("Python profile"),
+                source_version: [5; 32],
+                input_digest: [6; 32],
+                observation_sequence: 7,
+                source_count: 2,
+                state: IndexOperationSemanticProfileState::Published {
+                    generation: [8; 32],
+                    coverage: IndexOperationSemanticCoverage::Complete,
+                },
+            },
+            IndexOperationSourceProfile {
+                profile: SemanticLanguageProfile::from_name("typescript")
+                    .expect("TypeScript profile"),
+                source_version: [5; 32],
+                input_digest: [9; 32],
+                observation_sequence: 10,
+                source_count: 3,
+                state: IndexOperationSemanticProfileState::Unavailable {
+                    reason: IndexOperationSemanticUnavailableReason::Rejected,
+                },
+            },
+        ];
+        profiles.sort_by_key(|profile| profile.profile);
+        let refused_profile = profiles
+            .iter()
+            .find(|profile| {
+                matches!(
+                    profile.state,
+                    IndexOperationSemanticProfileState::Unavailable { .. }
+                )
+            })
+            .expect("refused profile")
+            .profile;
+        let capture = IndexOperationSourceCaptureReceipt::from_checked_parts(
+            key,
+            [2; 32],
+            [3; 32],
+            8,
+            profiles.into_boxed_slice(),
+        )
+        .expect("source receipt");
+        let view = operation_receipt_view();
+        let receipt = IndexOperationPublicationReceipt::from_published_view(
+            Some([1; 32]),
+            [11; 32],
+            [12; 32],
+            9,
+            &view,
+            crate::Cursor::for_view_root(&view),
+        )
+        .expect("publication receipt");
+        let status = IndexOperationStatus::new(
+            key,
+            PackageReference::parse("/workspace/demo").expect("package"),
+            crate::CompileExecutionIntent::Interactive,
+            IndexOperationState::PartiallyPublished {
+                receipt,
+                refused_profiles: vec![IndexOperationProfileRefusal {
+                    profile: refused_profile,
+                    reason: IndexOperationSemanticUnavailableReason::Rejected,
+                    compiler_failure: Some(compiler_failure("src/recovery.ts")),
+                }]
+                .into_boxed_slice(),
+            },
+        )
+        .with_source_capture(Some(capture));
+        let admit = |status| {
+            SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(status))
+                .admit(CommandId::IndexProgress)
+        };
+        assert_eq!(admit(status.clone()), Ok(()));
+        for (language, stage, expected) in [
+            (
+                backend_semantic::vocabulary::Language::TypeScript,
+                backend_semantic::vocabulary::Stage::LowerIr,
+                Ok(()),
+            ),
+            (
+                backend_semantic::vocabulary::Language::Python,
+                backend_semantic::vocabulary::Stage::LowerIr,
+                Err(ProductAdmissionError::IndexOperationShape),
+            ),
+            (
+                backend_semantic::vocabulary::Language::TypeScript,
+                backend_semantic::vocabulary::Stage::Parse,
+                Err(ProductAdmissionError::IndexOperationShape),
+            ),
+        ] {
+            let terminal = crate::interface::CompilerTerminal::ToolingUnavailable {
+                source: crate::interface::SourceAuthority {
+                    identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"source bytes"),
+                    byte_len: 12,
+                },
+                language,
+                stage,
+                tool: if language == backend_semantic::vocabulary::Language::Python {
+                    backend_semantic::vocabulary::NativeTool::Python
+                } else {
+                    backend_semantic::vocabulary::NativeTool::TypeScriptCompiler
+                },
+            };
+            let mut setup = status.clone();
+            let IndexOperationState::PartiallyPublished {
+                refused_profiles, ..
+            } = &mut setup.state
+            else {
+                unreachable!()
+            };
+            refused_profiles[0].compiler_failure =
+                PackageCompilerFailure::from_package_terminal("src/recovery.ts", &terminal)
+                    .expect("bounded typed setup failure");
+            assert_eq!(admit(setup), expected);
+        }
+        let mut cancelled_partition = status.clone();
+        let mut cancelled_profiles = cancelled_partition
+            .source_capture
+            .as_ref()
+            .expect("capture")
+            .profiles()
+            .to_vec();
+        cancelled_profiles
+            .iter_mut()
+            .find(|profile| profile.profile == refused_profile)
+            .expect("refused")
+            .state = IndexOperationSemanticProfileState::Unavailable {
+            reason: IndexOperationSemanticUnavailableReason::Cancelled,
+        };
+        cancelled_partition.source_capture = Some(
+            IndexOperationSourceCaptureReceipt::from_checked_parts(
+                key,
+                [2; 32],
+                [3; 32],
+                8,
+                cancelled_profiles.into_boxed_slice(),
+            )
+            .expect("typed cancelled capture"),
+        );
+        let IndexOperationState::PartiallyPublished {
+            refused_profiles, ..
+        } = &mut cancelled_partition.state
+        else {
+            unreachable!()
+        };
+        refused_profiles[0].reason = IndexOperationSemanticUnavailableReason::Cancelled;
+        refused_profiles[0].compiler_failure = None;
+        assert_eq!(
+            admit(cancelled_partition),
+            Err(ProductAdmissionError::IndexOperationShape),
+            "caller cancellation cannot be represented as partial publication"
+        );
+        let encoded = serde_json::to_vec(&IndexOperationObservation::Known(status.clone()))
+            .expect("partial wire");
+        assert_eq!(
+            serde_json::from_slice::<IndexOperationObservation>(&encoded).expect("partial decode"),
+            IndexOperationObservation::Known(status.clone())
+        );
+        assert_eq!(
+            crate::DTO_VERSION,
+            23,
+            "partial publication uses the closed wire-23 cohort"
+        );
+        let command = crate::CommandDto::new(
+            61,
+            crate::Command::Surface(SurfaceCommand::IndexOperationStatus { operation_key: key }),
+        );
+        let reply = crate::ReplyDto::new(
+            61,
+            crate::CommandReply::Surface(SurfaceReply::IndexOperationStatus(
+                IndexOperationObservation::Known(status.clone()),
+            )),
+        );
+        let encoded_reply = serde_json::to_vec(&reply).expect("partial reply envelope");
+        let decoded_reply =
+            crate::decode_reply_body(&encoded_reply).expect("wire-23 partial reply");
+        crate::admit_reply(&command, &decoded_reply).expect("admit exact partial status route");
+        assert_eq!(decoded_reply, reply);
+        let mut old_peer: serde_json::Value =
+            serde_json::from_slice(&encoded_reply).expect("encoded reply fields");
+        old_peer["version"] = serde_json::json!(22);
+        let old_bytes = serde_json::to_vec(&old_peer).expect("old peer version header");
+        let error = crate::decode_reply_body(&old_bytes).expect_err("wire-22 partial peer refused");
+        assert!(error.contains("reply DTO version 22"));
+        assert!(error.contains("this build supports 23"));
+        assert!(error.contains("same build"));
+        let mut missing = status.clone();
+        missing.source_capture = None;
+        assert_eq!(
+            admit(missing),
+            Err(ProductAdmissionError::IndexOperationShape)
+        );
+        for state in [
+            IndexOperationSemanticProfileState::Pending { prior: None },
+            IndexOperationSemanticProfileState::Published {
+                generation: [8; 32],
+                coverage: IndexOperationSemanticCoverage::Complete,
+            },
+        ] {
+            let mut malformed = status.clone();
+            malformed
+                .source_capture
+                .as_mut()
+                .expect("capture")
+                .profiles
+                .iter_mut()
+                .find(|profile| profile.profile == refused_profile)
+                .expect("refusal")
+                .state = state;
+            assert_eq!(
+                admit(malformed),
+                Err(ProductAdmissionError::IndexOperationShape)
+            );
+        }
+        let mut mismatch = status.clone();
+        let IndexOperationState::PartiallyPublished {
+            refused_profiles, ..
+        } = &mut mismatch.state
+        else {
+            unreachable!()
+        };
+        refused_profiles[0].reason = IndexOperationSemanticUnavailableReason::Toolchain;
+        assert_eq!(
+            admit(mismatch),
+            Err(ProductAdmissionError::IndexOperationShape)
+        );
+        let mut duplicated = status.clone();
+        let IndexOperationState::PartiallyPublished {
+            refused_profiles, ..
+        } = &mut duplicated.state
+        else {
+            unreachable!()
+        };
+        *refused_profiles =
+            vec![refused_profiles[0].clone(), refused_profiles[0].clone()].into_boxed_slice();
+        assert_eq!(
+            admit(duplicated),
+            Err(ProductAdmissionError::IndexOperationShape)
         );
     }
 

@@ -28,6 +28,15 @@ pub(super) fn parse_reply_body<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, S
     if bytes.len() > MAX_REPLY_BODY {
         return Err(format!("reply body exceeds {MAX_REPLY_BODY} bytes"));
     }
+    // Inspect only the bounded envelope version before allocating strict nested
+    // payloads. A different protocol can add fields our reader does not know;
+    // the useful refusal is the version mismatch, before those shape errors.
+    #[derive(serde::Deserialize)]
+    struct VersionHeader {
+        version: u16,
+    }
+    let header: VersionHeader = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    super::ensure_version(header.version, "reply")?;
     serde_json::from_slice(bytes).map_err(|error| error.to_string())
 }
 
@@ -237,6 +246,41 @@ mod tests {
         let mut padded = bytes.to_vec();
         padded.resize(limit + 1, b' ');
         padded
+    }
+
+    #[test]
+    fn protocol_mismatch_precedes_unknown_strict_python_payload_fields() {
+        let verifier = CountingVerifier::new();
+        for version in [crate::DTO_VERSION - 1, crate::DTO_VERSION + 1] {
+            let bytes = serde_json::to_vec(&serde_json::json!({
+                "version": version,
+                "request_id": 41,
+                "certificate": {"future_producer_contract": true},
+                "reply": {"kind": "surface", "data": {
+                    "result": "package-profile", "data": {"future_python_metadata": true}
+                }}
+            }))
+            .expect("future protocol payload");
+            let error = decode_reply_body(&bytes).expect_err("explicit protocol refusal");
+            assert!(error.contains(&format!("reply DTO version {version}")));
+            assert!(error.contains(&format!("this build supports {}", crate::DTO_VERSION)));
+            assert!(!error.contains("unknown field"));
+            let error = decode_reply_body_with_verifier(&bytes, &verifier)
+                .expect_err("refuse before producer verification");
+            assert!(error.contains("same build"));
+        }
+        assert_eq!(verifier.calls(), 0);
+        let current = serde_json::to_vec(&serde_json::json!({
+            "version": crate::DTO_VERSION,
+            "request_id": 41,
+            "certificate": null,
+            "reply": {"kind": "error", "data": {"message": "failure", "future_field": true}}
+        }))
+        .expect("unknown current field");
+        assert!(
+            decode_reply_body(&current).is_err(),
+            "same-version grammar stays closed"
+        );
     }
 
     #[test]

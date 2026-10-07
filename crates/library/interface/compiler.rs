@@ -1015,6 +1015,8 @@ pub struct CompilerDiagnosticFacts {
     /// expose it as a stable cause tag while the bounded diagnostic bytes remain
     /// available only through the local-debug accessor.
     pub python_failure: Option<PythonAuthorityFailureKind>,
+    /// Exact TypeScript authority cause; native bytes and paths remain local.
+    pub typescript_failure: Option<super::TypeScriptAuthorityFailureKind>,
     /// Zero-filled storage whose prefix through `byte_len` is the exact diagnostic prefix.
     pub bytes: [u8; MAX_NATIVE_DIAGNOSTIC_BYTES],
 }
@@ -1167,6 +1169,7 @@ impl CompilerDiagnostic {
             observed,
             truncated: truncated || retained != bytes.len(),
             python_failure: None,
+            typescript_failure: None,
             bytes: output,
         })))
     }
@@ -1176,6 +1179,18 @@ impl CompilerDiagnostic {
     #[must_use]
     pub fn with_python_failure(mut self, failure: PythonAuthorityFailureKind) -> Self {
         self.0.python_failure = Some(failure);
+        self.0.typescript_failure = None;
+        self
+    }
+
+    /// Adds an exact TypeScript cause without modifying retained native bytes.
+    #[must_use]
+    pub fn with_typescript_failure(
+        mut self,
+        failure: super::TypeScriptAuthorityFailureKind,
+    ) -> Self {
+        self.0.typescript_failure = Some(failure);
+        self.0.python_failure = None;
         self
     }
 

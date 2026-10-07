@@ -7,6 +7,7 @@
 //! typed diagnostics. Process, JSON-RPC, and GPUI crates only decode or project these values.
 
 mod compiler;
+mod compiler_typescript;
 mod execution;
 mod index_sync;
 mod local_query;
@@ -46,6 +47,7 @@ pub use compiler::{
     TypeNodeFaultFacts, UnavailableCompiler, ValidateFaultKind, ValidationFaultFacts,
     WriteFaultKind,
 };
+pub use compiler_typescript::TypeScriptAuthorityFailureKind;
 pub use index_sync::{
     BaseGeneration, ClientIndex, ClientManifest, ClientSyncError, ClientSyncPhase,
     CompleteLocalSelection, DemandSelection, DisposableProjection, EffectiveSearchDocument,
