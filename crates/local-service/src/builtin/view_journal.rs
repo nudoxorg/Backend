@@ -160,6 +160,9 @@ impl ViewJournal {
                 sequence_workspace_root = Some(envelope.workspace_root);
                 sequence_capability = Some(envelope.capability);
             } else {
+                if cursor_sequence_floor.is_none() {
+                    return Err("view journal event precedes its snapshot".to_owned());
+                }
                 if sequence_workspace_root != Some(envelope.workspace_root)
                     || sequence_capability != Some(envelope.capability)
                 {
