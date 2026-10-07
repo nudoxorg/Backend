@@ -63,6 +63,7 @@ pub const RUNTIME_DIR_ENV: &str = "XDG_RUNTIME_DIR";
 const APPLICATION_DIRECTORY: &str = "Nudox";
 const PROJECTS_DIRECTORY: &str = "projects";
 const AUTHORITY_FILE: &str = "authority.secret";
+const AUTHORITY_INITIALIZATION_LOCK: &str = "authority-initialize.lock";
 /// How long a daemon that is still running may take to publish its endpoint.
 ///
 /// Opening a cold workspace is bounded by how much the last revision wrote,
@@ -884,10 +885,10 @@ fn ensure_authority_secret(path: &Path) -> Result<(), RuntimeError> {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
 
-    match fs::symlink_metadata(path) {
-        Ok(_) => return validate_authority_secret(path),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(RuntimeError::Io(error)),
+    // An already admitted credential needs no write access or initializer
+    // lock. A concurrently publishing credential is not admitted yet.
+    if validate_authority_secret(path).is_ok() {
+        return Ok(());
     }
     let parent = path.parent().ok_or_else(|| {
         RuntimeError::Io(std::io::Error::new(
@@ -896,6 +897,23 @@ fn ensure_authority_secret(path: &Path) -> Result<(), RuntimeError> {
         ))
     })?;
     backend_platform::durable::ensure_private_directory(parent).map_err(RuntimeError::Io)?;
+    let directory = backend_platform::DirectoryCapability::open(
+        &fs::canonicalize(parent).map_err(RuntimeError::Io)?,
+    )
+    .map_err(RuntimeError::Io)?;
+    directory.validate_private().map_err(RuntimeError::Io)?;
+    let initialization = directory
+        .open_private_file_read_write(AUTHORITY_INITIALIZATION_LOCK, true)
+        .map_err(RuntimeError::Io)?;
+    initialization.lock().map_err(RuntimeError::Io)?;
+    // Independent processes keep the same descriptor lease through staging,
+    // no-clobber publication and temporary unlink. No racing initializer can
+    // inspect the valid credential's transient two-link publication window.
+    match fs::symlink_metadata(path) {
+        Ok(_) => return validate_authority_secret(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(RuntimeError::Io(error)),
+    }
     let mut bytes = [0_u8; 32];
     #[cfg(unix)]
     fs::File::open("/dev/urandom")
@@ -1594,12 +1612,8 @@ mod tests {
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
             .expect("set private fixture root");
         let data = root.join("client-data");
-        let paths = WorkspacePaths::discover(
-            Some(root.clone()),
-            Some(data.clone()),
-            Some(root.join("locald.sock")),
-        )
-        .expect("discover client-only workspace");
+        let paths = WorkspacePaths::discover(Some(root.clone()), Some(data.clone()), None)
+            .expect("discover client-only workspace");
 
         paths
             .initialize_data_directory()
@@ -1740,7 +1754,11 @@ mod tests {
                 .expect("read fixture")
                 .filter_map(Result::ok)
                 .count(),
-            1
+            2
+        );
+        assert!(
+            root.join(AUTHORITY_INITIALIZATION_LOCK).is_file(),
+            "the stable initializer lease replaces transient credential retries"
         );
         fs::remove_dir_all(fixture).expect("remove runtime fixture");
     }
