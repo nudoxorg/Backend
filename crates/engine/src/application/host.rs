@@ -819,6 +819,35 @@ mod tests {
         }
     }
 
+    struct PrivateTestDirectory(PathBuf);
+
+    impl PrivateTestDirectory {
+        fn create(label: &str) -> io::Result<Self> {
+            let path = std::env::temp_dir().join(format!(
+                "{label}-{}-{}",
+                std::process::id(),
+                NEXT_NATIVE_WORK.fetch_add(1, Ordering::Relaxed),
+            ));
+            fs::create_dir(&path)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
+            }
+            Ok(Self(path))
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for PrivateTestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
     fn inspected_environment_identity() -> [u8; 32] {
         let executable = std::env::current_exe().expect("test executable");
         let data_root = executable
@@ -940,7 +969,7 @@ mod tests {
         let node = required_path("NUDOX_GO_STARTUP_NODE")?;
         let module_root = required_path("NUDOX_GO_STARTUP_TYPESCRIPT_MODULE_ROOT")?;
 
-        let state = tempfile::tempdir()?;
+        let state = PrivateTestDirectory::create("go-owner-startup")?;
         let data_root = state.path().join("owner-data");
         let invalid_go_module_cache = state.path().join("invalid-go-module-cache");
         fs::write(&invalid_go_module_cache, b"not a directory")?;
