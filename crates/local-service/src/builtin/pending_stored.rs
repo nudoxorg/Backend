@@ -1518,6 +1518,22 @@ impl PendingStoredAckJournal {
         })
     }
 
+    /// A Pending source marker cannot be retired while an offered assignment,
+    /// stored result, or acknowledgement for its product key remains owned.
+    /// Include guarded in-flight selections: the retry iterator deliberately
+    /// hides those rows, but hiding them is not proof that work has ended.
+    /// An unbound reservation has no product identity and blocks conservatively.
+    pub(crate) fn protects_capture(&self, key: &PendingStoredAckProductKey) -> bool {
+        self.rows.values().any(|entry| match entry {
+            PendingStoredAckEntry::Reservation(row) => row
+                .identity
+                .as_ref()
+                .is_none_or(|identity| &identity.product_key == key),
+            PendingStoredAckEntry::Selection(row) => &row.product_key == key,
+            PendingStoredAckEntry::RejectedAdmission(row) => &row.identity.product_key == key,
+        })
+    }
+
     /// Marks an already-persisted AwaitingSelection row as owned by a cold
     /// recovery attempt, atomically with respect to the retry iterator.
     pub(crate) fn guard_selection_attempt(
@@ -4044,6 +4060,81 @@ mod tests {
         ))
         .expect("read exact superseded proof")
         .expect("later attempt superseded the exact old token")
+    }
+
+    #[test]
+    fn capture_recovery_protects_guarded_results_offers_and_unknown_reservations() {
+        let root = TestRoot::new();
+        let mut journal = open(&root);
+        let row = record();
+        let key = row.product_key.clone();
+        let mut other = key.clone();
+        other.coordinate = "pkg:cargo/another@1.0.0".into();
+        assert!(!journal.protects_capture(&key));
+        let id = journal.prepare(row.clone()).expect("durable result");
+        journal.in_flight_selections.insert(id);
+        assert_eq!(
+            journal.retry_rows().count(),
+            0,
+            "guarded result is hidden from retries"
+        );
+        assert!(journal.protects_capture(&key), "hidden is not absent");
+        assert!(!journal.protects_capture(&other));
+        let reservation_id = [41; 32];
+        for stage in [
+            PendingAckReservationStage::BoundBeforeOffer,
+            PendingAckReservationStage::OfferMayBeSent,
+        ] {
+            journal
+                .publish(BTreeMap::from([(
+                    reservation_id,
+                    PendingStoredAckEntry::Reservation(PendingAckReservationRecord {
+                        id: reservation_id,
+                        stage,
+                        owner_endpoint_id: row.owner_endpoint_id,
+                        identity: Some(assignment_identity(&row)),
+                        capture: Some(captured_work(&row)),
+                    }),
+                )]))
+                .expect("persist reservation");
+            assert!(journal.protects_capture(&key));
+            assert!(!journal.protects_capture(&other));
+        }
+        journal
+            .publish(BTreeMap::from([(
+                reservation_id,
+                PendingStoredAckEntry::Reservation(PendingAckReservationRecord {
+                    id: reservation_id,
+                    stage: PendingAckReservationStage::Unbound,
+                    owner_endpoint_id: row.owner_endpoint_id,
+                    identity: None,
+                    capture: None,
+                }),
+            )]))
+            .expect("unbound reservation");
+        assert!(journal.protects_capture(&key));
+        assert!(
+            journal.protects_capture(&other),
+            "unknown identity blocks absence proof"
+        );
+        let rejected = PendingRejectedAckRecord {
+            state: PendingRejectedAckState::AckPending,
+            identity: assignment_identity(&row),
+            closure_id: row.worker_closure_id,
+            reason: backend_engine::cluster_transport::ResultRejectReason::Admission,
+        };
+        journal
+            .publish(BTreeMap::from([(
+                rejected.id(),
+                PendingStoredAckEntry::RejectedAdmission(rejected),
+            )]))
+            .expect("rejected work awaits retirement");
+        assert!(journal.protects_capture(&key));
+        drop(journal);
+        assert!(
+            open(&root).protects_capture(&key),
+            "cold ownership remains protected"
+        );
     }
 
     #[test]
