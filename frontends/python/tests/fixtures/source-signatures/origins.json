@@ -1,0 +1,23 @@
+{
+  "purpose": "Complete unchanged source files from the preserved public source/signature audit; parsed only, never imported or executed.",
+  "fixtures": [
+    {
+      "file": "docs-utils.py",
+      "repository": "https://github.com/suitenumerique/docs",
+      "commit": "6e5dee38e927fac86855d17dfb614fbb64b172b3",
+      "path": "src/backend/core/api/utils.py",
+      "sha256": "1bc6b1f104cf50bbc6ab6f6c5f789ddf903975bc53a96987bc10a9b2f35cb2ac",
+      "audited_declaration": "generate_s3_authorization_headers",
+      "line": 70
+    },
+    {
+      "file": "open-webui-openai.py",
+      "repository": "https://github.com/open-webui/open-webui",
+      "commit": "8bd8b4fac5e059578ac0c74b3c18d11139f88b7d",
+      "path": "backend/open_webui/routers/openai.py",
+      "sha256": "c6b514f057e9273206cd7d61e064e000ffe4db5cd5e06c0379a408e9aa1e964a",
+      "audited_declaration": "delete_provider_model",
+      "line": 1031
+    }
+  ]
+}
