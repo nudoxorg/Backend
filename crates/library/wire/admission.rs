@@ -213,7 +213,7 @@ pub fn admit_reply_with_capability(
             }
         }
         CommandReply::GraphQueryPage(page) => {
-            admit_graph_query_page(&request.command, page)?;
+            admit_graph_query_page(request, page)?;
         }
         CommandReply::SemanticShapes(batch) => {
             let Command::SemanticShapes(shape_request) = &request.command else {
@@ -304,29 +304,59 @@ fn admit_query_page(
 }
 
 fn admit_graph_query_page(
-    command: &Command,
+    request: &CommandDto,
     page: &crate::GraphQueryPage,
 ) -> Result<(), ReplyAdmissionError> {
-    let Command::GraphQuery(query) = command else {
+    let Command::GraphQuery(query) = &request.command else {
         return Err(ReplyAdmissionError::Protocol(
             "graph query page does not match its command".to_owned(),
         ));
     };
-    if page.revision != query.page().basis() {
-        return Err(ReplyAdmissionError::Protocol(
-            "graph query page revision does not match its request".to_owned(),
-        ));
-    }
-    if let crate::PageTerminal::More(continuation) = page.terminal {
-        let cursor = continuation.cursor();
-        if cursor.recipe() != query.recipe()
-            || !page.revision.matches(cursor.root())
-            || cursor.query_offset() == 0
-        {
-            return Err(ReplyAdmissionError::Protocol(
-                "graph query continuation does not match its request".to_owned(),
-            ));
-        }
+    let invalid = |error: String| {
+        ReplyAdmissionError::Protocol(format!(
+            "graph query page does not match its owner request: {error}"
+        ))
+    };
+    query
+        .admit_page(page)
+        .map_err(|error| invalid(error.to_string()))?;
+    if let crate::PageTerminal::More(next) = page.terminal {
+        let certificate = request
+            .certificate()
+            .ok_or_else(|| invalid("owner certificate omitted".to_owned()))?;
+        let recipe = certificate
+            .claims
+            .iter()
+            .find_map(|claim| {
+                if let WireClaim::Cursor { recipe, .. } = claim {
+                    Some(recipe)
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| invalid("owner cursor claim omitted".to_owned()))?;
+        let owner_recipe = certificate
+            .key_bytes::<crate::canonical::ViewRecipeSchema>(crate::WireSchema::ViewRecipe, recipe)
+            .map_err(invalid)?;
+        let cursor = next.cursor();
+        // The reply cursor already has typed canonical identities. Compare its
+        // entire owner frontier with the request's preserved authority claim;
+        // this also binds a first page, which has no predecessor cursor.
+        let owner = Cursor::for_view(
+            owner_recipe,
+            cursor.version(),
+            crate::Frontier::new(
+                cursor.branch(),
+                cursor.log(),
+                cursor.schema(),
+                cursor.root(),
+                cursor.sequence(),
+            ),
+        );
+        certificate.cursor_claim(owner).map_err(invalid)?;
+        query
+            .admit_page_against(page, owner)
+            .map_err(|error| invalid(error.to_string()))?;
     }
     Ok(())
 }

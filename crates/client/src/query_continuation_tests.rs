@@ -55,7 +55,11 @@ fn owner_with_labels(context: u8, count: usize, sequence: u64, labels: &[&str]) 
     )
     .expect("evidence");
     let basis = Basis::new(view_state_root(&[]), object);
-    let rows = labels.iter().cycle().take(count).enumerate()
+    let rows = labels
+        .iter()
+        .cycle()
+        .take(count)
+        .enumerate()
         .map(|(i, label)| {
             Row::new(
                 RowId::Symbol(symbol_key(&format!("pkg::Thing{i:03}"))),
@@ -88,7 +92,55 @@ impl CommandTransport for Transport {
             .expect("requests")
             .push(request.command.clone());
         let library = self.owner.lock().expect("owner");
-        let mut reply = library.execute_dto(request.clone());
+        let mut reply = if let Command::GraphQuery(query) = &request.command {
+            let bytes =
+                backend_library::encode_command_body(&request).map_err(ClientError::Protocol)?;
+            let admitted = backend_library::decode_command_body_for_owner(&bytes, library.cursor())
+                .map_err(ClientError::Protocol)?;
+            assert_eq!(admitted, request, "actual strict owner command admission");
+            let start = query
+                .start_offset(library.cursor())
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
+            let count = library.view().row_refs().count();
+            let end = (start + usize::from(query.page().limit().get())).min(count);
+            let rows = (start..end)
+                .map(|i| {
+                    backend_library::GraphQueryRow::new(BTreeMap::from([(
+                        "coordinate".to_owned(),
+                        GraphValue::String(format!("Thing{i}")),
+                    )]))
+                    .expect("admitted projected row")
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
+            let terminal = if end < count {
+                PageTerminal::More(
+                    query
+                        .next_continuation(library.cursor(), end)
+                        .expect("next"),
+                )
+            } else {
+                PageTerminal::Complete
+            };
+            let (rows, terminal) = if query.control() == backend_library::GraphQueryControl::Cancel
+            {
+                (Box::new([]) as Box<[_]>, PageTerminal::Cancelled)
+            } else {
+                (rows, terminal)
+            };
+            ReplyDto::new(
+                request.request_id,
+                CommandReply::GraphQueryPage(GraphQueryPage {
+                    revision: query.page().basis(),
+                    source: library.view().basis().object,
+                    rows,
+                    terminal,
+                }),
+            )
+            .with_certificate(request.certificate().expect("owner proof").clone())
+        } else {
+            library.execute_dto(request.clone())
+        };
         let snapshot = match &reply.reply {
             CommandReply::Search(page) | CommandReply::Names(page) => Some(page),
             _ => None,
@@ -673,7 +725,18 @@ fn portable_compact_proof_rejects_expansion_truncation_and_trailing_bytes() {
 
 #[test]
 fn portable_names_public_rank_reproduces_full_rows_across_fresh_pages() {
-    let owner = Arc::new(Mutex::new(owner_with_labels(1, 37, 0, &["Thing", "Thing repeated", "ThingZZ", "anotherThing", "Thingα路径"])));
+    let owner = Arc::new(Mutex::new(owner_with_labels(
+        1,
+        37,
+        0,
+        &[
+            "Thing",
+            "Thing repeated",
+            "ThingZZ",
+            "anotherThing",
+            "Thingα路径",
+        ],
+    )));
     let requests = Arc::new(Mutex::new(vec![]));
     let reference = owner.lock().expect("owner");
     let mut expected = reference
@@ -689,7 +752,11 @@ fn portable_names_public_rank_reproduces_full_rows_across_fresh_pages() {
     drop(reference);
     let storage_order = expected.iter().map(|row| row.id).collect::<Vec<_>>();
     expected.sort_by_key(|row| std::cmp::Reverse(row.score));
-    assert_ne!(storage_order, expected.iter().map(|row| row.id).collect::<Vec<_>>(), "fixture must exercise names order different from canonical storage");
+    assert_ne!(
+        storage_order,
+        expected.iter().map(|row| row.id).collect::<Vec<_>>(),
+        "fixture must exercise names order different from canonical storage"
+    );
     let mut seen = Vec::new();
     let mut token: Option<String> = None;
     loop {
@@ -718,10 +785,12 @@ fn portable_names_public_rank_reproduces_full_rows_across_fresh_pages() {
 
 #[test]
 fn portable_compact_proof_retains_real_cachetools_dto_and_exact_expansion_bound() {
-    let value: serde_json::Value = serde_json::from_slice(include_bytes!(
-        "../../../evidence/sol61-public-tantivy-20261006/first-token-decoded.json"
-    ))
-    .expect("retained actual DTO");
+    // Exact retained public Cachetools proof from f44c1bdd3c, Git blob
+    // eba1c588c224ae1bd8affb7d9ce0bf2314811c90 (SHA-256
+    // a4467416cd0dc60a6315e0d952495e9d82519f2522de99c841f1e5b63422d15f).
+    let mut value: serde_json::Value =
+        serde_json::from_slice(include_bytes!("fixtures/real-cachetools-first-token.json"))
+            .expect("retained actual DTO");
     let body = serde_json::to_vec(&value).expect("canonical JSON");
     let token = encode_compact_proof(&body).expect("ordinary real proof fits");
     assert!(
@@ -729,7 +798,14 @@ fn portable_compact_proof_retains_real_cachetools_dto_and_exact_expansion_bound(
         "ordinary canonical proof should fit compact presentation"
     );
     assert_eq!(decode_portable_body(&token).expect("compact bytes"), body);
-    backend_library::decode_command_body(&body).expect("all real canonical claims rehash strictly");
+    let legacy = backend_library::decode_command_body(&body)
+        .expect_err("the original historical envelope retains its old wire version");
+    assert!(legacy.contains("unsupported command DTO version 20"));
+    // Re-envelope the retained canonical claims at this build's version.
+    // The fixture bytes remain the authentic version-20 capture above.
+    value["version"] = serde_json::json!(backend_library::DTO_VERSION);
+    backend_library::decode_command_body(&serde_json::to_vec(&value).expect("current envelope"))
+        .expect("all retained real canonical claims rehash strictly at the current version");
     assert_eq!(
         decode_portable_body(&token_bytes(&body)).expect("legacy pc2 bytes"),
         body
@@ -752,4 +828,98 @@ fn portable_compact_proof_retains_real_cachetools_dto_and_exact_expansion_bound(
             .is_err()
     );
     assert_eq!(requests.lock().expect("requests").len(), before);
+}
+
+#[test]
+fn graph_query_portable_continuation_reopens_in_fresh_session() {
+    let owner = Arc::new(Mutex::new(owner(1, 3, 7)));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let input =
+        AdmittedGraphQueryInput::new("{ Declaration { coordinate @output } }", BTreeMap::new())
+            .expect("query");
+    let mut first = session(&owner, &requests);
+    let page = first
+        .graph_query_admitted(input.clone(), 1, None, false)
+        .expect("first admitted page");
+    let PageTerminal::More(next) = page.terminal else {
+        panic!("next page");
+    };
+    let token = first
+        .encode_query_continuation(next)
+        .expect("portable graph proof");
+    assert!(token.starts_with("pc3-"));
+    assert!(token.len() <= MAX_PORTABLE_QUERY_TOKEN_BYTES);
+    drop(first);
+    // An intent-only owner advance retains the exact view and authority scope.
+    *owner.lock().expect("owner") = self::owner(1, 3, 8);
+    let mut fresh = session(&owner, &requests);
+    let decoded = fresh
+        .decode_page_continuation(&token)
+        .expect("cold public token");
+    assert_eq!(decoded, next);
+    let second = fresh
+        .graph_query_admitted(input.clone(), 1, Some(decoded), false)
+        .expect("cold resumed admitted wire");
+    assert_eq!(
+        second.rows[0].fields()[0].1,
+        GraphValue::String("Thing1".to_owned())
+    );
+    for (changed_input, changed_limit) in [
+        (input.clone(), 2),
+        (
+            AdmittedGraphQueryInput::new("{ Declaration { name @output } }", BTreeMap::new())
+                .expect("changed"),
+            1,
+        ),
+        (
+            AdmittedGraphQueryInput::new(
+                input.query(),
+                BTreeMap::from([("value".to_owned(), GraphValue::Unsigned(2))]),
+            )
+            .expect("variables"),
+            1,
+        ),
+    ] {
+        let mut fresh = session(&owner, &requests);
+        let decoded = fresh.decode_page_continuation(&token).expect("proof");
+        assert!(
+            fresh
+                .graph_query_admitted(changed_input, changed_limit, Some(decoded), false)
+                .is_err()
+        );
+    }
+    let mut cancelling = session(&owner, &requests);
+    let decoded = cancelling
+        .decode_page_continuation(&token)
+        .expect("cold cancellation proof");
+    let cancelled = cancelling
+        .graph_query_admitted(input, 1, Some(decoded), true)
+        .expect("cancel exact query");
+    assert!(cancelled.rows.is_empty());
+    assert_eq!(cancelled.terminal, PageTerminal::Cancelled);
+    let original = token_value(&token);
+    for field in ["scope", "observed", "producer", "context"] {
+        let mut forged = original.clone();
+        let coverage = forged["certificate"]["claims"]
+            .as_array_mut()
+            .expect("claims")
+            .iter_mut()
+            .find(|claim| claim["kind"] == "coverage")
+            .expect("scope");
+        coverage["data"][field] = serde_json::json!("00".repeat(32));
+        assert!(
+            session(&owner, &requests)
+                .decode_page_continuation(&token_bytes(
+                    &serde_json::to_vec(&forged).expect("forged")
+                ))
+                .is_err()
+        );
+    }
+    *owner.lock().expect("owner") = self::owner(1, 4, 9);
+    assert!(
+        session(&owner, &requests)
+            .decode_page_continuation(&token)
+            .is_err(),
+        "changed current view"
+    );
 }

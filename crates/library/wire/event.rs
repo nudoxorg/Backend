@@ -323,8 +323,8 @@ pub fn encode_compact_view_event(
     // A reset replaces the entire visible relation. Its canonical rows are
     // transferred through bounded snapshot pages, so allowing one here would
     // reintroduce an O(view) journal record.
-    if matches!(delta.delta(), ViewDelta::Reset { .. }) {
-        return Err("compact view events cannot carry reset transitions".to_owned());
+    if !delta.is_compact_replayable() {
+        return Err("compact view event requires an authenticated snapshot replacement".to_owned());
     }
     if cursor.query_offset() != 0
         || cursor.recipe() != delta.target_recipe()
@@ -401,6 +401,9 @@ fn decode_admitted_compact_view_event(
 ) -> Result<(Cursor, CommittedViewDelta), String> {
     let CompactEventWire::View(value) = envelope.event;
     let certificate = required_certificate(envelope.certificate.as_ref())?;
+    if matches!(value.delta, ViewDeltaWire::Reset(_)) {
+        return Err("compact view events cannot carry reset transitions".to_owned());
+    }
     if previous.query_offset() != 0
         || previous.recipe() != base.recipe()
         || previous.version() != base.version()

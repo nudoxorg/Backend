@@ -58,10 +58,11 @@ pub use coverage::{
     admit_producer_observation, bind_scope_equality, partial_coverage,
 };
 pub use delta::{
-    BoundDelta, CheckedStateObject, CheckedStateObjectRef, Delta, DeltaError, DeltaView, DeltaWork,
-    MapChange, PreparedDelta, RelationEntry, RelationState, StateError, ValueSchema, apply_delta,
-    apply_delta_with_work, canonical_delta_id, checked_canonical_delta_id, prepare_delta,
-    prepare_delta_with_state, prepare_delta_with_work, prepare_internal_update_with_work,
+    BoundDelta, CheckedStateObject, CheckedStateObjectRef, CoverageRebindError, Delta, DeltaError,
+    DeltaView, DeltaWork, MapChange, PreparedDelta, RelationEntry, RelationState, StateError,
+    ValueSchema, apply_delta, apply_delta_with_work, canonical_delta_id,
+    checked_canonical_delta_id, prepare_delta, prepare_delta_with_state, prepare_delta_with_work,
+    prepare_internal_update_with_work,
 };
 pub use ids::{
     CANONICAL_CUT_POLICY_VERSION, CANONICAL_TREE_ABI, CANONICAL_VERSION, CanonicalRelation,
