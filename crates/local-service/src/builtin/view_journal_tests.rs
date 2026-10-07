@@ -412,7 +412,7 @@ fn stale_sequence_floor_refuses_foreign_lineage_gaps_and_exhaustion() {
     assert_ne!(foreign, selected.root());
 
     let foreign_path = temp.path().join("foreign.journal");
-    let foreign_journal = ViewJournal::open(&foreign_path).expect("foreign journal");
+    let mut foreign_journal = ViewJournal::open(&foreign_path).expect("foreign journal");
     foreign_journal
         .persist(
             foreign,
@@ -431,7 +431,7 @@ fn stale_sequence_floor_refuses_foreign_lineage_gaps_and_exhaustion() {
     );
 
     let gap_path = temp.path().join("gap.journal");
-    let gap_journal = ViewJournal::open(&gap_path).expect("gap journal");
+    let mut gap_journal = ViewJournal::open(&gap_path).expect("gap journal");
     let base_cursor = Cursor::for_view_root_at(&view, 5);
     gap_journal
         .persist(selected.root(), &view, base_cursor, None)
@@ -447,7 +447,7 @@ fn stale_sequence_floor_refuses_foreign_lineage_gaps_and_exhaustion() {
             capability.clone(),
         )
         .expect("prepare checked event");
-    let (next, delta) = view.commit(prepared).expect("commit checked event");
+    let (next, delta) = view.clone().commit(prepared).expect("commit checked event");
     let event = CursorEvent::View {
         delta: Box::new(delta),
     };
@@ -469,7 +469,7 @@ fn stale_sequence_floor_refuses_foreign_lineage_gaps_and_exhaustion() {
         .contains("sequence does not advance"));
 
     let exhausted_path = temp.path().join("exhausted.journal");
-    let exhausted = ViewJournal::open(&exhausted_path).expect("exhausted journal");
+    let mut exhausted = ViewJournal::open(&exhausted_path).expect("exhausted journal");
     exhausted
         .persist(
             selected.root(),
