@@ -256,16 +256,44 @@ impl Cursor {
     /// Returns an error when the fixed-width cursor is malformed or does not
     /// name the supplied view root.
     pub fn decode_control_for_root(bytes: &[u8], root: &ViewRoot) -> Result<Self, String> {
+        let sequence = Self::control_sequence(bytes)?;
+        let expected = Self::for_view_root_at(root, sequence);
+        Self::decode_control_against(bytes, expected)
+    }
+
+    /// Reads the monotonic sequence field from a fixed-width control cursor.
+    ///
+    /// This does not admit the cursor identity and must not be used to
+    /// authorize or correlate a cursor. Callers that need a typed cursor must
+    /// also compare the complete envelope against an already admitted cursor,
+    /// as [`decode_control_for_root`](Self::decode_control_for_root) does.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the envelope length or either schema field is
+    /// unsupported.
+    pub fn control_sequence(bytes: &[u8]) -> Result<u64, String> {
         if bytes.len() != CURSOR_CONTROL_BYTES {
             return Err("invalid subscription cursor length".to_owned());
         }
-        let sequence = u64::from_be_bytes(
+        let envelope_schema = u16::from_be_bytes(
+            bytes[..2]
+                .try_into()
+                .map_err(|_| "invalid subscription cursor schema".to_owned())?,
+        );
+        let cursor_schema = u16::from_be_bytes(
+            bytes[130..132]
+                .try_into()
+                .map_err(|_| "invalid subscription cursor schema".to_owned())?,
+        );
+        if envelope_schema != CURSOR_SCHEMA || cursor_schema != CURSOR_SCHEMA {
+            return Err("unsupported subscription cursor schema".to_owned());
+        }
+        Ok(u64::from_be_bytes(
             bytes[164..172]
                 .try_into()
                 .map_err(|_| "invalid subscription cursor sequence".to_owned())?,
-        );
-        let expected = Self::for_view_root_at(root, sequence);
-        Self::decode_control_against(bytes, expected)
+        ))
     }
 
     /// Encodes this cursor for a bounded query continuation.
@@ -817,6 +845,26 @@ mod tests {
             "different".to_owned(),
             "root".to_owned(),
         )]));
+        assert!(Cursor::decode_control_for_root(&encoded, &other).is_err());
+    }
+
+    #[test]
+    fn control_sequence_reads_only_a_well_formed_scalar_without_admitting_identity() {
+        let view = make_root(view_state_root(&[]));
+        let cursor = Cursor::for_view_root_at(&view, 6);
+        let encoded = cursor.encode_control();
+        assert_eq!(Cursor::control_sequence(&encoded).expect("sequence"), 6);
+
+        let mut wrong_envelope_schema = encoded.to_vec();
+        wrong_envelope_schema[0] ^= 1;
+        assert!(Cursor::control_sequence(&wrong_envelope_schema).is_err());
+
+        let mut wrong_cursor_schema = encoded.to_vec();
+        wrong_cursor_schema[130] ^= 1;
+        assert!(Cursor::control_sequence(&wrong_cursor_schema).is_err());
+        assert!(Cursor::control_sequence(&encoded[..encoded.len() - 1]).is_err());
+
+        let other = make_root(view_state_root(&[("foreign".to_owned(), "root".to_owned())]));
         assert!(Cursor::decode_control_for_root(&encoded, &other).is_err());
     }
 
