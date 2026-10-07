@@ -1,0 +1,73 @@
+{
+  "schema": "semantic-diff-occurrences.native-test.v1",
+  "started_at": "2026-10-07T17:30:39.667340+00:00",
+  "source": "/root/codex-worktrees/luna-semantic-diff-occurrences-20261007",
+  "source_before": {
+    "commit": "2da31be31988726f171c1e95b39aa55588153163",
+    "tree": "99bb2ae09a1c1e14d9a5d1ae9bc5a3dd311c3d95",
+    "clean": true,
+    "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+  },
+  "source_expected": {
+    "commit": "2da31be31988726f171c1e95b39aa55588153163",
+    "tree": "99bb2ae09a1c1e14d9a5d1ae9bc5a3dd311c3d95",
+    "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+  },
+  "runner": "/root/nudox-corpus-20261006/tool-recovery/cargo-wrapped-nix6",
+  "runner_sha256": "315f9865062f25292bba930c3fd77616a34ad265f8f5370e27206ca30dd10102",
+  "supervisor_sha256": "44708ddb26ce4e1b18413627bb6a838bc37ed7a1c4708e5983b97c66c029d7e7",
+  "target_dir": "/root/codex-worktrees/luna-semantic-diff-occurrences-20261007/.local/target",
+  "build_lease_root": "/root/codex-worktrees/luna-semantic-diff-occurrences-20261007/.local/owned-build-role",
+  "reused_owned_target_from_prior_attempt": true,
+  "reused_owned_build_graph_from_prior_attempt": true,
+  "admission_path": "/root/luna-semantic-diff-occurrences-evidence-20261007/native-test-attempt04.admission.json",
+  "admission_sha256": "9cb30ae12d4d998b0163393c3c7c475760839d64ccc6f47d893dd959e5ec8bc0",
+  "fleet_groups": 10,
+  "ilo_groups_before": 2,
+  "argv": [
+    "/root/nudox-corpus-20261006/tool-recovery/cargo-wrapped-nix6",
+    "test",
+    "--locked",
+    "--offline",
+    "-j4",
+    "-p",
+    "backend-local-service",
+    "--lib",
+    "semantic_diff_tests",
+    "--message-format=json",
+    "--",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "environment": {
+    "PATH": "/nix/store/n4b80fmlzlmxx0584y7acwcnikk4k071-nudox-luna-tools-shell/bin:/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin:/nix/store/5hndr36f8c9d9z305r27z6dxkhysng95-gnumake-4.4.1/bin:/run/current-system/sw/bin",
+    "CARGO_HOME": "/root/.cargo",
+    "CARGO_BUILD_JOBS": "4",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_TARGET_DIR": "/root/codex-worktrees/luna-semantic-diff-occurrences-20261007/.local/target",
+    "CARGO_BUILD_BUILD_DIR": "/root/codex-worktrees/luna-semantic-diff-occurrences-20261007/.local/owned-build-role",
+    "RUSTC": "/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/rustc",
+    "RUSTDOC": "/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/rustdoc",
+    "CC": "/nix/store/n4b80fmlzlmxx0584y7acwcnikk4k071-nudox-luna-tools-shell/bin/cc",
+    "CXX": "/nix/store/n4b80fmlzlmxx0584y7acwcnikk4k071-nudox-luna-tools-shell/bin/c++",
+    "AR": "/nix/store/n4b80fmlzlmxx0584y7acwcnikk4k071-nudox-luna-tools-shell/bin/ar",
+    "LD": "/nix/store/n4b80fmlzlmxx0584y7acwcnikk4k071-nudox-luna-tools-shell/bin/ld",
+    "PKG_CONFIG": "/nix/store/n4b80fmlzlmxx0584y7acwcnikk4k071-nudox-luna-tools-shell/bin/pkg-config",
+    "LIBRARY_PATH": "",
+    "NIX_LDFLAGS": "",
+    "PKG_CONFIG_PATH": "",
+    "NUDOX_CARGO_BUILD_SLOTS": "4",
+    "NUDOX_CARGO_SLOT_WAIT_MS": "0",
+    "NUDOX_CARGO_WORKTREE_WAIT_MS": "0"
+  },
+  "toolchain_sha256": {
+    "rustc": "312adc99331d2e50de49ec76bbde65fcc4bc75e5b7ea2370b19594d5b20ced9d",
+    "rustdoc": "d1de343b649046964754a282d27d8d453ca5bedd090e4bd4aec2a71b405f3d23",
+    "cc": "7d5b8a9041b43a4dcb3b887c523b3a88c3557fecf989cef092f09d7b986b9de9",
+    "cxx": "b4fdd90c4033628492ecdc3f7e02c8200ae00b0bf4c561ea2a6656d3a6c849ae",
+    "ar": "89024bad297f69b625307673eebe421c2b16fb158201582db0b5e05dcc07e666",
+    "ld": "1d4268a801c29f63e1c3ef069542a308acb7042ed20cd34f1f365d4c37361f14",
+    "pkg_config": "9cf315e1dab2e37f7eee6be09932c468038527bb1d5df021976ecf281e57cd07"
+  },
+  "pid": 1616881
+}
