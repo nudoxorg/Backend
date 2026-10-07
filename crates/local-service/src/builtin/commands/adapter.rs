@@ -2047,7 +2047,7 @@ impl CommandAdapter {
                     Err(std::sync::mpsc::TryRecvError::Empty) => {
                         indexing.work = IndexJobWork::Acquiring(acquired);
                         self.indexing = Some(indexing);
-                        return self.with_browse_completions(daemon, ready);
+                        return self.finish_deferred_poll(daemon, ready);
                     }
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         terminal = Some(backend_library::IndexJobOutcome::Failed(
@@ -2063,7 +2063,7 @@ impl CommandAdapter {
                         );
                         indexing.work = IndexJobWork::Acquiring(acquired);
                         self.indexing = Some(indexing);
-                        return self.with_browse_completions(daemon, ready);
+                        return self.finish_deferred_poll(daemon, ready);
                     }
                     Ok(RegistryAcquisitionMessage::Complete { gateway, result }) => {
                         if let Some(gateway) = gateway {
@@ -2089,7 +2089,7 @@ impl CommandAdapter {
                                     ) {
                                         Ok(()) => {
                                             self.indexing = Some(indexing);
-                                            return self.with_browse_completions(daemon, ready);
+                                            return self.finish_deferred_poll(daemon, ready);
                                         }
                                         Err(refusal) => {
                                             terminal =
@@ -2107,7 +2107,7 @@ impl CommandAdapter {
                     Err(std::sync::mpsc::TryRecvError::Empty) => {
                         indexing.work = IndexJobWork::Scanning(scanned);
                         self.indexing = Some(indexing);
-                        return self.with_browse_completions(daemon, ready);
+                        return self.finish_deferred_poll(daemon, ready);
                     }
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         terminal = Some(backend_library::IndexJobOutcome::Failed(
@@ -2158,7 +2158,7 @@ impl CommandAdapter {
                                 }) {
                                     Ok(()) => {
                                         self.indexing = Some(indexing);
-                                        return self.with_browse_completions(daemon, ready);
+                                        return self.finish_deferred_poll(daemon, ready);
                                     }
                                     Err(error) => {
                                         terminal = Some(backend_library::IndexJobOutcome::Failed(
@@ -2206,7 +2206,7 @@ impl CommandAdapter {
                                 compiled,
                             };
                             self.indexing = Some(indexing);
-                            return self.with_browse_completions(daemon, ready);
+                            return self.finish_deferred_poll(daemon, ready);
                         }
                         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                             let mut attempts = vec![profile.candidate_attempt().clone()];
@@ -2261,7 +2261,7 @@ impl CommandAdapter {
                                         match self.spawn_next_index_profile(&mut indexing, job) {
                                             Ok(()) => {
                                                 self.indexing = Some(indexing);
-                                                return self.with_browse_completions(daemon, ready);
+                                                return self.finish_deferred_poll(daemon, ready);
                                             }
                                             Err(error) => {
                                                 terminal =
@@ -2396,6 +2396,17 @@ impl CommandAdapter {
                 Err(_) => {}
             }
         }
+        self.finish_deferred_poll(daemon, ready)
+    }
+
+    /// Every scan, acquisition, and compiler pending/transition exit crosses
+    /// this same tail. A busy index worker cannot starve search completion or
+    /// stale-selection invalidation.
+    fn finish_deferred_poll(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        mut ready: Vec<(u64, Result<Vec<u8>, BuiltinModelError>)>,
+    ) -> Vec<(u64, Result<Vec<u8>, BuiltinModelError>)> {
         ready.extend(self.search_completions(daemon));
         self.with_browse_completions(daemon, ready)
     }
@@ -6542,5 +6553,122 @@ mod tests {
             !adapter.search_lane.active(),
             "worker retired before owner lease closure"
         );
+    }
+    #[test]
+    fn cold_search_owner_completes_and_invalidates_while_index_scan_stays_pending() {
+        let mut fixture = AdapterFixture::new();
+        let new_project = fixture.root.0.join("concurrent-project");
+        fs::create_dir_all(&new_project).expect("concurrent project");
+        let new_label = label(&new_project);
+        let (adapter, daemon) = fixture.parts();
+        let cancelled = install_transition_job(adapter);
+        let (scan_sender, scanned) = std::sync::mpsc::sync_channel(1);
+        adapter.indexing.as_mut().expect("index owner").work = IndexJobWork::Scanning(scanned);
+        let index_ticket = adapter
+            .indexing
+            .as_ref()
+            .expect("ticket")
+            .owner_ticket
+            .clone();
+        let (entered, release) = adapter.search_lane.hold_next();
+        assert!(matches!(
+            defer_search_body(adapter, daemon, 501, 1501),
+            Ok(Executed::Deferred)
+        ));
+        entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("search preparation held");
+        for _ in 0..3 {
+            assert!(adapter.poll_deferred(daemon).is_empty());
+            assert!(matches!(
+                adapter.indexing.as_ref().expect("held index scan").work,
+                IndexJobWork::Scanning(_)
+            ));
+        }
+        release.send(()).expect("release only search");
+        let replies = finish_search_lane(adapter, daemon);
+        assert_eq!(
+            replies.len(),
+            1,
+            "search delivery must pass the pending-index early return"
+        );
+        assert_eq!(replies[0].0, 1501);
+        assert_eq!(
+            search_wire_kind(replies[0].1.as_ref().expect("concurrent search")),
+            "search"
+        );
+        assert!(
+            adapter.indexing.is_some(),
+            "index scan still has no worker receipt"
+        );
+
+        let new_package = backend_engine::package_key(&new_label);
+        let intent =
+            BuiltinIntent::add(new_package, new_label.clone()).expect("advance selected source");
+        super::commit_builtin_intent(daemon, 502, &intent).expect("workspace advance");
+        adapter
+            .publish_view(daemon, Some(&intent))
+            .expect("view advance");
+        let (entered, release) = adapter.search_lane.hold_next();
+        assert!(matches!(
+            defer_search_body(adapter, daemon, 503, 1503),
+            Ok(Executed::Deferred)
+        ));
+        entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("new preparation held");
+        let remove =
+            BuiltinIntent::remove(new_package, new_label).expect("remove concurrent project");
+        super::commit_builtin_intent(daemon, 504, &remove).expect("supersede pending preparation");
+        adapter
+            .publish_view(daemon, Some(&remove))
+            .expect("publish superseding view");
+        let stale = adapter.poll_deferred(daemon);
+        assert_eq!(
+            stale.len(),
+            1,
+            "stale invalidation must pass pending-index early return"
+        );
+        let wire: serde_json::Value =
+            serde_json::from_slice(stale[0].1.as_ref().expect("stale result")).expect("DTO");
+        assert_eq!(wire["request_id"], 503);
+        assert_eq!(wire["reply"]["data"]["kind"], "wrong_basis");
+        assert!(adapter.indexing.is_some());
+        let health = serde_json::to_vec(&backend_engine::CommandDto::new(
+            505,
+            backend_engine::Command::Health,
+        ))
+        .expect("health DTO");
+        let start = std::time::Instant::now();
+        assert!(matches!(
+            adapter.execute_or_defer(daemon, &health, 1505),
+            Ok(Executed::Reply(_))
+        ));
+        assert!(start.elapsed() < Duration::from_secs(1));
+        let cancel = serde_json::to_vec(&backend_engine::CommandDto::new(
+            506,
+            backend_engine::Command::Surface(backend_library::SurfaceCommand::IndexCancel {
+                ticket: index_ticket,
+            }),
+        ))
+        .expect("cancel DTO");
+        let start = std::time::Instant::now();
+        assert!(matches!(
+            adapter.execute_or_defer(daemon, &cancel, 1506),
+            Ok(Executed::Reply(_))
+        ));
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(cancelled.load(Ordering::Acquire));
+        release.send(()).expect("retire stale native preparation");
+        assert!(finish_search_lane(adapter, daemon).is_empty());
+        assert!(
+            adapter.indexing.is_some(),
+            "scan cancellation is cooperative, never joined by control"
+        );
+        scan_sender
+            .send(Err(super::IndexScanFailure::Cancelled))
+            .expect("retire held scan");
+        assert!(adapter.poll_deferred(daemon).is_empty());
+        assert!(adapter.indexing.is_none());
     }
 }
