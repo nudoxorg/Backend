@@ -1803,6 +1803,12 @@ fn spool_advisory_zip(mut input: impl Read, maximum: usize) -> Result<AdvisoryZi
     }
     let mut file = tempfile::tempfile()
         .map_err(|_| "could not create private bounded OSV ZIP spool".to_owned())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|_| "could not restrict bounded OSV ZIP spool permissions".to_owned())?;
+    }
     let mut hasher = blake3::Hasher::new();
     let mut total = 0usize;
     let mut buffer = [0_u8; 64 * 1024];
