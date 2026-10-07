@@ -20,23 +20,46 @@ export def platform-packages []: nothing -> list<string> {
     ]
 }
 
+const STEP_TIMEOUT = "CI step timed out"
+
 # Runs one named step, streaming its output, and returns whether it passed.
-# The `CI-TIMING` line is for comparing runs: grep a build log for it.
+# The `CI-TIMING` line is for comparing runs: grep a build log for it. Its
+# result is `passed`, `FAILED`, or `TIMEOUT` when run-bounded stopped the step.
 export def ci-step [lane: string, name: string, body: closure]: nothing -> bool {
     print $"== ($lane): ($name) =="
     let started = (date now)
-    let passed = (try {
+    let verdict = (try {
         do $body
-        true
+        "passed"
     } catch {|error|
         print $error.msg
-        false
+        if ($error.msg | str starts-with $STEP_TIMEOUT) { "TIMEOUT" } else { "FAILED" }
     })
     let elapsed = (date now) - $started
-    let verdict = if $passed { "passed" } else { "FAILED" }
     print $"== ($lane): ($name) ($verdict) in ($elapsed) =="
     print $"CI-TIMING lane=($lane) step=\"($name)\" seconds=($elapsed / 1sec | math round) result=($verdict)"
-    $passed
+    $verdict == "passed"
+}
+
+# Runs an external command, and stops it, with everything it started, if it
+# is still running after `limit`. Without a limit a hung step held the PR
+# gate until Concourse's 180-minute task timeout, and every PR queued behind
+# it went unchecked that round (nudox-backend-lanes-pr build 1656). Callers
+# pass several times the step's warm time from the CI-TIMING lines, plus room
+# for a cold cache, so only a hang reaches the limit.
+#
+# `timeout` signals the command's whole process group: TERM, then KILL two
+# minutes later. Stdin is an empty pipe, not the task's terminal, so nothing
+# in the background group can stop on a terminal read.
+export def run-bounded [limit: duration, command: string, ...args: string]: nothing -> nothing {
+    try {
+        "" | run-external "timeout" "--kill-after=120s" $"($limit / 1sec | math round)s" $command ...$args
+    } catch {|error|
+        if ($error.exit_code? | default 0) in [124 137] {
+            error make {msg: $"($STEP_TIMEOUT): ($command) was still running after ($limit)"}
+        }
+        error make {msg: $error.msg}
+    }
 }
 
 # Whether this is a CI run: the scheduler exports CI_HEAD_SHA for every
@@ -195,7 +218,7 @@ export def emulated-lane [lane: string, platform: string]: nothing -> nothing {
     provide-fhs-tools
     let emulated = $EMULATED_RUNNER
     let passed = ci-step $lane $"($platform) platform tests" {||
-        with-plain-tmp {|| run-external "nu" "--no-config-file" $emulated $platform }
+        with-plain-tmp {|| run-bounded 30min "nu" "--no-config-file" $emulated $platform }
     }
     reclaim-build-output
     if not $passed { error make {msg: $"($lane) lane failed"} }
