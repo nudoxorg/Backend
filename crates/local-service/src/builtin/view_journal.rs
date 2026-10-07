@@ -63,6 +63,31 @@ pub(super) struct RecoveredView {
     pub(super) base_sequence: u64,
 }
 
+/// Recovery result for one selected workspace generation.
+///
+/// When the checked view is stale, only the scalar sequence floor is retained.
+/// It can seed a cursor bound to a newly checked view but carries no previous
+/// root, certificate, capability, or events.
+#[derive(Debug)]
+pub(super) struct ViewJournalRecovery {
+    pub(super) recovered: Option<RecoveredView>,
+    pub(super) cursor_sequence_floor: CursorSequenceFloor,
+}
+
+/// Whether a cache miss can safely preserve a checked prior cursor sequence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum CursorSequenceFloor {
+    /// No complete snapshot/event suffix exists, so startup may build a new
+    /// view at its own checked frontier sequence.
+    Empty,
+    /// The bounded suffix is complete and belongs to the selected root or its
+    /// checked transition base.
+    Proven(u64),
+    /// A complete suffix exists, but its workspace lineage cannot be proved.
+    /// Startup must retain the journal and refuse to replace its sequence.
+    Unproven,
+}
+
 /// Exact authority generation for a durable snapshot and its compact suffix.
 /// Capture-only owner commits can retain the workspace root while changing
 /// the admitted producer context and evidence. Both identities bind the base.
@@ -101,7 +126,8 @@ impl ViewJournal {
         &self,
         capability: &CoverageCapability,
         expected_workspace: WorkspaceRoot,
-    ) -> Result<Option<RecoveredView>, String> {
+        prior_workspace: Option<WorkspaceRoot>,
+    ) -> Result<ViewJournalRecovery, String> {
         self.generation.set(None);
         let live = capability_fingerprint(capability);
         // Every snapshot restarts the chain and a frame for another workspace
@@ -123,8 +149,33 @@ impl ViewJournal {
         })?;
         let mut state = Scoped::Empty;
         let mut events = Vec::new();
+        let mut cursor_sequence_floor = None;
+        let mut sequence_workspace_root = None;
+        let mut sequence_capability = None;
         for (kind, payload) in suffix {
             let envelope = decode_envelope(&payload)?;
+            let cursor_sequence = Cursor::control_sequence(&envelope.cursor)?;
+            if kind == SNAPSHOT {
+                cursor_sequence_floor = Some(cursor_sequence);
+                sequence_workspace_root = Some(envelope.workspace_root);
+                sequence_capability = Some(envelope.capability);
+            } else {
+                if sequence_workspace_root != Some(envelope.workspace_root)
+                    || sequence_capability != Some(envelope.capability)
+                {
+                    return Err("view journal event changed its snapshot lineage".to_owned());
+                }
+                let expected_sequence = cursor_sequence_floor
+                    .and_then(|sequence| sequence.checked_add(1))
+                    .ok_or_else(|| "view journal event sequence overflow or missing snapshot".to_owned())?;
+                if cursor_sequence != expected_sequence {
+                    return Err("view journal event sequence does not advance its snapshot".to_owned());
+                }
+                cursor_sequence_floor = Some(cursor_sequence);
+            }
+            if cursor_sequence == u64::MAX {
+                return Err("view journal cursor sequence is exhausted".to_owned());
+            }
             if expected_workspace.to_bytes() != envelope.workspace_root {
                 // A valid snapshot for an older selected workspace carries a
                 // deliberately different producer capability. Ignore that
@@ -145,7 +196,23 @@ impl ViewJournal {
             root: view, cursor, ..
         } = state
         else {
-            return Ok(None);
+            let current_root = expected_workspace.to_bytes();
+            let prior_root = prior_workspace.map(WorkspaceRoot::to_bytes);
+            let sequence_is_in_lineage = sequence_workspace_root.is_some_and(|root| {
+                root == current_root || prior_root.is_some_and(|prior| root == prior)
+            });
+            let sequence_has_authority_binding = sequence_capability.flatten().is_some();
+            let cursor_sequence_floor = match cursor_sequence_floor {
+                Some(sequence) if sequence_is_in_lineage && sequence_has_authority_binding => {
+                    CursorSequenceFloor::Proven(sequence)
+                }
+                Some(_) => CursorSequenceFloor::Unproven,
+                None => CursorSequenceFloor::Empty,
+            };
+            return Ok(ViewJournalRecovery {
+                recovered: None,
+                cursor_sequence_floor,
+            });
         };
         let base_sequence = cursor
             .sequence()
@@ -157,12 +224,18 @@ impl ViewJournal {
             workspace_root: expected_workspace,
             capability: Some(live),
         }));
-        Ok(Some(RecoveredView {
-            view,
-            cursor,
-            events,
-            base_sequence,
-        }))
+        let cursor_sequence_floor = cursor_sequence_floor
+            .map(CursorSequenceFloor::Proven)
+            .ok_or_else(|| "accepted view journal has no cursor sequence".to_owned())?;
+        Ok(ViewJournalRecovery {
+            recovered: Some(RecoveredView {
+                view,
+                cursor,
+                events,
+                base_sequence,
+            }),
+            cursor_sequence_floor,
+        })
     }
 
     /// Loads a view only when its publication certificate names the exact
@@ -177,7 +250,19 @@ impl ViewJournal {
         workspace_root: WorkspaceRoot,
         capability: &CoverageCapability,
     ) -> Result<Option<RecoveredView>, String> {
-        self.load_scoped(capability, workspace_root)
+        self.recover_for_workspace(workspace_root, None, capability)
+            .map(|recovery| recovery.recovered)
+    }
+
+    /// Loads the selected checked view and preserves only the last validated
+    /// scalar cursor sequence when the journal belongs to a stale generation.
+    pub(super) fn recover_for_workspace(
+        &self,
+        workspace_root: WorkspaceRoot,
+        prior_workspace: Option<WorkspaceRoot>,
+        capability: &CoverageCapability,
+    ) -> Result<ViewJournalRecovery, String> {
+        self.load_scoped(capability, workspace_root, prior_workspace)
     }
 
     /// How this journal shows that another build wrote it, when one did.
