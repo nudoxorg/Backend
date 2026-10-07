@@ -1,0 +1,11 @@
+warning: resolver for the non root package will be ignored, specify resolver at the workspace root:
+package:   /Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/vendor/gpui_ce_components/Cargo.toml
+workspace: /Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/Cargo.toml
+   Compiling backend-runtime v0.2.0 (/Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/crates/runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.31s
+     Running unittests src/lib.rs (.local/build/point-metadata-test/.nudox-cargo/slot-0/debug/deps/backend_runtime-f403b30f5a909ec5)
+
+thread 'tests::concurrent_initializers_publish_one_complete_authority_secret' (47560024) panicked at crates/runtime/src/lib.rs:1828:18:
+publish or admit secret: Io(Custom { kind: NotFound, error: AuthorityStageError { stage: "initializer-descriptor-open", source: Os { code: 2, kind: NotFound, message: "No such file or directory" } } })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+error: test failed, to rerun pass `-p backend-runtime --lib`

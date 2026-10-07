@@ -1,0 +1,5 @@
+warning: resolver for the non root package will be ignored, specify resolver at the workspace root:
+package:   /Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/vendor/gpui_ce_components/Cargo.toml
+workspace: /Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/Cargo.toml
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.68s
+     Running unittests src/lib.rs (.local/build/point-metadata-test/.nudox-cargo/slot-0/debug/deps/backend_runtime-f403b30f5a909ec5)

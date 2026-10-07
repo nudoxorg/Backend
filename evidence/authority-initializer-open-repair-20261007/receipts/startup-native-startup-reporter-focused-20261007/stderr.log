@@ -1,0 +1,35 @@
+warning: resolver for the non root package will be ignored, specify resolver at the workspace root:
+package:   /Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/vendor/gpui_ce_components/Cargo.toml
+workspace: /Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/Cargo.toml
+   Compiling backend-runtime v0.2.0 (/Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/crates/runtime)
+error[E0599]: no method named `kind` found for enum `std::fs::TryLockError` in the current scope
+   --> crates/runtime/src/startup.rs:381:77
+    |
+381 |             second.file.try_lock().expect_err("duplicate writer must wait").kind(),
+    |                                                                             ^^^^ method not found in `std::fs::TryLockError`
+    |
+note: the method `kind` exists on the type `std::io::Error`
+   --> /nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/lib/rustlib/src/rust/library/std/src/io/error.rs:682:5
+    |
+682 |     pub fn kind(&self) -> ErrorKind {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `kind` found for enum `std::fs::TryLockError` in the current scope
+   --> crates/runtime/src/startup.rs:388:18
+    |
+385 | /             reader
+386 | |                 .try_lock_shared()
+387 | |                 .expect_err("reader must wait for the writer")
+388 | |                 .kind(),
+    | |                 -^^^^ method not found in `std::fs::TryLockError`
+    | |_________________|
+    |
+    |
+note: the method `kind` exists on the type `std::io::Error`
+   --> /nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/lib/rustlib/src/rust/library/std/src/io/error.rs:682:5
+    |
+682 |     pub fn kind(&self) -> ErrorKind {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `backend-runtime` (lib test) due to 2 previous errors

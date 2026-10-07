@@ -1,0 +1,54 @@
+warning: resolver for the non root package will be ignored, specify resolver at the workspace root:
+package:   /Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/vendor/gpui_ce_components/Cargo.toml
+workspace: /Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/Cargo.toml
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling memchr v2.8.3
+   Compiling serde_core v1.0.229
+   Compiling crossbeam-utils v0.8.22
+   Compiling libc v0.2.189
+   Compiling serde v1.0.229
+   Compiling syn v3.0.4
+   Compiling syn v2.0.119
+   Compiling crossbeam-epoch v0.9.20
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.12
+   Compiling cc v1.2.67
+   Compiling serde_derive v1.0.229
+   Compiling aho-corasick v1.1.5
+   Compiling crossbeam-deque v0.8.7
+   Compiling regex-syntax v0.8.11
+   Compiling blake3 v1.8.7
+   Compiling bstr v1.13.1
+   Compiling heck v0.5.0
+   Compiling log v0.4.34
+   Compiling rustix v1.1.4
+   Compiling thiserror v2.0.20
+   Compiling same-file v1.0.6
+   Compiling zerocopy v0.8.56
+   Compiling unicode-xid v0.2.6
+   Compiling derive_more-impl v2.1.1
+   Compiling regex-automata v0.4.18
+   Compiling walkdir v2.5.0
+   Compiling strum_macros v0.28.0
+   Compiling zerocopy-derive v0.8.56
+   Compiling errno v0.3.14
+   Compiling thiserror-impl v2.0.20
+   Compiling bitflags v2.13.1
+   Compiling arrayvec v0.7.8
+   Compiling constant_time_eq v0.4.2
+   Compiling cfg-if v1.0.4
+   Compiling strum v0.28.0
+   Compiling derive_more v2.1.1
+   Compiling smallvec v1.16.0
+   Compiling socket2 v0.6.5
+   Compiling globset v0.4.20
+   Compiling atomic-waker v1.1.2
+   Compiling backend-platform v0.2.0 (/Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/crates/platform)
+   Compiling backend-version v0.2.0 (/Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/crates/version)
+   Compiling ignore v0.4.33
+   Compiling backend-discovery v0.2.0 (/Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/crates/discovery)
+   Compiling backend-runtime v0.2.0 (/Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/crates/runtime)
+    Finished `release` profile [optimized] target(s) in 17.48s
+     Running unittests src/lib.rs (.local/build/point-metadata-test/.nudox-cargo/slot-0/release/deps/backend_runtime-60f2bee1c89d5563)

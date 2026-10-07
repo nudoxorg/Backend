@@ -1,0 +1,11 @@
+
+running 1 test
+test directory::tests::simultaneous_private_writable_opens_share_one_file_in_a_pinned_directory ... FAILED
+
+failures:
+
+failures:
+    directory::tests::simultaneous_private_writable_opens_share_one_file_in_a_pinned_directory
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 74 filtered out; finished in 0.01s
+

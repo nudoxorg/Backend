@@ -1,0 +1,12 @@
+
+running 7 tests
+test startup::tests::diagnostic_channel_does_not_create_a_missing_or_unrelated_file ... ok
+test startup::tests::diagnostic_channel_refuses_symlinks_and_unprintable_control_sequences ... ok
+test startup::tests::duplicate_reporters_serialize_on_the_admitted_file ... ok
+test startup::tests::incomplete_terminal_record_is_never_reported_as_a_cause ... ok
+test startup::tests::original_startup_cause_is_private_bounded_and_removed_with_the_attempt ... ok
+test startup::tests::reporting_after_attempt_removal_does_not_recreate_the_path ... ok
+test startup::tests::reporting_after_path_replacement_does_not_modify_the_replacement ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.14s
+
