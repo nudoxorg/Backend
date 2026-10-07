@@ -1471,6 +1471,9 @@ pub(crate) fn structural_call_graph_relations(
                     "structural call graph callee is absent from the published view".to_owned(),
                 )
             })?;
+        if caller_id != source_id && (!include_incoming || callee_id != source_id) {
+            continue;
+        }
         relations.insert(backend_engine::GraphRelation::new(
             caller_id,
             callee_id,
