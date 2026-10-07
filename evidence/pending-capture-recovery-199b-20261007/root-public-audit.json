@@ -1,0 +1,16 @@
+{
+  "source": "199bef18b011e41493a3a973f8765015b29ab412",
+  "archive_sha256": "146afd956213ca912833e07403a976a1c3c083c50a06e76087d4893eaf1c84ed",
+  "verified_artifacts": 820,
+  "epochs": 18,
+  "actual_idle_exits": 12,
+  "intentional_or_cleanup_signal_epochs": 6,
+  "observer_failed_epochs": 2,
+  "max_admission_age_seconds": 14.158207,
+  "all_owners_retired": true,
+  "authentic_next_semantic_pass": false,
+  "tiny_configured_type_script_scope": true,
+  "reviewed_source_commit": "81c53ff276",
+  "basis": "latest canonical 98182b3fef differs from tested 96b only by CI and evidence/docs; all three production/test blobs match native-tested199b exactly",
+  "compiled_identity_relabelled": false
+}
