@@ -219,11 +219,11 @@ impl ImportedCalls {
         joined
     }
 
-    fn targets(&self, local: &FileDeclarations<'_>, call: &CallSite) -> BTreeSet<DeclarationId> {
+    fn target(&self, local: &FileDeclarations<'_>, call: &CallSite) -> Option<DeclarationId> {
         if let Some(targets) = local.callable.get(call.name.as_str()) {
-            return targets.clone();
+            return unique_target(targets.iter().copied());
         }
-        let mut targets = self.methods.get(&call.name).cloned().unwrap_or_default();
+        let methods = self.methods.get(&call.name).into_iter().flatten().copied();
         let imported = match &call.qualifier {
             Some(qualifier) => self
                 .qualified
@@ -231,11 +231,16 @@ impl ImportedCalls {
                 .and_then(|names| names.get(&call.name)),
             None => self.unqualified.get(&call.name),
         };
-        if let Some(imported) = imported {
-            targets.extend(imported);
-        }
-        targets
+        unique_target(methods.chain(imported.into_iter().flatten().copied()))
     }
+}
+
+/// Candidate union can distinguish absence, one identity and ambiguity without
+/// allocating a set for every call. Repeated candidates with the same interned
+/// coordinate remain one identity, as in the original coordinate-set join.
+fn unique_target(mut targets: impl Iterator<Item = DeclarationId>) -> Option<DeclarationId> {
+    let first = targets.next()?;
+    targets.all(|target| target == first).then_some(first)
 }
 
 pub(super) struct ProjectCalls {
@@ -353,11 +358,9 @@ impl ProjectCalls {
             }
             for &(caller, excerpt) in &callers[at] {
                 for call in structural_excerpt_call_sites(excerpt) {
-                    let targets = imported.targets(&declarations[at], &call);
-                    if targets.len() != 1 {
+                    let Some(callee) = imported.target(&declarations[at], &call) else {
                         continue;
-                    }
-                    let callee = *targets.first().expect("exactly one target");
+                    };
                     if caller == callee {
                         continue;
                     }
