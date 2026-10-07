@@ -883,10 +883,11 @@ mod semantic_diff_tests {
         BorrowedTree, Confidence, CorePayloadHash, DeclarationFamilyId, DeclarationIdentity,
         EntityAuthorityFacts, EntityVersion, ExternalTarget, FactAvailability,
         ForeignDeclarationId, ForeignExternalTarget, ForeignTargetOrigin, IrBuilder, ItemKind,
-        LinkKind, LinkTarget, OccurrenceAuthorityFacts, ParentageAuthority, SemanticReader as _,
-        SemanticSnapshot, SemanticStableLinks, SourceSpan, StableLinkKey, TreeEntityId,
-        TreeItemInput, TreeLinkInput, TreeLinkTarget, VariantAvailability, VariantFingerprint,
-        Visibility, encode_full_semantic_image, full_semantic_image_len,
+        LinkKind, LinkTarget, OccurrenceAuthorityFacts, ParentageAuthority,
+        SemanticCoreReader as _, SemanticReader as _, SemanticSnapshot, SemanticStableLinks,
+        SourceSpan, StableLinkKey, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget,
+        VariantAvailability, VariantFingerprint, Visibility, encode_full_semantic_image,
+        full_semantic_image_len,
     };
 
     #[derive(Clone, Copy)]
@@ -1032,7 +1033,7 @@ mod semantic_diff_tests {
                 .map_err(|error| BuiltinModelError(error.to_string()))?,
         };
         backend_library::interface::SemanticImageSnapshot::try_from_reopened(authority, &bytes)
-            .map_err(|error| BuiltinModelError(format!("admit fixture semantic image: {error}")))
+            .map_err(|error| BuiltinModelError(format!("admit fixture semantic image: {error:?}")))
     }
 
     fn package_snapshot_from_image(
