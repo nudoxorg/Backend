@@ -99,6 +99,10 @@ pub enum LocalHostVariable {
     NudoxDotnet,
     /// Explicit Node runtime for the vendored TypeScript authority driver.
     NudoxTypeScriptNode,
+    /// Internal frozen installed Node selection; does not claim an explicit NUDOX override.
+    NudoxTypeScriptDefaultNode,
+    /// Internal Node selection validated against an application bundle's byte inventory.
+    NudoxTypeScriptBundledNode,
     /// Explicit Node module root containing the TypeScript compiler API.
     NudoxTypeScriptModuleRoot,
     /// Explicit program that directly emits TypeScript authority reports.
@@ -133,7 +137,7 @@ impl LocalHostVariable {
     /// The order is the stable order used by closed host-environment snapshots. Keep this list
     /// exhaustive when adding a new variant. Renaming an existing variable's process spelling or
     /// changing its role meaning requires a snapshot protocol version change.
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 32] = [
         Self::NudoxDataRoot,
         Self::Home,
         Self::XdgDataHome,
@@ -164,6 +168,8 @@ impl LocalHostVariable {
         Self::NudoxMavenRoot,
         Self::NudoxNugetRoot,
         Self::NudoxGenericRoot,
+        Self::NudoxTypeScriptDefaultNode,
+        Self::NudoxTypeScriptBundledNode,
     ];
 
     /// Number of closed snapshot roles after excluding the workspace-owned data root.
@@ -404,6 +410,8 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                     | LocalHostVariable::NudoxTypeScriptCompiler
                     | LocalHostVariable::NudoxTypeScriptDefaultCompiler
                     | LocalHostVariable::NudoxTypeScriptNode
+                    | LocalHostVariable::NudoxTypeScriptDefaultNode
+                    | LocalHostVariable::NudoxTypeScriptBundledNode
                     | LocalHostVariable::NudoxTypeScriptModuleRoot
                     | LocalHostVariable::NudoxPyrefly
                     | LocalHostVariable::NudoxGo
@@ -439,7 +447,12 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             paths.push((variable, compiler));
         }
         if let Some(node) = typescript.node {
-            paths.push((LocalHostVariable::NudoxTypeScriptNode, node.path));
+            let variable = match node.origin {
+                crate::application::typescript_host::TypeScriptSelectionOrigin::ExplicitConfiguration => LocalHostVariable::NudoxTypeScriptNode,
+                crate::application::typescript_host::TypeScriptSelectionOrigin::ValidatedApplicationBundle => LocalHostVariable::NudoxTypeScriptBundledNode,
+                _ => LocalHostVariable::NudoxTypeScriptDefaultNode,
+            };
+            paths.push((variable, node.path));
         }
         if let Some(module_root) = typescript.module_root {
             paths.push((LocalHostVariable::NudoxTypeScriptModuleRoot, module_root));
@@ -1106,6 +1119,8 @@ const fn variable_name(variable: LocalHostVariable) -> &'static str {
         LocalHostVariable::NudoxJavaCompiler => "NUDOX_JAVAC",
         LocalHostVariable::NudoxDotnet => "NUDOX_DOTNET",
         LocalHostVariable::NudoxTypeScriptNode => "NUDOX_TYPESCRIPT_NODE",
+        LocalHostVariable::NudoxTypeScriptDefaultNode => "BACKEND_LOCALD_DEFAULT_TYPESCRIPT_NODE",
+        LocalHostVariable::NudoxTypeScriptBundledNode => "BACKEND_LOCALD_BUNDLED_TYPESCRIPT_NODE",
         LocalHostVariable::NudoxTypeScriptModuleRoot => "NUDOX_TYPESCRIPT_MODULE_ROOT",
         LocalHostVariable::NudoxTypeScriptReportProgram => "NUDOX_TYPESCRIPT_REPORT_PROGRAM",
         LocalHostVariable::NudoxPyrefly => "NUDOX_PYREFLY",

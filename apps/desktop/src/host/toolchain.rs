@@ -323,7 +323,7 @@ mod tests {
         assert_eq!(&desktop, locald.snapshot(), "GUI and CLI/MCP select the same exact host paths");
         assert_eq!(desktop.path(LocalHostVariable::NudoxTypeScriptDefaultCompiler), Some(expected_compiler.as_path()));
         assert_eq!(desktop.path(LocalHostVariable::NudoxTypeScriptCompiler), None);
-        assert_eq!(desktop.path(LocalHostVariable::NudoxTypeScriptNode), Some(expected_node.as_path()));
+        assert_eq!(desktop.path(LocalHostVariable::NudoxTypeScriptDefaultNode), Some(expected_node.as_path()));
         assert!(desktop.path(LocalHostVariable::NudoxTypeScriptModuleRoot).is_some());
         let restarted = prepared_by_the_process().expect("repeat actual desktop composition");
         assert_eq!(desktop, restarted, "unchanged launch inputs yield the same closed owner paths");
@@ -380,7 +380,7 @@ mod tests {
             Some(module_root.as_path())
         );
         assert_eq!(
-            desktop.path(LocalHostVariable::NudoxTypeScriptNode),
+            desktop.path(LocalHostVariable::NudoxTypeScriptDefaultNode),
             Some(node.as_path())
         );
 

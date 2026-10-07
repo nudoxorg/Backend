@@ -232,7 +232,10 @@ fn selection_issues(
 ) -> Vec<LocalCompilerHostSelectionIssue> {
     let has = |variable| snapshot.path(variable).is_some();
     let mut issues = Vec::new();
-    if !has(LocalHostVariable::NudoxTypeScriptNode) {
+    if !has(LocalHostVariable::NudoxTypeScriptNode)
+        && !has(LocalHostVariable::NudoxTypeScriptDefaultNode)
+        && !has(LocalHostVariable::NudoxTypeScriptBundledNode)
+    {
         issues.push(LocalCompilerHostSelectionIssue::MissingTypeScriptNode);
     }
     if (has(LocalHostVariable::NudoxTypeScriptCompiler)
@@ -294,6 +297,11 @@ impl ClosedLocalHostEnvironmentSnapshot {
             }
             if selected.iter().any(|(existing, _)| *existing == variable) {
                 return Err(ClosedLocalHostEnvironmentSnapshotError::DuplicateRole);
+            }
+            if is_typescript_node_role(variable)
+                && selected.iter().any(|(existing, _)| is_typescript_node_role(*existing))
+            {
+                return Err(ClosedLocalHostEnvironmentSnapshotError::ConflictingTypeScriptNodeRoles);
             }
             if selected.len() >= LocalHostVariable::CLOSED_ENVIRONMENT_SNAPSHOT_ROLE_COUNT {
                 return Err(ClosedLocalHostEnvironmentSnapshotError::TooManyRoles);
@@ -428,6 +436,8 @@ pub enum ClosedLocalHostEnvironmentSnapshotError {
     WorkspaceOwnedRole,
     /// A role occurs more than once.
     DuplicateRole,
+    /// More than one explicit, installed, or bundled Node authority is claimed.
+    ConflictingTypeScriptNodeRoles,
     /// The snapshot contains more roles than the vocabulary permits.
     TooManyRoles,
     /// A selected value is not an absolute path.
@@ -456,6 +466,7 @@ impl fmt::Display for ClosedLocalHostEnvironmentSnapshotError {
                 "compiler environment snapshot contains a workspace-owned role"
             }
             Self::DuplicateRole => "compiler environment snapshot repeats a role",
+            Self::ConflictingTypeScriptNodeRoles => "compiler environment snapshot contains conflicting TypeScript Node roles",
             Self::TooManyRoles => "compiler environment snapshot has too many roles",
             Self::RelativePath => "compiler environment snapshot contains a relative path",
             Self::InvalidPath => "compiler environment snapshot contains an invalid native path",
@@ -483,6 +494,12 @@ struct SnapshotPathWire {
 
 fn is_snapshot_role(variable: LocalHostVariable) -> bool {
     LocalHostVariable::closed_environment_snapshot_roles().any(|role| role == variable)
+}
+
+fn is_typescript_node_role(variable: LocalHostVariable) -> bool {
+    matches!(variable, LocalHostVariable::NudoxTypeScriptNode
+        | LocalHostVariable::NudoxTypeScriptDefaultNode
+        | LocalHostVariable::NudoxTypeScriptBundledNode)
 }
 
 fn role_rank(variable: LocalHostVariable) -> usize {

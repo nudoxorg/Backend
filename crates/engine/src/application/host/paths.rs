@@ -206,6 +206,14 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             });
         }
         if self.discovery == LocalHostDiscovery::ClosedSnapshot {
+            for (variable, origin) in [
+                (LocalHostVariable::NudoxTypeScriptBundledNode, TypeScriptSelectionOrigin::ValidatedApplicationBundle),
+                (LocalHostVariable::NudoxTypeScriptDefaultNode, TypeScriptSelectionOrigin::InstalledHostSelection),
+            ] {
+                if let Some(path) = self.optional_absolute_path(variable)? {
+                    return self.validate_file(role, variable, path).map(|path| Some(TypeScriptNodeSelection { path, origin }));
+                }
+            }
             return Ok(None);
         }
         if let Some(directory) = compiler.and_then(Path::parent) {
@@ -1463,7 +1471,7 @@ mod tests {
             ),
         );
         assert_eq!(
-            snapshot.path(LocalHostVariable::NudoxTypeScriptNode),
+            snapshot.path(LocalHostVariable::NudoxTypeScriptDefaultNode),
             Some(fs::canonicalize(root.join("bin/node")).unwrap().as_path()),
         );
         assert_eq!(
@@ -1575,6 +1583,42 @@ mod tests {
             }
         ));
         fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn closed_node_roles_round_trip_exact_paths_and_keep_truthful_origins() {
+        use super::super::ClosedLocalHostEnvironmentSnapshot;
+        struct Closed(ClosedLocalHostEnvironmentSnapshot);
+        impl LocalHostEnvironment for Closed {
+            fn value(&self, variable: LocalHostVariable) -> Option<std::ffi::OsString> {
+                self.0.path(variable).map(|path| path.as_os_str().to_owned())
+            }
+        }
+        let root = private_test_directory("closed-node-origin");
+        let node = root.join("bin/node"); executable(&node);
+        for (role, origin) in [
+            (LocalHostVariable::NudoxTypeScriptNode, TypeScriptSelectionOrigin::ExplicitConfiguration),
+            (LocalHostVariable::NudoxTypeScriptDefaultNode, TypeScriptSelectionOrigin::InstalledHostSelection),
+            (LocalHostVariable::NudoxTypeScriptBundledNode, TypeScriptSelectionOrigin::ValidatedApplicationBundle),
+        ] {
+            let snapshot = ClosedLocalHostEnvironmentSnapshot::from_paths([(role, node.clone())]).expect("one Node role");
+            let encoded = snapshot.encode().expect("closed Node encoding");
+            let decoded = ClosedLocalHostEnvironmentSnapshot::parse(&encoded).expect("closed Node decoding");
+            assert_eq!(snapshot, decoded);
+            assert_eq!(encoded, decoded.encode().unwrap(), "same authority inputs retain exact canonical bytes");
+            let host = LocalCompilerHost::new(Closed(decoded), LocalHostDiscovery::ClosedSnapshot);
+            let selected = host.typescript_node_executable(None, None).expect("closed Node selection").expect("Node");
+            assert_eq!(selected.path, node);
+            assert_eq!(selected.origin, origin);
+            let repeated = host.typescript_node_executable(None, None).unwrap().unwrap();
+            assert_eq!(selected.path, repeated.path); assert_eq!(selected.origin, repeated.origin);
+        }
+        assert!(matches!(ClosedLocalHostEnvironmentSnapshot::from_paths([
+            (LocalHostVariable::NudoxTypeScriptNode, node.clone()),
+            (LocalHostVariable::NudoxTypeScriptDefaultNode, node),
+        ]), Err(super::super::ClosedLocalHostEnvironmentSnapshotError::ConflictingTypeScriptNodeRoles)));
+        fs::remove_dir_all(root).expect("owned fixture cleanup");
+
     }
 
     #[test]
