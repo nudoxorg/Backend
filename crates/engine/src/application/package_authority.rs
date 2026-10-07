@@ -1194,7 +1194,7 @@ mod tests {
             Some(crate::application::LocalRuntimeGoAuthorityFailure::ToolchainIdentityUnavailable);
         let cancelled = AtomicBool::new(false);
 
-        let error = enter_package_authority(PackageAuthorityRequest {
+        let result = enter_package_authority(PackageAuthorityRequest {
             package_root: &root,
             source_path: &source_path,
             source,
@@ -1206,8 +1206,11 @@ mod tests {
                 cancelled: &cancelled,
             },
             configuration: config,
-        })
-        .expect_err("Go package use must surface its retained typed admission failure");
+        });
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("Go package use must surface its retained typed admission failure"),
+        };
 
         assert!(matches!(
             error,
