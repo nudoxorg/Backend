@@ -995,7 +995,6 @@ fn graph_query_continuation_decodes_only_against_its_owner_cursor() {
     let continuation = request
         .next_continuation(owner, 1)
         .expect("owner-bound continuation");
-    let cursor = continuation.cursor();
     let mut claims = certificate(&root)
         .claims
         .iter()
@@ -1012,13 +1011,13 @@ fn graph_query_continuation_decodes_only_against_its_owner_cursor() {
         value: request.recipe_preimage(),
     });
     claims.push(WireClaim::Cursor {
-        recipe: encode_id(cursor.recipe().as_bytes()),
-        version: encode_id(cursor.version().as_bytes()),
-        branch: encode_id(cursor.branch().as_bytes()),
-        log: encode_id(cursor.log().as_bytes()),
-        schema: cursor.schema(),
-        root: encode_id(cursor.root().as_bytes()),
-        sequence: cursor.sequence(),
+        recipe: encode_id(owner.recipe().as_bytes()),
+        version: encode_id(owner.version().as_bytes()),
+        branch: encode_id(owner.branch().as_bytes()),
+        log: encode_id(owner.log().as_bytes()),
+        schema: owner.schema(),
+        root: encode_id(owner.root().as_bytes()),
+        sequence: owner.sequence(),
     });
     let expected = CommandDto::new(
         43,
@@ -1049,6 +1048,80 @@ fn graph_query_continuation_decodes_only_against_its_owner_cursor() {
         ),
     );
     assert!(crate::decode_command_body_for_owner(&encoded, foreign_owner).is_err());
+
+    // The real client sends the fresh revision's owner claim. The query
+    // recipe remains separate and binds all request arguments and page scope.
+    let original: serde_json::Value = serde_json::from_slice(&encoded).expect("command JSON");
+    for (path, replacement) in [
+        (
+            vec!["query"],
+            serde_json::json!("{ Declaration { label @output } }"),
+        ),
+        (
+            vec!["variables"],
+            serde_json::json!({"name": {"kind": "string", "value": "changed"}}),
+        ),
+        (vec!["page", "limit"], serde_json::json!(2)),
+        (
+            vec!["page", "basis"],
+            serde_json::json!(encode_id(foreign_owner.root().as_bytes())),
+        ),
+        (
+            vec!["page", "continuation", "query_offset"],
+            serde_json::json!(0),
+        ),
+        (
+            vec!["page", "continuation", "sequence"],
+            serde_json::json!(owner.sequence() + 1),
+        ),
+        (
+            vec!["page", "continuation", "branch"],
+            serde_json::json!(encode_id(crate::branch_key("forged").as_bytes())),
+        ),
+        (
+            vec!["page", "continuation", "version"],
+            serde_json::json!("00"),
+        ),
+    ] {
+        let mut forged = original.clone();
+        let mut field = &mut forged["command"]["data"];
+        for part in &path {
+            field = &mut field[*part];
+        }
+        *field = replacement;
+        assert!(
+            crate::decode_command_body_for_owner(
+                &serde_json::to_vec(&forged).expect("forgery"),
+                owner
+            )
+            .is_err(),
+            "changed {path:?} must be refused"
+        );
+    }
+
+    let advanced_owner = Cursor::for_view(
+        owner.recipe(),
+        owner.version(),
+        Frontier::new(
+            owner.branch(),
+            owner.log(),
+            owner.schema(),
+            owner.root(),
+            owner.sequence() + 1,
+        ),
+    );
+    let mut same_view = original.clone();
+    let claims = same_view["certificate"]["claims"]
+        .as_array_mut()
+        .expect("claims");
+    let claim = claims
+        .iter_mut()
+        .find(|claim| claim["kind"] == "cursor")
+        .expect("owner claim");
+    claim["data"]["sequence"] = serde_json::json!(advanced_owner.sequence());
+    let same_view = serde_json::to_vec(&same_view).expect("same view continuation");
+    crate::decode_command_body_for_owner(&same_view, advanced_owner)
+        .expect("same-view cold continuation with fresh authority");
 }
 
 fn reply_round_trip_fixtures() -> (Basis, ViewStateRoot, Vec<CommandReply>) {
@@ -2387,4 +2460,183 @@ fn shared_request_admission_keeps_text_bounds_out_of_process_clients() {
         },
     );
     assert!(admit_request(&accepted).is_ok());
+}
+
+#[test]
+fn graph_query_page_wire_admission_enforces_credit_and_exact_progress() {
+    let source_root = view_state_root(&[]);
+    let basis = Basis::new(source_root, object_version(b"source"));
+    let root = ViewRoot::empty_checked(
+        view_key(b"view"),
+        basis,
+        Frontier::new(basis.branch, basis.log, basis.schema, source_root, 7),
+        capability(basis.object),
+    )
+    .expect("root");
+    let owner = Cursor::for_view_root(&root);
+    let query = crate::GraphQueryRequest::new(
+        "{ Declaration { coordinate @output } }",
+        std::collections::BTreeMap::new(),
+        root.root(),
+        QueryLimit::new(1).expect("limit"),
+    )
+    .expect("query");
+    let row = crate::GraphQueryRow::new(std::collections::BTreeMap::from([(
+        "coordinate".to_owned(),
+        crate::GraphValue::String("a".to_owned()),
+    )]))
+    .expect("row");
+    let mut proof = certificate(&root).with_claim_once(WireClaim::KeyBytes {
+        schema: WireSchema::ViewRecipe,
+        id: encode_id(query.recipe().as_bytes()),
+        value: query.recipe_preimage(),
+    });
+    proof = proof.with_claim_once(WireClaim::RootCommitment {
+        schema: WireSchema::ViewRelation,
+        id: encode_id(root.root().as_bytes()),
+    });
+    let request =
+        CommandDto::new(1, Command::GraphQuery(query.clone())).with_certificate(proof.clone());
+    let good = crate::GraphQueryPage {
+        revision: root.root().into(),
+        source: basis.object,
+        rows: vec![row.clone()].into_boxed_slice(),
+        terminal: crate::PageTerminal::More(query.next_continuation(owner, 1).expect("next")),
+    };
+    let decode_with_proof = |page, proof: &WireCertificate| {
+        let dto =
+            ReplyDto::new(1, CommandReply::GraphQueryPage(page)).with_certificate(proof.clone());
+        let bytes = serde_json::to_vec(&dto).expect("actual reply wire");
+        ReplyDto::decode_with_certificate(&bytes, root.capability())
+            .expect("strict proof admission")
+    };
+    let decode = |page| decode_with_proof(page, &proof);
+    assert!(admit_reply(&request, &decode(good.clone())).is_ok());
+    let mut oversized = good.clone();
+    oversized.rows = vec![row.clone(), row].into_boxed_slice();
+    let mut empty = good.clone();
+    empty.rows = Box::new([]);
+    let mut skipped = good.clone();
+    skipped.terminal =
+        crate::PageTerminal::More(query.next_continuation(owner, 9).expect("skipped"));
+    let mut cancelled = good.clone();
+    cancelled.rows = Box::new([]);
+    cancelled.terminal = crate::PageTerminal::Cancelled;
+    for page in [oversized, empty, skipped, cancelled] {
+        assert!(admit_reply(&request, &decode(page)).is_err());
+    }
+    let foreign_branch = crate::branch_key("foreign");
+    let foreign_log = crate::log_key("foreign");
+    let foreign_version = crate::canonical::view_version(b"foreign-stream");
+    let foreign_proof = proof
+        .clone()
+        .with_claim(WireClaim::Key {
+            schema: WireSchema::Branch,
+            id: encode_id(foreign_branch.as_bytes()),
+            value: "foreign".to_owned(),
+        })
+        .with_claim(WireClaim::Key {
+            schema: WireSchema::Log,
+            id: encode_id(foreign_log.as_bytes()),
+            value: "foreign".to_owned(),
+        })
+        .with_claim(WireClaim::Version {
+            schema: WireSchema::ViewVersion,
+            id: encode_id(foreign_version.as_bytes()),
+            value: b"foreign-stream".to_vec().into_boxed_slice(),
+        });
+    for (recipe, version, branch, log, schema, sequence) in [
+        (
+            query.recipe(),
+            owner.version(),
+            foreign_branch,
+            owner.log(),
+            owner.schema(),
+            owner.sequence(),
+        ),
+        (
+            query.recipe(),
+            owner.version(),
+            owner.branch(),
+            foreign_log,
+            owner.schema(),
+            owner.sequence(),
+        ),
+        (
+            query.recipe(),
+            foreign_version,
+            owner.branch(),
+            owner.log(),
+            owner.schema(),
+            owner.sequence(),
+        ),
+        (
+            query.recipe(),
+            owner.version(),
+            owner.branch(),
+            owner.log(),
+            owner.schema() + 1,
+            owner.sequence(),
+        ),
+        (
+            query.recipe(),
+            owner.version(),
+            owner.branch(),
+            owner.log(),
+            owner.schema(),
+            owner.sequence() + 1,
+        ),
+        (
+            owner.recipe(),
+            owner.version(),
+            owner.branch(),
+            owner.log(),
+            owner.schema(),
+            owner.sequence(),
+        ),
+    ] {
+        let foreign = Cursor::for_view(
+            recipe,
+            version,
+            Frontier::new(branch, log, schema, owner.root(), sequence),
+        )
+        .with_query_offset(1);
+        let mut page = good.clone();
+        page.terminal = crate::PageTerminal::More(crate::PageContinuation::from_cursor(foreign));
+        assert!(
+            admit_reply(&request, &decode_with_proof(page, &foreign_proof)).is_err(),
+            "canonical foreign cursor must not become an issued token"
+        );
+    }
+    let two = crate::GraphQueryRequest::bind(
+        query.input().clone(),
+        root.root(),
+        QueryLimit::new(2).expect("two"),
+    );
+    let two_proof = proof.clone().with_claim_once(WireClaim::KeyBytes {
+        schema: WireSchema::ViewRecipe,
+        id: encode_id(two.recipe().as_bytes()),
+        value: two.recipe_preimage(),
+    });
+    let mut short = good.clone();
+    short.terminal = crate::PageTerminal::More(two.next_continuation(owner, 1).expect("short"));
+    let two_request =
+        CommandDto::new(1, Command::GraphQuery(two)).with_certificate(two_proof.clone());
+    assert!(
+        admit_reply(&two_request, &decode_with_proof(short, &two_proof)).is_err(),
+        "More requires the full credit"
+    );
+    let resumed = CommandDto::new(
+        1,
+        Command::GraphQuery(
+            query
+                .clone()
+                .with_continuation(query.next_continuation(owner, 1).expect("start")),
+        ),
+    )
+    .with_certificate(proof.clone());
+    assert!(
+        admit_reply(&resumed, &decode(good)).is_err(),
+        "repeated offset"
+    );
 }

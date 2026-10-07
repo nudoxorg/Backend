@@ -1,0 +1,172 @@
+{
+  "algorithm": "sha256",
+  "root": "nudox-transport-c61e-raw-evidence-20261007",
+  "self_excluded": "artifact-hashes.json excludes itself to avoid a recursive hash; its exact bytes are covered by archive SHA256 and external archive-seal.json.",
+  "artifacts": [
+    {
+      "path": "remote/transport-contract-client-20261007T201920Z/cargo.log",
+      "size": 185849,
+      "sha256": "b69b446843ee6a717232f08aaece8a3468440d0c6f4af8677c1c8225bec93f2a"
+    },
+    {
+      "path": "remote/transport-contract-client-20261007T201920Z/launch.json",
+      "size": 37586,
+      "sha256": "1ae21a99199b1a24d7ad27c01f7d207ad3bde7f936b492eb5a3940a413aae67d"
+    },
+    {
+      "path": "remote/transport-contract-client-20261007T201920Z/receipt.json",
+      "size": 38435,
+      "sha256": "0b4e0fd5146ac43816fc4e93da795f9f284c0e47b4be609e6f96a331e3655aa4"
+    },
+    {
+      "path": "remote/transport-contract-client-20261007T201920Z-fleet.json",
+      "size": 34635,
+      "sha256": "d02026646f51763112525931986013ed1ced7f7165776caa7d9547d1c9cc4a11"
+    },
+    {
+      "path": "remote/transport-contract-journal-20261007T201840Z/cargo.log",
+      "size": 303256,
+      "sha256": "7180fe90da94df1cd4169c2053afd6ad54bf5419a95a29b909a39e24fd298934"
+    },
+    {
+      "path": "remote/transport-contract-journal-20261007T201840Z/launch.json",
+      "size": 40332,
+      "sha256": "28162d0a58c1456c90a724906a44cd84d2c359210e827a8fd43a048e5309f83b"
+    },
+    {
+      "path": "remote/transport-contract-journal-20261007T201840Z/receipt.json",
+      "size": 41190,
+      "sha256": "518f9a78f6815a11a2c9ab601e33f3e2c6e72c2d6a8e8b1b9c8eddfbd5da4c5c"
+    },
+    {
+      "path": "remote/transport-contract-journal-20261007T201840Z-fleet.json",
+      "size": 37125,
+      "sha256": "35ee816f627be840d0696a4525d9c2f4d6633e760962141ee251ccf9706344de"
+    },
+    {
+      "path": "remote/transport-contract-kernel-20261007T195418Z/cargo.log",
+      "size": 688,
+      "sha256": "9a9e1fed97aeac090484e380e54d331cad2901cf87d96dc4cc7cf0b635b9d5b4"
+    },
+    {
+      "path": "remote/transport-contract-kernel-20261007T195418Z/launch.json",
+      "size": 23418,
+      "sha256": "861b532854617c52429edb8768ab12e9adb8d25c750d6cecabc06194b5d23785"
+    },
+    {
+      "path": "remote/transport-contract-kernel-20261007T195418Z/receipt.json",
+      "size": 24267,
+      "sha256": "5cad944a1c77188088f8904f7d43f82c3164cc9d7ae5e2d7a024f8d99f11cd67"
+    },
+    {
+      "path": "remote/transport-contract-kernel-20261007T195418Z-fleet.json",
+      "size": 21440,
+      "sha256": "b5907d39fc9ac146d63edfa0dd82b1136cb3e602a5d12ce1efbdf78896058720"
+    },
+    {
+      "path": "remote/transport-contract-library-20261007T194821Z/cargo.log",
+      "size": 165285,
+      "sha256": "6d12023a04d162a4be19a673d20cebd548bcb332d80f5af22ba858584db3c5cf"
+    },
+    {
+      "path": "remote/transport-contract-library-20261007T194821Z/launch.json",
+      "size": 30796,
+      "sha256": "f85877e32f84ac25e982201432d8375c9616ebb008042bc2012e7eea647878e5"
+    },
+    {
+      "path": "remote/transport-contract-library-20261007T194821Z/receipt.json",
+      "size": 31646,
+      "sha256": "7e6ea00fdff0812c437f7f5d9373b505e1a95fb5437540ad91303eddb50d2cd9"
+    },
+    {
+      "path": "remote/transport-contract-library-20261007T194821Z-fleet.json",
+      "size": 28353,
+      "sha256": "5aff6b24fd7cfdb229980535127db4300727ebc83384dd3642b353831de9453a"
+    },
+    {
+      "path": "remote/transport-contract-publication-20261007T190219Z/cargo.log",
+      "size": 2880888,
+      "sha256": "fd630ea97126992ef1b75925c0bdae637e4a43aca4e931dc272eb9e3f7dd691d"
+    },
+    {
+      "path": "remote/transport-contract-publication-20261007T190219Z/launch.json",
+      "size": 29939,
+      "sha256": "ce02570efddbb4546a81528ae36353862eb7086e103d6e6102a5bc78319ae345"
+    },
+    {
+      "path": "remote/transport-contract-publication-20261007T190219Z/receipt.json",
+      "size": 30804,
+      "sha256": "e3ef3d692b26527b71196a52d9925671ee3864f68fc1207e350b5fe78d07df77"
+    },
+    {
+      "path": "remote/transport-contract-publication-20261007T190219Z-fleet.json",
+      "size": 27526,
+      "sha256": "0b2737987e5d09744b88d7a81bbb20372aec50c5e4c106428b679035e39aef66"
+    },
+    {
+      "path": "remote/transport-contract-publication-20261007T195442Z/cargo.log",
+      "size": 306498,
+      "sha256": "a023a3ca1fce5ff76db86edb48e2a0467458f0b560abaf693478275a11a9e6b5"
+    },
+    {
+      "path": "remote/transport-contract-publication-20261007T195442Z/launch.json",
+      "size": 26018,
+      "sha256": "d6259e2b48d0334b3ecfc4bf802f35eb0195bda6b4402526307c3ded2f1c5ab4"
+    },
+    {
+      "path": "remote/transport-contract-publication-20261007T195442Z/receipt.json",
+      "size": 26878,
+      "sha256": "0e9a2b36f4f3938762bcaf5fdb64c19fafc8376bcd9dcc85648df76eb2d6dfb0"
+    },
+    {
+      "path": "remote/transport-contract-publication-20261007T195442Z-fleet.json",
+      "size": 23853,
+      "sha256": "1e38a6be51a20a67ba4ebd96ec42160d0350450078237788edb8265ab3e7e01a"
+    },
+    {
+      "path": "runner/post-run-managed-wrapper",
+      "size": 35121,
+      "sha256": "315f9865062f25292bba930c3fd77616a34ad265f8f5370e27206ca30dd10102"
+    },
+    {
+      "path": "runner/transport-contract-launch.py",
+      "size": 2041,
+      "sha256": "dfa21ee532038608f5ebff027f52f3c226caa3592716123af6fdb188f092c9fa"
+    },
+    {
+      "path": "runner/transport-contract-supervisor.py",
+      "size": 4247,
+      "sha256": "115a833d292b6a71424fa32941bbe86642e3d7eefa3ffaa2b37b37f144d1e44f"
+    },
+    {
+      "path": "sealed/manifest.json",
+      "size": 9860,
+      "sha256": "4e1fd2f46f6d3880d3f452d4b5deba66f8b83aa336caa866bb95b1ddcb5091f5"
+    },
+    {
+      "path": "sealed/provenance.json",
+      "size": 5767,
+      "sha256": "ae9fd3f82c284ad2f7953da14a051764bb69b72f30fb2f0aca7bf979d98f692c"
+    },
+    {
+      "path": "sealed/remote-original-artifact-hashes.json",
+      "size": 4483,
+      "sha256": "2977523cf2c3657b9c96f72eab0a8001018a0edc3d508fdc81173ec8ab38ee29"
+    },
+    {
+      "path": "source/Cargo.lock",
+      "size": 421381,
+      "sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+    },
+    {
+      "path": "source/checkpoint.bundle",
+      "size": 26795,
+      "sha256": "e8ba6804f19d00a041ec20bed9790fdf0ba706a62361ac55fc1340f1e170fcd7"
+    },
+    {
+      "path": "source/identity.json",
+      "size": 1190,
+      "sha256": "64c9e51e5d96ef13febbab66b5fd6024a973991ff5183b12d88fcc76f9cb6464"
+    }
+  ]
+}

@@ -1692,9 +1692,24 @@ pub(crate) fn compose_owner(
     let workspace_snapshot = daemon.engine().daemon().owner().snapshot();
     let view_capability = builtin_view_capability_for_workspace(&workspace_snapshot)
         .map_err(|error| ProcessError::Profile(error.to_string()))?;
-    let recovered_view = view_journal
-        .load_for_workspace(workspace_root, &view_capability)
+    let view_recovery = view_journal
+        .recover_for_workspace(
+            workspace_root,
+            Some(workspace_snapshot.transition_base()),
+            &view_capability,
+        )
         .map_err(|error| embedded_host::journal_refusal(&view_journal, error))?;
+    let recovered_view = view_recovery.recovered;
+    let cursor_sequence_floor = match view_recovery.cursor_sequence_floor {
+        view_journal::CursorSequenceFloor::Empty => None,
+        view_journal::CursorSequenceFloor::Proven(sequence) => Some(sequence),
+        view_journal::CursorSequenceFloor::Unproven => {
+            return Err(ProcessError::Profile(
+                "view journal has a complete stale generation whose cursor sequence lineage is unproven; refusing to reset it"
+                    .to_owned(),
+            ));
+        }
+    };
     daemon
         .engine_mut()
         .daemon_mut()
@@ -1725,7 +1740,11 @@ pub(crate) fn compose_owner(
             &mut generations,
         )
         .map_err(|error| embedded_host::view_refusal(&daemon, &error, ""))?;
-        let cursor = backend_engine::Cursor::for_view_root(&view);
+        let view_sequence = view.frontier().sequence;
+        let cursor_sequence = cursor_sequence_floor
+            .unwrap_or(view_sequence)
+            .max(view_sequence);
+        let cursor = backend_engine::Cursor::for_view_root_at(&view, cursor_sequence);
         let admission = BuiltinViewAdmission {
             workspace_root,
             source_root: view.basis().root,
@@ -2375,6 +2394,9 @@ pub fn run(config: ProcessConfig) -> ExitCode {
 
 #[path = "builtin/projection.rs"]
 mod projection;
+#[cfg(test)]
+#[path = "builtin/publication_transport_tests.rs"]
+mod publication_transport_tests;
 
 pub(crate) use projection::{certificate_for_compact_event, certificate_for_snapshot_page};
 

@@ -6,8 +6,8 @@
 //! deltas retain those root and value preconditions.
 
 use crate::{
-    CanonicalNode, CoverageWitness, IdAdmissionError, IdContext, NodeError, ObjectVersion,
-    Relation, Schema, SchemaIdentity, StateRoot, UntrustedId,
+    AuthorizedCompleteCoverage, CanonicalNode, CoverageWitness, IdAdmissionError, IdContext,
+    NodeError, ObjectVersion, Relation, Schema, SchemaIdentity, ScopeRoot, StateRoot, UntrustedId,
     persistent::{PersistentTree, TreeError},
 };
 use core::{fmt, marker::PhantomData};
@@ -98,6 +98,28 @@ impl fmt::Display for StateError {
 
 impl std::error::Error for StateError {}
 
+/// Failure to replace a checked relation's complete producer observation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CoverageRebindError {
+    /// The retained relation was not authorized complete coverage.
+    NotAuthorizedComplete,
+    /// The admitted replacement observed a different source scope.
+    ScopeMismatch {
+        /// Scope of the retained checked relation.
+        retained: ScopeRoot,
+        /// Scope of the replacement producer observation.
+        replacement: ScopeRoot,
+    },
+}
+
+impl fmt::Display for CoverageRebindError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "relation coverage rebind failed: {self:?}")
+    }
+}
+
+impl std::error::Error for CoverageRebindError {}
+
 impl<R: Relation> RelationState<R> {
     /// Creates an empty checked relation state with the supplied coverage
     /// witness. The canonical empty root is produced by the version kernel,
@@ -154,6 +176,33 @@ impl<R: Relation> RelationState<R> {
     #[must_use]
     pub const fn coverage(&self) -> CoverageWitness {
         self.coverage
+    }
+
+    /// Replaces the producer observation for an already authorized complete
+    /// relation in the exact same source scope. The replacement must already
+    /// have crossed producer admission; a scope label cannot authorize it.
+    ///
+    /// This consumes the checked state and retains its canonical tree and
+    /// root unchanged, with no row traversal, encoding, or identity work.
+    ///
+    /// # Errors
+    /// Refuses incomplete, closed, or unadmitted retained coverage and a
+    /// replacement observation for a different scope.
+    pub fn rebind_authorized_coverage(
+        mut self,
+        replacement: AuthorizedCompleteCoverage,
+    ) -> Result<Self, CoverageRebindError> {
+        let CoverageWitness::Complete(retained) = self.coverage else {
+            return Err(CoverageRebindError::NotAuthorizedComplete);
+        };
+        if retained.scope_root() != replacement.scope_root() {
+            return Err(CoverageRebindError::ScopeMismatch {
+                retained: retained.scope_root(),
+                replacement: replacement.scope_root(),
+            });
+        }
+        self.coverage = CoverageWitness::Complete(replacement);
+        Ok(self)
     }
 
     /// Looks up one visible relation value.

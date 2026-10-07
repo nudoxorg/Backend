@@ -1,0 +1,22 @@
+{
+  "archive_sha256": "2953a22843a97c915a59bbde7c1b3229111430809fd6e04ae4e3bd837947e235",
+  "verified_artifacts": 9,
+  "native_source": {
+    "commit": "579ab4368766e049e33b6c5f5c46cdb01408042a",
+    "tree": "e613544dce6ada67d0a25dbb9d5fcafa5483e17f",
+    "clean": true,
+    "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+  },
+  "integrated_source": "422748c8f34d9b61e1764458ccc6b0ebf3487eb7",
+  "native_test_results": [
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 65 filtered out; finished in 1.65s",
+    "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 41 filtered out; finished in 0.55s"
+  ],
+  "production_file_hashes": {
+    "crates/platform/directory.rs": "85bd201711af93406f30329654b9ab955f413dd6ed02685ef7f3229f9e1ee819",
+    "crates/platform/win32/workspace_fs.rs": "27afdd3884b5549b80df2dc4e9ad66eada26a5a9751d8184cf776eb0985de4fd",
+    "crates/runtime/src/lib.rs": "548d0eb9d92c42216338e284c08960ec1730544c3628dad1872872ab1736cbd5"
+  },
+  "ordinary_empty_profile_cli_mcp": "pending matched 81c images; earlier 4e failed before owner spawn",
+  "windows_native": "not run"
+}
