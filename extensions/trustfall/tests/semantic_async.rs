@@ -41,6 +41,7 @@ fn reopened_image() -> Result<(Vec<u8>, EntityId), Box<dyn std::error::Error>> {
     let versions = [version(1), version(2)];
     let items = [b"source".as_slice(), b"target".as_slice()].map(|name| TreeItemInput {
         name,
+        anonymous_callable_anchor: None,
         kind: ItemKind::Function,
         visibility: Visibility::Public,
         authority: authority(),
@@ -94,6 +95,7 @@ fn single_occurrence_image(
     let versions = [version(11), version(12)];
     let items = [b"source".as_slice(), b"target".as_slice()].map(|name| TreeItemInput {
         name,
+        anonymous_callable_anchor: None,
         kind: ItemKind::Function,
         visibility: Visibility::Public,
         authority: authority(),

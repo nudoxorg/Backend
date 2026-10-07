@@ -1579,6 +1579,7 @@ mod tests {
         let docs = [DocInput::Text(documentation)];
         let items = [TreeItemInput {
             name: b"historical-large-document",
+            anonymous_callable_anchor: None,
             kind: ItemKind::Module,
             visibility: Visibility::Private,
             authority,

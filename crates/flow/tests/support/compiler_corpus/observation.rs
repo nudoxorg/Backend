@@ -3326,6 +3326,7 @@ mod reopened_digest_pins {
     ) -> backend_semantic::ir::TreeItemInput<'facts> {
         backend_semantic::ir::TreeItemInput {
             name,
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: authority(),

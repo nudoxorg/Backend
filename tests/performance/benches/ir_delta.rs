@@ -492,6 +492,7 @@ fn build_ir(rows: &[RowInput]) -> Result<backend_semantic::ir::Ir, Box<dyn Error
         .enumerate()
         .map(|(index, row)| TreeItemInput {
             name: &row.name,
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: complete_entity_authority(),
@@ -637,7 +638,7 @@ fn owned_oracle<Reader: SemanticReader + ?Sized>(reader: &Reader) -> OwnedOracle
             .map(|ty| format!("{:?}", reader.ty(ty).expect("semantic type resolves")));
         let row = OwnedEntity {
             name: reader
-                .atom(entity.name)
+                .atom(entity.name.atom())
                 .expect("entity name resolves")
                 .to_vec(),
             kind: format!("{:?}", entity.kind),
