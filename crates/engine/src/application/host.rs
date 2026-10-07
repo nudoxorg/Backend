@@ -429,7 +429,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                     path: path.into_boxed_path(),
                 });
             }
-            paths.push((variable, path));
+            paths.push((variable, self.canonical_configured_selection_path(variable, path)?));
         }
         if let Some(home) = home.as_ref() {
             paths.push((LocalHostVariable::Home, home.clone()));

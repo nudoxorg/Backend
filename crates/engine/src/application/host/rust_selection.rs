@@ -28,6 +28,7 @@ mod tests {
         cargo: Option<PathBuf>,
         cargo_home: Option<OsString>,
         typescript: Option<PathBuf>,
+        configured: Option<(LocalHostVariable, PathBuf)>,
     }
     impl LocalHostEnvironment for RustEnvironment {
         fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
@@ -39,6 +40,12 @@ mod tests {
                 }
                 _ => None,
             }
+            .or_else(|| {
+                self.configured
+                    .as_ref()
+                    .filter(|(key, _)| *key == variable)
+                    .map(|(_, path)| path.clone().into_os_string())
+            })
         }
         fn search_path(&self) -> Option<OsString> {
             Some(self.bin.clone().into_os_string())
@@ -73,6 +80,7 @@ mod tests {
                     cargo,
                     cargo_home,
                     typescript: None,
+                    configured: None,
                 },
                 super::super::LocalHostDiscovery::InstalledTools,
             )
@@ -107,6 +115,7 @@ mod tests {
                 cargo: None,
                 cargo_home: None,
                 typescript: Some(root.join("configured/missing-tsc")),
+                configured: None,
             },
             super::super::LocalHostDiscovery::InstalledTools,
         );
@@ -121,6 +130,30 @@ mod tests {
             !home.join(".cargo").exists(),
             "unrelated invalid explicit SDK cannot realize Rust state"
         );
+        for variable in [
+            LocalHostVariable::NudoxTypeScriptReportProgram,
+            LocalHostVariable::NudoxJavaCompiler,
+            LocalHostVariable::LibclangPath,
+            LocalHostVariable::NudoxNpmRoot,
+        ] {
+            let host = LocalCompilerHost::new(
+                RustEnvironment {
+                    home: home.clone(),
+                    bin: bin.clone(),
+                    cargo: None,
+                    cargo_home: None,
+                    typescript: None,
+                    configured: Some((variable, root.join("configured/missing-object"))),
+                },
+                super::super::LocalHostDiscovery::InstalledTools,
+            );
+            assert!(matches!(host.capture_installed_selection(),
+                Err(LocalCompilerHostError::ConfiguredPath { variable: failed, .. }) if failed == variable));
+            assert!(
+                !home.join(".cargo").exists(),
+                "invalid named {variable:?} cannot realize cache state"
+            );
+        }
         let mut paths = Vec::new();
         make(None, None)
             .capture_installed_rust_paths(&mut paths, Some(&home))

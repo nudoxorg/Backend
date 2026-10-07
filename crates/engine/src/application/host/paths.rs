@@ -278,6 +278,16 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         let Some(path) = self.optional_absolute_path(variable)? else {
             return Ok(None);
         };
+        self.validate_file_or_directory(role, variable, path)
+            .map(Some)
+    }
+
+    fn validate_file_or_directory(
+        &self,
+        role: LocalHostPathRole,
+        variable: LocalHostVariable,
+        path: PathBuf,
+    ) -> Result<PathBuf, LocalCompilerHostError> {
         let metadata =
             fs::metadata(&path).map_err(|source| LocalCompilerHostError::ConfiguredPath {
                 role,
@@ -293,7 +303,67 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 expected: LocalHostPathKind::FileOrDirectory,
             });
         }
-        canonicalize_existing(role, &path).map(Some)
+        canonicalize_existing(role, &path)
+    }
+
+    /// Admits only explicitly named object roles before inferred cache state is realized.
+    /// Location hints remain paths: their optional state directories may not exist yet.
+    pub(super) fn canonical_configured_selection_path(
+        &self,
+        variable: LocalHostVariable,
+        path: PathBuf,
+    ) -> Result<PathBuf, LocalCompilerHostError> {
+        use LocalHostPathKind::{Directory, File, FileOrDirectory};
+        use LocalHostPathRole::{Native, PackageRoot};
+        let (role, kind) = match variable {
+            LocalHostVariable::NudoxDataRoot
+            | LocalHostVariable::Home
+            | LocalHostVariable::XdgDataHome
+            | LocalHostVariable::LocalAppData => return Ok(path),
+            LocalHostVariable::NudoxRustc => (Native(NativeTool::Rustc), File),
+            LocalHostVariable::NudoxRustSysroot => (LocalHostPathRole::RustSysroot, Directory),
+            LocalHostVariable::NudoxCargo => (LocalHostPathRole::Cargo, File),
+            LocalHostVariable::NudoxCargoHome => (LocalHostPathRole::CargoHome, Directory),
+            LocalHostVariable::NudoxClang => (Native(NativeTool::Clang), File),
+            LocalHostVariable::LibclangPath => (LocalHostPathRole::Libclang, FileOrDirectory),
+            LocalHostVariable::NudoxPython => (Native(NativeTool::Python), File),
+            LocalHostVariable::NudoxTypeScriptCompiler
+            | LocalHostVariable::NudoxTypeScriptDefaultCompiler => {
+                (Native(NativeTool::TypeScriptCompiler), File)
+            }
+            LocalHostVariable::NudoxGo => (Native(NativeTool::GoCompiler), File),
+            LocalHostVariable::NudoxJavaCompiler => (Native(NativeTool::JavaCompiler), File),
+            LocalHostVariable::NudoxDotnet => (Native(NativeTool::CSharpCompiler), File),
+            LocalHostVariable::NudoxTypeScriptNode
+            | LocalHostVariable::NudoxTypeScriptDefaultNode
+            | LocalHostVariable::NudoxTypeScriptBundledNode => {
+                (LocalHostPathRole::TypeScriptNode, File)
+            }
+            LocalHostVariable::NudoxTypeScriptModuleRoot => {
+                (LocalHostPathRole::TypeScriptModuleRoot, Directory)
+            }
+            LocalHostVariable::NudoxTypeScriptReportProgram => {
+                (LocalHostPathRole::TypeScriptReportProgram, File)
+            }
+            LocalHostVariable::NudoxPyrefly => (LocalHostPathRole::Pyrefly, File),
+            LocalHostVariable::NudoxGoOracle => (LocalHostPathRole::GoOracle, File),
+            LocalHostVariable::NudoxJdk => (LocalHostPathRole::JdkRoot, Directory),
+            LocalHostVariable::NudoxRoslynHelper => (LocalHostPathRole::RoslynHelper, File),
+            LocalHostVariable::NudoxCargoRoot => (PackageRoot(PackageEcosystem::Cargo), Directory),
+            LocalHostVariable::NudoxNpmRoot => (PackageRoot(PackageEcosystem::Npm), Directory),
+            LocalHostVariable::NudoxPypiRoot => (PackageRoot(PackageEcosystem::Pypi), Directory),
+            LocalHostVariable::NudoxGoRoot => (PackageRoot(PackageEcosystem::Golang), Directory),
+            LocalHostVariable::NudoxMavenRoot => (PackageRoot(PackageEcosystem::Maven), Directory),
+            LocalHostVariable::NudoxNugetRoot => (PackageRoot(PackageEcosystem::Nuget), Directory),
+            LocalHostVariable::NudoxGenericRoot => {
+                (PackageRoot(PackageEcosystem::Generic), Directory)
+            }
+        };
+        match kind {
+            File => self.validate_file(role, variable, path),
+            Directory => self.validate_directory(role, variable, path),
+            FileOrDirectory => self.validate_file_or_directory(role, variable, path),
+        }
     }
 
     pub(super) fn optional_absolute_path(
