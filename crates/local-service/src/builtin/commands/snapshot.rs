@@ -7,6 +7,7 @@ use backend_engine::builtin::{ProductSemanticPublicationRecord, SemanticPublicat
 use backend_semantic::ir::{
     SemanticReader as _, SemanticSnapshot, SemanticStableLinks, StableLinkKey,
 };
+use std::cmp::Ordering;
 use std::mem::size_of;
 
 #[derive(Clone, Copy)]
@@ -35,7 +36,7 @@ const MAX_DIFF_DECLARATIONS: usize = (super::super::MAX_REBUILD_BYTES / 4)
         backend_semantic::ir::DeclarationIdentity,
         SemanticDeclaration<'static>,
     )>();
-const MAX_DIFF_LINKS: usize =
+pub(super) const MAX_DIFF_LINKS: usize =
     (super::super::MAX_REBUILD_BYTES / 4) / size_of::<SemanticLinkSummary>();
 
 pub(super) fn semantic_package_snapshot<'view>(
@@ -143,8 +144,20 @@ fn append_semantic_image<'view>(
         generation: backend_semantic::ir::GenerationId::from_canonical_bytes(image.as_ref()),
         reader: &image,
     };
+    append_semantic_image_links(snapshot, links, MAX_DIFF_LINKS)
+}
+
+pub(super) fn append_semantic_image_links<'image, Reader>(
+    snapshot: SemanticSnapshot<'image, Reader>,
+    links: &mut Vec<SemanticLinkSummary>,
+    maximum_links: usize,
+) -> Result<(), BuiltinModelError>
+where
+    Reader: backend_semantic::ir::SemanticReader + ?Sized,
+{
+    let reader = snapshot.reader;
     for link in SemanticStableLinks::new(snapshot) {
-        if links.len() == MAX_DIFF_LINKS {
+        if links.len() >= maximum_links {
             return Err(BuiltinModelError(
                 "semantic diff graph index exceeds its memory budget".to_owned(),
             ));
@@ -154,13 +167,13 @@ fn append_semantic_image<'view>(
         })?;
         links.push(SemanticLinkSummary {
             key: link.key,
-            evidence: semantic_link_evidence(&image, link.evidence)?,
+            evidence: semantic_link_evidence(reader, link.evidence)?,
         });
     }
     Ok(())
 }
 
-fn finish_semantic_snapshot(
+pub(super) fn finish_semantic_snapshot(
     found_publication: bool,
     mut declarations: Vec<(
         backend_semantic::ir::DeclarationIdentity,
@@ -174,16 +187,44 @@ fn finish_semantic_snapshot(
             "semantic diff publication contains a duplicate declaration identity".to_owned(),
         ));
     }
-    links.sort_unstable_by_key(|link| link.key);
-    if links.windows(2).any(|pair| pair[0].key == pair[1].key) {
-        return Err(BuiltinModelError(
-            "semantic diff publication contains a duplicate graph relation".to_owned(),
-        ));
-    }
+    links.sort_unstable_by(semantic_link_summary_order);
     Ok(found_publication.then_some(SemanticPackageSnapshot {
         declarations,
         links,
     }))
+}
+
+fn semantic_link_summary_order(
+    left: &SemanticLinkSummary,
+    right: &SemanticLinkSummary,
+) -> Ordering {
+    left.key
+        .cmp(&right.key)
+        .then_with(|| {
+            semantic_link_site_order(
+                left.evidence.source.as_ref(),
+                right.evidence.source.as_ref(),
+            )
+        })
+        .then_with(|| left.evidence.confidence.cmp(&right.evidence.confidence))
+}
+
+pub(super) fn semantic_link_site_order(
+    left: Option<&backend_engine::SemanticSourceSpan>,
+    right: Option<&backend_engine::SemanticSourceSpan>,
+) -> Ordering {
+    match (left, right) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Less,
+        (Some(_), None) => Ordering::Greater,
+        (Some(left), Some(right)) => left
+            .file
+            .as_str()
+            .as_bytes()
+            .cmp(right.file.as_str().as_bytes())
+            .then_with(|| left.start.cmp(&right.start))
+            .then_with(|| left.end.cmp(&right.end)),
+    }
 }
 
 pub(super) fn semantic_link_evidence<Reader: backend_semantic::ir::SemanticReader + ?Sized>(

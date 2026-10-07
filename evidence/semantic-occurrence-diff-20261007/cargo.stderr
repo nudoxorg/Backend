@@ -1,0 +1,6 @@
+warning: resolver for the non root package will be ignored, specify resolver at the workspace root:
+package:   /root/codex-worktrees/luna-semantic-diff-occurrences-20261007/vendor/gpui_ce_components/Cargo.toml
+workspace: /root/codex-worktrees/luna-semantic-diff-occurrences-20261007/Cargo.toml
+   Compiling backend-local-service v0.2.0 (/root/codex-worktrees/luna-semantic-diff-occurrences-20261007/crates/local-service)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 20s
+     Running unittests src/lib.rs (.local/owned-build-role/.nudox-cargo/slot-0/debug/deps/backend_local_service-ba3028477911560f)

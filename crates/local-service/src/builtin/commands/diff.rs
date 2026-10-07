@@ -367,40 +367,357 @@ fn collect_semantic_link_deltas(
         let (older, newer) = match (before.links.get(left), after.links.get(right)) {
             (Some(older), Some(newer)) => match older.key.cmp(&newer.key) {
                 std::cmp::Ordering::Less => {
-                    left += 1;
-                    (Some(older), None)
+                    let end = semantic_link_key_end(&before.links, left);
+                    let older = &before.links[left..end];
+                    left = end;
+                    (older, &[][..])
                 }
                 std::cmp::Ordering::Greater => {
-                    right += 1;
-                    (None, Some(newer))
+                    let end = semantic_link_key_end(&after.links, right);
+                    let newer = &after.links[right..end];
+                    right = end;
+                    (&[][..], newer)
                 }
                 std::cmp::Ordering::Equal => {
-                    left += 1;
-                    right += 1;
-                    if older.evidence == newer.evidence {
-                        continue;
-                    }
-                    (Some(older), Some(newer))
+                    let before_end = semantic_link_key_end(&before.links, left);
+                    let after_end = semantic_link_key_end(&after.links, right);
+                    let older = &before.links[left..before_end];
+                    let newer = &after.links[right..after_end];
+                    left = before_end;
+                    right = after_end;
+                    (older, newer)
                 }
             },
-            (Some(older), None) => {
-                left += 1;
-                (Some(older), None)
+            (Some(_), None) => {
+                let end = semantic_link_key_end(&before.links, left);
+                let older = &before.links[left..end];
+                left = end;
+                (older, &[][..])
             }
-            (None, Some(newer)) => {
-                right += 1;
-                (None, Some(newer))
+            (None, Some(_)) => {
+                let end = semantic_link_key_end(&after.links, right);
+                let newer = &after.links[right..end];
+                right = end;
+                (&[][..], newer)
             }
             (None, None) => break,
         };
-        total = total.checked_add(1).ok_or_else(|| {
-            BuiltinModelError("semantic graph diff result count overflowed".to_owned())
-        })?;
-        ensure_semantic_diff_bound(declaration_rows, total)?;
-        let (source, delta) = semantic_link_delta(older, newer)?;
-        by_source.entry(source).or_default().push(delta);
+        diff_semantic_link_group(older, newer, declaration_rows, &mut total, &mut by_source)?;
     }
     Ok((by_source, total))
+}
+
+fn semantic_link_key_end(links: &[SemanticLinkSummary], start: usize) -> usize {
+    let key = links[start].key;
+    start + links[start..].partition_point(|link| link.key == key)
+}
+
+fn semantic_link_site_end(links: &[SemanticLinkSummary], start: usize) -> usize {
+    let source = links[start].evidence.source.as_ref();
+    start
+        + links[start..].partition_point(|link| {
+            super::snapshot::semantic_link_site_order(link.evidence.source.as_ref(), source)
+                == std::cmp::Ordering::Equal
+        })
+}
+
+fn semantic_link_confidence_end(links: &[SemanticLinkSummary], start: usize) -> usize {
+    let confidence = links[start].evidence.confidence;
+    start + links[start..].partition_point(|link| link.evidence.confidence == confidence)
+}
+
+fn diff_semantic_link_group(
+    older: &[SemanticLinkSummary],
+    newer: &[SemanticLinkSummary],
+    declaration_rows: usize,
+    total: &mut usize,
+    by_source: &mut SemanticLinkDeltas,
+) -> Result<(), BuiltinModelError> {
+    if older.is_empty() || newer.is_empty() {
+        let (old, new) = if older.is_empty() {
+            (None, Some(newer))
+        } else {
+            (Some(older), None)
+        };
+        let group = old.or(new).ok_or_else(|| {
+            BuiltinModelError("semantic graph diff lost both relation groups".to_owned())
+        })?;
+        for summary in group {
+            append_semantic_link_delta(
+                old.map(|_| summary),
+                new.map(|_| summary),
+                declaration_rows,
+                total,
+                by_source,
+            )?;
+        }
+        return Ok(());
+    }
+
+    let mut left = 0;
+    let mut right = 0;
+    while left < older.len() || right < newer.len() {
+        let ordering = match (older.get(left), newer.get(right)) {
+            (Some(old), Some(new)) => super::snapshot::semantic_link_site_order(
+                old.evidence.source.as_ref(),
+                new.evidence.source.as_ref(),
+            ),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => break,
+        };
+        match ordering {
+            std::cmp::Ordering::Less => {
+                let end = semantic_link_site_end(older, left);
+                diff_semantic_link_group(
+                    &older[left..end],
+                    &[],
+                    declaration_rows,
+                    total,
+                    by_source,
+                )?;
+                left = end;
+            }
+            std::cmp::Ordering::Greater => {
+                let end = semantic_link_site_end(newer, right);
+                diff_semantic_link_group(
+                    &[],
+                    &newer[right..end],
+                    declaration_rows,
+                    total,
+                    by_source,
+                )?;
+                right = end;
+            }
+            std::cmp::Ordering::Equal => {
+                let old_end = semantic_link_site_end(older, left);
+                let new_end = semantic_link_site_end(newer, right);
+                diff_semantic_link_site(
+                    &older[left..old_end],
+                    &newer[right..new_end],
+                    declaration_rows,
+                    total,
+                    by_source,
+                )?;
+                left = old_end;
+                right = new_end;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn diff_semantic_link_site(
+    older: &[SemanticLinkSummary],
+    newer: &[SemanticLinkSummary],
+    declaration_rows: usize,
+    total: &mut usize,
+    by_source: &mut SemanticLinkDeltas,
+) -> Result<(), BuiltinModelError> {
+    let (removed, added, removed_summary, added_summary) =
+        unmatched_semantic_link_evidence(older, newer);
+    if removed == 1 && added == 1 {
+        return append_semantic_link_delta(
+            removed_summary,
+            added_summary,
+            declaration_rows,
+            total,
+            by_source,
+        );
+    }
+    append_unmatched_semantic_link_evidence(older, newer, declaration_rows, total, by_source)
+}
+
+fn unmatched_semantic_link_evidence<'summary>(
+    older: &'summary [SemanticLinkSummary],
+    newer: &'summary [SemanticLinkSummary],
+) -> (
+    usize,
+    usize,
+    Option<&'summary SemanticLinkSummary>,
+    Option<&'summary SemanticLinkSummary>,
+) {
+    let mut left = 0;
+    let mut right = 0;
+    let mut removed = 0;
+    let mut added = 0;
+    let mut removed_summary = None;
+    let mut added_summary = None;
+    while left < older.len() || right < newer.len() {
+        match (older.get(left), newer.get(right)) {
+            (Some(old), Some(new)) => match old.evidence.confidence.cmp(&new.evidence.confidence) {
+                std::cmp::Ordering::Less => {
+                    let end = semantic_link_confidence_end(older, left);
+                    let count = end - left;
+                    if count == 1 {
+                        removed_summary = Some(&older[left]);
+                    }
+                    removed += count;
+                    left = end;
+                }
+                std::cmp::Ordering::Greater => {
+                    let end = semantic_link_confidence_end(newer, right);
+                    let count = end - right;
+                    if count == 1 {
+                        added_summary = Some(&newer[right]);
+                    }
+                    added += count;
+                    right = end;
+                }
+                std::cmp::Ordering::Equal => {
+                    let old_end = semantic_link_confidence_end(older, left);
+                    let new_end = semantic_link_confidence_end(newer, right);
+                    let old_count = old_end - left;
+                    let new_count = new_end - right;
+                    if old_count > new_count {
+                        if old_count - new_count == 1 {
+                            removed_summary = Some(&older[left + new_count]);
+                        }
+                        removed += old_count - new_count;
+                    } else if new_count > old_count {
+                        if new_count - old_count == 1 {
+                            added_summary = Some(&newer[right + old_count]);
+                        }
+                        added += new_count - old_count;
+                    }
+                    left = old_end;
+                    right = new_end;
+                }
+            },
+            (Some(_), None) => {
+                let end = semantic_link_confidence_end(older, left);
+                let count = end - left;
+                if count == 1 {
+                    removed_summary = Some(&older[left]);
+                }
+                removed += count;
+                left = end;
+            }
+            (None, Some(_)) => {
+                let end = semantic_link_confidence_end(newer, right);
+                let count = end - right;
+                if count == 1 {
+                    added_summary = Some(&newer[right]);
+                }
+                added += count;
+                right = end;
+            }
+            (None, None) => break,
+        }
+    }
+    (removed, added, removed_summary, added_summary)
+}
+
+fn append_unmatched_semantic_link_evidence(
+    older: &[SemanticLinkSummary],
+    newer: &[SemanticLinkSummary],
+    declaration_rows: usize,
+    total: &mut usize,
+    by_source: &mut SemanticLinkDeltas,
+) -> Result<(), BuiltinModelError> {
+    let mut left = 0;
+    let mut right = 0;
+    while left < older.len() || right < newer.len() {
+        match (older.get(left), newer.get(right)) {
+            (Some(old), Some(new)) => match old.evidence.confidence.cmp(&new.evidence.confidence) {
+                std::cmp::Ordering::Less => {
+                    let end = semantic_link_confidence_end(older, left);
+                    for summary in &older[left..end] {
+                        append_semantic_link_delta(
+                            Some(summary),
+                            None,
+                            declaration_rows,
+                            total,
+                            by_source,
+                        )?;
+                    }
+                    left = end;
+                }
+                std::cmp::Ordering::Greater => {
+                    let end = semantic_link_confidence_end(newer, right);
+                    for summary in &newer[right..end] {
+                        append_semantic_link_delta(
+                            None,
+                            Some(summary),
+                            declaration_rows,
+                            total,
+                            by_source,
+                        )?;
+                    }
+                    right = end;
+                }
+                std::cmp::Ordering::Equal => {
+                    let old_end = semantic_link_confidence_end(older, left);
+                    let new_end = semantic_link_confidence_end(newer, right);
+                    let common = (old_end - left).min(new_end - right);
+                    for summary in &older[left + common..old_end] {
+                        append_semantic_link_delta(
+                            Some(summary),
+                            None,
+                            declaration_rows,
+                            total,
+                            by_source,
+                        )?;
+                    }
+                    for summary in &newer[right + common..new_end] {
+                        append_semantic_link_delta(
+                            None,
+                            Some(summary),
+                            declaration_rows,
+                            total,
+                            by_source,
+                        )?;
+                    }
+                    left = old_end;
+                    right = new_end;
+                }
+            },
+            (Some(_), None) => {
+                let end = semantic_link_confidence_end(older, left);
+                for summary in &older[left..end] {
+                    append_semantic_link_delta(
+                        Some(summary),
+                        None,
+                        declaration_rows,
+                        total,
+                        by_source,
+                    )?;
+                }
+                left = end;
+            }
+            (None, Some(_)) => {
+                let end = semantic_link_confidence_end(newer, right);
+                for summary in &newer[right..end] {
+                    append_semantic_link_delta(
+                        None,
+                        Some(summary),
+                        declaration_rows,
+                        total,
+                        by_source,
+                    )?;
+                }
+                right = end;
+            }
+            (None, None) => break,
+        }
+    }
+    Ok(())
+}
+
+fn append_semantic_link_delta(
+    older: Option<&SemanticLinkSummary>,
+    newer: Option<&SemanticLinkSummary>,
+    declaration_rows: usize,
+    total: &mut usize,
+    by_source: &mut SemanticLinkDeltas,
+) -> Result<(), BuiltinModelError> {
+    *total = total.checked_add(1).ok_or_else(|| {
+        BuiltinModelError("semantic graph diff result count overflowed".to_owned())
+    })?;
+    ensure_semantic_diff_bound(declaration_rows, *total)?;
+    let (source, delta) = semantic_link_delta(older, newer)?;
+    by_source.entry(source).or_default().push(delta);
+    Ok(())
 }
 
 fn semantic_link_delta(
@@ -563,9 +880,24 @@ mod semantic_diff_tests {
     };
     use super::*;
     use backend_semantic::ir::{
-        CorePayloadHash, DeclarationFamilyId, DeclarationIdentity, EntityVersion, StableLinkKey,
-        VariantFingerprint,
+        BorrowedTree, Confidence, CorePayloadHash, DeclarationFamilyId, DeclarationIdentity,
+        EntityAuthorityFacts, EntityVersion, ExternalTarget, FactAvailability,
+        ForeignDeclarationId, ForeignExternalTarget, ForeignTargetOrigin, IrBuilder, ItemKind,
+        LinkKind, LinkTarget, OccurrenceAuthorityFacts, ParentageAuthority,
+        SemanticCoreReader as _, SemanticReader as _, SemanticSnapshot, SemanticStableLinks,
+        SourceSpan, StableLinkKey, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget,
+        VariantAvailability, VariantFingerprint, Visibility, encode_full_semantic_image,
+        full_semantic_image_len,
     };
+
+    #[derive(Clone, Copy)]
+    struct ForeignLinkSite {
+        target_path: &'static str,
+        target_display: &'static str,
+        start: u32,
+        end: u32,
+        confidence: Confidence,
+    }
 
     fn declaration(
         family: u16,
@@ -600,6 +932,154 @@ mod semantic_diff_tests {
         SemanticPackageSnapshot {
             declarations,
             links: Vec::new(),
+        }
+    }
+
+    fn admitted_foreign_link_image(
+        sites: &[ForeignLinkSite],
+    ) -> Result<backend_library::interface::SemanticImageSnapshot, BuiltinModelError> {
+        let mut builder = IrBuilder::new();
+        let caller_version = declaration(7, 1, 1, "caller").1.version;
+        let source_path = builder
+            .intern_atom(b"src/httpie/client.py")
+            .map_err(|error| BuiltinModelError(error.to_string()))?;
+        let ecosystem = builder
+            .intern_atom(b"python")
+            .map_err(|error| BuiltinModelError(error.to_string()))?;
+        let namespace = builder
+            .intern_atom(b"httpie")
+            .map_err(|error| BuiltinModelError(error.to_string()))?;
+        let mut links = Vec::new();
+        links
+            .try_reserve_exact(sites.len())
+            .map_err(|error| BuiltinModelError(format!("reserve fixture link inputs: {error}")))?;
+        for site in sites {
+            let path = builder
+                .intern_atom(site.target_path.as_bytes())
+                .map_err(|error| BuiltinModelError(error.to_string()))?;
+            let display = builder
+                .intern_atom(site.target_display.as_bytes())
+                .map_err(|error| BuiltinModelError(error.to_string()))?;
+            let target = builder
+                .intern_external(ExternalTarget::Foreign(ForeignExternalTarget {
+                    identity: backend_semantic::ir::ExternalDeclarationIdentity {
+                        foreign: ForeignDeclarationId::from_raw([0x65; 16]),
+                        variant: VariantAvailability::Unavailable,
+                    },
+                    origin: ForeignTargetOrigin::Namespace {
+                        ecosystem,
+                        namespace,
+                    },
+                    path,
+                    display,
+                    kind: Some(ItemKind::Function),
+                }))
+                .map_err(|error| BuiltinModelError(error.to_string()))?;
+            let source = SourceSpan::new(source_path, site.start, site.end).ok_or_else(|| {
+                BuiltinModelError("fixture source span has an invalid range".to_owned())
+            })?;
+            links.push(TreeLinkInput {
+                from: TreeEntityId::new(0),
+                target: TreeLinkTarget::External(target),
+                kind: LinkKind::Calls,
+                confidence: site.confidence,
+                authority: OccurrenceAuthorityFacts {
+                    source: FactAvailability::Captured,
+                },
+                source: Some(source),
+            });
+        }
+        let items = [TreeItemInput {
+            name: b"caller",
+            anonymous_callable_anchor: None,
+            kind: ItemKind::Function,
+            visibility: Visibility::Public,
+            authority: EntityAuthorityFacts {
+                parentage: ParentageAuthority::Root,
+                visibility: FactAvailability::Captured,
+                ..EntityAuthorityFacts::default()
+            },
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: None,
+            extension: None,
+        }];
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &[caller_version],
+                items: &items,
+                links: &links,
+            })
+            .map_err(|error| BuiltinModelError(error.to_string()))?;
+        let ir = builder
+            .finish()
+            .map_err(|error| BuiltinModelError(error.to_string()))?;
+        let mut bytes = vec![
+            0;
+            full_semantic_image_len(&ir)
+                .map_err(|error| BuiltinModelError(error.to_string()))?
+        ];
+        encode_full_semantic_image(&ir, &mut bytes)
+            .map_err(|error| BuiltinModelError(error.to_string()))?;
+        let authority = backend_library::interface::SemanticImageAuthority {
+            identity: backend_version::ArtifactId::<
+                backend_version::IrSemanticImageEncoding,
+                backend_version::IrSemanticImageDomain,
+            >::from_encoded_bytes(&bytes),
+            byte_len: u32::try_from(bytes.len())
+                .map_err(|error| BuiltinModelError(error.to_string()))?,
+        };
+        backend_library::interface::SemanticImageSnapshot::try_from_reopened(authority, &bytes)
+            .map_err(|error| BuiltinModelError(format!("admit fixture semantic image: {error:?}")))
+    }
+
+    fn package_snapshot_from_image(
+        admitted: &backend_library::interface::SemanticImageSnapshot,
+    ) -> Result<SemanticPackageSnapshot<'static>, BuiltinModelError> {
+        let image = admitted.reopen().map_err(|error| {
+            BuiltinModelError(format!("reopen admitted fixture image: {error}"))
+        })?;
+        let mut declarations = Vec::new();
+        for entity in image.canonical_entities() {
+            let identity = entity.version.identity();
+            let parent = entity
+                .parent
+                .and_then(|parent| image.entity(parent))
+                .map(|parent| parent.version.identity());
+            declarations.push((
+                identity,
+                SemanticDeclaration {
+                    label: "caller",
+                    version: entity.version,
+                    parent,
+                },
+            ));
+        }
+        let mut links = Vec::new();
+        let semantic_snapshot = SemanticSnapshot {
+            generation: backend_semantic::ir::GenerationId::from_canonical_bytes(admitted.as_ref()),
+            reader: &image,
+        };
+        super::super::snapshot::append_semantic_image_links(
+            semantic_snapshot,
+            &mut links,
+            super::super::snapshot::MAX_DIFF_LINKS,
+        )?;
+        super::super::snapshot::finish_semantic_snapshot(true, declarations, links)?.ok_or_else(
+            || BuiltinModelError("admitted fixture publication was not retained".to_owned()),
+        )
+    }
+
+    fn foreign_site(path_start: u32, alias: &'static str) -> ForeignLinkSite {
+        ForeignLinkSite {
+            target_path: alias,
+            target_display: alias,
+            start: path_start,
+            end: path_start + 6,
+            confidence: Confidence::Compiler,
         }
     }
 
@@ -715,6 +1195,301 @@ mod semantic_diff_tests {
                 ..
             }] if before == &before_evidence && after == &after_evidence
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn admitted_foreign_aliases_preserve_two_sites_and_reverse_input_order()
+    -> Result<(), BuiltinModelError> {
+        let first = foreign_site(10, "httpie.core.request");
+        let second = foreign_site(24, "httpie.client.request");
+        let forward_image = admitted_foreign_link_image(&[first, second])?;
+        let reversed_image = admitted_foreign_link_image(&[second, first])?;
+        assert_eq!(forward_image.as_ref(), reversed_image.as_ref());
+
+        // These are two real canonical FullLinks rows. Their foreign descriptors
+        // differ in raw identity, path, and display while the stable foreign
+        // declaration identity deliberately collapses them to one relation key.
+        let view = forward_image.reopen().map_err(|error| {
+            BuiltinModelError(format!("reopen admitted fixture image: {error}"))
+        })?;
+        let raw_links = view.canonical_links().collect::<Vec<_>>();
+        assert_eq!(raw_links.len(), 2);
+        let external_ids = raw_links
+            .iter()
+            .map(|(_, link)| match link.target {
+                LinkTarget::External(id) => Ok(id),
+                LinkTarget::Local(_) => Err(BuiltinModelError(
+                    "foreign-link fixture unexpectedly has a local target".to_owned(),
+                )),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_ne!(external_ids[0], external_ids[1]);
+        let external_descriptors = external_ids
+            .iter()
+            .map(|id| match view.external(*id) {
+                Some(ExternalTarget::Foreign(target)) => Ok(target),
+                _ => Err(BuiltinModelError(
+                    "foreign-link fixture descriptor was not retained".to_owned(),
+                )),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(
+            external_descriptors[0].identity,
+            external_descriptors[1].identity
+        );
+        let raw_aliases = external_descriptors
+            .iter()
+            .map(|target| {
+                Ok((
+                    view.atom(target.path).ok_or_else(|| {
+                        BuiltinModelError("fixture target path atom is absent".to_owned())
+                    })?,
+                    view.atom(target.display).ok_or_else(|| {
+                        BuiltinModelError("fixture target display atom is absent".to_owned())
+                    })?,
+                ))
+            })
+            .collect::<Result<Vec<_>, BuiltinModelError>>()?;
+        assert_ne!(raw_aliases[0].0, raw_aliases[1].0);
+        assert_ne!(raw_aliases[0].1, raw_aliases[1].1);
+        let semantic_snapshot = SemanticSnapshot {
+            generation: backend_semantic::ir::GenerationId::from_canonical_bytes(
+                forward_image.as_ref(),
+            ),
+            reader: &view,
+        };
+        let stable_links = SemanticStableLinks::new(semantic_snapshot).collect::<Vec<_>>();
+        assert_eq!(stable_links.len(), 2);
+        assert_eq!(stable_links[0].key, stable_links[1].key);
+
+        let before = package_snapshot_from_image(&forward_image)?;
+        let after = package_snapshot_from_image(&reversed_image)?;
+        assert_eq!(before.links.len(), 2);
+        assert_eq!(before.links[0].key, before.links[1].key);
+        assert_eq!(
+            before.links[0].key.kind,
+            backend_semantic::ir::LinkKind::Calls
+        );
+        assert!(matches!(
+            before.links[0].key.target,
+            backend_semantic::ir::DeclarationLinkTarget::Foreign(identity)
+                if identity.foreign == ForeignDeclarationId::from_raw([0x65; 16])
+                    && identity.variant == VariantAvailability::Unavailable
+        ));
+        assert_eq!(
+            before
+                .links
+                .iter()
+                .map(|link| link.evidence.clone())
+                .collect::<Vec<_>>(),
+            [
+                backend_engine::SemanticLinkEvidence {
+                    confidence: backend_engine::SemanticConfidence::Compiler,
+                    source: Some(backend_engine::SemanticSourceSpan {
+                        file: backend_engine::ProductText::new("src/httpie/client.py")
+                            .map_err(|error| BuiltinModelError(error.to_string()))?,
+                        start: 10,
+                        end: 16,
+                    }),
+                },
+                backend_engine::SemanticLinkEvidence {
+                    confidence: backend_engine::SemanticConfidence::Compiler,
+                    source: Some(backend_engine::SemanticSourceSpan {
+                        file: backend_engine::ProductText::new("src/httpie/client.py")
+                            .map_err(|error| BuiltinModelError(error.to_string()))?,
+                        start: 24,
+                        end: 30,
+                    }),
+                },
+            ]
+        );
+        assert!(diff_semantic_snapshots(&before, &after)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn admitted_same_site_confidence_change_retains_both_observations()
+    -> Result<(), BuiltinModelError> {
+        let mut before_site = foreign_site(10, "httpie.core.request");
+        before_site.confidence = Confidence::Syntactic;
+        let before_image = admitted_foreign_link_image(&[before_site])?;
+        let after_image = admitted_foreign_link_image(&[foreign_site(10, "httpie.core.request")])?;
+        let before = package_snapshot_from_image(&before_image)?;
+        let after = package_snapshot_from_image(&after_image)?;
+
+        let rows = diff_semantic_snapshots(&before, &after)?;
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(
+            rows[0].links.as_ref(),
+            [backend_engine::SemanticLinkDelta::EvidenceChanged { before, after, .. }]
+                if before.confidence == backend_engine::SemanticConfidence::Syntactic
+                    && after.confidence == backend_engine::SemanticConfidence::Compiler
+                    && before.source == after.source
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn admitted_changed_source_site_is_added_and_removed_without_guessing()
+    -> Result<(), BuiltinModelError> {
+        let before_image = admitted_foreign_link_image(&[foreign_site(10, "httpie.core.request")])?;
+        let after_image = admitted_foreign_link_image(&[foreign_site(20, "httpie.core.request")])?;
+        let before = package_snapshot_from_image(&before_image)?;
+        let after = package_snapshot_from_image(&after_image)?;
+
+        let rows = diff_semantic_snapshots(&before, &after)?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].links.len(), 2);
+        assert_eq!(
+            rows[0]
+                .links
+                .iter()
+                .filter(|link| matches!(link, backend_engine::SemanticLinkDelta::Removed { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            rows[0]
+                .links
+                .iter()
+                .filter(|link| matches!(link, backend_engine::SemanticLinkDelta::Added { .. }))
+                .count(),
+            1
+        );
+        assert!(rows[0].links.iter().all(|link| !matches!(
+            link,
+            backend_engine::SemanticLinkDelta::EvidenceChanged { .. }
+        )));
+        Ok(())
+    }
+
+    #[test]
+    fn admitted_repeated_site_add_remove_and_exact_duplicate_multiplicity_are_preserved()
+    -> Result<(), BuiltinModelError> {
+        let first = foreign_site(10, "httpie.core.request");
+        let second = foreign_site(24, "httpie.client.request");
+        let before_image = admitted_foreign_link_image(&[first])?;
+        let repeated_image = admitted_foreign_link_image(&[first, second])?;
+        let before = package_snapshot_from_image(&before_image)?;
+        let repeated = package_snapshot_from_image(&repeated_image)?;
+
+        let added = diff_semantic_snapshots(&before, &repeated)?;
+        assert_eq!(added.len(), 1);
+        assert!(matches!(
+            added[0].links.as_ref(),
+            [backend_engine::SemanticLinkDelta::Added { evidence, .. }]
+                if evidence.source.as_ref().is_some_and(|source| source.start == 24 && source.end == 30)
+        ));
+        let removed = diff_semantic_snapshots(&repeated, &before)?;
+        assert_eq!(removed.len(), 1);
+        assert!(matches!(
+            removed[0].links.as_ref(),
+            [backend_engine::SemanticLinkDelta::Removed { evidence, .. }]
+                if evidence.source.as_ref().is_some_and(|source| source.start == 24 && source.end == 30)
+        ));
+
+        let duplicate = foreign_site(10, "httpie.client.request");
+        let repeated_evidence_image = admitted_foreign_link_image(&[first, duplicate])?;
+        let one_evidence = package_snapshot_from_image(&before_image)?;
+        let two_equal_evidence = package_snapshot_from_image(&repeated_evidence_image)?;
+        assert_eq!(two_equal_evidence.links.len(), 2);
+        assert_eq!(
+            two_equal_evidence.links[0].evidence,
+            two_equal_evidence.links[1].evidence
+        );
+        assert!(diff_semantic_snapshots(&two_equal_evidence, &two_equal_evidence)?.is_empty());
+        let one_removed = diff_semantic_snapshots(&two_equal_evidence, &one_evidence)?;
+        assert_eq!(one_removed.len(), 1);
+        assert!(matches!(
+            one_removed[0].links.as_ref(),
+            [backend_engine::SemanticLinkDelta::Removed { .. }]
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn admitted_link_projection_refuses_its_budget_without_hiding_partial_evidence()
+    -> Result<(), BuiltinModelError> {
+        let image = admitted_foreign_link_image(&[
+            foreign_site(10, "httpie.core.request"),
+            foreign_site(24, "httpie.client.request"),
+        ])?;
+        let view = image.reopen().map_err(|error| {
+            BuiltinModelError(format!("reopen admitted fixture image: {error}"))
+        })?;
+        let semantic_snapshot = SemanticSnapshot {
+            generation: backend_semantic::ir::GenerationId::from_canonical_bytes(image.as_ref()),
+            reader: &view,
+        };
+        let mut links = Vec::new();
+        let error =
+            super::super::snapshot::append_semantic_image_links(semantic_snapshot, &mut links, 1)
+                .expect_err("second distinct stable-link occurrence exceeds the test budget");
+        assert!(error.0.contains("memory budget"));
+        assert_eq!(links.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn finish_keeps_duplicate_declaration_identity_rejection() {
+        let repeated = declaration(1, 1, 1, "caller");
+        let result = super::super::snapshot::finish_semantic_snapshot(
+            true,
+            vec![repeated, repeated],
+            Vec::new(),
+        );
+        let error = match result {
+            Ok(_) => panic!("duplicate declaration identity must remain invalid"),
+            Err(error) => error,
+        };
+        assert!(error.0.contains("duplicate declaration identity"));
+    }
+
+    #[test]
+    fn absent_source_evidence_remains_distinct_from_a_captured_site()
+    -> Result<(), BuiltinModelError> {
+        let source = declaration(1, 1, 1, "source");
+        let key = StableLinkKey {
+            from: source.0,
+            target: backend_semantic::ir::DeclarationLinkTarget::Foreign(
+                backend_semantic::ir::ExternalDeclarationIdentity {
+                    foreign: ForeignDeclarationId::from_raw([0x65; 16]),
+                    variant: VariantAvailability::Unavailable,
+                },
+            ),
+            kind: LinkKind::Calls,
+        };
+        let mut package = snapshot([source]);
+        package.links = vec![
+            SemanticLinkSummary {
+                key,
+                evidence: backend_engine::SemanticLinkEvidence {
+                    confidence: backend_engine::SemanticConfidence::Compiler,
+                    source: Some(backend_engine::SemanticSourceSpan {
+                        file: backend_engine::ProductText::new("src/caller.py")
+                            .map_err(|error| BuiltinModelError(error.to_string()))?,
+                        start: 4,
+                        end: 9,
+                    }),
+                },
+            },
+            SemanticLinkSummary {
+                key,
+                evidence: backend_engine::SemanticLinkEvidence {
+                    confidence: backend_engine::SemanticConfidence::Compiler,
+                    source: None,
+                },
+            },
+        ];
+        let package = super::super::snapshot::finish_semantic_snapshot(
+            true,
+            package.declarations,
+            package.links,
+        )?
+        .ok_or_else(|| BuiltinModelError("fixture publication was not retained".to_owned()))?;
+        assert!(package.links[0].evidence.source.is_none());
+        assert!(package.links[1].evidence.source.is_some());
         Ok(())
     }
 
