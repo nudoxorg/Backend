@@ -1,0 +1,207 @@
+{
+  "archive_sha256": "d44c3732ba13f160014872fee8e386ab51bb37be49d2442ea74e72a0e591ffa7",
+  "native_gates": [
+    {
+      "directory": "go-setup-parity-desktop-composition-20261007T194305Z",
+      "source": {
+        "commit": "17e8a0f9a57a5f9b4c4ec576479c245562759989",
+        "tree": "2bdfc14b13bc8c83022db157bbaebd4a452632fe",
+        "clean": true,
+        "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "actual_test_summaries": [
+        "test result: ok. 16 passed; 0 failed; 1 ignored; 0 measured; 1 filtered out; finished in 0.02s"
+      ],
+      "verified_files": {
+        "cargo.log": "a7f91eda7a501e10ca12139207e9903c65b96875d79d0ab0021ac5a179893a14",
+        "launch.json": "654bcc59e06ff47163c5d53e690c746caa33159ef742d953c58e958bbaf49790",
+        "receipt.json": "e8ec23947e24f39a84194d9ecb523fb2591056683547e4d41c5f5452633851c9"
+      }
+    },
+    {
+      "directory": "go-setup-parity-desktop-composition-actual-20261007T200221Z",
+      "source": {
+        "commit": "17e8a0f9a57a5f9b4c4ec576479c245562759989",
+        "tree": "2bdfc14b13bc8c83022db157bbaebd4a452632fe",
+        "clean": true,
+        "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "actual_test_summaries": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s"
+      ],
+      "verified_files": {
+        "cargo.log": "4d609939c6b25ac297e9123c1173ca000aa13273430875c1e6d80812078cb8bc",
+        "launch.json": "e0744e42741f50b6ee82c42df43179ac73a12de1e3bc025c20fff53af5e73456",
+        "receipt.json": "835bb2b38cdb604136632190119e87b228b66006e71ed1ff3b1d01b545a037f8"
+      }
+    },
+    {
+      "directory": "go-setup-parity-engine-20261007T190846Z",
+      "source": {
+        "commit": "26ab90cd44d97cf243c958898e04469c00bd4f55",
+        "tree": "aa0fcc64d74c6e32f5e622ea4664971717f1daf5",
+        "clean": true,
+        "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "actual_test_summaries": [
+        "test result: ok. 35 passed; 0 failed; 2 ignored; 0 measured; 826 filtered out; finished in 30.63s"
+      ],
+      "verified_files": {
+        "cargo.log": "4a4c99add92bdf95fa454d6de3a1e6e243e1d770f8860da09a0498653517862d",
+        "launch.json": "ed55fe76bd54b63b48c272f582ee71a5ddf27ce334b28f6804a57c159104684f",
+        "receipt.json": "fc81a51f3d6420f1cb3760758b75c5990f26bc7dede9615688e0c193a16239eb"
+      }
+    },
+    {
+      "directory": "go-setup-parity-go-debian-20261007T193630Z",
+      "source": {
+        "commit": "0c61ba81673cb960ebf2456ddf8ea2297125a59b",
+        "tree": "46217ad4fbce8c25e5ed21c4ba4276c06e6353a9",
+        "clean": true,
+        "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "actual_test_summaries": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 1.27s"
+      ],
+      "verified_files": {
+        "cargo.log": "8cb8369f1affbceb568c54e4e68a25701201cf54038bd99bc1ebe273907ac976",
+        "launch.json": "eddacdc385b39d7e15b5e94f2d76a4a817312e7c6788f2fc1dcd94b9d5e0528c",
+        "receipt.json": "851a56fe48b2991ba76c7f7690fd809d6e902bdd29a9918bfd2398c8d060e525"
+      }
+    },
+    {
+      "directory": "setup-parity-engine-actual-20261007T182642Z",
+      "source": {
+        "commit": "7c5727060f929ce562e434e386640d48df3a2b02",
+        "tree": "2a76360f8ddeaee356051bacd7a88a5a4456b95d",
+        "clean": true,
+        "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "actual_test_summaries": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 854 filtered out; finished in 1.81s"
+      ],
+      "verified_files": {
+        "cargo.log": "035216dfa7ee2269192bc29e9ff9a661e62fdfafff40199f5cf83cb387b3bfcb",
+        "launch.json": "c68ad00522332e71e8eae129e6c2a7a7faec8ec5236d6fd34f543c6deb7066a3",
+        "receipt.json": "f17de80fd2d4a8677029e64c3e53fb725060ea03aed6ee8bfecf4034d8dd2554"
+      }
+    }
+  ],
+  "source_blobs": [
+    {
+      "path": "apps/desktop/src/host/toolchain.rs",
+      "tested_blob": "0eb606d11d8d02368a6bf0d1361e496f8d02ae7f",
+      "integrated_blob": "0eb606d11d8d02368a6bf0d1361e496f8d02ae7f",
+      "exact": true
+    },
+    {
+      "path": "crates/engine/src/application/compiler.rs",
+      "tested_blob": "5eea7b60bb3358cfefcd7059da2b0c2e3883784e",
+      "integrated_blob": "5eea7b60bb3358cfefcd7059da2b0c2e3883784e",
+      "exact": true
+    },
+    {
+      "path": "crates/engine/src/application/host.rs",
+      "tested_blob": "546488071cd1464c7bf1a6b1dd69bba94730861f",
+      "integrated_blob": "546488071cd1464c7bf1a6b1dd69bba94730861f",
+      "exact": true
+    },
+    {
+      "path": "crates/engine/src/application/host/authority.rs",
+      "tested_blob": "f5f69d346d1336a556bdc72f141f467ca61aea1d",
+      "integrated_blob": "f5f69d346d1336a556bdc72f141f467ca61aea1d",
+      "exact": true
+    },
+    {
+      "path": "crates/engine/src/application/host/capture.rs",
+      "tested_blob": "d98fc0e1014448a40cc4fe900da81b9141095b09",
+      "integrated_blob": "d98fc0e1014448a40cc4fe900da81b9141095b09",
+      "exact": true
+    },
+    {
+      "path": "crates/engine/src/application/host/paths.rs",
+      "tested_blob": "97099c56e79237dad9e8269d5a2b725047754d20",
+      "integrated_blob": "97099c56e79237dad9e8269d5a2b725047754d20",
+      "exact": true
+    },
+    {
+      "path": "crates/engine/src/application/host/rust_selection.rs",
+      "tested_blob": "9c02bee0b5d8a9347e195b650e8ee4f76df54b04",
+      "integrated_blob": "9c02bee0b5d8a9347e195b650e8ee4f76df54b04",
+      "exact": true
+    },
+    {
+      "path": "crates/engine/src/application/host/snapshot.rs",
+      "tested_blob": "e7a36bbb4a313badc88f70ced5b530d89616fc26",
+      "integrated_blob": "e7a36bbb4a313badc88f70ced5b530d89616fc26",
+      "exact": true
+    },
+    {
+      "path": "crates/engine/src/application/mod.rs",
+      "tested_blob": "e0e7cbf9ac2707165fade623f81b883a307522b6",
+      "integrated_blob": "e0e7cbf9ac2707165fade623f81b883a307522b6",
+      "exact": true
+    },
+    {
+      "path": "crates/engine/src/application/package_authority.rs",
+      "tested_blob": "134d7ddbdb21fb7c4a3a141124551b615f367305",
+      "integrated_blob": "134d7ddbdb21fb7c4a3a141124551b615f367305",
+      "exact": true
+    },
+    {
+      "path": "crates/engine/src/application/runtime.rs",
+      "tested_blob": "ee27f0deae83b77f7b8abff4d69cdc00371abf72",
+      "integrated_blob": "ee27f0deae83b77f7b8abff4d69cdc00371abf72",
+      "exact": true
+    },
+    {
+      "path": "crates/engine/src/application/typescript_host.rs",
+      "tested_blob": "6283d8c9849193923399c1a4a074534dd019838b",
+      "integrated_blob": "6283d8c9849193923399c1a4a074534dd019838b",
+      "exact": true
+    },
+    {
+      "path": "crates/engine/src/driver/types/toolchain.rs",
+      "tested_blob": "4f38bbc64371bc856cfd6938a407a28caf1da882",
+      "integrated_blob": "4f38bbc64371bc856cfd6938a407a28caf1da882",
+      "exact": true
+    },
+    {
+      "path": "crates/local-service/src/builtin.rs",
+      "tested_blob": "6d1802cce23fb4379f66bc0f9564dd68a2a57937",
+      "integrated_blob": "6d1802cce23fb4379f66bc0f9564dd68a2a57937",
+      "exact": true
+    },
+    {
+      "path": "crates/local-service/src/builtin/embedded_host.rs",
+      "tested_blob": "b67999aa7d48f5b8560fd800f5b4f51ee0ccdfbf",
+      "integrated_blob": "b67999aa7d48f5b8560fd800f5b4f51ee0ccdfbf",
+      "exact": true
+    },
+    {
+      "path": "crates/local-service/src/lib.rs",
+      "tested_blob": "d653b3b9a8ba3d71bad367f0d7da8acb3c824a3d",
+      "integrated_blob": "d653b3b9a8ba3d71bad367f0d7da8acb3c824a3d",
+      "exact": true
+    },
+    {
+      "path": "crates/local-service/tests/desktop_toolchain_composition.rs",
+      "tested_blob": "6843226d1c496311bbf3c41d07c050f83d1e745c",
+      "integrated_blob": "6843226d1c496311bbf3c41d07c050f83d1e745c",
+      "exact": true
+    },
+    {
+      "path": "crates/platform/directory.rs",
+      "tested_blob": "3e89ad68824712a07fe0a7b8750a222444b8db6a",
+      "integrated_blob": "55c079aa27d1a1cab7742a8331535d5c80f74e19",
+      "exact": false
+    },
+    {
+      "path": "frontends/go/src/legacy/oracle.rs",
+      "tested_blob": "58c84bf00168bb2bb21f53982387e71f05fd1208",
+      "integrated_blob": "58c84bf00168bb2bb21f53982387e71f05fd1208",
+      "exact": true
+    }
+  ],
+  "non_exact_platform_scope": "Canonical OwnedWorkspaceDirectory code is retained alongside the bounded readlink addition; the joined source requires a native gate."
+}
