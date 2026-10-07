@@ -817,6 +817,7 @@ impl SearchSnapshotOwner {
                 &semantic_evidence,
                 self.durable_root.as_deref(),
                 self.durable_budget,
+                cancelled,
             ),
             None => Ok(None),
         };
@@ -884,7 +885,7 @@ impl SearchSnapshotOwner {
             builds: self.builds,
             opens: self.opens,
             maintenance: self.maintenance,
-            corpus: None,
+            corpus: self.corpus.clone(),
             corpus_builds: 0,
         }
     }
@@ -898,6 +899,10 @@ impl SearchSnapshotOwner {
         self.builds = projection.builds;
         self.opens = projection.opens;
         self.maintenance = if admit { projection.maintenance } else { None };
+        self.corpus_builds = self.corpus_builds.saturating_add(projection.corpus_builds);
+        if admit && projection.corpus.is_some() {
+            self.corpus = projection.corpus.take();
+        }
     }
 
     pub(crate) fn selected_for(
@@ -1093,6 +1098,7 @@ impl QueryCoordinator {
         semantic_evidence: &SemanticQueryCorpus,
         durable_root: Option<&Path>,
         durable_budget: lexical::DurableCacheBudget,
+        cancelled: Option<&AtomicBool>,
     ) -> Result<Option<SnapshotMaintenance>, QueryError> {
         let prepared = prepare_corpus(
             workspace,
@@ -1123,8 +1129,20 @@ impl QueryCoordinator {
         let Some(corpus) = Arc::get_mut(&mut self.corpus) else {
             return Ok(None);
         };
-        let durable_publication = match (durable_root, previous_state.as_ref()) {
-            (Some(root), Some(previous)) => Some(
+        let durable_publication = match (durable_root, previous_state.as_ref(), cancelled) {
+            (Some(root), Some(previous), Some(cancelled)) => Some(
+                lexical::TantivySource::open_or_advance_cancelable(
+                    previous,
+                    &prepared.state,
+                    lexical::Limits::default(),
+                    lexical::OverlayLimits::default(),
+                    root,
+                    durable_budget,
+                    cancelled,
+                )
+                .map_err(|error| QueryError::provider(LexicalPhase::AdvanceProjection, error))?,
+            ),
+            (Some(root), Some(previous), None) => Some(
                 lexical::TantivySource::open_or_advance_in_dir_with_budget_and_action(
                     previous,
                     &prepared.state,
@@ -1156,9 +1174,17 @@ impl QueryCoordinator {
                 (None, _) => SnapshotMaintenance::Rebuilt,
             }
         } else {
-            match corpus
-                .lexical
-                .maintain(&prepared.state, lexical::OverlayLimits::default())
+            let maintained = match cancelled {
+                Some(cancelled) => corpus.lexical.maintain_cancelable(
+                    &prepared.state,
+                    lexical::OverlayLimits::default(),
+                    cancelled,
+                ),
+                None => corpus
+                    .lexical
+                    .maintain(&prepared.state, lexical::OverlayLimits::default()),
+            };
+            match maintained
                 .map_err(|error| QueryError::provider(LexicalPhase::MaintainProjection, error))?
             {
                 lexical::MaintainOutcome::RebuildRequired => return Ok(None),

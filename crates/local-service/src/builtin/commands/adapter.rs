@@ -10,7 +10,7 @@ use super::super::{
 };
 use super::browse_lane::{BrowseLane, Terminal as BrowseTerminal};
 use super::diff::execute_semantic_diff;
-use super::graph::{capture_search, execute_certified_graph_query, execute_search};
+use super::graph::{execute_certified_graph_query, execute_search};
 use super::index::{
     DeferredIndex, DeferredProfileFailure, DeferredProfileTicket, IndexScanFailure,
     IndexScanResult, IndexScanWork, PreparedIndex, PreparedProductSelection, capture_index_scan,
@@ -3616,29 +3616,15 @@ impl CommandAdapter {
                 )
                 .map(Executed::Reply);
         }
-        let selection = match capture_search(
-            daemon,
-            &self.compiler,
-            &mut self.search_snapshots,
-            &mut self.generations,
-            &mut self.image_rows,
-        ) {
-            Ok(selection) => selection,
-            Err(error) => {
-                return self
-                    .search_reply(
-                        daemon,
-                        waiter,
-                        Err(backend_engine::CommandFailure::InvalidQuery(format!(
-                            "search_corpus_capture_refused: {error}"
-                        ))),
-                    )
-                    .map(Executed::Reply);
-            }
+        let capture = super::search_lane::Capture {
+            snapshot: daemon.engine().daemon().owner().snapshot(),
+            view: view.clone(),
+            compiler: self.compiler.clone(),
+            generations: self.generations.for_preparation(),
         };
         let projection = self.search_snapshots.take_projection();
         self.search_lane
-            .start(projection, selection, waiter)
+            .start(projection, capture, waiter)
             .map_err(BuiltinModelError)?;
         Ok(Executed::Deferred)
     }
@@ -6255,11 +6241,15 @@ mod tests {
             daemon.engine().daemon().library().view().root(),
             backend_engine::QueryLimit::default(),
         );
-        serde_json::to_vec(&backend_engine::CommandDto::new(
-            id,
-            backend_engine::Command::Search(query),
-        ))
-        .expect("search DTO")
+        let certificate = WireCertificate::new().with_claim(WireClaim::RootCommitment {
+            schema: backend_engine::WireSchema::ViewRelation,
+            id: backend_engine::encode_id(query.basis().as_bytes()),
+        });
+        serde_json::to_vec(
+            &backend_engine::CommandDto::new(id, backend_engine::Command::Search(query))
+                .with_certificate(certificate),
+        )
+        .expect("certified search DTO")
     }
 
     fn finish_search_lane(

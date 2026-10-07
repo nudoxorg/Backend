@@ -16,6 +16,7 @@ pub(super) const MAX_SEARCH_WAITERS: usize = super::adapter::MAX_WAITING_COMMAND
 
 pub(super) enum Failure {
     Preparation(super::super::query::QueryError),
+    Capture(super::super::BuiltinModelError),
     Cancelled,
     Panicked,
     Stopped,
@@ -23,14 +24,23 @@ pub(super) enum Failure {
 
 impl Failure {
     pub(super) fn into_command_failure(self) -> backend_engine::CommandFailure {
-        backend_engine::CommandFailure::InvalidQuery(match self {
-            Self::Preparation(error) => format!("search_preparation_refused: {error}"),
-            Self::Cancelled => {
-                "search_preparation_cancelled: retry against the current view".to_owned()
-            }
-            Self::Panicked => "search_preparation_worker_panicked: retry".to_owned(),
-            Self::Stopped => "search_preparation_worker_stopped: retry".to_owned(),
-        })
+        match self {
+            Self::Preparation(error) => backend_engine::CommandFailure::IncoherentView(format!(
+                "search_preparation_refused: {error}"
+            )),
+            Self::Capture(error) => backend_engine::CommandFailure::IncoherentView(format!(
+                "search_corpus_capture_refused: {error}"
+            )),
+            Self::Cancelled => backend_engine::CommandFailure::InvalidQuery(
+                "search_preparation_cancelled: retry against the current view".to_owned(),
+            ),
+            Self::Panicked => backend_engine::CommandFailure::IncoherentView(
+                "search_preparation_worker_panicked: retry".to_owned(),
+            ),
+            Self::Stopped => backend_engine::CommandFailure::IncoherentView(
+                "search_preparation_worker_stopped: retry".to_owned(),
+            ),
+        }
     }
 }
 
@@ -55,6 +65,15 @@ pub(super) struct Selection {
     pub(super) capability: CoverageCapability,
     pub(super) coverage: CoverageWitness,
     pub(super) corpus: SemanticQueryCorpus,
+}
+
+/// Constant-time immutable capture; all relation walks and image activation
+/// happen on the preparation worker against this checked workspace guard.
+pub(super) struct Capture {
+    pub(super) snapshot: backend_engine::WorkspaceSnapshot,
+    pub(super) view: ViewRoot,
+    pub(super) compiler: backend_engine::application::LocalCompilerClient,
+    pub(super) generations: super::super::generation_residence::SemanticGenerationResidence,
 }
 
 pub(super) struct Waiter {
@@ -127,14 +146,14 @@ impl SearchLane {
     pub(super) fn start(
         &mut self,
         mut projection: SearchSnapshotOwner,
-        selection: Selection,
+        capture: Capture,
         waiter: Waiter,
     ) -> Result<(), String> {
         if self.closed || self.active.is_some() {
             return Err("search preparation owner is unavailable; retry".to_owned());
         }
-        let workspace = selection.workspace;
-        let view = selection.view.root();
+        let workspace = capture.snapshot.root();
+        let view = capture.view.root();
         let cancelled = Arc::new(AtomicBool::new(false));
         let control = Arc::clone(&cancelled);
         let (sender, completed) = mpsc::sync_channel(1);
@@ -152,6 +171,37 @@ impl SearchLane {
                     if control.load(Ordering::Acquire) {
                         return Err(Failure::Cancelled);
                     }
+                    let snapshot = capture.snapshot;
+                    let capability = super::super::builtin_view_capability_for_workspace(&snapshot)
+                        .map_err(Failure::Capture)?;
+                    let coverage = super::super::admitted_coverage().map_err(Failure::Capture)?;
+                    let mut generations = capture.generations;
+                    let mut image_rows = super::super::view_build::ImageRowResidence::default();
+                    let corpus = projection
+                        .admit_corpus(
+                            snapshot.root(),
+                            || super::super::read_indexed_sources(&snapshot),
+                            |sources| {
+                                super::super::view_build::semantic_query_corpus(
+                                    &snapshot,
+                                    &capture.compiler,
+                                    &sources,
+                                    &mut generations,
+                                    &mut image_rows,
+                                )
+                            },
+                        )
+                        .map_err(Failure::Capture)?;
+                    if control.load(Ordering::Acquire) {
+                        return Err(Failure::Cancelled);
+                    }
+                    let selection = Selection {
+                        workspace: snapshot.root(),
+                        view: capture.view,
+                        capability,
+                        coverage,
+                        corpus,
+                    };
                     let prepared = projection
                         .select_controlled(
                             selection.workspace,

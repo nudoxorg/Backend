@@ -67,6 +67,8 @@ static NEXT_DURABLE_STAGE: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(test)]
 std::thread_local! {
+    static TEST_CANCEL_AFTER_PUBLICATION: std::cell::RefCell<Option<std::sync::Arc<AtomicBool>>> = const { std::cell::RefCell::new(None) };
+    static TEST_CANCEL_AFTER_COMMIT: std::cell::RefCell<Option<std::sync::Arc<AtomicBool>>> = const { std::cell::RefCell::new(None) };
     static TEST_CANCEL_BEFORE_COMMIT: std::cell::RefCell<Option<std::sync::Arc<AtomicBool>>> = const { std::cell::RefCell::new(None) };
     static TEST_NO_MERGE_POLICY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TEST_FORCE_MERGE_AFTER_NEXT_COMMIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -757,7 +759,9 @@ impl TantivySource {
     /// Prepares the exact immutable projection with cancellation samples while
     /// populating and before and after native commit. Native commit itself is
     /// not preemptible; run this on a preparation worker, never a control owner.
-    /// A cancelled stage cannot be published into the durable namespace.
+    /// Cancellation observed before publication discards the stage. A race
+    /// with atomic publication may leave a valid immutable cache generation;
+    /// the control owner must reject cancelled or superseded selections.
     ///
     /// # Errors
     /// Returns the usual admission errors, or interrupted I/O on cancellation.
@@ -878,6 +882,8 @@ impl TantivySource {
             DirectoryPublication::AlreadyPresent => DurableProjectionAction::Opened,
         };
 
+        sample_test_cancel_after_publication();
+        check_projection_cancelled(cancelled)?;
         let source = Self::open_selected_root(state, limits, namespace, &key, budget, &fence)?
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "published root vanished"))?;
         let source = Self::retain_selected_root(source, namespace, &selected, budget, &fence)?;
@@ -1051,6 +1057,56 @@ impl TantivySource {
         cache_budget: DurableCacheBudget,
     ) -> Result<(Self, Option<ProjectionRevision>, DurableProjectionAction), TantivySourceError>
     {
+        Self::open_or_advance_controlled(
+            previous,
+            next,
+            limits,
+            budget,
+            cache_root.as_ref(),
+            cache_budget,
+            None,
+        )
+    }
+
+    /// Revises a selected immutable generation with cooperative cancellation.
+    /// Native commit cannot be preempted. Cancellation observed before namespace
+    /// publication retires the stage; a racing publication may leave a valid
+    /// immutable cache generation, which the control owner must not select.
+    ///
+    /// # Errors
+    /// Returns admission errors or interrupted I/O on cancellation.
+    pub fn open_or_advance_cancelable(
+        previous: &DocumentState,
+        next: &DocumentState,
+        limits: Limits,
+        budget: OverlayLimits,
+        cache_root: &Path,
+        cache_budget: DurableCacheBudget,
+        cancelled: &AtomicBool,
+    ) -> Result<(Self, Option<ProjectionRevision>, DurableProjectionAction), TantivySourceError>
+    {
+        Self::open_or_advance_controlled(
+            previous,
+            next,
+            limits,
+            budget,
+            cache_root,
+            cache_budget,
+            Some(cancelled),
+        )
+    }
+
+    fn open_or_advance_controlled(
+        previous: &DocumentState,
+        next: &DocumentState,
+        limits: Limits,
+        budget: OverlayLimits,
+        cache_root: &Path,
+        cache_budget: DurableCacheBudget,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<(Self, Option<ProjectionRevision>, DurableProjectionAction), TantivySourceError>
+    {
+        check_projection_cancelled(cancelled)?;
         let limits = limits.validate()?;
         if !matches!(previous.coverage(), CoverageWitness::Complete(_))
             || !matches!(next.coverage(), CoverageWitness::Complete(_))
@@ -1061,7 +1117,15 @@ impl TantivySource {
         cache_directory.verify_path()?;
         let namespace =
             PrivateNamespace::open_child(cache_directory.path(), DURABLE_ROOTS_DIRECTORY)?;
-        Self::open_or_advance_locked(previous, next, limits, budget, &namespace, cache_budget)
+        Self::open_or_advance_locked(
+            previous,
+            next,
+            limits,
+            budget,
+            &namespace,
+            cache_budget,
+            cancelled,
+        )
     }
 
     fn open_or_advance_locked(
@@ -1071,8 +1135,10 @@ impl TantivySource {
         budget: OverlayLimits,
         namespace: &PrivateNamespace,
         cache_budget: DurableCacheBudget,
+        cancelled: Option<&AtomicBool>,
     ) -> Result<(Self, Option<ProjectionRevision>, DurableProjectionAction), TantivySourceError>
     {
+        check_projection_cancelled(cancelled)?;
         let limits = limits.validate()?;
         if !matches!(previous.coverage(), CoverageWitness::Complete(_))
             || !matches!(next.coverage(), CoverageWitness::Complete(_))
@@ -1081,7 +1147,7 @@ impl TantivySource {
         }
         preflight_ordinal_map_capacity(next.iter().count())?;
         if previous.binding() == next.binding() {
-            return Self::open_or_build_locked(next, limits, namespace, cache_budget, None)
+            return Self::open_or_build_locked(next, limits, namespace, cache_budget, cancelled)
                 .map(|(source, action)| (source, None, action));
         }
         let version_root = namespace.path();
@@ -1112,7 +1178,7 @@ impl TantivySource {
         let previous_key = hex_fingerprint(projection_fingerprint(previous.binding()));
         let previous_path = version_root.join(&previous_key);
         let (previous_source, _) =
-            Self::open_or_build_locked(previous, limits, namespace, cache_budget, None)?;
+            Self::open_or_build_locked(previous, limits, namespace, cache_budget, cancelled)?;
         let prepared = retry_while_denied(|| {
             let stage_id = NEXT_DURABLE_STAGE.fetch_add(1, AtomicOrdering::Relaxed);
             let stage_name = format!(".{next_key}.building-{}-{stage_id}", std::process::id());
@@ -1139,7 +1205,7 @@ impl TantivySource {
                 namespace.verify_child_path(&previous_key)?;
                 let mut staged =
                     Self::open_in_dir_with_budget(previous, limits, stage.path(), cache_budget)?;
-                let revision = match staged.maintain_for_publication(next, budget) {
+                let revision = match staged.maintain_for_publication(next, budget, cancelled) {
                     Ok(MaintainOutcome::Applied(revision)) => revision,
                     Ok(MaintainOutcome::RebuildRequired) => {
                         drop(staged);
@@ -1184,7 +1250,7 @@ impl TantivySource {
         .map_err(StagePreparationFailure::into_error)?;
         let Some((stage, revision)) = prepared else {
             drop(previous_source);
-            return Self::open_or_build_locked(next, limits, namespace, cache_budget, None)
+            return Self::open_or_build_locked(next, limits, namespace, cache_budget, cancelled)
                 .map(|(source, action)| (source, None, action));
         };
 
@@ -1217,10 +1283,18 @@ impl TantivySource {
                 namespace.remove_entry(&next_key, &fence)?;
             }
         }
+        if let Err(error) = check_projection_cancelled(cancelled) {
+            stage
+                .discard_under(&fence)
+                .map_err(|error| TantivySourceError::Io(error.into_io_error()))?;
+            return Err(error);
+        }
         let publication = stage
             .publish(&next_key, &fence)
             .map_err(|error| TantivySourceError::Io(error.into_io_error()))?;
 
+        sample_test_cancel_after_publication();
+        check_projection_cancelled(cancelled)?;
         drop(previous_source);
         let source =
             Self::open_selected_root(next, limits, namespace, &next_key, cache_budget, &fence)?
@@ -1277,12 +1351,7 @@ impl TantivySource {
             u32::try_from(live.len()).map_err(|_| Error::SizeLimit)?,
             live,
         )?;
-        #[cfg(test)]
-        TEST_CANCEL_BEFORE_COMMIT.with(|slot| {
-            if let Some(control) = slot.borrow_mut().take() {
-                control.store(true, Ordering::Release);
-            }
-        });
+        sample_test_cancel_before_commit();
         check_projection_cancelled(cancelled)?;
         writer.commit()?;
         // Join background merges so no thread is still rewriting the index
@@ -1397,29 +1466,50 @@ impl TantivySource {
         if self.durable {
             return Err(TantivySourceError::DurableProjectionImmutable);
         }
-        self.maintain_projection(next, budget)
+        self.maintain_projection(next, budget, None)
+    }
+
+    /// Revises an ephemeral source with per-document and native commit samples.
+    /// A cancelled source after commit is poisoned and cannot answer old-binding
+    /// queries. Its owner must discard it rather than retry in place.
+    ///
+    /// # Errors
+    /// Returns admission errors or interrupted I/O on cancellation.
+    pub fn maintain_cancelable(
+        &mut self,
+        next: &DocumentState,
+        budget: OverlayLimits,
+        cancelled: &AtomicBool,
+    ) -> Result<MaintainOutcome, TantivySourceError> {
+        if self.durable {
+            return Err(TantivySourceError::DurableProjectionImmutable);
+        }
+        self.maintain_projection(next, budget, Some(cancelled))
     }
 
     fn maintain_for_publication(
         &mut self,
         next: &DocumentState,
         budget: OverlayLimits,
+        cancelled: Option<&AtomicBool>,
     ) -> Result<MaintainOutcome, TantivySourceError> {
         if !self.durable || self._root_lease.is_some() {
             return Err(Self::corrupt(
                 "durable publication must mutate an unpinned staging projection",
             ));
         }
-        self.maintain_projection(next, budget)
+        self.maintain_projection(next, budget, cancelled)
     }
 
     fn maintain_projection(
         &mut self,
         next: &DocumentState,
         budget: OverlayLimits,
+        cancelled: Option<&AtomicBool>,
     ) -> Result<MaintainOutcome, TantivySourceError> {
+        check_projection_cancelled(cancelled)?;
         self.ensure_live()?;
-        let Some(plan) = self.plan_revision(next, budget)? else {
+        let Some(plan) = self.plan_revision(next, budget, cancelled)? else {
             return Ok(MaintainOutcome::RebuildRequired);
         };
         match plan {
@@ -1437,7 +1527,7 @@ impl TantivySource {
                     added_postings: 0,
                 }))
             }
-            RevisionPlan::Changed(plan) => self.commit_revision(next, plan),
+            RevisionPlan::Changed(plan) => self.commit_revision(next, plan, cancelled),
         }
     }
 
@@ -1445,6 +1535,7 @@ impl TantivySource {
         &self,
         next: &'next DocumentState,
         budget: OverlayLimits,
+        cancelled: Option<&AtomicBool>,
     ) -> Result<Option<RevisionPlan<'next>>, TantivySourceError> {
         let budget = budget.validate()?;
         if !matches!(next.coverage(), CoverageWitness::Complete(_)) {
@@ -1472,6 +1563,7 @@ impl TantivySource {
         let mut term_count = 0usize;
         let mut estimated_bytes = 0usize;
         for (id, fields) in next.iter() {
+            check_projection_cancelled(cancelled)?;
             next_document_count = next_document_count.checked_add(1).ok_or(Error::SizeLimit)?;
             if let Some(ordinal) = self
                 .documents
@@ -1619,6 +1711,7 @@ impl TantivySource {
         &mut self,
         next: &DocumentState,
         plan: RevisionChanges<'_>,
+        cancelled: Option<&AtomicBool>,
     ) -> Result<MaintainOutcome, TantivySourceError> {
         let RevisionChanges {
             rewritten_documents,
@@ -1681,6 +1774,7 @@ impl TantivySource {
             rank_material_len: self.rank_material_len,
         };
         for write in writes {
+            check_projection_cancelled(cancelled)?;
             let postings = write_document(
                 &writer,
                 &fields,
@@ -1703,10 +1797,17 @@ impl TantivySource {
                 segment_id: None,
             });
         }
+        sample_test_cancel_before_commit();
+        check_projection_cancelled(cancelled)?;
         writer.commit()?;
         if let Err(error) = writer.wait_merging_threads() {
             self.poisoned = true;
             return Err(error.into());
+        }
+        sample_test_cancel_after_commit();
+        if let Err(error) = check_projection_cancelled(cancelled) {
+            self.poisoned = true;
+            return Err(error);
         }
         if let Err(error) = self.reader.reload() {
             self.poisoned = true;
@@ -3832,6 +3933,14 @@ fn sync_directory(path: &Path) -> Result<(), io::Error> {
 pub(crate) mod test_support {
     use std::mem;
 
+    pub(crate) fn cancel_after_next_publication(control: std::sync::Arc<super::AtomicBool>) {
+        super::TEST_CANCEL_AFTER_PUBLICATION.with(|slot| *slot.borrow_mut() = Some(control));
+    }
+
+    pub(crate) fn cancel_after_next_commit(control: std::sync::Arc<super::AtomicBool>) {
+        super::TEST_CANCEL_AFTER_COMMIT.with(|slot| *slot.borrow_mut() = Some(control));
+    }
+
     pub(crate) fn cancel_before_next_commit(control: std::sync::Arc<super::AtomicBool>) {
         super::TEST_CANCEL_BEFORE_COMMIT.with(|slot| *slot.borrow_mut() = Some(control));
     }
@@ -5516,6 +5625,20 @@ impl crate::Adapter<TantivySource> {
         self.source_mut().maintain(next, budget)
     }
 
+    /// Maintains the exclusive source with cooperative preparation cancellation.
+    ///
+    /// # Errors
+    /// Returns source admission errors or interrupted I/O on cancellation.
+    pub fn maintain_cancelable(
+        &mut self,
+        next: &DocumentState,
+        budget: OverlayLimits,
+        cancelled: &AtomicBool,
+    ) -> Result<MaintainOutcome, TantivySourceError> {
+        self.source_mut()
+            .maintain_cancelable(next, budget, cancelled)
+    }
+
     /// Returns the exact token-posting count represented by live rows.
     #[must_use]
     pub fn indexed_postings(&self) -> u64 {
@@ -5593,4 +5716,31 @@ fn check_projection_cancelled(cancelled: Option<&AtomicBool>) -> Result<(), Tant
     } else {
         Ok(())
     }
+}
+
+fn sample_test_cancel_before_commit() {
+    #[cfg(test)]
+    TEST_CANCEL_BEFORE_COMMIT.with(|slot| {
+        if let Some(control) = slot.borrow_mut().take() {
+            control.store(true, Ordering::Release);
+        }
+    });
+}
+
+fn sample_test_cancel_after_publication() {
+    #[cfg(test)]
+    TEST_CANCEL_AFTER_PUBLICATION.with(|slot| {
+        if let Some(control) = slot.borrow_mut().take() {
+            control.store(true, Ordering::Release);
+        }
+    });
+}
+
+fn sample_test_cancel_after_commit() {
+    #[cfg(test)]
+    TEST_CANCEL_AFTER_COMMIT.with(|slot| {
+        if let Some(control) = slot.borrow_mut().take() {
+            control.store(true, Ordering::Release);
+        }
+    });
 }

@@ -3570,3 +3570,126 @@ fn cancelled_cold_preparation_does_not_publish_and_can_retry() {
     assert_eq!(action, DurableProjectionAction::Opened);
     std::fs::remove_dir_all(root).expect("retire cancelled cache");
 }
+
+#[test]
+fn preparation_cancellation_warm_revision_preserves_old_durable_authority() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-warm-cancel-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let previous = state_for(
+        vec![(document(1), vec![("name".into(), "alpha".into())])],
+        [101; 32],
+    );
+    let next = state_for(
+        vec![(document(1), vec![("name".into(), "beta".into())])],
+        [102; 32],
+    );
+    let old =
+        TantivySource::open_or_build_in_dir(&previous, Limits::default(), &root).expect("old root");
+    let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+    engine::test_support::cancel_before_next_commit(std::sync::Arc::clone(&cancelled));
+    let result = TantivySource::open_or_advance_cancelable(
+        &previous,
+        &next,
+        Limits::default(),
+        OverlayLimits::default(),
+        &root,
+        DurableCacheBudget::default(),
+        &cancelled,
+    );
+    assert!(
+        matches!(result, Err(TantivySourceError::Io(ref e)) if e.kind() == std::io::ErrorKind::Interrupted)
+    );
+    assert_eq!(term_hits(&old, "alpha"), vec![document(1)]);
+    assert!(term_hits(&old, "beta").is_empty());
+    cancelled.store(false, Ordering::Release);
+    let (revised, _, action) = TantivySource::open_or_advance_cancelable(
+        &previous,
+        &next,
+        Limits::default(),
+        OverlayLimits::default(),
+        &root,
+        DurableCacheBudget::default(),
+        &cancelled,
+    )
+    .expect("warm retry");
+    assert_eq!(action, DurableProjectionAction::Revised);
+    assert_eq!(term_hits(&revised, "beta"), vec![document(1)]);
+    assert!(term_hits(&revised, "alpha").is_empty());
+    drop(revised);
+    drop(old);
+    std::fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn preparation_cancellation_after_native_commit_poisoned_ephemeral_owner() {
+    use std::sync::atomic::AtomicBool;
+    let previous = state_for(
+        vec![(document(1), vec![("name".into(), "alpha".into())])],
+        [103; 32],
+    );
+    let next = state_for(
+        vec![(document(1), vec![("name".into(), "beta".into())])],
+        [104; 32],
+    );
+    let mut source =
+        TantivySource::build(&previous, Limits::default()).expect("ephemeral old source");
+    let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+    engine::test_support::cancel_after_next_commit(std::sync::Arc::clone(&cancelled));
+    assert!(
+        matches!(source.maintain_cancelable(&next, OverlayLimits::default(), &cancelled), Err(TantivySourceError::Io(ref e)) if e.kind() == std::io::ErrorKind::Interrupted)
+    );
+    assert!(
+        source
+            .search(&Query::new(vec!["alpha".into()], Limits::default()).expect("query"))
+            .is_err(),
+        "old-binding authority cannot answer after physical postings commit"
+    );
+    assert!(
+        source.maintain(&next, OverlayLimits::default()).is_err(),
+        "poisoned source must retire rather than retry in place"
+    );
+    let retry = TantivySource::build(&next, Limits::default()).expect("fresh retry");
+    assert_eq!(term_hits(&retry, "beta"), vec![document(1)]);
+}
+
+#[test]
+fn preparation_cancellation_publication_race_leaves_only_admissible_immutable_residue() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-publish-cancel-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let state = state_for(
+        vec![(document(1), vec![("name".into(), "alpha".into())])],
+        [105; 32],
+    );
+    let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+    engine::test_support::cancel_after_next_publication(std::sync::Arc::clone(&cancelled));
+    assert!(
+        matches!(TantivySource::open_or_build_cancelable(&state, Limits::default(), &root, DurableCacheBudget::default(), &cancelled), Err(TantivySourceError::Io(ref e)) if e.kind() == std::io::ErrorKind::Interrupted)
+    );
+    cancelled.store(false, Ordering::Release);
+    let (source, action) = TantivySource::open_or_build_cancelable(
+        &state,
+        Limits::default(),
+        &root,
+        DurableCacheBudget::default(),
+        &cancelled,
+    )
+    .expect("fully admitted cached residue");
+    assert_eq!(action, DurableProjectionAction::Opened);
+    assert_eq!(term_hits(&source, "alpha"), vec![document(1)]);
+    drop(source);
+    std::fs::remove_dir_all(root).expect("cleanup");
+}
