@@ -1,0 +1,260 @@
+{
+  "archive_sha256": "1d554dd4c07315d98ad05b5b46ab02333e4f03dbd2d446fc73221b390c961689",
+  "verified_raw_files": [
+    "luna-n4-final-evidence-20261007-v2/census/luna-n4-capacity-poll-engine-reg-02.json",
+    "luna-n4-final-evidence-20261007-v2/census/luna-n4-capacity-poll-engine-reg-03.json",
+    "luna-n4-final-evidence-20261007-v2/census/luna-n4-capacity-poll-engine-reg-04.json",
+    "luna-n4-final-evidence-20261007-v2/census/luna-n4-capacity-poll-engine-reg-05.json",
+    "luna-n4-final-evidence-20261007-v2/census/luna-n4-capacity-poll-v8e.json",
+    "luna-n4-final-evidence-20261007-v2/census/luna-n4-engine-acquisition-final-v8-census.json",
+    "luna-n4-final-evidence-20261007-v2/census/luna-n4-engine-registry-final-dab-v1-census.json",
+    "luna-n4-final-evidence-20261007-v2/census/luna-n4-local-service-discovery-final-v8-census.json",
+    "luna-n4-final-evidence-20261007-v2/census/luna-n4-local-service-registry-final-v6-census.json",
+    "luna-n4-final-evidence-20261007-v2/census/luna-n4-registry-final-v6-census.json",
+    "luna-n4-final-evidence-20261007-v2/census/n4-broadaudit-platform-store-tantivy-20261007T1416Z-fleet.json",
+    "luna-n4-final-evidence-20261007-v2/census/n4-broadaudit-platform-store-tantivy-rerun-20261007T1424Z-fleet.json",
+    "luna-n4-final-evidence-20261007-v2/census/n4-engine-acquisition-final-v5-20261007T1707Z-fleet.json",
+    "luna-n4-final-evidence-20261007-v2/census/n4-engine-forge-final-v5-20261007T1714Z-fleet.json",
+    "luna-n4-final-evidence-20261007-v2/census/n4-engine-registry-final-v5-20261007T1713Z-fleet.json",
+    "luna-n4-final-evidence-20261007-v2/census/n4-finalall-platform-store-tantivy-v5-20261007T1704Z-fleet.json",
+    "luna-n4-final-evidence-20261007-v2/raw/baseline-0645-reds/cargo.log",
+    "luna-n4-final-evidence-20261007-v2/raw/baseline-0645-reds/platform-tantivy-initial/cargo.log",
+    "luna-n4-final-evidence-20261007-v2/raw/engine-acquisition-dab/cargo.log",
+    "luna-n4-final-evidence-20261007-v2/raw/engine-acquisition-dab/launch.txt",
+    "luna-n4-final-evidence-20261007-v2/raw/engine-forge-b90/cargo.log",
+    "luna-n4-final-evidence-20261007-v2/raw/engine-registry-dab/cargo.log",
+    "luna-n4-final-evidence-20261007-v2/raw/engine-registry-dab/launch.txt",
+    "luna-n4-final-evidence-20261007-v2/raw/kernel-retirement/luna-n4-kernel-retirement-20261007T1855Z.txt",
+    "luna-n4-final-evidence-20261007-v2/raw/local-service-discovery-dab/cargo.log",
+    "luna-n4-final-evidence-20261007-v2/raw/local-service-discovery-dab/launch.txt",
+    "luna-n4-final-evidence-20261007-v2/raw/local-service-registry-b90-red-v6/cargo.log",
+    "luna-n4-final-evidence-20261007-v2/raw/local-service-registry-b90-red-v6/launch.txt",
+    "luna-n4-final-evidence-20261007-v2/raw/local-service-registry-dab-final-v7/cargo.log",
+    "luna-n4-final-evidence-20261007-v2/raw/local-service-registry-dab-final-v7/launch.txt",
+    "luna-n4-final-evidence-20261007-v2/raw/luna-n4-final-sha256-20261007.txt",
+    "luna-n4-final-evidence-20261007-v2/raw/platform-store-tantivy-b90/cargo.log",
+    "luna-n4-final-evidence-20261007-v2/README.md"
+  ],
+  "native_results": {
+    "engine-acquisition-dab": {
+      "archive_member": "raw/engine-acquisition-dab/cargo.log",
+      "results": [
+        [
+          "ok",
+          "91",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    "engine-registry-dab": {
+      "archive_member": "raw/engine-registry-dab/cargo.log",
+      "results": [
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "127",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    "local-service-registry-dab": {
+      "archive_member": "raw/local-service-registry-dab-final-v7/cargo.log",
+      "results": [
+        [
+          "ok",
+          "43",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    "local-service-discovery-dab": {
+      "archive_member": "raw/local-service-discovery-dab/cargo.log",
+      "results": [
+        [
+          "ok",
+          "69",
+          "0",
+          "8"
+        ]
+      ]
+    },
+    "engine-forge-b90": {
+      "archive_member": "raw/engine-forge-b90/cargo.log",
+      "results": [
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "28",
+          "0",
+          "1"
+        ]
+      ]
+    },
+    "platform-store-tantivy-b90": {
+      "archive_member": "raw/platform-store-tantivy-b90/cargo.log",
+      "results": [
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "96",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "62",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "275",
+          "0",
+          "0"
+        ]
+      ]
+    }
+  },
+  "changed_file_blobs": {
+    "crates/engine/src/acquisition/content_addressed.rs": {
+      "integrated": "15cf7a173b4595d9a169ddcdd65bfb8392fb0737",
+      "tested_candidate": "15cf7a173b4595d9a169ddcdd65bfb8392fb0737",
+      "identical": true
+    },
+    "crates/engine/src/acquisition/lease.rs": {
+      "integrated": "5b3467942c03c428b8019f8f3cf42e2144884bb6",
+      "tested_candidate": "5b3467942c03c428b8019f8f3cf42e2144884bb6",
+      "identical": true
+    },
+    "crates/engine/src/acquisition/lease_tests.rs": {
+      "integrated": "38eba3c71fb0ada4f169ffce613145bb63614b61",
+      "tested_candidate": "38eba3c71fb0ada4f169ffce613145bb63614b61",
+      "identical": true
+    },
+    "crates/engine/src/acquisition/service.rs": {
+      "integrated": "9a21124c8c5dc0f18b4a2a69da627bf8d1e8700a",
+      "tested_candidate": "9a21124c8c5dc0f18b4a2a69da627bf8d1e8700a",
+      "identical": true
+    },
+    "crates/engine/src/forge/service.rs": {
+      "integrated": "b0571e79f18c8454e5aba4403fd683cfa783de1f",
+      "tested_candidate": "b0571e79f18c8454e5aba4403fd683cfa783de1f",
+      "identical": true
+    },
+    "crates/engine/src/forge/tests.rs": {
+      "integrated": "abb55a6c9806ce625a9ca04a43b5657bf255c2f7",
+      "tested_candidate": "abb55a6c9806ce625a9ca04a43b5657bf255c2f7",
+      "identical": true
+    },
+    "crates/engine/src/forge/transport/git.rs": {
+      "integrated": "4378c3154b622d2bbff972c694dd2759c0df24f6",
+      "tested_candidate": "4378c3154b622d2bbff972c694dd2759c0df24f6",
+      "identical": true
+    },
+    "crates/engine/src/registry/owner.rs": {
+      "integrated": "cae40fe9bdc0e7926dcdd1972ab7db40d3096fb5",
+      "tested_candidate": "cae40fe9bdc0e7926dcdd1972ab7db40d3096fb5",
+      "identical": true
+    },
+    "crates/engine/src/registry/router.rs": {
+      "integrated": "559cea882f07f976d60c34fdb2a394ff5b7368fa",
+      "tested_candidate": "559cea882f07f976d60c34fdb2a394ff5b7368fa",
+      "identical": true
+    },
+    "crates/engine/src/registry/tests.rs": {
+      "integrated": "8aabb6d6e598b4b6b03441d1ed6d5c0d4d016e4c",
+      "tested_candidate": "8aabb6d6e598b4b6b03441d1ed6d5c0d4d016e4c",
+      "identical": true
+    },
+    "crates/local-service/src/builtin/discovery_search.rs": {
+      "integrated": "2bc4094624d8708577bda53361b21084035803f4",
+      "tested_candidate": "2bc4094624d8708577bda53361b21084035803f4",
+      "identical": true
+    },
+    "crates/local-service/src/builtin/registry.rs": {
+      "integrated": "36e9463792104c0ec80d65337f7848f220324917",
+      "tested_candidate": "36e9463792104c0ec80d65337f7848f220324917",
+      "identical": true
+    },
+    "crates/local-service/src/discovery.rs": {
+      "integrated": "a0060abc65aafc3d97a137ac5467dbae6f292fb3",
+      "tested_candidate": "a0060abc65aafc3d97a137ac5467dbae6f292fb3",
+      "identical": true
+    },
+    "crates/platform/directory.rs": {
+      "integrated": "88b9f506e5708e973766788c8f9c3b8a15f62aa4",
+      "tested_candidate": "4057067682be2af0cc32c5b013f33e1bb6c18fb4",
+      "identical": false
+    },
+    "crates/platform/durable_read.rs": {
+      "integrated": "dcab5e4a60e960222034d0798d9eccd85277b94e",
+      "tested_candidate": "dcab5e4a60e960222034d0798d9eccd85277b94e",
+      "identical": true
+    },
+    "crates/platform/lib.rs": {
+      "integrated": "36e76876c12aa47cbbf5cc9449a9ee57d0571d58",
+      "tested_candidate": "36e76876c12aa47cbbf5cc9449a9ee57d0571d58",
+      "identical": true
+    },
+    "crates/store/src/durable/store_api.rs": {
+      "integrated": "97cfba9bf99f7184ed0d9c2c56ffd9f134bddfee",
+      "tested_candidate": "97cfba9bf99f7184ed0d9c2c56ffd9f134bddfee",
+      "identical": true
+    },
+    "extensions/tantivy/src/engine.rs": {
+      "integrated": "fd04875f2ca465311b79c3d35f10a2b480b68b73",
+      "tested_candidate": "fd04875f2ca465311b79c3d35f10a2b480b68b73",
+      "identical": true
+    },
+    "extensions/tantivy/src/tests.rs": {
+      "integrated": "30fa59399b4ebc2259e60a83fe21e615254f95e6",
+      "tested_candidate": "30fa59399b4ebc2259e60a83fe21e615254f95e6",
+      "identical": true
+    }
+  },
+  "integration_head": "a00a9f61c2ed82b9050d1a79d1617c7eb31f2f25",
+  "failed_package_v1_sha256": "1ba9bcea7fc0c10072b22ea10685591f925e1d00f74a63d082f08d4d4170b121",
+  "scope": "Root independently checked all hashes/log results/source blobs. Platform directory composed with separately merged startup repair; combined current binary native gates still pending."
+}
