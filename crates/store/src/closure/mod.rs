@@ -233,17 +233,23 @@ impl WorkspaceBinding {
 
 #[cfg(test)]
 std::thread_local! {
-    static OBJECT_COMMITMENT_WORK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static OBJECT_COMMITMENT_WORK: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
 }
 
 #[cfg(test)]
-pub(crate) fn take_object_commitment_work() -> u64 {
-    OBJECT_COMMITMENT_WORK.with(|work| work.replace(0))
+pub(crate) fn take_object_commitment_work() -> (u64, u64) {
+    OBJECT_COMMITMENT_WORK.with(|work| work.replace((0, 0)))
 }
 
 fn object_commitment(object: &TypedObject) -> Hash {
     #[cfg(test)]
-    OBJECT_COMMITMENT_WORK.with(|work| work.set(work.get().saturating_add(1)));
+    OBJECT_COMMITMENT_WORK.with(|work| {
+        let (calls, bytes) = work.get();
+        work.set((
+            calls.saturating_add(1),
+            bytes.saturating_add(u64::try_from(object.bytes.len()).unwrap_or(u64::MAX)),
+        ));
+    });
 
     let length = u64::try_from(object.bytes.len()).unwrap_or(u64::MAX);
     let fixed_preimage_len = u64::try_from(1_usize + 2 + 1 + ID_BYTES * 2 + 8).unwrap_or(u64::MAX);

@@ -1360,10 +1360,20 @@ fn stored_extension_installs_auxiliary_children_before_membership_rebind() {
     // Exercise the actual durable stage with a large admitted physical
     // frontier. The bound includes version/CAS verification and serialization;
     // it rules out a pairwise identity union without relying on wall time.
+    assert!(
+        frontier.len() > 128,
+        "the fixture must distinguish linear from pairwise union work"
+    );
     closure::take_object_commitment_work();
+    let stage_started = std::time::Instant::now();
     must(store.stage_workspace_frontier(&next));
-    let identity_work = closure::take_object_commitment_work();
+    let stage_elapsed = stage_started.elapsed();
+    let (identity_work, hashed_payload_bytes) = closure::take_object_commitment_work();
     let frontier_count = u64::try_from(frontier.len() + 3).unwrap_or(u64::MAX);
+    eprintln!(
+        "durable_frontier_work nodes={frontier_count} commitments={identity_work} hashed_payload_bytes={hashed_payload_bytes} stage_elapsed_us={}",
+        stage_elapsed.as_micros()
+    );
     assert!(
         identity_work <= frontier_count.saturating_mul(64),
         "frontier staging rehashed {identity_work} objects for {frontier_count} nodes"
