@@ -1845,7 +1845,7 @@ pub fn execute() {}
         assert!(STALE_NOTE.contains("stale semantic image"));
     }
 
-    fn analyze_source(
+    pub(super) fn analyze_source(
         language: backend_engine::SourceLanguage,
         path: &str,
         source: &str,
@@ -1879,7 +1879,7 @@ pub fn execute() {}
         }
     }
 
-    fn cross_file_sources(
+    pub(super) fn cross_file_sources(
         files: &[(
             &str,
             backend_engine::SourceLanguage,
