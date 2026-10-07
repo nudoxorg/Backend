@@ -738,7 +738,7 @@ mod tests {
             "no Go selected: no Go root"
         );
     }
-}
+
     #[test]
     fn installed_capture_keeps_cargo_and_windows_home_as_raw_launch_inputs() {
         let captured = BTreeMap::from([
@@ -761,3 +761,4 @@ mod tests {
             Some(OsString::new())
         );
     }
+}
