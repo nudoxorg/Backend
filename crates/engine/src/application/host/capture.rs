@@ -176,6 +176,11 @@ mod tests {
         );
         assert_eq!(inputs.node_path, node.path.as_path());
         assert_eq!(inputs.package_root, root.as_path());
+        assert_eq!(inputs.compiler_origin, crate::application::typescript_host::TypeScriptSelectionOrigin::ProjectLocalInstallation);
+        assert_eq!(
+            inputs.node_origin,
+            crate::application::typescript_host::TypeScriptSelectionOrigin::InstalledHostSelection
+        );
         assert!(String::from_utf8_lossy(inputs.compiler_version).contains("5.7.2"));
         assert!(
             !inputs.config_candidates.is_empty(),
@@ -184,11 +189,50 @@ mod tests {
         admitted
             .validate_current()
             .expect("unchanged source/config/SDK authority");
+        let frontier = std::fs::read_to_string(
+            std::env::var_os("NUDOX_SETUP_SOURCE_FRONTIER")
+                .expect("exact original application source frontier"),
+        )
+        .expect("source frontier");
+        let sources = frontier.lines().collect::<Vec<_>>();
+        assert_eq!(sources.len(), 33);
+        for relative in &sources {
+            let path = root.join(relative);
+            let captured = inputs
+                .load_source(&path)
+                .expect("source belongs to actual selected project");
+            assert_eq!(captured.path.as_ref(), path.as_path());
+            assert_eq!(
+                captured.bytes.as_ref(),
+                std::fs::read(&path).unwrap().as_slice()
+            );
+        }
+        admitted
+            .validate_current()
+            .expect("all exact source members remain unchanged");
         let restarted = project
             .admit(&root)
             .expect("repeat project admission")
             .expect("same project SDK");
         assert_eq!(admitted.fingerprint, restarted.fingerprint);
+        assert_eq!(
+            admitted.resolved_toolchain().unwrap().invocation_identity(),
+            restarted
+                .resolved_toolchain()
+                .unwrap()
+                .invocation_identity(),
+            "same actual SDK/Node retain the authority recipe"
+        );
+        assert_eq!(
+            admitted
+                .resolved_toolchain()
+                .unwrap()
+                .invocation_location_identity(),
+            restarted
+                .resolved_toolchain()
+                .unwrap()
+                .invocation_location_identity()
+        );
         println!(
             "actual-project-sdk={} node={} host-fallback={} fingerprint={:?}",
             inputs.compiler_path.display(),
