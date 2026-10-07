@@ -7,6 +7,7 @@ use backend_execution::{
     Cancellation, OutputAdmission, OutputValidationError, ResultCoverage, UntrustedOutputClaim,
     WorkInterner, WorkKey, acquisition_work_key,
 };
+use backend_platform::OwnedWorkspaceDirectory;
 use std::{
     collections::BTreeMap,
     fmt, io,
@@ -430,11 +431,12 @@ impl AcquisitionService {
     /// `WorkInterner` itself is deliberately process-local.
     pub fn from_owner(owner: RegistryOwner, root: impl Into<PathBuf>) -> io::Result<Self> {
         let root = root.into();
-        // Create the coordination root privately before anything below it. The lease
-        // store makes its subdirectories with ordinary filesystem calls and would
-        // otherwise create `root` itself as a side effect, after which the receipt
-        // store, which pins `root` as a private directory, refuses it on Windows.
-        backend_platform::DirectoryCapability::open_or_create_private(&root)?;
+        // Establish the root and its direct child directories through pinned
+        // private capabilities before path-based journal initializers run.
+        let root_directory = OwnedWorkspaceDirectory::open(&root)?;
+        root_directory.child("coordination")?;
+        root_directory.child("product-receipts")?;
+        root_directory.verify_path()?;
         let leases = LeaseStore::open(root.join("coordination"))?;
         let product_receipts = AcquisitionReceiptStore::open(root.join("product-receipts"))?;
         let breaker =

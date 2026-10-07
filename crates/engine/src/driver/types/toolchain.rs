@@ -210,7 +210,7 @@ impl<'path> ResolvedToolchain<'path> {
             return Err(ToolchainResolutionError::RelativeInvocationPath);
         }
         if tool != NativeTool::TypeScriptCompiler
-            || script != module_root.join("typescript/bin/tsc")
+            || !crate::application::is_module_tsc_script(script, module_root)
         {
             return Err(ToolchainResolutionError::CompilerModuleMismatch);
         }
@@ -273,7 +273,7 @@ impl<'path> ResolvedToolchain<'path> {
             return Err(ToolchainResolutionError::RelativeInvocationPath);
         }
         if tool != NativeTool::TypeScriptCompiler
-            || script != module_root.join("typescript/bin/tsc")
+            || !crate::application::is_module_tsc_script(script, module_root)
             || !lease.matches_invocation(script, interpreter, module_root)
         {
             return Err(ToolchainResolutionError::CompilerModuleMismatch);
@@ -378,6 +378,12 @@ impl<'path> ResolvedToolchain<'path> {
         };
         if let InvocationValidation::ProjectPackage(lease) = validation {
             return lease.validate_launch_objects();
+        }
+        if !crate::application::is_module_tsc_script(script, module_root) {
+            return Err(NativeInvocationError::Changed {
+                role: NativeInvocationFileRole::CompilerModule,
+                path: module_root.join("typescript").into_boxed_path(),
+            });
         }
         for (role, path, expected) in [
             (

@@ -13,6 +13,7 @@
 //! the card cannot promise a query the engine will not run.
 
 use super::codec::{empty_cursor, object, percent_decode, percent_encode, string};
+use super::tools::catalog_markdown;
 use super::{RpcError, answer_for};
 use backend_present::{
     Answer, DEFAULT_RESPONSE_BUDGET_BYTES, Detail, Engine, Request, encode_serializable, markdown,
@@ -23,6 +24,7 @@ use serde_json::{Value, json};
 
 const WORKSPACE_URI: &str = "backend://workspace/current";
 const SCHEMA_URI: &str = "backend://schema/query";
+const TOOLS_URI: &str = "backend://tools/catalog";
 const MARKDOWN: &str = "text/markdown";
 
 /// The card an agent reads before writing its first Trustfall query.
@@ -159,7 +161,8 @@ pub(super) fn worked_queries(card: &str) -> Vec<&str> {
     queries
 }
 
-/// Lists the workspace status, the query card, and one outline per project.
+/// Lists workspace status, query guidance, the route catalog, and one outline
+/// per project.
 pub(super) fn list_resources(engine: &mut dyn Engine, params: &Value) -> Result<Value, RpcError> {
     empty_cursor(params)?;
     let mut resources = vec![
@@ -175,6 +178,13 @@ pub(super) fn list_resources(engine: &mut dyn Engine, params: &Value) -> Result<
             "name": "query-schema",
             "title": "backend.query schema",
             "description": "Starting edges, fields, and worked Trustfall queries that run unchanged.",
+            "mimeType": MARKDOWN
+        }),
+        json!({
+            "uri": TOOLS_URI,
+            "name": "mcp-tool-catalog",
+            "title": "MCP tool catalog",
+            "description": "Advertised tools plus capability-dependent routes that remain callable by exact name.",
             "mimeType": MARKDOWN
         }),
     ];
@@ -222,10 +232,10 @@ pub(super) fn list_resource_templates(params: &Value) -> Result<Value, RpcError>
 pub(super) fn read_resource(engine: &mut dyn Engine, params: &Value) -> Result<Value, RpcError> {
     let params = object(params)?;
     let uri = string(params, "uri")?;
-    let text = if uri == SCHEMA_URI {
-        QUERY_SCHEMA_CARD.to_owned()
-    } else {
-        markdown::answer(&answer_for(engine, &request_for(uri)?)?)
+    let text = match uri {
+        SCHEMA_URI => QUERY_SCHEMA_CARD.to_owned(),
+        TOOLS_URI => catalog_markdown(),
+        _ => markdown::answer(&answer_for(engine, &request_for(uri)?)?),
     };
     encode_result(
         "resource",

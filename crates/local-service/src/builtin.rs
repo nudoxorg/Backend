@@ -1619,6 +1619,7 @@ pub(crate) fn compose_owner(
         },
         backend_engine::application::LocalHostDiscovery::ClosedSnapshot,
     )
+    .with_go_authority_failure(compiler_selection.go_authority_failure())
     .with_rust_cargo_metadata_policy(cargo_metadata_policy);
     if let Ok(cache_directory) = daemon
         .engine()
@@ -2362,8 +2363,12 @@ pub fn run(config: ProcessConfig) -> ExitCode {
     match compose_owner(&config) {
         Ok(owner) => crate::process::run_process(owner, config),
         Err(error) => {
-            eprintln!("backend-locald: {error}");
-            ExitCode::from(70)
+            crate::process::report_process_failure(&error);
+            if matches!(error, ProcessError::OwnerContended { .. }) {
+                ExitCode::from(backend_runtime::OWNER_CONTENDED_EXIT_CODE)
+            } else {
+                ExitCode::from(70)
+            }
         }
     }
 }

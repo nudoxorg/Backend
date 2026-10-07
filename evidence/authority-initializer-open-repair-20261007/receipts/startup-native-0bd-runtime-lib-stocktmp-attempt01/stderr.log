@@ -1,0 +1,20 @@
+warning: resolver for the non root package will be ignored, specify resolver at the workspace root:
+package:   /Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/vendor/gpui_ce_components/Cargo.toml
+workspace: /Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/Cargo.toml
+   Compiling backend-runtime v0.2.0 (/Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/crates/runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.72s
+     Running unittests src/lib.rs (.local/build/point-metadata-test/.nudox-cargo/slot-0/debug/deps/backend_runtime-f403b30f5a909ec5)
+
+thread 'server::storage::tests::local_payload_prefix_guard_drops_partial_initialization_during_unwind' (47439274) panicked at crates/runtime/src/server/storage.rs:271:21:
+simulate a future caller-arena element constructor failure
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'server::runtime_tests::destructor_panic_after_normal_callback_keeps_the_committed_terminal' (47439266) panicked at crates/runtime/src/server/runtime_tests.rs:50:13:
+adversarial work destructor panic
+
+thread 'server::runtime_tests::callback_unwind_commits_executor_unwound_before_the_original_panic_continues' (47439265) panicked at crates/runtime/src/server/runtime_tests.rs:616:13:
+adversarial callback panic
+
+thread 'tests::concurrent_initializers_publish_one_complete_authority_secret' (47439282) panicked at crates/runtime/src/lib.rs:1749:18:
+publish or admit secret: Io(Os { code: 2, kind: NotFound, message: "No such file or directory" })
+error: test failed, to rerun pass `-p backend-runtime --lib`

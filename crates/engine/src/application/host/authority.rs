@@ -8,7 +8,7 @@ use std::{
 use arrayvec::ArrayVec;
 use backend_frontend_clang::ClangAuthorityEnvironment;
 use backend_frontend_csharp::legacy::{CSharpOracle, DEFAULT_SOURCE_LIMIT};
-use backend_frontend_go::legacy::oracle::GoOracleChildEnvironment;
+use backend_frontend_go::legacy::oracle::{GoOracleChildEnvironment, GoOracleConfigurationError};
 use backend_frontend_go::legacy::{GoOracle, GoOracleConfiguration};
 use backend_frontend_java::legacy::harness::JdkToolchain;
 use backend_frontend_python::legacy::Pyrefly;
@@ -28,8 +28,8 @@ use crate::application::toolchain_probe::{
 };
 use crate::application::typescript_host::{TypeScriptProjectHost, is_module_tsc_script};
 use crate::application::{
-    LocalRuntimeCSharpAuthority, LocalRuntimeJavaAuthority, LocalRuntimePackageAuthority,
-    LocalRuntimePackageRoot, LocalRuntimePythonCheckerAdmission,
+    LocalRuntimeCSharpAuthority, LocalRuntimeGoAuthorityFailure, LocalRuntimeJavaAuthority,
+    LocalRuntimePackageAuthority, LocalRuntimePackageRoot, LocalRuntimePythonCheckerAdmission,
     LocalRuntimePythonCheckerProbeFailure, LocalRuntimeRustAuthority, LocalRuntimeToolchain,
     PyreflyToolchainIdentity,
 };
@@ -38,8 +38,15 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
     pub(super) fn package_roots(
         &self,
         home: Option<&Path>,
-    ) -> Result<Box<[LocalRuntimePackageRoot]>, LocalCompilerHostError> {
+    ) -> Result<
+        (
+            Box<[LocalRuntimePackageRoot]>,
+            Option<LocalRuntimeGoAuthorityFailure>,
+        ),
+        LocalCompilerHostError,
+    > {
         let mut roots = Vec::with_capacity(7);
+        let mut go_failure = None;
         for (ecosystem, variable) in [
             (PackageEcosystem::Cargo, LocalHostVariable::NudoxCargoRoot),
             (PackageEcosystem::Npm, LocalHostVariable::NudoxNpmRoot),
@@ -53,15 +60,21 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             ),
         ] {
             let candidates = self.package_root_candidates(home, ecosystem);
-            if let Some(path) = self.directory(
+            let selected = self.directory(
                 variable,
                 LocalHostPathRole::PackageRoot(ecosystem),
                 candidates,
-            )? {
-                roots.push(LocalRuntimePackageRoot::new(ecosystem, path)?);
+            );
+            match selected {
+                Ok(Some(path)) => roots.push(LocalRuntimePackageRoot::new(ecosystem, path)?),
+                Ok(None) => {}
+                Err(error) if ecosystem == PackageEcosystem::Golang => {
+                    go_failure = Some(go_authority_failure(&error));
+                }
+                Err(error) => return Err(error),
             }
         }
-        Ok(roots.into_boxed_slice())
+        Ok((roots.into_boxed_slice(), go_failure))
     }
 
     pub(super) fn package_authority(
@@ -73,6 +86,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         go_module_cache: Option<&Path>,
         native_work_directory: &Path,
         probe_limits: ToolchainProbeLimits,
+        go_discovery_failure: Option<LocalRuntimeGoAuthorityFailure>,
     ) -> Result<(LocalRuntimePackageAuthority, TypeScriptProjectHost), LocalCompilerHostError> {
         let libclang =
             self.file_or_directory(LocalHostVariable::LibclangPath, LocalHostPathRole::Libclang)?;
@@ -157,33 +171,39 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             }
             _ => None,
         };
-        let go_oracle = self.executable(
-            LocalHostVariable::NudoxGoOracle,
-            LocalHostPathRole::GoOracle,
-            ArrayVec::new(),
-        )?;
-        let go = match executables.go.as_deref() {
-            Some(go) => {
-                let module_cache =
-                    selected_go_module_cache(go_module_cache, native_work_directory)?;
-                let goroot = self.go_root(go, probe_limits)?;
-                let child_environment = GoOracleChildEnvironment::new(
-                    go.to_path_buf(),
-                    goroot,
-                    module_cache,
-                    native_work_directory.join("go-oracle-cache"),
-                )?;
-                let configuration = match go_oracle {
-                    Some(oracle) => GoOracleConfiguration::oracle_binary(oracle)?,
-                    None => GoOracleConfiguration::go_toolchain(go.to_path_buf())?,
-                };
-                Some(
+        let (go, go_unavailable) = match (executables.go.as_deref(), go_discovery_failure) {
+            (Some(go), None) => {
+                let admitted = (|| {
+                    let go_oracle = self.executable(
+                        LocalHostVariable::NudoxGoOracle,
+                        LocalHostPathRole::GoOracle,
+                        ArrayVec::new(),
+                    )?;
+                    let module_cache =
+                        selected_go_module_cache(go_module_cache, native_work_directory)?;
+                    let goroot = self.go_root(go, probe_limits)?;
+                    let child_environment = GoOracleChildEnvironment::new(
+                        go.to_path_buf(),
+                        goroot,
+                        module_cache,
+                        native_work_directory.join("go-oracle-cache"),
+                    )?;
+                    let configuration = match go_oracle {
+                        Some(oracle) => GoOracleConfiguration::oracle_binary(oracle)?,
+                        None => GoOracleConfiguration::go_toolchain(go.to_path_buf())?,
+                    };
                     GoOracle::default()
                         .with_configuration(configuration)
-                        .with_child_environment(child_environment)?,
-                )
+                        .with_child_environment(child_environment)
+                        .map_err(LocalCompilerHostError::from)
+                })();
+                match admitted {
+                    Ok(go) => (Some(go), None),
+                    Err(error) => (None, Some(go_authority_failure(&error))),
+                }
             }
-            None => None,
+            (Some(_), Some(failure)) => (None, Some(failure)),
+            (None, failure) => (None, failure),
         };
         let java = match (executables.java.as_ref(), jdk_root) {
             (Some(_), Some(root)) => Some(LocalRuntimeJavaAuthority {
@@ -217,6 +237,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 python_checker,
                 rust,
                 go,
+                go_unavailable,
                 csharp,
                 java,
                 maximum_image_bytes: Some(nonzero(AUTHORITY_IMAGE_BYTES)),
@@ -306,6 +327,54 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             });
         }
         self.validate_directory(LocalHostPathRole::GoRoot, LocalHostVariable::NudoxGo, path)
+    }
+}
+
+pub(super) fn go_authority_failure(
+    error: &LocalCompilerHostError,
+) -> LocalRuntimeGoAuthorityFailure {
+    match error {
+        LocalCompilerHostError::RelativeEnvironmentPath {
+            variable: LocalHostVariable::NudoxGoRoot, ..
+        }
+        | LocalCompilerHostError::GoRootProbe(_)
+        | LocalCompilerHostError::GoRootEncoding { .. }
+        | LocalCompilerHostError::GoRootEmpty { .. }
+        | LocalCompilerHostError::GoRootRelative { .. }
+        | LocalCompilerHostError::ConfiguredPath {
+            role:
+                LocalHostPathRole::GoRoot | LocalHostPathRole::PackageRoot(PackageEcosystem::Golang),
+            ..
+        }
+        | LocalCompilerHostError::ConfiguredPathKind {
+            role:
+                LocalHostPathRole::GoRoot | LocalHostPathRole::PackageRoot(PackageEcosystem::Golang),
+            ..
+        } => LocalRuntimeGoAuthorityFailure::GoRootUnavailable,
+        LocalCompilerHostError::GoAuthority(GoOracleConfigurationError::ToolchainIdentity {
+            ..
+        }) => LocalRuntimeGoAuthorityFailure::ToolchainIdentityUnavailable,
+        LocalCompilerHostError::GoAuthority(
+            GoOracleConfigurationError::InvalidGoExecutable { .. }
+            | GoOracleConfigurationError::RelativeExecutable { .. },
+        )
+        | LocalCompilerHostError::ConfiguredPath {
+            role: LocalHostPathRole::Native(NativeTool::GoCompiler),
+            ..
+        }
+        | LocalCompilerHostError::ConfiguredPathKind {
+            role: LocalHostPathRole::Native(NativeTool::GoCompiler),
+            ..
+        }
+        | LocalCompilerHostError::RelativeEnvironmentPath {
+            variable: LocalHostVariable::NudoxGo,
+            ..
+        } => LocalRuntimeGoAuthorityFailure::ExecutableUnavailable,
+        LocalCompilerHostError::CreateDirectory {
+            directory: super::LocalHostDirectory::GoModuleCache,
+            ..
+        } => LocalRuntimeGoAuthorityFailure::ModuleCacheUnavailable,
+        _ => LocalRuntimeGoAuthorityFailure::OracleUnavailable,
     }
 }
 

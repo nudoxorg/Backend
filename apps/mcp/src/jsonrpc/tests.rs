@@ -8,6 +8,7 @@
 
 #![allow(clippy::expect_used, clippy::naive_bytecount, clippy::panic)]
 
+use super::tools::QUERY_TOOL;
 use super::*;
 use backend_library::{
     Basis, COMMANDS, CommandReply, CompileExecutionIntent, Coverage, DeclarationKind, Document,
@@ -65,6 +66,8 @@ struct Fake {
     graph_query_calls: usize,
     /// Exact index operands that reached the owner admission boundary.
     index_paths: Vec<String>,
+    /// Number of command probes that reached the product boundary.
+    probe_calls: usize,
     /// Real catalog projection used to exercise owner-issued page contracts.
     page_catalog: Option<backend_library::Library>,
     /// Each cursor keeps its actual selected owner root at issuance.
@@ -195,6 +198,7 @@ impl Engine for Fake {
     }
 
     fn probe(&mut self, probe: Probe<'_>) -> Result<ReplyDto, ClientError> {
+        self.probe_calls += 1;
         if let Probe::Index(path) | Probe::IndexWithExecutionIntent { path, .. } = probe {
             self.index_paths.push(path.to_owned());
         }
@@ -786,11 +790,14 @@ fn tool_named<'a>(tools: &'a Value, name: &str) -> &'a Value {
 }
 
 fn assert_context_bounded(response: &Value) {
-    let bytes = serde_json::to_vec(response).expect("JSON-RPC response serializes");
+    let bytes = serde_json::to_vec(response)
+        .expect("JSON-RPC response serializes")
+        .len()
+        .saturating_add(1);
     assert!(
-        bytes.len() <= DEFAULT_RESPONSE_BUDGET_BYTES,
+        bytes <= DEFAULT_RESPONSE_BUDGET_BYTES,
         "response is {} bytes, above the {} byte context budget: {response}",
-        bytes.len(),
+        bytes,
         DEFAULT_RESPONSE_BUDGET_BYTES
     );
 }
@@ -1797,6 +1804,56 @@ fn registry_lookup_tools_are_advertised_with_bounded_typed_inputs() {
 }
 
 #[test]
+fn registry_schema_primitive_types_are_enforced_before_the_product_boundary() {
+    let mut server = ready(Fake::default());
+    let listed = request(&mut server, "tools/list", &json!({}));
+    let tools = &listed["result"]["tools"];
+    assert_eq!(
+        tool_named(tools, "backend.search")["inputSchema"]["properties"]["limit"]["type"],
+        "integer"
+    );
+    assert_eq!(
+        tool_named(tools, "backend.read")["inputSchema"]["properties"]["coordinate"]["type"],
+        "array"
+    );
+
+    for (tool, arguments, operand) in [
+        (
+            "backend.search",
+            json!({"query":"ferris","limit":"1"}),
+            "limit",
+        ),
+        ("backend.search", json!({"query":7}), "query"),
+        (
+            "backend.read",
+            json!({"coordinate":DECLARATION}),
+            "coordinate",
+        ),
+    ] {
+        let response = request(
+            &mut server,
+            "tools/call",
+            &json!({"name":tool,"arguments":arguments}),
+        );
+        let result = &response["result"];
+        assert_eq!(result["isError"], true, "{tool} {arguments}: {response}");
+        assert_eq!(result["structuredContent"]["answer"], "fault");
+        assert_eq!(result["structuredContent"]["slug"], "usage");
+        assert_eq!(result["structuredContent"]["operand"], operand);
+        assert_context_bounded(&response);
+    }
+    assert_eq!(server.product.probe_calls, 0);
+
+    let accepted = call(
+        &mut server,
+        "backend.search",
+        &json!({"query":"ferris","limit":1}),
+    );
+    assert_eq!(accepted["isError"], false);
+    assert_eq!(server.product.probe_calls, 1);
+}
+
+#[test]
 fn advertised_registry_lookups_reach_the_typed_product_commands() {
     let mut package_server = ready(Fake {
         surface_reply: Some(SurfaceReply::Package(Box::new([]))),
@@ -2416,6 +2473,12 @@ fn resources_are_the_same_markdown_their_tools_return() {
                 .is_some_and(|uri| uri.starts_with("backend://outline/"))),
         "the shelf contributes one outline resource per project: {listed}"
     );
+    assert!(
+        resources
+            .iter()
+            .any(|resource| resource["uri"] == "backend://tools/catalog"),
+        "the capability-dependent route catalog is always addressable"
+    );
 
     let workspace = request(
         &mut server,
@@ -2427,6 +2490,81 @@ fn resources_are_the_same_markdown_their_tools_return() {
         .expect("workspace resource text");
     let status = call(&mut server, "backend.status", &json!({}));
     assert_eq!(text, text_of(&status), "one renderer, one answer");
+}
+
+#[test]
+fn tool_catalog_names_callable_routes_without_advertising_unready_surfaces() {
+    let mut server = ready(Fake::default());
+    let listed = request(&mut server, "tools/list", &json!({}));
+    let advertised: Vec<&str> = listed["result"]["tools"]
+        .as_array()
+        .expect("tool list")
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    assert_eq!(advertised.len(), 17);
+    assert!(
+        advertised
+            .iter()
+            .all(|name| tools::tool_route(name).is_some()),
+        "every advertised schema has a registered route"
+    );
+
+    let catalog = request(
+        &mut server,
+        "resources/read",
+        &json!({"uri":"backend://tools/catalog"}),
+    );
+    let text = catalog["result"]["contents"][0]["text"]
+        .as_str()
+        .expect("catalog text");
+    for name in [
+        "backend.dependencies",
+        "backend.dependents",
+        "backend.diff",
+        "backend.package_profile",
+        "backend.package_source_membership",
+        "backend.package_versions",
+        "backend.related",
+        "backend.semantic_shapes",
+        "backend.semantic_versions",
+    ] {
+        assert!(text.contains(&format!("`{name}`")), "catalog omits {name}");
+        assert!(
+            !advertised.contains(&name),
+            "unready route {name} was listed"
+        );
+        assert!(
+            tools::tool_route(name).is_some(),
+            "catalog route {name} is not callable"
+        );
+    }
+    let package_versions_schema = text
+        .split("`backend.package_versions` —")
+        .nth(1)
+        .and_then(|entry| entry.split_once("```json\n"))
+        .and_then(|(_, schema)| schema.split_once("\n```").map(|(schema, _)| schema))
+        .and_then(|schema| serde_json::from_str::<Value>(schema).ok())
+        .expect("catalog provides a parseable route input schema");
+    assert_eq!(
+        package_versions_schema["properties"]["package"]["type"],
+        "string"
+    );
+    assert_eq!(package_versions_schema["required"], json!(["package"]));
+    for name in [QUERY_TOOL, SURFACE_TOOL] {
+        assert!(text.contains(&format!("`{name}`")), "catalog omits {name}");
+        assert!(!advertised.contains(&name));
+        assert!(tools::tool_route(name).is_some());
+    }
+    assert!(text.contains("`backend.index_await`"));
+    assert_eq!(
+        tools::tool_route("backend.index_await")
+            .map(|route| matches!(route, tools::ToolRoute::RefusedIndexAwait)),
+        Some(true)
+    );
+    assert!(tools::tool_route("backend.type_graph").is_none());
+    assert!(!text.contains("backend.type_graph"));
+    assert!(text.contains("backend://schema/query"));
 }
 
 #[test]
@@ -2793,6 +2931,73 @@ fn every_metadata_route_stays_within_the_context_budget() {
         .handle(&serde_json::to_vec(&huge_prompt).expect("large prompt request"))
         .expect("large prompt response");
     assert_context_bounded(&response);
+}
+
+#[test]
+fn wire_budget_metadata_counts_the_complete_escaped_jsonrpc_line() {
+    let source_text = "λ אב🙂\n".repeat(DEFAULT_RESPONSE_BUDGET_BYTES);
+    let structured = json!({
+        "answer":"records",
+        "records":[{"coordinate":"/selected/current"}],
+        "more":true,
+        "nextCursor":"opaque-owner-cursor-page-two",
+        "budget":{"bytes":34050,"estimatedTokens":8513,"bytesPerToken":4}
+    });
+    let result = tool_result(&source_text, structured.clone(), false);
+    let response = bound_rpc_reply(success(json!("request-אב🙂"), result));
+    assert_context_bounded(&response);
+    assert_eq!(response["result"]["structuredContent"], structured);
+    assert_eq!(response["result"]["isError"], false);
+
+    let preview = text_of(&response["result"]);
+    assert!(preview.starts_with("λ אב🙂\n"));
+    assert!(preview.len() < source_text.len());
+    assert!(preview.ends_with(
+        "… readable preview shortened to fit this response; structuredContent contains the complete page and any nextCursor."
+    ));
+
+    let wire_budget = &response["result"]["_meta"]["backend/wireBudget"];
+    let actual_bytes = serde_json::to_vec(&response)
+        .expect("response serializes")
+        .len()
+        .saturating_add(1);
+    assert_eq!(wire_budget["bytes"], actual_bytes);
+    assert_eq!(
+        wire_budget["estimatedTokens"],
+        estimate_tokens(actual_bytes)
+    );
+    assert_eq!(wire_budget["bytesPerToken"], ESTIMATED_BYTES_PER_TOKEN);
+    assert_eq!(wire_budget["limitBytes"], DEFAULT_RESPONSE_BUDGET_BYTES);
+    assert_eq!(wire_budget["scope"], "complete_jsonrpc_line");
+
+    let large_id = format!("request-{}", "אב🙂".repeat(2_000));
+    let large_structured = json!({
+        "answer":"records",
+        "rows":"s".repeat(31_000),
+        "more":true,
+        "nextCursor":"opaque-owner-cursor-page-two"
+    });
+    let large_text = "λ אב🙂\n".repeat(6_000);
+    let large_result = tool_result(&large_text, large_structured.clone(), false);
+    let large_response = bound_rpc_reply(success(json!(large_id.clone()), large_result));
+    assert_eq!(large_response["id"], large_id);
+    assert_eq!(large_response["result"]["isError"], false);
+    assert_eq!(
+        large_response["result"]["structuredContent"],
+        large_structured
+    );
+    assert!(text_of(&large_response["result"]).ends_with(
+        "… readable preview shortened to fit this response; structuredContent contains the complete page and any nextCursor."
+    ));
+    assert_context_bounded(&large_response);
+    let large_wire_bytes = serde_json::to_vec(&large_response)
+        .expect("large-id response serializes")
+        .len()
+        .saturating_add(1);
+    assert_eq!(
+        large_response["result"]["_meta"]["backend/wireBudget"]["bytes"],
+        large_wire_bytes
+    );
 }
 
 #[test]

@@ -1,0 +1,35 @@
+{
+  "schema": "nudox.root-python-signature-review.v1",
+  "source_blob_matches": {
+    "crates/compile/src/syntax.rs": "33911b80cb320baff12184a654d7b244172a6dd3",
+    "frontends/python/lib.rs": "fc53030b712398d5e692fa9de27661967e1f8fac",
+    "frontends/python/tests/source_signature_ranges.rs": "68512d71b36f9e924466f893401b1231da213f75"
+  },
+  "actual_passed": 2,
+  "actual_failed": 0,
+  "native_source": "2372377f9372b42bd00c42750b2bab3de52a9220",
+  "binary_sha256": "3ab3c03ea0168cc0c003b3945454f17a6d5d9e5627543bca1e683c62d2e59bb9",
+  "raw_log_sha256": "73d2cab1363f28ad7384a2ce698c8ec2b4ddd40c282e7f04475e07ee10124d66",
+  "gzip_sha256": "e3f58ea918759ec8fd54f2fc2df95935a3ebb99e5e26470249b0a1863b0d50b4",
+  "receipt_sha256": "7c8b9a23bae374900ca73d499a520475640357aa4ffd458d75fc18a8349ac46e",
+  "fixture_hashes_checked": [
+    {
+      "file": "docs-utils.py",
+      "repository": "https://github.com/suitenumerique/docs",
+      "commit": "6e5dee38e927fac86855d17dfb614fbb64b172b3",
+      "path": "src/backend/core/api/utils.py",
+      "sha256": "1bc6b1f104cf50bbc6ab6f6c5f789ddf903975bc53a96987bc10a9b2f35cb2ac",
+      "audited_declaration": "generate_s3_authorization_headers",
+      "line": 70
+    },
+    {
+      "file": "open-webui-openai.py",
+      "repository": "https://github.com/open-webui/open-webui",
+      "commit": "8bd8b4fac5e059578ac0c74b3c18d11139f88b7d",
+      "path": "backend/open_webui/routers/openai.py",
+      "sha256": "c6b514f057e9273206cd7d61e064e000ffe4db5cd5e06c0379a408e9aa1e964a",
+      "audited_declaration": "delete_provider_model",
+      "line": 1031
+    }
+  ]
+}

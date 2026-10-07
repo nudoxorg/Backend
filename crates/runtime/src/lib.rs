@@ -33,6 +33,9 @@ pub use backend_discovery::DiscoveryPolicy;
 /// Bounded physical-credit admission and one-owner execution.
 pub mod server;
 
+mod startup;
+pub use startup::{STARTUP_DIAGNOSTIC_ENV, StartupDiagnostic, StartupFailureReporter};
+
 use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, OpenOptions};
@@ -60,6 +63,7 @@ pub const RUNTIME_DIR_ENV: &str = "XDG_RUNTIME_DIR";
 const APPLICATION_DIRECTORY: &str = "Nudox";
 const PROJECTS_DIRECTORY: &str = "projects";
 const AUTHORITY_FILE: &str = "authority.secret";
+const AUTHORITY_INITIALIZATION_LOCK: &str = "authority-initialize.lock";
 /// How long a daemon that is still running may take to publish its endpoint.
 ///
 /// Opening a cold workspace is bounded by how much the last revision wrote,
@@ -71,12 +75,14 @@ const AUTHORITY_FILE: &str = "authority.secret";
 /// command that was already working. A live child is evidence that startup is
 /// progressing, so waiting on it is not the same act as waiting on nothing.
 const LIVE_START_TIMEOUT: Duration = Duration::from_secs(90);
+/// A checked owner-lease contender must await the already-opening winner.
+/// This is distinct from a failed owner composition or an unavailable profile.
+pub const OWNER_CONTENDED_EXIT_CODE: u8 = 75;
 /// How long to keep waiting after the spawned child has exited.
 ///
-/// A contender that won the owner lease can publish its listener shortly after
-/// this child gives up, so an exit is not yet proof that no owner will appear.
-/// It is proof that *this* process will not produce one, which is why the
-/// window after an exit is short and the window before it is not.
+/// Ordinary failure exits get a short final endpoint check. A typed owner-lease
+/// contention exit retains the original cold-start budget instead: its winner
+/// may still be replaying a healthy workspace before binding the listener.
 const EXITED_START_GRACE: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const PASSIVE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -431,6 +437,7 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
     // from "somebody else is already listening".
     unlink_dead_endpoint(paths.endpoint());
     let executable = locald_executable()?;
+    let startup = startup::StartupAttempt::prepare(paths.data()).map_err(RuntimeError::Io)?;
     let mut command = Command::new(&executable);
     // locald derives its configured project from the working directory when
     // no project flag exists, and rejects a workspace owned by a different
@@ -447,6 +454,7 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    startup.configure(&mut command);
     detach(&mut command);
     let mut child = command
         .spawn()
@@ -460,20 +468,32 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
         if child_exit.is_none()
             && let Some(status) = child.try_wait().map_err(RuntimeError::Io)?
         {
-            // A concurrent caller may have won the owner lease while this
-            // child was composing. Its listener can appear shortly after the
-            // losing child exits, so the wait continues for a short grace
-            // window rather than failing on the exit itself.
+            // A losing contender is not a failed startup. Preserve the
+            // original cold-open budget for its actual lease winner; an
+            // ordinary failed child cannot extend or restart that budget.
             child_exit = Some(status.code());
-            deadline = Instant::now() + EXITED_START_GRACE;
+            deadline = deadline_after_exit(deadline, Instant::now(), status.code());
         }
         if Instant::now() >= deadline {
             return child_exit.map_or_else(
                 || Err(RuntimeError::StartTimeout(paths.endpoint.clone())),
-                |code| Err(RuntimeError::DaemonExited(code)),
+                |code| {
+                    Err(RuntimeError::DaemonExited {
+                        code,
+                        diagnostic: startup.failure(),
+                    })
+                },
             );
         }
         thread::sleep(POLL_INTERVAL);
+    }
+}
+
+fn deadline_after_exit(original: Instant, now: Instant, code: Option<i32>) -> Instant {
+    if code == Some(i32::from(OWNER_CONTENDED_EXIT_CODE)) {
+        original
+    } else {
+        original.min(now + EXITED_START_GRACE)
     }
 }
 
@@ -865,10 +885,10 @@ fn ensure_authority_secret(path: &Path) -> Result<(), RuntimeError> {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
 
-    match fs::symlink_metadata(path) {
-        Ok(_) => return validate_authority_secret(path),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(RuntimeError::Io(error)),
+    // An already admitted credential needs no write access or initializer
+    // lock. A concurrently publishing credential is not admitted yet.
+    if validate_authority_secret(path).is_ok() {
+        return Ok(());
     }
     let parent = path.parent().ok_or_else(|| {
         RuntimeError::Io(std::io::Error::new(
@@ -877,6 +897,23 @@ fn ensure_authority_secret(path: &Path) -> Result<(), RuntimeError> {
         ))
     })?;
     backend_platform::durable::ensure_private_directory(parent).map_err(RuntimeError::Io)?;
+    let directory = backend_platform::DirectoryCapability::open(
+        &fs::canonicalize(parent).map_err(RuntimeError::Io)?,
+    )
+    .map_err(RuntimeError::Io)?;
+    directory.validate_private().map_err(RuntimeError::Io)?;
+    let initialization = directory
+        .open_private_file_read_write(AUTHORITY_INITIALIZATION_LOCK, true)
+        .map_err(RuntimeError::Io)?;
+    initialization.lock().map_err(RuntimeError::Io)?;
+    // Independent processes keep the same descriptor lease through staging,
+    // no-clobber publication and temporary unlink. No racing initializer can
+    // inspect the valid credential's transient two-link publication window.
+    match fs::symlink_metadata(path) {
+        Ok(_) => return validate_authority_secret(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(RuntimeError::Io(error)),
+    }
     let mut bytes = [0_u8; 32];
     #[cfg(unix)]
     fs::File::open("/dev/urandom")
@@ -993,7 +1030,12 @@ pub enum RuntimeError {
         source: std::io::Error,
     },
     /// The daemon exited before accepting clients.
-    DaemonExited(Option<i32>),
+    DaemonExited {
+        /// Exit status of the attempted owner process.
+        code: Option<i32>,
+        /// Original bounded startup cause, when the owner could report one.
+        diagnostic: Option<StartupDiagnostic>,
+    },
     /// The daemon did not become ready before the bounded deadline.
     StartTimeout(PathBuf),
     /// Automatic local composition is unavailable on this platform.
@@ -1043,8 +1085,12 @@ impl fmt::Display for RuntimeError {
                 "no existing local owner answered at {}: {source}",
                 endpoint.display()
             ),
-            Self::DaemonExited(code) => {
-                write!(formatter, "backend-locald exited during startup ({code:?})")
+            Self::DaemonExited { code, diagnostic } => {
+                write!(formatter, "backend-locald exited during startup ({code:?})")?;
+                if let Some(diagnostic) = diagnostic {
+                    write!(formatter, ": {diagnostic}")?;
+                }
+                Ok(())
             }
             Self::StartTimeout(path) => {
                 write!(formatter, "backend-locald did not open {}", path.display())
@@ -1067,7 +1113,7 @@ impl std::error::Error for RuntimeError {
             | Self::InvalidCredential(_)
             | Self::EndpointTooLong { .. }
             | Self::MissingExecutable(_)
-            | Self::DaemonExited(_)
+            | Self::DaemonExited { .. }
             | Self::StartTimeout(_)
             | Self::Unsupported => None,
         }
@@ -1078,6 +1124,41 @@ impl std::error::Error for RuntimeError {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_owner_contender_keeps_the_cold_open_budget_without_extending_it() {
+        let start = Instant::now();
+        let original = start + LIVE_START_TIMEOUT;
+        let early_exit = start + Duration::from_millis(100);
+        let cold_winner = start + Duration::from_secs(18);
+        let contender = deadline_after_exit(
+            original,
+            early_exit,
+            Some(i32::from(OWNER_CONTENDED_EXIT_CODE)),
+        );
+        assert!(
+            cold_winner < contender,
+            "a healthy cold winner must not inherit a losing child's five-second window"
+        );
+        assert!(
+            cold_winner > deadline_after_exit(original, early_exit, Some(70)),
+            "a genuine startup failure retains only its final endpoint-check grace"
+        );
+        let late_exit = original - Duration::from_millis(10);
+        assert_eq!(
+            deadline_after_exit(original, late_exit, Some(70)),
+            original,
+            "late exits never restart the overall startup budget"
+        );
+        assert_eq!(
+            deadline_after_exit(
+                original,
+                late_exit,
+                Some(i32::from(OWNER_CONTENDED_EXIT_CODE))
+            ),
+            original
+        );
+    }
 
     /// Runs the actual owner launcher against an explicitly supplied private
     /// runtime fixture. This is kept out of ordinary unit runs.
@@ -1531,12 +1612,8 @@ mod tests {
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
             .expect("set private fixture root");
         let data = root.join("client-data");
-        let paths = WorkspacePaths::discover(
-            Some(root.clone()),
-            Some(data.clone()),
-            Some(root.join("locald.sock")),
-        )
-        .expect("discover client-only workspace");
+        let paths = WorkspacePaths::discover(Some(root.clone()), Some(data.clone()), None)
+            .expect("discover client-only workspace");
 
         paths
             .initialize_data_directory()
@@ -1590,7 +1667,7 @@ mod tests {
         Path::new("/tmp").join(directory.file_name().expect("fixture directory name"))
     }
 
-    fn test_directory(label: &str) -> PathBuf {
+    pub(super) fn test_directory(label: &str) -> PathBuf {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -1607,7 +1684,7 @@ mod tests {
     /// that will hold it must be private itself: mode 0700 on Unix, and the
     /// protected current-user ACL on Windows, where a plain `create_dir`
     /// inherits the (shared) temporary directory's ACL.
-    fn create_private_fixture(path: &Path) {
+    pub(super) fn create_private_fixture(path: &Path) {
         #[cfg(unix)]
         {
             use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
@@ -1677,7 +1754,11 @@ mod tests {
                 .expect("read fixture")
                 .filter_map(Result::ok)
                 .count(),
-            1
+            2
+        );
+        assert!(
+            root.join(AUTHORITY_INITIALIZATION_LOCK).is_file(),
+            "the stable initializer lease replaces transient credential retries"
         );
         fs::remove_dir_all(fixture).expect("remove runtime fixture");
     }

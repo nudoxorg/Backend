@@ -1,0 +1,4 @@
+error: no such command: `cargo`
+
+help: view all installed commands with `cargo --list`
+help: find a package to install `cargo` with `cargo search cargo-cargo`

@@ -1,0 +1,34 @@
+{
+  "scope": "Root independent source and raw native receipt review, no new native execution",
+  "native_source": {
+    "commit": "2da31be31988726f171c1e95b39aa55588153163",
+    "tree": "99bb2ae09a1c1e14d9a5d1ae9bc5a3dd311c3d95",
+    "clean": true,
+    "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+  },
+  "native_pass_count": 13,
+  "native_test_runtime_seconds": 0.01,
+  "native_total_build_and_run_seconds": 205.055,
+  "changed_blobs": {
+    "crates/local-service/src/builtin/commands/diff.rs": {
+      "tested_blob": "e5e49a57a3c4434bb683f88034e4624c06ae544e",
+      "integrated_blob": "e5e49a57a3c4434bb683f88034e4624c06ae544e"
+    },
+    "crates/local-service/src/builtin/commands/snapshot.rs": {
+      "tested_blob": "712d625eab55d05a6708a553dd7b50ab320029d8",
+      "integrated_blob": "712d625eab55d05a6708a553dd7b50ab320029d8"
+    }
+  },
+  "artifact_hashes": {
+    "cargo.stdout": "deb9f9bb9dee18f304699632b96b15ab71b0bd04cd6dcf713e5295153607b629",
+    "launch.json": "4bcbb3a19abbc63bf3c74eb9edaa7fded4fc99af3278b0d92bfb06f7cc0ce758",
+    "resources.jsonl": "088573cab51e4d6500878e6dfe25ec33f75664ff97537872dbead86cb8c7d765",
+    "cargo.stderr": "e83e8af9fcd8cbb266c36e833dbfce5519135ce699ce7454d5cfe8920fa6aefb",
+    "receipt.json": "478b8b5e680ed4f5b4e9da293931d791e62d9a743646b8a82a35f26c5bd3d0d3"
+  },
+  "remaining_gates": [
+    "current composed CLI/MCP actual HTTPie self-diff",
+    "structural Docs homonym self-diff",
+    "dynamic owned source-path memory accounting"
+  ]
+}

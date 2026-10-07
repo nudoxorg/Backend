@@ -70,6 +70,8 @@ pub use self::embedding_provision::{
     inspect_embedding_runtime, install_embedding_runtime, remove_embedding_runtime,
 };
 pub use self::host::{
+    CapturedLocalHostEnvironment,
+    InstalledRustInputs, InstalledRustSelectionSource, InstalledRustToolchain, InstalledToolPlace, find_installed_rust, installed_rust_system_locations,
     ClosedLocalHostEnvironmentSnapshot, ClosedLocalHostEnvironmentSnapshotError, LocalCompilerHost,
     LocalCompilerHostError, LocalCompilerHostSelection, LocalCompilerHostSelectionIssue,
     LocalCompilerHostSelectionSource, LocalHostDirectory, LocalHostDiscovery, LocalHostEnvironment,
@@ -90,8 +92,8 @@ pub use self::runtime::{
     LocalCompilerPlaneExecutionIdentity, LocalCompilerPlaneRecipeIdentity,
     LocalCompilerRuntimeConfiguration, LocalCompilerRuntimeConfigurationError,
     LocalCompilerRuntimeOpenError, LocalCompilerRuntimePaths, LocalRuntimeCSharpAuthority,
-    LocalRuntimeJavaAuthority, LocalRuntimePackageAuthority, LocalRuntimePackageRoot,
-    LocalRuntimePackageRootFacts, LocalRuntimePythonCheckerAdmission,
+    LocalRuntimeGoAuthorityFailure, LocalRuntimeJavaAuthority, LocalRuntimePackageAuthority,
+    LocalRuntimePackageRoot, LocalRuntimePackageRootFacts, LocalRuntimePythonCheckerAdmission,
     LocalRuntimePythonCheckerProbeFailure, LocalRuntimeRustAuthority, LocalRuntimeToolchain,
     LocalRuntimeToolchainFacts, LocalRuntimeToolchainState, OwnedPackageSource,
     OwnedPackageSourceSet, PackageSemanticRuntimeError, PyreflyToolchainIdentity,
@@ -110,7 +112,7 @@ pub use self::toolchain_probe::{
     ToolchainProbeLimits, ToolchainProbeLimitsView, ToolchainProbePrimary,
     ToolchainProbeStreamError,
 };
-pub(crate) use self::typescript_host::TypeScriptProjectInvocationLease;
+pub(crate) use self::typescript_host::{TypeScriptProjectInvocationLease, is_module_tsc_script};
 pub use self::typescript_host::{TypeScriptProjectHost, TypeScriptProjectHostError};
 pub use self::unit_authority_v2::{
     AdmittedCompilationUnitV2, CapturedUnitMemberV2, CompilationUnitKindV2, CompilationUnitPlanV2,

@@ -1,0 +1,256 @@
+warning: resolver for the non root package will be ignored, specify resolver at the workspace root:
+package:   /Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/vendor/gpui_ce_components/Cargo.toml
+workspace: /Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/Cargo.toml
+   Compiling backend-platform v0.2.0 (/Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/crates/platform)
+warning: unnecessary qualification
+   --> crates/platform/child_output.rs:442:17
+    |
+442 |                 std::io::stdout()
+    |                 ^^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+    |
+442 -                 std::io::stdout()
+442 +                 io::stdout()
+    |
+
+warning: unnecessary qualification
+   --> crates/platform/child_output.rs:445:17
+    |
+445 |                 std::io::stderr()
+    |                 ^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+445 -                 std::io::stderr()
+445 +                 io::stderr()
+    |
+
+warning: unnecessary qualification
+   --> crates/platform/child_output.rs:449:28
+    |
+449 |             "large-out" => std::io::stdout()
+    |                            ^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+449 -             "large-out" => std::io::stdout()
+449 +             "large-out" => io::stdout()
+    |
+
+warning: unnecessary qualification
+   --> crates/platform/child_output.rs:452:28
+    |
+452 |             "large-err" => std::io::stderr()
+    |                            ^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+452 -             "large-err" => std::io::stderr()
+452 +             "large-err" => io::stderr()
+    |
+
+warning: unnecessary qualification
+   --> crates/platform/child_output.rs:456:28
+    |
+456 |                 let root = std::path::PathBuf::from(
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+456 -                 let root = std::path::PathBuf::from(
+456 +                 let root = PathBuf::from(
+    |
+
+warning: unnecessary qualification
+   --> crates/platform/child_output.rs:460:21
+    |
+460 |                     std::process::Command::new(std::env::current_exe().expect("executable"));
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+460 -                     std::process::Command::new(std::env::current_exe().expect("executable"));
+460 +                     Command::new(std::env::current_exe().expect("executable"));
+    |
+
+warning: unnecessary qualification
+   --> crates/platform/child_output.rs:482:21
+    |
+482 |                     std::thread::sleep(Duration::from_millis(2));
+    |                     ^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+482 -                     std::thread::sleep(Duration::from_millis(2));
+482 +                     thread::sleep(Duration::from_millis(2));
+    |
+
+warning: unnecessary qualification
+   --> crates/platform/child_output.rs:486:28
+    |
+486 |                 let root = std::path::PathBuf::from(
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+486 -                 let root = std::path::PathBuf::from(
+486 +                 let root = PathBuf::from(
+    |
+
+warning: unnecessary qualification
+   --> crates/platform/child_output.rs:490:17
+    |
+490 |                 std::thread::sleep(if mode == "sleep-marker" {
+    |                 ^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+490 -                 std::thread::sleep(if mode == "sleep-marker" {
+490 +                 thread::sleep(if mode == "sleep-marker" {
+    |
+
+warning: unnecessary qualification
+   --> crates/platform/child_output.rs:502:31
+    |
+502 |     fn scratch(name: &str) -> std::path::PathBuf {
+    |                               ^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+502 -     fn scratch(name: &str) -> std::path::PathBuf {
+502 +     fn scratch(name: &str) -> PathBuf {
+    |
+
+warning: unnecessary qualification
+   --> crates/platform/child_output.rs:576:9
+    |
+576 |         std::thread::sleep(Duration::from_millis(2300));
+    |         ^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+576 -         std::thread::sleep(Duration::from_millis(2300));
+576 +         thread::sleep(Duration::from_millis(2300));
+    |
+
+warning: unnecessary qualification
+   --> crates/platform/child_output.rs:625:21
+    |
+625 |         let timer = std::thread::spawn(move || {
+    |                     ^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+625 -         let timer = std::thread::spawn(move || {
+625 +         let timer = thread::spawn(move || {
+    |
+
+warning: unnecessary qualification
+   --> crates/platform/child_output.rs:629:17
+    |
+629 |                 std::thread::sleep(Duration::from_millis(2));
+    |                 ^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+629 -                 std::thread::sleep(Duration::from_millis(2));
+629 +                 thread::sleep(Duration::from_millis(2));
+    |
+
+warning: unnecessary qualification
+   --> crates/platform/durable.rs:760:9
+    |
+760 |         std::io::Read::read_to_end(&mut reopened, &mut bytes).expect("read private state");
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+760 -         std::io::Read::read_to_end(&mut reopened, &mut bytes).expect("read private state");
+760 +         io::Read::read_to_end(&mut reopened, &mut bytes).expect("read private state");
+    |
+
+warning: unnecessary qualification
+   --> crates/platform/durable.rs:834:9
+    |
+834 |         std::io::Read::read_to_end(&mut reopened, &mut bytes).expect("read journal record");
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+834 -         std::io::Read::read_to_end(&mut reopened, &mut bytes).expect("read journal record");
+834 +         io::Read::read_to_end(&mut reopened, &mut bytes).expect("read journal record");
+    |
+
+warning: unnecessary qualification
+   --> crates/platform/durable.rs:928:13
+    |
+928 |             std::io::Read::read_to_end(&mut file, &mut bytes).expect("read the generation");
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+928 -             std::io::Read::read_to_end(&mut file, &mut bytes).expect("read the generation");
+928 +             io::Read::read_to_end(&mut file, &mut bytes).expect("read the generation");
+    |
+
+warning: unnecessary qualification
+    --> crates/platform/executable_identity.rs:1050:13
+     |
+1050 |             std::io::stdin()
+     |             ^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1050 -             std::io::stdin()
+1050 +             io::stdin()
+     |
+
+warning: unnecessary qualification
+   --> crates/platform/macos_process.rs:495:20
+    |
+495 |         assert_eq!(std::mem::size_of::<ProcUniqIdentifierInfo>(), 56);
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+495 -         assert_eq!(std::mem::size_of::<ProcUniqIdentifierInfo>(), 56);
+495 +         assert_eq!(size_of::<ProcUniqIdentifierInfo>(), 56);
+    |
+
+warning: unnecessary qualification
+   --> crates/platform/macos_process.rs:498:13
+    |
+498 |             std::mem::size_of::<libc::proc_bsdinfo>()
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+498 -             std::mem::size_of::<libc::proc_bsdinfo>()
+498 +             size_of::<libc::proc_bsdinfo>()
+    |
+
+warning: `backend-platform` (lib test) generated 19 warnings (run `cargo fix --lib -p backend-platform --tests` to apply 19 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.95s
+     Running unittests lib.rs (.local/build/point-metadata-test/.nudox-cargo/slot-0/debug/deps/backend_platform-13d074c9dc81c8ba)
+directory-stage=openat kind=NotFound os=Some(2)
+directory-stage=openat kind=NotFound os=Some(2)
+directory-stage=openat kind=NotFound os=Some(2)
+directory-stage=openat kind=NotFound os=Some(2)
+directory-stage=openat kind=NotFound os=Some(2)
+directory-stage=openat kind=NotFound os=Some(2)
+directory-stage=openat kind=NotFound os=Some(2)
+directory-stage=openat kind=NotFound os=Some(2)
+directory-stage=openat kind=NotFound os=Some(2)
+directory-stage=openat kind=NotFound os=Some(2)
+directory-stage=openat kind=NotFound os=Some(2)
+directory-stage=openat kind=NotFound os=Some(2
+thread 'directory::tests::simultaneous_private_writable_opens_share_one_file_in_a_pinned_directory' (49002092) panicked at crates/platform/directory.rs:1780:22:
+open or admit the shared private file: Os { code: 2, kind: NotFound, message: "No such file or directory" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+)
+directory-stage=openat kind=NotFound os=Some(2)
+directory-stage=openat kind=NotFound os=Some(2)
+directory-stage=openat kind=NotFound os=Some(2)
+error: test failed, to rerun pass `-p backend-platform --lib`

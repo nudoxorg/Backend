@@ -1,0 +1,262 @@
+{
+  "schema": "nudox.root-readonly-raw-audit.v1",
+  "source": "fe26d8326ad07911a3d3e2cb9e548dbbc05c559d",
+  "evidence_commit": "fee67470094dba401a36be3c81b690243b2b0d93",
+  "verified_raw_artifacts": 30,
+  "verified_packaged_files": 5,
+  "derived_committed_totals": {
+    "cases": 1920,
+    "pages": 56688,
+    "row_occurrences": 114078
+  },
+  "scope": "compiler-owned native IR all23 eligible; local lexical Tantivy Search, catalog leafgram Names; no package catalog or external Python oracle authority claim",
+  "artifacts": [
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/initial/receipt.json",
+      "bytes": 34943,
+      "sha256": "716df6866deeb5cb150cadf0a7756840138474352423972cb61e88c83f7f32d1"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/initial/wire.jsonl",
+      "bytes": 95559543,
+      "sha256": "6b3ab468229c6d43e9bd1c1bf052e4f4ecdcdb5e2b254df54c476ae857648fc3"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/initial/matrix.json",
+      "bytes": 1303304,
+      "sha256": "6473ae8ae1019de8fb764ce4057a3c858ee76e24f3895d81ee7a86b15e479d04"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/readded-cold/receipt.json",
+      "bytes": 43880,
+      "sha256": "757e52c7d877f3d6e488ee9cb1073717bc1144fc6dca40dedebd7c9c96451bd0"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/readded-cold/wire.jsonl",
+      "bytes": 1123850,
+      "sha256": "b82bafa73cd921a975dff29a56dd6435c8e3ce73bd1505c28da269220da7da09"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/readded/receipt.json",
+      "bytes": 32971,
+      "sha256": "d9de406d838809b0393c255154671916e28807e6cad79a99596821a2a8b11ea3"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/readded/wire.jsonl",
+      "bytes": 95529603,
+      "sha256": "830ecc91f8882ca7cd8e5577a1649cb6d1d0b30245825e2fe344c78d8b53c914"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/readded/matrix.json",
+      "bytes": 1303306,
+      "sha256": "d01b44b74638e669a5f593336989a4fc14f5501a17d3075973070cc717038201"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/removed-verify/receipt.json",
+      "bytes": 11385,
+      "sha256": "ef49a82f9e5db4111febec5a88b4f2059d6de2a921e8e4d511eaef26e560546d"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/removed-verify/wire.jsonl",
+      "bytes": 51608,
+      "sha256": "987456612a2922cedb9841655dab3f85d0578e2b5b1e13ad3f6278b8e2eb8bff"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/restored-cold/receipt.json",
+      "bytes": 46531,
+      "sha256": "4c59a134f45929bdcdfe73df87ec32aa0eca732c45017815acb5cb9915864c99"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/restored-cold/wire.jsonl",
+      "bytes": 96184882,
+      "sha256": "dd501583d23b0cc46e2060ed985aceb9e247677a4aa6d6d8d81de974cb513972"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/restored-cold/matrix.json",
+      "bytes": 1303305,
+      "sha256": "aae68a81bcfae59ea314e2e9c3f131358c60f81f88331b2df85184a1f2328a9e"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/restored/receipt.json",
+      "bytes": 31986,
+      "sha256": "6ba303496745ba0ca1de35a832e8d821976d31cac4513b483128740113592340"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/restored/wire.jsonl",
+      "bytes": 95635198,
+      "sha256": "f87520c916b1fb16ede36a826976ce562a2d601734b3d90bfb42c1062a438a9d"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/restored/matrix.json",
+      "bytes": 1303305,
+      "sha256": "aae68a81bcfae59ea314e2e9c3f131358c60f81f88331b2df85184a1f2328a9e"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/retry/receipt.json",
+      "bytes": 20344,
+      "sha256": "bdadd5e59b4895ccf92d06b196e7b31746c3ebd7768bae5a1f4405d4de7438b6"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/retry/wire.jsonl",
+      "bytes": 445597,
+      "sha256": "710c21d14d3e41e7aff84d594642b3657ad25907952b28caee24276355f75442"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/unicode-cold-1/receipt.json",
+      "bytes": 53023,
+      "sha256": "067fc2d71a890131be4a46f9efbe0c716e7c3062fb436b740eda4e441952eb50"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/unicode-cold-1/wire.jsonl",
+      "bytes": 96190979,
+      "sha256": "0b08d1edb3b18be523fffdb8e04f7d40987ce34e85f91680830fa9f3711ab624"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/unicode-cold-1/matrix.json",
+      "bytes": 1303299,
+      "sha256": "ee9b73b544a62c411d9fe9d0b699d9697560d0c6a1a7e48760e643d9b19db3d5"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/unicode-cold-2/receipt.json",
+      "bytes": 76218,
+      "sha256": "9afcc89eabfe49384e766dde514674d4c3cfe143b1381b99ececb3da2a7a4846"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/unicode-cold-2/wire.jsonl",
+      "bytes": 96651429,
+      "sha256": "1afc68cbbfef7f122c91974b09defc8e0143858c7eead68856d4b298647b49d4"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/unicode-cold-2/matrix.json",
+      "bytes": 1303299,
+      "sha256": "ee9b73b544a62c411d9fe9d0b699d9697560d0c6a1a7e48760e643d9b19db3d5"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/unicode-retry/receipt.json",
+      "bytes": 32492,
+      "sha256": "7cd63891ef7ad2fffa145f6645709113ca4438e50ec4ea34bcd275e8eacd0ba2"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/unicode-retry/wire.jsonl",
+      "bytes": 95368406,
+      "sha256": "bd068b49a58b41c31e2b6d2163926ef39bc0c9d7205e9972769a68c153d6b0df"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/unicode-retry/matrix.json",
+      "bytes": 1303266,
+      "sha256": "30275d3e488baa993cc2c822ca11c8ea9d26f2b1f59a950ec0a6879484d62fe5"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/unicode/receipt.json",
+      "bytes": 47789,
+      "sha256": "8ede2715824bb9682d371f381c64d61484d7012fbe2add159a6c9f91cb790b16"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/unicode/wire.jsonl",
+      "bytes": 95654798,
+      "sha256": "17dd7e3f33ac5847fc3fbaf46017a172923872f3d89d6ba98b4349a48303176b"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/unicode/matrix.json",
+      "bytes": 1303299,
+      "sha256": "ee9b73b544a62c411d9fe9d0b699d9697560d0c6a1a7e48760e643d9b19db3d5"
+    }
+  ],
+  "packaged_files": [
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/cli-canonical-fe26-macos-arm64-v1/nudox-macos-arm64/bin/backend-cli",
+      "bytes": 34398016,
+      "sha256": "5073db235f521e025c7f084cbae208033924190c5099c5cdfb597dfd3b9f1881"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/cli-canonical-fe26-macos-arm64-v1/nudox-macos-arm64/bin/backend-mcp",
+      "bytes": 26456720,
+      "sha256": "9ef12fc28640f67a637c6286509f32de776bf60a9af83c13ceccfe5ed386bb1c"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/cli-canonical-fe26-macos-arm64-v1/nudox-macos-arm64/bin/backend-locald",
+      "bytes": 116465904,
+      "sha256": "e5777e05492070919ddccce353574b6265198eea3585403d33c8a35bf8fb2ce5"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/cli-canonical-fe26-macos-arm64-v1/nudox-macos-arm64/lib/libiconv.2.dylib",
+      "bytes": 109904,
+      "sha256": "2fbbe9796199ea41388cef1d4a707dafb2f45d2ceafb0554b9b75cf75bfe613d"
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/cli-canonical-fe26-macos-arm64-v1/nudox-macos-arm64/lib/libcharset.1.dylib",
+      "bytes": 68976,
+      "sha256": "cbde7311dae0ec0bcd8af251f00b5a5794986fc800270fadb5f6a5563dc47ce9"
+    }
+  ],
+  "actual_launch_freshness": [
+    {
+      "phase": "initial",
+      "actual_owner_pid": 8568,
+      "sample_to_owner_start_seconds": 20.835498094558716,
+      "oldest_host_sample_seconds_at_owner_start": 22.622498094558715
+    },
+    {
+      "phase": "readded-cold",
+      "actual_owner_pid": 73360,
+      "sample_to_owner_start_seconds": 7.520071029663086,
+      "oldest_host_sample_seconds_at_owner_start": 14.618071029663085
+    },
+    {
+      "phase": "readded",
+      "actual_owner_pid": 30968,
+      "sample_to_owner_start_seconds": 2.9761910438537598,
+      "oldest_host_sample_seconds_at_owner_start": 5.22519104385376
+    },
+    {
+      "phase": "removed-verify",
+      "actual_owner_pid": 25665,
+      "sample_to_owner_start_seconds": 2.9752650260925293,
+      "oldest_host_sample_seconds_at_owner_start": 5.220265026092529
+    },
+    {
+      "phase": "restored-cold",
+      "actual_owner_pid": 90824,
+      "sample_to_owner_start_seconds": 5.184741973876953,
+      "oldest_host_sample_seconds_at_owner_start": 6.6167419738769535
+    },
+    {
+      "phase": "restored",
+      "actual_owner_pid": 74483,
+      "sample_to_owner_start_seconds": 3.8569517135620117,
+      "oldest_host_sample_seconds_at_owner_start": 6.322951713562012
+    },
+    {
+      "phase": "retry",
+      "actual_owner_pid": 30323,
+      "sample_to_owner_start_seconds": 3.8790769577026367,
+      "oldest_host_sample_seconds_at_owner_start": 6.191076957702636
+    },
+    {
+      "phase": "unicode-cold-1",
+      "actual_owner_pid": 49275,
+      "sample_to_owner_start_seconds": 3.167100191116333,
+      "oldest_host_sample_seconds_at_owner_start": 5.419100191116333
+    },
+    {
+      "phase": "unicode-cold-2",
+      "actual_owner_pid": 91178,
+      "sample_to_owner_start_seconds": 3.639169216156006,
+      "oldest_host_sample_seconds_at_owner_start": 6.431169216156006
+    },
+    {
+      "phase": "unicode-retry",
+      "actual_owner_pid": 1194,
+      "sample_to_owner_start_seconds": 3.513446807861328,
+      "oldest_host_sample_seconds_at_owner_start": 6.260446807861328
+    },
+    {
+      "phase": "unicode",
+      "actual_owner_pid": 33766,
+      "sample_to_owner_start_seconds": 3.6658620834350586,
+      "oldest_host_sample_seconds_at_owner_start": 5.987862083435059
+    }
+  ],
+  "duration_seconds": 0.5724549293518066,
+  "no_runtime_launched_or_state_modified": true
+}

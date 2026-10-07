@@ -1,4 +1,5 @@
 use super::*;
+use backend_platform::OwnedWorkspaceDirectory;
 
 fn forge_fence_error(error: io::Error) -> ForgeAcquisitionError {
     if error.kind() == io::ErrorKind::InvalidData {
@@ -118,9 +119,12 @@ impl ForgeAcquisitionService {
         limits: ForgeAcquisitionLimits,
     ) -> Result<Self, ForgeAcquisitionError> {
         let limits = limits.validate().map_err(ForgeAcquisitionError::Rejected)?;
-        let root = root.into();
-        fs::create_dir_all(&root).map_err(ForgeAcquisitionError::Io)?;
-        let root = fs::canonicalize(root).map_err(ForgeAcquisitionError::Io)?;
+        let root_directory = OwnedWorkspaceDirectory::open(root.into())
+            .map_err(ForgeAcquisitionError::Io)?;
+        root_directory
+            .verify_path()
+            .map_err(ForgeAcquisitionError::Io)?;
+        let root = fs::canonicalize(root_directory.path()).map_err(ForgeAcquisitionError::Io)?;
         let root_identity = forge_root_identity(&root);
         let journal_work_key = forge_journal_work_key(root_identity);
         let leases =

@@ -10,6 +10,7 @@ use backend_engine::{
     ViewRoot, ViewStateRoot,
 };
 use backend_extension_tantivy::DurableCacheBudget;
+use backend_platform::OwnedWorkspaceDirectory;
 use backend_library::{Fragment, Row};
 use serde::{Deserialize, Serialize};
 use std::cell::OnceCell;
@@ -1980,18 +1981,20 @@ impl DiscoverySearchIndex {
     ) -> Result<Self, String> {
         // This process-safe lock fences stage cleanup, publication, and pruning
         // across every durable discovery open for this cache.
-        fs::create_dir_all(cache_root).map_err(|error| error.to_string())?;
-        let _cache_directory = backend_platform::durability::open_directory_readonly_nofollow(
-            cache_root,
-        )
-        .map_err(|error| format!("open discovery search cache without following links: {error}"))?;
+        let cache_directory = OwnedWorkspaceDirectory::open(cache_root)
+            .map_err(|error| format!("open private discovery search cache: {error}"))?;
+        cache_directory
+            .verify_path()
+            .map_err(|error| format!("verify discovery search cache: {error}"))?;
+        let cache_root = cache_directory.path();
         let _cache_lock = SearchProjectionCacheLock::acquire(cache_root)?;
-        let version_root = cache_root.join(SEARCH_PROJECTION_DIRECTORY);
-        fs::create_dir_all(&version_root).map_err(|error| error.to_string())?;
-        let _version_directory = backend_platform::durability::open_directory_readonly_nofollow(
-            &version_root,
-        )
-        .map_err(|error| format!("open discovery search root without following links: {error}"))?;
+        let version_directory = cache_directory
+            .child(SEARCH_PROJECTION_DIRECTORY)
+            .map_err(|error| format!("open private discovery search root: {error}"))?;
+        let version_root = version_directory.path();
+        version_directory
+            .verify_path()
+            .map_err(|error| format!("verify discovery search root: {error}"))?;
         remove_search_projection_stages(&version_root)?;
 
         let expected_root = selected_discovery_root(store, forge_documents, source_pin_documents)?;

@@ -1061,6 +1061,12 @@ fn signature_node(language: SourceLanguage, mut node: Node<'_>) -> Node<'_> {
         let Some(parent) = node.parent() else {
             break;
         };
+        // Decorators are source context, not part of a Python declaration's
+        // header. Their arguments can contain braces, strings and lambdas;
+        // only the grammar's own definition node proves the signature span.
+        if language == SourceLanguage::Python && parent.kind() == "decorated_definition" {
+            break;
+        }
         let declaration_parent = matches!(
             parent.kind(),
             "function_definition"
@@ -1116,6 +1122,24 @@ fn excerpt_node(mut node: Node<'_>) -> Node<'_> {
 fn declaration_signature(language: SourceLanguage, node: Node<'_>, source: &str) -> String {
     let root = signature_node(language, node);
     let source_text = node_text(root, source);
+    if language == SourceLanguage::Python {
+        // The suite separator is a direct grammar token. A colon in an
+        // annotation, dict, string, slice or lambda is nested inside another
+        // child and cannot be mistaken for it. Preserve the written async
+        // prefix and multiline header; exclude every docstring/body token.
+        let end = if let Some(body) = root.child_by_field_name("body") {
+            let mut cursor = root.walk();
+            let separator = root
+                .children(&mut cursor)
+                .find(|child| child.kind() == ":" && child.end_byte() <= body.start_byte());
+            separator
+                .map(|colon| colon.end_byte().saturating_sub(root.start_byte()))
+                .unwrap_or_else(|| body.start_byte().saturating_sub(root.start_byte()))
+        } else {
+            source_text.len()
+        };
+        return bounded(source_text.get(..end).unwrap_or("").trim());
+    }
     if language == SourceLanguage::Clang {
         // The grammar's declaration node already ends at the semicolon. A
         // function definition instead exposes its body as a field on a node
@@ -1644,7 +1668,9 @@ fn push_rust_use_argument(
             let Some((specifier, exported)) = rust_value_path_parts(node, text) else {
                 return;
             };
-            imports.push(value_import(&exported, line, &specifier, &exported, excerpt));
+            imports.push(value_import(
+                &exported, line, &specifier, &exported, excerpt,
+            ));
         }
         "identifier" => {
             let local = node_text(node, text);

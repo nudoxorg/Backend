@@ -4444,6 +4444,7 @@ fn package_authority_projection(
         | PackageAuthorityError::ClangToolchainExecutableMismatch { .. }
         | PackageAuthorityError::NativePythonToolchainIdentityMismatch { .. }
         | PackageAuthorityError::GoAuthorityInputsChanged { .. }
+        | PackageAuthorityError::GoAuthorityUnavailable { .. }
         | PackageAuthorityError::ClangProject(_) => (Phase::Open, Class::Binding),
         PackageAuthorityError::PythonSyntax(_) => (Phase::Parse, Class::Syntax),
         PackageAuthorityError::PythonPyrefly(_) => (Phase::TypeCheck, Class::Type),

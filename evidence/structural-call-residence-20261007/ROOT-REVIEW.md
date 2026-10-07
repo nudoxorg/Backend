@@ -1,0 +1,9 @@
+# Structural call residence checkpoint — 2026-10-07
+
+The lead read the entire source-scoped module index, prejoined import resolver, owner-local cache, production call sites, row mapping changes and new controls. All six integrated source file blobs exactly match native-tested `6383b38dd4aa4127be09241f1fcedf1b3b71eaf6`. The final cache belongs to one command adapter and is borrowed through `&mut`; it adds no global cache, mutex or Arc. Its checked workspace root and package key bind complete source manifests. Unauthenticated fixture inputs rebuild rather than reuse cached results. Failed admission does not replace the previous cache.
+
+The two exact-source ILO gates pass 25 and 37 tests, with six overlaps: **56 distinct passes, zero failures**. The archive contains both complete logs, source/tree/lock and native executable identities, launch/admission and owned retirement records. The lead independently verified every one of its 42 artifact hashes and the actual test summaries. Source and lock remained clean throughout each gate.
+
+The imported module index keeps component boundaries, ambiguity and the prior duplicate row-selection contract. Negative results invalidate on an authenticated root change, including complete facts beyond a compact row. Calls resolve each distinct import once, then retain outgoing and incoming adjacency for the selected neighborhood.
+
+This is a source checkpoint, not an end-to-end performance result. Earlier `9946624b` broader execution had 109 passes and one failing native TSZ retarget control; its failure is retained and was not cleared by the narrower final gates. Python relative-import extraction remains a separate compiler limitation. The measured historical Mealie graph stall needs a new actual application replay on the combined binaries. No instantaneous graph or complete semantic corpus claim is made.

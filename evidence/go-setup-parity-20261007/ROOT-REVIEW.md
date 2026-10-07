@@ -1,0 +1,13 @@
+# Root review: installed tool capture and Go isolation
+
+The source checkpoint prevents an optional Go installation failure from stopping unrelated language owners. It admits Debian's paired executable/shared Go layout through bounded directory witnesses, and retains typed Go failures through a closed environment until a Go request uses them. Desktop and standalone owners now use the same frozen installed-tool selection; explicit invalid paths fail before inferred Cargo cache creation. PNPM selection is bound to the witnessed compiler package, and closed Rust reports describe selection rather than asserting compilation readiness.
+
+Root reviewed the source changes and their typed path, directory, environment, runtime, compiler, snapshot, and desktop facade boundaries. The final omitted Rust selection-source reexport was corrected before its native composition gate.
+
+The attached immutable archive contains five uniquely named raw gates. Root independently checked all 15 artifact hashes and extracted each test summary directly from its cargo log. Final source `17e8a0f9a57a5f9b4c4ec576479c245562759989` passed the production desktop-module composition target (16 tests, one existing ignored actual-SDK gate), then the actual installed-SDK equality control (one test). Earlier source `26ab90cd44` passed 35 host controls including real native Python compilation after Go refusal; `0c61ba8167` passed the official Debian Go fixture control; `7c5727060f` passed actual PNPM project precedence. These scopes are separate and are not relabelled as a single final full-workspace test.
+
+Eighteen of nineteen changed file blobs match the final tested source exactly. The platform directory file additionally retains canonical's reviewed private-directory implementation; its bounded readlink addition is preserved. The independently frozen joined CLI/MCP/locald source is being built to test that composition. No current GUI renderer, whole TypeScript application, Windows runtime, release installer, or joined production-readiness claim follows from these gates.
+
+See `root-audit.json` for exact source and artifact identities. The archived test output is complete, including warnings and ignored cases; no expectations or coverage were removed for this checkpoint.
+
+The separately immutable addendum now supplies three final-source controls: strict paired Go layout, bounded symlink reads, and official Debian fixture admission/revalidation. Each actually ran one passing test on clean `17e8a0f9a57a5f9b4c4ec576479c245562759989`. Root verified all nine additional raw artifact hashes and test summaries. This closes the narrow final-source Go gates without relabelling the earlier host or PNPM scopes.
