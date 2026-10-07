@@ -1308,6 +1308,33 @@ pub(in crate::builtin) fn source_capture_receipt_for_root(
     operation_key: backend_library::IndexOperationKey,
     expected_request_identity: Option<[u8; 32]>,
 ) -> Result<Option<backend_library::IndexOperationSourceCaptureReceipt>, BuiltinModelError> {
+    source_capture_summary_for_root(
+        daemon,
+        package,
+        Some(operation_key),
+        expected_request_identity,
+    )?
+    .map(|summary| {
+        backend_library::IndexOperationSourceCaptureReceipt::from_checked_parts(
+            operation_key,
+            summary.commit_identity,
+            summary.workspace_root,
+            summary.workspace_sequence,
+            summary.profiles,
+        )
+        .map_err(|error| BuiltinModelError(error.to_string()))
+    })
+    .transpose()
+}
+
+/// Reads only selected markers in the exact producer namespace and request.
+/// Legacy operations remain explicitly unkeyed rather than inventing a key.
+pub(in crate::builtin) fn source_capture_summary_for_root(
+    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    package: &backend_engine::PackageReference,
+    operation_key: Option<backend_library::IndexOperationKey>,
+    expected_request_identity: Option<[u8; 32]>,
+) -> Result<Option<backend_library::IndexSourceCaptureSummary>, BuiltinModelError> {
     let owner = daemon.engine().daemon().owner();
     let snapshot = owner.snapshot();
     let Some(relation) = semantic_capture_relation(&snapshot).map_err(|error| {
@@ -1316,7 +1343,7 @@ pub(in crate::builtin) fn source_capture_receipt_for_root(
     else {
         return Ok(None);
     };
-    let operation_key = operation_key.to_bytes();
+    let operation_key = operation_key.map(|key| key.to_bytes());
     let mut profiles = Vec::new();
     let mut capture_basis = None;
     let mut after = None;
@@ -1330,7 +1357,7 @@ pub(in crate::builtin) fn source_capture_receipt_for_root(
             if key.package() != package || !key.is_selected() {
                 continue;
             }
-            if record.operation_key() != Some(&operation_key)
+            if record.operation_key() != operation_key.as_ref()
                 || expected_request_identity
                     .is_some_and(|expected| record.request_identity() != &expected)
             {
@@ -1391,21 +1418,24 @@ pub(in crate::builtin) fn source_capture_receipt_for_root(
     if profiles.is_empty() {
         return Ok(None);
     }
-    let Some((commit_identity, workspace_root, workspace_sequence, _)) = capture_basis else {
+    let Some((commit_identity, workspace_root, workspace_sequence, request_identity)) =
+        capture_basis
+    else {
         return Ok(None);
     };
-    let receipt = backend_library::IndexOperationSourceCaptureReceipt::from_checked_parts(
-        backend_library::IndexOperationKey::from_bytes(operation_key)
+    let summary = backend_library::IndexSourceCaptureSummary {
+        producer_package: backend_library::PackageReference::parse(package.as_str())
             .map_err(|error| BuiltinModelError(error.to_string()))?,
+        request_identity,
         commit_identity,
         workspace_root,
         workspace_sequence,
-        profiles.into_boxed_slice(),
-    )
-    .map_err(|error| {
-        BuiltinModelError(format!("admit selected source-capture receipt: {error}"))
-    })?;
-    Ok(Some(receipt))
+        profiles: profiles.into_boxed_slice(),
+    };
+    summary
+        .admit()
+        .map_err(|error| BuiltinModelError(error.to_string()))?;
+    Ok(Some(summary))
 }
 
 fn index_operation_prior_semantic(

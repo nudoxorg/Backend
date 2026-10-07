@@ -10,6 +10,7 @@ pub(crate) enum CommandFailureWire {
     WrongBasis(WrongBasisWire),
     InvalidQuery(TextWire),
     CompilerRefused(CompilerRefusedWire),
+    PartiallyPublished(crate::IndexJobPartialPublication),
     CursorMismatch(EmptyWire),
     IncoherentView(TextWire),
     SequenceOverflow(EmptyWire),
@@ -42,6 +43,7 @@ pub(crate) fn command_failure_to_wire(failure: &CommandFailure) -> CommandFailur
         CommandFailure::InvalidQuery(message) => CommandFailureWire::InvalidQuery(TextWire {
             text: message.clone(),
         }),
+        CommandFailure::PartiallyPublished(partial) => CommandFailureWire::PartiallyPublished(partial.clone()),
         CommandFailure::CompilerRefused { detail, failure } => {
             CommandFailureWire::CompilerRefused(CompilerRefusedWire {
                 detail: TextWire {
@@ -75,6 +77,10 @@ pub(crate) fn command_failure_from_wire(
             ),
         },
         CommandFailureWire::InvalidQuery(value) => CommandFailure::InvalidQuery(value.text),
+        CommandFailureWire::PartiallyPublished(partial) => {
+            partial.admit().map_err(|error| error.to_string())?;
+            CommandFailure::PartiallyPublished(partial)
+        }
         CommandFailureWire::CompilerRefused(value) => CommandFailure::CompilerRefused {
             detail: value.detail.text,
             failure: value.failure,

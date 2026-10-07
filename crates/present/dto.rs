@@ -292,6 +292,9 @@ pub struct FaultDto {
     /// Native setup requirement projected from the same closed compiler cause.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compiler_tool_requirement: Option<CompilerToolRequirementDto>,
+    /// Exact partial publication basis and the full typed terminal profile partition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial_publication: Option<backend_library::IndexJobPartialPublication>,
 }
 
 /// Machine-actionable setup facts derived from a producer's native tool requirement.
@@ -321,6 +324,7 @@ impl FaultDto {
             shell: fault.affordance().shell(),
             call: fault.affordance().tool_call(),
             compiler_failure: fault.compiler_failure().cloned(),
+            partial_publication: fault.partial_publication_receipt().cloned(),
             compiler_tool_requirement: fault.compiler_failure().and_then(|failure| {
                 failure
                     .required_native_tool()

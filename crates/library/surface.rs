@@ -1215,24 +1215,7 @@ impl IndexOperationSourceCaptureReceipt {
         workspace_sequence: u64,
         profiles: Box<[IndexOperationSourceProfile]>,
     ) -> Result<Self, ProductAdmissionError> {
-        if [commit_identity, workspace_root]
-            .iter()
-            .any(|identity| identity.iter().all(|byte| *byte == 0))
-            || workspace_sequence == 0
-            || profiles.is_empty()
-            || profiles.len() > 16
-            || profiles
-                .windows(2)
-                .any(|window| window[0].profile >= window[1].profile)
-            || profiles.iter().any(|profile| {
-                profile.source_version.iter().all(|byte| *byte == 0)
-                    || profile.input_digest.iter().all(|byte| *byte == 0)
-                    || profile.observation_sequence == 0
-                    || !valid_index_operation_profile_state(profile.state)
-            })
-        {
-            return Err(ProductAdmissionError::IndexOperationShape);
-        }
+        admit_source_capture_parts(commit_identity, workspace_root, workspace_sequence, &profiles)?;
         Ok(Self {
             operation_key,
             commit_identity,
@@ -1297,88 +1280,120 @@ impl IndexOperationSourceCaptureReceipt {
         refused_profiles: &[IndexOperationProfileRefusal],
     ) -> Result<(), ProductAdmissionError> {
         self.admit(self.operation_key)?;
-        let profiles = self.profiles();
-        let published = profiles
+        admit_terminal_profile_partition(self.profiles(), refused_profiles)
+    }
+}
+
+fn admit_source_capture_parts(
+    commit_identity: [u8; 32],
+    workspace_root: [u8; 32],
+    workspace_sequence: u64,
+    profiles: &[IndexOperationSourceProfile],
+) -> Result<(), ProductAdmissionError> {
+    if [commit_identity, workspace_root]
+        .iter()
+        .any(|identity| identity.iter().all(|byte| *byte == 0))
+        || workspace_sequence == 0
+        || profiles.is_empty()
+        || profiles.len() > 16
+        || profiles
+            .windows(2)
+            .any(|window| window[0].profile >= window[1].profile)
+        || profiles.iter().any(|profile| {
+            profile.source_version.iter().all(|byte| *byte == 0)
+                || profile.input_digest.iter().all(|byte| *byte == 0)
+                || profile.observation_sequence == 0
+                || !valid_index_operation_profile_state(profile.state)
+        })
+    {
+        return Err(ProductAdmissionError::IndexOperationShape);
+    }
+    Ok(())
+}
+
+fn admit_terminal_profile_partition(
+    profiles: &[IndexOperationSourceProfile],
+    refused_profiles: &[IndexOperationProfileRefusal],
+) -> Result<(), ProductAdmissionError> {
+    let published = profiles
+        .iter()
+        .filter(|profile| {
+            matches!(
+                profile.state,
+                IndexOperationSemanticProfileState::Published { .. }
+            )
+        })
+        .count();
+    if published == 0
+        || published == profiles.len()
+        || refused_profiles.len() != profiles.len() - published
+        || refused_profiles
+            .windows(2)
+            .any(|pair| pair[0].profile >= pair[1].profile)
+    {
+        return Err(ProductAdmissionError::IndexOperationShape);
+    }
+    for profile in profiles {
+        let expected_reason = match profile.state {
+            IndexOperationSemanticProfileState::Published { .. } => continue,
+            IndexOperationSemanticProfileState::Unavailable { reason }
+            | IndexOperationSemanticProfileState::Failed { reason, .. } => reason,
+            IndexOperationSemanticProfileState::Pending { .. } => {
+                return Err(ProductAdmissionError::IndexOperationShape);
+            }
+        };
+        let refusal = refused_profiles
             .iter()
-            .filter(|profile| {
-                matches!(
-                    profile.state,
-                    IndexOperationSemanticProfileState::Published { .. }
-                )
-            })
-            .count();
-        if published == 0
-            || published == profiles.len()
-            || refused_profiles.len() != profiles.len() - published
-            || refused_profiles
-                .windows(2)
-                .any(|pair| pair[0].profile >= pair[1].profile)
+            .find(|refusal| refusal.profile == profile.profile)
+            .ok_or(ProductAdmissionError::IndexOperationShape)?;
+        if refusal.reason != expected_reason
+            || refusal.reason == IndexOperationSemanticUnavailableReason::Cancelled
         {
             return Err(ProductAdmissionError::IndexOperationShape);
         }
-        for profile in profiles {
-            let expected_reason = match profile.state {
-                IndexOperationSemanticProfileState::Published { .. } => continue,
-                IndexOperationSemanticProfileState::Unavailable { reason }
-                | IndexOperationSemanticProfileState::Failed { reason, .. } => reason,
-                IndexOperationSemanticProfileState::Pending { .. } => {
+        if let Some(failure) = &refusal.compiler_failure {
+            if refusal.reason != IndexOperationSemanticUnavailableReason::Rejected {
+                return Err(ProductAdmissionError::IndexOperationShape);
+            }
+            failure.encode_bounded_json()?;
+            if let PackageCompilerFailureCause::Authority {
+                diagnostic: Some(facts),
+                ..
+            } = failure.cause()
+            {
+                let language = profile.profile.profile()?.language();
+                if (facts.python_failure.is_some()
+                    && language != backend_semantic::vocabulary::Language::Python)
+                    || (facts.typescript_failure.is_some()
+                        && language != backend_semantic::vocabulary::Language::TypeScript)
+                    || matches!(
+                        facts.python_failure,
+                        Some(crate::interface::PythonAuthorityFailureKind::Cancelled)
+                    )
+                    || facts
+                        .typescript_failure
+                        .is_some_and(|failure| failure.is_cancelled())
+                {
                     return Err(ProductAdmissionError::IndexOperationShape);
                 }
-            };
-            let refusal = refused_profiles
-                .iter()
-                .find(|refusal| refusal.profile == profile.profile)
-                .ok_or(ProductAdmissionError::IndexOperationShape)?;
-            if refusal.reason != expected_reason
-                || refusal.reason == IndexOperationSemanticUnavailableReason::Cancelled
+            }
+            if let PackageCompilerFailureCause::Toolchain {
+                language, stage, ..
+            }
+            | PackageCompilerFailureCause::ToolingUnavailable {
+                language, stage, ..
+            }
+            | PackageCompilerFailureCause::RequiredTool {
+                language, stage, ..
+            } = failure.cause()
+                && (*language != CompilerLanguageFact::from(profile.profile.profile()?.language())
+                    || *stage != CompilerStageFact::LowerIr)
             {
                 return Err(ProductAdmissionError::IndexOperationShape);
             }
-            if let Some(failure) = &refusal.compiler_failure {
-                if refusal.reason != IndexOperationSemanticUnavailableReason::Rejected {
-                    return Err(ProductAdmissionError::IndexOperationShape);
-                }
-                failure.encode_bounded_json()?;
-                if let PackageCompilerFailureCause::Authority {
-                    diagnostic: Some(facts),
-                    ..
-                } = failure.cause()
-                {
-                    let language = profile.profile.profile()?.language();
-                    if (facts.python_failure.is_some()
-                        && language != backend_semantic::vocabulary::Language::Python)
-                        || (facts.typescript_failure.is_some()
-                            && language != backend_semantic::vocabulary::Language::TypeScript)
-                        || matches!(
-                            facts.python_failure,
-                            Some(crate::interface::PythonAuthorityFailureKind::Cancelled)
-                        )
-                        || facts
-                            .typescript_failure
-                            .is_some_and(|failure| failure.is_cancelled())
-                    {
-                        return Err(ProductAdmissionError::IndexOperationShape);
-                    }
-                }
-                if let PackageCompilerFailureCause::Toolchain {
-                    language, stage, ..
-                }
-                | PackageCompilerFailureCause::ToolingUnavailable {
-                    language, stage, ..
-                }
-                | PackageCompilerFailureCause::RequiredTool {
-                    language, stage, ..
-                } = failure.cause()
-                    && (*language
-                        != CompilerLanguageFact::from(profile.profile.profile()?.language())
-                        || *stage != CompilerStageFact::LowerIr)
-                {
-                    return Err(ProductAdmissionError::IndexOperationShape);
-                }
-            }
         }
-        Ok(())
     }
+    Ok(())
 }
 
 fn valid_index_operation_profile_state(state: IndexOperationSemanticProfileState) -> bool {
@@ -2693,6 +2708,105 @@ fn lower_hex_nibble(value: u8) -> Option<u8> {
     }
 }
 
+/// Exact selected source-capture basis of a process-local index result.
+/// This summary does not manufacture a caller-owned durable operation key.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexSourceCaptureSummary {
+    /// Immutable producer namespace whose selected profile markers were read.
+    pub producer_package: PackageReference,
+    /// Source intent identity retained in each selected profile marker.
+    #[serde(with = "hex_32")]
+    pub request_identity: [u8; 32],
+    /// Exact source-capture commit.
+    #[serde(with = "hex_32")]
+    pub commit_identity: [u8; 32],
+    /// Exact workspace root containing that capture.
+    #[serde(with = "hex_32")]
+    pub workspace_root: [u8; 32],
+    /// Sequence selecting that capture.
+    pub workspace_sequence: u64,
+    /// Complete canonical profile source/input/observation and semantic outcomes.
+    pub profiles: Box<[IndexOperationSourceProfile]>,
+}
+
+impl IndexSourceCaptureSummary {
+    /// Checks the exact source basis and canonical bounded profile tuples.
+    /// This is structural admission; authority comes from selected owner rows.
+    pub fn admit(&self) -> Result<(), ProductAdmissionError> {
+        if self.request_identity.iter().all(|byte| *byte == 0) {
+            return Err(ProductAdmissionError::IndexOperationShape);
+        }
+        admit_source_capture_parts(
+            self.commit_identity,
+            self.workspace_root,
+            self.workspace_sequence,
+            &self.profiles,
+        )
+    }
+}
+
+/// Useful committed language profiles alongside every typed refused profile.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexJobPartialPublication {
+    /// Exact requested package; the producer namespace is retained separately.
+    pub package: PackageReference,
+    /// Exact committed workspace and derived product view.
+    pub receipt: IndexOperationPublicationReceipt,
+    /// Exact source basis with every terminal profile outcome.
+    pub source_capture: IndexSourceCaptureSummary,
+    /// All failed or unavailable profiles in canonical order.
+    pub refused_profiles: Box<[IndexOperationProfileRefusal]>,
+}
+
+impl<'de> Deserialize<'de> for IndexJobPartialPublication {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            package: PackageReference,
+            receipt: IndexOperationPublicationReceipt,
+            source_capture: IndexSourceCaptureSummary,
+            refused_profiles: Box<[IndexOperationProfileRefusal]>,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        let partial = Self {
+            package: wire.package,
+            receipt: wire.receipt,
+            source_capture: wire.source_capture,
+            refused_profiles: wire.refused_profiles,
+        };
+        partial.admit().map_err(D::Error::custom)?;
+        Ok(partial)
+    }
+}
+
+impl IndexJobPartialPublication {
+    /// Rejects incomplete, pending, cancelled, foreign or malformed partitions.
+    pub fn admit(&self) -> Result<(), ProductAdmissionError> {
+        self.source_capture.admit()?;
+        admit_terminal_profile_partition(&self.source_capture.profiles, &self.refused_profiles)?;
+        let receipt = &self.receipt;
+        IndexOperationPublicationReceipt::from_checked_parts(
+            receipt.request_identity().copied(),
+            *receipt.commit_identity(),
+            *receipt.workspace_root(),
+            receipt.workspace_sequence(),
+            *receipt.view_root(),
+            *receipt.view_version(),
+            *receipt.view_recipe(),
+            receipt.revision_cursor().into(),
+        )?;
+        if receipt.request_identity().is_none()
+            || receipt.workspace_sequence() <= self.source_capture.workspace_sequence
+        {
+            return Err(ProductAdmissionError::IndexOperationShape);
+        }
+        Ok(())
+    }
+}
+
 /// Terminal effect of one index job.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(
@@ -2704,6 +2818,8 @@ fn lower_hex_nibble(value: u8) -> Option<u8> {
 pub enum IndexJobOutcome {
     /// Semantic admission and the owner publication completed.
     Published,
+    /// Useful profiles were published with an exact terminal refusal partition.
+    PartiallyPublished(IndexJobPartialPublication),
     /// The candidate was refused and did not replace the prior publication.
     Refused(ProductText),
     /// A package compiler refusal with a typed, source-bound cause.
@@ -2721,6 +2837,9 @@ pub enum IndexJobOutcome {
 
 impl IndexJobOutcome {
     fn admit(&self) -> Result<(), ProductAdmissionError> {
+        if let Self::PartiallyPublished(partial) = self {
+            partial.admit()?;
+        }
         if let Self::RefusedWithCompilerFailure { failure, .. } = self {
             failure.validate()?;
         }
@@ -2730,7 +2849,13 @@ impl IndexJobOutcome {
 
 impl IndexJobTerminal {
     fn admit(&self) -> Result<(), ProductAdmissionError> {
-        self.outcome.admit()
+        self.outcome.admit()?;
+        if let IndexJobOutcome::PartiallyPublished(partial) = &self.outcome
+            && &partial.package != self.ticket.package()
+        {
+            return Err(ProductAdmissionError::IndexOperationShape);
+        }
+        Ok(())
     }
 }
 
@@ -6604,6 +6729,46 @@ mod tests {
                 .admit(CommandId::IndexProgress)
         };
         assert_eq!(admit(status.clone()), Ok(()));
+        let IndexOperationState::PartiallyPublished { receipt, refused_profiles } = &status.state else { unreachable!() };
+        let captured = status.source_capture.as_ref().expect("source capture");
+        let partial = IndexJobPartialPublication {
+            package: status.package.clone(), receipt: receipt.clone(),
+            source_capture: IndexSourceCaptureSummary {
+                producer_package: status.package.clone(), request_identity: [21; 32],
+                commit_identity: *captured.commit_identity(), workspace_root: *captured.workspace_root(),
+                workspace_sequence: captured.workspace_sequence(), profiles: captured.profiles.clone(),
+            },
+            refused_profiles: refused_profiles.clone(),
+        };
+        partial.admit().expect("unkeyed partial retains exact checked partition");
+        let terminal = IndexJobTerminal {
+            ticket: IndexJobTicket::new(NonZeroU64::new(42).expect("ticket"), [9; 16], status.package.clone()),
+            outcome: IndexJobOutcome::PartiallyPublished(partial.clone()),
+        };
+        terminal.admit().expect("exact requested package");
+        let encoded = serde_json::to_value(&terminal).expect("closed partial terminal");
+        assert!(encoded["outcome"]["detail"]["source_capture"].get("operation_key").is_none());
+        assert_eq!(serde_json::from_value::<IndexJobTerminal>(encoded).expect("typed round trip"), terminal);
+        let mut foreign = terminal.clone();
+        foreign.ticket = IndexJobTicket::new(NonZeroU64::new(42).expect("ticket"), [9; 16],
+            PackageReference::parse("/workspace/foreign").expect("foreign package"));
+        assert_eq!(foreign.admit(), Err(ProductAdmissionError::IndexOperationShape));
+        for mutation in 0..6 {
+            let mut invalid = partial.clone();
+            match mutation {
+                0 => invalid.refused_profiles = Box::new([]),
+                1 => invalid.source_capture.request_identity = [0; 32],
+                2 => invalid.source_capture.workspace_sequence = invalid.receipt.workspace_sequence(),
+                3 => invalid.source_capture.profiles[0].state = IndexOperationSemanticProfileState::Pending { prior: None },
+                4 => {
+                    let profile = invalid.source_capture.profiles.iter_mut().find(|p| p.profile == refused_profile).expect("refused profile");
+                    profile.state = IndexOperationSemanticProfileState::Unavailable { reason: IndexOperationSemanticUnavailableReason::Cancelled };
+                    invalid.refused_profiles[0].reason = IndexOperationSemanticUnavailableReason::Cancelled;
+                }
+                _ => invalid.source_capture.profiles[0].input_digest = [0; 32],
+            }
+            assert_eq!(invalid.admit(), Err(ProductAdmissionError::IndexOperationShape), "mutation {mutation}");
+        }
         for (language, stage, expected) in [
             (
                 backend_semantic::vocabulary::Language::TypeScript,

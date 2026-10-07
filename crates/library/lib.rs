@@ -251,7 +251,7 @@ pub use surface::{
     ForgeDiscoveryCandidate, ForgeFact, ForgeManifestRecord, ForgePackageDetailRecord,
     ForgePackageManifestDetail, ForgePackagePin, ForgePackageRecord, ForgePackageRegistryEvidence,
     ForgeRepositoryMetadataRecord, IndexCancelReceipt, IndexCancelStatus, IndexJobObservation,
-    IndexJobOutcome, IndexJobProgressEvent, IndexJobProgressKind, IndexJobStage, IndexJobTerminal,
+    IndexJobOutcome, IndexJobPartialPublication, IndexSourceCaptureSummary, IndexJobProgressEvent, IndexJobProgressKind, IndexJobStage, IndexJobTerminal,
     IndexJobTicket, IndexOperationFailureReason, IndexOperationKey, IndexOperationObservation,
     IndexOperationPriorSemantic, IndexOperationProfileRefusal, IndexOperationPublicationReceipt,
     IndexOperationSemanticCoverage, IndexOperationSemanticProfileState,

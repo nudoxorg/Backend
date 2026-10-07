@@ -1107,6 +1107,7 @@ fn index_start_view(result: &IndexStartResult) -> ProductView {
 fn index_terminal_view(terminal: &IndexJobTerminal) -> ProductView {
     let (state, detail) = match &terminal.outcome {
         IndexJobOutcome::Published => ("published", None),
+        IndexJobOutcome::PartiallyPublished(_) => ("partially-published", None),
         IndexJobOutcome::Refused(reason) => ("refused", Some(reason.as_str())),
         IndexJobOutcome::RefusedWithCompilerFailure { .. } => ("refused", None),
         IndexJobOutcome::Cancelled => ("cancelled", None),
@@ -1115,6 +1116,10 @@ fn index_terminal_view(terminal: &IndexJobTerminal) -> ProductView {
     let mut tags = vec![format!("outcome {state}")];
     if let Some(detail) = detail {
         tags.push(detail.to_owned());
+    }
+    if let IndexJobOutcome::PartiallyPublished(partial) = &terminal.outcome {
+        tags.push(Fault::partial_publication(partial, Operand::Text(index_ticket_json(&terminal.ticket)))
+            .cause().sentence().to_owned());
     }
     if let IndexJobOutcome::RefusedWithCompilerFailure { failure, .. } = &terminal.outcome {
         let fault =

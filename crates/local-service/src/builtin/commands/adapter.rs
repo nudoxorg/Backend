@@ -106,6 +106,7 @@ fn capture_terminalization_failed(
 ) -> backend_library::IndexJobOutcome {
     let primary = match &outcome {
         backend_library::IndexJobOutcome::Published => "semantic publication completed".to_owned(),
+        backend_library::IndexJobOutcome::PartiallyPublished(_) => "available profiles were partially published".to_owned(),
         backend_library::IndexJobOutcome::Refused(detail)
         | backend_library::IndexJobOutcome::Failed(detail) => detail.as_str().to_owned(),
         backend_library::IndexJobOutcome::RefusedWithCompilerFailure { detail, .. } => {
@@ -147,6 +148,9 @@ fn deferred_profile_refused_outcome(
 fn legacy_add_compiler_failure(
     outcome: &backend_library::IndexJobOutcome,
 ) -> Option<backend_library::CommandFailure> {
+    if let backend_library::IndexJobOutcome::PartiallyPublished(partial) = outcome {
+        return Some(backend_library::CommandFailure::PartiallyPublished(partial.clone()));
+    }
     let backend_library::IndexJobOutcome::RefusedWithCompilerFailure { detail, failure } = outcome
     else {
         return None;
@@ -187,7 +191,7 @@ fn index_operation_failure(
             detail.clone(),
             None,
         ),
-        Some(backend_library::IndexJobOutcome::Published) => (
+        Some(backend_library::IndexJobOutcome::Published | backend_library::IndexJobOutcome::PartiallyPublished(_)) => (
             backend_library::IndexOperationFailureReason::WorkerFailed,
             backend_library::ProductText::from_static(
                 "semantic publication was reported while a captured profile remains Pending",
@@ -261,7 +265,7 @@ fn index_attempt_retirement_reason(
 ) -> Option<backend_extension_turso::CandidateAttemptRetirementReason> {
     use backend_extension_turso::CandidateAttemptRetirementReason as R;
     match outcome {
-        backend_library::IndexJobOutcome::Published => None,
+        backend_library::IndexJobOutcome::Published | backend_library::IndexJobOutcome::PartiallyPublished(_) => None,
         backend_library::IndexJobOutcome::Refused(_)
         | backend_library::IndexJobOutcome::RefusedWithCompilerFailure { .. } => Some(R::Refused),
         backend_library::IndexJobOutcome::Cancelled => Some(R::Cancelled),
@@ -2034,10 +2038,15 @@ impl CommandAdapter {
             prepared,
             indexing.request_id,
             indexing.requested_package,
+            indexing.owner_ticket.package().clone(),
             indexing.operation_key,
             Arc::clone(&indexing.cancelled),
         ) {
-            Ok(reply) => {
+            Ok((reply, partial)) => {
+                if let Some(partial) = partial {
+                    indexing.captures.clear();
+                    return backend_library::IndexJobOutcome::PartiallyPublished(partial);
+                }
                 if let Some(refusal) = refusal_outcome {
                     // The final intent already terminalized every capture and
                     // selected only admitted profiles. Do not reject them all
@@ -2436,7 +2445,7 @@ impl CommandAdapter {
                 }
             }
             if let Some(mut outcome) = terminal {
-                if !matches!(outcome, backend_library::IndexJobOutcome::Published)
+                if !matches!(outcome, backend_library::IndexJobOutcome::Published | backend_library::IndexJobOutcome::PartiallyPublished(_))
                     && !indexing.captures.is_empty()
                 {
                     let compiler_failure = match &outcome {
@@ -2844,16 +2853,57 @@ impl CommandAdapter {
         prepared: PreparedProductSelection,
         request_id: u64,
         requested_package: backend_engine::PackageKey,
+        requested_reference: backend_library::PackageReference,
         operation_key: Option<backend_library::IndexOperationKey>,
         cancellation: Arc<AtomicBool>,
-    ) -> Result<AdmittedReply, BuiltinModelError> {
+    ) -> Result<
+        (
+            AdmittedReply,
+            Option<backend_library::IndexJobPartialPublication>,
+        ),
+        BuiltinModelError,
+    > {
         let PreparedProductSelection {
             intent: prepared_intent,
             selected,
             revision_fence,
-            profile_refusals: _,
+            profile_refusals,
             partial_plan,
         } = prepared;
+        let partial_basis = if !profile_refusals.is_empty() && !selected.is_empty() {
+            let producer = selected
+                .first()
+                .expect("selected profile exists")
+                .0
+                .package();
+            if selected.iter().any(|(key, _)| key.package() != producer) {
+                return Err(BuiltinModelError("partial candidates span foreign producer namespaces".to_owned()));
+            }
+            Some(
+                super::index::source_capture_summary_for_root(
+                    daemon,
+                    producer,
+                    operation_key,
+                    None,
+                )?
+                .ok_or_else(|| {
+                    BuiltinModelError(
+                        "partial publication lost its selected source basis".to_owned(),
+                    )
+                })?,
+            )
+        } else {
+            None
+        };
+        let expected_selected = selected
+            .iter()
+            .map(|(key, claim)| {
+                (
+                    backend_library::SemanticLanguageProfile::new(key.profile()),
+                    *claim.binding().identity.as_ref(),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
         let intent = match (prepared_intent, operation_key) {
             (Some(intent), Some(operation_key)) => Some(intent.with_operation_key(operation_key)?),
             (intent, _) => intent,
@@ -2934,6 +2984,86 @@ impl CommandAdapter {
                 },
         )?;
         self.publish_view(daemon, committed.as_ref())?;
+        let partial = partial_basis
+            .map(|basis| {
+                let producer = backend_engine::PackageReference::parse(
+                    basis.producer_package.as_str().to_owned(),
+                )
+                .map_err(|error| {
+                    BuiltinModelError(format!("partial producer identity: {error}"))
+                })?;
+                let selected_capture = super::index::source_capture_summary_for_root(
+                    daemon,
+                    &producer,
+                    operation_key,
+                    Some(basis.request_identity),
+                )?
+                .ok_or_else(|| {
+                    BuiltinModelError(
+                        "committed partial publication lost its exact source capture".to_owned(),
+                    )
+                })?;
+                if selected_capture.commit_identity != basis.commit_identity
+                    || selected_capture.workspace_root != basis.workspace_root
+                    || selected_capture.workspace_sequence != basis.workspace_sequence
+                    || selected_capture.profiles.len() != basis.profiles.len()
+                    || selected_capture
+                        .profiles
+                        .iter()
+                        .zip(basis.profiles.iter())
+                        .any(|(selected, captured)| {
+                            selected.profile != captured.profile
+                                || selected.source_version != captured.source_version
+                                || selected.input_digest != captured.input_digest
+                                || selected.observation_sequence != captured.observation_sequence
+                                || selected.source_count != captured.source_count
+                        })
+                {
+                    return Err(BuiltinModelError(
+                        "partial publication selected a foreign source basis".to_owned(),
+                    ));
+                }
+                let published = selected_capture
+                    .profiles
+                    .iter()
+                    .filter_map(|profile| match profile.state {
+                        backend_library::IndexOperationSemanticProfileState::Published {
+                            generation,
+                            ..
+                        } => Some((profile.profile, generation)),
+                        _ => None,
+                    })
+                    .collect::<std::collections::BTreeMap<_, _>>();
+                if published != expected_selected {
+                    return Err(BuiltinModelError(
+                        "partial publication receipt differs from selected compiler candidates"
+                            .to_owned(),
+                    ));
+                }
+                let receipt = self
+                    .current_index_operation_receipt(
+                        daemon,
+                        request_identity,
+                        base_workspace_root,
+                        base_workspace_sequence,
+                    )
+                    .ok_or_else(|| {
+                        BuiltinModelError(
+                            "partial publication lacks one exact workspace/view receipt".to_owned(),
+                        )
+                    })?;
+                let partial = backend_library::IndexJobPartialPublication {
+                    package: requested_reference,
+                    receipt,
+                    source_capture: selected_capture,
+                    refused_profiles: profile_refusals,
+                };
+                partial
+                    .admit()
+                    .map_err(|error| BuiltinModelError(error.to_string()))?;
+                Ok(partial)
+            })
+            .transpose()?;
         if let Some(operation_key) = operation_key {
             if let Ok(Some(JournalEntry::Retained(entry))) =
                 self.index_operations.entry(operation_key)
@@ -2969,7 +3099,7 @@ impl CommandAdapter {
             // place so status can reconstruct the same checked receipt.
             let _ = self.index_operations.published(operation_key, receipt);
         }
-        Ok(added_reply(requested_package))
+        Ok((added_reply(requested_package), partial))
     }
 
     pub(in crate::builtin) fn execute(
@@ -3402,6 +3532,8 @@ impl CommandAdapter {
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let label = certified_package_label(certificate, package)?;
         let requested_package = package;
+        let requested_reference = backend_library::PackageReference::parse(label.clone())
+            .map_err(|error| BuiltinModelError(error.to_string()))?;
         let (package, label) = canonical_local_package(package, label)?;
         self.recover_orphaned_package_label(daemon, &label, request_id)?;
         let prepared = match classify_add_target(&label)? {
@@ -3435,43 +3567,12 @@ impl CommandAdapter {
                     partial_plan: None,
                 }),
         };
-        let PreparedProductSelection {
-            intent,
-            selected,
-            revision_fence,
-            profile_refusals,
-            partial_plan: _,
-        } = prepared;
-        let removals = intent
-            .as_ref()
-            .map(selected_semantic_removals)
-            .unwrap_or_default();
-        let committed =
-            self.semantic_authority
-                .commit_product_selection_changes(selected, removals, || {
-                    if let Some(revision_fence) = revision_fence.as_ref()
-                        && !super::super::ingest::compiler_revision_is_current(revision_fence)
-                            .map_err(BuiltinModelError)?
-                    {
-                        return Err(BuiltinModelError(
-                            "compiler source or configuration revision changed before product selection; retry indexing"
-                                .to_owned(),
-                        ));
-                    }
-                    intent
-                        .map(|intent| {
-                            commit_builtin_intent(daemon, request_id, &intent).map_err(
-                                |error| {
-                                    BuiltinModelError(format!(
-                                        "commit product source intent: {error}"
-                                    ))
-                                },
-                            )?;
-                            Ok(intent)
-                        })
-                        .transpose()
-                })?;
-        self.publish_view(daemon, committed.as_ref())?;
+        let profile_refusals = prepared.profile_refusals.clone();
+        let (reply, partial) = self.finish_add(daemon, prepared, request_id, requested_package,
+            requested_reference, None, Arc::new(AtomicBool::new(false)))?;
+        if let Some(partial) = partial {
+            return Ok((CommandReply::Failed(backend_library::CommandFailure::PartiallyPublished(partial)), None));
+        }
         if !profile_refusals.is_empty() {
             let detail = "language profiles reached independent terminal outcomes; unavailable profiles were refused; inspect package-profile for the retained outcomes".to_owned();
             let failure = match profile_refusals
@@ -3485,7 +3586,7 @@ impl CommandAdapter {
             };
             return Ok((CommandReply::Failed(failure), None));
         }
-        Ok(added_reply(requested_package))
+        Ok(reply)
     }
 
     fn registry_intent(
@@ -5437,6 +5538,128 @@ mod tests {
             status.state
         );
         status
+    }
+
+    #[test]
+    fn legacy_add_and_cold_retry_expose_exact_native_partial_publication() {
+        let mut fixture = AdapterFixture::new();
+        let (package, label) = fixture.add_target();
+        fs::write(
+            Path::new(&label).join("pyproject.toml"),
+            "[project]\nname=\"legacy_mixed\"\nversion=\"1.0.0\"\n",
+        )
+        .expect("manifest");
+        fs::write(
+            Path::new(&label).join("useful.py"),
+            "def useful_name():\n    return 7\n",
+        )
+        .expect("Python source");
+        fs::write(
+            Path::new(&label).join("panel.ts"),
+            "export function refused_name(): number { return 7; }\n",
+        )
+        .expect("TypeScript source");
+        for attempt in 0..2 {
+            install_mixed_native_compiler(&mut fixture);
+            let (adapter, daemon) = fixture.parts();
+            let request = 0x181 + attempt;
+            let transport = 0x1181 + attempt;
+            assert!(matches!(
+                adapter.execute_or_defer(daemon, &add_body(request, package, &label), transport),
+                Ok(Executed::Deferred)
+            ));
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            let mut replies = Vec::new();
+            while adapter.indexing.is_some() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "legacy native partial completes"
+                );
+                replies.extend(adapter.poll_deferred(daemon));
+                std::thread::yield_now();
+            }
+            let bytes = replies
+                .into_iter()
+                .find(|(ticket, _)| *ticket == transport)
+                .expect("legacy reply")
+                .1
+                .expect("encoded legacy reply");
+            let wire: serde_json::Value = serde_json::from_slice(&bytes).expect("actual wire");
+            assert_eq!(
+                wire["reply"]["kind"], "failed",
+                "partial preserves a non-success legacy result"
+            );
+            assert_eq!(
+                wire["reply"]["data"]["kind"], "partially_published",
+                "{wire}"
+            );
+            let partial: backend_library::IndexJobPartialPublication =
+                serde_json::from_value(wire["reply"]["data"]["data"].clone())
+                    .expect("typed full partition");
+            partial.admit().expect("strict public partial");
+            assert_eq!(partial.package.as_str(), label);
+            assert_eq!(partial.source_capture.producer_package.as_str(), label);
+            assert_eq!(partial.source_capture.profiles.len(), 2);
+            assert_eq!(partial.refused_profiles.len(), 1);
+            assert_eq!(
+                partial.refused_profiles[0]
+                    .profile
+                    .name()
+                    .expect("language"),
+                "typescript"
+            );
+            assert!(
+                partial.refused_profiles[0]
+                    .compiler_failure
+                    .as_ref()
+                    .expect("actual TS refusal")
+                    .requires_tool_configuration()
+            );
+            let source = crate::builtin::commands::index::source_capture_summary_for_root(
+                daemon,
+                &backend_engine::PackageReference::parse(label.clone()).expect("producer"),
+                None,
+                Some(partial.source_capture.request_identity),
+            )
+            .expect("selected source relation")
+            .expect("source basis");
+            assert_eq!(partial.source_capture, source);
+            assert!(
+                source
+                    .profiles
+                    .iter()
+                    .any(
+                        |profile| profile.profile.name().expect("profile") == "python"
+                            && matches!(
+                                profile.state,
+                                backend_library::IndexOperationSemanticProfileState::Published {
+                                    coverage:
+                                        backend_library::IndexOperationSemanticCoverage::Complete,
+                                    ..
+                                }
+                            )
+                    )
+            );
+            assert_eq!(
+                partial.receipt.workspace_root(),
+                daemon.engine().daemon().owner().head().root().as_bytes()
+            );
+            assert_eq!(
+                partial.receipt.workspace_sequence(),
+                daemon.engine().daemon().owner().head().sequence()
+            );
+            assert_eq!(
+                partial.receipt.view_root(),
+                daemon.engine().daemon().library().view().root().as_bytes()
+            );
+            assert_eq!(
+                legacy_add_compiler_failure(&backend_library::IndexJobOutcome::PartiallyPublished(
+                    partial.clone()
+                )),
+                Some(backend_library::CommandFailure::PartiallyPublished(partial))
+            );
+            fixture = fixture.reopen();
+        }
     }
 
     #[test]
