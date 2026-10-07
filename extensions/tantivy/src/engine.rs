@@ -807,7 +807,7 @@ impl TantivySource {
             return Err(Error::IncompleteCoverage.into());
         }
 
-        let cache_directory = OwnedWorkspaceDirectory::open(cache_root.as_ref())?;
+        let cache_directory = OwnedWorkspaceDirectory::open(cache_root)?;
         cache_directory.verify_path()?;
         let namespace =
             PrivateNamespace::open_child(cache_directory.path(), DURABLE_ROOTS_DIRECTORY)?;
@@ -1113,7 +1113,7 @@ impl TantivySource {
         {
             return Err(Error::IncompleteCoverage.into());
         }
-        let cache_directory = OwnedWorkspaceDirectory::open(cache_root.as_ref())?;
+        let cache_directory = OwnedWorkspaceDirectory::open(cache_root)?;
         cache_directory.verify_path()?;
         let namespace =
             PrivateNamespace::open_child(cache_directory.path(), DURABLE_ROOTS_DIRECTORY)?;
