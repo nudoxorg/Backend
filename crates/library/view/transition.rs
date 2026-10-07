@@ -331,6 +331,17 @@ impl CommittedViewDelta {
         &self.delta
     }
 
+    /// Whether a receiver can replay this transition using only its checked
+    /// base root and the bounded row changes. Compact events inherit the
+    /// base's producer authority; a new capability must be transferred by
+    /// the authenticated snapshot route before any new root is admitted.
+    #[must_use]
+    pub fn is_compact_replayable(&self) -> bool {
+        !matches!(self.delta, ViewDelta::Reset { .. })
+            && self.base.capability.as_ref() == Some(&self.capability)
+            && self.changed_row_count() <= MAX_VIEW_PATCH_ROWS
+    }
+
     /// Returns the number of visible rows affected by this transition.
     #[must_use]
     pub fn changed_row_count(&self) -> usize {

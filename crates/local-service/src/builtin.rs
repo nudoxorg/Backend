@@ -2375,6 +2375,9 @@ pub fn run(config: ProcessConfig) -> ExitCode {
 
 #[path = "builtin/projection.rs"]
 mod projection;
+#[cfg(test)]
+#[path = "builtin/publication_transport_tests.rs"]
+mod publication_transport_tests;
 
 pub(crate) use projection::{certificate_for_compact_event, certificate_for_snapshot_page};
 

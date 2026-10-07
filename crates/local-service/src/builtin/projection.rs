@@ -778,9 +778,9 @@ pub(crate) fn certificate_for_view(
 pub(crate) fn certificate_for_compact_event(
     delta: &backend_engine::CommittedViewDelta,
 ) -> Result<WireCertificate, BuiltinModelError> {
-    if matches!(delta.delta(), backend_engine::ViewDelta::Reset { .. }) {
+    if !delta.is_compact_replayable() {
         return Err(BuiltinModelError(
-            "reset transitions are persisted as a bounded snapshot".to_owned(),
+            "transitions that change producer authority require a bounded snapshot".to_owned(),
         ));
     }
     let mut certificate = ClaimBuilder::from_claims(vec![WireClaim::Delta {
