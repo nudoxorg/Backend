@@ -382,6 +382,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             CapturedLocalHostEnvironment::capture(&self.environment),
             LocalHostDiscovery::InstalledTools,
         )
+        .with_go_authority_failure(self.go_authority_failure)
         .capture_frozen_installed_selection()
     }
 
@@ -401,7 +402,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         };
         let mut paths =
             Vec::with_capacity(LocalHostVariable::CLOSED_ENVIRONMENT_SNAPSHOT_ROLE_COUNT);
-        let mut go_failure = None;
+        let mut go_failure = self.go_authority_failure;
         for variable in LocalHostVariable::closed_environment_snapshot_roles() {
             if matches!(
                 variable,
@@ -416,6 +417,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                     | LocalHostVariable::NudoxPyrefly
                     | LocalHostVariable::NudoxGo
                     | LocalHostVariable::NudoxGoRoot
+                    | LocalHostVariable::NudoxGoOracle
             ) {
                 continue;
             }
@@ -478,7 +480,9 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 Ok(Some(path)) => paths.push((variable, path)),
                 Ok(None) => {}
                 Err(error) if tool == NativeTool::GoCompiler => {
-                    go_failure = Some(authority::go_authority_failure(&error));
+                    if go_failure.is_none() {
+                        go_failure = Some(authority::go_authority_failure(&error));
+                    }
                 }
                 Err(error) => return Err(error),
             }
@@ -507,11 +511,30 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             }
         }
 
+        if let Some(value) = self.environment.value(LocalHostVariable::NudoxGoOracle) {
+            let path = PathBuf::from(value);
+            let admitted = if path.is_absolute() {
+                self.canonical_configured_selection_path(LocalHostVariable::NudoxGoOracle, path)
+            } else {
+                Err(LocalCompilerHostError::RelativeEnvironmentPath {
+                    variable: LocalHostVariable::NudoxGoOracle, path: path.into_boxed_path(),
+                })
+            };
+            match admitted {
+                Ok(path) => paths.push((LocalHostVariable::NudoxGoOracle, path)),
+                Err(_) if go_failure.is_none() => {
+                    go_failure = Some(LocalRuntimeGoAuthorityFailure::OracleUnavailable);
+                }
+                Err(_) => {}
+            }
+        }
+
         let snapshot = ClosedLocalHostEnvironmentSnapshot::from_paths(paths.clone())
             .map_err(LocalCompilerHostError::HostSnapshot)?;
+        let selection = LocalCompilerHostSelection::captured_installed_tools(snapshot, go_failure)
+            .map_err(LocalCompilerHostError::HostSnapshot)?;
         self.realize_installed_rust_cache(&paths, home.as_deref())?;
-        LocalCompilerHostSelection::captured_installed_tools(snapshot, go_failure)
-            .map_err(LocalCompilerHostError::HostSnapshot)
+        Ok(selection)
     }
 
     /// Admits the host, builds a complete canonical runtime table, and starts its single owner.

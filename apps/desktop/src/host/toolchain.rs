@@ -385,6 +385,44 @@ mod tests {
         std::fs::remove_dir_all(machine.root).expect("owned fixture cleanup");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn desktop_and_standalone_keep_the_same_closed_go_only_refusal() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use backend_local_service::{LocalCompilerHostSelection, LocalRuntimeGoAuthorityFailure as Failure};
+        let machine = machine("go-only-closed-handoff");
+        let home = machine.root.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let module_root = machine.root.join("lib/node_modules");
+        let tsc = module_root.join("typescript/bin/tsc");
+        std::fs::create_dir_all(tsc.parent().unwrap()).unwrap();
+        std::fs::write(&tsc, "#!/bin/sh\nexit 0\n").unwrap();
+        let node = tsc.with_file_name(executable("node"));
+        std::fs::write(&node, "#!/bin/sh\nexit 0\n").unwrap();
+        for path in [&tsc, &node] {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let mut captured = BTreeMap::from([("HOME", home.into_os_string()),
+            ("PATH", tsc.parent().unwrap().as_os_str().to_owned())]);
+        for (name, cause) in [("NUDOX_GO", Failure::ExecutableUnavailable),
+            ("NUDOX_GO_ROOT", Failure::GoRootUnavailable), ("NUDOX_GO_ORACLE", Failure::OracleUnavailable)] {
+            for value in [OsString::new(), OsString::from("relative-object"), machine.root.join("missing-object").into_os_string()] {
+                captured.insert(name, value);
+                let desktop = installed_snapshot(&captured).expect("desktop preserves Go-only failure");
+                let standalone = LocalCompilerHost::new(DesktopLaunchEnvironment { captured: &captured },
+                    LocalHostDiscovery::InstalledTools).capture_installed_selection().unwrap();
+                assert_eq!(&desktop, standalone.snapshot());
+                let transported = ClosedLocalHostEnvironmentSnapshot::parse(&desktop.encode().unwrap()).unwrap();
+                let owner = LocalCompilerHostSelection::from_closed_snapshot(transported).unwrap();
+                assert_eq!(owner.go_authority_failure(), Some(cause));
+                assert_eq!(owner.snapshot().path(LocalHostVariable::NudoxTypeScriptDefaultCompiler), Some(tsc.as_path()));
+                assert_eq!(owner.snapshot().path(LocalHostVariable::NudoxTypeScriptDefaultNode), Some(node.as_path()));
+            }
+            captured.remove(name);
+        }
+        std::fs::remove_dir_all(machine.root).unwrap();
+    }
+
     /// A toolchain directory and a home, on disk, under a scratch root.
     struct Machine {
         root: PathBuf,

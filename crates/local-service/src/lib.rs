@@ -38,7 +38,8 @@ use std::path::Path;
 pub use backend_engine::application::{
     InstalledRustInputs, InstalledRustToolchain, InstalledToolPlace, find_installed_rust, installed_rust_system_locations,
     ClosedLocalHostEnvironmentSnapshot, ClosedLocalHostEnvironmentSnapshotError, LocalCompilerHost,
-    LocalHostDiscovery, LocalHostEnvironment, LocalHostVariable,
+    LocalHostDiscovery, LocalHostEnvironment, LocalHostVariable, LocalCompilerHostSelection,
+    LocalRuntimeGoAuthorityFailure,
     ProcessHostEnvironment,
     MAX_CLOSED_LOCAL_HOST_ENVIRONMENT_BYTES,
 };

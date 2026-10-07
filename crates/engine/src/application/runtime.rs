@@ -313,7 +313,7 @@ pub enum LocalRuntimePythonCheckerProbeFailure {
 /// Retained cause when an optional Go installation was selected but could not
 /// be admitted for package authority. The owner remains usable for other
 /// languages; Go requests receive this exact typed cause at their boundary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum LocalRuntimeGoAuthorityFailure {
     /// The selected executable path could not be admitted.
     ExecutableUnavailable,

@@ -1591,6 +1591,37 @@ mod tests {
     }
 
     #[test]
+    fn go_only_refusals_survive_frozen_capture_and_closed_snapshot_handoff() {
+        use crate::application::{ClosedLocalHostEnvironmentSnapshot, LocalCompilerHostSelection,
+            LocalRuntimeGoAuthorityFailure as Failure};
+        let (root, environment) = installed_fixture("closed-go-only-failures", false);
+        for (variable, cause) in [(LocalHostVariable::NudoxGo, Failure::ExecutableUnavailable),
+            (LocalHostVariable::NudoxGoRoot, Failure::GoRootUnavailable),
+            (LocalHostVariable::NudoxGoOracle, Failure::OracleUnavailable)] {
+            for bad in [root.join("missing-object"), PathBuf::from("relative-object"), PathBuf::new()] {
+                let mut configured = environment.clone();
+                configured.set(variable, &bad);
+                let captured = LocalCompilerHost::new(configured, LocalHostDiscovery::InstalledTools)
+                    .capture_installed_selection().expect("Go-only failure cannot abort capture");
+                assert_eq!(captured.go_authority_failure(), Some(cause));
+                let closed = ClosedLocalHostEnvironmentSnapshot::parse(&captured.snapshot().encode().unwrap()).unwrap();
+                let incoming = LocalCompilerHostSelection::from_closed_snapshot(closed).unwrap();
+                assert_eq!(incoming.go_authority_failure(), Some(cause));
+                assert_eq!(incoming.snapshot().path(variable), None);
+                assert!(incoming.snapshot().path(LocalHostVariable::NudoxTypeScriptDefaultCompiler).is_some());
+                assert!(incoming.snapshot().path(LocalHostVariable::NudoxTypeScriptDefaultNode).is_some());
+                assert!(incoming.snapshot().path(LocalHostVariable::NudoxPython).is_some());
+            }
+        }
+        // A previously captured cause must survive the temporary frozen host construction.
+        let retained = LocalCompilerHost::new(environment, LocalHostDiscovery::InstalledTools)
+            .with_go_authority_failure(Some(Failure::ToolchainIdentityUnavailable))
+            .capture_installed_selection().unwrap();
+        assert_eq!(retained.go_authority_failure(), Some(Failure::ToolchainIdentityUnavailable));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn invalid_explicit_go_root_is_retained_without_blocking_installed_selection() {
         let (root, mut environment) = installed_fixture("installed-tools-invalid-go-root", false);
         let invalid_root = root.join("go-root-file");
@@ -1623,7 +1654,10 @@ mod tests {
             }
         ));
         let receipt = selection.encode_receipt().expect("encode typed failure");
-        assert!(receipt.contains("go_root_unavailable"));
+        let receipt: serde_json::Value = serde_json::from_str(&receipt).expect("typed receipt JSON");
+        let failure: crate::application::LocalRuntimeGoAuthorityFailure =
+            serde_json::from_value(receipt["go_failure"].clone()).expect("typed Go cause");
+        assert_eq!(failure, crate::application::LocalRuntimeGoAuthorityFailure::GoRootUnavailable);
         fs::remove_dir_all(root).expect("remove fixture");
     }
 
