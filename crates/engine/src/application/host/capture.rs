@@ -14,6 +14,8 @@ pub struct CapturedLocalHostEnvironment {
     search_path: Option<OsString>,
     go_module_cache: Option<OsString>,
     go_path: Option<OsString>,
+    cargo_home: Option<OsString>,
+    user_profile: Option<OsString>,
 }
 
 impl CapturedLocalHostEnvironment {
@@ -28,6 +30,8 @@ impl CapturedLocalHostEnvironment {
             search_path: environment.search_path(),
             go_module_cache: environment.go_module_cache(),
             go_path: environment.go_path(),
+            cargo_home: environment.cargo_home(),
+            user_profile: environment.user_profile(),
         }
     }
 }
@@ -48,6 +52,12 @@ impl LocalHostEnvironment for CapturedLocalHostEnvironment {
     }
     fn go_path(&self) -> Option<OsString> {
         self.go_path.clone()
+    }
+    fn cargo_home(&self) -> Option<OsString> {
+        self.cargo_home.clone()
+    }
+    fn user_profile(&self) -> Option<OsString> {
+        self.user_profile.clone()
     }
 }
 

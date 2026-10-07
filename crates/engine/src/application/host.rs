@@ -9,6 +9,7 @@ mod authority;
 mod capture;
 mod error;
 mod paths;
+mod rust_selection;
 mod snapshot;
 
 use std::{
@@ -38,6 +39,7 @@ use crate::application::{
 };
 
 pub use capture::CapturedLocalHostEnvironment;
+pub use rust_selection::{InstalledRustInputs, InstalledRustToolchain, InstalledToolPlace, find_installed_rust, installed_rust_system_locations};
 pub use error::LocalCompilerHostError;
 pub use paths::{LocalHostDirectory, LocalHostPathKind, LocalHostPathRole};
 pub use snapshot::{
@@ -210,6 +212,12 @@ pub trait LocalHostEnvironment {
     fn go_path(&self) -> Option<OsString> {
         None
     }
+
+    /// Cargo's configured user cache, captured only during installed-tool selection.
+    fn cargo_home(&self) -> Option<OsString> { None }
+
+    /// Windows user home when HOME is absent.
+    fn user_profile(&self) -> Option<OsString> { None }
 }
 
 /// Production environment reader.
@@ -232,6 +240,9 @@ impl LocalHostEnvironment for ProcessHostEnvironment {
     fn go_path(&self) -> Option<OsString> {
         std::env::var_os("GOPATH")
     }
+
+    fn cargo_home(&self) -> Option<OsString> { std::env::var_os("CARGO_HOME") }
+    fn user_profile(&self) -> Option<OsString> { std::env::var_os("USERPROFILE") }
 }
 
 /// Process environment with one explicit durable compiler root.
@@ -260,6 +271,9 @@ impl LocalHostEnvironment for WorkspaceCompilerEnvironment {
     fn go_path(&self) -> Option<OsString> {
         ProcessHostEnvironment.go_path()
     }
+
+    fn cargo_home(&self) -> Option<OsString> { ProcessHostEnvironment.cargo_home() }
+    fn user_profile(&self) -> Option<OsString> { ProcessHostEnvironment.user_profile() }
 }
 
 /// Whether host admission may inspect its finite documented platform locations.
@@ -334,7 +348,7 @@ impl<Environment> LocalCompilerHost<Environment> {
 }
 
 impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
-    /// Captures installed TypeScript, Python, and Go authorities into one immutable snapshot.
+    /// Captures installed Rust, TypeScript, Python, and Go authorities into one immutable snapshot.
     /// Pass that snapshot to a host using LocalHostDiscovery::ClosedSnapshot before opening
     /// a long-lived owner. PATH and Go cache variables are consulted only during this call.
     ///
@@ -342,7 +356,8 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
     /// kind. An invalid explicit Go path is retained as a Go-only admission failure so it
     /// cannot prevent other languages from starting; other invalid explicit paths return their
     /// typed error instead of choosing a PATH alternative. The returned selection contains no
-    /// ambient search inputs.
+    /// ambient search inputs. A discovered Rust pair may create only its absent default Cargo
+    /// cache beneath the existing user home; explicit cache content and permissions are retained.
     ///
     /// # Errors
     ///
@@ -368,6 +383,16 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         &self,
     ) -> Result<LocalCompilerHostSelection, LocalCompilerHostError> {
         let home = self.optional_absolute_path(LocalHostVariable::Home)?;
+        #[cfg(windows)]
+        let home = match home {
+            Some(home) => Some(home),
+            None => self.environment.user_profile().map(PathBuf::from)
+                .map(|path| if path.is_absolute() { Ok(path) } else {
+                    Err(LocalCompilerHostError::RelativeEnvironmentPath {
+                        variable: LocalHostVariable::Home, path: path.into_boxed_path(),
+                    })
+                }).transpose()?,
+        };
         let mut paths =
             Vec::with_capacity(LocalHostVariable::CLOSED_ENVIRONMENT_SNAPSHOT_ROLE_COUNT);
         let mut go_failure = None;
@@ -401,6 +426,8 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         if let Some(home) = home.as_ref() {
             paths.push((LocalHostVariable::Home, home.clone()));
         }
+
+        self.capture_installed_rust_paths(&mut paths, home.as_deref())?;
 
         let typescript = self.typescript_host_selection(home.as_deref())?;
         if let Some(compiler) = typescript.compiler {

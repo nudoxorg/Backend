@@ -71,6 +71,7 @@ pub use self::embedding_provision::{
 };
 pub use self::host::{
     CapturedLocalHostEnvironment,
+    InstalledRustInputs, InstalledRustToolchain, InstalledToolPlace, find_installed_rust, installed_rust_system_locations,
     ClosedLocalHostEnvironmentSnapshot, ClosedLocalHostEnvironmentSnapshotError, LocalCompilerHost,
     LocalCompilerHostError, LocalCompilerHostSelection, LocalCompilerHostSelectionIssue,
     LocalCompilerHostSelectionSource, LocalHostDirectory, LocalHostDiscovery, LocalHostEnvironment,

@@ -1,33 +1,9 @@
-//! The compiler paths the desktop supplies to the owner it embeds.
+//! Frozen compiler launch inputs for the desktop's embedded owner.
 //!
-//! The desktop freezes its launch inputs and uses the engine's shared installed
-//! tool selection, as CLI/MCP locald does. Only canonical selected paths enter
-//! the closed owner environment; PATH never enters compiler children. For Rust,
-//! the owner needs a Cargo and a
-//! Cargo home as well as `NUDOX_RUSTC` (a lone `NUDOX_RUSTC` used to be enough
-//! and the development shell still exports only that), and for Go a module
-//! cache. Without them the owner's Rust and Go adapters are absent and every
-//! root of those languages is refused as `Unavailable { language, stage:
-//! LowerIr }`.
-//!
-//! What is supplied is derived from what the process was given, never guessed:
-//! Cargo is the one beside the selected `rustc`, Cargo's home is where Cargo
-//! keeps it (`CARGO_HOME`, else `~/.cargo`), Go's module cache where Go keeps
-//! it (`GOMODCACHE`, else `GOPATH/pkg/mod`, else `~/go/pkg/mod`). A path is
-//! supplied only when the process has not set that variable itself. Derived
-//! tools and caches must exist as the owner requires, except that the default
-//! Cargo home can be safely created under the existing home. Configured paths
-//! stay exact, including invalid ones the owner must honestly refuse.
-//!
-//! A person who opens the app from the Finder gives it no `NUDOX_*` variable
-//! and a `PATH` of `/usr/bin:/bin:/usr/sbin:/sbin`. For them the desktop looks
-//! for the Rust they installed ([`find_rust`]): the process's `PATH`, then
-//! rustup's `~/.cargo/bin`, Homebrew, and Nix profiles, and takes the first
-//! directory that holds both `rustc` and `cargo` (a pair from one install,
-//! never a `rustc` from one and a `cargo` from another). An explicit
-//! `NUDOX_RUSTC` still wins. What it found, or where it looked in vain, is
-//! [`report`]ed, so the window can say it in words instead of every Rust
-//! package being refused as unavailable.
+//! Desktop and CLI/MCP use the engine's shared installed-tool policy, including
+//! Rust pair/cache selection and canonical TypeScript SDK/Node discovery. Only
+//! selected typed paths enter the closed owner snapshot. Explicit values retain
+//! their normal typed failures; an incoming closed snapshot is never expanded.
 
 use backend_local_service::{
     ClosedLocalHostEnvironmentSnapshot, LocalCompilerHost, LocalHostDiscovery,
@@ -36,132 +12,29 @@ use backend_local_service::{
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+#[cfg(test)]
+use std::path::Path;
 use std::sync::{PoisonError, RwLock};
 
-/// Where a person's Rust was found.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Place {
-    /// The process named it (`NUDOX_RUSTC`: the development shell, an operator).
-    Named,
-    /// A directory on the process's `PATH`.
-    Path,
-    /// rustup's proxies (`$CARGO_HOME/bin`, else `~/.cargo/bin`).
-    Rustup,
-    /// Homebrew (`/opt/homebrew/bin`, `/usr/local/bin`).
-    Homebrew,
-    /// A Nix profile.
-    Nix,
-}
+// Installed Rust pair discovery is shared with CLI/MCP host capture.
+use backend_local_service::{
+    InstalledRustInputs, InstalledRustToolchain as Rust, InstalledToolPlace as Place,
+};
 
-impl Place {
-    /// How a person names it.
-    pub(crate) const fn words(self) -> &'static str {
-        match self {
-            Self::Named => "as configured",
-            Self::Path => "on your PATH",
-            Self::Rustup => "from rustup",
-            Self::Homebrew => "from Homebrew",
-            Self::Nix => "from Nix",
-        }
-    }
-}
-
-/// The Rust the owner compiles with, as this launch found it.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Rust {
-    /// A `rustc` with its `cargo` beside it.
-    Found {
-        rustc: PathBuf,
-        place: Place,
-        /// `rustc --version`'s first line, when it answered.
-        version: Option<String>,
-    },
-    /// No directory it looked in held both; each looked-in directory, in order.
-    Missing { looked: Vec<PathBuf> },
-}
-
-impl Rust {
-    /// What the window says about it.
-    pub(crate) fn words(&self) -> String {
-        match self {
-            Self::Found { rustc, place, version } => {
-                let name = version.as_deref().and_then(|version| version.split_whitespace().nth(1)).map_or_else(|| "Rust".to_owned(), |number| format!("Rust {number}"));
-                format!("{name} at {} ({})", rustc.display(), place.words())
-            }
-            Self::Missing { .. } => {
-                "No Rust toolchain was found. Install one with rustup (rustup.rs) or Homebrew (brew install rust), then quit and reopen Nudox.".to_owned()
-            }
-        }
-    }
-}
-
-/// Directories people install Rust into outside their home, in the order they
-/// are tried after the process's `PATH` and rustup's.
-const SYSTEM_BINS: [(&str, Place); 5] = [
-    ("/opt/homebrew/bin", Place::Homebrew),
-    ("/usr/local/bin", Place::Homebrew),
-    ("/run/current-system/sw/bin", Place::Nix),
-    ("/nix/var/nix/profiles/default/bin", Place::Nix),
-    ("/etc/profiles/per-user", Place::Nix),
-];
-
-/// The file name a `tool` executable has on this platform (`rustc.exe` on
-/// Windows, `rustc` elsewhere).
-fn executable(tool: &str) -> String {
-    format!("{tool}{}", std::env::consts::EXE_SUFFIX)
-}
-
-/// The person's home directory variable: `HOME`, and on Windows, which does
-/// not set it, `USERPROFILE` (where rustup puts `.cargo`).
+#[cfg(test)]
+fn executable(tool: &str) -> String { format!("{tool}{}", std::env::consts::EXE_SUFFIX) }
 fn home_variable(value: &dyn Fn(&str) -> Option<OsString>) -> Option<OsString> {
     value("HOME").or_else(|| if cfg!(windows) { value("USERPROFILE") } else { None })
 }
 
-/// The first directory that holds both `rustc` and `cargo`: an explicit
-/// `NUDOX_RUSTC`, else the process's `PATH`, rustup's proxies, Homebrew, Nix.
-/// `system` is [`SYSTEM_BINS`] in production (a test gives its own).
-pub(crate) fn find_rust(variable: &dyn Fn(&str) -> Option<OsString>, system: &[(PathBuf, Place)]) -> Rust {
-    let value = |name: &str| variable(name).filter(|value| !value.is_empty());
-    if let Some(rustc) = value("NUDOX_RUSTC") {
-        return Rust::Found { rustc: PathBuf::from(rustc), place: Place::Named, version: None };
-    }
-    let home = home_variable(&value).map(PathBuf::from).filter(|home| home.is_absolute());
-    let mut places = Vec::new();
-    if let Some(path) = value("PATH") {
-        places.extend(std::env::split_paths(&path).filter(|dir| dir.is_absolute()).map(|dir| (dir, Place::Path)));
-    }
-    let cargo_home = value("CARGO_HOME").map(PathBuf::from).filter(|home| home.is_absolute()).or_else(|| home.as_ref().map(|home| home.join(".cargo")));
-    if let Some(cargo_home) = cargo_home {
-        places.push((cargo_home.join("bin"), Place::Rustup));
-    }
-    for (dir, place) in system {
-        // `/etc/profiles/per-user` is per user: NixOS and nix-darwin's.
-        let dir = if dir.ends_with("per-user") {
-            match home.as_ref().and_then(|home| home.file_name()) {
-                Some(user) => dir.join(user).join("bin"),
-                None => continue,
-            }
-        } else {
-            dir.clone()
-        };
-        places.push((dir, *place));
-    }
-    if let Some(home) = &home {
-        places.push((home.join(".nix-profile/bin"), Place::Nix));
-    }
-    let mut looked = Vec::new();
-    for (dir, place) in places {
-        if looked.contains(&dir) {
-            continue;
-        }
-        let (rustc, cargo) = (dir.join(executable("rustc")), dir.join(executable("cargo")));
-        if rustc.is_file() && cargo.is_file() {
-            return Rust::Found { rustc, place, version: None };
-        }
-        looked.push(dir);
-    }
-    Rust::Missing { looked }
+fn find_rust(variable: &dyn Fn(&str) -> Option<OsString>, system: &[(PathBuf, Place)]) -> Rust {
+    backend_local_service::find_installed_rust(&InstalledRustInputs {
+        configured_rustc: variable("NUDOX_RUSTC"),
+        home: home_variable(variable),
+        cargo_home: variable("CARGO_HOME"),
+        search_path: variable("PATH"),
+    }, system)
 }
 
 /// What this launch found, once the owner was started.
@@ -170,34 +43,6 @@ static REPORT: RwLock<Option<Rust>> = RwLock::new(None);
 /// The Rust this launch found for the owner, once it started.
 pub(crate) fn report() -> Option<Rust> {
     REPORT.read().unwrap_or_else(PoisonError::into_inner).clone()
-}
-
-/// `rustc --version`'s first line, within two seconds (a rustup proxy may
-/// first resolve its toolchain).
-fn version_of(rustc: &Path) -> Option<String> {
-    let mut child = std::process::Command::new(rustc)
-        .arg("--version")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
-    let started = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => break,
-            Ok(Some(_)) | Err(_) => return None,
-            Ok(None) if started.elapsed() > std::time::Duration::from_secs(2) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
-        }
-    }
-    let mut out = String::new();
-    std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out).ok()?;
-    out.lines().next().map(str::trim).filter(|line| !line.is_empty()).map(str::to_owned)
 }
 
 /// The paths to supply, given the process's variables.
@@ -210,6 +55,7 @@ pub(crate) fn supplied(
 
 /// [`supplied`], with a person's Rust looked for in `system` too when the
 /// process named none ([`find_rust`]).
+#[cfg(test)]
 pub(crate) fn supplied_among(
     variable: &dyn Fn(&str) -> Option<OsString>,
     system: &[(PathBuf, Place)],
@@ -272,10 +118,12 @@ pub(crate) fn supplied_among(
 /// the owner, including its normal invalid-path refusal, remains the authority.
 struct CompilerSelection {
     paths: Vec<(LocalHostVariable, PathBuf)>,
+    #[cfg(test)]
     inferred_cargo_home: Option<PathBuf>,
 }
 
 impl CompilerSelection {
+    #[cfg(test)]
     fn derive(variable: &dyn Fn(&str) -> Option<OsString>, system: &[(PathBuf, Place)]) -> Self {
         let mut paths = supplied_among(variable, system);
         let rust = find_rust(variable, system);
@@ -316,6 +164,7 @@ impl CompilerSelection {
 
     /// Only a default cache below the existing home may be created. Existing
     /// user caches, configured paths, ancestors and permissions stay untouched.
+    #[cfg(test)]
     fn realize(&self) -> io::Result<()> {
         let Some(path) = &self.inferred_cargo_home else { return Ok(()); };
         if path.is_dir() { return Ok(()); }
@@ -332,25 +181,15 @@ pub(crate) fn prepared_by_the_process() -> io::Result<ClosedLocalHostEnvironment
     }
     let captured = process_variables();
     let variable = |name: &str| captured.get(name).cloned();
-    let system = SYSTEM_BINS
-        .iter()
-        .map(|(dir, place)| (PathBuf::from(dir), *place))
-        .collect::<Vec<_>>();
-    let found = match find_rust(&variable, &system) {
-        Rust::Found { rustc, place, .. } => {
-            let version = version_of(&rustc);
-            Rust::Found {
-                rustc,
-                place,
-                version,
-            }
-        }
-        missing @ Rust::Missing { .. } => missing,
-    };
+    let system = backend_local_service::installed_rust_system_locations();
+    let found = find_rust(&variable, &system);
     *REPORT.write().unwrap_or_else(PoisonError::into_inner) = Some(found);
-    let selected = CompilerSelection::derive(&variable, &system);
+    let selected = CompilerSelection {
+        paths: closed_paths(&variable),
+        #[cfg(test)]
+        inferred_cargo_home: None,
+    };
     let snapshot = installed_snapshot(&captured, &selected)?;
-    selected.realize()?;
     Ok(snapshot)
 }
 
@@ -406,6 +245,8 @@ impl LocalHostEnvironment for DesktopLaunchEnvironment<'_> {
     fn go_path(&self) -> Option<OsString> {
         self.captured.get("GOPATH").cloned()
     }
+    fn cargo_home(&self) -> Option<OsString> { self.captured.get("CARGO_HOME").cloned() }
+    fn user_profile(&self) -> Option<OsString> { self.captured.get("USERPROFILE").cloned() }
 }
 
 fn installed_snapshot(
@@ -486,7 +327,7 @@ mod tests {
             ("HOME", home.into_os_string()),
             ("PATH", bin.into_os_string()),
         ]);
-        let selected = CompilerSelection::derive(&|name| captured.get(name).cloned(), &[]);
+        let selected = CompilerSelection { paths: closed_paths(&|name| captured.get(name).cloned()), inferred_cargo_home: None };
         let desktop = installed_snapshot(&captured, &selected).expect("desktop capture");
         let locald = LocalCompilerHost::new(
             DesktopLaunchEnvironment {
