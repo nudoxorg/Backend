@@ -1308,6 +1308,69 @@ impl std::fmt::Debug for OwnedWorkspaceDirectory {
 }
 
 impl OwnedWorkspaceDirectory {
+    /// Establishes private application state beneath an existing user-owned
+    /// profile/data anchor and its known operating-system directory suffix.
+    /// Existing conventional directories may be readable, but never writable
+    /// by other users. Their permissions are preserved. Missing components
+    /// are created privately relative to held handles; links are never followed.
+    pub fn under_user_data(anchor: &Path, suffix: &[&str], application: &str) -> io::Result<Self> {
+        if !anchor.is_absolute() {
+            return Err(invalid("user data anchor must be absolute"));
+        }
+        validate_component(application)?;
+        for name in suffix {
+            validate_component(name)?;
+        }
+        #[cfg(unix)]
+        let directory = {
+            let mut parent = DirectoryCapability::open(anchor)?;
+            validate_user_data_parent(&parent)?;
+            let mut path = anchor.to_path_buf();
+            for name in suffix {
+                parent.verify_path(&path)?;
+                let child = match parent.open_dir(name) {
+                    Ok(child) => child,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        match parent.create_private_dir(name) {
+                            Ok(child) => child,
+                            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                                parent.open_dir(name)?
+                            }
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    Err(error) => return Err(error),
+                };
+                validate_user_data_parent(&child)?;
+                path.push(name);
+                child.verify_path(&path)?;
+                parent = child;
+            }
+            parent.verify_path(&path)?;
+            parent.open_or_create_private_dir(application)?
+        };
+        #[cfg(windows)]
+        let directory = DirectoryCapability {
+            handle: Arc::new(crate::win32::workspace_fs::WorkspaceRoot::under_user_data(
+                anchor,
+                suffix,
+                application,
+            )?),
+            purpose: CapabilityPurpose::PrivateState,
+        };
+        #[cfg(not(any(unix, windows)))]
+        let directory = {
+            return Err(unsupported());
+        };
+        let path = suffix
+            .iter()
+            .fold(anchor.to_path_buf(), |path, name| path.join(name))
+            .join(application);
+        let workspace = Self { path, directory };
+        workspace.verify_path()?;
+        Ok(workspace)
+    }
+
     /// Opens an existing private directory or creates it beneath a verified
     /// private parent (or root-owned sticky temporary directory).
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
@@ -1387,6 +1450,22 @@ impl OwnedWorkspaceDirectory {
     }
 }
 
+#[cfg(unix)]
+fn validate_user_data_parent(parent: &DirectoryCapability) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt as _;
+    let metadata = parent.handle.metadata()?;
+    if !metadata.is_dir()
+        || metadata.uid() != rustix::process::geteuid().as_raw()
+        || metadata.mode() & 0o300 != 0o300
+        || metadata.mode() & 0o022 != 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "user data directory must be user-owned and not writable by other users",
+        ));
+    }
+    Ok(())
+}
 #[cfg(unix)]
 fn validate_workspace_parent(parent: &DirectoryCapability) -> io::Result<()> {
     use rustix::process::geteuid;
@@ -1635,6 +1714,30 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o700, "workspace directory mode for {path:?}");
+    }
+
+    #[test]
+    fn default_user_data_state_keeps_its_pinned_identity_and_refuses_public_app_repair() {
+        let root = scratch();
+        let home = root.join("home");
+        fs::create_dir(&home).unwrap();
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).unwrap();
+        let app = OwnedWorkspaceDirectory::under_user_data(&home, &["Library", "Application Support"], "Nudox")
+            .expect("empty public home bootstrap");
+        assert_private_mode(app.path());
+        app.verify_path().expect("pinned original path");
+        let moved = root.join("moved-home");
+        fs::rename(&home, &moved).unwrap();
+        fs::create_dir(&home).unwrap();
+        assert!(app.verify_path().is_err(), "a replacement pathname cannot inherit the pinned identity");
+        drop(app);
+        let public_app = home.join("Nudox");
+        fs::create_dir(&public_app).unwrap();
+        fs::set_permissions(&public_app, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(OwnedWorkspaceDirectory::under_user_data(&home, &[], "Nudox").is_err());
+        assert_eq!(fs::metadata(&public_app).unwrap().mode() & 0o777, 0o755);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(unix)]
