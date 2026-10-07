@@ -12,6 +12,7 @@ use crate::{
     compare_ranked_hits,
 };
 use backend_semantic::EntityId;
+use backend_platform::OwnedWorkspaceDirectory;
 use backend_version::CoverageWitness;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
@@ -743,10 +744,10 @@ impl TantivySource {
             return Err(Error::IncompleteCoverage.into());
         }
 
-        fs::create_dir_all(cache_root.as_ref())?;
-        let _cache_directory =
-            backend_platform::durability::open_directory_readonly_nofollow(cache_root.as_ref())?;
-        let namespace = PrivateNamespace::open_child(cache_root.as_ref(), DURABLE_ROOTS_DIRECTORY)?;
+        let cache_directory = OwnedWorkspaceDirectory::open(cache_root.as_ref())?;
+        cache_directory.verify_path()?;
+        let namespace =
+            PrivateNamespace::open_child(cache_directory.path(), DURABLE_ROOTS_DIRECTORY)?;
         Self::open_or_build_locked(state, limits, &namespace, budget)
     }
 
@@ -983,10 +984,10 @@ impl TantivySource {
         {
             return Err(Error::IncompleteCoverage.into());
         }
-        fs::create_dir_all(cache_root.as_ref())?;
-        let _cache_directory =
-            backend_platform::durability::open_directory_readonly_nofollow(cache_root.as_ref())?;
-        let namespace = PrivateNamespace::open_child(cache_root.as_ref(), DURABLE_ROOTS_DIRECTORY)?;
+        let cache_directory = OwnedWorkspaceDirectory::open(cache_root.as_ref())?;
+        cache_directory.verify_path()?;
+        let namespace =
+            PrivateNamespace::open_child(cache_directory.path(), DURABLE_ROOTS_DIRECTORY)?;
         Self::open_or_advance_locked(previous, next, limits, budget, &namespace, cache_budget)
     }
 

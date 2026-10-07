@@ -1,5 +1,6 @@
 use super::super::*;
 use super::ForgeTransport;
+use backend_platform::OwnedWorkspaceDirectory;
 
 /// Safe process-backed transport for a generic HTTPS Git source.
 ///
@@ -45,9 +46,14 @@ impl Drop for GitArchiveReader {
 impl GitCommandTransport {
     /// Creates a transport whose temporary repositories live below `root`.
     pub fn new(root: impl Into<PathBuf>) -> Result<Self, ForgeTransportError> {
-        let root = root.into();
-        fs::create_dir_all(&root).map_err(|_| ForgeTransportError::Unavailable)?;
-        Ok(Self { root, token: None })
+        let root = OwnedWorkspaceDirectory::open(root.into())
+            .map_err(|_| ForgeTransportError::Unavailable)?;
+        root.verify_path()
+            .map_err(|_| ForgeTransportError::Unavailable)?;
+        Ok(Self {
+            root: root.path().to_path_buf(),
+            token: None,
+        })
     }
 
     /// Attaches a process-local bearer token. The token is not written into

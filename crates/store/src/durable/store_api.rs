@@ -3,6 +3,7 @@
 use super::layout::collection_pin_root_identity;
 use super::nodes;
 use super::recovery;
+use backend_platform::OwnedWorkspaceDirectory;
 use super::{
     Arc, ClosureId, ClosureManifest, DurableManifest, DurableTree, FileStore, Mutex, ObjectEdge,
     ObjectId, ObjectWriteReceipt, Pack, PackId, Path, RawRelation, RelationAdmissionRegistry,
@@ -42,11 +43,17 @@ impl FileStore {
         max_pack_bytes: usize,
         relation_registry: RelationAdmissionRegistry,
     ) -> Result<Self, StoreError> {
-        let root = root.as_ref().to_path_buf();
-        fs::create_dir_all(root.join("packs")).map_err(|error| io_error(&error))?;
-        fs::create_dir_all(root.join("objects")).map_err(|error| io_error(&error))?;
-        fs::create_dir_all(root.join("closures")).map_err(|error| io_error(&error))?;
-        fs::create_dir_all(root.join("nodes")).map_err(|error| io_error(&error))?;
+        let root_directory = OwnedWorkspaceDirectory::open(root.as_ref())
+            .map_err(|error| io_error(&error))?;
+        for name in ["packs", "objects", "closures", "nodes"] {
+            root_directory
+                .child(name)
+                .map_err(|error| io_error(&error))?;
+        }
+        root_directory
+            .verify_path()
+            .map_err(|error| io_error(&error))?;
+        let root = root_directory.path().to_path_buf();
         let gc_identity = collection_pin_root_identity(&root);
         let store = Self {
             root,

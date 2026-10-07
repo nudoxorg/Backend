@@ -8,7 +8,7 @@
 use std::ffi::OsString;
 use std::fs::File;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[cfg(unix)]
@@ -577,6 +577,28 @@ impl DirectoryCapability {
         let directory = self.open_dir(name)?;
         directory.validate_private()?;
         Ok(directory)
+    }
+
+    /// Opens one owner-only child directory, creating it with private
+    /// permissions when it is absent.
+    ///
+    /// Existing children are checked through a no-follow handle and are never
+    /// chmodded or otherwise repaired. A concurrent creator is reopened and
+    /// subjected to the same owner and permission checks.
+    pub fn open_or_create_private_dir(&self, name: &str) -> io::Result<Self> {
+        match self.open_private_dir(name) {
+            Ok(directory) => Ok(directory),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                match self.create_private_dir(name) {
+                    Ok(directory) => Ok(directory),
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                        self.open_private_dir(name)
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Validates this held directory's owner and private mode or ACL.
@@ -1225,6 +1247,141 @@ impl DirectoryCapability {
     }
 }
 
+/// A verified private workspace directory that creates children without
+/// relying on the process umask.
+///
+/// `open` requires an existing trusted parent: a current-user-owned parent
+/// that is not group- or world-writable, or a root-owned sticky temporary
+/// directory. Each child is created relative to a pinned directory handle
+/// with owner-only permissions. Existing children must already be owned by
+/// the current user and private; this type never chmods an existing directory.
+/// Path-based consumers can call [`Self::verify_path`] immediately before
+/// using [`Self::path`].
+#[derive(Clone)]
+pub struct OwnedWorkspaceDirectory {
+    path: PathBuf,
+    directory: DirectoryCapability,
+}
+
+impl std::fmt::Debug for OwnedWorkspaceDirectory {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OwnedWorkspaceDirectory")
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
+}
+
+impl OwnedWorkspaceDirectory {
+    /// Opens an existing private directory or creates it beneath a verified
+    /// private parent (or root-owned sticky temporary directory).
+    pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
+        let requested = path.as_ref();
+        let path = if requested.is_absolute() {
+            requested.to_path_buf()
+        } else {
+            std::env::current_dir()?.join(requested)
+        };
+        if path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err(invalid("owned workspace path contains a parent component"));
+        }
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| invalid("owned workspace path has no valid final name"))?;
+        let parent_path = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let parent = DirectoryCapability::open(parent_path)?;
+        validate_workspace_parent(&parent)?;
+        let directory = parent.open_or_create_private_dir(name)?;
+        let workspace = Self { path, directory };
+        workspace.verify_path()?;
+        Ok(workspace)
+    }
+
+    /// Opens or creates a private direct child relative to this pinned
+    /// workspace directory.
+    pub fn child(&self, name: &str) -> io::Result<Self> {
+        let directory = self.directory.open_or_create_private_dir(name)?;
+        let workspace = Self {
+            path: self.path.join(name),
+            directory,
+        };
+        workspace.verify_path()?;
+        Ok(workspace)
+    }
+
+    /// Opens or creates a private descendant beneath this workspace.
+    /// Absolute paths, parent components, and non-normal components are
+    /// rejected; each normal component is resolved through the preceding
+    /// pinned directory handle.
+    pub fn descendant(&self, relative: impl AsRef<Path>) -> io::Result<Self> {
+        let relative = relative.as_ref();
+        if relative.is_absolute() {
+            return Err(invalid("owned workspace descendant must be relative"));
+        }
+        let mut directory = self.clone();
+        for component in relative.components() {
+            let std::path::Component::Normal(name) = component else {
+                return Err(invalid("owned workspace descendant has an unsafe component"));
+            };
+            let name = name
+                .to_str()
+                .ok_or_else(|| invalid("owned workspace descendant name is not valid text"))?;
+            directory = directory.child(name)?;
+        }
+        Ok(directory)
+    }
+
+    /// Returns the path associated with this pinned directory.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Verifies that this directory is still private and its path still names
+    /// the pinned directory object.
+    pub fn verify_path(&self) -> io::Result<()> {
+        self.directory.validate_private()?;
+        self.directory.verify_path(&self.path)
+    }
+}
+
+#[cfg(unix)]
+fn validate_workspace_parent(parent: &DirectoryCapability) -> io::Result<()> {
+    use rustix::process::geteuid;
+    use std::os::unix::fs::MetadataExt as _;
+
+    let metadata = parent.handle.metadata()?;
+    let mode = metadata.mode();
+    let user_owned = metadata.uid() == geteuid().as_raw()
+        && mode & 0o300 == 0o300
+        && mode & 0o022 == 0;
+    let protected_temporary = metadata.uid() == 0 && mode & 0o1000 != 0;
+    if !metadata.is_dir() || !(user_owned || protected_temporary) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "workspace parent must be user-owned and not writable by other users, or root-owned and sticky",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn validate_workspace_parent(parent: &DirectoryCapability) -> io::Result<()> {
+    parent.validate_private()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn validate_workspace_parent(_parent: &DirectoryCapability) -> io::Result<()> {
+    Err(unsupported())
+}
+
 #[cfg(unix)]
 fn open_unix_path(path: &Path) -> io::Result<File> {
     use rustix::fs::{CWD, Mode, OFlags, open, openat};
@@ -1405,10 +1562,16 @@ fn file_is_unlinked(_file: &File) -> bool {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::{CreatedDirectoryCleanup, DirectoryCapability, DirectoryCreateFailure};
+    use super::{
+        CreatedDirectoryCleanup, DirectoryCapability, DirectoryCreateFailure,
+        OwnedWorkspaceDirectory,
+    };
     use std::fs;
     use std::os::unix::fs::symlink;
-    use std::path::PathBuf;
+    use std::os::unix::fs::MetadataExt as _;
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -1427,6 +1590,146 @@ mod tests {
             }
         }
         panic!("directory capability fixture capacity exhausted");
+    }
+
+    #[cfg(unix)]
+    fn assert_private_mode(path: &Path) {
+        let mode = fs::metadata(path)
+            .expect("workspace directory metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700, "workspace directory mode for {path:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_workspace_permission_probe_child() {
+        let Some(mask) = std::env::var_os("BACKEND_PLATFORM_WORKSPACE_UMASK_PROBE") else {
+            return;
+        };
+        let mask = u32::from_str_radix(mask.to_str().expect("umask text"), 8)
+            .expect("umask value");
+        let _previous_mask = rustix::process::umask(rustix::fs::Mode::from_bits_truncate(mask));
+        let root = std::env::temp_dir().join(format!(
+            "backend-platform-workspace-umask-{}-{}",
+            std::process::id(),
+            mask
+        ));
+        let root_capability = DirectoryCapability::open_or_create_private(&root)
+            .expect("create isolated private workspace fixture");
+        assert_private_mode(&root);
+        let workspace = OwnedWorkspaceDirectory::open(root.join("workspace"))
+            .expect("open private workspace root");
+        let search = workspace
+            .child("search-index-v2")
+            .expect("create private Tantivy root");
+        let objects = search.child("objects").expect("create private object child");
+        assert_private_mode(workspace.path());
+        assert_private_mode(search.path());
+        assert_private_mode(objects.path());
+
+        drop(objects);
+        drop(search);
+        drop(workspace);
+        let reopened = OwnedWorkspaceDirectory::open(root.join("workspace"))
+            .expect("reopen existing workspace without repairing it");
+        let reopened_search = reopened
+            .child("search-index-v2")
+            .expect("reopen existing Tantivy root");
+        assert_private_mode(reopened.path());
+        assert_private_mode(reopened_search.path());
+        drop((reopened_search, reopened, root_capability));
+        fs::remove_dir_all(root).expect("remove isolated private workspace fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_workspace_directories_ignore_group_and_restrictive_umasks() {
+        for mask in ["002", "077"] {
+            let status = Command::new(std::env::current_exe().expect("test executable"))
+                .args(["owned_workspace_permission_probe_child", "--nocapture"])
+                .env("BACKEND_PLATFORM_WORKSPACE_UMASK_PROBE", mask)
+                .status()
+                .expect("launch isolated umask test process");
+            assert!(status.success(), "workspace umask probe for {mask} failed");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_workspace_reopen_refuses_group_writable_or_symlinked_children() {
+        let root = scratch();
+        let parent = DirectoryCapability::open_or_create_private(&root)
+            .expect("make workspace fixture private");
+        let workspace = parent
+            .open_or_create_private_dir("workspace")
+            .expect("create workspace root");
+        let unsafe_path = root.join("workspace/unsafe");
+        fs::create_dir(&unsafe_path).expect("create unsafe preexisting child");
+        fs::set_permissions(&unsafe_path, fs::Permissions::from_mode(0o770))
+            .expect("make child group-writable");
+        let before = fs::metadata(&unsafe_path)
+            .expect("unsafe child metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert!(workspace.open_or_create_private_dir("unsafe").is_err());
+        assert_eq!(
+            fs::metadata(&unsafe_path)
+                .expect("unsafe child remains")
+                .permissions()
+                .mode()
+                & 0o777,
+            before,
+            "refusal must not chmod an existing directory"
+        );
+
+        let target = root.join("outside");
+        fs::create_dir(&target).expect("create symlink target");
+        symlink(&target, root.join("workspace/link")).expect("create child symlink");
+        assert!(workspace.open_or_create_private_dir("link").is_err());
+        assert!(
+            !target.join("new").exists(),
+            "refused symlink child must have no target side effect"
+        );
+        drop(workspace);
+        drop(parent);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_workspace_rejects_a_foreign_owned_existing_child() {
+        if rustix::process::geteuid().as_raw() != 0 {
+            return;
+        }
+        let root = scratch();
+        let parent = DirectoryCapability::open_or_create_private(&root)
+            .expect("make workspace fixture private");
+        let foreign = root.join("foreign");
+        fs::create_dir(&foreign).expect("create foreign-owner fixture");
+        fs::set_permissions(&foreign, fs::Permissions::from_mode(0o700))
+            .expect("make foreign directory mode private before ownership change");
+        let status = Command::new("chown")
+            .arg("65534")
+            .arg(&foreign)
+            .status()
+            .expect("run chown for foreign-owner fixture");
+        assert!(status.success(), "assign fixture to the nobody account");
+
+        let before = fs::metadata(&foreign).expect("foreign owner metadata");
+        assert_ne!(before.uid(), rustix::process::geteuid().as_raw());
+        assert!(OwnedWorkspaceDirectory::open(&foreign).is_err());
+        let after = fs::metadata(&foreign).expect("foreign directory remains");
+        assert_eq!(after.uid(), before.uid(), "refusal must not change ownership");
+        assert_eq!(
+            after.permissions().mode() & 0o777,
+            before.permissions().mode() & 0o777,
+            "refusal must not repair foreign permissions"
+        );
+        drop(parent);
+        fs::remove_dir_all(root).expect("remove fixture");
     }
 
     #[test]

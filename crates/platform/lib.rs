@@ -35,7 +35,7 @@ mod windows_child_output;
 
 pub use directory::{
     CreatedDirectory, CreatedDirectoryRenameError, DirectoryCapability, DirectoryCreateFailure,
-    DirectoryEntry, DirectoryRenameError, EntryKind,
+    DirectoryEntry, DirectoryRenameError, EntryKind, OwnedWorkspaceDirectory,
 };
 pub use file_identity::FileIdentity;
 pub use native_path::{NativePath, NativePathError, NativePathKey, NativePathWire};

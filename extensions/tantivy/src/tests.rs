@@ -13,7 +13,7 @@ use crate::engine::test_support::{
     hex_fingerprint, ordinal_map_capacity, projection_fingerprint, rank_cache_bytes,
     write_projection_manifest,
 };
-use backend_platform::DirectoryCapability;
+use backend_platform::{DirectoryCapability, OwnedWorkspaceDirectory};
 use backend_semantic::{Entity, EntityId, Source, entity_key};
 use backend_version::{
     AuthorityScopeClaim, Coverage, CoverageWitness, ProducerObservationClaims,
@@ -1667,6 +1667,129 @@ fn term_hits(source: &TantivySource, term: &str) -> Vec<EntityId> {
         .into_iter()
         .map(|hit| hit.document)
         .collect()
+}
+
+#[cfg(unix)]
+#[test]
+fn durable_cache_workspace_umask_probe_child() {
+    let Some(mask) = std::env::var_os("BACKEND_TANTIVY_WORKSPACE_UMASK_PROBE") else {
+        return;
+    };
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-workspace-umask-{}-{}-{}",
+        std::process::id(),
+        mask.to_string_lossy(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    ));
+    let workspace = OwnedWorkspaceDirectory::open(&root).expect("create private workspace root");
+    let index_root = workspace
+        .child("search-index-v2")
+        .expect("create private discovery search root");
+    let state = state_for(
+        vec![(
+            document(41),
+            vec![("name".into(), "umaskrestartcanary".into())],
+        )],
+        [0x41; 32],
+    );
+
+    let (source, action) = TantivySource::open_or_build_in_dir_with_action(
+        &state,
+        Limits::default(),
+        index_root.path(),
+    )
+    .expect("build Tantivy projection with process umask");
+    assert_eq!(action, DurableProjectionAction::Built);
+    assert_eq!(term_hits(&source, "umaskrestartcanary"), vec![document(41)]);
+    drop(source);
+
+    let reopened = TantivySource::open_or_build_in_dir_with_action(
+        &state,
+        Limits::default(),
+        index_root.path(),
+    )
+    .expect("reopen valid Tantivy projection");
+    assert_eq!(reopened.1, DurableProjectionAction::Opened);
+    assert_eq!(
+        term_hits(&reopened.0, "umaskrestartcanary"),
+        vec![document(41)],
+        "a process restart must retain the exact indexed search answer"
+    );
+
+    use std::os::unix::fs::PermissionsExt as _;
+    let version_root = root.join("search-index-v2/v4");
+    for path in [workspace.path(), index_root.path(), version_root.as_path()] {
+        let mode = std::fs::metadata(path)
+            .expect("private directory metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700, "private directory mode for {path:?}");
+    }
+    drop((reopened, index_root, workspace));
+    std::fs::remove_dir_all(&root).expect("remove private workspace fixture");
+}
+
+#[cfg(unix)]
+#[test]
+fn durable_cache_workspace_creation_survives_common_umasks_and_refuses_unsafe_roots() {
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::process::Command;
+
+    for mask in ["002", "077"] {
+        let executable = std::env::current_exe().expect("test executable");
+        let status = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("umask \"$1\"; shift; exec \"$@\"")
+            .arg("workspace-umask-probe")
+            .arg(mask)
+            .arg(executable)
+            .args([
+                "--exact",
+                "tests::durable_cache_workspace_umask_probe_child",
+                "--nocapture",
+            ])
+            .env("BACKEND_TANTIVY_WORKSPACE_UMASK_PROBE", mask)
+            .status()
+            .expect("launch isolated umask probe");
+        assert!(status.success(), "Tantivy umask probe failed under {mask}");
+    }
+
+    let root = std::env::temp_dir().join(format!(
+        "backend-tantivy-unsafe-workspace-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    ));
+    let workspace = OwnedWorkspaceDirectory::open(&root).expect("create private workspace");
+    let unsafe_root = workspace.child("unsafe-index").expect("create index root");
+    std::fs::set_permissions(unsafe_root.path(), std::fs::Permissions::from_mode(0o770))
+        .expect("make existing index root group-writable");
+    assert!(TantivySource::open_or_build_in_dir(
+        &state_for(
+            vec![(document(42), vec![("name".into(), "mustnotbuild".into())])],
+            [0x42; 32]
+        ),
+        Limits::default(),
+        unsafe_root.path(),
+    )
+    .is_err());
+    assert_eq!(
+        std::fs::metadata(unsafe_root.path())
+            .expect("unsafe existing root remains")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o770,
+        "refusing an existing unsafe root must not chmod it"
+    );
+    drop((unsafe_root, workspace));
+    std::fs::remove_dir_all(root).expect("remove unsafe workspace fixture");
 }
 
 #[test]

@@ -17,6 +17,7 @@ use backend_engine::registry::{
 };
 use backend_library::is_hard_ignored_path;
 use backend_platform::directory::{DirectoryCapability, DirectoryEntry, EntryKind};
+use backend_platform::OwnedWorkspaceDirectory;
 use flate2::read::{DeflateDecoder, GzDecoder};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -861,17 +862,23 @@ impl RegistryGateway {
         root: impl AsRef<Path>,
         advisory_config: &AdvisoryConfig,
     ) -> Result<Option<Self>, RegistryGatewayOpenError> {
-        let workspace_root = root.as_ref().to_path_buf();
+        let requested_root = root.as_ref().to_path_buf();
         // The authority journal lives directly under this namespace. Create
-        // the namespace through a held parent capability before the authority
-        // initializer writes its first durable state; persist itself must not
-        // create ancestors by re-walking their pathnames.
-        let registry_directory = DirectoryCapability::open_or_create_private(&workspace_root)
+        // the namespace through a held, owner-checked capability before the
+        // authority initializer writes its first durable state. Existing
+        // directories are never chmodded on open.
+        let registry_directory = OwnedWorkspaceDirectory::open(&requested_root)
             .map_err(|source| RegistryGatewayOpenError::RegistryRoot {
-                path: workspace_root.clone(),
+                path: requested_root.clone(),
                 source,
             })?;
-        drop(registry_directory);
+        registry_directory
+            .verify_path()
+            .map_err(|source| RegistryGatewayOpenError::RegistryRoot {
+                path: requested_root,
+                source,
+            })?;
+        let workspace_root = registry_directory.path().to_path_buf();
         let advisory_path = workspace_root.join("advisory-authority.json");
         let advisory =
             open_advisory_authority(&advisory_path, advisory_config).map_err(|source| {
@@ -883,8 +890,21 @@ impl RegistryGateway {
         // Every source, including a legacy endpoint override, is composed
         // below the versioned router root. This keeps cache migration and
         // owner identity independent of the process adapter that selected it.
-        let source_root = workspace_root.join(REGISTRY_SOURCE_ROOT_VERSION);
-        let shared_objects = source_root.join("cas").join("objects");
+        let source_directory = registry_directory
+            .child(REGISTRY_SOURCE_ROOT_VERSION)
+            .map_err(|source| RegistryGatewayOpenError::RegistryRoot {
+                path: workspace_root.join(REGISTRY_SOURCE_ROOT_VERSION),
+                source,
+            })?;
+        let shared_objects = source_directory
+            .child("cas")
+            .and_then(|directory| directory.child("objects"))
+            .map_err(|source| RegistryGatewayOpenError::RegistryRoot {
+                path: workspace_root.join(REGISTRY_SOURCE_ROOT_VERSION).join("cas/objects"),
+                source,
+            })?;
+        let source_root = source_directory.path().to_path_buf();
+        let shared_objects = shared_objects.path().to_path_buf();
         Ok(Some(Self {
             sources: config.sources.clone(),
             slots: BTreeMap::new(),
