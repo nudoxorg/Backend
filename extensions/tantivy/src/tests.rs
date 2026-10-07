@@ -3518,3 +3518,55 @@ fn damaged_inactive_binding_remains_charged_without_poisoning_selected_search() 
     std::fs::write(&binding_path, original).expect("restore private fixture");
     std::fs::remove_dir_all(root).expect("cleanup");
 }
+
+#[test]
+fn cancelled_cold_preparation_does_not_publish_and_can_retry() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let documents = vec![(document(1), vec![("body".into(), "alpha".into())])];
+    let (binding, coverage) = binding(&documents);
+    let state = DocumentState::new(binding, coverage, documents, Limits::default()).expect("state");
+    let root = std::env::temp_dir().join(format!("backend-tantivy-cancel-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos()));
+    std::fs::create_dir(&root).expect("private durable root");
+    let cancelled = std::sync::Arc::new(AtomicBool::new(true));
+    let result = TantivySource::open_or_build_cancelable(
+        &state,
+        Limits::default(),
+        &root,
+        DurableCacheBudget::default(),
+        &cancelled,
+    );
+    assert!(
+        matches!(result, Err(TantivySourceError::Io(ref error)) if error.kind() == std::io::ErrorKind::Interrupted)
+    );
+    assert_eq!(
+        std::fs::read_dir(&root).expect("root").count(),
+        0,
+        "cancelled preflight does not enter publication"
+    );
+    cancelled.store(false, Ordering::Release);
+    engine::test_support::cancel_before_next_commit(std::sync::Arc::clone(&cancelled));
+    let cancelled_stage = TantivySource::open_or_build_cancelable(&state, Limits::default(), &root, DurableCacheBudget::default(), &cancelled);
+    assert!(matches!(cancelled_stage, Err(TantivySourceError::Io(ref error)) if error.kind() == std::io::ErrorKind::Interrupted));
+    let generations = std::fs::read_dir(root.join(DURABLE_ROOTS_DIRECTORY)).expect("namespace").filter_map(Result::ok).filter(|entry| entry.file_type().expect("generation type").is_dir()).count();
+    assert_eq!(generations, 0, "cancelled native precommit retires stage without publishing");
+    cancelled.store(false, Ordering::Release);
+    let (_, action) = TantivySource::open_or_build_cancelable(
+        &state,
+        Limits::default(),
+        &root,
+        DurableCacheBudget::default(),
+        &cancelled,
+    )
+    .expect("retry succeeds");
+    assert_eq!(action, DurableProjectionAction::Built);
+    let (_, action) = TantivySource::open_or_build_cancelable(
+        &state,
+        Limits::default(),
+        &root,
+        DurableCacheBudget::default(),
+        &cancelled,
+    )
+    .expect("cold reopen remains fully admitted");
+    assert_eq!(action, DurableProjectionAction::Opened);
+    std::fs::remove_dir_all(root).expect("retire cancelled cache");
+}

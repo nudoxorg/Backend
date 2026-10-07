@@ -12,6 +12,7 @@ use std::fmt;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 const MAX_SEMANTIC_DOCUMENT_PAGE_ROWS: usize = 256;
 
@@ -781,6 +782,25 @@ impl SearchSnapshotOwner {
         coverage: CoverageWitness,
         semantic_evidence: SemanticQueryCorpus,
     ) -> Result<&QueryCoordinator, QueryError> {
+        self.select_controlled(
+            workspace,
+            view,
+            expected_view_capability,
+            coverage,
+            semantic_evidence,
+            None,
+        )
+    }
+
+    pub(crate) fn select_controlled(
+        &mut self,
+        workspace: WorkspaceRoot,
+        view: ViewRoot,
+        expected_view_capability: CoverageCapability,
+        coverage: CoverageWitness,
+        semantic_evidence: SemanticQueryCorpus,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<&QueryCoordinator, QueryError> {
         validate_view_binding(&view, &expected_view_capability)?;
         if self.selected.as_ref().is_some_and(|selected| {
             selected.matches_selection(workspace, &view, coverage, &semantic_evidence)
@@ -833,6 +853,7 @@ impl SearchSnapshotOwner {
             semantic_evidence,
             self.durable_root.clone(),
             self.durable_budget,
+            cancelled,
         )?;
         self.selected = Some(selected);
         match action {
@@ -851,6 +872,42 @@ impl SearchSnapshotOwner {
             }
         }
         self.selected.as_ref().ok_or(QueryError::InvalidView)
+    }
+
+    /// Transfers only projection ownership. The owner loop retains its admitted
+    /// immutable semantic corpus and can continue other reads during preparation.
+    pub(crate) fn take_projection(&mut self) -> Self {
+        Self {
+            selected: self.selected.take(),
+            durable_root: self.durable_root.clone(),
+            durable_budget: self.durable_budget,
+            builds: self.builds,
+            opens: self.opens,
+            maintenance: self.maintenance,
+            corpus: None,
+            corpus_builds: 0,
+        }
+    }
+
+    pub(crate) fn restore_projection(&mut self, mut projection: Self, admit: bool) {
+        self.selected = if admit {
+            projection.selected.take()
+        } else {
+            None
+        };
+        self.builds = projection.builds;
+        self.opens = projection.opens;
+        self.maintenance = if admit { projection.maintenance } else { None };
+    }
+
+    pub(crate) fn selected_for(
+        &self,
+        workspace: WorkspaceRoot,
+        view: &ViewRoot,
+    ) -> Option<&QueryCoordinator> {
+        self.selected.as_ref().filter(|selected| {
+            selected.corpus.workspace == workspace && selected.corpus.view.root() == view.root()
+        })
     }
 
     /// Returns how the most recent [`Self::select`] treated the resident index.
@@ -954,6 +1011,7 @@ impl QueryCoordinator {
             semantic_evidence,
             None,
             lexical::DurableCacheBudget::default(),
+            None,
         )
         .map(|(coordinator, _)| coordinator)
     }
@@ -966,6 +1024,7 @@ impl QueryCoordinator {
         semantic_evidence: SemanticQueryCorpus,
         durable_root: Option<PathBuf>,
         durable_budget: lexical::DurableCacheBudget,
+        cancelled: Option<&AtomicBool>,
     ) -> Result<(Self, lexical::DurableProjectionAction), QueryError> {
         let prepared = prepare_corpus(
             workspace,
@@ -974,15 +1033,32 @@ impl QueryCoordinator {
             coverage,
             semantic_evidence,
         )?;
-        let (source, action) = match durable_root.as_deref() {
-            Some(root) => lexical::TantivySource::open_or_build_in_dir_with_budget_and_action(
+        let (source, action) = match (durable_root.as_deref(), cancelled) {
+            (Some(root), Some(cancelled)) => lexical::TantivySource::open_or_build_cancelable(
                 &prepared.state,
                 lexical::Limits::default(),
                 root,
                 durable_budget,
+                cancelled,
             ),
-            None => lexical::TantivySource::build(&prepared.state, lexical::Limits::default())
-                .map(|source| (source, lexical::DurableProjectionAction::Built)),
+            (None, Some(cancelled)) => lexical::TantivySource::build_cancelable(
+                &prepared.state,
+                lexical::Limits::default(),
+                cancelled,
+            )
+            .map(|source| (source, lexical::DurableProjectionAction::Built)),
+            (Some(root), None) => {
+                lexical::TantivySource::open_or_build_in_dir_with_budget_and_action(
+                    &prepared.state,
+                    lexical::Limits::default(),
+                    root,
+                    durable_budget,
+                )
+            }
+            (None, None) => {
+                lexical::TantivySource::build(&prepared.state, lexical::Limits::default())
+                    .map(|source| (source, lexical::DurableProjectionAction::Built))
+            }
         }
         .map_err(|error| QueryError::provider(LexicalPhase::OpenProjection, error))?;
         let lexical =

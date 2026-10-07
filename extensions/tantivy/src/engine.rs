@@ -14,7 +14,7 @@ use crate::{
 use backend_semantic::EntityId;
 use backend_platform::OwnedWorkspaceDirectory;
 use backend_version::CoverageWitness;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs,
@@ -67,6 +67,7 @@ static NEXT_DURABLE_STAGE: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(test)]
 std::thread_local! {
+    static TEST_CANCEL_BEFORE_COMMIT: std::cell::RefCell<Option<std::sync::Arc<AtomicBool>>> = const { std::cell::RefCell::new(None) };
     static TEST_NO_MERGE_POLICY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TEST_FORCE_MERGE_AFTER_NEXT_COMMIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TEST_FORCED_MERGE_INPUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -545,7 +546,7 @@ impl TantivySource {
         }
         let projected = projection_schema();
         let index = Index::create_in_ram(projected.schema);
-        Self::populate(state, limits, index, projected.fields)
+        Self::populate(state, limits, index, projected.fields, None)
     }
 
     /// Reopens a committed directory only when its schema and complete state
@@ -669,22 +670,33 @@ impl TantivySource {
         directory: impl AsRef<Path>,
         budget: DurableCacheBudget,
     ) -> Result<Self, TantivySourceError> {
+        Self::build_in_dir_controlled(state, limits, directory.as_ref(), budget, None)
+    }
+
+    fn build_in_dir_controlled(
+        state: &DocumentState,
+        limits: Limits,
+        directory: &Path,
+        budget: DurableCacheBudget,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<Self, TantivySourceError> {
+        check_projection_cancelled(cancelled)?;
         let limits = limits.validate()?;
         if !matches!(state.coverage(), CoverageWitness::Complete(_)) {
             return Err(Error::IncompleteCoverage.into());
         }
         preflight_ordinal_map_capacity(state.iter().count())?;
         let projected = projection_schema();
-        let index = Index::create_in_dir(directory.as_ref(), projected.schema)?;
-        let mut source = Self::populate(state, limits, index, projected.fields)?;
+        let index = Index::create_in_dir(directory, projected.schema)?;
+        let mut source = Self::populate(state, limits, index, projected.fields, cancelled)?;
         write_ordinal_map(
-            directory.as_ref(),
+            directory,
             projection_fingerprint(state.binding()),
             &source.documents,
         )?;
-        write_binding_stamp(directory.as_ref(), projection_fingerprint(state.binding()))?;
+        write_binding_stamp(directory, projection_fingerprint(state.binding()))?;
         write_projection_manifest(
-            directory.as_ref(),
+            directory,
             projection_fingerprint(state.binding()),
             budget,
         )?;
@@ -739,6 +751,53 @@ impl TantivySource {
         cache_root: impl AsRef<Path>,
         budget: DurableCacheBudget,
     ) -> Result<(Self, DurableProjectionAction), TantivySourceError> {
+        Self::open_or_build_controlled(state, limits, cache_root.as_ref(), budget, None)
+    }
+
+    /// Prepares the exact immutable projection with cancellation samples while
+    /// populating and before and after native commit. Native commit itself is
+    /// not preemptible; run this on a preparation worker, never a control owner.
+    /// A cancelled stage cannot be published into the durable namespace.
+    ///
+    /// # Errors
+    /// Returns the usual admission errors, or interrupted I/O on cancellation.
+    pub fn open_or_build_cancelable(
+        state: &DocumentState,
+        limits: Limits,
+        cache_root: &Path,
+        budget: DurableCacheBudget,
+        cancelled: &AtomicBool,
+    ) -> Result<(Self, DurableProjectionAction), TantivySourceError> {
+        Self::open_or_build_controlled(state, limits, cache_root, budget, Some(cancelled))
+    }
+
+    /// Builds an ephemeral projection with the same cancellation boundaries.
+    ///
+    /// # Errors
+    /// Returns construction errors or interrupted I/O on cancellation.
+    pub fn build_cancelable(
+        state: &DocumentState,
+        limits: Limits,
+        cancelled: &AtomicBool,
+    ) -> Result<Self, TantivySourceError> {
+        check_projection_cancelled(Some(cancelled))?;
+        let limits = limits.validate()?;
+        if !matches!(state.coverage(), CoverageWitness::Complete(_)) {
+            return Err(Error::IncompleteCoverage.into());
+        }
+        let projected = projection_schema();
+        let index = Index::create_in_ram(projected.schema);
+        Self::populate(state, limits, index, projected.fields, Some(cancelled))
+    }
+
+    fn open_or_build_controlled(
+        state: &DocumentState,
+        limits: Limits,
+        cache_root: &Path,
+        budget: DurableCacheBudget,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<(Self, DurableProjectionAction), TantivySourceError> {
+        check_projection_cancelled(cancelled)?;
         let limits = limits.validate()?;
         if !matches!(state.coverage(), CoverageWitness::Complete(_)) {
             return Err(Error::IncompleteCoverage.into());
@@ -748,7 +807,7 @@ impl TantivySource {
         cache_directory.verify_path()?;
         let namespace =
             PrivateNamespace::open_child(cache_directory.path(), DURABLE_ROOTS_DIRECTORY)?;
-        Self::open_or_build_locked(state, limits, &namespace, budget)
+        Self::open_or_build_locked(state, limits, &namespace, budget, cancelled)
     }
 
     fn open_or_build_locked(
@@ -756,7 +815,9 @@ impl TantivySource {
         limits: Limits,
         namespace: &PrivateNamespace,
         budget: DurableCacheBudget,
+        cancelled: Option<&AtomicBool>,
     ) -> Result<(Self, DurableProjectionAction), TantivySourceError> {
+        check_projection_cancelled(cancelled)?;
         let limits = limits.validate()?;
         if !matches!(state.coverage(), CoverageWitness::Complete(_)) {
             return Err(Error::IncompleteCoverage.into());
@@ -780,17 +841,16 @@ impl TantivySource {
 
         // Build a uniquely leased stage without holding the namespace fence.
         // The final admission section rechecks the winner under the gate.
-        let stage = Self::build_durable_stage(state, limits, namespace, &key, budget)?;
+        let stage = Self::build_durable_stage(state, limits, namespace, &key, budget, cancelled)?;
         let fence = namespace.acquire_fence(NamespaceFenceKind::DurableCache)?;
         retry_while_denied(|| remove_incomplete_stages(namespace, &fence))?;
         if let Some(source) =
             Self::open_selected_root(state, limits, namespace, &key, budget, &fence)?
         {
-            stage.discard_under(&fence).map_err(|source| {
-                TantivySourceError::Io(source.into_io_error())
-            })?;
-            let source =
-                Self::retain_selected_root(source, namespace, &selected, budget, &fence)?;
+            stage
+                .discard_under(&fence)
+                .map_err(|source| TantivySourceError::Io(source.into_io_error()))?;
+            let source = Self::retain_selected_root(source, namespace, &selected, budget, &fence)?;
             fence.verify_for(namespace)?;
             return Ok((source, DurableProjectionAction::Opened));
         }
@@ -803,6 +863,12 @@ impl TantivySource {
             } else {
                 namespace.remove_entry(&key, &fence)?;
             }
+        }
+        if let Err(error) = check_projection_cancelled(cancelled) {
+            stage
+                .discard_under(&fence)
+                .map_err(|source| TantivySourceError::Io(source.into_io_error()))?;
+            return Err(error);
         }
         let action = match stage
             .publish(&key, &fence)
@@ -871,16 +937,21 @@ impl TantivySource {
         namespace: &PrivateNamespace,
         key: &str,
         budget: DurableCacheBudget,
+        cancelled: Option<&AtomicBool>,
     ) -> Result<crate::publish::PreparedStage, TantivySourceError> {
         let stage = retry_while_denied(|| {
             let stage_id = NEXT_DURABLE_STAGE.fetch_add(1, AtomicOrdering::Relaxed);
             let stage_name = format!(".{key}.building-{}-{stage_id}", std::process::id());
-            let fence = namespace.acquire_fence(NamespaceFenceKind::DurableCache).map_err(|error| {
-                StagePreparationFailure::for_attempt(TantivySourceError::Io(error))
-            })?;
-            let stage = namespace.create_stage(&stage_name, &fence).map_err(|error| {
-                StagePreparationFailure::for_attempt(TantivySourceError::Io(error))
-            })?;
+            let fence = namespace
+                .acquire_fence(NamespaceFenceKind::DurableCache)
+                .map_err(|error| {
+                    StagePreparationFailure::for_attempt(TantivySourceError::Io(error))
+                })?;
+            let stage = namespace
+                .create_stage(&stage_name, &fence)
+                .map_err(|error| {
+                    StagePreparationFailure::for_attempt(TantivySourceError::Io(error))
+                })?;
             drop(fence);
             if let Err(error) = stage.verify_path() {
                 return Err(failed_stage_preparation(
@@ -888,10 +959,12 @@ impl TantivySource {
                     TantivySourceError::Io(error),
                 ));
             }
-            let built = match Self::build_in_dir_with_budget(state, limits, stage.path(), budget) {
-                Ok(source) => source,
-                Err(error) => return Err(failed_stage_preparation(stage, error)),
-            };
+            let built =
+                match Self::build_in_dir_controlled(state, limits, stage.path(), budget, cancelled)
+                {
+                    Ok(source) => source,
+                    Err(error) => return Err(failed_stage_preparation(stage, error)),
+                };
             drop(built);
             if let Err(error) = stage.verify_path() {
                 return Err(failed_stage_preparation(
@@ -1008,7 +1081,7 @@ impl TantivySource {
         }
         preflight_ordinal_map_capacity(next.iter().count())?;
         if previous.binding() == next.binding() {
-            return Self::open_or_build_locked(next, limits, namespace, cache_budget)
+            return Self::open_or_build_locked(next, limits, namespace, cache_budget, None)
                 .map(|(source, action)| (source, None, action));
         }
         let version_root = namespace.path();
@@ -1038,16 +1111,21 @@ impl TantivySource {
 
         let previous_key = hex_fingerprint(projection_fingerprint(previous.binding()));
         let previous_path = version_root.join(&previous_key);
-        let (previous_source, _) = Self::open_or_build_locked(previous, limits, namespace, cache_budget)?;
+        let (previous_source, _) =
+            Self::open_or_build_locked(previous, limits, namespace, cache_budget, None)?;
         let prepared = retry_while_denied(|| {
             let stage_id = NEXT_DURABLE_STAGE.fetch_add(1, AtomicOrdering::Relaxed);
             let stage_name = format!(".{next_key}.building-{}-{stage_id}", std::process::id());
-            let fence = namespace.acquire_fence(NamespaceFenceKind::DurableCache).map_err(|error| {
-                StagePreparationFailure::for_attempt(TantivySourceError::Io(error))
-            })?;
-            let stage = namespace.create_stage(&stage_name, &fence).map_err(|error| {
-                StagePreparationFailure::for_attempt(TantivySourceError::Io(error))
-            })?;
+            let fence = namespace
+                .acquire_fence(NamespaceFenceKind::DurableCache)
+                .map_err(|error| {
+                    StagePreparationFailure::for_attempt(TantivySourceError::Io(error))
+                })?;
+            let stage = namespace
+                .create_stage(&stage_name, &fence)
+                .map_err(|error| {
+                    StagePreparationFailure::for_attempt(TantivySourceError::Io(error))
+                })?;
             drop(fence);
             if let Err(error) = stage.verify_path() {
                 return Err(failed_stage_preparation(
@@ -1106,7 +1184,7 @@ impl TantivySource {
         .map_err(StagePreparationFailure::into_error)?;
         let Some((stage, revision)) = prepared else {
             drop(previous_source);
-            return Self::open_or_build_locked(next, limits, namespace, cache_budget)
+            return Self::open_or_build_locked(next, limits, namespace, cache_budget, None)
                 .map(|(source, action)| (source, None, action));
         };
 
@@ -1144,22 +1222,13 @@ impl TantivySource {
             .map_err(|error| TantivySourceError::Io(error.into_io_error()))?;
 
         drop(previous_source);
-        let source = Self::open_selected_root(
-            next,
-            limits,
-            namespace,
-            &next_key,
-            cache_budget,
-            &fence,
-        )?
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "published root vanished"))?;
-        let source = Self::retain_selected_root(
-            source,
-            namespace,
-            &selected,
-            cache_budget,
-            &fence,
-        )?;
+        let source =
+            Self::open_selected_root(next, limits, namespace, &next_key, cache_budget, &fence)?
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotFound, "published root vanished")
+                })?;
+        let source =
+            Self::retain_selected_root(source, namespace, &selected, cache_budget, &fence)?;
         fence.verify_for(namespace)?;
         Ok(match publication {
             DirectoryPublication::Published => {
@@ -1175,6 +1244,7 @@ impl TantivySource {
         limits: Limits,
         index: Index,
         fields: ProjectionFields,
+        cancelled: Option<&AtomicBool>,
     ) -> Result<Self, TantivySourceError> {
         if state.iter().count() > MAX_ORDINAL_SLOTS {
             return Err(Error::SizeLimit.into());
@@ -1182,6 +1252,7 @@ impl TantivySource {
         let mut writer = index.writer(WRITER_MEMORY_BYTES)?;
         let mut live = Vec::new();
         for (document, document_fields) in state.iter() {
+            check_projection_cancelled(cancelled)?;
             let document_ordinal = u64::try_from(live.len()).map_err(|_| Error::SizeLimit)?;
             let postings = write_document(
                 &writer,
@@ -1206,10 +1277,18 @@ impl TantivySource {
             u32::try_from(live.len()).map_err(|_| Error::SizeLimit)?,
             live,
         )?;
+        #[cfg(test)]
+        TEST_CANCEL_BEFORE_COMMIT.with(|slot| {
+            if let Some(control) = slot.borrow_mut().take() {
+                control.store(true, Ordering::Release);
+            }
+        });
+        check_projection_cancelled(cancelled)?;
         writer.commit()?;
         // Join background merges so no thread is still rewriting the index
         // directory once the source is handed out.
         writer.wait_merging_threads()?;
+        check_projection_cancelled(cancelled)?;
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
@@ -3251,12 +3330,10 @@ fn remove_incomplete_stages(
     let names = entries
         .into_iter()
         .map(|entry| {
-            entry.name.into_string().map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "invalid cache filename",
-                )
-            })
+            entry
+                .name
+                .into_string()
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid cache filename"))
         })
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -3315,9 +3392,9 @@ fn copy_projection_tree(source: &Path, destination: &Path) -> Result<(), io::Err
             ));
         }
         let name = entry.file_name();
-        let name = name.into_string().map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "invalid filename")
-        })?;
+        let name = name
+            .into_string()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid filename"))?;
         if !is_projection_file_name(&name) && !is_volatile_projection_file(&name) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -3493,9 +3570,10 @@ fn prune_durable_roots_entries(
         if is_control_entry(&entry.path())? {
             continue;
         }
-        let name = entry.file_name().into_string().map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "invalid durable root name")
-        })?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid durable root name"))?;
         if !name.bytes().all(|byte| byte.is_ascii_hexdigit()) || name.len() != 64 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -3715,9 +3793,10 @@ fn durable_root_size(root: &Path) -> Result<u64, io::Error> {
     let mut count = 0_usize;
     for entry in fs::read_dir(root)? {
         let entry = entry?;
-        let name = entry.file_name().into_string().map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "invalid filename")
-        })?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid filename"))?;
         let metadata = fs::symlink_metadata(entry.path())?;
         if !metadata.file_type().is_file() {
             return Err(io::Error::new(
@@ -3752,6 +3831,10 @@ fn sync_directory(path: &Path) -> Result<(), io::Error> {
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::mem;
+
+    pub(crate) fn cancel_before_next_commit(control: std::sync::Arc<super::AtomicBool>) {
+        super::TEST_CANCEL_BEFORE_COMMIT.with(|slot| *slot.borrow_mut() = Some(control));
+    }
 
     pub(crate) const BINDING_FILE: &str = super::BINDING_FILE;
     pub(crate) const DURABLE_ROOTS_DIRECTORY: &str = super::DURABLE_ROOTS_DIRECTORY;
@@ -5501,5 +5584,13 @@ fn field_weight(field: &str) -> u16 {
         "signature" => 3,
         "documentation" => 2,
         _ => 1,
+    }
+}
+
+fn check_projection_cancelled(cancelled: Option<&AtomicBool>) -> Result<(), TantivySourceError> {
+    if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+        Err(io::Error::new(io::ErrorKind::Interrupted, "lexical preparation cancelled").into())
+    } else {
+        Ok(())
     }
 }
