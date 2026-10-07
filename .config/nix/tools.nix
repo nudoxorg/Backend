@@ -606,17 +606,19 @@ let
   );
   nativeCompilers = builtins.attrValues compilers ++ nativeLibraries ++ linuxDesktopLibraries;
   # Go semantic oracle. The coordinate is the workspace's own vendored Go
-  # module (`frontends/go/src/legacy/oracle`); its `vendorHash` is the exact
-  # fixed-output hash of `golang.org/x/{tools,mod,sync} v0.30.0/v0.23.0/v0.11.0`.
-  # It is null when this module is evaluated from the configuration-only
-  # `.config` flake, whose source root cannot reach the workspace tree.
+  # module (`frontends/go/src/legacy/oracle`). Its dependencies
+  # (`golang.org/x/{tools,mod,sync} v0.30.0/v0.23.0/v0.11.0`) are committed in
+  # its `vendor/` directory, so `vendorHash = null` builds from those instead
+  # of a fixed-output download. It is null when this module is evaluated from
+  # the configuration-only `.config` flake, whose source root cannot reach the
+  # workspace tree.
   goOracle =
     if workspaceAvailable then
       pkgs.buildGoModule {
         pname = "nudox-go-oracle";
         version = "0.1.0";
         src = workspaceRoot + "/frontends/go/src/legacy/oracle";
-        vendorHash = "sha256-oZyvmlZ9m8v3h1UIL9s9Ko26yZF3f0muBF4nV4t3Y7o=";
+        vendorHash = null;
         subPackages = [ "." ];
         doCheck = false;
       }
