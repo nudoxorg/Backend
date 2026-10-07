@@ -3563,6 +3563,45 @@ mod read_tests {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires a privately extracted official Debian Go package tree"]
+    fn debian_packaged_go_root_identity_is_admitted_and_revalidates_on_private_root()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture_root = std::env::var_os("NUDOX_GO_DEBIAN_FIXTURE_ROOT")
+            .expect("explicit Debian Go fixture root is required for this ignored test");
+        let fixture_root = PathBuf::from(fixture_root);
+        if !fixture_root.is_absolute() {
+            return Err(io::Error::other("Debian Go fixture root must be absolute").into());
+        }
+
+        let goroot = fixture_root.join("usr/lib/go-1.24");
+        let go = goroot.join("bin/go");
+        let module_cache = tempfile::tempdir()?;
+        let cache_root = tempfile::tempdir()?;
+        let environment = GoOracleChildEnvironment::new(
+            go.clone(),
+            goroot,
+            module_cache.path().to_path_buf(),
+            cache_root.path().join("go-build"),
+        )?;
+        let identity = environment.toolchain_identity();
+        assert_ne!(
+            identity, [0; 32],
+            "the package must have a captured identity"
+        );
+
+        let configured = GoOracle::default()
+            .with_configuration(GoOracleConfiguration::go_toolchain(go)?)
+            .with_child_environment(environment)?;
+        configured
+            .child_environment
+            .as_ref()
+            .expect("the exact admitted environment remains attached")
+            .revalidate_toolchain()?;
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[test]
     fn relocated_go_toolchain_builds_one_offline_cached_embedded_helper()
