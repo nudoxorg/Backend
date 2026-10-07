@@ -825,3 +825,126 @@ fn typed_unavailable_source_facts_do_not_promote_compacted_rows() {
         "unavailability must bind the exact selected row"
     );
 }
+
+#[test]
+fn structural_calls_rebuild_negative_results_on_source_and_complete_manifest_changes() {
+    fn file(
+        package: PackageKey,
+        path: &str,
+        source: &str,
+    ) -> (ProductSourceRecord, Option<ProductSourceFileFactsUpdate>) {
+        let analysis = backend_frontend_typescript::syntax_frontend()
+            .expect("frontend")
+            .analyze(Path::new(path), source.as_bytes())
+            .expect("actual parsed declarations");
+        let identity = ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes());
+        let record = ProductSourceRecord::identified_file_within_row_capacity(
+            package.to_bytes(),
+            path,
+            SourceLanguage::TypeScript,
+            analysis.content().to_bytes(),
+            [0x61; 32],
+            analysis.declarations().clone(),
+            identity,
+        )
+        .expect("capacity-aware source row");
+        let facts = build_product_source_file_facts(
+            package.to_bytes(),
+            path,
+            SourceLanguage::TypeScript,
+            analysis.content().to_bytes(),
+            [0x61; 32],
+            identity,
+            analysis.declarations(),
+        )
+        .expect("complete manifest");
+        (record, Some(facts))
+    }
+    let workspace = TempWorkspace::new();
+    let label = "pkg:npm/structural-call-cache@1.0.0";
+    let package = PackageKey::from_value(label);
+    let mut daemon = open_daemon(workspace.0.path());
+    let caller = file(
+        package,
+        "one/caller.ts",
+        "import { validate as check } from './target';\nexport function caller() { check(); }\n",
+    );
+    let decoy = file(package, "two/target.ts", "export function validate() {}\n");
+    commit_files(
+        &mut daemon,
+        package,
+        label,
+        1,
+        &[caller.clone(), decoy.clone()],
+    );
+    let initial = read_package_sources(&daemon.engine().daemon().owner().snapshot(), package)
+        .expect("exact initial source");
+    assert!(
+        view_build::structural_call_coordinate_pairs(&initial, package)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        view_build::structural_call_coordinate_pairs(&initial, package)
+            .unwrap()
+            .is_empty(),
+        "repeated negative result on the exact selected closure"
+    );
+    let prefix = (0..900)
+        .map(|at| format!("export function filler_{at}() {{}}\n"))
+        .collect::<String>();
+    let target = file(
+        package,
+        "one/target.ts",
+        &(prefix.clone() + "export function validate() {}\n"),
+    );
+    assert!(
+        !target.1.as_ref().unwrap().pages().is_empty(),
+        "target must exercise authenticated paged complete facts"
+    );
+    commit_files(
+        &mut daemon,
+        package,
+        label,
+        2,
+        &[caller.clone(), decoy.clone(), target],
+    );
+    let added = read_package_sources(&daemon.engine().daemon().owner().snapshot(), package)
+        .expect("source after module addition");
+    assert_ne!(
+        initial.source_snapshot.as_ref().unwrap().workspace_root(),
+        added.source_snapshot.as_ref().unwrap().workspace_root()
+    );
+    let expected = vec![(
+        format!("{label}::one/caller.ts:2::caller"),
+        format!("{label}::one/target.ts:901::validate"),
+    )];
+    assert_eq!(
+        view_build::structural_call_coordinate_pairs(&added, package).unwrap(),
+        expected,
+        "new module invalidates the old negative import and uses the complete declaration beyond the compact row"
+    );
+    let changed = file(
+        package,
+        "one/target.ts",
+        &(prefix + "export function unrelated() {}\n"),
+    );
+    commit_files(&mut daemon, package, label, 3, &[caller, decoy, changed]);
+    let changed = read_package_sources(&daemon.engine().daemon().owner().snapshot(), package)
+        .expect("source after complete manifest edit");
+    assert_ne!(
+        added.source_snapshot.as_ref().unwrap().workspace_root(),
+        changed.source_snapshot.as_ref().unwrap().workspace_root()
+    );
+    assert!(
+        view_build::structural_call_coordinate_pairs(&changed, package)
+            .unwrap()
+            .is_empty(),
+        "changing the target facts manifest invalidates a positive call projection"
+    );
+    assert_eq!(
+        view_build::structural_call_coordinate_pairs(&added, package).unwrap(),
+        expected,
+        "retained older exact snapshots remain independent of the latest resident entry"
+    );
+}
