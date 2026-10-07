@@ -98,4 +98,99 @@ mod tests {
         assert_eq!(captured.value(LocalHostVariable::NudoxGoOracle), None);
         assert_eq!(source.0.get(), 1);
     }
+
+    #[test]
+    #[ignore = "requires the pinned dependency-installed real TypeScript application and installed host SDK"]
+    fn actual_project_sdk_precedes_the_frozen_installed_global_sdk() {
+        use super::super::{
+            ClosedLocalHostEnvironmentSnapshot, LocalCompilerHost, LocalHostDiscovery,
+            ProcessHostEnvironment,
+        };
+        use crate::application::typescript_host::TypeScriptProjectHost;
+        use std::path::{Path, PathBuf};
+
+        struct Closed(ClosedLocalHostEnvironmentSnapshot);
+        impl LocalHostEnvironment for Closed {
+            fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
+                self.0
+                    .path(variable)
+                    .map(|path| path.as_os_str().to_owned())
+            }
+        }
+        for variable in [
+            "NUDOX_TSC",
+            "NUDOX_TYPESCRIPT_NODE",
+            "NUDOX_TYPESCRIPT_MODULE_ROOT",
+        ] {
+            assert!(
+                std::env::var_os(variable).is_none(),
+                "default gate cannot configure {variable}"
+            );
+        }
+        let root = std::fs::canonicalize(PathBuf::from(
+            std::env::var_os("NUDOX_SETUP_APPLICATION_ROOT")
+                .expect("pinned declared-dependency application"),
+        ))
+        .expect("application root");
+        let selected =
+            LocalCompilerHost::new(ProcessHostEnvironment, LocalHostDiscovery::InstalledTools)
+                .capture_installed_selection()
+                .expect("capture actual installed host");
+        let frozen = LocalCompilerHost::new(
+            Closed(selected.snapshot().clone()),
+            LocalHostDiscovery::ClosedSnapshot,
+        );
+        let home = selected.snapshot().path(LocalHostVariable::Home);
+        let tuple = frozen
+            .typescript_host_selection(home)
+            .expect("closed canonical host tuple");
+        let global_compiler = tuple.compiler.clone().expect("installed global SDK");
+        assert!(!tuple.compiler_explicit);
+        let node = tuple.node.expect("canonical installed Node");
+        let project = TypeScriptProjectHost::new_with_node_origin(
+            None,
+            Some(node.path.clone()),
+            Some(node.origin),
+            home.map(Path::to_path_buf),
+            None,
+            None,
+            super::super::probe_limits(),
+        )
+        .with_installed_default(Some(global_compiler.clone()), tuple.module_root);
+        let admitted = project
+            .admit(&root)
+            .expect("actual project SDK admission")
+            .expect("project SDK available");
+        let inputs = admitted.inputs();
+        let local_compiler = std::fs::canonicalize(root.join("node_modules/typescript/bin/tsc"))
+            .expect("actual PNPM project SDK compiler");
+        assert_eq!(inputs.compiler_path, local_compiler.as_path());
+        assert_ne!(
+            inputs.compiler_path,
+            global_compiler.as_path(),
+            "installed global SDK is a fallback"
+        );
+        assert_eq!(inputs.node_path, node.path.as_path());
+        assert_eq!(inputs.package_root, root.as_path());
+        assert!(String::from_utf8_lossy(inputs.compiler_version).contains("5.7.2"));
+        assert!(
+            !inputs.config_candidates.is_empty(),
+            "actual project configuration is bound"
+        );
+        admitted
+            .validate_current()
+            .expect("unchanged source/config/SDK authority");
+        let restarted = project
+            .admit(&root)
+            .expect("repeat project admission")
+            .expect("same project SDK");
+        assert_eq!(admitted.fingerprint, restarted.fingerprint);
+        println!(
+            "actual-project-sdk={} node={} host-fallback={} fingerprint={:?}",
+            inputs.compiler_path.display(),
+            inputs.node_path.display(),
+            global_compiler.display(),
+            admitted.fingerprint
+        );
+    }
 }
