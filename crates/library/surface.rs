@@ -17,7 +17,7 @@ use serde::{
 };
 use std::collections::BTreeSet;
 use std::io::{self, Write};
-use std::num::NonZeroU64;
+use std::num::{NonZeroU32, NonZeroU64};
 use std::{fmt, str::FromStr};
 
 #[path = "surface/package_compiler_failure.rs"]
@@ -4131,6 +4131,36 @@ fn forge_manifest_coordinate(manifest: &ForgePackageManifestDetail) -> Option<Pa
     .ok()
 }
 
+/// One local declaration in combined search, backed by the selected source view.
+/// A declaration has a source location, not a registry ecosystem or release.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalDeclarationSearchRecord {
+    /// Exact declaration coordinate accepted by document and source reads.
+    pub coordinate: ProductText,
+    /// Name supplied by the selected declaration row.
+    pub name: ProductText,
+    /// Source path, never a package release version.
+    pub path: ProductText,
+    /// Captured one-based start line; absent when only the label supplied a path.
+    pub line: Option<NonZeroU32>,
+}
+
+impl LocalDeclarationSearchRecord {
+    fn admit(&self) -> Result<(), ProductAdmissionError> {
+        if self
+            .coordinate
+            .as_str()
+            .rsplit_once("::")
+            .is_some_and(|(scope, name)| !scope.is_empty() && name == self.name.as_str())
+        {
+            Ok(())
+        } else {
+            Err(ProductAdmissionError::LocalDeclarationSearchShape)
+        }
+    }
+}
+
 /// Ranked catalog-search item, with acquisition and discovery kept as
 /// different variants and source conflicts kept as separate candidates.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -4145,7 +4175,7 @@ pub enum RegistrySearchHit {
     /// A code-forge source pin whose manifest does not establish a package version.
     ForgeSourcePin(ForgePackageDetailRecord),
     /// A local indexed declaration returned by the combined search surface.
-    LocalDeclaration(RegistryPackageRecord),
+    LocalDeclaration(LocalDeclarationSearchRecord),
     /// One source-scoped canonical package lineage with bounded release facets.
     PackageGroup(RegistryPackageSearchGroup),
 }
@@ -4856,10 +4886,8 @@ impl SurfaceReply {
                 Self::IndexSearchWithDiscovery(hits) => {
                     for hit in hits {
                         match hit {
-                            RegistrySearchHit::Acquired(record)
-                            | RegistrySearchHit::LocalDeclaration(record) => {
-                                admit_registry_record(record)?;
-                            }
+                            RegistrySearchHit::Acquired(record) => admit_registry_record(record)?,
+                            RegistrySearchHit::LocalDeclaration(record) => record.admit()?,
                             RegistrySearchHit::Discovered(candidate) => candidate.admit()?,
                             RegistrySearchHit::ForgeDiscovered(candidate) => candidate.admit()?,
                             RegistrySearchHit::ForgeSourcePin(candidate) => candidate.admit()?,
@@ -4896,10 +4924,8 @@ impl SurfaceReply {
                     }
                     for hit in page.hits.iter() {
                         match hit {
-                            RegistrySearchHit::Acquired(record)
-                            | RegistrySearchHit::LocalDeclaration(record) => {
-                                admit_registry_record(record)?;
-                            }
+                            RegistrySearchHit::Acquired(record) => admit_registry_record(record)?,
+                            RegistrySearchHit::LocalDeclaration(record) => record.admit()?,
                             RegistrySearchHit::Discovered(candidate) => candidate.admit()?,
                             RegistrySearchHit::ForgeDiscovered(candidate) => candidate.admit()?,
                             RegistrySearchHit::ForgeSourcePin(candidate) => candidate.admit()?,
@@ -4995,10 +5021,11 @@ impl SurfaceReply {
             }
             Self::IndexSearchWithDiscovery(hits) => hits.iter().fold(0_usize, |bound, hit| {
                 bound.saturating_add(match hit {
-                    RegistrySearchHit::Acquired(record)
-                    | RegistrySearchHit::LocalDeclaration(record) => {
-                        registry_package_record_bound(record)
-                    }
+                    RegistrySearchHit::Acquired(record) => registry_package_record_bound(record),
+                    RegistrySearchHit::LocalDeclaration(record) => fixed_record_bound()
+                        .saturating_add(text_bound(&record.coordinate))
+                        .saturating_add(text_bound(&record.name))
+                        .saturating_add(text_bound(&record.path)),
                     RegistrySearchHit::Discovered(candidate) => {
                         fixed_record_bound().saturating_add(candidate.coordinate.as_str().len())
                     }
@@ -5342,6 +5369,8 @@ pub enum ProductAdmissionError {
     RegistryDiscoveryFreshness,
     /// A registry discovery metadata facet is outside the product bounds.
     RegistryDiscoveryMetadata,
+    /// A local search hit has no declaration scope or contradicts its source name.
+    LocalDeclarationSearchShape,
     /// An index-search continuation is malformed or exceeds its byte bound.
     IndexSearchCursor,
     /// A forge search hit is not bound to its source or manifest coordinate.
@@ -5391,6 +5420,9 @@ impl core::fmt::Display for ProductAdmissionError {
             }
             Self::RegistryDiscoveryMetadata => {
                 "registry discovery metadata exceeds its evidence bounds"
+            }
+            Self::LocalDeclarationSearchShape => {
+                "local search declaration identity is inconsistent"
             }
             Self::IndexSearchCursor => "index-search cursor is malformed or too large",
             Self::ForgeSearchShape => "forge search candidate is not bound to its source manifest",

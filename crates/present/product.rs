@@ -17,15 +17,15 @@ use crate::fault::{Fault, Operand};
 use backend_library::{
     AcquisitionDecision, AdvisoryPackageDto, DeclarationChange, DeclarationRecord, DependencyFacts,
     DiffRecord, ForgeFact, ForgePackageDetailRecord, ForgePackagePin, ForgePackageRecord,
-    IndexSearchCursor, IndexSearchPage, IndexSearchResultCount, PackageDependencyRecord,
-    PackageReference, ProjectRecord, RegistryDiscoveryCandidate, RegistryEvidenceFacet,
-    RegistryMetadata, RegistryNativeAvailability, RegistryNativeDetails, RegistryNativeMetadata,
-    RegistryPackageFactAuthority, RegistryPackageFactFreshness, RegistryPackageRecord,
-    RegistryPackageSearchGroup, RegistryReleaseMatchScope, RegistrySearchGroupKind,
-    RegistrySearchHit, RegistrySearchRelease, ReleaseRecord, SelectedProjectSourceFrontier,
-    SemanticHistoryPublicationStatus, SemanticLanguageProfile, SemanticVersionFreshness,
-    SemanticVersionRecord, SubscriptionRecord, SurfaceReply, TreeNodeRecord, TreeOpener,
-    TreeSubject, encode_id,
+    IndexSearchCursor, IndexSearchPage, IndexSearchResultCount, LocalDeclarationSearchRecord,
+    PackageDependencyRecord, PackageReference, ProjectRecord, RegistryDiscoveryCandidate,
+    RegistryEvidenceFacet, RegistryMetadata, RegistryNativeAvailability, RegistryNativeDetails,
+    RegistryNativeMetadata, RegistryPackageFactAuthority, RegistryPackageFactFreshness,
+    RegistryPackageRecord, RegistryPackageSearchGroup, RegistryReleaseMatchScope,
+    RegistrySearchGroupKind, RegistrySearchHit, RegistrySearchRelease, ReleaseRecord,
+    SelectedProjectSourceFrontier, SemanticHistoryPublicationStatus, SemanticLanguageProfile,
+    SemanticVersionFreshness, SemanticVersionRecord, SubscriptionRecord, SurfaceReply,
+    TreeNodeRecord, TreeOpener, TreeSubject, encode_id,
 };
 use backend_library::{
     IndexCancelReceipt, IndexCancelStatus, IndexJobObservation, IndexJobOutcome,
@@ -47,6 +47,7 @@ pub struct ProductRecord {
     forge_package_detail: Option<ForgePackageDetailRecord>,
     discovery_details: Option<RegistryDiscoveryCandidate>,
     package_group: Option<RegistryPackageSearchGroup>,
+    local_declaration: Option<LocalDeclarationSearchRecord>,
     history_status: Option<ProductSemanticHistoryStatus>,
     compiler_profile: Option<SemanticLanguageProfile>,
 }
@@ -65,6 +66,7 @@ impl ProductRecord {
             forge_package_detail: None,
             discovery_details: None,
             package_group: None,
+            local_declaration: None,
             history_status: None,
             compiler_profile: None,
         }
@@ -124,6 +126,13 @@ impl ProductRecord {
     #[must_use]
     pub fn with_discovery_details(mut self, candidate: RegistryDiscoveryCandidate) -> Self {
         self.discovery_details = Some(candidate);
+        self
+    }
+
+    /// Attaches exact local source provenance, independently of registry metadata.
+    #[must_use]
+    pub fn with_local_declaration(mut self, record: LocalDeclarationSearchRecord) -> Self {
+        self.local_declaration = Some(record);
         self
     }
 
@@ -189,6 +198,12 @@ impl ProductRecord {
     #[must_use]
     pub fn discovery_details(&self) -> Option<&RegistryDiscoveryCandidate> {
         self.discovery_details.as_ref()
+    }
+
+    /// Returns the selected local declaration and its exact source location.
+    #[must_use]
+    pub fn local_declaration(&self) -> Option<&LocalDeclarationSearchRecord> {
+        self.local_declaration.as_ref()
     }
 
     /// Returns the source-scoped version group for this package result.
@@ -1287,11 +1302,23 @@ fn discovery_row(candidate: &backend_library::RegistryDiscoveryCandidate) -> Pro
     .with_discovery_details(candidate.clone())
 }
 
+fn local_declaration_search_row(record: &LocalDeclarationSearchRecord) -> ProductRecord {
+    let location = record.line.map_or_else(
+        || record.path.as_str().to_owned(),
+        |line| format!("{}:{line}", record.path.as_str()),
+    );
+    ProductRecord::new(
+        record.name.as_str(),
+        Some(record.coordinate.as_str().to_owned()),
+        vec!["local declaration".to_owned(), location],
+    )
+    .with_local_declaration(record.clone())
+}
+
 fn registry_search_hit_row(hit: &RegistrySearchHit) -> ProductRecord {
     match hit {
-        RegistrySearchHit::Acquired(record) | RegistrySearchHit::LocalDeclaration(record) => {
-            registry_row(record)
-        }
+        RegistrySearchHit::Acquired(record) => registry_row(record),
+        RegistrySearchHit::LocalDeclaration(record) => local_declaration_search_row(record),
         RegistrySearchHit::Discovered(candidate) => discovery_row(candidate),
         RegistrySearchHit::ForgeDiscovered(candidate) => forge_discovery_row(candidate),
         RegistrySearchHit::ForgeSourcePin(candidate) => forge_package_detail_row(candidate),
@@ -2863,6 +2890,54 @@ mod tests {
             let original = serde_json::to_value(&reply).expect("source facts");
             assert!(original.to_string().contains("literal\\nforged"));
         }
+    }
+
+    #[test]
+    fn local_declaration_search_preserves_source_provenance_in_cli_and_mcp() {
+        let coordinate = backend_library::ProductText::new("/project::src/react.tsx:17::react")
+            .expect("coordinate");
+        let record = LocalDeclarationSearchRecord {
+            coordinate: coordinate.clone(),
+            name: backend_library::ProductText::new("react").expect("name"),
+            path: backend_library::ProductText::new("src/react.tsx").expect("path"),
+            line: std::num::NonZeroU32::new(17),
+        };
+        let reply = SurfaceReply::IndexSearchWithDiscovery(Box::new([
+            RegistrySearchHit::LocalDeclaration(record.clone()),
+        ]));
+        reply.admit(reply.id()).expect("local search reply");
+        let view = product_view(&reply);
+        assert_eq!(view.records()[0].operand(), Some(coordinate.as_str()));
+        for rendered in [
+            crate::markdown::product(&view),
+            crate::text::product(&view, crate::Theme::plain()),
+        ] {
+            assert!(rendered.contains("local declaration"));
+            assert!(rendered.contains("src/react.tsx:17"));
+            for fiction in [
+                "cargo",
+                "byte(s)",
+                "release:",
+                "downloads:",
+                "registry facts:",
+            ] {
+                assert!(
+                    !rendered.contains(fiction),
+                    "local declaration cannot claim {fiction}"
+                );
+            }
+        }
+        let dto = crate::dto::ProductDto::new(&view);
+        assert_eq!(dto.records[0].local_declaration.as_ref(), Some(&record));
+        assert!(dto.records[0].native_metadata.is_none());
+        assert!(dto.records[0].package_group.is_none());
+        let mut invalid = record;
+        invalid.coordinate =
+            backend_library::ProductText::new("pkg:npm/react@19.2.0").expect("purl");
+        let invalid = SurfaceReply::IndexSearchWithDiscovery(Box::new([
+            RegistrySearchHit::LocalDeclaration(invalid),
+        ]));
+        assert!(invalid.admit(invalid.id()).is_err());
     }
 
     #[test]

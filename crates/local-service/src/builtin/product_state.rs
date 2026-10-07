@@ -20,15 +20,16 @@ use backend_library::{
     AdvisoryPackageDto, CommandMutation, DeclarationRecord, DependencyFacts, DependentSources,
     ForgeDiscoveryCandidate, ForgeManifestRecord, ForgeRepositoryMetadataRecord, Fragment,
     IndexSearchCursor, IndexSearchPage, IndexSearchResultCount, IndexedCheckedPackageGraph,
-    PackageCoordinate as ProductPackageCoordinate, PackageDependencyLookup,
-    PackageDependencyRecord, PackageGraphSourceAuthority, PackageGraphSourceKey, PackageReference,
-    ProductText, ProjectId, ProjectName, ProjectRecord, ProjectSelector,
-    RegistryDiscoveryCandidate, RegistryDiscoveryCompleteness, RegistryDiscoveryFreshness,
-    RegistryDiscoveryStanding, RegistryDownloadCount, RegistryEcosystem, RegistryFactAvailability,
-    RegistryMetadata, RegistryNativeMetadata, RegistryPackageRecord, RegistryPackageSearchGroup,
-    RegistryReleaseMatchScope, RegistryReleaseStanding, RegistrySearchGroupKind, RegistrySearchHit,
-    RegistrySearchRelease, ReleaseRecord, Row, SemanticVersionRecord, SubscriptionRecord,
-    TreeNodeRecord, TreeOpener, TreeSubject, command_spec,
+    LocalDeclarationSearchRecord, PackageCoordinate as ProductPackageCoordinate,
+    PackageDependencyLookup, PackageDependencyRecord, PackageGraphSourceAuthority,
+    PackageGraphSourceKey, PackageReference, ProductText, ProjectId, ProjectName, ProjectRecord,
+    ProjectSelector, RegistryDiscoveryCandidate, RegistryDiscoveryCompleteness,
+    RegistryDiscoveryFreshness, RegistryDiscoveryStanding, RegistryDownloadCount,
+    RegistryEcosystem, RegistryFactAvailability, RegistryMetadata, RegistryNativeMetadata,
+    RegistryPackageRecord, RegistryPackageSearchGroup, RegistryReleaseMatchScope,
+    RegistryReleaseStanding, RegistrySearchGroupKind, RegistrySearchHit, RegistrySearchRelease,
+    ReleaseRecord, Row, SemanticVersionRecord, SubscriptionRecord, TreeNodeRecord, TreeOpener,
+    TreeSubject, command_spec,
 };
 use backend_platform::durable;
 use base64::Engine as _;
@@ -1022,6 +1023,19 @@ fn declaration_identity(row: &Row) -> Result<(String, String), String> {
     Ok((name.to_owned(), path))
 }
 
+fn declaration_search_record(row: &Row) -> Result<LocalDeclarationSearchRecord, String> {
+    let (name, path) = declaration_identity(row)?;
+    Ok(LocalDeclarationSearchRecord {
+        coordinate: ProductText::new(row.label.clone()).map_err(|error| error.to_string())?,
+        name: ProductText::new(name).map_err(|error| error.to_string())?,
+        path: ProductText::new(path).map_err(|error| error.to_string())?,
+        line: row
+            .source
+            .captured()
+            .and_then(|location| std::num::NonZeroU32::new(location.start_line())),
+    })
+}
+
 fn declaration_explore_record(row: &Row) -> Result<RegistryPackageRecord, String> {
     let (name, path) = declaration_identity(row)?;
     Ok(RegistryPackageRecord {
@@ -1488,7 +1502,7 @@ fn index_search_page_with_discovery_measured_snapshot(
         ranked.push(MergedPageSearchCandidate {
             candidate: PageSearchCandidate {
                 evidence: search_hit.evidence,
-                hit: RegistrySearchHit::LocalDeclaration(declaration_explore_record(row)?),
+                hit: RegistrySearchHit::LocalDeclaration(declaration_search_record(row)?),
                 plane: SearchPlane::LocalDeclaration,
             },
             page_order: format!(
@@ -1960,7 +1974,7 @@ fn index_search_with_discovery(
             ranked_hits.push(RankedRegistrySearchHit {
                 evidence: search_hit.evidence,
                 tie: SearchStableTie::local(row_id, row.label.as_str()),
-                hit: RegistrySearchHit::LocalDeclaration(declaration_explore_record(row)?),
+                hit: RegistrySearchHit::LocalDeclaration(declaration_search_record(row)?),
             });
         }
     }
@@ -3743,6 +3757,44 @@ mod tests {
             native_metadata,
             forge_sources: Box::new([]),
             advisory: AdvisoryPackageDto::unknown(),
+        }
+    }
+
+    #[test]
+    fn local_declaration_search_keeps_typescript_and_python_source_identity() {
+        let (view, _) = super::super::initial_view().expect("initial view");
+        for (path, line) in [
+            ("frontend/components/react.tsx", 17),
+            ("mealie/routes/react.py", 43),
+        ] {
+            let label = format!("/captured/project::{path}:{line}::react");
+            let row = Row::new(
+                RowId::Symbol(backend_engine::symbol_key(&label)),
+                view.basis(),
+                &label,
+            )
+            .with_source(backend_library::SourceLocation::new(path, line).expect("location"));
+            let record = declaration_search_record(&row).expect("source-backed declaration");
+            assert_eq!(record.coordinate.as_str(), label);
+            assert_eq!(record.path.as_str(), path);
+            assert_eq!(record.line.map(std::num::NonZeroU32::get), Some(line));
+            let encoded =
+                serde_json::to_value(RegistrySearchHit::LocalDeclaration(record)).expect("encode");
+            assert_eq!(encoded["state"], "local-declaration");
+            assert_eq!(encoded["value"]["name"], "react");
+            for field in [
+                "ecosystem",
+                "version",
+                "bytes",
+                "standing",
+                "downloads",
+                "native_metadata",
+            ] {
+                assert!(
+                    encoded["value"].get(field).is_none(),
+                    "declaration cannot claim {field}"
+                );
+            }
         }
     }
 

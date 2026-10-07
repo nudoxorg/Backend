@@ -878,6 +878,9 @@ pub struct ProductRecordDto {
     /// Source-scoped, version-specific lineage group for index search.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub package_group: Option<backend_library::RegistryPackageSearchGroup>,
+    /// Exact local declaration source identity; absent for registry packages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_declaration: Option<backend_library::LocalDeclarationSearchRecord>,
     /// Concise typed derived-history state for the readable generation row.
     /// The complete immutable proof remains in `semantic_data`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -906,6 +909,7 @@ impl ProductDto {
                     forge_package_detail: record.forge_package_detail().cloned(),
                     discovery: record.discovery_details().cloned(),
                     package_group: record.package_group().cloned(),
+                    local_declaration: record.local_declaration().cloned(),
                     history_status: record.history_status().cloned(),
                     compiler_profile: record.compiler_profile(),
                 })
