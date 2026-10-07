@@ -334,7 +334,10 @@ pub(super) fn go_authority_failure(
     error: &LocalCompilerHostError,
 ) -> LocalRuntimeGoAuthorityFailure {
     match error {
-        LocalCompilerHostError::GoRootProbe(_)
+        LocalCompilerHostError::RelativeEnvironmentPath {
+            variable: LocalHostVariable::NudoxGoRoot, ..
+        }
+        | LocalCompilerHostError::GoRootProbe(_)
         | LocalCompilerHostError::GoRootEncoding { .. }
         | LocalCompilerHostError::GoRootEmpty { .. }
         | LocalCompilerHostError::GoRootRelative { .. }

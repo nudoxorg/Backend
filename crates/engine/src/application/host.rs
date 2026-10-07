@@ -1033,6 +1033,38 @@ mod tests {
         assert!(!data_root.exists());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn closed_go_refusal_keeps_the_actual_native_python_owner_usable() {
+        use backend_library::interface::{CompilerCapability, CompilerRequest};
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = std::env::temp_dir().join(format!("nudox-go-python-{}-{}", std::process::id(),
+            NEXT_NATIVE_WORK.fetch_add(1, Ordering::Relaxed)));
+        fs::create_dir_all(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let snapshot = ClosedLocalHostEnvironmentSnapshot::from_paths([]).unwrap()
+            .with_go_failure(Some(LocalRuntimeGoAuthorityFailure::OracleUnavailable)).unwrap();
+        let decoded = ClosedLocalHostEnvironmentSnapshot::parse(&snapshot.encode().unwrap()).unwrap();
+        let selection = LocalCompilerHostSelection::from_closed_snapshot(decoded).unwrap();
+        let environment = StartupEnvironment(vec![(LocalHostVariable::NudoxDataRoot,
+            root.join("owner").into_os_string())]);
+        let mut client = LocalCompilerHost::new(environment, LocalHostDiscovery::ClosedSnapshot)
+            .with_go_authority_failure(selection.go_authority_failure()).open()
+            .expect("closed Go refusal cannot block native Python startup");
+        assert_eq!(client.capabilities().for_profile(LanguageProfile::Go(GoVersion::Go125)).state(),
+            crate::application::LocalCompilerCapabilityState::ProbeFailed);
+        client.generate(CompilerRequest {
+            profile: LanguageProfile::Python(PythonVersion::Python314), stage: Stage::LowerIr,
+            source: "answer = 42\n",
+        }).expect("actual compiled Python producer remains usable");
+        assert_eq!(client.capabilities().for_profile(LanguageProfile::Python(PythonVersion::Python314)).state(),
+            crate::application::LocalCompilerCapabilityState::Ready);
+        assert_eq!(client.capabilities().for_profile(LanguageProfile::TypeScript(TypeScriptSource::TypeScript)).state(),
+            crate::application::LocalCompilerCapabilityState::Unavailable);
+        drop(client);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     #[ignore = "requires privately admitted Go, Node, and TypeScript installations"]
