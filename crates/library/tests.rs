@@ -150,6 +150,54 @@ fn complete_coverage_requires_a_producer_capability_at_root_construction() {
 }
 
 #[test]
+fn partial_view_updates_require_an_already_authorized_source_relation() {
+    let (source, object) = source();
+    let basis = Basis::new(source, object);
+    let frontier = Frontier::new(basis.branch, basis.log, basis.schema, source, 0);
+    let recipe = view_key(b"partial-source-authority");
+    let coverage = vec![Coverage::Partial {
+        lane: Lane::Semantic,
+        completed: 1,
+        total: 2,
+    }];
+    let row = Row::new(RowId::Symbol(symbol_key("pkg::Partial")), basis, "Partial");
+    let cap = capability(object);
+    // Visible lane progress can be partial while the source relation has
+    // already crossed producer admission. Those ordinary edits remain valid.
+    let checked = ViewRoot::new_checked(
+        recipe,
+        basis,
+        frontier,
+        Vec::new(),
+        coverage.clone(),
+        cap.clone(),
+    )
+    .expect("authorized source with partial lane progress");
+    let prepared = checked
+        .prepare(ViewDelta::Upsert { row: row.clone() }, cap.clone())
+        .expect("partial lane update");
+    let (updated, delta) = checked.clone().commit(prepared).expect("checked update");
+    assert!(updated.is_coherent());
+    assert_eq!(updated.coverage(), coverage);
+    assert_eq!(delta.apply_to(&checked).expect("checked replay"), updated);
+
+    // A label-only incomplete root cannot become an authorized base through
+    // delta application. It needs a separately admitted complete snapshot.
+    let incomplete =
+        ViewRoot::new_incomplete(recipe, basis, frontier, Vec::new(), coverage.clone())
+            .expect("unadmitted partial source");
+    assert!(incomplete.is_coherent());
+    assert_eq!(
+        incomplete.prepare(ViewDelta::Upsert { row: row.clone() }, cap.clone()),
+        Err(ViewError::InvalidRelationDelta),
+    );
+    let replacement = ViewRoot::new_checked(recipe, basis, frontier, vec![row], coverage, cap)
+        .expect("separately admitted replacement snapshot");
+    assert!(replacement.is_coherent());
+    assert_eq!(replacement.row_count(), 1);
+}
+
+#[test]
 fn default_library_stays_unavailable_until_a_producer_admits_coverage() {
     let library = Library::new();
     assert!(matches!(

@@ -389,6 +389,88 @@ fn state(
     )
 }
 
+#[test]
+fn authorized_coverage_rebind_retains_exact_tree_and_refuses_scope_or_authority_changes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let base = state((0..4097).map(|key| (key, key * 2)))?;
+    let CoverageWitness::Complete(previous) = base.coverage() else {
+        panic!("admitted complete fixture");
+    };
+    let claim =
+        AuthorityScopeClaim::from_object_version(ObjectVersion::<SchemaFixture>::from_value(&1));
+    let next = admit_complete_scope(
+        claim,
+        admit_producer_observation(
+            UntrustedProducerObservation::new(
+                [8; ID_BYTES],
+                claim.scope_root(),
+                [9; ID_BYTES],
+                vec![6, 5, 4],
+            ),
+            &FixtureVerifier,
+        )?,
+    )?;
+    assert_ne!(previous, next);
+    let (prepared, _) = prepare_delta_with_state(
+        &base,
+        vec![MapChange {
+            key: 0,
+            before: Some(0),
+            after: Some(7),
+        }],
+    )?;
+    let delta = prepared.delta().clone();
+    let target = prepared.commit(&base)?;
+    let rebound = target.clone().rebind_authorized_coverage(next)?;
+    assert_eq!(rebound.coverage(), CoverageWitness::Complete(next));
+    assert_eq!(rebound.root(), target.root());
+    assert!(
+        std::ptr::eq(
+            rebound.materialize().canonical_node(),
+            target.materialize().canonical_node(),
+        ),
+        "the entire immutable canonical tree is retained"
+    );
+    assert_eq!(delta.base(), base.root());
+    assert_eq!(delta.target(), rebound.root());
+    assert_eq!(
+        delta.id(),
+        canonical_delta_id(
+            base.root(),
+            rebound.root(),
+            &delta.changes().cloned().collect::<Vec<_>>()
+        )
+    );
+    assert_eq!(apply_delta(&base, &delta)?.root(), rebound.root());
+
+    let CoverageWitness::Complete(foreign) = complete(2)? else {
+        panic!("admitted complete fixture");
+    };
+    assert_eq!(
+        target.clone().rebind_authorized_coverage(foreign),
+        Err(CoverageRebindError::ScopeMismatch {
+            retained: next.scope_root(),
+            replacement: foreign.scope_root(),
+        }),
+    );
+    for kind in [
+        Coverage::Partial,
+        Coverage::Closed,
+        Coverage::Unavailable,
+        Coverage::Unsupported,
+        Coverage::Complete,
+    ] {
+        let unadmitted = CoverageWitness::from_untrusted_parts(kind, next.scope_root(), None);
+        let incomplete = RelationState::<RelationFixture>::from_entries([(0, 7)], unadmitted)?;
+        assert_eq!(
+            incomplete.rebind_authorized_coverage(next),
+            Err(CoverageRebindError::NotAuthorizedComplete),
+            "{kind:?} cannot be promoted by supplying a scope-matched capability",
+        );
+    }
+    Ok(())
+}
+
 fn manifest(
     state: &RelationState<RelationFixture>,
     coverage: CoverageWitness,

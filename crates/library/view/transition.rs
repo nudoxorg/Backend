@@ -189,6 +189,14 @@ impl PreparedViewDelta {
             .relation
             .commit(&base.relation)
             .map_err(|_| ViewError::InvalidRelationDelta)?;
+        let backend_version::CoverageWitness::Complete(authorized) =
+            self.capability.clone().witness()
+        else {
+            return Err(ViewError::InvalidCoverage);
+        };
+        let target_relation = target_relation
+            .rebind_authorized_coverage(authorized)
+            .map_err(|_| ViewError::InvalidCoverage)?;
         if target_relation.root() != self.target_root {
             return Err(ViewError::WrongTarget);
         }

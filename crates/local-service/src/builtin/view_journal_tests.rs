@@ -978,6 +978,10 @@ fn capture_only_generation_rebind_cold_recovers_then_retains_compact_events() {
         assert_eq!(recovered.view.descriptor(), rebound.descriptor());
         assert_eq!(recovered.view.capability(), rebound.capability());
         assert_eq!(recovered.view.rows(), rebound.rows());
+        assert_eq!(
+            recovered.view, rebound,
+            "cold hydration preserves the current relation authority"
+        );
         assert!(recovered.events.is_empty());
     }
     journal
@@ -992,6 +996,10 @@ fn capture_only_generation_rebind_cold_recovers_then_retains_compact_events() {
     assert_eq!(recovered.view.descriptor(), rebound.descriptor());
     assert_eq!(recovered.view.capability(), rebound.capability());
     assert_eq!(recovered.view.rows(), rebound.rows());
+    assert_eq!(
+        recovered.view, rebound,
+        "the published root equals its cold reconstruction"
+    );
     assert_eq!(recovered.cursor, cursor);
     assert_eq!(recovered.view.capability(), Some(cap.clone()));
     assert_eq!(recovered.view.row_count(), base.row_count());

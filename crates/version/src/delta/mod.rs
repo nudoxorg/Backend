@@ -9,8 +9,8 @@ pub use operations::{
     prepare_delta_with_work, prepare_internal_update_with_work,
 };
 pub use state::{
-    CheckedStateObject, CheckedStateObjectRef, RelationEntry, RelationState, StateError,
-    ValueSchema,
+    CheckedStateObject, CheckedStateObjectRef, CoverageRebindError, RelationEntry, RelationState,
+    StateError, ValueSchema,
 };
 pub use transition::{
     BoundDelta, Delta, DeltaError, DeltaView, DeltaWork, MapChange, PreparedDelta,
