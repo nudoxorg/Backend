@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/httpie-document-selection-d54f-wire21.py", line 219, in <module>
+    owner.terminate();code=owner.wait(timeout=30);receipt.update(kernel_wait=code,ended=datetime.now(timezone.utc).isoformat());(epoch/'owner.retired.json').write_text(json.dumps(receipt,indent=2)+'\n');out.close();err.close()
+AttributeError: 'bytes' object has no attribute 'close'
