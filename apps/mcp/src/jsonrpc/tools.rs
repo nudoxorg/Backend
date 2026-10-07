@@ -1,21 +1,19 @@
 //! The tool table an MCP client should see.
 //!
-//! The command registry stays complete for the CLI. This list is the session
-//! an agent needs to add a project, search it, inspect coordinates, and run two
-//! compact registry lookups. Registry schemas come from
-//! [`backend_present::GRAMMARS`]; the three owner-job tools project the same
-//! typed `SurfaceCommand` API. Other registry rows stay callable by name for
-//! existing probes but are not advertised, and neither are the Trustfall or
-//! surface escape hatches.
+//! Each descriptor connects the route, default discovery policy, and registry
+//! grammar. `tools/list` stays small and ready for a new session; the catalog
+//! resource makes capability-dependent routes and the two advanced lanes
+//! inspectable without promising that every workspace can answer them.
 
 use super::codec::empty_cursor;
 use super::{RpcError, default_detail};
 use backend_library::CommandDomain;
 use backend_present::{
     ArgumentKind, ArgumentSpec, CommandGrammar, DEFAULT_LIMIT, DEFAULT_RESPONSE_BUDGET_BYTES,
-    Detail, domain_name, encode_serializable, grammar_for_tool, oversized_fault,
+    Detail, Fault, GRAMMARS, domain_name, encode_serializable, grammar_for_tool, oversized_fault,
 };
 use serde_json::{Map, Value, json};
+use std::fmt::Write as _;
 
 /// The escape hatch that takes one tagged `SurfaceCommand` object.
 pub(super) const SURFACE_TOOL: &str = "backend.surface";
@@ -31,6 +29,34 @@ pub(super) const INDEX_PROGRESS_TOOL: &str = "backend.index_progress";
 
 /// Requests cancellation of one exact owner-managed index job.
 pub(super) const INDEX_CANCEL_TOOL: &str = "backend.index_cancel";
+
+/// One MCP route and its source grammar. Both `tools/list` and `tools/call`
+/// resolve names through this descriptor so a route cannot be advertised with
+/// a schema that is disconnected from the handler which accepts it.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum ToolRoute {
+    Registry(CommandGrammar),
+    Query,
+    Surface,
+    IndexStart,
+    IndexProgress,
+    IndexCancel,
+    RefusedIndexAwait,
+}
+
+/// Whether a callable route belongs in the default agent tool set.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Discovery {
+    Listed,
+    CatalogOnly,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ToolDescriptor {
+    name: &'static str,
+    route: ToolRoute,
+    discovery: Discovery,
+}
 
 /// Tools advertised to an MCP client, in the order the instructions use them.
 const SESSION_TOOLS: &[&str] = &[
@@ -52,6 +78,180 @@ const SESSION_TOOLS: &[&str] = &[
 
 pub(super) const INDEX_JOB_TOOLS: &[&str] =
     &[INDEX_START_TOOL, INDEX_PROGRESS_TOOL, INDEX_CANCEL_TOOL];
+
+/// Resolves every callable tool name through its route descriptor.
+pub(super) fn tool_route(name: &str) -> Option<ToolRoute> {
+    descriptor(name).map(|descriptor| descriptor.route)
+}
+
+fn descriptor(name: &str) -> Option<ToolDescriptor> {
+    let descriptor = match name {
+        SURFACE_TOOL => ToolDescriptor {
+            name: SURFACE_TOOL,
+            route: ToolRoute::Surface,
+            discovery: Discovery::CatalogOnly,
+        },
+        QUERY_TOOL => ToolDescriptor {
+            name: QUERY_TOOL,
+            route: ToolRoute::Query,
+            discovery: Discovery::CatalogOnly,
+        },
+        INDEX_START_TOOL => ToolDescriptor {
+            name: INDEX_START_TOOL,
+            route: ToolRoute::IndexStart,
+            discovery: Discovery::Listed,
+        },
+        INDEX_PROGRESS_TOOL => ToolDescriptor {
+            name: INDEX_PROGRESS_TOOL,
+            route: ToolRoute::IndexProgress,
+            discovery: Discovery::Listed,
+        },
+        INDEX_CANCEL_TOOL => ToolDescriptor {
+            name: INDEX_CANCEL_TOOL,
+            route: ToolRoute::IndexCancel,
+            discovery: Discovery::Listed,
+        },
+        "backend.index_await" => ToolDescriptor {
+            name: "backend.index_await",
+            route: ToolRoute::RefusedIndexAwait,
+            discovery: Discovery::CatalogOnly,
+        },
+        _ => {
+            let grammar = grammar_for_tool(name)?;
+            ToolDescriptor {
+                name: grammar.tool(),
+                route: ToolRoute::Registry(grammar),
+                discovery: if SESSION_TOOLS.contains(&grammar.tool()) {
+                    Discovery::Listed
+                } else {
+                    Discovery::CatalogOnly
+                },
+            }
+        }
+    };
+    Some(descriptor)
+}
+
+fn descriptors() -> Vec<ToolDescriptor> {
+    let mut descriptors = Vec::with_capacity(GRAMMARS.len() + 2);
+    descriptors.extend(GRAMMARS.iter().copied().map(|grammar| {
+        descriptor(grammar.tool()).expect("every grammar row has an MCP descriptor")
+    }));
+    descriptors.extend([
+        descriptor(QUERY_TOOL).expect("query tool descriptor"),
+        descriptor(SURFACE_TOOL).expect("surface tool descriptor"),
+    ]);
+    descriptors
+}
+
+/// Describes every callable-but-not-default route, including its registry
+/// description, so capability-dependent features remain inspectable without
+/// advertising them as universally ready.
+pub(super) fn catalog_markdown() -> String {
+    let mut output = String::from(
+        "# MCP tool catalog\n\n`tools/list` contains the default session tools. The registry routes below are callable by exact name but are not in the default set. Each input schema is the accepted JSON shape. A route can still return a typed fault when its required source metadata or product capability is unavailable; read `backend.status` and `backend://workspace/current` before treating an empty or unavailable result as evidence that the project has none.\n\n## Capability-dependent registry routes\n\n",
+    );
+    let descriptors = descriptors();
+    for descriptor in &descriptors {
+        if descriptor.discovery == Discovery::CatalogOnly
+            && let ToolRoute::Registry(grammar) = descriptor.route
+        {
+            let domain = grammar.domain().unwrap_or(CommandDomain::Library);
+            let schema = registry_tool(grammar, domain)["inputSchema"].clone();
+            let schema = serde_json::to_string_pretty(&schema)
+                .expect("registry input schema always serializes");
+            let _ = writeln!(
+                output,
+                "- `{}` — {}\n\n```json\n{schema}\n```\n",
+                descriptor.name,
+                grammar.description()
+            );
+        }
+    }
+    output.push_str("\n## Advanced and retired routes\n\n");
+    for descriptor in &descriptors {
+        if descriptor.discovery != Discovery::CatalogOnly {
+            continue;
+        }
+        match descriptor.route {
+            ToolRoute::Registry(_) => {}
+            ToolRoute::Query => output.push_str(
+                "- `backend.query` — Typed Trustfall joins over the selected immutable revision. This advanced lane is not in the default session tool set; read `backend://schema/query` for its input contract and executable examples.\n",
+            ),
+            ToolRoute::Surface => output.push_str(
+                "- `backend.surface` — Generic typed `SurfaceCommand` escape hatch. Pass `command` as a tagged object with an `operation` field; its accepted operations and fields are defined by `SurfaceCommand`. Prefer a matching named tool when one exists.\n",
+            ),
+            ToolRoute::RefusedIndexAwait => output.push_str(
+                "- `backend.index_await` — Retired over MCP because it may block on owner work; use `backend.index_progress` for immediate bounded polling. Calls are refused.\n",
+            ),
+            ToolRoute::IndexStart | ToolRoute::IndexProgress | ToolRoute::IndexCancel => {}
+        }
+    }
+    output
+}
+
+/// Checks JSON values against the primitive and collection shapes projected by
+/// the registry schema before the compatibility `Invocation` parser converts
+/// values into command-line text. Semantic validation remains in the shared
+/// command lowering path.
+pub(super) fn validate_registry_arguments(
+    grammar: CommandGrammar,
+    arguments: &Map<String, Value>,
+) -> Result<(), Fault> {
+    for spec in grammar.positional().iter().chain(grammar.options()) {
+        let Some(value) = arguments.get(spec.json_name()) else {
+            continue;
+        };
+        if spec.is_repeated() {
+            let Some(values) = value.as_array() else {
+                return Err(argument_fault(*spec, "an array"));
+            };
+            if values.is_empty() {
+                return Err(argument_fault(*spec, "a non-empty array"));
+            }
+            for value in values {
+                validate_scalar(*spec, value)?;
+            }
+        } else {
+            validate_scalar(*spec, value)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_scalar(spec: ArgumentSpec, value: &Value) -> Result<(), Fault> {
+    let type_matches = match spec.kind().json_type() {
+        "string" => value.is_string(),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "boolean" => value.is_boolean(),
+        "object" => value.is_object(),
+        _ => false,
+    };
+    if type_matches {
+        Ok(())
+    } else {
+        let expected = if spec.kind() == ArgumentKind::Limit {
+            "an integer from 1 through 200"
+        } else if spec.is_repeated() {
+            "an array of values with the declared type"
+        } else {
+            match spec.kind().json_type() {
+                "integer" => "an integer",
+                "boolean" => "a boolean",
+                "object" => "an object",
+                _ => "a string",
+            }
+        };
+        Err(argument_fault(spec, expected))
+    }
+}
+
+fn argument_fault(spec: ArgumentSpec, expected: &str) -> Fault {
+    Fault::usage(
+        spec.json_name(),
+        format!("`{}` must be {expected}", spec.json_name()),
+    )
+}
 
 /// Lists the session tools. `backend.index` requires `path` here even though
 /// the CLI grammar treats it as optional, so a client cannot accidentally
@@ -77,26 +277,31 @@ fn bounded_tools() -> Result<Value, RpcError> {
 
 fn tools_value() -> Value {
     let mut tools = Vec::with_capacity(SESSION_TOOLS.len() + INDEX_JOB_TOOLS.len());
-    for name in SESSION_TOOLS {
-        let grammar = grammar_for_tool(name)
-            .unwrap_or_else(|| panic!("session tool {name} is not a registry row"));
-        let domain = grammar
-            .spec()
-            .map(|spec| spec.domain)
-            .unwrap_or(CommandDomain::Library);
-        tools.push(registry_tool(grammar, domain));
+    for name in SESSION_TOOLS.iter().chain(INDEX_JOB_TOOLS) {
+        let descriptor =
+            descriptor(name).unwrap_or_else(|| panic!("listed MCP tool {name} has no descriptor"));
+        assert_eq!(descriptor.discovery, Discovery::Listed);
+        tools.push(listed_tool(descriptor));
     }
-    tools.extend(index_job_tools());
     json!({ "tools": tools })
 }
 
-fn index_job_tools() -> impl Iterator<Item = Value> {
-    [
-        index_start_tool(),
-        index_progress_tool(),
-        index_cancel_tool(),
-    ]
-    .into_iter()
+fn listed_tool(descriptor: ToolDescriptor) -> Value {
+    match descriptor.route {
+        ToolRoute::Registry(grammar) => {
+            let domain = grammar.domain().unwrap_or(CommandDomain::Library);
+            registry_tool(grammar, domain)
+        }
+        ToolRoute::IndexStart => index_start_tool(),
+        ToolRoute::IndexProgress => index_progress_tool(),
+        ToolRoute::IndexCancel => index_cancel_tool(),
+        ToolRoute::Query | ToolRoute::Surface | ToolRoute::RefusedIndexAwait => {
+            panic!(
+                "non-default route {} was put in tools/list",
+                descriptor.name
+            )
+        }
+    }
 }
 
 fn index_start_tool() -> Value {

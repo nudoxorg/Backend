@@ -1,0 +1,159 @@
+{
+  "schema": "nudox.actual-public-phase-summary.v1",
+  "phase": "unicode-retry",
+  "source": {
+    "commit": "fe26d8326ad07911a3d3e2cb9e548dbbc05c559d",
+    "tree": "428ad1f552295ce4b63787a2956b4283b1b4ea3b",
+    "clean": true
+  },
+  "pass": true,
+  "error": null,
+  "owner_pid": 1194,
+  "eligible_inputs": 23,
+  "elapsed_seconds": 340.3530728816986,
+  "receipt": {
+    "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/unicode-retry/receipt.json",
+    "bytes": 32492,
+    "sha256": "7cd63891ef7ad2fffa145f6645709113ca4438e50ec4ea34bcd275e8eacd0ba2"
+  },
+  "wire": {
+    "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/unicode-retry/wire.jsonl",
+    "bytes": 95368406,
+    "sha256": "bd068b49a58b41c31e2b6d2163926ef39bc0c9d7205e9972769a68c153d6b0df"
+  },
+  "old_token_new_owner_replays": [],
+  "contract_negatives": 0,
+  "stale_root_refusals": 0,
+  "surface_checks": 0,
+  "issued_token_sets": [
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/unicode-retry-late.json",
+      "sha256": "3444667f61247d4b5a913123e8293354336fdba63fc3f3783e6800be66dbbc92",
+      "cases": 8,
+      "issued_at_unix": 1791334625.636179
+    }
+  ],
+  "matrix": {
+    "artifact": {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/unicode-retry/matrix.json",
+      "bytes": 1303266,
+      "sha256": "30275d3e488baa993cc2c822ca11c8ea9d26f2b1f59a950ec0a6879484d62fe5"
+    },
+    "pass": true,
+    "cases": 240,
+    "pages": 7086,
+    "row_occurrences": 14262,
+    "multi_page_cases": 178,
+    "unique_large_credit_refusals": [
+      {
+        "route": "resolve",
+        "query": "Cache",
+        "surface": "cli",
+        "credit": 200,
+        "fault": {
+          "slug": "transport",
+          "operand": "response",
+          "cause": "oversized",
+          "detail": "response is 180483 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+          "answer": "fault"
+        }
+      },
+      {
+        "route": "resolve",
+        "query": "Cache",
+        "surface": "mcp",
+        "credit": 200,
+        "fault": {
+          "slug": "transport",
+          "operand": "response",
+          "cause": "oversized",
+          "detail": "response is 181664 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+          "answer": "fault"
+        }
+      },
+      {
+        "route": "search",
+        "query": "Cache",
+        "surface": "cli",
+        "credit": 200,
+        "fault": {
+          "slug": "transport",
+          "operand": "response",
+          "cause": "oversized",
+          "detail": "response is 183464 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+          "answer": "fault"
+        }
+      },
+      {
+        "route": "search",
+        "query": "Cache",
+        "surface": "mcp",
+        "credit": 200,
+        "fault": {
+          "slug": "transport",
+          "operand": "response",
+          "cause": "oversized",
+          "detail": "response is 184651 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+          "answer": "fault"
+        }
+      },
+      {
+        "route": "search",
+        "query": "cache_clear",
+        "surface": "cli",
+        "credit": 200,
+        "fault": {
+          "slug": "transport",
+          "operand": "response",
+          "cause": "oversized",
+          "detail": "response is 50207 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+          "answer": "fault"
+        }
+      },
+      {
+        "route": "search",
+        "query": "cache_clear",
+        "surface": "mcp",
+        "credit": 200,
+        "fault": {
+          "slug": "transport",
+          "operand": "response",
+          "cause": "oversized",
+          "detail": "response is 50207 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+          "answer": "fault"
+        }
+      },
+      {
+        "route": "search",
+        "query": "cache_info",
+        "surface": "cli",
+        "credit": 200,
+        "fault": {
+          "slug": "transport",
+          "operand": "response",
+          "cause": "oversized",
+          "detail": "response is 55228 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+          "answer": "fault"
+        }
+      },
+      {
+        "route": "search",
+        "query": "cache_info",
+        "surface": "mcp",
+        "credit": 200,
+        "fault": {
+          "slug": "transport",
+          "operand": "response",
+          "cause": "oversized",
+          "detail": "response is 55228 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+          "answer": "fault"
+        }
+      }
+    ],
+    "maximum_token_sizes": {
+      "public_token_bytes": 12425,
+      "owner_token_bytes": 9282,
+      "decoded_command_bytes": 84778
+    }
+  }
+}

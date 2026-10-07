@@ -1,0 +1,208 @@
+{
+  "schema": "nudox.actual-public-phase-summary.v1",
+  "phase": "restored",
+  "source": {
+    "commit": "fe26d8326ad07911a3d3e2cb9e548dbbc05c559d",
+    "tree": "428ad1f552295ce4b63787a2956b4283b1b4ea3b",
+    "clean": true
+  },
+  "pass": true,
+  "error": null,
+  "owner_pid": 74483,
+  "eligible_inputs": 23,
+  "elapsed_seconds": 335.94062995910645,
+  "receipt": {
+    "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/restored/receipt.json",
+    "bytes": 31986,
+    "sha256": "6ba303496745ba0ca1de35a832e8d821976d31cac4513b483128740113592340"
+  },
+  "wire": {
+    "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/restored/wire.jsonl",
+    "bytes": 95635198,
+    "sha256": "f87520c916b1fb16ede36a826976ce562a2d601734b3d90bfb42c1062a438a9d"
+  },
+  "old_token_new_owner_replays": [],
+  "contract_negatives": 0,
+  "stale_root_refusals": 8,
+  "surface_checks": 0,
+  "issued_token_sets": [
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/restored-early.json",
+      "sha256": "459157c9bf1718ebd22b1b21a6a9e45255fc37374ca67a1917ef16114b1152b6",
+      "cases": 8,
+      "issued_at_unix": 1791335689.275167
+    },
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/restored-late.json",
+      "sha256": "d8274c30bb6cb0ec8b4c3854e7a055a4fbc88c5ce21eaeab9e4c94f89f589654",
+      "cases": 8,
+      "issued_at_unix": 1791336015.697099
+    }
+  ],
+  "matrix": {
+    "artifact": {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/restored/matrix.json",
+      "bytes": 1303305,
+      "sha256": "aae68a81bcfae59ea314e2e9c3f131358c60f81f88331b2df85184a1f2328a9e"
+    },
+    "pass": true,
+    "cases": 240,
+    "pages": 7086,
+    "row_occurrences": 14256,
+    "multi_page_cases": 178,
+    "unique_large_credit_refusals": [
+      {
+        "route": "resolve",
+        "query": "Cache",
+        "surface": "cli",
+        "credit": 200,
+        "fault": {
+          "slug": "transport",
+          "operand": "response",
+          "cause": "oversized",
+          "detail": "response is 180436 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+          "answer": "fault"
+        }
+      },
+      {
+        "route": "resolve",
+        "query": "Cache",
+        "surface": "mcp",
+        "credit": 200,
+        "fault": {
+          "slug": "transport",
+          "operand": "response",
+          "cause": "oversized",
+          "detail": "response is 181617 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+          "answer": "fault"
+        }
+      },
+      {
+        "route": "search",
+        "query": "Cache",
+        "surface": "cli",
+        "credit": 200,
+        "fault": {
+          "slug": "transport",
+          "operand": "response",
+          "cause": "oversized",
+          "detail": "response is 183260 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+          "answer": "fault"
+        }
+      },
+      {
+        "route": "search",
+        "query": "Cache",
+        "surface": "mcp",
+        "credit": 200,
+        "fault": {
+          "slug": "transport",
+          "operand": "response",
+          "cause": "oversized",
+          "detail": "response is 184396 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+          "answer": "fault"
+        }
+      },
+      {
+        "route": "search",
+        "query": "cache_clear",
+        "surface": "cli",
+        "credit": 200,
+        "fault": {
+          "slug": "transport",
+          "operand": "response",
+          "cause": "oversized",
+          "detail": "response is 50195 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+          "answer": "fault"
+        }
+      },
+      {
+        "route": "search",
+        "query": "cache_clear",
+        "surface": "mcp",
+        "credit": 200,
+        "fault": {
+          "slug": "transport",
+          "operand": "response",
+          "cause": "oversized",
+          "detail": "response is 50195 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+          "answer": "fault"
+        }
+      },
+      {
+        "route": "search",
+        "query": "cache_info",
+        "surface": "cli",
+        "credit": 200,
+        "fault": {
+          "slug": "transport",
+          "operand": "response",
+          "cause": "oversized",
+          "detail": "response is 55228 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+          "answer": "fault"
+        }
+      },
+      {
+        "route": "search",
+        "query": "cache_info",
+        "surface": "mcp",
+        "credit": 200,
+        "fault": {
+          "slug": "transport",
+          "operand": "response",
+          "cause": "oversized",
+          "detail": "response is 55228 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+          "answer": "fault"
+        }
+      }
+    ],
+    "maximum_token_sizes": {
+      "public_token_bytes": 13273,
+      "owner_token_bytes": 9918,
+      "decoded_command_bytes": 73451
+    }
+  },
+  "retained_mcp_token_expiry_observations": [
+    {
+      "route": "resolve",
+      "query": "cached",
+      "issued_at_unix": 1791335229.969297,
+      "request_at_unix": 1791335691.8678348,
+      "expires_at_unix": 1791336130,
+      "before_expiry": true,
+      "age_seconds": 461.8985378742218
+    },
+    {
+      "route": "resolve",
+      "query": "__getitem__",
+      "issued_at_unix": 1791335229.969297,
+      "request_at_unix": 1791335691.940118,
+      "expires_at_unix": 1791336130,
+      "before_expiry": true,
+      "age_seconds": 461.97082114219666
+    },
+    {
+      "route": "search",
+      "query": "cached",
+      "issued_at_unix": 1791335229.969297,
+      "request_at_unix": 1791335691.985211,
+      "expires_at_unix": 1791336130,
+      "before_expiry": true,
+      "age_seconds": 462.01591396331787
+    },
+    {
+      "route": "search",
+      "query": "__getitem__",
+      "issued_at_unix": 1791335229.969297,
+      "request_at_unix": 1791335692.05693,
+      "expires_at_unix": 1791336130,
+      "before_expiry": true,
+      "age_seconds": 462.08763313293457
+    }
+  ],
+  "token_file": {
+    "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/readded-late.json",
+    "bytes": 366712,
+    "sha256": "3b753deefe8d17ad9081111f29611cadb9a4886f2094ebfa177b82cc1309b0dd"
+  }
+}

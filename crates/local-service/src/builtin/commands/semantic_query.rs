@@ -141,6 +141,7 @@ pub(super) fn for_package_publications(
 }
 
 pub(super) fn execute_semantic_graph(
+    structural_calls: &mut view_build::StructuralCallResidence,
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     compiler: &LocalCompilerClient,
     generations: &mut super::super::generation_residence::SemanticGenerationResidence,
@@ -222,7 +223,7 @@ pub(super) fn execute_semantic_graph(
         &project_paths,
     )?;
     let pairs = if package_indexed_in_sources(&sources, package) {
-        view_build::structural_call_coordinate_pairs(&sources, package)?
+        structural_calls.coordinate_pairs(&sources, package)?
     } else {
         Vec::new()
     };
@@ -256,6 +257,7 @@ pub(super) fn execute_semantic_graph(
 }
 
 pub(super) fn execute_structural_call_graph(
+    structural_calls: &mut view_build::StructuralCallResidence,
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     query: backend_engine::GraphNeighborhoodQuery,
     include_incoming: bool,
@@ -281,7 +283,8 @@ pub(super) fn execute_structural_call_graph(
     };
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let sources = read_package_sources(&snapshot, package)?;
-    let relations = view_build::structural_call_graph_relations(
+    let relations = view_build::structural_call_graph_relations_resident(
+        structural_calls,
         view,
         &sources,
         package,
@@ -906,6 +909,7 @@ fn project_opened_reference_facts(
 /// have no structural analogue and still refuse the query outright in that
 /// case — only references falls back.
 pub(super) fn execute_references(
+    structural_calls: &mut view_build::StructuralCallResidence,
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     compiler: &LocalCompilerClient,
     generations: &mut super::super::generation_residence::SemanticGenerationResidence,
@@ -965,7 +969,7 @@ pub(super) fn execute_references(
         Ok(())
     })?;
     if !publication_found {
-        return execute_structural_references(daemon, target);
+        return execute_structural_references(structural_calls, daemon, target);
     }
     let project_paths = project_paths_for_package(&sources, package);
     let mut opened = Vec::with_capacity(image_slots.len());
@@ -979,7 +983,7 @@ pub(super) fn execute_references(
         );
     }
     let pairs = if package_indexed_in_sources(&sources, package) {
-        view_build::structural_call_coordinate_pairs(&sources, package)?
+        structural_calls.coordinate_pairs(&sources, package)?
     } else {
         Vec::new()
     };
@@ -1006,6 +1010,7 @@ pub(super) fn execute_references(
 }
 
 fn execute_structural_references(
+    structural_calls: &mut view_build::StructuralCallResidence,
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     target: &backend_engine::ProductText,
 ) -> Result<backend_engine::SurfaceReply, BuiltinModelError> {
@@ -1021,7 +1026,12 @@ fn execute_structural_references(
         Some(package) => read_package_sources(&snapshot, package)?,
         None => empty_indexed_sources(),
     };
-    let mut facts = view_build::structural_reference_facts(view, &sources, target.as_str())?;
+    let mut facts = view_build::structural_reference_facts_resident(
+        structural_calls,
+        view,
+        &sources,
+        target.as_str(),
+    )?;
     facts.sort_by(|left, right| {
         left.evidence
             .source

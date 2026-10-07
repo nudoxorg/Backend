@@ -1,0 +1,189 @@
+{
+  "raw_files": {
+    "native-controls/sol61-bootstrap-lifecycle-495bb7-producer-namespace-20261007-attempt27/actual-test-artifact-events.json": {
+      "bytes": 1238,
+      "sha256": "6aa80e451ca9d29cc2d8e09d9033c218e5ed3b517b0b16206c0d008e56fb54b1"
+    },
+    "native-controls/sol61-bootstrap-lifecycle-495bb7-producer-namespace-20261007-attempt27/actual-test-output.log": {
+      "bytes": 234,
+      "sha256": "953d557273739370d789f0e06b36295425a41bbdd923826a328bcd3a952f4db2"
+    },
+    "native-controls/sol61-bootstrap-lifecycle-495bb7-producer-namespace-20261007-attempt27/capture-script.py": {
+      "bytes": 9449,
+      "sha256": "0f682effa5489d4aefacc76a198ace8a4487521d65973203e8a1a3cd7adb50f3"
+    },
+    "native-controls/sol61-bootstrap-lifecycle-495bb7-producer-namespace-20261007-attempt27/cargo.stderr.log": {
+      "bytes": 626,
+      "sha256": "b7a6a261e7130441b6c53b25c1eb3340dd6007f9e4011404160464b090bba8cf"
+    },
+    "native-controls/sol61-bootstrap-lifecycle-495bb7-producer-namespace-20261007-attempt27/cargo.stdout.jsonl": {
+      "bytes": 2727019,
+      "sha256": "92f053289ee256ee92080ddd6891a2b052b3968af99288b3987227ff67d73740"
+    },
+    "native-controls/sol61-bootstrap-lifecycle-495bb7-producer-namespace-20261007-attempt27/compiler-errors.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "native-controls/sol61-bootstrap-lifecycle-495bb7-producer-namespace-20261007-attempt27/completion.json": {
+      "bytes": 292,
+      "sha256": "584faaf8f53f6da051f18bd094acb9427f86ee2a345495d504fa1e833ae5e2fd"
+    },
+    "native-controls/sol61-bootstrap-lifecycle-495bb7-producer-namespace-20261007-attempt27/fleet-proof.json": {
+      "bytes": 35131,
+      "sha256": "20fa46829256afe6b9bd9bbf853905e8264cf83010dc395cee55cb9dd4a31ec6"
+    },
+    "native-controls/sol61-bootstrap-lifecycle-495bb7-producer-namespace-20261007-attempt27/owned-runtime-observations.jsonl": {
+      "bytes": 1209811,
+      "sha256": "0614b3e66b4aad696af248561e1dd20d09effe287df87ee4c2c2909dfd3e259a"
+    },
+    "native-controls/sol61-bootstrap-lifecycle-495bb7-producer-namespace-20261007-attempt27/raw-log-identity.json": {
+      "bytes": 288,
+      "sha256": "bf2c00364d90c76cbff7806e59a4717f02f8efa0cae0aa38af4abcd7aa6b8ceb"
+    },
+    "native-controls/sol61-bootstrap-lifecycle-495bb7-producer-namespace-20261007-attempt27/resources.jsonl": {
+      "bytes": 10179,
+      "sha256": "3262288cb7600086dcdcc8e3b45465e490493eaf7f0c82607f77c1931845a08b"
+    },
+    "native-controls/sol61-bootstrap-lifecycle-495bb7-producer-namespace-20261007-attempt27/test-receipt.json": {
+      "bytes": 6107,
+      "sha256": "5e657dd4cc98b2a4b5d18027aed998172d016c4aabd560b97cbd21bdd566b211"
+    },
+    "native-controls/sol61-bootstrap-lifecycle-495bb7-reconstructed-publication-20261007-attempt28/actual-test-artifact-events.json": {
+      "bytes": 1237,
+      "sha256": "34848fe65c0a4a85e8ab4af7d20b767765104597134a7e0b9376fe85190e7beb"
+    },
+    "native-controls/sol61-bootstrap-lifecycle-495bb7-reconstructed-publication-20261007-attempt28/actual-test-output.log": {
+      "bytes": 228,
+      "sha256": "4bc803ed071614c1e375897fdac11888a249300cff2ec70088b214d5592c1ed2"
+    },
+    "native-controls/sol61-bootstrap-lifecycle-495bb7-reconstructed-publication-20261007-attempt28/capture-script.py": {
+      "bytes": 9449,
+      "sha256": "0f682effa5489d4aefacc76a198ace8a4487521d65973203e8a1a3cd7adb50f3"
+    },
+    "native-controls/sol61-bootstrap-lifecycle-495bb7-reconstructed-publication-20261007-attempt28/cargo.stderr.log": {
+      "bytes": 495,
+      "sha256": "07e4f97569fc75b47e446f10c682b13cc7b06ed1d7fee69fb569e796a686b5ee"
+    },
+    "native-controls/sol61-bootstrap-lifecycle-495bb7-reconstructed-publication-20261007-attempt28/cargo.stdout.jsonl": {
+      "bytes": 2727012,
+      "sha256": "0e900fb7b73e6319c214b0a4c21975d5de822dd71a22af815cc712b764cf0184"
+    },
+    "native-controls/sol61-bootstrap-lifecycle-495bb7-reconstructed-publication-20261007-attempt28/compiler-errors.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "native-controls/sol61-bootstrap-lifecycle-495bb7-reconstructed-publication-20261007-attempt28/completion.json": {
+      "bytes": 292,
+      "sha256": "00c39d8d54747123a4f5f29eebf3d877ddecf2371df58fdb2d6230a976c57e34"
+    },
+    "native-controls/sol61-bootstrap-lifecycle-495bb7-reconstructed-publication-20261007-attempt28/fleet-proof.json": {
+      "bytes": 36094,
+      "sha256": "8987458d35808a19d9d0963e7e65aa8f58a062944f9c884441ac65731ed0f906"
+    },
+    "native-controls/sol61-bootstrap-lifecycle-495bb7-reconstructed-publication-20261007-attempt28/owned-runtime-observations.jsonl": {
+      "bytes": 463,
+      "sha256": "329810b454bc976aff25dcfd29b5c25c925c013d128363be69fb9da10e1f4af3"
+    },
+    "native-controls/sol61-bootstrap-lifecycle-495bb7-reconstructed-publication-20261007-attempt28/raw-log-identity.json": {
+      "bytes": 295,
+      "sha256": "4c4f4243aae6758522a7a6852ee61db05d92f88924ec06ea8a5f894e4cf22e09"
+    },
+    "native-controls/sol61-bootstrap-lifecycle-495bb7-reconstructed-publication-20261007-attempt28/resources.jsonl": {
+      "bytes": 117,
+      "sha256": "5c2fb70365f0af414a247804852646e314970909d2f139a55ee1f32f2bedfae8"
+    },
+    "native-controls/sol61-bootstrap-lifecycle-495bb7-reconstructed-publication-20261007-attempt28/test-receipt.json": {
+      "bytes": 6116,
+      "sha256": "04ee0c5fdd716a3007837c964f11d6f8df130dd110d8e5b15fba260ee4d71dd6"
+    },
+    "real-owner/exact-private-operation/claim-first.json": {
+      "bytes": 208,
+      "sha256": "43eeb2c59d5e9a2459f7d180fc05723555cf8ab2d247f21c014389b29b06abc1"
+    },
+    "real-owner/exact-private-operation/claim-second.json": {
+      "bytes": 208,
+      "sha256": "72a990c5f09560e1e922f15f2d824f3d4b7c6c44a51982f6fd53cebe9e351d90"
+    },
+    "real-owner/exact-private-operation/raw-wire/reply-26.body": {
+      "bytes": 2289,
+      "sha256": "802c97957916511c3a55b7239c91cb88d56dcbdac3251935b75f0d63cd7e5b70"
+    },
+    "real-owner/exact-private-operation/raw-wire/reply-52.body": {
+      "bytes": 2293,
+      "sha256": "47a481008790fc8384fe2060a12741c9fa5ad138496e6da9a7cdb6040d2e44d2"
+    },
+    "real-owner/exact-private-operation/raw-wire/request-26.body": {
+      "bytes": 207,
+      "sha256": "18eb7f46f4202166e7ed0fe15c71391b9af1d85e138d2198e3ee5d347b112a6f"
+    },
+    "real-owner/exact-private-operation/raw-wire/request-52.body": {
+      "bytes": 207,
+      "sha256": "fc8f368414aef4a8299b8f43bdfeb6d1bcde691cf419c21e2ed7c3309812abf7"
+    },
+    "real-owner/exact-private-operation/selected-capture.jsonl": {
+      "bytes": 1,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "real-owner/exact-private-operation/terminal-wire-summary.json": {
+      "bytes": 2761,
+      "sha256": "98aed31604b69faa20ac94c45deab6f6577cc2e17d3cb95c82c281e83820a290"
+    },
+    "real-owner/exact-private-operation/trace.jsonl": {
+      "bytes": 66849,
+      "sha256": "84d66ed50e6556d4aebed92fee2e2d5bc4fbc320a13d2c4b4412d73a57933010"
+    },
+    "real-owner/sol61-bootstrap-publication-387120-real-20261007-attempt19/actual-test-artifact-events.json": {
+      "bytes": 1189,
+      "sha256": "6fa3f4fa571a0918a87282e209c7218fe6a73b38e6ebbf663565f7514305e12c"
+    },
+    "real-owner/sol61-bootstrap-publication-387120-real-20261007-attempt19/actual-test-output.log": {
+      "bytes": 38971,
+      "sha256": "97b441d73e3928557bb90a6b2b2c500f2c5dd7be1b1304eca9bc78ec28db0850"
+    },
+    "real-owner/sol61-bootstrap-publication-387120-real-20261007-attempt19/capture-script.py": {
+      "bytes": 9449,
+      "sha256": "5d0ae3315eaa2d834e5cc48b4c68d68ff4ca4dea96473dbf8d4f993900f361e3"
+    },
+    "real-owner/sol61-bootstrap-publication-387120-real-20261007-attempt19/cargo.stderr.log": {
+      "bytes": 732,
+      "sha256": "ffb5697c1170328e705a850b8e295730d920a390bbf8bfe8676674a7f975456e"
+    },
+    "real-owner/sol61-bootstrap-publication-387120-real-20261007-attempt19/cargo.stdout.jsonl": {
+      "bytes": 4593322,
+      "sha256": "7d2d3960d3c830923eaea3a88b1d3b8f7fbd85a5b5545e9b0cd6fed3b42ff318"
+    },
+    "real-owner/sol61-bootstrap-publication-387120-real-20261007-attempt19/compiler-errors.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "real-owner/sol61-bootstrap-publication-387120-real-20261007-attempt19/completion.json": {
+      "bytes": 292,
+      "sha256": "30467647dcbb1a2c646ba08304300142237d8d35a2a552cbc4ee1fbb5ea33220"
+    },
+    "real-owner/sol61-bootstrap-publication-387120-real-20261007-attempt19/fleet-proof.json": {
+      "bytes": 30596,
+      "sha256": "4f7ad52ed8425df87caa7af5cf251e224911a6f3e538e25c6d000e348779db75"
+    },
+    "real-owner/sol61-bootstrap-publication-387120-real-20261007-attempt19/owned-runtime-observations.jsonl": {
+      "bytes": 9686,
+      "sha256": "aeff3ff9e2283f2929ce6db27d8780ef3d7dcea783d14ef089d5e5e9d614ba0b"
+    },
+    "real-owner/sol61-bootstrap-publication-387120-real-20261007-attempt19/raw-log-identity.json": {
+      "bytes": 276,
+      "sha256": "7ee9cb5eb9c9816afadd77018348a34e0d0b5ce53dcf1cc6949e43be172bd465"
+    },
+    "real-owner/sol61-bootstrap-publication-387120-real-20261007-attempt19/resources.jsonl": {
+      "bytes": 585,
+      "sha256": "616350b0d4d9dd07d7c948d0519739ff87d8a9a84271beb926a586afb056c243"
+    },
+    "real-owner/sol61-bootstrap-publication-387120-real-20261007-attempt19/test-receipt.json": {
+      "bytes": 6137,
+      "sha256": "4141cd0b28b8a6630030747de71b3e8c3bd36927f422e6d27ade44a609c129c6"
+    }
+  },
+  "archive": {
+    "bytes": 658474,
+    "sha256": "cbcc60dd4d446571a8971be953c06112191d0a57a72bb8b498b6b6d4caebdd49"
+  },
+  "scope": "raw native controls27/28 and actual owner19; no embedded native executable"
+}

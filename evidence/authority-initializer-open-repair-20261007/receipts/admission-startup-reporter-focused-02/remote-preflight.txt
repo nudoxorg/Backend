@@ -1,0 +1,11 @@
+startup diagnostic lock: free
+HEAD/tree/Cargo.lock/source blob:
+f11fdab20d7197616a38fb389752d8a4dba9619a
+f835bc5e1c4c2497adeaa903379a34decf45a061
+49e3cc50cc3424d6d0eee338eca0863cfb176819
+9232f099d6263e136bbaa79f49b4ec0a0cdc883f
+Worktree clean. Active native compiler/supervisor process identities:
+60649 60639 03-20:50:25 /Users/rmccrar6/ /Users/rmccrar6/.local/share/nudox/client-releases/c0c073d6f3b08314423c90a40193735539aa3ff1-macos-arm64-deploy26/bin/backend-worker cluster run --config /Users/rmccrar6/.local/share/nudox/remote-indexes/a3a729c17617eddad58e4d901bbb2797dcbba610-macos26/worker-state/cluster.bin --data-dir /Users/rmccrar6/.local/share/nudox/remote-indexes/a3a729c17617eddad58e4d901bbb2797dcbba610-macos26/worker-state --cargo-metadata-policy online
+91172 91172       09:14 /bin/bash        /bin/bash /Users/rmccrar6/codex-worktrees/sol61-real-ts-config-repair-20261007/.local/next-ts-managed/cargo test --locked --offline -j4 --message-format=json -p backend-engine --lib -- --exact --test-threads=1 --nocapture --ignored application::typescript_program::tests::authentic_application_and_configuration_roles_share_native_tsz_authority
+91323 91172       09:13 /nix/store/ff5ch /nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/cargo test --locked --offline -j4 --message-format=json -p backend-engine --lib -- --exact --test-threads=1 --nocapture --ignored application::typescript_program::tests::authentic_application_and_configuration_roles_share_native_tsz_authority
+98384 91172       05:57 /Users/rmccrar6/ /Users/rmccrar6/codex-worktrees/sol61-real-ts-config-repair-20261007/.local/build/next-ts/.nudox-cargo/slot-0/debug/deps/backend_engine-59d83410b14bb33b --exact --test-threads=1 --nocapture --ignored application::typescript_program::tests::authentic_application_and_configuration_roles_share_native_tsz_authority

@@ -1,0 +1,11 @@
+{
+  "former_supervisor_pid": 31441,
+  "former_launcher_pid": 31707,
+  "former_pid_rows": [],
+  "private_lock_unheld": true,
+  "source_clean_after": true,
+  "tools_unchanged": true,
+  "commit": "2d9fe2efccad3cbfe302db5e4d13d501f8df537d",
+  "tree": "c48bd7d8038db8cbf968142bfacb6e860c7cfbf7",
+  "admission_age_seconds": 6.413440942764282
+}

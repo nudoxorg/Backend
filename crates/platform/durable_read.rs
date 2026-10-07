@@ -236,15 +236,18 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn final_symlink_and_fifo_are_refused_without_waiting_for_a_writer() {
+        use rustix::fs::{CWD, Mode, mkfifoat};
+
         let root = scratch();
         fs::write(root.join("target"), b"state").expect("target");
         std::os::unix::fs::symlink("target", root.join("link")).expect("symlink");
         assert!(read_regular_bounded(&root.join("link"), 4096).is_err());
-        let status = std::process::Command::new("/usr/bin/mkfifo")
-            .arg(root.join("fifo"))
-            .status()
-            .expect("mkfifo");
-        assert!(status.success());
+        mkfifoat(
+            CWD,
+            root.join("fifo"),
+            Mode::from_bits_truncate(0o600),
+        )
+        .expect("create FIFO");
         let start = std::time::Instant::now();
         assert!(read_regular_bounded(&root.join("fifo"), 4096).is_err());
         assert!(

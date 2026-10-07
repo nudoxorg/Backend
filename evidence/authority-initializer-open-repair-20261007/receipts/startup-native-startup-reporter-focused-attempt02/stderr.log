@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-startup-native-supervisor.py", line 5, in <module>
+    stamp=[datetime.datetime.fromisoformat(x['census']['sample_started_at_utc'].replace('Z','+00:00')).timestamp() for x in fleet['raw_samples'].values()];age=max(time.time()-x for x in stamp);assert age<=30,age
+AssertionError: 34.133517265319824

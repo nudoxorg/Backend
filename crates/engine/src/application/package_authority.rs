@@ -65,6 +65,8 @@ pub struct PackageAuthorityConfiguration<'config> {
     pub rust: Option<RustPackageAuthorityConfiguration<'config>>,
     /// Go package oracle selected by the application owner.
     pub go: Option<&'config ConfiguredGoOracle>,
+    /// Typed Go-only host admission failure retained by the application owner.
+    pub go_unavailable: Option<super::LocalRuntimeGoAuthorityFailure>,
     /// Roslyn helper producer selected by the application owner.
     pub csharp: Option<CSharpPackageAuthorityConfiguration<'config>>,
     /// Java doclet/JDK authority configuration.
@@ -85,6 +87,7 @@ impl PackageAuthorityConfiguration<'static> {
         python_checker: super::LocalRuntimePythonCheckerAdmission::Unconfigured,
         rust: None,
         go: None,
+        go_unavailable: None,
         csharp: None,
         java: None,
         maximum_image_bytes: 0,
@@ -634,14 +637,21 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                 }
             }
             LanguageProfile::Go(_) => {
-                let oracle =
-                    request
-                        .configuration
-                        .go
-                        .ok_or(PackageAuthorityError::AdapterUnavailable {
+                let oracle = match request.configuration.go {
+                    Some(oracle) => oracle,
+                    None => {
+                        if let Some(cause) = request.configuration.go_unavailable {
+                            return Err(PackageAuthorityError::GoAuthorityUnavailable {
+                                profile: request.profile,
+                                cause,
+                            });
+                        }
+                        return Err(PackageAuthorityError::AdapterUnavailable {
                             profile: request.profile,
                             stage: PackageAuthorityStage::GoOracle,
-                        })?;
+                        });
+                    }
+                };
                 let owned_witness;
                 let go_authority = match captured_go_authority {
                     Some(witness) => witness,
@@ -1050,6 +1060,14 @@ pub enum PackageAuthorityError {
     /// The exact Go authority filesystem witness could not be captured or revalidated.
     #[error(transparent)]
     GoAuthorityWitness(#[from] GoPackageAuthorityWitnessError),
+    /// A Go installation was selected but failed admission; unrelated language owners remain usable.
+    #[error("Go package authority is unavailable after host admission: {cause:?}")]
+    GoAuthorityUnavailable {
+        /// Requested Go profile.
+        profile: LanguageProfile,
+        /// Retained Go-only failure category.
+        cause: super::LocalRuntimeGoAuthorityFailure,
+    },
     /// Roslyn authority-image production returned its exact terminal.
     #[error(transparent)]
     CSharp(#[from] CSharpAuthorityError),
@@ -1069,7 +1087,7 @@ mod tests {
 
     use backend_frontend_go::legacy::{GoOracle, GoOracleConfiguration};
     use backend_frontend_typescript::legacy::Checker as TypeScriptChecker;
-    use backend_semantic::vocabulary::{CSharpVersion, CStandard};
+    use backend_semantic::vocabulary::{CSharpVersion, CStandard, GoVersion};
 
     use super::*;
 
@@ -1081,6 +1099,7 @@ mod tests {
             python_checker: crate::application::LocalRuntimePythonCheckerAdmission::Unconfigured,
             rust: None,
             go: None,
+            go_unavailable: None,
             csharp: None,
             java: None,
             maximum_image_bytes: 0,
@@ -1123,6 +1142,7 @@ mod tests {
             python_checker: crate::application::LocalRuntimePythonCheckerAdmission::Unconfigured,
             rust: None,
             go: Some(&go),
+            go_unavailable: None,
             csharp: None,
             java: None,
             maximum_image_bytes: 0,
@@ -1147,6 +1167,60 @@ mod tests {
             b"package-authority-test-dotnet",
         )
         .expect("absolute fixture executable is admissible")
+    }
+
+    fn go_toolchain() -> ResolvedToolchain<'static> {
+        ResolvedToolchain::from_version(
+            NativeTool::GoCompiler,
+            host_path("/configured/go"),
+            b"package-authority-test-go",
+        )
+        .expect("absolute Go executable fixture is admissible")
+    }
+
+    #[test]
+    fn retained_go_admission_failure_is_reported_only_at_go_package_use() {
+        let root = std::env::temp_dir().join(format!(
+            "nudox-go-unavailable-authority-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create package root");
+        let source_path = root.join("main.go");
+        let source = b"package example\n";
+        std::fs::write(&source_path, source).expect("write Go source");
+        let mut config = configuration();
+        config.go_unavailable =
+            Some(crate::application::LocalRuntimeGoAuthorityFailure::ToolchainIdentityUnavailable);
+        let cancelled = AtomicBool::new(false);
+
+        let result = enter_package_authority(PackageAuthorityRequest {
+            package_root: &root,
+            source_path: &source_path,
+            source,
+            unit_key: &CompilationUnitKeyV2::PackageRoot,
+            profile: LanguageProfile::Go(GoVersion::Go125),
+            toolchain: ToolchainSelection::ResolvedNative(go_toolchain()),
+            control: CompileControl {
+                deadline: Instant::now() + Duration::from_secs(1),
+                cancelled: &cancelled,
+            },
+            configuration: config,
+        });
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("Go package use must surface its retained typed admission failure"),
+        };
+
+        assert!(matches!(
+            error,
+            PackageAuthorityError::GoAuthorityUnavailable {
+                profile: LanguageProfile::Go(GoVersion::Go125),
+                cause:
+                    crate::application::LocalRuntimeGoAuthorityFailure::ToolchainIdentityUnavailable,
+            }
+        ));
+        std::fs::remove_dir_all(root).expect("remove fixture");
     }
 
     #[test]

@@ -1,0 +1,47 @@
+{
+  "schema": "nudox.root-mcp-contract-review.v1",
+  "native_source": "1f8d7074e7c059f1b154c7a8a1743e675e718f99",
+  "native_tree": "8cc3b5ac98e577abc96c69e19cff92050794db44",
+  "integrated_source_blobs": {
+    "apps/mcp/src/jsonrpc.rs": "8d6367e283c1697885c4c493986bd968ae755ed5",
+    "apps/mcp/src/jsonrpc/resources.rs": "ab1731187d3d98cfea095a485e1884ccd6099fc4",
+    "apps/mcp/src/jsonrpc/tests.rs": "c1822895c0077c4ddb23f8d5c7367cceaae50bdc",
+    "apps/mcp/src/jsonrpc/tools.rs": "b65b27de9fd6ffdd3d38eda6c36f013b46e36449"
+  },
+  "checks": [
+    {
+      "file": "admission-v5-06.json",
+      "sha256": "c8289a0439dd69e8941efe5fabb6c20da775756da2e5eb5c9e1495bccfa99cb5",
+      "matches": true
+    },
+    {
+      "file": "run-manifest.txt",
+      "sha256": "33149c654596e6a8a790abaaf03d98e8e9ea86ebc88fc7ff03d552d98236b554",
+      "matches": true
+    },
+    {
+      "file": "test.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "matches": true
+    },
+    {
+      "file": "test.log",
+      "sha256": "2eb1274cf532d4ccd141686cd468bc44cc4b5def0f0200589c8628e6a2123dd4",
+      "matches": true
+    },
+    {
+      "file": "test-binary.sha256",
+      "sha256": "e67968d0c4551a419347315d62f817a6b5580de3e91c9e55543df2604d224f0b",
+      "matches": true
+    },
+    {
+      "file": "toolchain-and-wrapper.sha256",
+      "sha256": "c86e7cc9f86587c8d696b98bad63c3f82db2d80dacde01b40f5852d4d5c02a21",
+      "matches": true
+    }
+  ],
+  "native_tests": 71,
+  "failures": 0,
+  "gzip_sha256": "f890bdace9156481174c6273a6015c94bf75ddb9987061fa360b8af9c670ae1a",
+  "raw_log_sha256": "2eb1274cf532d4ccd141686cd468bc44cc4b5def0f0200589c8628e6a2123dd4"
+}

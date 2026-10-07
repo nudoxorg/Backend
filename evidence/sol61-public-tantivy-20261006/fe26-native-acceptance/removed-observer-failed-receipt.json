@@ -1,0 +1,179 @@
+{
+  "schema": "nudox.native-public-phase.v1",
+  "phase": "removed",
+  "started_at_unix": 1791334651.3092768,
+  "runtime_source": {
+    "commit": "fe26d8326ad07911a3d3e2cb9e548dbbc05c559d",
+    "tree": "428ad1f552295ce4b63787a2956b4283b1b4ea3b",
+    "clean": true
+  },
+  "observer": {
+    "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/mac_public_phase.py",
+    "sha256": "639c55ef8f53c1d8493da04ab2a11ea4f83800aa2b5a1d1a0866cb606fc4ef4c",
+    "paging_sha256": "c1bcb24733c7eca3211acb5e8060428fe573aedbb6f0a16f85e9ceea549f8b8d",
+    "python": "/nix/store/llk2h8rxqzv7zh53bi413ffibjrxskxw-python3-3.14.6/bin/python3",
+    "python_sha256": "4f3c8b2a70cc7967e1ce900871443300357d017c1c67dfcca74bfe3e9bb6c8ad",
+    "python_version": "3.14.6 (main, Jun 10 2026, 10:03:53) [Clang 21.1.8 ]",
+    "host": [
+      "Darwin",
+      "h16001mac",
+      "25.6.0",
+      "Darwin Kernel Version 25.6.0: Tue Aug 18 17:51:35 PDT 2026; root:xnu-12377.161.15.700.19~2/RELEASE_ARM64_T6031",
+      "arm64"
+    ]
+  },
+  "source": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/project",
+  "state": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/state",
+  "manifest": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/receipts/canonical-release-fe26d8326a-attempt01/runtime-build-manifest.json",
+  "manifest_sha256": "c6c6a791ff6d31fafc73bce3e65a2b005101d18d1fe027a96b4c434b5b9da035",
+  "environment": {
+    "HOME": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/removed/home",
+    "PATH": "/Users/rmccrar6/.nix-profile/bin:/Users/rmccrar6/.npm-global/bin:/Users/rmccrar6/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    "TMPDIR": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/removed/tmp",
+    "USER": "rmccrar6",
+    "LANG": "C.UTF-8"
+  },
+  "allocation": "Root allocated sol61-public-tantivy one private Mac runtime owner",
+  "whole_project_runtime_pass": false,
+  "all_phase_checks_pass": false,
+  "portable_package": {
+    "schema": "nudox.mac-cli-diagnostic-preview.v1",
+    "source": "fe26d8326ad07911a3d3e2cb9e548dbbc05c559d",
+    "runtime_manifest_sha256": "c6c6a791ff6d31fafc73bce3e65a2b005101d18d1fe027a96b4c434b5b9da035",
+    "signing": "ad-hoc",
+    "notarized": false,
+    "production_ready": false,
+    "semantic_acceptance": "diagnostic canonical release-profile trio; authentic Unicode edit/retry/two-cold complete-frontier acceptance pending PublicTantivy",
+    "known_unresolved_failure": "Authentic Immer full native compilation reached duplicate declaration identity after a39 ownership repair; not accepted",
+    "files": [
+      {
+        "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/images-canonical-release-fe26d8326a-attempt01/backend-cli",
+        "original_sha256": "92e0d3c5df85b402e1ada328a85d670787e37fbcfb1f15ddecbd5a170f393c33",
+        "packaged": "bin/backend-cli",
+        "loads": [
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+            "relocated": "@loader_path/../lib/libiconv.2.dylib",
+            "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1"
+          }
+        ],
+        "packaged_sha256": "5073db235f521e025c7f084cbae208033924190c5099c5cdfb597dfd3b9f1881"
+      },
+      {
+        "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/images-canonical-release-fe26d8326a-attempt01/backend-mcp",
+        "original_sha256": "9823643296d5092f98972214e14f59c26be569667ef605482f823a6f5fb94be9",
+        "packaged": "bin/backend-mcp",
+        "loads": [
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+            "relocated": "@loader_path/../lib/libiconv.2.dylib",
+            "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1"
+          }
+        ],
+        "packaged_sha256": "9ef12fc28640f67a637c6286509f32de776bf60a9af83c13ceccfe5ed386bb1c"
+      },
+      {
+        "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/images-canonical-release-fe26d8326a-attempt01/backend-locald",
+        "original_sha256": "8c6fad4cbea0eb15af9cef9bc1ef16d90c7d41763ae576760d9d626223debf7e",
+        "packaged": "bin/backend-locald",
+        "loads": [
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+            "relocated": "@loader_path/../lib/libiconv.2.dylib",
+            "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1"
+          }
+        ],
+        "packaged_sha256": "e5777e05492070919ddccce353574b6265198eea3585403d33c8a35bf8fb2ce5"
+      },
+      {
+        "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+        "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1",
+        "packaged": "lib/libiconv.2.dylib",
+        "loads": [
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+            "relocated": "@loader_path/libiconv.2.dylib",
+            "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1"
+          },
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libcharset.1.dylib",
+            "relocated": "@loader_path/libcharset.1.dylib",
+            "original_sha256": "cd965d293a43242b9073190e31af8b4cfa3bacca3f0262edc7fd47abce360959"
+          }
+        ],
+        "packaged_sha256": "2fbbe9796199ea41388cef1d4a707dafb2f45d2ceafb0554b9b75cf75bfe613d"
+      },
+      {
+        "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libcharset.1.dylib",
+        "original_sha256": "cd965d293a43242b9073190e31af8b4cfa3bacca3f0262edc7fd47abce360959",
+        "packaged": "lib/libcharset.1.dylib",
+        "loads": [
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libcharset.1.dylib",
+            "relocated": "@loader_path/libcharset.1.dylib",
+            "original_sha256": "cd965d293a43242b9073190e31af8b4cfa3bacca3f0262edc7fd47abce360959"
+          }
+        ],
+        "packaged_sha256": "cbde7311dae0ec0bcd8af251f00b5a5794986fc800270fadb5f6a5563dc47ce9"
+      }
+    ],
+    "zero_nudox_fresh_home_help": [
+      {
+        "name": "backend-cli",
+        "exit": 0,
+        "stdout_bytes": 8687
+      },
+      {
+        "name": "backend-mcp",
+        "exit": 0,
+        "stdout_bytes": 108
+      },
+      {
+        "name": "backend-locald",
+        "exit": 0,
+        "stdout_bytes": 1623
+      }
+    ]
+  },
+  "used_images": {
+    "backend-cli": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/cli-canonical-fe26-macos-arm64-v1/nudox-macos-arm64/bin/backend-cli",
+    "backend-locald": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/cli-canonical-fe26-macos-arm64-v1/nudox-macos-arm64/bin/backend-locald",
+    "backend-mcp": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/cli-canonical-fe26-macos-arm64-v1/nudox-macos-arm64/bin/backend-mcp"
+  },
+  "owner_pid": 18635,
+  "eligible_python_inputs": 23,
+  "lifecycle_change": {
+    "heading": "remove",
+    "records": [
+      {
+        "title": "remove request accepted",
+        "operand": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/project",
+        "tags": [
+          "intent 7f58f4f6",
+          "pending",
+          "read `backend health` for readiness"
+        ]
+      }
+    ],
+    "answer": "product",
+    "detail": "full",
+    "budget": {
+      "bytes": 383,
+      "estimatedTokens": 96,
+      "bytesPerToken": 4
+    }
+  },
+  "history_after_change": {
+    "slug": "invalid-query",
+    "operand": "",
+    "cause": "malformed",
+    "detail": "semantic publication unavailable: project authority",
+    "answer": "fault"
+  },
+  "error": "AssertionError({'slug': 'invalid-query', 'operand': '', 'cause': 'malformed', 'detail': 'semantic publication unavailable: project authority', 'answer': 'fault'})",
+  "available_memory_samples": [
+    61585735680
+  ],
+  "finished_at_unix": 1791334655.286877,
+  "elapsed_seconds": 3.97760009765625
+}

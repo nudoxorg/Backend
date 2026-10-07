@@ -27,9 +27,9 @@ use backend_library::{
 };
 use backend_present::{
     Answer, BudgetExceeded, ContinuationCursor, CursorTarget, DEFAULT_RESPONSE_BUDGET_BYTES,
-    Detail, Engine, Fault, Invocation, Probe, Request, answer_paged, bounded_text, encode_answer,
-    encode_serializable, fault_value, grammar_for_tool, lower, markdown, oversized_fault,
-    record_list,
+    Detail, ESTIMATED_BYTES_PER_TOKEN, Engine, Fault, Invocation, Probe, Request, answer_paged,
+    bounded_text, encode_answer, encode_serializable, estimate_tokens, fault_value, lower,
+    markdown, oversized_fault, record_list,
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{
@@ -51,7 +51,8 @@ use codec::{
     read_line, string, success, valid_id, write_message,
 };
 use tools::{
-    INDEX_CANCEL_TOOL, INDEX_PROGRESS_TOOL, INDEX_START_TOOL, QUERY_TOOL, SURFACE_TOOL, list_tools,
+    INDEX_CANCEL_TOOL, INDEX_PROGRESS_TOOL, INDEX_START_TOOL, SURFACE_TOOL, ToolRoute, list_tools,
+    tool_route, validate_registry_arguments,
 };
 
 #[cfg(feature = "token-budget")]
@@ -570,6 +571,7 @@ impl<P: Product> Server<P> {
     fn call_tool(&mut self, params: &Value) -> Result<Value, RpcError> {
         let params = object(params)?;
         let name = string(params, "name")?;
+        let route = tool_route(name).ok_or_else(|| RpcError::new(-32602, "Unknown tool"))?;
         let empty = Map::new();
         let arguments = match params.get("arguments") {
             None | Some(Value::Null) => &empty,
@@ -582,28 +584,35 @@ impl<P: Product> Server<P> {
             string(arguments, "path")?;
         }
         let detail = response_detail(name, arguments)?;
-        if name == SURFACE_TOOL {
+        if matches!(route, ToolRoute::Surface) {
             let mut surface_arguments = arguments.clone();
             surface_arguments.remove("detail");
             let context = continuation_context(&self.project, name, &surface_arguments, detail);
             return self.surface_tool(&surface_arguments, detail, &context);
         }
         if matches!(
-            name,
-            INDEX_START_TOOL | INDEX_PROGRESS_TOOL | INDEX_CANCEL_TOOL
+            route,
+            ToolRoute::IndexStart | ToolRoute::IndexProgress | ToolRoute::IndexCancel
         ) {
             let context = continuation_context(&self.project, name, arguments, detail);
             return self.index_job_tool(name, arguments, detail, &context);
         }
-        if name == "backend.index_await" {
+        if matches!(route, ToolRoute::RefusedIndexAwait) {
             return Err(RpcError::new(
                 -32602,
                 "Use backend.index_progress for bounded polling",
             ));
         }
         let context = continuation_context(&self.project, name, arguments, detail);
-        let index_search_tool =
-            grammar_for_tool(name).is_some_and(|grammar| grammar.name() == "index-search");
+        let grammar = match route {
+            ToolRoute::Registry(grammar) => Some(grammar),
+            ToolRoute::Query | ToolRoute::Surface => None,
+            ToolRoute::IndexStart
+            | ToolRoute::IndexProgress
+            | ToolRoute::IndexCancel
+            | ToolRoute::RefusedIndexAwait => None,
+        };
+        let index_search_tool = grammar.is_some_and(|grammar| grammar.name() == "index-search");
         let index_search_cursor = if index_search_tool {
             self.index_search_cursor(arguments, &context)?
         } else {
@@ -614,13 +623,13 @@ impl<P: Product> Server<P> {
         } else {
             self.continuation(arguments, &context)?
         };
-        if name == QUERY_TOOL {
+        if matches!(route, ToolRoute::Query) {
             return self.query_tool(arguments, detail, continuation, &context);
         }
-        if name == "backend.graph" {
+        if grammar.is_some_and(|grammar| grammar.name() == "graph") {
             return self.graph_tool(arguments, detail, continuation, &context);
         }
-        let Some(grammar) = grammar_for_tool(name) else {
+        let Some(grammar) = grammar else {
             return Err(RpcError::new(-32602, "Unknown tool"));
         };
         let mut command_arguments = arguments.clone();
@@ -635,7 +644,8 @@ impl<P: Product> Server<P> {
         } else {
             command_arguments.remove("cursor");
         }
-        let planned = Invocation::from_json(grammar, &command_arguments)
+        let planned = validate_registry_arguments(grammar, &command_arguments)
+            .and_then(|()| Invocation::from_json(grammar, &command_arguments))
             .and_then(|invocation| lower(&invocation, &self.project));
         match planned {
             Ok(request) => match answer_paged(&mut self.product, &request, continuation) {
@@ -1073,7 +1083,8 @@ a coordinate with backend.search, or with backend.outline when you do not know t
 that coordinate verbatim into backend.document for the signature and docs, backend.source for \
 the body, backend.references for uses, and backend.graph for calls. Do not invent coordinates \
 and do not guess from filenames when a tool can answer. A refusal names the operand and the next \
-call; follow it. Read backend://workspace/current when a result looks thin.";
+call; follow it. Read backend://workspace/current when a result looks thin. Read \
+backend://tools/catalog for callable capability-dependent routes that are not in tools/list.";
 
 /// Returns the readable head of one stable identity.
 fn abbreviate(bytes: &[u8; 32]) -> String {
@@ -1203,15 +1214,20 @@ fn refused(fault: &Fault) -> Value {
     )
 }
 
-/// Context-sized ceiling for a complete JSON-RPC reply. The transport frame
-/// limit is intentionally much larger; this is the product budget that keeps
-/// a typed projection and its readable duplicate bounded together.
+/// Context-sized ceiling for one complete JSON-RPC line, including its ID,
+/// text block, typed projection, metadata, and trailing newline.
 const MCP_RESULT_BUDGET_BYTES: usize = DEFAULT_RESPONSE_BUDGET_BYTES;
+const PREVIEW_MARKER: &str = "\n\n… readable preview shortened to fit this response; structuredContent contains the complete page and any nextCursor.";
 
 fn serialized_bytes(value: &Value) -> usize {
     serde_json::to_vec(value).map_or(MCP_RESULT_BUDGET_BYTES.saturating_add(1), |bytes| {
         bytes.len()
     })
+}
+
+/// JSON-RPC stdio writes exactly one trailing newline after each response.
+fn framed_serialized_bytes(value: &Value) -> usize {
+    serialized_bytes(value).saturating_add(1)
 }
 
 fn bound_route_value(value: Value) -> Result<Value, RpcError> {
@@ -1226,7 +1242,13 @@ fn bound_route_value(value: Value) -> Result<Value, RpcError> {
 }
 
 fn bound_rpc_reply(value: Value) -> Value {
-    let bytes = serialized_bytes(&value);
+    let value = attach_wire_budget(value);
+    let value = if framed_serialized_bytes(&value) > MCP_RESULT_BUDGET_BYTES {
+        fit_tool_preview(value)
+    } else {
+        value
+    };
+    let bytes = framed_serialized_bytes(&value);
     if bytes <= MCP_RESULT_BUDGET_BYTES {
         return value;
     }
@@ -1245,7 +1267,7 @@ fn bound_rpc_reply(value: Value) -> Value {
             "structuredContent": fault_value(&fault),
         })),
     );
-    if serialized_bytes(&fallback) <= MCP_RESULT_BUDGET_BYTES {
+    if framed_serialized_bytes(&fallback) <= MCP_RESULT_BUDGET_BYTES {
         fallback
     } else {
         error_reply(
@@ -1257,6 +1279,90 @@ fn bound_rpc_reply(value: Value) -> Value {
             None,
         )
     }
+}
+
+/// Reclaims only duplicate human-readable text when a large request ID makes
+/// the caller-specific JSON-RPC envelope exceed the budget. Structured rows,
+/// terminal state, and owner cursors stay byte-for-byte intact.
+fn fit_tool_preview(mut value: Value) -> Value {
+    let Some(current_text) = value
+        .get("result")
+        .and_then(|result| result.get("content"))
+        .and_then(Value::as_array)
+        .and_then(|content| content.first())
+        .and_then(|entry| entry.get("text"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    else {
+        return value;
+    };
+    let prefix = current_text
+        .strip_suffix(PREVIEW_MARKER)
+        .unwrap_or(&current_text)
+        .to_owned();
+    value["result"]["content"][0]["text"] = Value::String(PREVIEW_MARKER.to_owned());
+    let mut best = attach_wire_budget(value.clone());
+    if framed_serialized_bytes(&best) > MCP_RESULT_BUDGET_BYTES {
+        return best;
+    }
+    let mut lower = 0;
+    let mut upper = prefix.len();
+    while lower < upper {
+        let midpoint = lower + (upper - lower).div_ceil(2);
+        let mut end = midpoint;
+        while !prefix.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut candidate = value.clone();
+        candidate["result"]["content"][0]["text"] =
+            Value::String(format!("{}{PREVIEW_MARKER}", &prefix[..end]));
+        candidate = attach_wire_budget(candidate);
+        if framed_serialized_bytes(&candidate) <= MCP_RESULT_BUDGET_BYTES {
+            lower = midpoint;
+            best = candidate;
+        } else {
+            upper = midpoint - 1;
+        }
+    }
+    best
+}
+
+/// Adds exact transport accounting to MCP tool results while preserving the
+/// shared structured projection's own payload budget. The reported value is
+/// fixed-point measured because its decimal size is part of the frame itself.
+fn attach_wire_budget(mut value: Value) -> Value {
+    let is_tool_result = value
+        .get("result")
+        .and_then(Value::as_object)
+        .is_some_and(|result| {
+            result.contains_key("content") && result.contains_key("structuredContent")
+        });
+    if !is_tool_result {
+        return value;
+    }
+    {
+        let result = value["result"].as_object_mut().expect("tool result object");
+        if !result.get("_meta").is_some_and(Value::is_object) {
+            result.insert("_meta".to_owned(), json!({}));
+        }
+        result["_meta"]["backend/wireBudget"] = json!({
+            "bytes": 0,
+            "estimatedTokens": 0,
+            "bytesPerToken": ESTIMATED_BYTES_PER_TOKEN,
+            "limitBytes": MCP_RESULT_BUDGET_BYTES,
+            "scope": "complete_jsonrpc_line"
+        });
+    }
+    for _ in 0..8 {
+        let bytes = framed_serialized_bytes(&value);
+        value["result"]["_meta"]["backend/wireBudget"]["bytes"] = json!(bytes);
+        value["result"]["_meta"]["backend/wireBudget"]["estimatedTokens"] =
+            json!(estimate_tokens(bytes));
+        if framed_serialized_bytes(&value) == bytes {
+            break;
+        }
+    }
+    value
 }
 
 /// Serialize the exact bounded response envelope used by `tools/call`.
@@ -1292,7 +1398,8 @@ pub(super) fn token_budget_rpc_response_with_observed(
         "id": id,
         "result": result
     });
-    let observed = serialized_bytes(&response);
+    let response = attach_wire_budget(response);
+    let observed = framed_serialized_bytes(&response);
     (bound_rpc_reply(response), observed)
 }
 
@@ -1313,8 +1420,7 @@ fn tool_result(text: &str, structured: Value, is_error: bool) -> Value {
     // Text duplicates the typed answer. A shorter, explicitly labelled
     // preview keeps every structured row, coverage fact, and owner cursor
     // intact; it never turns an oversized typed page into a partial result.
-    const MARKER: &str = "\n\n… readable preview shortened to fit this response; structuredContent contains the complete page and any nextCursor.";
-    candidate["content"][0]["text"] = Value::String(MARKER.to_owned());
+    candidate["content"][0]["text"] = Value::String(PREVIEW_MARKER.to_owned());
     if serialized_bytes(&candidate) <= budget {
         let mut lower = 0;
         let mut upper = text.len();
@@ -1324,7 +1430,8 @@ fn tool_result(text: &str, structured: Value, is_error: bool) -> Value {
             while !text.is_char_boundary(end) {
                 end -= 1;
             }
-            candidate["content"][0]["text"] = Value::String(format!("{}{MARKER}", &text[..end]));
+            candidate["content"][0]["text"] =
+                Value::String(format!("{}{PREVIEW_MARKER}", &text[..end]));
             if serialized_bytes(&candidate) <= budget {
                 lower = midpoint;
             } else {
@@ -1334,7 +1441,8 @@ fn tool_result(text: &str, structured: Value, is_error: bool) -> Value {
         while !text.is_char_boundary(lower) {
             lower -= 1;
         }
-        candidate["content"][0]["text"] = Value::String(format!("{}{MARKER}", &text[..lower]));
+        candidate["content"][0]["text"] =
+            Value::String(format!("{}{PREVIEW_MARKER}", &text[..lower]));
         return candidate;
     }
     let fault = oversized_fault(BudgetExceeded {

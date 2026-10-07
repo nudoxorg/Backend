@@ -206,6 +206,14 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             });
         }
         if self.discovery == LocalHostDiscovery::ClosedSnapshot {
+            for (variable, origin) in [
+                (LocalHostVariable::NudoxTypeScriptBundledNode, TypeScriptSelectionOrigin::ValidatedApplicationBundle),
+                (LocalHostVariable::NudoxTypeScriptDefaultNode, TypeScriptSelectionOrigin::InstalledHostSelection),
+            ] {
+                if let Some(path) = self.optional_absolute_path(variable)? {
+                    return self.validate_file(role, variable, path).map(|path| Some(TypeScriptNodeSelection { path, origin }));
+                }
+            }
             return Ok(None);
         }
         if let Some(directory) = compiler.and_then(Path::parent) {
@@ -270,6 +278,16 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         let Some(path) = self.optional_absolute_path(variable)? else {
             return Ok(None);
         };
+        self.validate_file_or_directory(role, variable, path)
+            .map(Some)
+    }
+
+    fn validate_file_or_directory(
+        &self,
+        role: LocalHostPathRole,
+        variable: LocalHostVariable,
+        path: PathBuf,
+    ) -> Result<PathBuf, LocalCompilerHostError> {
         let metadata =
             fs::metadata(&path).map_err(|source| LocalCompilerHostError::ConfiguredPath {
                 role,
@@ -285,7 +303,67 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 expected: LocalHostPathKind::FileOrDirectory,
             });
         }
-        canonicalize_existing(role, &path).map(Some)
+        canonicalize_existing(role, &path)
+    }
+
+    /// Admits only explicitly named object roles before inferred cache state is realized.
+    /// Location hints remain paths: their optional state directories may not exist yet.
+    pub(super) fn canonical_configured_selection_path(
+        &self,
+        variable: LocalHostVariable,
+        path: PathBuf,
+    ) -> Result<PathBuf, LocalCompilerHostError> {
+        use LocalHostPathKind::{Directory, File, FileOrDirectory};
+        use LocalHostPathRole::{Native, PackageRoot};
+        let (role, kind) = match variable {
+            LocalHostVariable::NudoxDataRoot
+            | LocalHostVariable::Home
+            | LocalHostVariable::XdgDataHome
+            | LocalHostVariable::LocalAppData => return Ok(path),
+            LocalHostVariable::NudoxRustc => (Native(NativeTool::Rustc), File),
+            LocalHostVariable::NudoxRustSysroot => (LocalHostPathRole::RustSysroot, Directory),
+            LocalHostVariable::NudoxCargo => (LocalHostPathRole::Cargo, File),
+            LocalHostVariable::NudoxCargoHome => (LocalHostPathRole::CargoHome, Directory),
+            LocalHostVariable::NudoxClang => (Native(NativeTool::Clang), File),
+            LocalHostVariable::LibclangPath => (LocalHostPathRole::Libclang, FileOrDirectory),
+            LocalHostVariable::NudoxPython => (Native(NativeTool::Python), File),
+            LocalHostVariable::NudoxTypeScriptCompiler
+            | LocalHostVariable::NudoxTypeScriptDefaultCompiler => {
+                (Native(NativeTool::TypeScriptCompiler), File)
+            }
+            LocalHostVariable::NudoxGo => (Native(NativeTool::GoCompiler), File),
+            LocalHostVariable::NudoxJavaCompiler => (Native(NativeTool::JavaCompiler), File),
+            LocalHostVariable::NudoxDotnet => (Native(NativeTool::CSharpCompiler), File),
+            LocalHostVariable::NudoxTypeScriptNode
+            | LocalHostVariable::NudoxTypeScriptDefaultNode
+            | LocalHostVariable::NudoxTypeScriptBundledNode => {
+                (LocalHostPathRole::TypeScriptNode, File)
+            }
+            LocalHostVariable::NudoxTypeScriptModuleRoot => {
+                (LocalHostPathRole::TypeScriptModuleRoot, Directory)
+            }
+            LocalHostVariable::NudoxTypeScriptReportProgram => {
+                (LocalHostPathRole::TypeScriptReportProgram, File)
+            }
+            LocalHostVariable::NudoxPyrefly => (LocalHostPathRole::Pyrefly, File),
+            LocalHostVariable::NudoxGoOracle => (LocalHostPathRole::GoOracle, File),
+            LocalHostVariable::NudoxJdk => (LocalHostPathRole::JdkRoot, Directory),
+            LocalHostVariable::NudoxRoslynHelper => (LocalHostPathRole::RoslynHelper, File),
+            LocalHostVariable::NudoxCargoRoot => (PackageRoot(PackageEcosystem::Cargo), Directory),
+            LocalHostVariable::NudoxNpmRoot => (PackageRoot(PackageEcosystem::Npm), Directory),
+            LocalHostVariable::NudoxPypiRoot => (PackageRoot(PackageEcosystem::Pypi), Directory),
+            LocalHostVariable::NudoxGoRoot => (PackageRoot(PackageEcosystem::Golang), Directory),
+            LocalHostVariable::NudoxMavenRoot => (PackageRoot(PackageEcosystem::Maven), Directory),
+            LocalHostVariable::NudoxNugetRoot => (PackageRoot(PackageEcosystem::Nuget), Directory),
+            LocalHostVariable::NudoxGenericRoot => {
+                (PackageRoot(PackageEcosystem::Generic), Directory)
+            }
+        };
+        match kind {
+            File => self.validate_file(role, variable, path),
+            Directory => self.validate_directory(role, variable, path),
+            FileOrDirectory => self.validate_file_or_directory(role, variable, path),
+        }
     }
 
     pub(super) fn optional_absolute_path(
@@ -1463,7 +1541,7 @@ mod tests {
             ),
         );
         assert_eq!(
-            snapshot.path(LocalHostVariable::NudoxTypeScriptNode),
+            snapshot.path(LocalHostVariable::NudoxTypeScriptDefaultNode),
             Some(fs::canonicalize(root.join("bin/node")).unwrap().as_path()),
         );
         assert_eq!(
@@ -1510,6 +1588,141 @@ mod tests {
         assert!(receipt.contains("captured_installed_tools"));
         assert!(receipt.contains(&first.fingerprint_hex()));
         fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn go_only_refusals_survive_frozen_capture_and_closed_snapshot_handoff() {
+        use crate::application::{ClosedLocalHostEnvironmentSnapshot, LocalCompilerHostSelection,
+            LocalRuntimeGoAuthorityFailure as Failure};
+        let (root, environment) = installed_fixture("closed-go-only-failures", false);
+        for (variable, cause) in [(LocalHostVariable::NudoxGo, Failure::ExecutableUnavailable),
+            (LocalHostVariable::NudoxGoRoot, Failure::GoRootUnavailable),
+            (LocalHostVariable::NudoxGoOracle, Failure::OracleUnavailable)] {
+            for bad in [root.join("missing-object"), PathBuf::from("relative-object"), PathBuf::new()] {
+                let mut configured = environment.clone();
+                configured.set(variable, &bad);
+                let captured = LocalCompilerHost::new(configured, LocalHostDiscovery::InstalledTools)
+                    .capture_installed_selection().expect("Go-only failure cannot abort capture");
+                assert_eq!(captured.go_authority_failure(), Some(cause));
+                let closed = ClosedLocalHostEnvironmentSnapshot::parse(&captured.snapshot().encode().unwrap()).unwrap();
+                let incoming = LocalCompilerHostSelection::from_closed_snapshot(closed).unwrap();
+                assert_eq!(incoming.go_authority_failure(), Some(cause));
+                assert_eq!(incoming.snapshot().path(variable), None);
+                assert!(incoming.snapshot().path(LocalHostVariable::NudoxTypeScriptDefaultCompiler).is_some());
+                assert!(incoming.snapshot().path(LocalHostVariable::NudoxTypeScriptDefaultNode).is_some());
+                assert!(incoming.snapshot().path(LocalHostVariable::NudoxPython).is_some());
+            }
+        }
+        // A previously captured cause must survive the temporary frozen host construction.
+        let retained = LocalCompilerHost::new(environment, LocalHostDiscovery::InstalledTools)
+            .with_go_authority_failure(Some(Failure::ToolchainIdentityUnavailable))
+            .capture_installed_selection().unwrap();
+        assert_eq!(retained.go_authority_failure(), Some(Failure::ToolchainIdentityUnavailable));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn invalid_explicit_go_root_is_retained_without_blocking_installed_selection() {
+        let (root, mut environment) = installed_fixture("installed-tools-invalid-go-root", false);
+        let invalid_root = root.join("go-root-file");
+        fs::write(&invalid_root, b"not a directory").expect("create invalid Go root");
+        environment.set(LocalHostVariable::NudoxGoRoot, &invalid_root);
+
+        let selection = LocalCompilerHost::new(environment, LocalHostDiscovery::InstalledTools)
+            .capture_installed_selection()
+            .expect("optional Go root failure must not block other tool capture");
+
+        assert!(
+            selection
+                .snapshot()
+                .path(LocalHostVariable::NudoxGo)
+                .is_some()
+        );
+        assert!(
+            selection
+                .snapshot()
+                .path(LocalHostVariable::NudoxGoRoot)
+                .is_none()
+        );
+        assert_eq!(
+            selection.go_authority_failure(),
+            Some(crate::application::LocalRuntimeGoAuthorityFailure::GoRootUnavailable),
+        );
+        assert!(selection.issues().contains(
+            &super::super::LocalCompilerHostSelectionIssue::GoAuthorityUnavailable {
+                cause: crate::application::LocalRuntimeGoAuthorityFailure::GoRootUnavailable,
+            }
+        ));
+        let receipt = selection.encode_receipt().expect("encode typed failure");
+        let receipt: serde_json::Value = serde_json::from_str(&receipt).expect("typed receipt JSON");
+        let failure: crate::application::LocalRuntimeGoAuthorityFailure =
+            serde_json::from_value(receipt["go_failure"].clone()).expect("typed Go cause");
+        assert_eq!(failure, crate::application::LocalRuntimeGoAuthorityFailure::GoRootUnavailable);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn invalid_explicit_go_executable_is_deferred_to_the_go_language_lane() {
+        let (root, mut environment) = installed_fixture("installed-tools-invalid-go", false);
+        let invalid_go = root.join("missing/go");
+        environment.set(LocalHostVariable::NudoxGo, &invalid_go);
+
+        let selection = LocalCompilerHost::new(environment, LocalHostDiscovery::InstalledTools)
+            .capture_installed_selection()
+            .expect("optional Go path failure must not block other tool capture");
+
+        assert!(
+            selection
+                .snapshot()
+                .path(LocalHostVariable::NudoxGo)
+                .is_none()
+        );
+        assert_eq!(
+            selection.go_authority_failure(),
+            Some(crate::application::LocalRuntimeGoAuthorityFailure::ExecutableUnavailable),
+        );
+        assert!(selection.issues().contains(
+            &super::super::LocalCompilerHostSelectionIssue::GoAuthorityUnavailable {
+                cause: crate::application::LocalRuntimeGoAuthorityFailure::ExecutableUnavailable,
+            }
+        ));
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn closed_node_roles_round_trip_exact_paths_and_keep_truthful_origins() {
+        use super::super::ClosedLocalHostEnvironmentSnapshot;
+        struct Closed(ClosedLocalHostEnvironmentSnapshot);
+        impl LocalHostEnvironment for Closed {
+            fn value(&self, variable: LocalHostVariable) -> Option<std::ffi::OsString> {
+                self.0.path(variable).map(|path| path.as_os_str().to_owned())
+            }
+        }
+        let root = private_test_directory("closed-node-origin");
+        let node = root.join("bin/node"); executable(&node);
+        for (role, origin) in [
+            (LocalHostVariable::NudoxTypeScriptNode, TypeScriptSelectionOrigin::ExplicitConfiguration),
+            (LocalHostVariable::NudoxTypeScriptDefaultNode, TypeScriptSelectionOrigin::InstalledHostSelection),
+            (LocalHostVariable::NudoxTypeScriptBundledNode, TypeScriptSelectionOrigin::ValidatedApplicationBundle),
+        ] {
+            let snapshot = ClosedLocalHostEnvironmentSnapshot::from_paths([(role, node.clone())]).expect("one Node role");
+            let encoded = snapshot.encode().expect("closed Node encoding");
+            let decoded = ClosedLocalHostEnvironmentSnapshot::parse(&encoded).expect("closed Node decoding");
+            assert_eq!(snapshot, decoded);
+            assert_eq!(encoded, decoded.encode().unwrap(), "same authority inputs retain exact canonical bytes");
+            let host = LocalCompilerHost::new(Closed(decoded), LocalHostDiscovery::ClosedSnapshot);
+            let selected = host.typescript_node_executable(None, None).expect("closed Node selection").expect("Node");
+            assert_eq!(selected.path, node);
+            assert_eq!(selected.origin, origin);
+            let repeated = host.typescript_node_executable(None, None).unwrap().unwrap();
+            assert_eq!(selected.path, repeated.path); assert_eq!(selected.origin, repeated.origin);
+        }
+        assert!(matches!(ClosedLocalHostEnvironmentSnapshot::from_paths([
+            (LocalHostVariable::NudoxTypeScriptNode, node.clone()),
+            (LocalHostVariable::NudoxTypeScriptDefaultNode, node),
+        ]), Err(super::super::ClosedLocalHostEnvironmentSnapshotError::ConflictingTypeScriptNodeRoles)));
+        fs::remove_dir_all(root).expect("owned fixture cleanup");
+
     }
 
     #[test]

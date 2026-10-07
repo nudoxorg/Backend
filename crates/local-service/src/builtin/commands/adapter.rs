@@ -233,8 +233,8 @@ fn index_operation_published_observation(
     entry: &StoredOperation,
     operation_key: backend_library::IndexOperationKey,
     receipt: backend_library::IndexOperationPublicationReceipt,
-) -> backend_library::IndexOperationObservation {
-    backend_library::IndexOperationObservation::Known(
+) -> Result<backend_library::IndexOperationObservation, IndexOperationJournalError> {
+    let observation = backend_library::IndexOperationObservation::Known(
         backend_library::IndexOperationStatus::new(
             operation_key,
             entry.package.clone(),
@@ -242,7 +242,11 @@ fn index_operation_published_observation(
             backend_library::IndexOperationState::Published(receipt),
         )
         .with_source_capture(entry.source_capture.clone()),
-    )
+    );
+    backend_library::SurfaceReply::IndexOperationStatus(observation.clone())
+        .admit(backend_library::CommandId::IndexProgress)
+        .map_err(|_| IndexOperationJournalError::InvalidTransition)?;
+    Ok(observation)
 }
 
 fn index_attempt_retirement_reason(
@@ -297,6 +301,7 @@ pub(in crate::builtin) struct CommandAdapter {
     manifests: super::super::local_manifest::LocalManifestResidence,
     project_roots: super::super::project_root_residence::ProjectRootResidence,
     image_rows: super::super::view_build::ImageRowResidence,
+    structural_calls: super::super::view_build::StructuralCallResidence,
     generations: super::super::generation_residence::SemanticGenerationResidence,
     semantic_authority: super::super::semantic_authority::SemanticAuthority,
     owner_cluster: Option<Arc<super::super::cluster_dispatch::OwnerCompilerClusterRuntime>>,
@@ -596,6 +601,7 @@ impl CommandAdapter {
             manifests: super::super::local_manifest::LocalManifestResidence::default(),
             project_roots: super::super::project_root_residence::ProjectRootResidence::default(),
             image_rows,
+            structural_calls: super::super::view_build::StructuralCallResidence::default(),
             generations,
             semantic_authority,
             owner_cluster,
@@ -1019,6 +1025,7 @@ impl CommandAdapter {
                         execution_intent,
                     ),
                     package,
+                    producer_package: None,
                     execution_intent,
                     source_capture: None,
                     source_capture_base: None,
@@ -1126,7 +1133,7 @@ impl CommandAdapter {
                     if head.sequence() == base.workspace_sequence.saturating_add(1) {
                         if let Some(receipt) = super::index::source_capture_receipt_for_root(
                             daemon,
-                            &entry.package,
+                            entry.source_package(),
                             operation_key,
                             Some(head.request_identity()),
                         )
@@ -1165,7 +1172,7 @@ impl CommandAdapter {
                 let _ = self.refresh_index_operation_source_capture(
                     daemon,
                     operation_key,
-                    &entry.package,
+                    entry.source_package(),
                     &original,
                 );
                 if let Some(JournalEntry::Retained(refreshed)) =
@@ -1292,12 +1299,22 @@ impl CommandAdapter {
                 };
                 if selected_exactly {
                     if let Some(source_capture) = entry.source_capture.clone() {
-                        let _ = self.refresh_index_operation_source_capture(
-                            daemon,
-                            operation_key,
-                            &entry.package,
-                            &source_capture,
-                        );
+                        if self
+                            .refresh_index_operation_source_capture(
+                                daemon,
+                                operation_key,
+                                entry.source_package(),
+                                &source_capture,
+                            )
+                            .is_err()
+                        {
+                            return Ok(Self::unresolved_index_operation(
+                                operation_key,
+                                &entry,
+                                backend_library::IndexOperationUnresolvedReason::ReceiptPersistenceFailed,
+                                "the exact workspace commit is selected but its source-capture outcomes could not be reconciled",
+                            ));
+                        }
                         if let Some(JournalEntry::Retained(refreshed)) =
                             self.index_operations.entry(operation_key)?
                         {
@@ -1323,17 +1340,28 @@ impl CommandAdapter {
                             })
                         });
                     if let Some(receipt) = receipt {
+                        let observation = match index_operation_published_observation(
+                            &entry,
+                            operation_key,
+                            receipt.clone(),
+                        ) {
+                            Ok(observation) => observation,
+                            Err(_) => {
+                                return Ok(Self::unresolved_index_operation(
+                                    operation_key,
+                                    &entry,
+                                    backend_library::IndexOperationUnresolvedReason::ReceiptPersistenceFailed,
+                                    "the exact workspace and view are selected but the operation's source-capture evidence does not establish a terminal publication",
+                                ));
+                            }
+                        };
                         // If the receipt file cannot be replaced after a fully
                         // checked workspace/view proof, keep Prepared on disk;
                         // a future status read or restart can reconstruct it.
                         let _ = self
                             .index_operations
                             .published(operation_key, receipt.clone());
-                        return Ok(index_operation_published_observation(
-                            &entry,
-                            operation_key,
-                            receipt,
-                        ));
+                        return Ok(observation);
                     }
                     Ok(Self::unresolved_index_operation(
                         operation_key,
@@ -1395,7 +1423,7 @@ impl CommandAdapter {
             super::index::source_capture_receipt_for_root(daemon, package, operation_key, None)
                 .map_err(|error| IndexOperationJournalError::Corrupt(error.to_string()))?
         else {
-            return Ok(());
+            return Err(IndexOperationJournalError::InvalidTransition);
         };
         if original.profiles().len() != latest.profiles().len()
             || !original
@@ -1805,7 +1833,7 @@ impl CommandAdapter {
                 let _ = self.refresh_index_operation_source_capture(
                     daemon,
                     operation_key,
-                    &entry.package,
+                    entry.source_package(),
                     source_capture,
                 );
             }
@@ -2513,6 +2541,15 @@ impl CommandAdapter {
         let label = certified_package_label(certificate, package)?;
         let requested_package = package;
         let (package, label) = canonical_local_package(package, label)?;
+        if let Some(operation_key) = operation_key {
+            let producer_package = backend_library::PackageReference::parse(label.clone())
+                .map_err(|error| BuiltinModelError(format!("admit producer package: {error:?}")))?;
+            self.index_operations
+                .bind_producer_package(operation_key, producer_package)
+                .map_err(|error| {
+                    BuiltinModelError(format!("persist index producer package before work: {error}"))
+                })?;
+        }
         self.recover_orphaned_package_label(daemon, &label, request_id)?;
         let cancelled = Arc::new(AtomicBool::new(false));
         let mut indexing = IndexJob {
@@ -2743,7 +2780,7 @@ impl CommandAdapter {
                 self.refresh_index_operation_source_capture(
                     daemon,
                     operation_key,
-                    &entry.package,
+                    entry.source_package(),
                     source_capture,
                 )
                 .map_err(|error| {
@@ -3565,6 +3602,7 @@ impl CommandAdapter {
         include_incoming: bool,
     ) -> Result<Option<backend_engine::ViewSnapshot>, BuiltinModelError> {
         match execute_semantic_graph(
+            &mut self.structural_calls,
             daemon,
             &self.compiler,
             &mut self.generations,
@@ -3573,7 +3611,12 @@ impl CommandAdapter {
             include_incoming,
         )? {
             Some(snapshot) => Ok(Some(snapshot)),
-            None => execute_structural_call_graph(daemon, query, include_incoming),
+            None => execute_structural_call_graph(
+                &mut self.structural_calls,
+                daemon,
+                query,
+                include_incoming,
+            ),
         }
     }
 
@@ -3765,6 +3808,7 @@ impl CommandAdapter {
                 )),
             },
             backend_engine::SurfaceCommand::References { target } => execute_references(
+                &mut self.structural_calls,
                 daemon,
                 &self.compiler,
                 &mut self.generations,
@@ -4472,7 +4516,8 @@ mod tests {
         IndexJobWork, JournalEntry, MAX_WAITING_COMMANDS, ProductDaemon,
         ProductSemanticPublicationKey, ResidentCatalog, ResidentDependencies, StoredOperationState,
         admitted_project_source_root, capture_terminalization_failed, classify_add_target,
-        index_operation_failure, legacy_add_compiler_failure, pending_capture_unresolved,
+        index_operation_failure, index_operation_published_observation, legacy_add_compiler_failure,
+        pending_capture_unresolved, IndexOperationJournalError,
     };
     use crate::builtin::{
         BuiltinIntent, BuiltinModel, BuiltinProfile, BuiltinSemanticRelation,
@@ -4980,6 +5025,52 @@ mod tests {
             }
             let _ = fs::remove_dir_all(&self.root.0);
         }
+    }
+
+    #[test]
+    fn reconstructed_publication_rejects_pending_capture_before_encoding() -> Result<(), String> {
+        use backend_library::{IndexOperationSemanticProfileState, IndexOperationSourceProfile};
+        let mut fixture = AdapterFixture::new();
+        let caller = backend_library::PackageReference::parse(fixture.label.clone())
+            .map_err(|error| format!("caller fixture package: {error:?}"))?;
+        let (adapter, daemon) = fixture.parts();
+        let head = daemon.engine().daemon().owner().head();
+        let receipt = adapter.current_index_operation_receipt(
+            daemon, None, *head.root().as_bytes(), head.sequence(),
+        ).ok_or("fixture has no checked workspace/view receipt")?;
+        let operation_key = backend_library::IndexOperationKey::from_bytes([74; 32])
+            .map_err(|error| format!("test operation key: {error:?}"))?;
+        adapter.index_operations.accept(operation_key, caller, CompileExecutionIntent::Interactive)
+            .map_err(|error| format!("accept caller in actual journal: {error}"))?;
+        let Some(JournalEntry::Retained(mut entry)) = adapter.index_operations.entry(operation_key)
+            .map_err(|error| format!("read accepted journal row: {error}"))? else {
+                return Err("accepted operation is absent from its journal".to_owned());
+            };
+        let profile = IndexOperationSourceProfile {
+            profile: backend_library::SemanticLanguageProfile::from_name("rust")
+                .ok_or("Rust semantic profile is unavailable")?,
+            source_version: [23; 32], input_digest: [24; 32],
+            observation_sequence: 1, source_count: 0,
+            state: IndexOperationSemanticProfileState::Pending { prior: None },
+        };
+        let capture = |profile| backend_library::IndexOperationSourceCaptureReceipt::from_checked_parts(
+            operation_key, [21; 32], [22; 32], 1, vec![profile].into_boxed_slice(),
+        ).map_err(|error| format!("checked source capture: {error:?}"));
+        entry.source_capture = Some(capture(profile)?);
+        assert!(matches!(index_operation_published_observation(&entry, operation_key, receipt.clone()),
+            Err(IndexOperationJournalError::InvalidTransition)),
+            "checked view alone must not erase the exact Pending capture");
+        entry.source_capture = Some(capture(IndexOperationSourceProfile {
+            state: IndexOperationSemanticProfileState::Unavailable {
+                reason: backend_library::IndexOperationSemanticUnavailableReason::Toolchain,
+            }, ..profile
+        })?);
+        let terminal = index_operation_published_observation(&entry, operation_key, receipt)
+            .map_err(|error| format!("terminal capture admits checked receipt: {error}"))?;
+        backend_library::SurfaceReply::IndexOperationStatus(terminal)
+            .admit(backend_library::CommandId::IndexProgress)
+            .map_err(|error| format!("strict terminal reply admission: {error:?}"))?;
+        Ok(())
     }
 
     fn install_transition_job(adapter: &mut CommandAdapter) -> Arc<AtomicBool> {

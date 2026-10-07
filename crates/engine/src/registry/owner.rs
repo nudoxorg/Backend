@@ -23,6 +23,7 @@ use backend_advisory::{
     AcquisitionDecision, AcquisitionGate, AdvisoryCoverage, AdvisoryObservation,
     AdvisoryPackageDto, AdvisoryResolver, FreshnessState, MalwareCoverage, normalize_package,
 };
+use backend_platform::OwnedWorkspaceDirectory;
 use blake3::Hasher;
 
 use super::frontier::{
@@ -478,12 +479,30 @@ impl RegistryOwner {
         shared_objects: Option<&Path>,
     ) -> Result<(Self, RegistryRecovery), AcquisitionError> {
         let limits = limits.validate()?;
-        let root = storage_root(root.as_ref(), &endpoint);
-        fs::create_dir_all(&root)?;
-        let objects_root = shared_objects
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| root.join("registry-content"));
-        let objects = ContentAddressedStore::open(objects_root).map_err(content_store_error)?;
+        let base_directory = OwnedWorkspaceDirectory::open(root.as_ref())?;
+        let endpoint_directory = base_directory
+            .child(endpoint.ecosystem().as_str())?
+            .child(&super::transport::hex(&endpoint.id().as_bytes()))?;
+        let root = endpoint_directory.path().to_path_buf();
+        let object_directory = match shared_objects {
+            Some(shared_objects) => {
+                let shared_objects = if shared_objects.is_absolute() {
+                    shared_objects.to_path_buf()
+                } else {
+                    std::env::current_dir()?.join(shared_objects)
+                };
+                if let Ok(relative) = shared_objects.strip_prefix(base_directory.path()) {
+                    base_directory.descendant(relative)?
+                } else {
+                    OwnedWorkspaceDirectory::open(&shared_objects)?
+                }
+            }
+            None => endpoint_directory.child("registry-content")?,
+        };
+        base_directory.verify_path()?;
+        endpoint_directory.verify_path()?;
+        let objects =
+            ContentAddressedStore::open(object_directory.path()).map_err(content_store_error)?;
         let mut cursor = FeedCursor::genesis(endpoint.id());
         let mut pending = None;
         let mut last_receipt = None;

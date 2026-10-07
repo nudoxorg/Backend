@@ -778,11 +778,7 @@ impl AdvisoryConfig {
         }
         let mut sources = Vec::new();
         for (source, value, env) in [
-            (
-                AdvisorySource::Osv,
-                osv,
-                ADVISORY_OSV_ENV,
-            ),
+            (AdvisorySource::Osv, osv, ADVISORY_OSV_ENV),
             (
                 AdvisorySource::RustSec,
                 rustsec.or_else(|| std::env::var(ADVISORY_RUSTSEC_ENV).ok()),
@@ -1398,8 +1394,7 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<ParsedOptions
                 parsed.advisory_osv = Some(next_value(&mut args, "--advisory-osv")?);
             }
             "--advisory-osv-scope" => {
-                parsed.advisory_osv_scope =
-                    Some(next_value(&mut args, "--advisory-osv-scope")?);
+                parsed.advisory_osv_scope = Some(next_value(&mut args, "--advisory-osv-scope")?);
             }
             "--advisory-rustsec" => {
                 parsed.advisory_rustsec = Some(next_value(&mut args, "--advisory-rustsec")?);
@@ -1535,18 +1530,22 @@ pub fn run_process<O: OwnerService + 'static>(owner: O, config: ProcessConfig) -
             ExitCode::SUCCESS
         }
         Err(error @ ProcessError::Usage(_)) => {
-            eprintln!("locald: {error}");
+            report_process_failure(&error);
             ExitCode::from(EX_USAGE)
         }
         Err(
-            error @ (ProcessError::Profile(_)
+            error @ (ProcessError::OwnerContended { .. }
             | ProcessError::Listener(ListenerError::AlreadyRunning)),
         ) => {
-            eprintln!("locald: {error}");
+            report_process_failure(&error);
+            ExitCode::from(backend_runtime::OWNER_CONTENDED_EXIT_CODE)
+        }
+        Err(error @ ProcessError::Profile(_)) => {
+            report_process_failure(&error);
             ExitCode::from(EX_UNAVAILABLE)
         }
         Err(error) => {
-            eprintln!("locald: {error}");
+            report_process_failure(&error);
             ExitCode::from(EX_SOFTWARE)
         }
     }
@@ -1563,7 +1562,7 @@ pub fn main_entry() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("locald: {error}");
+            report_process_failure(&error);
             ExitCode::from(EX_USAGE)
         }
         Ok(config) => match config.profile.as_str() {
@@ -1576,18 +1575,29 @@ pub fn main_entry() -> ExitCode {
                         Some(config.endpoint.as_path().to_path_buf()),
                     );
                     if let Err(error) = paths.and_then(|paths| paths.initialize()) {
-                        eprintln!("locald: {error}");
+                        report_process_failure(&error);
                         return ExitCode::from(EX_USAGE);
                     }
                 }
                 crate::builtin::run(config)
             }
             profile => {
-                eprintln!("locald: unknown compiled profile {profile}");
+                report_process_failure(&ProcessError::Profile(format!(
+                    "unknown compiled profile {profile}"
+                )));
                 ExitCode::from(EX_UNAVAILABLE)
             }
         },
     }
+}
+
+/// Reports the original failure without attaching a detached owner's stderr
+/// to its launcher or allowing a secondary diagnostic failure to replace it.
+pub(crate) fn report_process_failure(error: &dyn fmt::Display) {
+    if let Ok(Some(reporter)) = backend_runtime::StartupFailureReporter::from_environment() {
+        let _ = reporter.report(error);
+    }
+    eprintln!("locald: {error}");
 }
 
 fn print_help() {
@@ -1617,6 +1627,12 @@ pub enum ProcessError {
     Help,
     /// A compiled profile could not construct its checked composition.
     Profile(String),
+    /// Another process holds the checked workspace lease; its listener may
+    /// still be opening. This is not a refused compiler or damaged state.
+    OwnerContended {
+        /// Exact workspace whose owner lease refused this contender.
+        workspace: PathBuf,
+    },
     /// The workspace is intact but was written by another build of the
     /// product, in a layout this build does not read. The message names what
     /// was recognised. Nothing here is corrupt: a host that owns its
@@ -1638,6 +1654,11 @@ impl fmt::Display for ProcessError {
             Self::Profile(message) => {
                 write!(formatter, "compiled locald profile failed: {message}")
             }
+            Self::OwnerContended { workspace } => write!(
+                formatter,
+                "another process owns workspace {}; waiting for its local endpoint is safe, but replacing its state is not",
+                workspace.display()
+            ),
             Self::StateFromAnotherBuild(message) => {
                 write!(
                     formatter,
@@ -1719,7 +1740,10 @@ mod tests {
             .expect("canonical empty snapshot");
         let closed = parse_config_with_compiler_environment_value(Some(OsStr::new(&empty)))
             .expect("parse empty closed snapshot");
-        assert_eq!(closed.compiler_environment, Some(empty_compiler_environment_snapshot()));
+        assert_eq!(
+            closed.compiler_environment,
+            Some(empty_compiler_environment_snapshot())
+        );
         assert_eq!(
             closed.compiler_environment.as_ref().and_then(|snapshot| {
                 snapshot.path(backend_engine::application::LocalHostVariable::Home)
@@ -1763,8 +1787,7 @@ mod tests {
     fn runtime_policy_cache_ceiling_matches_the_existing_desktop_setting() {
         assert_eq!(
             crate::runtime_policy::MAX_REGISTRY_CACHE_AGE_MILLIS,
-            u64::from(RegistryUserPolicy::MAX_CACHE_AGE_DAYS)
-                * RegistryUserPolicy::MILLIS_PER_DAY
+            u64::from(RegistryUserPolicy::MAX_CACHE_AGE_DAYS) * RegistryUserPolicy::MILLIS_PER_DAY
         );
     }
 
@@ -2024,7 +2047,10 @@ mod tests {
         );
         assert!(config.advisory.offline);
         assert!(!config.advisory.refresh_enabled);
-        assert_eq!(config.registry.cache_max_age_millis, Some(tighter_cache_age));
+        assert_eq!(
+            config.registry.cache_max_age_millis,
+            Some(tighter_cache_age)
+        );
 
         config.registry.cache_max_age_millis = Some(0);
         config.apply_registry_user_policy(RegistryUserPolicy {
@@ -2375,14 +2401,8 @@ mod tests {
             None,
         );
         assert!(matches!(invalid_scope, Err(ProcessError::Usage(_))));
-        let orphan_scope = AdvisoryConfig::from_options(
-            None,
-            Some("cargo".to_owned()),
-            None,
-            None,
-            false,
-            None,
-        );
+        let orphan_scope =
+            AdvisoryConfig::from_options(None, Some("cargo".to_owned()), None, None, false, None);
         assert!(matches!(orphan_scope, Err(ProcessError::Usage(_))));
     }
 }

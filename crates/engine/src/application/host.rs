@@ -6,8 +6,10 @@
 //! process environment.
 
 mod authority;
+mod capture;
 mod error;
 mod paths;
+mod rust_selection;
 mod snapshot;
 
 use std::{
@@ -32,9 +34,12 @@ use paths::create_directory;
 use crate::application::{
     DEFAULT_RUST_CARGO_METADATA_POLICY, EmbeddingProvisioningFailure, EmbeddingRequirement,
     LocalCompilerCapabilities, LocalCompilerClient, LocalCompilerRuntimeConfiguration,
-    LocalCompilerRuntimePaths, LocalCompilerScratch, LocalCompilerTimeout, ToolchainProbeLimits,
+    LocalCompilerRuntimePaths, LocalCompilerScratch, LocalCompilerTimeout,
+    LocalRuntimeGoAuthorityFailure, ToolchainProbeLimits,
 };
 
+pub use capture::CapturedLocalHostEnvironment;
+pub use rust_selection::{InstalledRustInputs, InstalledRustSelectionSource, InstalledRustToolchain, InstalledToolPlace, find_installed_rust, installed_rust_system_locations};
 pub use error::LocalCompilerHostError;
 pub use paths::{LocalHostDirectory, LocalHostPathKind, LocalHostPathRole};
 pub use snapshot::{
@@ -94,6 +99,10 @@ pub enum LocalHostVariable {
     NudoxDotnet,
     /// Explicit Node runtime for the vendored TypeScript authority driver.
     NudoxTypeScriptNode,
+    /// Internal frozen installed Node selection; does not claim an explicit NUDOX override.
+    NudoxTypeScriptDefaultNode,
+    /// Internal Node selection validated against an application bundle's byte inventory.
+    NudoxTypeScriptBundledNode,
     /// Explicit Node module root containing the TypeScript compiler API.
     NudoxTypeScriptModuleRoot,
     /// Explicit program that directly emits TypeScript authority reports.
@@ -128,7 +137,7 @@ impl LocalHostVariable {
     /// The order is the stable order used by closed host-environment snapshots. Keep this list
     /// exhaustive when adding a new variant. Renaming an existing variable's process spelling or
     /// changing its role meaning requires a snapshot protocol version change.
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 32] = [
         Self::NudoxDataRoot,
         Self::Home,
         Self::XdgDataHome,
@@ -159,6 +168,8 @@ impl LocalHostVariable {
         Self::NudoxMavenRoot,
         Self::NudoxNugetRoot,
         Self::NudoxGenericRoot,
+        Self::NudoxTypeScriptDefaultNode,
+        Self::NudoxTypeScriptBundledNode,
     ];
 
     /// Number of closed snapshot roles after excluding the workspace-owned data root.
@@ -207,6 +218,12 @@ pub trait LocalHostEnvironment {
     fn go_path(&self) -> Option<OsString> {
         None
     }
+
+    /// Cargo's configured user cache, captured only during installed-tool selection.
+    fn cargo_home(&self) -> Option<OsString> { None }
+
+    /// Windows user home when HOME is absent.
+    fn user_profile(&self) -> Option<OsString> { None }
 }
 
 /// Production environment reader.
@@ -229,6 +246,9 @@ impl LocalHostEnvironment for ProcessHostEnvironment {
     fn go_path(&self) -> Option<OsString> {
         std::env::var_os("GOPATH")
     }
+
+    fn cargo_home(&self) -> Option<OsString> { std::env::var_os("CARGO_HOME") }
+    fn user_profile(&self) -> Option<OsString> { std::env::var_os("USERPROFILE") }
 }
 
 /// Process environment with one explicit durable compiler root.
@@ -257,6 +277,9 @@ impl LocalHostEnvironment for WorkspaceCompilerEnvironment {
     fn go_path(&self) -> Option<OsString> {
         ProcessHostEnvironment.go_path()
     }
+
+    fn cargo_home(&self) -> Option<OsString> { ProcessHostEnvironment.cargo_home() }
+    fn user_profile(&self) -> Option<OsString> { ProcessHostEnvironment.user_profile() }
 }
 
 /// Whether host admission may inspect its finite documented platform locations.
@@ -285,6 +308,7 @@ pub struct LocalCompilerHost<Environment> {
     pub discovery: LocalHostDiscovery,
     /// Cargo registry policy used while resolving Rust package metadata.
     pub rust_cargo_metadata_policy: RustCargoMetadataPolicy,
+    go_authority_failure: Option<LocalRuntimeGoAuthorityFailure>,
     embedding_cache_directory: Option<DirectoryCapability>,
 }
 
@@ -296,6 +320,7 @@ impl<Environment> LocalCompilerHost<Environment> {
             environment,
             discovery,
             rust_cargo_metadata_policy: DEFAULT_RUST_CARGO_METADATA_POLICY,
+            go_authority_failure: None,
             embedding_cache_directory: None,
         }
     }
@@ -316,16 +341,29 @@ impl<Environment> LocalCompilerHost<Environment> {
         self.rust_cargo_metadata_policy = policy;
         self
     }
+
+    /// Retains a captured Go-only admission failure until a Go request arrives.
+    #[must_use]
+    pub const fn with_go_authority_failure(
+        mut self,
+        failure: Option<LocalRuntimeGoAuthorityFailure>,
+    ) -> Self {
+        self.go_authority_failure = failure;
+        self
+    }
 }
 
 impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
-    /// Captures installed TypeScript, Python, and Go authorities into one immutable snapshot.
+    /// Captures installed Rust, TypeScript, Python, and Go authorities into one immutable snapshot.
     /// Pass that snapshot to a host using LocalHostDiscovery::ClosedSnapshot before opening
     /// a long-lived owner. PATH and Go cache variables are consulted only during this call.
     ///
     /// Explicit NUDOX_* paths take precedence and are validated as their declared object
-    /// kind. An invalid explicit path returns its typed error instead of choosing a PATH
-    /// alternative. The returned selection contains no ambient search inputs.
+    /// kind. An invalid explicit Go path is retained as a Go-only admission failure so it
+    /// cannot prevent other languages from starting; other invalid explicit paths return their
+    /// typed error instead of choosing a PATH alternative. The returned selection contains no
+    /// ambient search inputs. A discovered Rust pair may create only its absent default Cargo
+    /// cache beneath the existing user home; explicit cache content and permissions are retained.
     ///
     /// # Errors
     ///
@@ -338,9 +376,33 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             return Err(LocalCompilerHostError::InstalledSelectionRequiresCapturePolicy);
         }
 
+        // Read ambient inputs exactly once. Discovery and the closed receipt must describe
+        // the same launch, even when an embedding host supplies a mutable environment reader.
+        LocalCompilerHost::new(
+            CapturedLocalHostEnvironment::capture(&self.environment),
+            LocalHostDiscovery::InstalledTools,
+        )
+        .with_go_authority_failure(self.go_authority_failure)
+        .capture_frozen_installed_selection()
+    }
+
+    fn capture_frozen_installed_selection(
+        &self,
+    ) -> Result<LocalCompilerHostSelection, LocalCompilerHostError> {
         let home = self.optional_absolute_path(LocalHostVariable::Home)?;
+        #[cfg(windows)]
+        let home = match home {
+            Some(home) => Some(home),
+            None => self.environment.user_profile().map(PathBuf::from)
+                .map(|path| if path.is_absolute() { Ok(path) } else {
+                    Err(LocalCompilerHostError::RelativeEnvironmentPath {
+                        variable: LocalHostVariable::Home, path: path.into_boxed_path(),
+                    })
+                }).transpose()?,
+        };
         let mut paths =
             Vec::with_capacity(LocalHostVariable::CLOSED_ENVIRONMENT_SNAPSHOT_ROLE_COUNT);
+        let mut go_failure = self.go_authority_failure;
         for variable in LocalHostVariable::closed_environment_snapshot_roles() {
             if matches!(
                 variable,
@@ -349,10 +411,13 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                     | LocalHostVariable::NudoxTypeScriptCompiler
                     | LocalHostVariable::NudoxTypeScriptDefaultCompiler
                     | LocalHostVariable::NudoxTypeScriptNode
+                    | LocalHostVariable::NudoxTypeScriptDefaultNode
+                    | LocalHostVariable::NudoxTypeScriptBundledNode
                     | LocalHostVariable::NudoxTypeScriptModuleRoot
                     | LocalHostVariable::NudoxPyrefly
                     | LocalHostVariable::NudoxGo
                     | LocalHostVariable::NudoxGoRoot
+                    | LocalHostVariable::NudoxGoOracle
             ) {
                 continue;
             }
@@ -366,11 +431,13 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                     path: path.into_boxed_path(),
                 });
             }
-            paths.push((variable, path));
+            paths.push((variable, self.canonical_configured_selection_path(variable, path)?));
         }
         if let Some(home) = home.as_ref() {
             paths.push((LocalHostVariable::Home, home.clone()));
         }
+
+        self.capture_installed_rust_paths(&mut paths, home.as_deref())?;
 
         let typescript = self.typescript_host_selection(home.as_deref())?;
         if let Some(compiler) = typescript.compiler {
@@ -382,7 +449,12 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             paths.push((variable, compiler));
         }
         if let Some(node) = typescript.node {
-            paths.push((LocalHostVariable::NudoxTypeScriptNode, node.path));
+            let variable = match node.origin {
+                crate::application::typescript_host::TypeScriptSelectionOrigin::ExplicitConfiguration => LocalHostVariable::NudoxTypeScriptNode,
+                crate::application::typescript_host::TypeScriptSelectionOrigin::ValidatedApplicationBundle => LocalHostVariable::NudoxTypeScriptBundledNode,
+                _ => LocalHostVariable::NudoxTypeScriptDefaultNode,
+            };
+            paths.push((variable, node.path));
         }
         if let Some(module_root) = typescript.module_root {
             paths.push((LocalHostVariable::NudoxTypeScriptModuleRoot, module_root));
@@ -400,12 +472,19 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 NativeTool::GoCompiler,
             ),
         ] {
-            if let Some(path) = self.executable(
+            match self.executable(
                 variable,
                 role,
                 self.executable_candidates(home.as_deref(), tool),
-            )? {
-                paths.push((variable, path));
+            ) {
+                Ok(Some(path)) => paths.push((variable, path)),
+                Ok(None) => {}
+                Err(error) if tool == NativeTool::GoCompiler => {
+                    if go_failure.is_none() {
+                        go_failure = Some(authority::go_authority_failure(&error));
+                    }
+                }
+                Err(error) => return Err(error),
             }
         }
         if let Some(pyrefly) = self.executable(
@@ -415,21 +494,47 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         )? {
             paths.push((LocalHostVariable::NudoxPyrefly, pyrefly));
         }
-        if let Some(go_root) = self.directory(
+        match self.directory(
             LocalHostVariable::NudoxGoRoot,
             LocalHostPathRole::PackageRoot(backend_library::interface::PackageEcosystem::Golang),
             self.package_root_candidates(
                 home.as_deref(),
                 backend_library::interface::PackageEcosystem::Golang,
             ),
-        )? {
-            paths.push((LocalHostVariable::NudoxGoRoot, go_root));
+        ) {
+            Ok(Some(go_root)) => paths.push((LocalHostVariable::NudoxGoRoot, go_root)),
+            Ok(None) => {}
+            Err(error) => {
+                if go_failure.is_none() {
+                    go_failure = Some(authority::go_authority_failure(&error));
+                }
+            }
         }
 
-        let snapshot = ClosedLocalHostEnvironmentSnapshot::from_paths(paths)
+        if let Some(value) = self.environment.value(LocalHostVariable::NudoxGoOracle) {
+            let path = PathBuf::from(value);
+            let admitted = if path.is_absolute() {
+                self.canonical_configured_selection_path(LocalHostVariable::NudoxGoOracle, path)
+            } else {
+                Err(LocalCompilerHostError::RelativeEnvironmentPath {
+                    variable: LocalHostVariable::NudoxGoOracle, path: path.into_boxed_path(),
+                })
+            };
+            match admitted {
+                Ok(path) => paths.push((LocalHostVariable::NudoxGoOracle, path)),
+                Err(_) if go_failure.is_none() => {
+                    go_failure = Some(LocalRuntimeGoAuthorityFailure::OracleUnavailable);
+                }
+                Err(_) => {}
+            }
+        }
+
+        let snapshot = ClosedLocalHostEnvironmentSnapshot::from_paths(paths.clone())
             .map_err(LocalCompilerHostError::HostSnapshot)?;
-        LocalCompilerHostSelection::captured_installed_tools(snapshot)
-            .map_err(LocalCompilerHostError::HostSnapshot)
+        let selection = LocalCompilerHostSelection::captured_installed_tools(snapshot, go_failure)
+            .map_err(LocalCompilerHostError::HostSnapshot)?;
+        self.realize_installed_rust_cache(&paths, home.as_deref())?;
+        Ok(selection)
     }
 
     /// Admits the host, builds a complete canonical runtime table, and starts its single owner.
@@ -437,8 +542,10 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
     /// # Errors
     ///
     /// Returns exact path, resource-bound, authority, configuration, or worker-startup causes.
-    /// Explicitly configured broken paths fail admission; they never become silent unavailable
-    /// rows. A genuinely absent optional tool remains an honest unavailable row.
+    /// Broken Go configuration is retained as a Go-only unavailable state and fails when a Go
+    /// package is requested; it does not block unrelated language owners. Other explicitly
+    /// configured broken paths fail admission. A genuinely absent optional tool remains an
+    /// honest unavailable row.
     pub fn open(&self) -> Result<LocalCompilerClient, LocalCompilerHostError> {
         self.open_with_embedding_state(None, None, EmbeddingRequirement::Optional)
     }
@@ -541,6 +648,20 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             .environment
             .value(LocalHostVariable::NudoxPyrefly)
             .is_some();
+        let (go, mut go_discovery_failure) = match self.executable(
+            LocalHostVariable::NudoxGo,
+            LocalHostPathRole::Native(NativeTool::GoCompiler),
+            self.executable_candidates(home.as_deref(), NativeTool::GoCompiler),
+        ) {
+            Ok(go) => (go, None),
+            Err(_) => (
+                None,
+                Some(LocalRuntimeGoAuthorityFailure::ExecutableUnavailable),
+            ),
+        };
+        if self.go_authority_failure.is_some() {
+            go_discovery_failure = self.go_authority_failure;
+        }
         let executables = NativeExecutables {
             rustc: self.executable(
                 LocalHostVariable::NudoxRustc,
@@ -572,11 +693,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 None
             },
             typescript: typescript_host.compiler.clone(),
-            go: self.executable(
-                LocalHostVariable::NudoxGo,
-                LocalHostPathRole::Native(NativeTool::GoCompiler),
-                self.executable_candidates(home.as_deref(), NativeTool::GoCompiler),
-            )?,
+            go,
             java: self.executable(
                 LocalHostVariable::NudoxJavaCompiler,
                 LocalHostPathRole::Native(NativeTool::JavaCompiler),
@@ -606,7 +723,10 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 typescript_host.module_root.as_deref(),
             )
         };
-        let package_roots = self.package_roots(home.as_deref())?;
+        let (package_roots, go_root_failure) = self.package_roots(home.as_deref())?;
+        if go_discovery_failure.is_none() {
+            go_discovery_failure = go_root_failure;
+        }
         let go_module_cache = package_roots
             .iter()
             .find(|root| root.ecosystem == backend_library::interface::PackageEcosystem::Golang)
@@ -619,6 +739,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             go_module_cache.as_deref(),
             &paths.native_work_directory,
             probe_limits,
+            go_discovery_failure,
         )?;
         if let crate::application::LocalRuntimePythonCheckerAdmission::Native { authority } =
             &package_authority.python_checker
@@ -752,13 +873,56 @@ impl LocalCompilerHost<WorkspaceCompilerEnvironment> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use backend_semantic::vocabulary::{LanguageProfile, RustEdition};
+    use backend_semantic::vocabulary::{
+        GoVersion, LanguageProfile, PythonVersion, RustEdition, Stage, TypeScriptSource,
+    };
+    use std::ffi::OsString;
 
     struct InspectionEnvironment(PathBuf);
 
     impl LocalHostEnvironment for InspectionEnvironment {
         fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
             (variable == LocalHostVariable::NudoxDataRoot).then(|| self.0.clone().into_os_string())
+        }
+    }
+
+    struct StartupEnvironment(Vec<(LocalHostVariable, OsString)>);
+
+    impl LocalHostEnvironment for StartupEnvironment {
+        fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
+            self.0
+                .iter()
+                .find(|(candidate, _)| *candidate == variable)
+                .map(|(_, value)| value.clone())
+        }
+    }
+
+    struct PrivateTestDirectory(PathBuf);
+
+    impl PrivateTestDirectory {
+        fn create(label: &str) -> io::Result<Self> {
+            let path = std::env::temp_dir().join(format!(
+                "{label}-{}-{}",
+                std::process::id(),
+                NEXT_NATIVE_WORK.fetch_add(1, Ordering::Relaxed),
+            ));
+            fs::create_dir(&path)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
+            }
+            Ok(Self(path))
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for PrivateTestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
         }
     }
 
@@ -854,10 +1018,142 @@ mod tests {
             .inspect_capabilities()
             .expect("capabilities can be inspected without an installed toolchain");
 
-        assert!(capabilities.as_slice().iter().all(|capability| {
-            capability.state() == crate::application::LocalCompilerCapabilityState::Unavailable
-        }));
+        for capability in capabilities.as_slice() {
+            if capability.profile().language() == backend_semantic::vocabulary::Language::Python {
+                // Python's producer is compiled into this host. Its admitted identity is
+                // available without an interpreter, cache, or runtime directory.
+                assert_eq!(capability.state(), crate::application::LocalCompilerCapabilityState::Ready);
+                assert!(capability.toolchain_identity().is_some());
+                assert!(capability.local_authority_fingerprint().is_some());
+            } else {
+                assert_eq!(capability.state(), crate::application::LocalCompilerCapabilityState::Unavailable,
+                    "an unconfigured external authority cannot be advertised ready: {capability:?}");
+            }
+        }
         assert!(!data_root.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn closed_go_refusal_keeps_the_actual_native_python_owner_usable() {
+        use backend_library::interface::{CompilerCapability, CompilerRequest};
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = std::env::temp_dir().join(format!("nudox-go-python-{}-{}", std::process::id(),
+            NEXT_NATIVE_WORK.fetch_add(1, Ordering::Relaxed)));
+        fs::create_dir_all(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let snapshot = ClosedLocalHostEnvironmentSnapshot::from_paths([]).unwrap()
+            .with_go_failure(Some(LocalRuntimeGoAuthorityFailure::OracleUnavailable)).unwrap();
+        let decoded = ClosedLocalHostEnvironmentSnapshot::parse(&snapshot.encode().unwrap()).unwrap();
+        let selection = LocalCompilerHostSelection::from_closed_snapshot(decoded).unwrap();
+        let environment = StartupEnvironment(vec![(LocalHostVariable::NudoxDataRoot,
+            root.join("owner").into_os_string())]);
+        let mut client = LocalCompilerHost::new(environment, LocalHostDiscovery::ClosedSnapshot)
+            .with_go_authority_failure(selection.go_authority_failure()).open()
+            .expect("closed Go refusal cannot block native Python startup");
+        assert_eq!(client.capabilities().for_profile(LanguageProfile::Go(GoVersion::Go125)).state(),
+            crate::application::LocalCompilerCapabilityState::ProbeFailed);
+        client.generate(CompilerRequest {
+            profile: LanguageProfile::Python(PythonVersion::Python314), stage: Stage::LowerIr,
+            source: "answer = 42\n",
+        }).expect("actual compiled Python producer remains usable");
+        assert_eq!(client.capabilities().for_profile(LanguageProfile::Python(PythonVersion::Python314)).state(),
+            crate::application::LocalCompilerCapabilityState::Ready);
+        assert_eq!(client.capabilities().for_profile(LanguageProfile::TypeScript(TypeScriptSource::TypeScript)).state(),
+            crate::application::LocalCompilerCapabilityState::Unavailable);
+        drop(client);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires privately admitted Go, Node, and TypeScript installations"]
+    fn failed_optional_go_admission_does_not_block_typescript_or_native_python_owner_startup()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use backend_library::interface::{CompilerCapability, CompilerRequest};
+
+        fn required_path(variable: &str) -> Result<PathBuf, io::Error> {
+            let path = std::env::var_os(variable)
+                .ok_or_else(|| io::Error::other(format!("{variable} is required")))?;
+            let path = PathBuf::from(path);
+            if !path.is_absolute() {
+                return Err(io::Error::other(format!("{variable} must be absolute")));
+            }
+            Ok(path)
+        }
+
+        let fixture_root = required_path("NUDOX_GO_DEBIAN_FIXTURE_ROOT")?;
+        let go = fixture_root.join("usr/lib/go-1.24/bin/go");
+        let typescript = required_path("NUDOX_GO_STARTUP_TSC")?;
+        let node = required_path("NUDOX_GO_STARTUP_NODE")?;
+        let module_root = required_path("NUDOX_GO_STARTUP_TYPESCRIPT_MODULE_ROOT")?;
+
+        let state = PrivateTestDirectory::create("go-owner-startup")?;
+        let data_root = state.path().join("owner-data");
+        let invalid_go_module_cache = state.path().join("invalid-go-module-cache");
+        fs::write(&invalid_go_module_cache, b"not a directory")?;
+        let environment = StartupEnvironment(vec![
+            (LocalHostVariable::NudoxDataRoot, data_root.into_os_string()),
+            (
+                LocalHostVariable::NudoxTypeScriptCompiler,
+                typescript.into_os_string(),
+            ),
+            (
+                LocalHostVariable::NudoxTypeScriptNode,
+                node.into_os_string(),
+            ),
+            (
+                LocalHostVariable::NudoxTypeScriptModuleRoot,
+                module_root.into_os_string(),
+            ),
+            (LocalHostVariable::NudoxGo, go.into_os_string()),
+            (
+                LocalHostVariable::NudoxGoRoot,
+                invalid_go_module_cache.into_os_string(),
+            ),
+        ]);
+        let mut client = LocalCompilerHost::new(environment, LocalHostDiscovery::ExplicitOnly)
+            .open()
+            .expect("optional Go authority failure must not stop owner startup");
+
+        assert_eq!(
+            client
+                .capabilities()
+                .for_profile(LanguageProfile::Go(GoVersion::Go125))
+                .state(),
+            crate::application::LocalCompilerCapabilityState::ProbeFailed,
+            "the explicit bad Go module-cache root remains a Go-only failure",
+        );
+        client
+            .generate(CompilerRequest {
+                profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+                stage: Stage::LowerIr,
+                source: "export const answer: number = 42;\n",
+            })
+            .expect("the configured TypeScript lane must remain usable");
+        client
+            .generate(CompilerRequest {
+                profile: LanguageProfile::Python(PythonVersion::Python314),
+                stage: Stage::LowerIr,
+                source: "answer = 42\n",
+            })
+            .expect("the native Python lane must remain usable");
+        assert_eq!(
+            client
+                .capabilities()
+                .for_profile(LanguageProfile::TypeScript(TypeScriptSource::TypeScript))
+                .state(),
+            crate::application::LocalCompilerCapabilityState::Ready,
+        );
+        assert_eq!(
+            client
+                .capabilities()
+                .for_profile(LanguageProfile::Python(PythonVersion::Python314))
+                .state(),
+            crate::application::LocalCompilerCapabilityState::Ready,
+        );
+        drop(client);
+        Ok(())
     }
 }
 
@@ -887,6 +1183,8 @@ const fn variable_name(variable: LocalHostVariable) -> &'static str {
         LocalHostVariable::NudoxJavaCompiler => "NUDOX_JAVAC",
         LocalHostVariable::NudoxDotnet => "NUDOX_DOTNET",
         LocalHostVariable::NudoxTypeScriptNode => "NUDOX_TYPESCRIPT_NODE",
+        LocalHostVariable::NudoxTypeScriptDefaultNode => "BACKEND_LOCALD_DEFAULT_TYPESCRIPT_NODE",
+        LocalHostVariable::NudoxTypeScriptBundledNode => "BACKEND_LOCALD_BUNDLED_TYPESCRIPT_NODE",
         LocalHostVariable::NudoxTypeScriptModuleRoot => "NUDOX_TYPESCRIPT_MODULE_ROOT",
         LocalHostVariable::NudoxTypeScriptReportProgram => "NUDOX_TYPESCRIPT_REPORT_PROGRAM",
         LocalHostVariable::NudoxPyrefly => "NUDOX_PYREFLY",

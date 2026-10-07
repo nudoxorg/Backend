@@ -1,0 +1,9 @@
+source_commit=1f8d7074e7c059f1b154c7a8a1743e675e718f99
+source_tree=8cc3b5ac98e577abc96c69e19cff92050794db44
+cargo_lock_sha256=b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268
+test=backend-mcp --lib jsonrpc::tests
+cargo_jobs=2
+target_dir=/root/evidence/luna-mcp-contract-quality-20261007/d0cd07d8-01/target
+build_dir=/root/evidence/luna-mcp-contract-quality-20261007/d0cd07d8-01/build
+sccache_dir=/root/evidence/luna-mcp-contract-quality-20261007/d0cd07d8-01/sccache
+test_binary_path=/root/evidence/luna-mcp-contract-quality-20261007/d0cd07d8-01/build/.nudox-cargo/slot-0/release/deps/backend_mcp-504e9c6db8ca6e53

@@ -1,0 +1,777 @@
+{
+  "schema": "nudox.native-public-phase.v1",
+  "phase": "retry",
+  "started_at_unix": 1791332614.929133,
+  "runtime_source": {
+    "commit": "fe26d8326ad07911a3d3e2cb9e548dbbc05c559d",
+    "tree": "428ad1f552295ce4b63787a2956b4283b1b4ea3b",
+    "clean": true
+  },
+  "observer": {
+    "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/mac_public_phase.py",
+    "sha256": "639c55ef8f53c1d8493da04ab2a11ea4f83800aa2b5a1d1a0866cb606fc4ef4c",
+    "paging_sha256": "c1bcb24733c7eca3211acb5e8060428fe573aedbb6f0a16f85e9ceea549f8b8d",
+    "python": "/nix/store/llk2h8rxqzv7zh53bi413ffibjrxskxw-python3-3.14.6/bin/python3",
+    "python_sha256": "4f3c8b2a70cc7967e1ce900871443300357d017c1c67dfcca74bfe3e9bb6c8ad",
+    "python_version": "3.14.6 (main, Jun 10 2026, 10:03:53) [Clang 21.1.8 ]",
+    "host": [
+      "Darwin",
+      "h16001mac",
+      "25.6.0",
+      "Darwin Kernel Version 25.6.0: Tue Aug 18 17:51:35 PDT 2026; root:xnu-12377.161.15.700.19~2/RELEASE_ARM64_T6031",
+      "arm64"
+    ]
+  },
+  "source": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/project",
+  "state": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/state",
+  "manifest": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/receipts/canonical-release-fe26d8326a-attempt01/runtime-build-manifest.json",
+  "manifest_sha256": "c6c6a791ff6d31fafc73bce3e65a2b005101d18d1fe027a96b4c434b5b9da035",
+  "environment": {
+    "HOME": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/retry/home",
+    "PATH": "/Users/rmccrar6/.nix-profile/bin:/Users/rmccrar6/.npm-global/bin:/Users/rmccrar6/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    "TMPDIR": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/retry/tmp",
+    "USER": "rmccrar6",
+    "LANG": "C.UTF-8"
+  },
+  "allocation": "Root allocated sol61-public-tantivy one private Mac runtime owner",
+  "whole_project_runtime_pass": false,
+  "all_phase_checks_pass": true,
+  "portable_package": {
+    "schema": "nudox.mac-cli-diagnostic-preview.v1",
+    "source": "fe26d8326ad07911a3d3e2cb9e548dbbc05c559d",
+    "runtime_manifest_sha256": "c6c6a791ff6d31fafc73bce3e65a2b005101d18d1fe027a96b4c434b5b9da035",
+    "signing": "ad-hoc",
+    "notarized": false,
+    "production_ready": false,
+    "semantic_acceptance": "diagnostic canonical release-profile trio; authentic Unicode edit/retry/two-cold complete-frontier acceptance pending PublicTantivy",
+    "known_unresolved_failure": "Authentic Immer full native compilation reached duplicate declaration identity after a39 ownership repair; not accepted",
+    "files": [
+      {
+        "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/images-canonical-release-fe26d8326a-attempt01/backend-cli",
+        "original_sha256": "92e0d3c5df85b402e1ada328a85d670787e37fbcfb1f15ddecbd5a170f393c33",
+        "packaged": "bin/backend-cli",
+        "loads": [
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+            "relocated": "@loader_path/../lib/libiconv.2.dylib",
+            "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1"
+          }
+        ],
+        "packaged_sha256": "5073db235f521e025c7f084cbae208033924190c5099c5cdfb597dfd3b9f1881"
+      },
+      {
+        "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/images-canonical-release-fe26d8326a-attempt01/backend-mcp",
+        "original_sha256": "9823643296d5092f98972214e14f59c26be569667ef605482f823a6f5fb94be9",
+        "packaged": "bin/backend-mcp",
+        "loads": [
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+            "relocated": "@loader_path/../lib/libiconv.2.dylib",
+            "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1"
+          }
+        ],
+        "packaged_sha256": "9ef12fc28640f67a637c6286509f32de776bf60a9af83c13ceccfe5ed386bb1c"
+      },
+      {
+        "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/images-canonical-release-fe26d8326a-attempt01/backend-locald",
+        "original_sha256": "8c6fad4cbea0eb15af9cef9bc1ef16d90c7d41763ae576760d9d626223debf7e",
+        "packaged": "bin/backend-locald",
+        "loads": [
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+            "relocated": "@loader_path/../lib/libiconv.2.dylib",
+            "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1"
+          }
+        ],
+        "packaged_sha256": "e5777e05492070919ddccce353574b6265198eea3585403d33c8a35bf8fb2ce5"
+      },
+      {
+        "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+        "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1",
+        "packaged": "lib/libiconv.2.dylib",
+        "loads": [
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+            "relocated": "@loader_path/libiconv.2.dylib",
+            "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1"
+          },
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libcharset.1.dylib",
+            "relocated": "@loader_path/libcharset.1.dylib",
+            "original_sha256": "cd965d293a43242b9073190e31af8b4cfa3bacca3f0262edc7fd47abce360959"
+          }
+        ],
+        "packaged_sha256": "2fbbe9796199ea41388cef1d4a707dafb2f45d2ceafb0554b9b75cf75bfe613d"
+      },
+      {
+        "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libcharset.1.dylib",
+        "original_sha256": "cd965d293a43242b9073190e31af8b4cfa3bacca3f0262edc7fd47abce360959",
+        "packaged": "lib/libcharset.1.dylib",
+        "loads": [
+          {
+            "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libcharset.1.dylib",
+            "relocated": "@loader_path/libcharset.1.dylib",
+            "original_sha256": "cd965d293a43242b9073190e31af8b4cfa3bacca3f0262edc7fd47abce360959"
+          }
+        ],
+        "packaged_sha256": "cbde7311dae0ec0bcd8af251f00b5a5794986fc800270fadb5f6a5563dc47ce9"
+      }
+    ],
+    "zero_nudox_fresh_home_help": [
+      {
+        "name": "backend-cli",
+        "exit": 0,
+        "stdout_bytes": 8687
+      },
+      {
+        "name": "backend-mcp",
+        "exit": 0,
+        "stdout_bytes": 108
+      },
+      {
+        "name": "backend-locald",
+        "exit": 0,
+        "stdout_bytes": 1623
+      }
+    ]
+  },
+  "used_images": {
+    "backend-cli": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/cli-canonical-fe26-macos-arm64-v1/nudox-macos-arm64/bin/backend-cli",
+    "backend-locald": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/cli-canonical-fe26-macos-arm64-v1/nudox-macos-arm64/bin/backend-locald",
+    "backend-mcp": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/cli-canonical-fe26-macos-arm64-v1/nudox-macos-arm64/bin/backend-mcp"
+  },
+  "owner_pid": 30323,
+  "eligible_python_inputs": 23,
+  "lifecycle_change": {
+    "heading": "index",
+    "records": [
+      {
+        "title": "index request accepted",
+        "operand": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/project",
+        "tags": [
+          "intent f002757e",
+          "pending",
+          "read `backend health` for readiness"
+        ]
+      }
+    ],
+    "answer": "product",
+    "detail": "full",
+    "budget": {
+      "bytes": 381,
+      "estimatedTokens": 96,
+      "bytesPerToken": 4
+    }
+  },
+  "history_after_change": {
+    "heading": "semantic-versions",
+    "records": [
+      {
+        "title": "pkg:pypi/local-c79b643ec5223f7ee6aefc767e3e44f0961f3df7ddd8c41d11540d8f9510d9f4@0.0.0-local",
+        "operand": "0612271aaf20331f142eb18af80a9cd37d8e156d8deeba2c86ba77f9bb98f99a",
+        "tags": [
+          "generation 0612271a",
+          "23 artifact(s)",
+          "10136 manifest byte(s)",
+          "complete",
+          "selected",
+          "current source input",
+          "derived history pending"
+        ],
+        "history_status": {
+          "state": "pending",
+          "selection_id": [
+            230,
+            91,
+            40,
+            246,
+            127,
+            236,
+            29,
+            5,
+            245,
+            40,
+            158,
+            224,
+            145,
+            206,
+            139,
+            16,
+            210,
+            170,
+            109,
+            27,
+            8,
+            214,
+            187,
+            170,
+            204,
+            165,
+            143,
+            97,
+            98,
+            184,
+            252,
+            18
+          ]
+        },
+        "compiler_profile": [
+          2,
+          4
+        ]
+      }
+    ],
+    "selected_source_frontier": {
+      "package": {
+        "kind": "local",
+        "value": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/project"
+      },
+      "source_relation_root": [
+        82,
+        6,
+        194,
+        122,
+        227,
+        162,
+        175,
+        239,
+        92,
+        222,
+        187,
+        155,
+        254,
+        176,
+        99,
+        200,
+        154,
+        215,
+        167,
+        217,
+        159,
+        199,
+        112,
+        188,
+        181,
+        79,
+        181,
+        96,
+        231,
+        64,
+        1,
+        10
+      ],
+      "source_version": [
+        117,
+        255,
+        73,
+        222,
+        147,
+        192,
+        14,
+        86,
+        84,
+        79,
+        101,
+        118,
+        177,
+        142,
+        138,
+        195,
+        155,
+        216,
+        48,
+        89,
+        237,
+        82,
+        144,
+        128,
+        130,
+        120,
+        191,
+        44,
+        236,
+        15,
+        214,
+        74
+      ],
+      "file_count": 23
+    },
+    "semantic_data": {
+      "kind": "versions",
+      "value": [
+        {
+          "package": {
+            "kind": "local",
+            "value": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/project"
+          },
+          "coordinate": "pkg:pypi/local-c79b643ec5223f7ee6aefc767e3e44f0961f3df7ddd8c41d11540d8f9510d9f4@0.0.0-local",
+          "profile": [
+            2,
+            4
+          ],
+          "generation": [
+            6,
+            18,
+            39,
+            26,
+            175,
+            32,
+            51,
+            31,
+            20,
+            46,
+            177,
+            138,
+            248,
+            10,
+            156,
+            211,
+            125,
+            142,
+            21,
+            109,
+            141,
+            238,
+            186,
+            44,
+            134,
+            186,
+            119,
+            249,
+            187,
+            152,
+            249,
+            154
+          ],
+          "generation_root": [
+            2,
+            83,
+            72,
+            133,
+            98,
+            104,
+            140,
+            231,
+            129,
+            203,
+            91,
+            140,
+            42,
+            230,
+            6,
+            75,
+            121,
+            45,
+            93,
+            22,
+            78,
+            123,
+            43,
+            179,
+            153,
+            212,
+            126,
+            120,
+            46,
+            137,
+            34,
+            233
+          ],
+          "dependency_set": [
+            4,
+            73,
+            179,
+            195,
+            20,
+            206,
+            4,
+            126,
+            13,
+            213,
+            204,
+            84,
+            149,
+            37,
+            199,
+            226,
+            251,
+            129,
+            52,
+            140,
+            7,
+            1,
+            107,
+            85,
+            249,
+            95,
+            74,
+            126,
+            73,
+            81,
+            220,
+            169
+          ],
+          "manifest": [
+            5,
+            13,
+            142,
+            184,
+            68,
+            168,
+            89,
+            11,
+            186,
+            98,
+            247,
+            181,
+            17,
+            89,
+            117,
+            73,
+            0,
+            133,
+            56,
+            202,
+            119,
+            179,
+            197,
+            80,
+            187,
+            224,
+            115,
+            77,
+            242,
+            214,
+            1,
+            210
+          ],
+          "artifacts": 23,
+          "semantic_bytes": 10136,
+          "complete": true,
+          "selected": true,
+          "freshness": {
+            "state": "current",
+            "input_digest": [
+              30,
+              178,
+              183,
+              75,
+              54,
+              90,
+              20,
+              53,
+              170,
+              187,
+              165,
+              153,
+              111,
+              74,
+              78,
+              87,
+              1,
+              156,
+              12,
+              87,
+              131,
+              155,
+              77,
+              70,
+              158,
+              165,
+              90,
+              31,
+              42,
+              30,
+              50,
+              189
+            ]
+          },
+          "history_status": {
+            "state": "pending",
+            "selection_id": [
+              230,
+              91,
+              40,
+              246,
+              127,
+              236,
+              29,
+              5,
+              245,
+              40,
+              158,
+              224,
+              145,
+              206,
+              139,
+              16,
+              210,
+              170,
+              109,
+              27,
+              8,
+              214,
+              187,
+              170,
+              204,
+              165,
+              143,
+              97,
+              98,
+              184,
+              252,
+              18
+            ]
+          },
+          "selected_source_frontier": {
+            "package": {
+              "kind": "local",
+              "value": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/project"
+            },
+            "source_relation_root": [
+              82,
+              6,
+              194,
+              122,
+              227,
+              162,
+              175,
+              239,
+              92,
+              222,
+              187,
+              155,
+              254,
+              176,
+              99,
+              200,
+              154,
+              215,
+              167,
+              217,
+              159,
+              199,
+              112,
+              188,
+              181,
+              79,
+              181,
+              96,
+              231,
+              64,
+              1,
+              10
+            ],
+            "source_version": [
+              117,
+              255,
+              73,
+              222,
+              147,
+              192,
+              14,
+              86,
+              84,
+              79,
+              101,
+              118,
+              177,
+              142,
+              138,
+              195,
+              155,
+              216,
+              48,
+              89,
+              237,
+              82,
+              144,
+              128,
+              130,
+              120,
+              191,
+              44,
+              236,
+              15,
+              214,
+              74
+            ],
+            "file_count": 23
+          }
+        }
+      ]
+    },
+    "answer": "product",
+    "detail": "full",
+    "budget": {
+      "bytes": 2891,
+      "estimatedTokens": 723,
+      "bytesPerToken": 4
+    }
+  },
+  "native_selection_full_eligible_frontier_after_change": true,
+  "complete_reference_streams": [
+    {
+      "surface": "cli",
+      "route": "resolve",
+      "query": "cached",
+      "credit": 200,
+      "pages": 1,
+      "rows": 28,
+      "typed_budget_refusals": []
+    },
+    {
+      "surface": "mcp",
+      "route": "resolve",
+      "query": "cached",
+      "credit": 200,
+      "pages": 1,
+      "rows": 28,
+      "typed_budget_refusals": []
+    },
+    {
+      "surface": "cli",
+      "route": "resolve",
+      "query": "__getitem__",
+      "credit": 200,
+      "pages": 1,
+      "rows": 7,
+      "typed_budget_refusals": []
+    },
+    {
+      "surface": "mcp",
+      "route": "resolve",
+      "query": "__getitem__",
+      "credit": 200,
+      "pages": 1,
+      "rows": 7,
+      "typed_budget_refusals": []
+    },
+    {
+      "surface": "cli",
+      "route": "search",
+      "query": "cached",
+      "credit": 200,
+      "pages": 1,
+      "rows": 33,
+      "typed_budget_refusals": []
+    },
+    {
+      "surface": "mcp",
+      "route": "search",
+      "query": "cached",
+      "credit": 200,
+      "pages": 1,
+      "rows": 33,
+      "typed_budget_refusals": []
+    },
+    {
+      "surface": "cli",
+      "route": "search",
+      "query": "__getitem__",
+      "credit": 200,
+      "pages": 1,
+      "rows": 12,
+      "typed_budget_refusals": []
+    },
+    {
+      "surface": "mcp",
+      "route": "search",
+      "query": "__getitem__",
+      "credit": 200,
+      "pages": 1,
+      "rows": 12,
+      "typed_budget_refusals": []
+    },
+    {
+      "surface": "cli",
+      "route": "resolve",
+      "query": "cached",
+      "credit": 200,
+      "pages": 1,
+      "rows": 28,
+      "typed_budget_refusals": []
+    },
+    {
+      "surface": "mcp",
+      "route": "resolve",
+      "query": "cached",
+      "credit": 200,
+      "pages": 1,
+      "rows": 28,
+      "typed_budget_refusals": []
+    },
+    {
+      "surface": "cli",
+      "route": "resolve",
+      "query": "__getitem__",
+      "credit": 200,
+      "pages": 1,
+      "rows": 7,
+      "typed_budget_refusals": []
+    },
+    {
+      "surface": "mcp",
+      "route": "resolve",
+      "query": "__getitem__",
+      "credit": 200,
+      "pages": 1,
+      "rows": 7,
+      "typed_budget_refusals": []
+    },
+    {
+      "surface": "cli",
+      "route": "search",
+      "query": "cached",
+      "credit": 200,
+      "pages": 1,
+      "rows": 33,
+      "typed_budget_refusals": []
+    },
+    {
+      "surface": "mcp",
+      "route": "search",
+      "query": "cached",
+      "credit": 200,
+      "pages": 1,
+      "rows": 33,
+      "typed_budget_refusals": []
+    },
+    {
+      "surface": "cli",
+      "route": "search",
+      "query": "__getitem__",
+      "credit": 200,
+      "pages": 1,
+      "rows": 12,
+      "typed_budget_refusals": []
+    },
+    {
+      "surface": "mcp",
+      "route": "search",
+      "query": "__getitem__",
+      "credit": 200,
+      "pages": 1,
+      "rows": 12,
+      "typed_budget_refusals": []
+    }
+  ],
+  "selected_full_rows_equal": true,
+  "issued_token_sets": [
+    {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/retry-late.json",
+      "sha256": "4cc62a301380d8e3d0c3d8f6acfdca75885c44241f046a900e3a20b91cba03bb",
+      "cases": 8,
+      "issued_at_unix": 1791332624.932283
+    }
+  ],
+  "available_memory_samples": [
+    57064095744,
+    57286967296,
+    57014501376,
+    56681480192,
+    57622052864
+  ],
+  "finished_at_unix": 1791332625.623303,
+  "elapsed_seconds": 10.694169998168945
+}

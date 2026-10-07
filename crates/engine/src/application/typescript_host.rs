@@ -82,7 +82,14 @@ impl TypeScriptProjectInvocationLease {
         self.compiler_path.as_ref() == compiler
             && self.node_path.as_ref() == node
             && self.module_root.as_ref() == module_root
-            && self.package_root.parent() == Some(module_root)
+            && self.matches_selected_package()
+    }
+
+    fn matches_selected_package(&self) -> bool {
+        self.package_root.starts_with(&self.module_root)
+            && fs::canonicalize(self.module_root.join("typescript"))
+                .is_ok_and(|package| package.as_path() == self.package_root.as_ref())
+            && is_module_tsc_script(&self.compiler_path, &self.module_root)
     }
 
     pub(crate) const fn compiler_digest(&self) -> [u8; 32] {
@@ -127,7 +134,7 @@ impl TypeScriptProjectInvocationLease {
                 });
             }
         }
-        if self.package_root.parent() != Some(self.module_root.as_ref()) {
+        if !self.matches_selected_package() {
             return Err(crate::driver::NativeInvocationError::Changed {
                 role: crate::driver::NativeInvocationFileRole::CompilerModule,
                 path: self.package_root.clone(),
@@ -3037,7 +3044,12 @@ impl TypeScriptProjectHost {
         witness.validate_current()?;
         let node_version = node_identity.version;
 
-        let version = if is_module_tsc_script(&compiler, &module_root) {
+        let compiler_invocation = if is_module_tsc_script(&compiler, &module_root) {
+            TypeScriptCompilerInvocation::PackageScript
+        } else {
+            TypeScriptCompilerInvocation::NativeExecutable
+        };
+        let version = if compiler_invocation == TypeScriptCompilerInvocation::PackageScript {
             crate::application::toolchain_probe::probe_typescript_script_with_node(
                 &compiler,
                 &node,
@@ -3103,6 +3115,7 @@ impl TypeScriptProjectHost {
             compiler: compiler.to_path_buf().into_boxed_path(),
             compiler_version: version,
             compiler_origin,
+            compiler_invocation,
             node: node.to_path_buf().into_boxed_path(),
             node_version,
             node_origin: self
@@ -3165,6 +3178,12 @@ impl TypeScriptProjectHost {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TypeScriptCompilerInvocation {
+    PackageScript,
+    NativeExecutable,
+}
+
 /// One project-local checker and the exact toolchain facts admitted for it.
 #[derive(Debug)]
 pub(crate) struct AdmittedTypeScriptProject {
@@ -3172,6 +3191,7 @@ pub(crate) struct AdmittedTypeScriptProject {
     pub(crate) compiler: Box<Path>,
     pub(crate) compiler_version: Box<[u8]>,
     compiler_origin: TypeScriptSelectionOrigin,
+    compiler_invocation: TypeScriptCompilerInvocation,
     node: Box<Path>,
     node_version: Box<[u8]>,
     node_origin: TypeScriptSelectionOrigin,
@@ -3184,7 +3204,7 @@ impl AdmittedTypeScriptProject {
     pub(crate) fn resolved_toolchain(
         &self,
     ) -> Result<ResolvedToolchain<'_>, TypeScriptProjectHostError> {
-        if is_module_tsc_script(&self.compiler, &self.module_root) {
+        if self.compiler_invocation == TypeScriptCompilerInvocation::PackageScript {
             ResolvedToolchain::from_project_invocation(
                 NativeTool::TypeScriptCompiler,
                 &self.node,
@@ -3611,11 +3631,15 @@ fn find_module_root_for_compiler(
 }
 
 pub(crate) fn is_module_tsc_script(compiler: &Path, module_root: &Path) -> bool {
-    let expected = module_root.join("typescript/bin/tsc");
-    matches!(
-        (fs::canonicalize(compiler), fs::canonicalize(expected)),
-        (Ok(compiler), Ok(expected)) if compiler == expected
-    )
+    let (Ok(root), Ok(package), Ok(compiler), Ok(expected)) = (
+        fs::canonicalize(module_root),
+        fs::canonicalize(module_root.join("typescript")),
+        fs::canonicalize(compiler),
+        fs::canonicalize(module_root.join("typescript/bin/tsc")),
+    ) else {
+        return false;
+    };
+    package.starts_with(root) && compiler.starts_with(package) && compiler == expected
 }
 
 fn read_typescript_module(root: &Path) -> Result<(PathBuf, String), TypeScriptProjectHostError> {
@@ -4098,6 +4122,85 @@ mod tests {
         };
         assert!(project.compiler.ends_with("typescript/bin/tsc"));
         assert!(!project.compiler.ends_with("node_modules/.bin/tsc"));
+    }
+
+    #[test]
+    fn pnpm_invocation_binds_exact_package_member_and_refuses_link_retarget() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        let store = modules.join(".pnpm/typescript@5.9.3/node_modules");
+        fs::create_dir_all(&store).expect("create PNPM store");
+        let package = store.join("typescript");
+        fs::rename(modules.join("typescript"), &package).expect("move exact package into store");
+        symlink(&package, modules.join("typescript")).expect("link selected package");
+        let node = fixture.0.join("node");
+        fs::write(
+            &node,
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'v22.0.0\\n'; else printf 'Version 5.9.3\\n'; fi\n",
+        )
+        .expect("write bounded version probe fixture");
+        fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
+        let host =
+            TypeScriptProjectHost::new(None, Some(node.clone()), None, None, Fixture::limits());
+        let admitted = host.admit(&fixture.0).unwrap().unwrap();
+        let toolchain = admitted
+            .resolved_toolchain()
+            .expect("bind canonical PNPM member");
+        assert_eq!(toolchain.executable(), package.join("bin/tsc"));
+        assert_eq!(admitted.inputs().typescript_module_root, modules);
+        let hashed_before = crate::application::executable_content_hash_bytes_for_test();
+        toolchain
+            .validate_invocation()
+            .expect("unchanged package objects");
+        assert_eq!(
+            crate::application::executable_content_hash_bytes_for_test(),
+            hashed_before
+        );
+
+        let other_store = modules.join(".pnpm/another-typescript/node_modules");
+        install_at(&other_store, "5.9.3");
+        let other_compiler = other_store.join("typescript/bin/tsc");
+        assert!(matches!(
+            ResolvedToolchain::from_interpreted_script(
+                NativeTool::TypeScriptCompiler,
+                &node,
+                &other_compiler,
+                &modules,
+                b"Version 5.9.3",
+                b"v22.0.0",
+                [0; 32],
+                [0; 32],
+                [0; 32],
+            ),
+            Err(crate::driver::ToolchainResolutionError::CompilerModuleMismatch)
+        ));
+        fs::remove_file(modules.join("typescript")).unwrap();
+        symlink(other_store.join("typescript"), modules.join("typescript")).unwrap();
+        assert!(
+            toolchain.validate_invocation().is_err(),
+            "same-byte package retarget must refuse"
+        );
+        assert!(
+            matches!(
+                admitted.resolved_toolchain(),
+                Err(TypeScriptProjectHostError::ToolchainResolution {
+                    source: crate::driver::ToolchainResolutionError::CompilerModuleMismatch
+                })
+            ),
+            "an admitted script cannot drift into native executable launch"
+        );
+        assert!(admitted.validate_current().is_err());
+
+        let outside = fixture.0.join("outside/node_modules");
+        install_at(&outside, "5.9.3");
+        fs::remove_file(modules.join("typescript")).unwrap();
+        symlink(outside.join("typescript"), modules.join("typescript")).unwrap();
+        assert!(!is_module_tsc_script(
+            &outside.join("typescript/bin/tsc"),
+            &modules
+        ));
     }
 
     #[test]

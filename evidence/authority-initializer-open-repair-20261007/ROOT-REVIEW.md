@@ -1,0 +1,13 @@
+# Root startup integration review — 2026-10-07
+
+The lead read all six changed production files and their relevant callers, checked that each changed Git blob equals the tested source-equivalent tree, and independently validated four native completion/launch/stdout receipts plus hashes for 97 raw artifacts. Source-only commits are integrated on current canonical base0e1f9bc9; no unrelated pending worker edits are imported.
+
+The runtime suite passed42 with1 existing ignored live-owner fixture. Its7 focused startup cases and1 isolated initializer are members of that same suite, not additional unique passes. The separate platform suite passed76 on unchanged platform source and lockfile. This is118 distinct native tests across two source scopes on remote macOS, not a complete composed desktop or public CLI/MCP acceptance claim. Actual Linux native and successor public tool gates remain open.
+
+The contention code preserves the original90-second cold-start budget only for a typed owner-lease loser; other failure exits retain at most the original deadline or five-second final endpoint grace. A bounded, private original cause travels through a pre-created file descriptor, with canonical complete framing and held-file identity checks. Neither diagnostics nor cleanup can recreate a missing path or modify a replacement object. Credential initialization uses one retained kernel file lease; private writable-file creation remains no-follow and refuses unsafe existing children unchanged.
+
+Historical failed native/launcher attempts remain in the raw evidence. The two historical test executables are retained in the complete archive outside Git rather than adding binary images to the source checkpoint. `root-source-receipt-audit.json` records that archive and each original artifact hash. The original Downloads/backend Nix edit is unchanged.
+
+A dependent native GUI harness currently recognizes ownership by old prose; the GUI worker owns a separate typed OwnerContended classification regression. It is not claimed fixed by this checkpoint. Broader Reports9/10 compiler discovery, compact publication, malformed Published status, query continuation and semantic diff failures remain active independent slices.
+
+The subsequent test-only precision commit requires the actual WouldBlock outcome for duplicate writers/readers. Root checked its exact tested source/tree and successful7-case focused receipt (5a8af61e; local source-equivalent d3227850), independently checked the copied artifacts, and integrated both assertions. The earlier full42/76 suite receipts remain labeled as their earlier trees.

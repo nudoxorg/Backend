@@ -1,6 +1,7 @@
 //! Closed, versioned compiler-host environment snapshots.
 
 use super::LocalHostVariable;
+use crate::application::LocalRuntimeGoAuthorityFailure;
 use backend_platform::{NativePath, NativePathError, NativePathWire};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -14,6 +15,7 @@ use std::path::{Path, PathBuf};
 pub const MAX_CLOSED_LOCAL_HOST_ENVIRONMENT_BYTES: usize = 30 * 1024;
 
 const SNAPSHOT_VERSION: u8 = 1;
+const SNAPSHOT_WITH_FAILURE_VERSION: u8 = 2;
 const SNAPSHOT_PREFIX_BYTES: usize = br#"{"version":1,"paths":["#.len();
 const SNAPSHOT_SUFFIX_BYTES: usize = 2; // `]}`
 const ENTRY_FIXED_BYTES: usize = br#"{"variable":"","path":}"#.len();
@@ -42,6 +44,11 @@ pub enum LocalCompilerHostSelectionIssue {
     MissingPyreflyChecker,
     /// No Go compiler was captured.
     MissingGoCompiler,
+    /// A selected Go toolchain or package root could not be admitted.
+    GoAuthorityUnavailable {
+        /// Exact bounded Go-only admission cause.
+        cause: LocalRuntimeGoAuthorityFailure,
+    },
     /// Legacy status for hosts without an explicitly selected Go module cache.
     MissingGoModuleCache,
 }
@@ -64,6 +71,9 @@ impl LocalCompilerHostSelectionIssue {
                 "Native Python source processing can run without an external Pyrefly checker; configure NUDOX_PYREFLY only to select one."
             }
             Self::MissingGoCompiler => "Install Go or configure NUDOX_GO, then restart locald.",
+            Self::GoAuthorityUnavailable { .. } => {
+                "Go was found but its package authority could not be admitted; check the Go toolchain and restart locald. Other language tools remain available."
+            }
             Self::MissingGoModuleCache => {
                 "Go source processing can use its private module cache; no cache environment variable is required."
             }
@@ -80,6 +90,7 @@ pub struct LocalCompilerHostSelection {
     source: LocalCompilerHostSelectionSource,
     fingerprint: [u8; 32],
     issues: Vec<LocalCompilerHostSelectionIssue>,
+    go_failure: Option<LocalRuntimeGoAuthorityFailure>,
 }
 
 impl LocalCompilerHostSelection {
@@ -92,40 +103,53 @@ impl LocalCompilerHostSelection {
     pub fn from_closed_snapshot(
         snapshot: ClosedLocalHostEnvironmentSnapshot,
     ) -> Result<Self, ClosedLocalHostEnvironmentSnapshotError> {
+        let go_failure = snapshot.go_authority_failure();
         Self::new(
             snapshot,
             LocalCompilerHostSelectionSource::IncomingClosedSnapshot,
+            go_failure,
         )
     }
 
     pub(super) fn captured_installed_tools(
         snapshot: ClosedLocalHostEnvironmentSnapshot,
+        go_failure: Option<LocalRuntimeGoAuthorityFailure>,
     ) -> Result<Self, ClosedLocalHostEnvironmentSnapshotError> {
         Self::new(
             snapshot,
             LocalCompilerHostSelectionSource::CapturedInstalledTools,
+            go_failure,
         )
     }
 
     fn new(
         snapshot: ClosedLocalHostEnvironmentSnapshot,
         source: LocalCompilerHostSelectionSource,
+        go_failure: Option<LocalRuntimeGoAuthorityFailure>,
     ) -> Result<Self, ClosedLocalHostEnvironmentSnapshotError> {
+        let go_failure = go_failure.or(snapshot.go_authority_failure());
+        let snapshot = snapshot.with_go_failure(go_failure)?;
         let encoded = snapshot.encode()?;
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"backend-local-compiler-host-selection-v1\0");
+        hasher.update(b"backend-local-compiler-host-selection-v2\0");
         hasher.update(&[match source {
             LocalCompilerHostSelectionSource::CapturedInstalledTools => 1,
             LocalCompilerHostSelectionSource::IncomingClosedSnapshot => 2,
         }]);
         hasher.update(encoded.as_bytes());
+        hasher.update(&[go_failure.map_or(0, go_failure_identity)]);
         let fingerprint = *hasher.finalize().as_bytes();
-        let issues = selection_issues(&snapshot);
+        let mut issues = selection_issues(&snapshot);
+        if let Some(cause) = go_failure {
+            issues.retain(|issue| *issue != LocalCompilerHostSelectionIssue::MissingGoCompiler);
+            issues.push(LocalCompilerHostSelectionIssue::GoAuthorityUnavailable { cause });
+        }
         Ok(Self {
             snapshot,
             source,
             fingerprint,
             issues,
+            go_failure,
         })
     }
 
@@ -159,6 +183,12 @@ impl LocalCompilerHostSelection {
         &self.issues
     }
 
+    /// Returns a Go-only admission failure for the owner to retain until a Go request arrives.
+    #[must_use]
+    pub const fn go_authority_failure(&self) -> Option<LocalRuntimeGoAuthorityFailure> {
+        self.go_failure
+    }
+
     /// Encodes a bounded receipt suitable for private locald state and a setup doctor.
     ///
     /// The nested snapshot keeps the receipt's native path encoding lossless. It is data, not a
@@ -175,17 +205,29 @@ impl LocalCompilerHostSelection {
             fingerprint: String,
             snapshot: String,
             issues: &'a [LocalCompilerHostSelectionIssue],
+            go_failure: Option<LocalRuntimeGoAuthorityFailure>,
         }
 
         let receipt = Receipt {
-            version: 1,
+            version: 2,
             source: self.source,
             fingerprint: self.fingerprint_hex(),
             snapshot: self.snapshot.encode()?,
             issues: &self.issues,
+            go_failure: self.go_failure,
         };
         serde_json::to_string(&receipt)
             .map_err(|_| ClosedLocalHostEnvironmentSnapshotError::InvalidEncoding)
+    }
+}
+
+const fn go_failure_identity(failure: LocalRuntimeGoAuthorityFailure) -> u8 {
+    match failure {
+        LocalRuntimeGoAuthorityFailure::ExecutableUnavailable => 1,
+        LocalRuntimeGoAuthorityFailure::GoRootUnavailable => 2,
+        LocalRuntimeGoAuthorityFailure::ModuleCacheUnavailable => 3,
+        LocalRuntimeGoAuthorityFailure::ToolchainIdentityUnavailable => 4,
+        LocalRuntimeGoAuthorityFailure::OracleUnavailable => 5,
     }
 }
 
@@ -194,7 +236,10 @@ fn selection_issues(
 ) -> Vec<LocalCompilerHostSelectionIssue> {
     let has = |variable| snapshot.path(variable).is_some();
     let mut issues = Vec::new();
-    if !has(LocalHostVariable::NudoxTypeScriptNode) {
+    if !has(LocalHostVariable::NudoxTypeScriptNode)
+        && !has(LocalHostVariable::NudoxTypeScriptDefaultNode)
+        && !has(LocalHostVariable::NudoxTypeScriptBundledNode)
+    {
         issues.push(LocalCompilerHostSelectionIssue::MissingTypeScriptNode);
     }
     if (has(LocalHostVariable::NudoxTypeScriptCompiler)
@@ -226,6 +271,7 @@ fn hex_fingerprint(fingerprint: &[u8; 32]) -> String {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClosedLocalHostEnvironmentSnapshot {
     paths: Vec<(LocalHostVariable, PathBuf)>,
+    go_failure: Option<LocalRuntimeGoAuthorityFailure>,
 }
 
 impl ClosedLocalHostEnvironmentSnapshot {
@@ -257,6 +303,15 @@ impl ClosedLocalHostEnvironmentSnapshot {
             if selected.iter().any(|(existing, _)| *existing == variable) {
                 return Err(ClosedLocalHostEnvironmentSnapshotError::DuplicateRole);
             }
+            if is_typescript_node_role(variable)
+                && selected
+                    .iter()
+                    .any(|(existing, _)| is_typescript_node_role(*existing))
+            {
+                return Err(
+                    ClosedLocalHostEnvironmentSnapshotError::ConflictingTypeScriptNodeRoles,
+                );
+            }
             if selected.len() >= LocalHostVariable::CLOSED_ENVIRONMENT_SNAPSHOT_ROLE_COUNT {
                 return Err(ClosedLocalHostEnvironmentSnapshotError::TooManyRoles);
             }
@@ -280,7 +335,30 @@ impl ClosedLocalHostEnvironmentSnapshot {
         }
 
         selected.sort_by_key(|(variable, _)| role_rank(*variable));
-        Ok(Self { paths: selected })
+        Ok(Self {
+            paths: selected,
+            go_failure: None,
+        })
+    }
+
+    /// Binds a Go-only refusal to the closed launch without rediscovering any paths.
+    /// Clean snapshots retain their original version-1 encoding; a refusal uses version 2.
+    ///
+    /// # Errors
+    /// Returns a bounded encoding error if the added typed failure exceeds the snapshot limit.
+    pub fn with_go_failure(
+        mut self,
+        failure: Option<LocalRuntimeGoAuthorityFailure>,
+    ) -> Result<Self, ClosedLocalHostEnvironmentSnapshotError> {
+        self.go_failure = failure;
+        self.encode()?;
+        Ok(self)
+    }
+
+    /// Returns the sealed Go admission failure, if this launch captured one.
+    #[must_use]
+    pub const fn go_authority_failure(&self) -> Option<LocalRuntimeGoAuthorityFailure> {
+        self.go_failure
     }
 
     /// Returns the selected path for a role; an absent path means that role is sealed absent.
@@ -300,7 +378,7 @@ impl ClosedLocalHostEnvironmentSnapshot {
             .map(|(variable, path)| (*variable, path.as_path()))
     }
 
-    /// Encodes the snapshot as canonical bounded version-1 JSON.
+    /// Encodes the snapshot as canonical bounded version-1 or version-2 JSON.
     ///
     /// # Errors
     ///
@@ -319,8 +397,13 @@ impl ClosedLocalHostEnvironmentSnapshot {
             });
         }
         let wire = SnapshotWire {
-            version: SNAPSHOT_VERSION,
+            version: if self.go_failure.is_some() {
+                SNAPSHOT_WITH_FAILURE_VERSION
+            } else {
+                SNAPSHOT_VERSION
+            },
             paths,
+            go_failure: self.go_failure,
         };
         let encoded = serde_json::to_string(&wire)
             .map_err(|_| ClosedLocalHostEnvironmentSnapshotError::InvalidEncoding)?;
@@ -330,7 +413,7 @@ impl ClosedLocalHostEnvironmentSnapshot {
         Ok(encoded)
     }
 
-    /// Parses a canonical bounded version-1 snapshot.
+    /// Parses a canonical bounded version-1 or version-2 snapshot.
     ///
     /// # Errors
     ///
@@ -341,7 +424,10 @@ impl ClosedLocalHostEnvironmentSnapshot {
         }
         let wire: SnapshotWire = serde_json::from_str(input)
             .map_err(|_| ClosedLocalHostEnvironmentSnapshotError::InvalidEncoding)?;
-        if wire.version != SNAPSHOT_VERSION {
+        if !matches!(
+            (wire.version, wire.go_failure),
+            (SNAPSHOT_VERSION, None) | (SNAPSHOT_WITH_FAILURE_VERSION, Some(_))
+        ) {
             return Err(ClosedLocalHostEnvironmentSnapshotError::UnsupportedVersion);
         }
         if wire.paths.len() > LocalHostVariable::CLOSED_ENVIRONMENT_SNAPSHOT_ROLE_COUNT {
@@ -369,7 +455,7 @@ impl ClosedLocalHostEnvironmentSnapshot {
             paths.push((variable, path));
         }
 
-        let snapshot = Self::from_paths(paths)?;
+        let snapshot = Self::from_paths(paths)?.with_go_failure(wire.go_failure)?;
         if snapshot.encode()?.as_bytes() != input.as_bytes() {
             return Err(ClosedLocalHostEnvironmentSnapshotError::NonCanonical);
         }
@@ -390,6 +476,8 @@ pub enum ClosedLocalHostEnvironmentSnapshotError {
     WorkspaceOwnedRole,
     /// A role occurs more than once.
     DuplicateRole,
+    /// More than one explicit, installed, or bundled Node authority is claimed.
+    ConflictingTypeScriptNodeRoles,
     /// The snapshot contains more roles than the vocabulary permits.
     TooManyRoles,
     /// A selected value is not an absolute path.
@@ -418,6 +506,9 @@ impl fmt::Display for ClosedLocalHostEnvironmentSnapshotError {
                 "compiler environment snapshot contains a workspace-owned role"
             }
             Self::DuplicateRole => "compiler environment snapshot repeats a role",
+            Self::ConflictingTypeScriptNodeRoles => {
+                "compiler environment snapshot contains conflicting TypeScript Node roles"
+            }
             Self::TooManyRoles => "compiler environment snapshot has too many roles",
             Self::RelativePath => "compiler environment snapshot contains a relative path",
             Self::InvalidPath => "compiler environment snapshot contains an invalid native path",
@@ -434,6 +525,8 @@ impl std::error::Error for ClosedLocalHostEnvironmentSnapshotError {}
 struct SnapshotWire {
     version: u8,
     paths: Vec<SnapshotPathWire>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    go_failure: Option<LocalRuntimeGoAuthorityFailure>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -445,6 +538,15 @@ struct SnapshotPathWire {
 
 fn is_snapshot_role(variable: LocalHostVariable) -> bool {
     LocalHostVariable::closed_environment_snapshot_roles().any(|role| role == variable)
+}
+
+fn is_typescript_node_role(variable: LocalHostVariable) -> bool {
+    matches!(
+        variable,
+        LocalHostVariable::NudoxTypeScriptNode
+            | LocalHostVariable::NudoxTypeScriptDefaultNode
+            | LocalHostVariable::NudoxTypeScriptBundledNode
+    )
 }
 
 fn role_rank(variable: LocalHostVariable) -> usize {
@@ -536,6 +638,73 @@ mod tests {
     use crate::application::LocalHostVariable;
     use backend_platform::{NativePath, NativePathWire};
     use std::path::PathBuf;
+
+    #[test]
+    fn typed_go_failure_survives_closed_transport_without_changing_clean_v1_bytes() {
+        use crate::application::{
+            LocalCompilerHostSelection, LocalRuntimeGoAuthorityFailure as Failure,
+        };
+        let clean = ClosedLocalHostEnvironmentSnapshot::from_paths([]).expect("clean snapshot");
+        let clean_wire = clean.encode().unwrap();
+        assert_eq!(clean_wire, "{\"version\":1,\"paths\":[]}");
+        let mut fingerprints = Vec::new();
+        for cause in [
+            Failure::ExecutableUnavailable,
+            Failure::GoRootUnavailable,
+            Failure::ModuleCacheUnavailable,
+            Failure::ToolchainIdentityUnavailable,
+            Failure::OracleUnavailable,
+        ] {
+            let captured =
+                LocalCompilerHostSelection::captured_installed_tools(clean.clone(), Some(cause))
+                    .unwrap();
+            let wire = captured.snapshot().encode().unwrap();
+            let json: serde_json::Value = serde_json::from_str(&wire).unwrap();
+            assert_eq!(json["version"], 2);
+            let decoded = ClosedLocalHostEnvironmentSnapshot::parse(&wire).unwrap();
+            assert_eq!(decoded.go_authority_failure(), Some(cause));
+            assert_eq!(decoded.encode().unwrap(), wire);
+            let incoming = LocalCompilerHostSelection::from_closed_snapshot(decoded).unwrap();
+            assert_eq!(incoming.go_authority_failure(), Some(cause));
+            assert!(incoming.issues().contains(
+                &super::LocalCompilerHostSelectionIssue::GoAuthorityUnavailable { cause }
+            ));
+            let receipt: serde_json::Value =
+                serde_json::from_str(&incoming.encode_receipt().unwrap()).unwrap();
+            let retained: Failure = serde_json::from_value(receipt["go_failure"].clone()).unwrap();
+            assert_eq!(retained, cause);
+            assert!(!fingerprints.contains(&incoming.fingerprint()));
+            fingerprints.push(incoming.fingerprint());
+            assert_eq!(
+                incoming
+                    .snapshot()
+                    .clone()
+                    .with_go_failure(None)
+                    .unwrap()
+                    .encode()
+                    .unwrap(),
+                clean_wire
+            );
+            // Old version-1 readers refuse a version-2 launch rather than drop the failure.
+            assert_ne!(json["version"], super::SNAPSHOT_VERSION);
+        }
+        assert_eq!(
+            ClosedLocalHostEnvironmentSnapshot::parse("{\"version\":2,\"paths\":[]}"),
+            Err(ClosedLocalHostEnvironmentSnapshotError::UnsupportedVersion)
+        );
+        assert!(
+            ClosedLocalHostEnvironmentSnapshot::parse(
+                "{\"version\":2,\"paths\":[],\"go_failure\":\"UnknownCause\"}"
+            )
+            .is_err()
+        );
+        assert!(
+            ClosedLocalHostEnvironmentSnapshot::parse(
+                "{\"version\":1,\"paths\":[],\"go_failure\":\"GoRootUnavailable\"}"
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn snapshot_roles_and_environment_names_form_one_closed_vocabulary() {
@@ -660,6 +829,7 @@ mod tests {
             .expect("temp path wire");
         let workspace_role = SnapshotWire {
             version: 1,
+            go_failure: None,
             paths: vec![SnapshotPathWire {
                 variable: LocalHostVariable::NudoxDataRoot
                     .environment_name()
@@ -674,6 +844,7 @@ mod tests {
         );
         let out_of_order = SnapshotWire {
             version: 1,
+            go_failure: None,
             paths: vec![
                 SnapshotPathWire {
                     variable: LocalHostVariable::NudoxCargo.environment_name().to_owned(),
@@ -700,6 +871,7 @@ mod tests {
     fn snapshot_rejects_duplicate_roles_and_wrong_platform_path_units_from_wire() {
         let duplicate = SnapshotWire {
             version: 1,
+            go_failure: None,
             paths: vec![
                 SnapshotPathWire {
                     variable: LocalHostVariable::Home.environment_name().to_owned(),
@@ -724,6 +896,7 @@ mod tests {
         };
         let wrong_platform = SnapshotWire {
             version: 1,
+            go_failure: None,
             paths: vec![SnapshotPathWire {
                 variable: LocalHostVariable::Home.environment_name().to_owned(),
                 path: wrong_platform,
@@ -742,6 +915,7 @@ mod tests {
         };
         let nul_path = SnapshotWire {
             version: 1,
+            go_failure: None,
             paths: vec![SnapshotPathWire {
                 variable: LocalHostVariable::Home.environment_name().to_owned(),
                 path: nul_path,
@@ -766,8 +940,12 @@ mod tests {
             variable: "UNKNOWN_EXTRA_ROLE".to_owned(),
             path: native_path_wire(),
         });
-        let encoded = serde_json::to_string(&SnapshotWire { version: 1, paths })
-            .expect("too many roles JSON");
+        let encoded = serde_json::to_string(&SnapshotWire {
+            version: 1,
+            paths,
+            go_failure: None,
+        })
+        .expect("too many roles JSON");
         assert_eq!(
             ClosedLocalHostEnvironmentSnapshot::parse(&encoded),
             Err(ClosedLocalHostEnvironmentSnapshotError::TooManyRoles)

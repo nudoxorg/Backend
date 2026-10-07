@@ -2534,6 +2534,66 @@ fn hash_toolchain_identity(executable: &Path, goroot: &Path) -> std::io::Result<
         Ok(bytes)
     }
 
+    fn debian_shared_go_root(goroot: &Path) -> Option<(PathBuf, String)> {
+        let root_name = goroot.file_name()?.to_str()?;
+        let version = root_name.strip_prefix("go-")?;
+        if version.split('.').count() < 2
+            || version.split('.').any(|component| {
+                component.is_empty() || !component.bytes().all(|byte| byte.is_ascii_digit())
+            })
+        {
+            return None;
+        }
+        let lib = goroot.parent()?;
+        if lib.file_name()? != "lib" {
+            return None;
+        }
+        let prefix = lib.parent()?;
+        Some((prefix.join("share").join(root_name), root_name.to_owned()))
+    }
+
+    fn approved_debian_shared_link(logical: &Path, root_name: &str) -> Option<(PathBuf, PathBuf)> {
+        let relative = logical.strip_prefix("GOROOT").ok()?;
+        let approved = ["api", "lib", "misc", "src", "test", "pkg/include"]
+            .iter()
+            .any(|path| relative == Path::new(path));
+        if !approved {
+            return None;
+        }
+        let parent_depth = relative
+            .parent()
+            .map_or(0, |parent| parent.components().count());
+        let target = format!(
+            "{}share/{root_name}/{}",
+            "../".repeat(parent_depth + 2),
+            relative.to_str()?
+        );
+        Some((PathBuf::from(target), relative.to_path_buf()))
+    }
+
+    fn validate_shared_directory(
+        root: &DirectoryCapability,
+        relative: &Path,
+    ) -> std::io::Result<()> {
+        let mut directory = root.clone();
+        for component in relative.components() {
+            let std::path::Component::Normal(name) = component else {
+                return Err(std::io::Error::new(
+                    ErrorKind::InvalidData,
+                    "Debian Go shared-root link has an invalid destination",
+                ));
+            };
+            let name = name.to_str().ok_or_else(|| {
+                std::io::Error::new(
+                    ErrorKind::InvalidData,
+                    "Debian Go shared-root link has a non-UTF-8 destination",
+                )
+            })?;
+            directory = directory.open_dir(name)?;
+        }
+        Ok(())
+    }
+
     fn add_open_file(
         file: &mut std::fs::File,
         logical: &Path,
@@ -2571,6 +2631,11 @@ fn hash_toolchain_identity(executable: &Path, goroot: &Path) -> std::io::Result<
         directory: &DirectoryCapability,
         logical: &Path,
         depth: usize,
+        shared_root_path: Option<&Path>,
+        shared_root_name: Option<&str>,
+        shared_root: &mut Option<DirectoryCapability>,
+        shared_root_hashed: &mut bool,
+        allow_debian_shared_links: bool,
         budget: &mut WalkBudget,
         digest: &mut Sha256,
     ) -> std::io::Result<()> {
@@ -2607,7 +2672,18 @@ fn hash_toolchain_identity(executable: &Path, goroot: &Path) -> std::io::Result<
             match entry.kind {
                 EntryKind::Directory => {
                     let child = directory.open_dir(name)?;
-                    walk(&child, &child_logical, depth + 1, budget, digest)?;
+                    walk(
+                        &child,
+                        &child_logical,
+                        depth + 1,
+                        shared_root_path,
+                        shared_root_name,
+                        shared_root,
+                        shared_root_hashed,
+                        allow_debian_shared_links,
+                        budget,
+                        digest,
+                    )?;
                 }
                 EntryKind::File => {
                     let mut file = directory.open_file_read(name)?;
@@ -2621,10 +2697,78 @@ fn hash_toolchain_identity(executable: &Path, goroot: &Path) -> std::io::Result<
                     )?;
                 }
                 EntryKind::Link => {
-                    return Err(std::io::Error::new(
-                        ErrorKind::InvalidData,
-                        format!("Go toolchain contains a symbolic link at {child_logical:?}"),
-                    ));
+                    let Some(root_path) = shared_root_path.filter(|_| allow_debian_shared_links)
+                    else {
+                        return Err(std::io::Error::new(
+                            ErrorKind::InvalidData,
+                            format!("Go toolchain contains a symbolic link at {child_logical:?}"),
+                        ));
+                    };
+                    let Some(root_name) = shared_root_name else {
+                        return Err(std::io::Error::new(
+                            ErrorKind::InvalidData,
+                            "Debian Go shared-root identity is incomplete",
+                        ));
+                    };
+                    let Some((expected_target, relative_target)) =
+                        approved_debian_shared_link(&child_logical, root_name)
+                    else {
+                        return Err(std::io::Error::new(
+                            ErrorKind::InvalidData,
+                            format!(
+                                "Go toolchain contains an unapproved symbolic link at {child_logical:?}"
+                            ),
+                        ));
+                    };
+                    let observed_target =
+                        directory.read_link_target(name, MAX_GO_TOOLCHAIN_PATH_BYTES)?;
+                    if observed_target.as_os_str().as_encoded_bytes()
+                        != expected_target.as_os_str().as_encoded_bytes()
+                    {
+                        return Err(std::io::Error::new(
+                            ErrorKind::InvalidData,
+                            format!(
+                                "Go toolchain symbolic link has an unexpected target at {child_logical:?}"
+                            ),
+                        ));
+                    }
+                    if observed_target.as_os_str().as_encoded_bytes().len()
+                        > MAX_GO_TOOLCHAIN_PATH_BYTES
+                    {
+                        return Err(std::io::Error::new(
+                            ErrorKind::InvalidData,
+                            "Go toolchain symbolic link target exceeds the identity limit",
+                        ));
+                    }
+                    if shared_root.is_none() {
+                        *shared_root = Some(DirectoryCapability::open_read_only_source(root_path)?);
+                    }
+                    let paired_root = shared_root.as_ref().expect("paired root was opened");
+                    validate_shared_directory(paired_root, &relative_target)?;
+                    if !*shared_root_hashed {
+                        let shared_logical = Path::new("GOROOT-shared").join(root_name);
+                        let mut nested_shared_root = None;
+                        let mut nested_shared_root_hashed = false;
+                        walk(
+                            paired_root,
+                            &shared_logical,
+                            0,
+                            None,
+                            None,
+                            &mut nested_shared_root,
+                            &mut nested_shared_root_hashed,
+                            false,
+                            budget,
+                            digest,
+                        )?;
+                        *shared_root_hashed = true;
+                    }
+                    digest.update(b"debian-go-shared-link\0");
+                    digest.update((child_bytes.len() as u64).to_be_bytes());
+                    digest.update(child_bytes);
+                    let target_bytes = observed_target.as_os_str().as_encoded_bytes();
+                    digest.update((target_bytes.len() as u64).to_be_bytes());
+                    digest.update(target_bytes);
                 }
                 EntryKind::Special => {
                     return Err(std::io::Error::new(
@@ -2640,6 +2784,13 @@ fn hash_toolchain_identity(executable: &Path, goroot: &Path) -> std::io::Result<
     }
 
     let goroot_cap = DirectoryCapability::open_read_only_source(goroot)?;
+    let shared_layout = debian_shared_go_root(goroot);
+    let (shared_root_path, shared_root_name) =
+        shared_layout.as_ref().map_or((None, None), |(path, name)| {
+            (Some(path.as_path()), Some(name.as_str()))
+        });
+    let mut shared_root = None;
+    let mut shared_root_hashed = false;
     let executable_parent = executable.parent().ok_or_else(|| {
         std::io::Error::new(
             ErrorKind::InvalidInput,
@@ -2655,7 +2806,7 @@ fn hash_toolchain_identity(executable: &Path, goroot: &Path) -> std::io::Result<
     let executable_parent = DirectoryCapability::open_read_only_source(executable_parent)?;
     let mut executable_file = executable_parent.open_file_read(executable_name)?;
     let mut digest = Sha256::new();
-    digest.update(b"nudox.go-toolchain-identity.v2\0");
+    digest.update(b"nudox.go-toolchain-identity.v3\0");
     let mut budget = WalkBudget {
         entries: 0,
         bytes: 0,
@@ -2672,6 +2823,11 @@ fn hash_toolchain_identity(executable: &Path, goroot: &Path) -> std::io::Result<
         &goroot_cap,
         Path::new("GOROOT"),
         0,
+        shared_root_path,
+        shared_root_name,
+        &mut shared_root,
+        &mut shared_root_hashed,
+        true,
         &mut budget,
         &mut digest,
     )?;
@@ -3343,6 +3499,106 @@ mod read_tests {
             std::fs::create_dir(&deep)?;
         }
         assert!(hash_toolchain_identity(&deep_go, &deep_goroot).is_err());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn go_toolchain_identity_accepts_only_the_paired_debian_shared_root_layout()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        fn fixture(root: &Path) -> io::Result<(PathBuf, PathBuf, PathBuf)> {
+            let prefix = root.join("usr");
+            let goroot = prefix.join("lib/go-1.24");
+            let shared = prefix.join("share/go-1.24");
+            let executable = goroot.join("bin/go");
+            std::fs::create_dir_all(executable.parent().expect("Go bin directory"))?;
+            std::fs::create_dir_all(goroot.join("pkg"))?;
+            std::fs::create_dir_all(shared.join("pkg/include"))?;
+            for name in ["api", "lib", "misc", "src", "test"] {
+                std::fs::create_dir_all(shared.join(name))?;
+                std::fs::write(shared.join(name).join("marker"), name.as_bytes())?;
+                symlink(format!("../../share/go-1.24/{name}"), goroot.join(name))?;
+            }
+            std::fs::write(shared.join("pkg/include/marker"), b"include")?;
+            symlink(
+                "../../../share/go-1.24/pkg/include",
+                goroot.join("pkg/include"),
+            )?;
+            std::fs::write(goroot.join("VERSION"), b"go1.24.4\n")?;
+            std::fs::write(&executable, b"selected Go executable")?;
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))?;
+            Ok((executable, goroot, shared))
+        }
+
+        let root = tempfile::tempdir()?;
+        let (executable, goroot, shared) = fixture(root.path())?;
+        let initial = hash_toolchain_identity(&executable, &goroot)?;
+        assert_eq!(initial, hash_toolchain_identity(&executable, &goroot)?);
+        std::fs::write(shared.join("src/marker"), b"changed source")?;
+        assert_ne!(initial, hash_toolchain_identity(&executable, &goroot)?);
+
+        let unexpected_root = tempfile::tempdir()?;
+        let (executable, goroot, _) = fixture(unexpected_root.path())?;
+        symlink("../../share/go-1.24/src", goroot.join("unexpected"))?;
+        assert!(hash_toolchain_identity(&executable, &goroot).is_err());
+
+        let wrong_target_root = tempfile::tempdir()?;
+        let (executable, goroot, _) = fixture(wrong_target_root.path())?;
+        std::fs::remove_file(goroot.join("api"))?;
+        symlink("/etc/passwd", goroot.join("api"))?;
+        assert!(hash_toolchain_identity(&executable, &goroot).is_err());
+
+        let mismatched_target_root = tempfile::tempdir()?;
+        let (executable, goroot, _) = fixture(mismatched_target_root.path())?;
+        std::fs::remove_file(goroot.join("api"))?;
+        symlink("../../share/go-1.24/src", goroot.join("api"))?;
+        assert!(hash_toolchain_identity(&executable, &goroot).is_err());
+
+        let nested_link_root = tempfile::tempdir()?;
+        let (executable, goroot, shared) = fixture(nested_link_root.path())?;
+        symlink("cycle", shared.join("src/cycle"))?;
+        assert!(hash_toolchain_identity(&executable, &goroot).is_err());
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires a privately extracted official Debian Go package tree"]
+    fn debian_packaged_go_root_identity_is_admitted_and_revalidates_on_private_root()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture_root = std::env::var_os("NUDOX_GO_DEBIAN_FIXTURE_ROOT")
+            .expect("explicit Debian Go fixture root is required for this ignored test");
+        let fixture_root = PathBuf::from(fixture_root);
+        if !fixture_root.is_absolute() {
+            return Err(io::Error::other("Debian Go fixture root must be absolute").into());
+        }
+
+        let goroot = fixture_root.join("usr/lib/go-1.24");
+        let go = goroot.join("bin/go");
+        let module_cache = tempfile::tempdir()?;
+        let cache_root = tempfile::tempdir()?;
+        let environment = GoOracleChildEnvironment::new(
+            go.clone(),
+            goroot,
+            module_cache.path().to_path_buf(),
+            cache_root.path().join("go-build"),
+        )?;
+        let identity = environment.toolchain_identity();
+        assert_ne!(
+            identity, [0; 32],
+            "the package must have a captured identity"
+        );
+
+        let configured = GoOracle::default()
+            .with_configuration(GoOracleConfiguration::go_toolchain(go)?)
+            .with_child_environment(environment)?;
+        configured
+            .child_environment
+            .as_ref()
+            .expect("the exact admitted environment remains attached")
+            .revalidate_toolchain()?;
         Ok(())
     }
 

@@ -647,6 +647,8 @@ fn paired_publication_recovers_after_torn_followup_generation() {
 #[test]
 fn reverse_stripe_order_processes_publish_without_deadlock() {
     let root = fresh_root("paired-reverse-process-order");
+    let _root_directory =
+        OwnedWorkspaceDirectory::open(&root).expect("create private lease root for children");
     let markers = root.join("markers");
     fs::create_dir_all(&markers).expect("markers");
     let mut low_first = spawn_child("pair-race-low-first", &root, &markers);
@@ -692,6 +694,8 @@ fn short_stripe_contention_waits_briefly_for_release() {
 #[test]
 fn independent_processes_have_one_lease_winner() {
     let root = fresh_root("process-race");
+    let _root_directory =
+        OwnedWorkspaceDirectory::open(&root).expect("create private lease root for children");
     let markers = root.join("markers");
     fs::create_dir_all(&markers).expect("markers");
     let mut first = spawn_child("race", &root, &markers);
@@ -714,6 +718,8 @@ fn independent_processes_have_one_lease_winner() {
 #[test]
 fn crashed_process_can_be_reopened_after_lease_expiry() {
     let root = fresh_root("process-crash");
+    let _root_directory =
+        OwnedWorkspaceDirectory::open(&root).expect("create private lease root for children");
     let markers = root.join("markers");
     fs::create_dir_all(&markers).expect("markers");
     let mut child = spawn_child("crash", &root, &markers);
