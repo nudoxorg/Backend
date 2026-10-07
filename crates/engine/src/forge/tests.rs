@@ -514,6 +514,8 @@ fn concurrent_forge_processes_serialize_the_shared_journal() {
         std::process::id(),
         now_millis()
     ));
+    let _root_directory = backend_platform::OwnedWorkspaceDirectory::open(&root)
+        .expect("create private forge root for workers");
     let executable = std::env::current_exe().expect("test executable");
     let spawn_worker = |worker: &str| {
         Command::new(&executable)
