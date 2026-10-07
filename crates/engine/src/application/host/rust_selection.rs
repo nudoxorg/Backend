@@ -27,12 +27,16 @@ mod tests {
         bin: PathBuf,
         cargo: Option<PathBuf>,
         cargo_home: Option<OsString>,
+        typescript: Option<PathBuf>,
     }
     impl LocalHostEnvironment for RustEnvironment {
         fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
             match variable {
                 LocalHostVariable::Home => Some(self.home.clone().into_os_string()),
                 LocalHostVariable::NudoxCargo => self.cargo.clone().map(PathBuf::into_os_string),
+                LocalHostVariable::NudoxTypeScriptCompiler => {
+                    self.typescript.clone().map(PathBuf::into_os_string)
+                }
                 _ => None,
             }
         }
@@ -68,6 +72,7 @@ mod tests {
                     bin: bin.clone(),
                     cargo,
                     cargo_home,
+                    typescript: None,
                 },
                 super::super::LocalHostDiscovery::InstalledTools,
             )
@@ -95,6 +100,27 @@ mod tests {
             })
         ));
         assert!(!home.join(".cargo").exists());
+        let bad_typescript = LocalCompilerHost::new(
+            RustEnvironment {
+                home: home.clone(),
+                bin: bin.clone(),
+                cargo: None,
+                cargo_home: None,
+                typescript: Some(root.join("configured/missing-tsc")),
+            },
+            super::super::LocalHostDiscovery::InstalledTools,
+        );
+        assert!(matches!(
+            bad_typescript.capture_installed_selection(),
+            Err(LocalCompilerHostError::ConfiguredPath {
+                variable: LocalHostVariable::NudoxTypeScriptCompiler,
+                ..
+            })
+        ));
+        assert!(
+            !home.join(".cargo").exists(),
+            "unrelated invalid explicit SDK cannot realize Rust state"
+        );
         let mut paths = Vec::new();
         make(None, None)
             .capture_installed_rust_paths(&mut paths, Some(&home))
