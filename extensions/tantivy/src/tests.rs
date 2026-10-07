@@ -3526,7 +3526,8 @@ fn preparation_cancellation_cold_does_not_publish_and_can_retry() {
     let (binding, coverage) = binding(&documents);
     let state = DocumentState::new(binding, coverage, documents, Limits::default()).expect("state");
     let root = std::env::temp_dir().join(format!("backend-tantivy-cancel-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos()));
-    std::fs::create_dir(&root).expect("private durable root");
+    let _private_root = backend_platform::OwnedWorkspaceDirectory::open(&root)
+        .expect("admitted private durable root");
     let cancelled = std::sync::Arc::new(AtomicBool::new(true));
     let result = TantivySource::open_or_build_cancelable(
         &state,
@@ -3546,7 +3547,7 @@ fn preparation_cancellation_cold_does_not_publish_and_can_retry() {
     cancelled.store(false, Ordering::Release);
     engine::test_support::cancel_before_next_commit(std::sync::Arc::clone(&cancelled));
     let cancelled_stage = TantivySource::open_or_build_cancelable(&state, Limits::default(), &root, DurableCacheBudget::default(), &cancelled);
-    assert!(matches!(cancelled_stage, Err(TantivySourceError::Io(ref error)) if error.kind() == std::io::ErrorKind::Interrupted));
+    assert!(matches!(cancelled_stage, Err(TantivySourceError::Io(ref error)) if error.kind() == std::io::ErrorKind::Interrupted), "cancelled stage result: {}", match &cancelled_stage { Err(error) => error.to_string(), Ok(_) => "unexpected successful preparation".to_owned() });
     let generations = std::fs::read_dir(root.join(DURABLE_ROOTS_DIRECTORY)).expect("namespace").filter_map(Result::ok).filter(|entry| entry.file_type().expect("generation type").is_dir()).count();
     assert_eq!(generations, 0, "cancelled native precommit retires stage without publishing");
     cancelled.store(false, Ordering::Release);
