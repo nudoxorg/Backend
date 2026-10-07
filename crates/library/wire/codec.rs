@@ -296,6 +296,41 @@ mod tests {
     }
 
     #[test]
+    fn joined_local_declaration_reply_roundtrips_only_under_current_protocol() {
+        let record = crate::LocalDeclarationSearchRecord {
+            coordinate: crate::ProductText::new("/project::src/react.tsx:17::react")
+                .expect("declaration coordinate"),
+            name: crate::ProductText::new("react").expect("declaration name"),
+            source: crate::LocalDeclarationSource::Captured {
+                path: crate::ProductText::new("src/react.tsx").expect("captured path"),
+                line: std::num::NonZeroU32::new(17).expect("captured line"),
+            },
+        };
+        for surface in [
+            crate::SurfaceReply::ExploredDeclarations(Box::new([record.clone()])),
+            crate::SurfaceReply::IndexSearchWithDiscovery(Box::new([
+                crate::RegistrySearchHit::LocalDeclaration(record),
+            ])),
+        ] {
+            surface
+                .admit(surface.id())
+                .expect("bounded current surface");
+            let expected = ReplyDto::new(41, crate::CommandReply::Surface(surface));
+            let bytes = serde_json::to_vec(&expected).expect("actual encoded reply");
+            assert_eq!(
+                decode_reply_body(&bytes).expect("current closed reply"),
+                expected
+            );
+            let mut old: serde_json::Value =
+                serde_json::from_slice(&bytes).expect("reply envelope");
+            old["version"] = serde_json::json!(23);
+            let error = decode_reply_body(&serde_json::to_vec(&old).expect("old envelope"))
+                .expect_err("old producer cohort");
+            assert!(error.contains("reply DTO version 23"));
+        }
+    }
+
+    #[test]
     fn old_live_view_subscription_and_page_headers_refuse_before_nested_fields() {
         let reply = certified_health_reply();
         let cursor = reply.health_cursor().expect("certified health cursor");
