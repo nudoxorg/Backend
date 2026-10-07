@@ -1,0 +1,3130 @@
+[
+  {
+    "app": "mini",
+    "phase": "cold1",
+    "owner_pid": 74500,
+    "admission_age_seconds": 6.339472,
+    "kernel_wait": 0,
+    "retirement": "actual idle exit without operator signal",
+    "observer_failure": null,
+    "current_complete_generations": [
+      {
+        "generation": [
+          6,
+          18,
+          106,
+          142,
+          138,
+          142,
+          187,
+          114,
+          94,
+          233,
+          252,
+          243,
+          196,
+          88,
+          118,
+          199,
+          171,
+          241,
+          242,
+          77,
+          246,
+          186,
+          95,
+          245,
+          231,
+          83,
+          94,
+          175,
+          78,
+          129,
+          221,
+          235
+        ],
+        "artifacts": 2,
+        "frontier": 4,
+        "freshness": "current"
+      }
+    ],
+    "cli": [
+      {
+        "label": "startup-health",
+        "exit": 0,
+        "elapsed_seconds": 0.5332128750000003
+      },
+      {
+        "label": "semantic-before-any-index",
+        "exit": 0,
+        "elapsed_seconds": 0.2500869589999999
+      },
+      {
+        "label": "third-index",
+        "exit": 0,
+        "elapsed_seconds": 3.3584277919999996
+      },
+      {
+        "label": "semantic-current",
+        "exit": 0,
+        "elapsed_seconds": 0.2782082500000005
+      },
+      {
+        "label": "packages",
+        "exit": 0,
+        "elapsed_seconds": 0.28421362500000136
+      },
+      {
+        "label": "search",
+        "exit": 0,
+        "elapsed_seconds": 0.6611601250000003
+      },
+      {
+        "label": "cli-membership",
+        "exit": 0,
+        "elapsed_seconds": 0.2538642919999994
+      },
+      {
+        "label": "cli-show",
+        "exit": 0,
+        "elapsed_seconds": 0.31933691699999933
+      },
+      {
+        "label": "cli-source",
+        "exit": 0,
+        "elapsed_seconds": 0.2878872080000008
+      },
+      {
+        "label": "cli-references",
+        "exit": 0,
+        "elapsed_seconds": 0.24616533299999865
+      },
+      {
+        "label": "cli-graph",
+        "exit": 0,
+        "elapsed_seconds": 0.24151133400000013
+      },
+      {
+        "label": "cli-resolve",
+        "exit": 0,
+        "elapsed_seconds": 0.27366745800000025
+      },
+      {
+        "label": "final-health",
+        "exit": 0,
+        "elapsed_seconds": 0.525304792
+      }
+    ],
+    "mcp": [
+      {
+        "receipt": "mcp-status.json",
+        "isError": false,
+        "answer": "status",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.graph.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 3,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.source.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp.tools.json",
+        "isError": null,
+        "answer": null,
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-search.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 5,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.references.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 2,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-membership.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 5,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.document.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-versions.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 1,
+        "fault_detail": null
+      }
+    ]
+  },
+  {
+    "app": "mini",
+    "phase": "cold2",
+    "owner_pid": 79548,
+    "admission_age_seconds": 6.054698,
+    "kernel_wait": 0,
+    "retirement": "actual idle exit without operator signal",
+    "observer_failure": null,
+    "current_complete_generations": [
+      {
+        "generation": [
+          6,
+          18,
+          106,
+          142,
+          138,
+          142,
+          187,
+          114,
+          94,
+          233,
+          252,
+          243,
+          196,
+          88,
+          118,
+          199,
+          171,
+          241,
+          242,
+          77,
+          246,
+          186,
+          95,
+          245,
+          231,
+          83,
+          94,
+          175,
+          78,
+          129,
+          221,
+          235
+        ],
+        "artifacts": 2,
+        "frontier": 4,
+        "freshness": "current"
+      }
+    ],
+    "cli": [
+      {
+        "label": "startup-health",
+        "exit": 0,
+        "elapsed_seconds": 0.5029470829999996
+      },
+      {
+        "label": "semantic-before-any-index",
+        "exit": 0,
+        "elapsed_seconds": 0.23433704199999994
+      },
+      {
+        "label": "semantic-current",
+        "exit": 0,
+        "elapsed_seconds": 0.24103208299999945
+      },
+      {
+        "label": "packages",
+        "exit": 0,
+        "elapsed_seconds": 0.2447289589999997
+      },
+      {
+        "label": "search",
+        "exit": 0,
+        "elapsed_seconds": 0.3208531249999993
+      },
+      {
+        "label": "cli-membership",
+        "exit": 0,
+        "elapsed_seconds": 0.2434561249999998
+      },
+      {
+        "label": "cli-show",
+        "exit": 0,
+        "elapsed_seconds": 0.30135420800000023
+      },
+      {
+        "label": "cli-source",
+        "exit": 0,
+        "elapsed_seconds": 0.2595361659999993
+      },
+      {
+        "label": "cli-references",
+        "exit": 0,
+        "elapsed_seconds": 0.2473457080000001
+      },
+      {
+        "label": "cli-graph",
+        "exit": 0,
+        "elapsed_seconds": 0.27341558300000024
+      },
+      {
+        "label": "cli-resolve",
+        "exit": 0,
+        "elapsed_seconds": 0.25011304100000054
+      },
+      {
+        "label": "final-health",
+        "exit": 0,
+        "elapsed_seconds": 0.5057289580000006
+      }
+    ],
+    "mcp": [
+      {
+        "receipt": "mcp-status.json",
+        "isError": false,
+        "answer": "status",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.graph.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 3,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.source.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp.tools.json",
+        "isError": null,
+        "answer": null,
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-search.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 5,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.references.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 2,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-membership.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 5,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.document.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-versions.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 1,
+        "fault_detail": null
+      }
+    ]
+  },
+  {
+    "app": "mini",
+    "phase": "resume",
+    "owner_pid": 73512,
+    "admission_age_seconds": 14.158207,
+    "kernel_wait": -15,
+    "retirement": "owned failure cleanup, not idle proof",
+    "observer_failure": {
+      "exception": "AssertionError('exact admitted membership differs from code and original controls')",
+      "owner_live": true
+    },
+    "current_complete_generations": [],
+    "cli": [
+      {
+        "label": "startup-health",
+        "exit": 0,
+        "elapsed_seconds": 0.5540538330000002
+      },
+      {
+        "label": "semantic-before-any-index",
+        "exit": 0,
+        "elapsed_seconds": 0.25063279099999924
+      },
+      {
+        "label": "semantic-current",
+        "exit": 0,
+        "elapsed_seconds": 0.2307863750000001
+      },
+      {
+        "label": "packages",
+        "exit": 0,
+        "elapsed_seconds": 0.2505518750000002
+      },
+      {
+        "label": "search",
+        "exit": 0,
+        "elapsed_seconds": 0.30210541699999993
+      },
+      {
+        "label": "cli-membership",
+        "exit": 0,
+        "elapsed_seconds": 0.24939133300000016
+      }
+    ],
+    "mcp": [
+      {
+        "receipt": "mcp-status.json",
+        "isError": false,
+        "answer": "status",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp.tools.json",
+        "isError": null,
+        "answer": null,
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-search.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 5,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-membership.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 5,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-versions.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 1,
+        "fault_detail": null
+      }
+    ]
+  },
+  {
+    "app": "mini",
+    "phase": "warm",
+    "owner_pid": 44516,
+    "admission_age_seconds": 5.486932,
+    "kernel_wait": -15,
+    "retirement": "owned failure cleanup, not idle proof",
+    "observer_failure": {
+      "exception": "AssertionError()",
+      "owner_live": true
+    },
+    "current_complete_generations": [
+      {
+        "generation": [
+          6,
+          18,
+          106,
+          142,
+          138,
+          142,
+          187,
+          114,
+          94,
+          233,
+          252,
+          243,
+          196,
+          88,
+          118,
+          199,
+          171,
+          241,
+          242,
+          77,
+          246,
+          186,
+          95,
+          245,
+          231,
+          83,
+          94,
+          175,
+          78,
+          129,
+          221,
+          235
+        ],
+        "artifacts": 2,
+        "frontier": 4,
+        "freshness": "current"
+      }
+    ],
+    "cli": [
+      {
+        "label": "startup-health",
+        "exit": 0,
+        "elapsed_seconds": 3.150824292000001
+      },
+      {
+        "label": "first-index",
+        "exit": 0,
+        "elapsed_seconds": 3.912187333000002
+      },
+      {
+        "label": "second-index",
+        "exit": 0,
+        "elapsed_seconds": 3.528660417000001
+      },
+      {
+        "label": "semantic-current",
+        "exit": 0,
+        "elapsed_seconds": 0.28658316699999986
+      },
+      {
+        "label": "packages",
+        "exit": 0,
+        "elapsed_seconds": 0.2700932499999986
+      },
+      {
+        "label": "search",
+        "exit": 0,
+        "elapsed_seconds": 0.5830260000000003
+      }
+    ],
+    "mcp": [
+      {
+        "receipt": "mcp-status.json",
+        "isError": false,
+        "answer": "status",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp.tools.json",
+        "isError": null,
+        "answer": null,
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-search.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 5,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-versions.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 1,
+        "fault_detail": null
+      }
+    ]
+  },
+  {
+    "app": "mini-clean",
+    "phase": "cold1",
+    "owner_pid": 97871,
+    "admission_age_seconds": 7.407317,
+    "kernel_wait": 0,
+    "retirement": "actual idle exit without operator signal",
+    "observer_failure": null,
+    "current_complete_generations": [
+      {
+        "generation": [
+          6,
+          18,
+          189,
+          220,
+          116,
+          167,
+          120,
+          249,
+          177,
+          110,
+          105,
+          0,
+          84,
+          74,
+          38,
+          121,
+          191,
+          94,
+          251,
+          220,
+          51,
+          70,
+          84,
+          33,
+          228,
+          177,
+          159,
+          72,
+          146,
+          146,
+          100,
+          230
+        ],
+        "artifacts": 2,
+        "frontier": 2,
+        "freshness": "current"
+      }
+    ],
+    "cli": [
+      {
+        "label": "startup-health",
+        "exit": 0,
+        "elapsed_seconds": 0.5383048749999997
+      },
+      {
+        "label": "semantic-before-any-index",
+        "exit": 0,
+        "elapsed_seconds": 0.27092450000000046
+      },
+      {
+        "label": "third-index",
+        "exit": 0,
+        "elapsed_seconds": 2.8568574170000005
+      },
+      {
+        "label": "semantic-current",
+        "exit": 0,
+        "elapsed_seconds": 0.26896266700000027
+      },
+      {
+        "label": "packages",
+        "exit": 0,
+        "elapsed_seconds": 0.24574145900000044
+      },
+      {
+        "label": "search",
+        "exit": 0,
+        "elapsed_seconds": 0.5501261660000001
+      },
+      {
+        "label": "cli-membership",
+        "exit": 0,
+        "elapsed_seconds": 0.2474984169999992
+      },
+      {
+        "label": "cli-show",
+        "exit": 0,
+        "elapsed_seconds": 0.30419254099999904
+      },
+      {
+        "label": "cli-source",
+        "exit": 0,
+        "elapsed_seconds": 0.23163862500000043
+      },
+      {
+        "label": "cli-references",
+        "exit": 0,
+        "elapsed_seconds": 0.22833862499999924
+      },
+      {
+        "label": "cli-graph",
+        "exit": 0,
+        "elapsed_seconds": 0.25046516699999977
+      },
+      {
+        "label": "cli-resolve",
+        "exit": 0,
+        "elapsed_seconds": 0.2402112919999997
+      },
+      {
+        "label": "final-health",
+        "exit": 0,
+        "elapsed_seconds": 0.4684826659999999
+      }
+    ],
+    "mcp": [
+      {
+        "receipt": "mcp-status.json",
+        "isError": false,
+        "answer": "status",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "old-ticket-after-restart.json",
+        "isError": false,
+        "answer": "surface",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.graph.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 3,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.source.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp.tools.json",
+        "isError": null,
+        "answer": null,
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-search.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 5,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.references.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 2,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-membership.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 3,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.document.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-versions.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 1,
+        "fault_detail": null
+      }
+    ]
+  },
+  {
+    "app": "mini-clean",
+    "phase": "cold2",
+    "owner_pid": 99175,
+    "admission_age_seconds": 6.23121,
+    "kernel_wait": 0,
+    "retirement": "actual idle exit without operator signal",
+    "observer_failure": null,
+    "current_complete_generations": [
+      {
+        "generation": [
+          6,
+          18,
+          189,
+          220,
+          116,
+          167,
+          120,
+          249,
+          177,
+          110,
+          105,
+          0,
+          84,
+          74,
+          38,
+          121,
+          191,
+          94,
+          251,
+          220,
+          51,
+          70,
+          84,
+          33,
+          228,
+          177,
+          159,
+          72,
+          146,
+          146,
+          100,
+          230
+        ],
+        "artifacts": 2,
+        "frontier": 2,
+        "freshness": "current"
+      }
+    ],
+    "cli": [
+      {
+        "label": "startup-health",
+        "exit": 0,
+        "elapsed_seconds": 0.4906659160000002
+      },
+      {
+        "label": "semantic-before-any-index",
+        "exit": 0,
+        "elapsed_seconds": 0.23810754099999976
+      },
+      {
+        "label": "semantic-current",
+        "exit": 0,
+        "elapsed_seconds": 0.24069979200000002
+      },
+      {
+        "label": "packages",
+        "exit": 0,
+        "elapsed_seconds": 0.25813616699999997
+      },
+      {
+        "label": "search",
+        "exit": 0,
+        "elapsed_seconds": 0.3304986249999997
+      },
+      {
+        "label": "cli-membership",
+        "exit": 0,
+        "elapsed_seconds": 0.24595541599999926
+      },
+      {
+        "label": "cli-show",
+        "exit": 0,
+        "elapsed_seconds": 0.29232441699999967
+      },
+      {
+        "label": "cli-source",
+        "exit": 0,
+        "elapsed_seconds": 0.25410304199999967
+      },
+      {
+        "label": "cli-references",
+        "exit": 0,
+        "elapsed_seconds": 0.23924516699999998
+      },
+      {
+        "label": "cli-graph",
+        "exit": 0,
+        "elapsed_seconds": 0.25123954199999954
+      },
+      {
+        "label": "cli-resolve",
+        "exit": 0,
+        "elapsed_seconds": 0.24895508400000033
+      },
+      {
+        "label": "final-health",
+        "exit": 0,
+        "elapsed_seconds": 0.4955457499999998
+      }
+    ],
+    "mcp": [
+      {
+        "receipt": "mcp-status.json",
+        "isError": false,
+        "answer": "status",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "old-ticket-after-restart.json",
+        "isError": false,
+        "answer": "surface",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.graph.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 3,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.source.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp.tools.json",
+        "isError": null,
+        "answer": null,
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-search.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 5,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.references.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 2,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-membership.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 3,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.document.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-versions.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 1,
+        "fault_detail": null
+      }
+    ]
+  },
+  {
+    "app": "mini-clean",
+    "phase": "interrupt01",
+    "owner_pid": 85105,
+    "admission_age_seconds": 6.679392,
+    "kernel_wait": -15,
+    "retirement": "intentional owned interrupted Pending stop (no cancellation request)",
+    "observer_failure": null,
+    "current_complete_generations": [
+      {
+        "generation": [
+          6,
+          18,
+          189,
+          220,
+          116,
+          167,
+          120,
+          249,
+          177,
+          110,
+          105,
+          0,
+          84,
+          74,
+          38,
+          121,
+          191,
+          94,
+          251,
+          220,
+          51,
+          70,
+          84,
+          33,
+          228,
+          177,
+          159,
+          72,
+          146,
+          146,
+          100,
+          230
+        ],
+        "artifacts": 2,
+        "frontier": 2,
+        "freshness": "current"
+      }
+    ],
+    "cli": [
+      {
+        "label": "startup-health",
+        "exit": 0,
+        "elapsed_seconds": 0.5068198750000001
+      },
+      {
+        "label": "semantic-before-any-index",
+        "exit": 0,
+        "elapsed_seconds": 0.2925292500000003
+      },
+      {
+        "label": "semantic-current",
+        "exit": 0,
+        "elapsed_seconds": 0.2570482080000005
+      },
+      {
+        "label": "packages",
+        "exit": 0,
+        "elapsed_seconds": 0.2631695839999999
+      },
+      {
+        "label": "search",
+        "exit": 0,
+        "elapsed_seconds": 0.5096763339999999
+      },
+      {
+        "label": "cli-membership",
+        "exit": 0,
+        "elapsed_seconds": 0.2606712499999997
+      },
+      {
+        "label": "cli-show",
+        "exit": 0,
+        "elapsed_seconds": 0.32631220800000005
+      },
+      {
+        "label": "cli-source",
+        "exit": 0,
+        "elapsed_seconds": 0.267087375
+      },
+      {
+        "label": "cli-references",
+        "exit": 0,
+        "elapsed_seconds": 0.27498383400000037
+      },
+      {
+        "label": "cli-graph",
+        "exit": 0,
+        "elapsed_seconds": 0.27998958399999996
+      },
+      {
+        "label": "cli-resolve",
+        "exit": 0,
+        "elapsed_seconds": 0.261505208
+      }
+    ],
+    "mcp": [
+      {
+        "receipt": "mcp-progress-11.json",
+        "isError": false,
+        "answer": "surface",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-status.json",
+        "isError": false,
+        "answer": "status",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.graph.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 3,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.source.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp.tools.json",
+        "isError": null,
+        "answer": null,
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-search.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 5,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.references.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 2,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-index-start.json",
+        "isError": false,
+        "answer": "surface",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-progress-14.json",
+        "isError": false,
+        "answer": "surface",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-membership.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 3,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.document.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-progress-13.json",
+        "isError": false,
+        "answer": "surface",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-versions.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 1,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-progress-12.json",
+        "isError": false,
+        "answer": "surface",
+        "returned_records": 0,
+        "fault_detail": null
+      }
+    ]
+  },
+  {
+    "app": "mini-clean",
+    "phase": "interrupt02",
+    "owner_pid": 88430,
+    "admission_age_seconds": 6.954494,
+    "kernel_wait": -15,
+    "retirement": "intentional owned interrupted Pending stop (no cancellation request)",
+    "observer_failure": null,
+    "current_complete_generations": [
+      {
+        "generation": [
+          6,
+          18,
+          189,
+          220,
+          116,
+          167,
+          120,
+          249,
+          177,
+          110,
+          105,
+          0,
+          84,
+          74,
+          38,
+          121,
+          191,
+          94,
+          251,
+          220,
+          51,
+          70,
+          84,
+          33,
+          228,
+          177,
+          159,
+          72,
+          146,
+          146,
+          100,
+          230
+        ],
+        "artifacts": 2,
+        "frontier": 2,
+        "freshness": "current"
+      }
+    ],
+    "cli": [
+      {
+        "label": "startup-health",
+        "exit": 0,
+        "elapsed_seconds": 0.5293596249999997
+      },
+      {
+        "label": "semantic-before-any-index",
+        "exit": 0,
+        "elapsed_seconds": 0.2587315830000003
+      },
+      {
+        "label": "semantic-current",
+        "exit": 0,
+        "elapsed_seconds": 0.246857125
+      },
+      {
+        "label": "packages",
+        "exit": 0,
+        "elapsed_seconds": 0.2627666660000001
+      },
+      {
+        "label": "search",
+        "exit": 0,
+        "elapsed_seconds": 0.3077489999999994
+      },
+      {
+        "label": "cli-membership",
+        "exit": 0,
+        "elapsed_seconds": 0.24461420899999986
+      },
+      {
+        "label": "cli-show",
+        "exit": 0,
+        "elapsed_seconds": 0.33090975
+      },
+      {
+        "label": "cli-source",
+        "exit": 0,
+        "elapsed_seconds": 0.2606082919999997
+      },
+      {
+        "label": "cli-references",
+        "exit": 0,
+        "elapsed_seconds": 0.24403037499999947
+      },
+      {
+        "label": "cli-graph",
+        "exit": 0,
+        "elapsed_seconds": 0.2675854580000001
+      },
+      {
+        "label": "cli-resolve",
+        "exit": 0,
+        "elapsed_seconds": 0.26103899999999935
+      }
+    ],
+    "mcp": [
+      {
+        "receipt": "mcp-progress-11.json",
+        "isError": false,
+        "answer": "surface",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-status.json",
+        "isError": false,
+        "answer": "status",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.graph.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 3,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.source.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp.tools.json",
+        "isError": null,
+        "answer": null,
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-search.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 5,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.references.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 2,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-index-start.json",
+        "isError": false,
+        "answer": "surface",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-membership.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 3,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.document.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-versions.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 1,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-progress-12.json",
+        "isError": false,
+        "answer": "surface",
+        "returned_records": 0,
+        "fault_detail": null
+      }
+    ]
+  },
+  {
+    "app": "mini-clean",
+    "phase": "remove-retry01",
+    "owner_pid": 94765,
+    "admission_age_seconds": 8.72532,
+    "kernel_wait": 0,
+    "retirement": "actual idle exit without operator signal",
+    "observer_failure": null,
+    "current_complete_generations": [
+      {
+        "generation": [
+          6,
+          18,
+          189,
+          220,
+          116,
+          167,
+          120,
+          249,
+          177,
+          110,
+          105,
+          0,
+          84,
+          74,
+          38,
+          121,
+          191,
+          94,
+          251,
+          220,
+          51,
+          70,
+          84,
+          33,
+          228,
+          177,
+          159,
+          72,
+          146,
+          146,
+          100,
+          230
+        ],
+        "artifacts": 2,
+        "frontier": 2,
+        "freshness": "current"
+      }
+    ],
+    "cli": [
+      {
+        "label": "startup-health",
+        "exit": 0,
+        "elapsed_seconds": 0.4819447079999999
+      },
+      {
+        "label": "semantic-before-any-index",
+        "exit": 0,
+        "elapsed_seconds": 0.2352817500000004
+      },
+      {
+        "label": "remove-interrupted",
+        "exit": 0,
+        "elapsed_seconds": 0.7505512909999998
+      },
+      {
+        "label": "retry-index",
+        "exit": 0,
+        "elapsed_seconds": 3.133250834
+      },
+      {
+        "label": "semantic-current",
+        "exit": 0,
+        "elapsed_seconds": 0.25146041699999877
+      },
+      {
+        "label": "packages",
+        "exit": 0,
+        "elapsed_seconds": 0.2645167500000003
+      },
+      {
+        "label": "search",
+        "exit": 0,
+        "elapsed_seconds": 0.5729668750000005
+      },
+      {
+        "label": "cli-membership",
+        "exit": 0,
+        "elapsed_seconds": 0.23398104099999983
+      },
+      {
+        "label": "cli-show",
+        "exit": 0,
+        "elapsed_seconds": 0.2577629160000008
+      },
+      {
+        "label": "cli-source",
+        "exit": 0,
+        "elapsed_seconds": 0.24763320799999988
+      },
+      {
+        "label": "cli-references",
+        "exit": 0,
+        "elapsed_seconds": 0.24131979200000053
+      },
+      {
+        "label": "cli-graph",
+        "exit": 0,
+        "elapsed_seconds": 0.2586070840000012
+      },
+      {
+        "label": "cli-resolve",
+        "exit": 0,
+        "elapsed_seconds": 0.25174808299999896
+      },
+      {
+        "label": "final-health",
+        "exit": 0,
+        "elapsed_seconds": 0.4855622079999993
+      }
+    ],
+    "mcp": [
+      {
+        "receipt": "mcp-status.json",
+        "isError": false,
+        "answer": "status",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "old-ticket-after-restart.json",
+        "isError": false,
+        "answer": "surface",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.graph.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 3,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.source.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp.tools.json",
+        "isError": null,
+        "answer": null,
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-search.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 5,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.references.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 2,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-membership.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 3,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.document.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-versions.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 1,
+        "fault_detail": null
+      }
+    ]
+  },
+  {
+    "app": "mini-clean",
+    "phase": "retry01",
+    "owner_pid": 86593,
+    "admission_age_seconds": 5.619839,
+    "kernel_wait": 0,
+    "retirement": "actual idle exit without operator signal",
+    "observer_failure": null,
+    "current_complete_generations": [
+      {
+        "generation": [
+          6,
+          18,
+          189,
+          220,
+          116,
+          167,
+          120,
+          249,
+          177,
+          110,
+          105,
+          0,
+          84,
+          74,
+          38,
+          121,
+          191,
+          94,
+          251,
+          220,
+          51,
+          70,
+          84,
+          33,
+          228,
+          177,
+          159,
+          72,
+          146,
+          146,
+          100,
+          230
+        ],
+        "artifacts": 2,
+        "frontier": 2,
+        "freshness": "current"
+      }
+    ],
+    "cli": [
+      {
+        "label": "startup-health",
+        "exit": 0,
+        "elapsed_seconds": 0.5196802500000004
+      },
+      {
+        "label": "semantic-before-any-index",
+        "exit": 0,
+        "elapsed_seconds": 0.2523884170000006
+      },
+      {
+        "label": "retry-index",
+        "exit": 0,
+        "elapsed_seconds": 3.2223763329999997
+      },
+      {
+        "label": "semantic-current",
+        "exit": 0,
+        "elapsed_seconds": 0.6382763330000003
+      },
+      {
+        "label": "packages",
+        "exit": 0,
+        "elapsed_seconds": 0.30542383399999906
+      },
+      {
+        "label": "search",
+        "exit": 0,
+        "elapsed_seconds": 0.5357903339999996
+      },
+      {
+        "label": "cli-membership",
+        "exit": 0,
+        "elapsed_seconds": 0.2470057919999995
+      },
+      {
+        "label": "cli-show",
+        "exit": 0,
+        "elapsed_seconds": 0.3230671249999997
+      },
+      {
+        "label": "cli-source",
+        "exit": 0,
+        "elapsed_seconds": 0.2560210000000005
+      },
+      {
+        "label": "cli-references",
+        "exit": 0,
+        "elapsed_seconds": 0.2513476249999993
+      },
+      {
+        "label": "cli-graph",
+        "exit": 0,
+        "elapsed_seconds": 0.27490162500000004
+      },
+      {
+        "label": "cli-resolve",
+        "exit": 0,
+        "elapsed_seconds": 0.2670944170000009
+      },
+      {
+        "label": "final-health",
+        "exit": 0,
+        "elapsed_seconds": 0.5115787919999999
+      }
+    ],
+    "mcp": [
+      {
+        "receipt": "mcp-status.json",
+        "isError": false,
+        "answer": "status",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "old-ticket-after-restart.json",
+        "isError": false,
+        "answer": "surface",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.graph.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 3,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.source.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp.tools.json",
+        "isError": null,
+        "answer": null,
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-search.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 5,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.references.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 2,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-membership.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 3,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.document.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-versions.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 1,
+        "fault_detail": null
+      }
+    ]
+  },
+  {
+    "app": "mini-clean",
+    "phase": "warm",
+    "owner_pid": 83223,
+    "admission_age_seconds": 6.208893,
+    "kernel_wait": 0,
+    "retirement": "actual idle exit without operator signal",
+    "observer_failure": null,
+    "current_complete_generations": [
+      {
+        "generation": [
+          6,
+          18,
+          189,
+          220,
+          116,
+          167,
+          120,
+          249,
+          177,
+          110,
+          105,
+          0,
+          84,
+          74,
+          38,
+          121,
+          191,
+          94,
+          251,
+          220,
+          51,
+          70,
+          84,
+          33,
+          228,
+          177,
+          159,
+          72,
+          146,
+          146,
+          100,
+          230
+        ],
+        "artifacts": 2,
+        "frontier": 2,
+        "freshness": "current"
+      }
+    ],
+    "cli": [
+      {
+        "label": "startup-health",
+        "exit": 0,
+        "elapsed_seconds": 0.5180800830000001
+      },
+      {
+        "label": "first-index",
+        "exit": 0,
+        "elapsed_seconds": 3.669281333
+      },
+      {
+        "label": "second-index",
+        "exit": 0,
+        "elapsed_seconds": 3.0929026660000005
+      },
+      {
+        "label": "semantic-current",
+        "exit": 0,
+        "elapsed_seconds": 0.2740747920000004
+      },
+      {
+        "label": "packages",
+        "exit": 0,
+        "elapsed_seconds": 0.2608799580000003
+      },
+      {
+        "label": "search",
+        "exit": 0,
+        "elapsed_seconds": 0.5681434579999998
+      },
+      {
+        "label": "cli-membership",
+        "exit": 0,
+        "elapsed_seconds": 0.24619695800000052
+      },
+      {
+        "label": "cli-show",
+        "exit": 0,
+        "elapsed_seconds": 0.3056850830000002
+      },
+      {
+        "label": "cli-source",
+        "exit": 0,
+        "elapsed_seconds": 0.25986716700000123
+      },
+      {
+        "label": "cli-references",
+        "exit": 0,
+        "elapsed_seconds": 0.25623237499999973
+      },
+      {
+        "label": "cli-graph",
+        "exit": 0,
+        "elapsed_seconds": 0.2810195829999991
+      },
+      {
+        "label": "cli-resolve",
+        "exit": 0,
+        "elapsed_seconds": 0.25774525000000104
+      },
+      {
+        "label": "final-health",
+        "exit": 0,
+        "elapsed_seconds": 0.5091474589999994
+      }
+    ],
+    "mcp": [
+      {
+        "receipt": "mcp-status.json",
+        "isError": false,
+        "answer": "status",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.graph.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 3,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.source.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp.tools.json",
+        "isError": null,
+        "answer": null,
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-search.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 5,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.references.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 2,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-membership.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 3,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.document.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-versions.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 1,
+        "fault_detail": null
+      }
+    ]
+  },
+  {
+    "app": "next",
+    "phase": "cold1",
+    "owner_pid": 59467,
+    "admission_age_seconds": 5.985874,
+    "kernel_wait": 0,
+    "retirement": "actual idle exit without operator signal",
+    "observer_failure": null,
+    "current_complete_generations": [],
+    "cli": [
+      {
+        "label": "startup-health",
+        "exit": 0,
+        "elapsed_seconds": 0.5195358750000003
+      },
+      {
+        "label": "semantic-before-any-index",
+        "exit": 0,
+        "elapsed_seconds": 0.2891182499999996
+      },
+      {
+        "label": "third-index",
+        "exit": 2,
+        "elapsed_seconds": 2.568355959,
+        "compiler_failure": {
+          "relative_path": "app/(dashboard)/actions.ts",
+          "source_identity": "content:0ed8ab458c5943b003b5e4bbe9525411eef071823969de7b9ead63b8d76f3450",
+          "source_byte_len": 269,
+          "recipe_identity": "content:11d834ea2847eea3e7844824a5cd3afa3b119eefb74f60e81150423e0bbe708b",
+          "phase": "authority",
+          "kind_tag": "authority_runtime",
+          "cause": {
+            "family": "authority",
+            "fault": {
+              "phase": "type_check",
+              "class": "authority",
+              "diagnostic": {
+                "retained_bytes": 144,
+                "observed_bytes": 144,
+                "truncated": false
+              }
+            }
+          },
+          "detail": "type check authority fault: authority runtime",
+          "detail_truncated": false
+        }
+      },
+      {
+        "label": "semantic-current",
+        "exit": 0,
+        "elapsed_seconds": 0.2618269170000005
+      },
+      {
+        "label": "packages",
+        "exit": 0,
+        "elapsed_seconds": 0.24892495799999992
+      },
+      {
+        "label": "search",
+        "exit": 0,
+        "elapsed_seconds": 0.8550182500000005
+      },
+      {
+        "label": "cli-membership",
+        "exit": 0,
+        "elapsed_seconds": 0.26870216600000063
+      },
+      {
+        "label": "cli-membership-1",
+        "exit": 0,
+        "elapsed_seconds": 0.24403787500000007
+      },
+      {
+        "label": "cli-show",
+        "exit": 0,
+        "elapsed_seconds": 0.33272816700000085
+      },
+      {
+        "label": "cli-source",
+        "exit": 0,
+        "elapsed_seconds": 0.2594026249999999
+      },
+      {
+        "label": "cli-references",
+        "exit": 0,
+        "elapsed_seconds": 0.2625685000000004
+      },
+      {
+        "label": "cli-graph",
+        "exit": 0,
+        "elapsed_seconds": 0.2790360420000013
+      },
+      {
+        "label": "cli-resolve",
+        "exit": 0,
+        "elapsed_seconds": 0.25982729200000065
+      },
+      {
+        "label": "final-health",
+        "exit": 0,
+        "elapsed_seconds": 0.5094239170000012
+      }
+    ],
+    "mcp": [
+      {
+        "receipt": "mcp-membership-1.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 2,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-status.json",
+        "isError": false,
+        "answer": "status",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "old-ticket-after-restart.json",
+        "isError": false,
+        "answer": "surface",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.graph.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 8,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.read.json",
+        "isError": true,
+        "answer": "fault",
+        "returned_records": 0,
+        "fault_detail": "a frame, DTO, or identity proof failed admission: command execution failed: local manifest /Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/public-pending-199b-next/project/package.json omits name"
+      },
+      {
+        "receipt": "backend.source.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp.tools.json",
+        "isError": null,
+        "answer": null,
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-search.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 2,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.references.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-membership.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 33,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.document.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-versions.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 0,
+        "fault_detail": null
+      }
+    ]
+  },
+  {
+    "app": "next",
+    "phase": "cold2",
+    "owner_pid": 68961,
+    "admission_age_seconds": 5.099655,
+    "kernel_wait": 0,
+    "retirement": "actual idle exit without operator signal",
+    "observer_failure": null,
+    "current_complete_generations": [],
+    "cli": [
+      {
+        "label": "startup-health",
+        "exit": 0,
+        "elapsed_seconds": 0.5226375410000004
+      },
+      {
+        "label": "semantic-before-any-index",
+        "exit": 0,
+        "elapsed_seconds": 0.2468615000000005
+      },
+      {
+        "label": "semantic-current",
+        "exit": 0,
+        "elapsed_seconds": 0.25900225
+      },
+      {
+        "label": "packages",
+        "exit": 0,
+        "elapsed_seconds": 0.25166812500000013
+      },
+      {
+        "label": "search",
+        "exit": 0,
+        "elapsed_seconds": 0.5122435829999992
+      },
+      {
+        "label": "cli-membership",
+        "exit": 0,
+        "elapsed_seconds": 0.26426041599999994
+      },
+      {
+        "label": "cli-membership-1",
+        "exit": 0,
+        "elapsed_seconds": 0.24930983399999995
+      },
+      {
+        "label": "cli-show",
+        "exit": 0,
+        "elapsed_seconds": 0.3427772080000002
+      },
+      {
+        "label": "cli-source",
+        "exit": 0,
+        "elapsed_seconds": 0.2677660839999998
+      },
+      {
+        "label": "cli-references",
+        "exit": 0,
+        "elapsed_seconds": 0.2902556669999994
+      },
+      {
+        "label": "cli-graph",
+        "exit": 0,
+        "elapsed_seconds": 0.29826200000000025
+      },
+      {
+        "label": "cli-resolve",
+        "exit": 0,
+        "elapsed_seconds": 0.2593605409999995
+      },
+      {
+        "label": "final-health",
+        "exit": 0,
+        "elapsed_seconds": 0.5027272499999995
+      }
+    ],
+    "mcp": [
+      {
+        "receipt": "mcp-membership-1.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 2,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-status.json",
+        "isError": false,
+        "answer": "status",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "old-ticket-after-restart.json",
+        "isError": false,
+        "answer": "surface",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.graph.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 8,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.read.json",
+        "isError": true,
+        "answer": "fault",
+        "returned_records": 0,
+        "fault_detail": "a frame, DTO, or identity proof failed admission: command execution failed: local manifest /Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/public-pending-199b-next/project/package.json omits name"
+      },
+      {
+        "receipt": "backend.source.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp.tools.json",
+        "isError": null,
+        "answer": null,
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-search.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 2,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.references.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-membership.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 33,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.document.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-versions.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 0,
+        "fault_detail": null
+      }
+    ]
+  },
+  {
+    "app": "next",
+    "phase": "interrupt01",
+    "owner_pid": 7215,
+    "admission_age_seconds": 6.096542,
+    "kernel_wait": -15,
+    "retirement": "intentional owned interrupted Pending stop (no cancellation request)",
+    "observer_failure": null,
+    "current_complete_generations": [],
+    "cli": [
+      {
+        "label": "startup-health",
+        "exit": 0,
+        "elapsed_seconds": 0.5119070839999997
+      },
+      {
+        "label": "semantic-before-any-index",
+        "exit": 0,
+        "elapsed_seconds": 0.24477395799999968
+      },
+      {
+        "label": "semantic-current",
+        "exit": 0,
+        "elapsed_seconds": 0.24832487500000067
+      },
+      {
+        "label": "packages",
+        "exit": 0,
+        "elapsed_seconds": 0.25291437500000047
+      },
+      {
+        "label": "search",
+        "exit": 0,
+        "elapsed_seconds": 0.5188890829999995
+      },
+      {
+        "label": "cli-membership",
+        "exit": 0,
+        "elapsed_seconds": 0.27636600000000033
+      },
+      {
+        "label": "cli-membership-1",
+        "exit": 0,
+        "elapsed_seconds": 0.2501991670000008
+      },
+      {
+        "label": "cli-show",
+        "exit": 0,
+        "elapsed_seconds": 0.33781762499999957
+      },
+      {
+        "label": "cli-source",
+        "exit": 0,
+        "elapsed_seconds": 0.26280225
+      },
+      {
+        "label": "cli-references",
+        "exit": 0,
+        "elapsed_seconds": 0.2598608750000002
+      },
+      {
+        "label": "cli-graph",
+        "exit": 0,
+        "elapsed_seconds": 0.2805631249999996
+      },
+      {
+        "label": "cli-resolve",
+        "exit": 0,
+        "elapsed_seconds": 0.25775658299999993
+      }
+    ],
+    "mcp": [
+      {
+        "receipt": "mcp-membership-1.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 2,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-status.json",
+        "isError": false,
+        "answer": "status",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.graph.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 8,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.read.json",
+        "isError": true,
+        "answer": "fault",
+        "returned_records": 0,
+        "fault_detail": "a frame, DTO, or identity proof failed admission: command execution failed: local manifest /Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/public-pending-199b-next/project/package.json omits name"
+      },
+      {
+        "receipt": "backend.source.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp.tools.json",
+        "isError": null,
+        "answer": null,
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-search.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 2,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.references.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-index-start.json",
+        "isError": false,
+        "answer": "surface",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-progress-14.json",
+        "isError": false,
+        "answer": "surface",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-membership.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 33,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.document.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-progress-13.json",
+        "isError": false,
+        "answer": "surface",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-versions.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 0,
+        "fault_detail": null
+      }
+    ]
+  },
+  {
+    "app": "next",
+    "phase": "interrupt02",
+    "owner_pid": 25202,
+    "admission_age_seconds": 6.98171,
+    "kernel_wait": -15,
+    "retirement": "intentional owned interrupted Pending stop (no cancellation request)",
+    "observer_failure": null,
+    "current_complete_generations": [],
+    "cli": [
+      {
+        "label": "startup-health",
+        "exit": 0,
+        "elapsed_seconds": 0.5212184159999995
+      },
+      {
+        "label": "semantic-before-any-index",
+        "exit": 0,
+        "elapsed_seconds": 0.24798241700000023
+      },
+      {
+        "label": "semantic-current",
+        "exit": 0,
+        "elapsed_seconds": 0.26210425000000015
+      },
+      {
+        "label": "packages",
+        "exit": 0,
+        "elapsed_seconds": 0.27226341700000045
+      },
+      {
+        "label": "search",
+        "exit": 0,
+        "elapsed_seconds": 0.5219214580000004
+      },
+      {
+        "label": "cli-membership",
+        "exit": 0,
+        "elapsed_seconds": 0.2795678749999997
+      },
+      {
+        "label": "cli-membership-1",
+        "exit": 0,
+        "elapsed_seconds": 0.24844854200000022
+      },
+      {
+        "label": "cli-show",
+        "exit": 0,
+        "elapsed_seconds": 0.3516935419999996
+      },
+      {
+        "label": "cli-source",
+        "exit": 0,
+        "elapsed_seconds": 0.2576022910000004
+      },
+      {
+        "label": "cli-references",
+        "exit": 0,
+        "elapsed_seconds": 0.27388237499999946
+      },
+      {
+        "label": "cli-graph",
+        "exit": 0,
+        "elapsed_seconds": 0.28588291600000026
+      },
+      {
+        "label": "cli-resolve",
+        "exit": 0,
+        "elapsed_seconds": 0.26179983299999954
+      }
+    ],
+    "mcp": [
+      {
+        "receipt": "mcp-membership-1.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 2,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-status.json",
+        "isError": false,
+        "answer": "status",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.graph.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 8,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.read.json",
+        "isError": true,
+        "answer": "fault",
+        "returned_records": 0,
+        "fault_detail": "a frame, DTO, or identity proof failed admission: command execution failed: local manifest /Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/public-pending-199b-next/project/package.json omits name"
+      },
+      {
+        "receipt": "backend.source.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp.tools.json",
+        "isError": null,
+        "answer": null,
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-progress-15.json",
+        "isError": false,
+        "answer": "surface",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-search.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 2,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.references.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-index-start.json",
+        "isError": false,
+        "answer": "surface",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-progress-14.json",
+        "isError": false,
+        "answer": "surface",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-membership.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 33,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.document.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-progress-13.json",
+        "isError": false,
+        "answer": "surface",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-versions.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 0,
+        "fault_detail": null
+      }
+    ]
+  },
+  {
+    "app": "next",
+    "phase": "remove-retry01",
+    "owner_pid": 45159,
+    "admission_age_seconds": 6.133592,
+    "kernel_wait": 0,
+    "retirement": "actual idle exit without operator signal",
+    "observer_failure": null,
+    "current_complete_generations": [],
+    "cli": [
+      {
+        "label": "startup-health",
+        "exit": 0,
+        "elapsed_seconds": 0.5183123750000003
+      },
+      {
+        "label": "semantic-before-any-index",
+        "exit": 0,
+        "elapsed_seconds": 0.2986503330000003
+      },
+      {
+        "label": "remove-interrupted",
+        "exit": 0,
+        "elapsed_seconds": 2.7708731250000005
+      },
+      {
+        "label": "retry-index",
+        "exit": 2,
+        "elapsed_seconds": 2.548722249999999,
+        "compiler_failure": {
+          "relative_path": "app/(dashboard)/actions.ts",
+          "source_identity": "content:0ed8ab458c5943b003b5e4bbe9525411eef071823969de7b9ead63b8d76f3450",
+          "source_byte_len": 269,
+          "recipe_identity": "content:11d834ea2847eea3e7844824a5cd3afa3b119eefb74f60e81150423e0bbe708b",
+          "phase": "authority",
+          "kind_tag": "authority_runtime",
+          "cause": {
+            "family": "authority",
+            "fault": {
+              "phase": "type_check",
+              "class": "authority",
+              "diagnostic": {
+                "retained_bytes": 144,
+                "observed_bytes": 144,
+                "truncated": false
+              }
+            }
+          },
+          "detail": "type check authority fault: authority runtime",
+          "detail_truncated": false
+        }
+      },
+      {
+        "label": "semantic-current",
+        "exit": 0,
+        "elapsed_seconds": 0.2666088329999994
+      },
+      {
+        "label": "packages",
+        "exit": 0,
+        "elapsed_seconds": 0.26633916699999993
+      },
+      {
+        "label": "search",
+        "exit": 0,
+        "elapsed_seconds": 0.9006848329999997
+      },
+      {
+        "label": "cli-membership",
+        "exit": 0,
+        "elapsed_seconds": 0.2973567500000005
+      },
+      {
+        "label": "cli-membership-1",
+        "exit": 0,
+        "elapsed_seconds": 0.2563018340000003
+      },
+      {
+        "label": "cli-show",
+        "exit": 0,
+        "elapsed_seconds": 0.3293010840000008
+      },
+      {
+        "label": "cli-source",
+        "exit": 0,
+        "elapsed_seconds": 0.2696783750000016
+      },
+      {
+        "label": "cli-references",
+        "exit": 0,
+        "elapsed_seconds": 0.28290150000000125
+      },
+      {
+        "label": "cli-graph",
+        "exit": 0,
+        "elapsed_seconds": 0.2829146250000001
+      },
+      {
+        "label": "cli-resolve",
+        "exit": 0,
+        "elapsed_seconds": 0.262914541999999
+      },
+      {
+        "label": "final-health",
+        "exit": 0,
+        "elapsed_seconds": 0.49075970900000065
+      }
+    ],
+    "mcp": [
+      {
+        "receipt": "mcp-membership-1.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 2,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-status.json",
+        "isError": false,
+        "answer": "status",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "old-ticket-after-restart.json",
+        "isError": false,
+        "answer": "surface",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.graph.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 8,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.read.json",
+        "isError": true,
+        "answer": "fault",
+        "returned_records": 0,
+        "fault_detail": "a frame, DTO, or identity proof failed admission: command execution failed: local manifest /Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/public-pending-199b-next/project/package.json omits name"
+      },
+      {
+        "receipt": "backend.source.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp.tools.json",
+        "isError": null,
+        "answer": null,
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-search.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 2,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.references.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-membership.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 33,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.document.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-versions.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 0,
+        "fault_detail": null
+      }
+    ]
+  },
+  {
+    "app": "next",
+    "phase": "retry01",
+    "owner_pid": 16568,
+    "admission_age_seconds": 5.637919,
+    "kernel_wait": 0,
+    "retirement": "actual idle exit without operator signal",
+    "observer_failure": null,
+    "current_complete_generations": [],
+    "cli": [
+      {
+        "label": "startup-health",
+        "exit": 0,
+        "elapsed_seconds": 0.5561360410000002
+      },
+      {
+        "label": "semantic-before-any-index",
+        "exit": 0,
+        "elapsed_seconds": 0.26519458300000043
+      },
+      {
+        "label": "retry-index",
+        "exit": 2,
+        "elapsed_seconds": 3.1978424589999994,
+        "compiler_failure": {
+          "relative_path": "app/(dashboard)/actions.ts",
+          "source_identity": "content:0ed8ab458c5943b003b5e4bbe9525411eef071823969de7b9ead63b8d76f3450",
+          "source_byte_len": 269,
+          "recipe_identity": "content:11d834ea2847eea3e7844824a5cd3afa3b119eefb74f60e81150423e0bbe708b",
+          "phase": "authority",
+          "kind_tag": "authority_runtime",
+          "cause": {
+            "family": "authority",
+            "fault": {
+              "phase": "type_check",
+              "class": "authority",
+              "diagnostic": {
+                "retained_bytes": 144,
+                "observed_bytes": 144,
+                "truncated": false
+              }
+            }
+          },
+          "detail": "type check authority fault: authority runtime",
+          "detail_truncated": false
+        }
+      },
+      {
+        "label": "semantic-current",
+        "exit": 0,
+        "elapsed_seconds": 0.27906504199999915
+      },
+      {
+        "label": "packages",
+        "exit": 0,
+        "elapsed_seconds": 0.2626187499999997
+      },
+      {
+        "label": "search",
+        "exit": 0,
+        "elapsed_seconds": 0.8428467499999996
+      },
+      {
+        "label": "cli-membership",
+        "exit": 0,
+        "elapsed_seconds": 0.2752264999999987
+      },
+      {
+        "label": "cli-membership-1",
+        "exit": 0,
+        "elapsed_seconds": 0.23940287499999968
+      },
+      {
+        "label": "cli-show",
+        "exit": 0,
+        "elapsed_seconds": 0.3242769999999986
+      },
+      {
+        "label": "cli-source",
+        "exit": 0,
+        "elapsed_seconds": 0.2528852910000001
+      },
+      {
+        "label": "cli-references",
+        "exit": 0,
+        "elapsed_seconds": 0.2678267090000013
+      },
+      {
+        "label": "cli-graph",
+        "exit": 0,
+        "elapsed_seconds": 0.2827729580000007
+      },
+      {
+        "label": "cli-resolve",
+        "exit": 0,
+        "elapsed_seconds": 0.263699625000001
+      },
+      {
+        "label": "final-health",
+        "exit": 0,
+        "elapsed_seconds": 0.5042955839999994
+      }
+    ],
+    "mcp": [
+      {
+        "receipt": "mcp-membership-1.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 2,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-status.json",
+        "isError": false,
+        "answer": "status",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "old-ticket-after-restart.json",
+        "isError": false,
+        "answer": "surface",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.graph.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 8,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.read.json",
+        "isError": true,
+        "answer": "fault",
+        "returned_records": 0,
+        "fault_detail": "a frame, DTO, or identity proof failed admission: command execution failed: local manifest /Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/public-pending-199b-next/project/package.json omits name"
+      },
+      {
+        "receipt": "backend.source.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp.tools.json",
+        "isError": null,
+        "answer": null,
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-search.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 2,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.references.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-membership.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 33,
+        "fault_detail": null
+      },
+      {
+        "receipt": "backend.document.json",
+        "isError": false,
+        "answer": "page",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-versions.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 0,
+        "fault_detail": null
+      }
+    ]
+  },
+  {
+    "app": "next",
+    "phase": "warm",
+    "owner_pid": 1440,
+    "admission_age_seconds": 6.175053,
+    "kernel_wait": 0,
+    "retirement": "actual idle exit without operator signal",
+    "observer_failure": null,
+    "current_complete_generations": [],
+    "cli": [
+      {
+        "label": "startup-health",
+        "exit": 0,
+        "elapsed_seconds": 0.46979341699999955
+      },
+      {
+        "label": "first-index",
+        "exit": 2,
+        "elapsed_seconds": 3.387028583,
+        "compiler_failure": {
+          "relative_path": "app/(dashboard)/actions.ts",
+          "source_identity": "content:0ed8ab458c5943b003b5e4bbe9525411eef071823969de7b9ead63b8d76f3450",
+          "source_byte_len": 269,
+          "recipe_identity": "content:11d834ea2847eea3e7844824a5cd3afa3b119eefb74f60e81150423e0bbe708b",
+          "phase": "authority",
+          "kind_tag": "authority_runtime",
+          "cause": {
+            "family": "authority",
+            "fault": {
+              "phase": "type_check",
+              "class": "authority",
+              "diagnostic": {
+                "retained_bytes": 144,
+                "observed_bytes": 144,
+                "truncated": false
+              }
+            }
+          },
+          "detail": "type check authority fault: authority runtime",
+          "detail_truncated": false
+        }
+      },
+      {
+        "label": "second-index",
+        "exit": 2,
+        "elapsed_seconds": 2.1323258330000003,
+        "compiler_failure": {
+          "relative_path": "app/(dashboard)/actions.ts",
+          "source_identity": "content:0ed8ab458c5943b003b5e4bbe9525411eef071823969de7b9ead63b8d76f3450",
+          "source_byte_len": 269,
+          "recipe_identity": "content:11d834ea2847eea3e7844824a5cd3afa3b119eefb74f60e81150423e0bbe708b",
+          "phase": "authority",
+          "kind_tag": "authority_runtime",
+          "cause": {
+            "family": "authority",
+            "fault": {
+              "phase": "type_check",
+              "class": "authority",
+              "diagnostic": {
+                "retained_bytes": 144,
+                "observed_bytes": 144,
+                "truncated": false
+              }
+            }
+          },
+          "detail": "type check authority fault: authority runtime",
+          "detail_truncated": false
+        }
+      },
+      {
+        "label": "semantic-current",
+        "exit": 0,
+        "elapsed_seconds": 0.2617702089999998
+      },
+      {
+        "label": "packages",
+        "exit": 0,
+        "elapsed_seconds": 0.23802850000000042
+      },
+      {
+        "label": "search",
+        "exit": 0,
+        "elapsed_seconds": 0.7797127079999999
+      },
+      {
+        "label": "cli-membership",
+        "exit": 0,
+        "elapsed_seconds": 0.2689384170000011
+      },
+      {
+        "label": "cli-membership-1",
+        "exit": 0,
+        "elapsed_seconds": 0.23005379099999956
+      },
+      {
+        "label": "final-health",
+        "exit": 0,
+        "elapsed_seconds": 0.4678072499999999
+      }
+    ],
+    "mcp": [
+      {
+        "receipt": "mcp-membership-1.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 2,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-status.json",
+        "isError": false,
+        "answer": "status",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp.tools.json",
+        "isError": null,
+        "answer": null,
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-search.json",
+        "isError": false,
+        "answer": "records",
+        "returned_records": 0,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-membership.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 33,
+        "fault_detail": null
+      },
+      {
+        "receipt": "mcp-versions.json",
+        "isError": false,
+        "answer": "product",
+        "returned_records": 0,
+        "fault_detail": null
+      }
+    ]
+  }
+]

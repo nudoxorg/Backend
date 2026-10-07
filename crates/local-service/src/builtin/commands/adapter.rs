@@ -40,6 +40,9 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+#[path = "capture_recovery.rs"]
+mod capture_recovery;
+
 const MAX_RETAINED_INDEX_TERMINALS: usize = 64;
 const MAX_RETAINED_INDEX_PROGRESS_EVENTS: usize = 256;
 const MAX_RETAINED_INDEX_PROGRESS_TICKETS: usize = MAX_RETAINED_INDEX_TERMINALS + 1;
@@ -849,6 +852,7 @@ impl CommandAdapter {
             .accept(operation_key, package.clone(), execution_intent)
         {
             Ok(IndexOperationAcceptance::Existing) => {
+                self.recover_orphaned_package_label(daemon, package.as_str(), request_id)?;
                 let observation = self
                     .resolve_index_operation(daemon, operation_key, None)
                     .map_err(|error| {
@@ -860,6 +864,19 @@ impl CommandAdapter {
             Err(error) => {
                 return Self::encode_index_operation_start_failure(daemon, request_id, error);
             }
+        }
+
+        if let Err(error) =
+            self.recover_orphaned_package_label(daemon, package.as_str(), request_id)
+        {
+            return self.fail_accepted_index_operation(
+                daemon,
+                operation_key,
+                package,
+                execution_intent,
+                request_id,
+                bounded_index_detail(error),
+            );
         }
 
         let acceptance_head = daemon.engine().daemon().owner().head();
@@ -2496,6 +2513,7 @@ impl CommandAdapter {
         let label = certified_package_label(certificate, package)?;
         let requested_package = package;
         let (package, label) = canonical_local_package(package, label)?;
+        self.recover_orphaned_package_label(daemon, &label, request_id)?;
         let cancelled = Arc::new(AtomicBool::new(false));
         let mut indexing = IndexJob {
             owner_ticket,
@@ -3186,6 +3204,7 @@ impl CommandAdapter {
         let label = certified_package_label(certificate, package)?;
         let requested_package = package;
         let (package, label) = canonical_local_package(package, label)?;
+        self.recover_orphaned_package_label(daemon, &label, request_id)?;
         let prepared = match classify_add_target(&label)? {
             AddTarget::LocalDirectory => match index_project_intent_with_cluster_and_intent(
                 daemon,
@@ -3426,6 +3445,7 @@ impl CommandAdapter {
         let label = certified_package_label(certificate, package)?;
         let requested_package = package;
         let (package, label) = canonical_local_package(package, label)?;
+        self.recover_orphaned_package_label(daemon, &label, request_id)?;
         let committed = if let Some(intent) =
             remove_project_intent(daemon, package, &label, &mut self.semantic_authority)?
         {
@@ -4449,7 +4469,8 @@ fn map_semantic_authority_error(
 mod tests {
     use super::{
         ADD_TARGET_REQUIRED, AddTarget, CommandAdapter, Executed, GraphProjectionStamp, IndexJob,
-        IndexJobWork, MAX_WAITING_COMMANDS, ProductDaemon, ResidentCatalog, ResidentDependencies,
+        IndexJobWork, JournalEntry, MAX_WAITING_COMMANDS, ProductDaemon,
+        ProductSemanticPublicationKey, ResidentCatalog, ResidentDependencies, StoredOperationState,
         admitted_project_source_root, capture_terminalization_failed, classify_add_target,
         index_operation_failure, legacy_add_compiler_failure, pending_capture_unresolved,
     };
@@ -4469,6 +4490,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::fs;
     use std::num::NonZeroUsize;
+    use std::path::Path;
 
     fn typed_compiler_refusal() -> backend_library::IndexJobOutcome {
         let attempt = backend_library::interface::CompilerAttempt {
@@ -4770,7 +4792,23 @@ mod tests {
 
     impl AdapterFixture {
         fn new() -> Self {
-            let root = TempTree::new();
+            Self::open(TempTree::new(), true)
+        }
+
+        fn reopen(mut self) -> Self {
+            if let Some(mut adapter) = self.adapter.take() {
+                adapter.close();
+                drop(adapter);
+            }
+            if let Some(mut daemon) = self.daemon.take() {
+                daemon.close();
+                drop(daemon);
+            }
+            let root = TempTree(std::mem::take(&mut self.root.0));
+            Self::open(root, false)
+        }
+
+        fn open(root: TempTree, seed: bool) -> Self {
             let workspace = root.0.join("workspace");
             fs::create_dir_all(&workspace).expect("workspace directory");
             // Commands admit a local directory under its physical identity.
@@ -4802,8 +4840,11 @@ mod tests {
                 registry,
             )
             .expect("open product daemon");
-            let intent = BuiltinIntent::add(package, label.clone()).expect("seed project intent");
-            super::commit_builtin_intent(&mut daemon, 1, &intent).expect("commit seed project");
+            let intent = seed
+                .then(|| BuiltinIntent::add(package, label.clone()).expect("seed project intent"));
+            if let Some(intent) = &intent {
+                super::commit_builtin_intent(&mut daemon, 1, intent).expect("commit seed project");
+            }
             // Product publication applies checked view deltas. Start with the
             // same source-bound baseline that production startup installs;
             // Library::new() is intentionally unbound and cannot authorize a
@@ -4861,7 +4902,7 @@ mod tests {
                 SemanticDeployment::from_remote(&remote),
                 &workspace,
                 None,
-                Some(&intent),
+                intent.as_ref(),
                 &mut image_rows,
                 &mut generations,
             )
@@ -5357,6 +5398,289 @@ mod tests {
         assert!(adapter.poll_deferred(daemon).is_empty());
         assert_eq!(owner_cursor(daemon), after, "the queued command runs once");
         assert!(!project_is_admitted(daemon, package));
+    }
+
+    #[test]
+    fn capture_recovery_preserves_live_job_then_recovers_exact_cold_marker() {
+        use backend_engine::builtin::{ProductSemanticCaptureOutcome, semantic_capture_relation};
+        let mut fixture = AdapterFixture::new();
+        let (package, label) = fixture.add_target();
+        fs::write(
+            Path::new(&label).join("pyproject.toml"),
+            "[project]\nname=\"interrupted_capture\"\nversion=\"1.0.0\"\n",
+        )
+        .expect("manifest");
+        fs::write(
+            Path::new(&label).join("source.py"),
+            "def recovered_name():\n    return 7\n",
+        )
+        .expect("source");
+        let operation =
+            backend_library::IndexOperationKey::from_bytes([0x61; 32]).expect("operation");
+        let reference = backend_library::PackageReference::parse(label.clone()).expect("reference");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let (key, original) = {
+            let (adapter, daemon) = fixture.parts();
+            assert!(matches!(
+                adapter.start_index_operation(
+                    daemon,
+                    operation,
+                    reference.clone(),
+                    CompileExecutionIntent::Interactive,
+                    870
+                ),
+                Ok(Executed::Reply(_))
+            ));
+            while !adapter
+                .indexing
+                .as_ref()
+                .is_some_and(|job| matches!(job.work, IndexJobWork::Compiling { .. }))
+            {
+                adapter.poll_deferred(daemon);
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "reach committed Pending capture"
+                );
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            let snapshot = daemon.engine().daemon().owner().snapshot();
+            let relation = semantic_capture_relation(&snapshot)
+                .expect("relation")
+                .expect("capture");
+            let page = relation
+                .page_from(
+                    &ProductSemanticPublicationKey::package_lower_bound(reference.clone()),
+                    8,
+                )
+                .expect("page");
+            let (key, original) = page
+                .entries()
+                .first()
+                .expect("one captured profile")
+                .clone();
+            assert!(matches!(
+                original.outcome(),
+                ProductSemanticCaptureOutcome::Pending { prior: None }
+            ));
+            let cancelled = Arc::clone(&adapter.indexing.as_ref().expect("live job").cancelled);
+            let head = daemon.engine().daemon().owner().head().root();
+            adapter
+                .recover_orphaned_package_label(daemon, &label, 871)
+                .expect("live work is protected");
+            assert_eq!(daemon.engine().daemon().owner().head().root(), head);
+            assert!(!cancelled.load(Ordering::Acquire));
+            (key.clone(), original.clone())
+        };
+        fixture = fixture.reopen();
+        {
+            let (adapter, daemon) = fixture.parts();
+            let relation = semantic_capture_relation(&daemon.engine().daemon().owner().snapshot())
+                .expect("relation")
+                .expect("capture");
+            assert_eq!(
+                relation.lookup(&key).expect("cold lookup"),
+                Some(original.clone())
+            );
+            adapter
+                .recover_orphaned_package_label(daemon, &label, 872)
+                .expect("orphan terminal recovery");
+            let relation = semantic_capture_relation(&daemon.engine().daemon().owner().snapshot())
+                .expect("relation")
+                .expect("capture");
+            let recovered = relation
+                .lookup(&key)
+                .expect("lookup")
+                .expect("retained marker");
+            assert_eq!(recovered.capture(), original.capture());
+            assert_eq!(recovered.source_commit(), original.source_commit());
+            assert_eq!(
+                recovered.source_workspace_root(),
+                original.source_workspace_root()
+            );
+            assert_eq!(
+                recovered.base_workspace_root(),
+                original.base_workspace_root()
+            );
+            assert!(matches!(
+                recovered.outcome(),
+                ProductSemanticCaptureOutcome::Unavailable {
+                    reason: backend_engine::builtin::SemanticUnavailableReason::Rejected
+                }
+            ));
+            let Some(JournalEntry::Retained(entry)) =
+                adapter.index_operations.entry(operation).expect("journal")
+            else {
+                panic!("retained operation");
+            };
+            assert!(matches!(
+                entry.state,
+                StoredOperationState::Failed {
+                    reason: backend_library::IndexOperationFailureReason::WorkerFailed,
+                    ..
+                }
+            ));
+            assert!(project_is_admitted(daemon, package));
+            assert!(
+                daemon
+                    .engine()
+                    .daemon()
+                    .library()
+                    .view()
+                    .row_refs()
+                    .any(|row| row.label.ends_with("::recovered_name"))
+            );
+        }
+        fixture = fixture.reopen();
+        {
+            let (adapter, daemon) = fixture.parts();
+            let next =
+                backend_library::IndexOperationKey::from_bytes([0x62; 32]).expect("new operation");
+            assert!(matches!(
+                adapter.start_index_operation(
+                    daemon,
+                    next,
+                    reference,
+                    CompileExecutionIntent::Interactive,
+                    873
+                ),
+                Ok(Executed::Reply(_))
+            ));
+            while adapter.indexing.is_some() {
+                adapter.poll_deferred(daemon);
+                assert!(std::time::Instant::now() < deadline, "retry terminal");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            let Some(JournalEntry::Retained(entry)) =
+                adapter.index_operations.entry(next).expect("journal")
+            else {
+                panic!("retained retry");
+            };
+            assert!(
+                matches!(entry.state, StoredOperationState::Failed { .. }),
+                "unavailable compiler is not semantic success"
+            );
+            let relation = semantic_capture_relation(&daemon.engine().daemon().owner().snapshot())
+                .expect("relation")
+                .expect("capture");
+            let retry = relation
+                .lookup(&key)
+                .expect("lookup")
+                .expect("retry capture");
+            assert_eq!(retry.operation_key(), Some(next.as_bytes()));
+            assert_eq!(
+                retry.capture().source_version(),
+                original.capture().source_version()
+            );
+            assert_eq!(
+                retry.capture().input_digest(),
+                original.capture().input_digest()
+            );
+            assert_eq!(
+                retry.capture().source_count(),
+                original.capture().source_count()
+            );
+            assert_eq!(
+                retry.capture().observation_sequence(),
+                original.capture().observation_sequence(),
+                "an identical source observation is reused rather than fabricated again"
+            );
+            assert!(!matches!(
+                retry.outcome(),
+                ProductSemanticCaptureOutcome::Pending { .. }
+                    | ProductSemanticCaptureOutcome::Published { .. }
+            ));
+            assert!(
+                retry.compiler_failure().is_some(),
+                "real unavailable compiler refusal retained"
+            );
+        }
+        fixture = fixture.reopen();
+        let (_, daemon) = fixture.parts();
+        assert!(project_is_admitted(daemon, package));
+    }
+
+    #[test]
+    fn capture_recovery_legacy_remove_retry_and_two_cold_reopens_keep_state() {
+        use backend_engine::builtin::{ProductSemanticCaptureOutcome, semantic_capture_relation};
+        let mut fixture = AdapterFixture::new();
+        let (package, label) = fixture.add_target();
+        fs::write(
+            Path::new(&label).join("pyproject.toml"),
+            "[project]\nname=\"legacy_capture\"\nversion=\"1.0.0\"\n",
+        )
+        .expect("manifest");
+        fs::write(
+            Path::new(&label).join("source.py"),
+            "def legacy_name():\n    return 8\n",
+        )
+        .expect("source");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        {
+            let (adapter, daemon) = fixture.parts();
+            assert!(matches!(
+                adapter.execute_or_defer(daemon, &add_body(880, package, &label), 9880),
+                Ok(Executed::Deferred)
+            ));
+            while !adapter
+                .indexing
+                .as_ref()
+                .is_some_and(|job| matches!(job.work, IndexJobWork::Compiling { .. }))
+            {
+                adapter.poll_deferred(daemon);
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+        fixture = fixture.reopen();
+        {
+            let (adapter, daemon) = fixture.parts();
+            assert!(matches!(
+                adapter.execute_or_defer(daemon, &remove_body(881, package, &label), 9881),
+                Ok(Executed::Reply(_))
+            ));
+            assert!(!project_is_admitted(daemon, package));
+            let relation = semantic_capture_relation(&daemon.engine().daemon().owner().snapshot())
+                .expect("relation")
+                .expect("capture");
+            let page = relation.page(None, 8).expect("page");
+            assert!(
+                page.entries().iter().all(|(_, record)| !matches!(
+                    record.outcome(),
+                    ProductSemanticCaptureOutcome::Pending { .. }
+                )),
+                "remove terminalizes orphan instead of forgetting it"
+            );
+        }
+        fixture = fixture.reopen();
+        {
+            let (adapter, daemon) = fixture.parts();
+            assert!(!project_is_admitted(daemon, package));
+            for (request, ticket) in [(882, 9882), (883, 9883)] {
+                assert!(matches!(
+                    adapter.execute_or_defer(daemon, &add_body(request, package, &label), ticket),
+                    Ok(Executed::Deferred)
+                ));
+                let mut replies = Vec::new();
+                while adapter.indexing.is_some() {
+                    replies.extend(adapter.poll_deferred(daemon));
+                    assert!(std::time::Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                let bytes = replies
+                    .into_iter()
+                    .find(|(id, _)| *id == ticket)
+                    .expect("terminal")
+                    .1
+                    .expect("reply");
+                let wire: serde_json::Value = serde_json::from_slice(&bytes).expect("DTO");
+                assert_eq!(wire["reply"]["data"]["kind"], "compiler_refused", "{wire}");
+                assert!(project_is_admitted(daemon, package));
+            }
+        }
+        fixture = fixture.reopen();
+        assert!(project_is_admitted(fixture.parts().1, package));
+        fixture = fixture.reopen();
+        assert!(project_is_admitted(fixture.parts().1, package));
     }
 
     #[test]

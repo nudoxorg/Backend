@@ -1,0 +1,22 @@
+{
+  "node": {
+    "path": "/nix/store/i5537z04agcqix2qgyg3bx6wdvhjqz1y-nodejs-slim-24.18.0/bin/node",
+    "bytes": 65788496,
+    "sha256": "8946b027017922e49849978029054c398004c2c75a49fea183c1c751ca1a48ce"
+  },
+  "tsc": {
+    "path": "/nix/store/ndn80vhc1mai4l1hlh7n716d94apb1m7-typescript-5.9.3/lib/node_modules/typescript/bin/tsc",
+    "bytes": 95,
+    "sha256": "3acbcc0cc034c445ec0bf43c58483553833a22867fc4e7e963cdaeb0bf122a4d"
+  },
+  "typescript_module": {
+    "path": "/nix/store/ndn80vhc1mai4l1hlh7n716d94apb1m7-typescript-5.9.3/lib/node_modules/typescript/lib/typescript.js",
+    "bytes": 9112572,
+    "sha256": "3ae902c92cc44dace175c0e69e13a4b0899f6983c6121d76b9ab8dd5795e7675"
+  },
+  "typescript_package": {
+    "path": "/nix/store/ndn80vhc1mai4l1hlh7n716d94apb1m7-typescript-5.9.3/lib/node_modules/typescript/package.json",
+    "bytes": 3561,
+    "sha256": "4532f4524fee211a60447f20f049bb5e4a8078d939edd4e194a3c4de006b1f07"
+  }
+}

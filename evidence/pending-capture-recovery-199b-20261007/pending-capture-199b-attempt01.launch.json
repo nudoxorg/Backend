@@ -1,0 +1,13 @@
+{
+  "permit_pid": 4701,
+  "launcher_pid": 4703,
+  "source_commit": "199bef18b011e41493a3a973f8765015b29ab412",
+  "started": "2026-10-07T00:54:10.061238+00:00",
+  "lock": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/compiler-index.lock",
+  "admission": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-199b-attempt01-fleet.json",
+  "admission_age_seconds": 5.001616,
+  "argv": [
+    "/bin/bash",
+    "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/run-pending-capture-199b-attempt01.sh"
+  ]
+}

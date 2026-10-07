@@ -1,0 +1,61 @@
+{
+  "classification": "exclusive idle mutable graph loan to Fresh; historical immutable96b proofs unchanged",
+  "time": "2026-10-07T00:52:05.191841+00:00",
+  "source": "96b04b141affd653e3c6932dc8c325f351775f8f",
+  "tree": "d15332203646b6d01b0decb14a1e3c6e03bc9a24",
+  "source_clean": true,
+  "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268",
+  "workspace": "/Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006",
+  "build_role": "/Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/.local/build/point-metadata-test",
+  "target": "/Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/.local/target",
+  "prior_complete_receipts": [
+    {
+      "permit_pid": 44259,
+      "launcher_pid": 44262,
+      "source_commit": "96b04b141affd653e3c6932dc8c325f351775f8f",
+      "started": "2026-10-07T00:04:47.652233+00:00",
+      "lock": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/compiler-index.lock",
+      "admission": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/document-union-96b-adapter-fresh-admission.json",
+      "admission_age_seconds": 5.724433,
+      "argv": [
+        "/bin/bash",
+        "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/run-document-union-96b-adapter.sh"
+      ],
+      "exit": 0,
+      "ended": "2026-10-07T00:09:09.065792+00:00"
+    },
+    {
+      "permit_pid": 62721,
+      "launcher_pid": 62724,
+      "source_commit": "96b04b141affd653e3c6932dc8c325f351775f8f",
+      "started": "2026-10-07T00:09:41.582727+00:00",
+      "lock": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/compiler-index.lock",
+      "admission": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/document-union-96b-journal-fresh-admission.json",
+      "admission_age_seconds": 5.396044,
+      "argv": [
+        "/bin/bash",
+        "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/run-document-union-96b-journal.sh"
+      ],
+      "exit": 0,
+      "ended": "2026-10-07T00:09:49.217383+00:00"
+    },
+    {
+      "permit_pid": 63949,
+      "launcher_pid": 63956,
+      "source_commit": "96b04b141affd653e3c6932dc8c325f351775f8f",
+      "started": "2026-10-07T00:10:22.062286+00:00",
+      "lock": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/compiler-index.lock",
+      "admission": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/document-union-96b-library-fresh-admission.json",
+      "admission_age_seconds": 5.746307,
+      "argv": [
+        "/bin/bash",
+        "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/run-document-union-96b-library.sh"
+      ],
+      "exit": 0,
+      "ended": "2026-10-07T00:11:48.620652+00:00"
+    }
+  ],
+  "prior_source_process_rows": [],
+  "prior_compiler_index_lock_unheld": true,
+  "new_successor": "Fresh must record exact Root-frozen successor and new owned lifetime lock at new launch"
+}

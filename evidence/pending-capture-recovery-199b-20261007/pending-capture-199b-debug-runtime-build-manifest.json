@@ -1,0 +1,77 @@
+{
+  "schema": "nudox.runtime-build-manifest.httpie-context.v1",
+  "source_commit": "199bef18b011e41493a3a973f8765015b29ab412",
+  "source_tree": "396b0720dff5f3a74577115670366c89a2743dd9",
+  "source_clean": true,
+  "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268",
+  "profile": "debug",
+  "target": "aarch64-apple-darwin",
+  "managed_build_receipt": {
+    "permit_pid": 24567,
+    "launcher_pid": 24574,
+    "source_commit": "199bef18b011e41493a3a973f8765015b29ab412",
+    "started": "2026-10-07T00:59:30.637955+00:00",
+    "lock": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/compiler-index.lock",
+    "admission": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-199b-trio-attempt01-fleet.json",
+    "admission_age_seconds": 5.222304,
+    "argv": [
+      "/bin/bash",
+      "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/run-pending-capture-199b-trio-attempt01.sh"
+    ],
+    "exit": 0,
+    "ended": "2026-10-07T01:02:06.362683+00:00"
+  },
+  "artifacts": {
+    "backend-mcp": {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/images-pending-capture-199b-debug/backend-mcp",
+      "compiler_output": "/Users/rmccrar6/codex-worktrees/sol61-pending-capture-recovery-20261007/.local/target/debug/backend-mcp",
+      "sha256": "6ecd0bc0c938e5897179c0526d9486fbadc9d2329ca4d4b91979ba5d1f83b760",
+      "bytes": 160082080,
+      "file": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/images-pending-capture-199b-debug/backend-mcp: Mach-O 64-bit executable arm64",
+      "cargo_package_id": "path+file:///Users/rmccrar6/codex-worktrees/sol61-pending-capture-recovery-20261007/apps/mcp#backend-mcp@0.2.0",
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 1,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": false
+      },
+      "features": [
+        "default"
+      ]
+    },
+    "backend-cli": {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/images-pending-capture-199b-debug/backend-cli",
+      "compiler_output": "/Users/rmccrar6/codex-worktrees/sol61-pending-capture-recovery-20261007/.local/target/debug/backend-cli",
+      "sha256": "f8161375bb974339c64f209db03946c0bed4872174e8bfd1e004726646aaa592",
+      "bytes": 219321152,
+      "file": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/images-pending-capture-199b-debug/backend-cli: Mach-O 64-bit executable arm64",
+      "cargo_package_id": "path+file:///Users/rmccrar6/codex-worktrees/sol61-pending-capture-recovery-20261007/apps/cli#backend-cli@0.2.0",
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 1,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": false
+      },
+      "features": []
+    },
+    "backend-locald": {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/images-pending-capture-199b-debug/backend-locald",
+      "compiler_output": "/Users/rmccrar6/codex-worktrees/sol61-pending-capture-recovery-20261007/.local/target/debug/backend-locald",
+      "sha256": "615fdb564d814ae47a7f9ee080d380fc0e6f529adf36a29d078387ec2a3e91eb",
+      "bytes": 685186368,
+      "file": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/images-pending-capture-199b-debug/backend-locald: Mach-O 64-bit executable arm64",
+      "cargo_package_id": "path+file:///Users/rmccrar6/codex-worktrees/sol61-pending-capture-recovery-20261007/apps/locald#backend-locald@0.2.0",
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 1,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": false
+      },
+      "features": []
+    }
+  },
+  "meeting_release_candidate": false
+}

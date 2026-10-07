@@ -1,0 +1,21 @@
+{
+  "source_commit": "199bef18b011e41493a3a973f8765015b29ab412",
+  "source_tree": "396b0720dff5f3a74577115670366c89a2743dd9",
+  "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268",
+  "base_commit": "96b04b141affd653e3c6932dc8c325f351775f8f",
+  "source_clean": true,
+  "source_blobs": {
+    "crates/local-service/src/builtin/commands/adapter.rs": {
+      "sha256": "3d1a540ca83c0e8dda5372b40c9af61c3597362d0c863ef73b8cb2155b1640da",
+      "git_blob": "0190e3a6294d6687b6cdb5befd3ab0de2e1f2e5b"
+    },
+    "crates/local-service/src/builtin/commands/capture_recovery.rs": {
+      "sha256": "831187d489b81edf0954e86b4a254f6d49047a99d2ac66d53d1e2f36e13d7ee5",
+      "git_blob": "8f7ad767e4e16e14ba8b8a5055fa18c53ed792ca"
+    },
+    "crates/local-service/src/builtin/pending_stored.rs": {
+      "sha256": "425994616d25329f6c88139e5a19d6821089868bb954464acb086fff23eb6fb6",
+      "git_blob": "f11482efea572d126f32fd57ae0748bde862a940"
+    }
+  }
+}
