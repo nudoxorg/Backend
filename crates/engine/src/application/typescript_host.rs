@@ -2816,6 +2816,7 @@ pub struct TypeScriptProjectHost {
     explicit_compiler: Option<Box<Path>>,
     installed_default_compiler: Option<Box<Path>>,
     installed_default_module_root: Option<Box<Path>>,
+    installed_default_origin: TypeScriptSelectionOrigin,
     node: Option<Box<Path>>,
     node_origin: Option<TypeScriptSelectionOrigin>,
     home_root: Option<Box<Path>>,
@@ -2867,6 +2868,7 @@ impl TypeScriptProjectHost {
             explicit_compiler: explicit_compiler.map(PathBuf::into_boxed_path),
             installed_default_compiler: None,
             installed_default_module_root: None,
+            installed_default_origin: TypeScriptSelectionOrigin::InstalledHostSelection,
             node: node.map(PathBuf::into_boxed_path),
             node_origin,
             home_root: home_root.map(PathBuf::into_boxed_path),
@@ -2886,6 +2888,16 @@ impl TypeScriptProjectHost {
     ) -> Self {
         self.installed_default_compiler = compiler.map(PathBuf::into_boxed_path);
         self.installed_default_module_root = module_root.map(PathBuf::into_boxed_path);
+        self
+    }
+
+    /// Tags the coherent installed fallback with the source from which its exact paths came.
+    #[must_use]
+    pub(crate) fn with_installed_default_origin(
+        mut self,
+        origin: TypeScriptSelectionOrigin,
+    ) -> Self {
+        self.installed_default_origin = origin;
         self
     }
 
@@ -3183,7 +3195,7 @@ impl TypeScriptProjectHost {
             compiler_origin: if self.explicit_compiler.is_some() {
                 TypeScriptSelectionOrigin::ExplicitConfiguration
             } else {
-                TypeScriptSelectionOrigin::InstalledHostSelection
+                self.installed_default_origin
             },
         }))
     }

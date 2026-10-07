@@ -304,11 +304,15 @@ def main() -> int:
         "required_glibc": minimum_glibc,
         "executables": executables,
         "libraries": libraries,
+        "typescript_sdk": {
+            "bundled": False,
+            "reason": "Linux portable packages do not include a Node runtime or TypeScript npm SDK",
+        },
         "glibc_libraries_bundled": False,
         "runtime_acceptance": "external_native_qa_record_required",
     }
     (root / "packaging-manifest.json").write_text(json.dumps(package, indent=2, sort_keys=True) + "\n")
-    readme = f"""NuDox Linux x86_64 CLI/MCP/locald\n\nSource revision: {revision}\nRequires Linux x86_64 with glibc >= {minimum_glibc} and {INTERPRETER}.\nThe CLI, MCP and locald executables must remain siblings in bin/.\n\nVerify the supplied SHA-256 sidecar before extracting. For manual use:\n  tar -xzf nudox-linux-x86_64-{revision[:10]}.tar.gz\n  export PATH=\"$PWD/nudox-linux-x86_64/bin:$PATH\"\n  backend-cli --help\n  backend-mcp --help\n\nLanguage compiler integrations are discovered separately from this CLI package.\nTypeScript indexing uses host Node and the project's installed typescript package when configured.\nDefault project discovery does not require hidden NUDOX_* environment variables.\n"""
+    readme = f"""NuDox Linux x86_64 CLI/MCP/locald\n\nSource revision: {revision}\nRequires Linux x86_64 with glibc >= {minimum_glibc} and {INTERPRETER}.\nThe CLI, MCP and locald executables must remain siblings in bin/.\n\nVerify the supplied SHA-256 sidecar before extracting. For manual use:\n  tar -xzf nudox-linux-x86_64-{revision[:10]}.tar.gz\n  export PATH=\"$PWD/nudox-linux-x86_64/bin:$PATH\"\n  backend-cli --help\n  backend-mcp --help\n\nLanguage compiler integrations are discovered separately from this CLI package.\nThis Linux archive does not bundle Node or the TypeScript npm SDK. TypeScript indexing uses a\ncompatible host Node runtime and the selected project's installed TypeScript package; an explicit\noperator configuration can supply those paths. Adding a default portable SDK requires packaging\nNode, TypeScript, the report driver, and their complete hash receipt together, then discovering\nthat tree relative to these executables. A partial Node-only or npm-package-only update is not a\nsupported default.\nDefault project discovery does not require hidden NUDOX_* environment variables.\n"""
     (root / "README.txt").write_text(readme)
 
     archive_name = f"nudox-linux-x86_64-{revision[:10]}.tar.gz"

@@ -96,11 +96,13 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             }
             _ => None,
         };
-        let typescript_report = self.executable(
-            LocalHostVariable::NudoxTypeScriptReportProgram,
-            LocalHostPathRole::TypeScriptReportProgram,
-            ArrayVec::new(),
-        )?;
+        let typescript_report = self
+            .executable(
+                LocalHostVariable::NudoxTypeScriptReportProgram,
+                LocalHostPathRole::TypeScriptReportProgram,
+                ArrayVec::new(),
+            )?
+            .or_else(|| typescript_host.report_program.clone());
         let (node, node_origin) = match typescript_host.node {
             Some(selection) => (Some(selection.path), Some(selection.origin)),
             None => (None, None),
@@ -128,7 +130,8 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             typescript_report.clone(),
             probe_limits,
         )
-        .with_installed_default(installed_default_compiler, installed_default_module_root);
+        .with_installed_default(installed_default_compiler, installed_default_module_root)
+        .with_installed_default_origin(typescript_host.compiler_origin);
         let typescript = if executables.typescript.is_some() {
             match (typescript_report, node, typescript_module_root) {
                 (Some(program), _, _) => Some(TypeScriptChecker::default().with_program(program)?),

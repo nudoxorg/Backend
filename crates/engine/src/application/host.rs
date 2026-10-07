@@ -414,6 +414,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                     | LocalHostVariable::NudoxTypeScriptDefaultNode
                     | LocalHostVariable::NudoxTypeScriptBundledNode
                     | LocalHostVariable::NudoxTypeScriptModuleRoot
+                    | LocalHostVariable::NudoxTypeScriptReportProgram
                     | LocalHostVariable::NudoxPyrefly
                     | LocalHostVariable::NudoxGo
                     | LocalHostVariable::NudoxGoRoot
@@ -458,6 +459,12 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         }
         if let Some(module_root) = typescript.module_root {
             paths.push((LocalHostVariable::NudoxTypeScriptModuleRoot, module_root));
+        }
+        if let Some(report_program) = typescript.report_program {
+            paths.push((
+                LocalHostVariable::NudoxTypeScriptReportProgram,
+                report_program,
+            ));
         }
 
         for (variable, role, tool) in [

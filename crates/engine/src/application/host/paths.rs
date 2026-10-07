@@ -45,8 +45,19 @@ pub(super) struct TypeScriptNodeSelection {
 pub(super) struct TypeScriptHostSelection {
     pub(super) compiler: Option<PathBuf>,
     pub(super) compiler_explicit: bool,
+    pub(super) compiler_origin: TypeScriptSelectionOrigin,
     pub(super) node: Option<TypeScriptNodeSelection>,
     pub(super) module_root: Option<PathBuf>,
+    pub(super) report_program: Option<PathBuf>,
+}
+
+/// The exact TypeScript SDK resources admitted from one relocatable application bundle.
+#[derive(Clone, Debug)]
+struct BundledTypeScriptSdk {
+    compiler: PathBuf,
+    node: PathBuf,
+    module_root: PathBuf,
+    report_program: PathBuf,
 }
 
 /// Closed file or directory authority role.
@@ -118,7 +129,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         first_existing(role, candidates)
     }
 
-    /// Selects one complete global TypeScript fallback for every local service surface.
+    /// Selects one complete installed or bundled TypeScript fallback for every local surface.
     ///
     /// Project-local TypeScript is still selected first by `TypeScriptProjectHost`. This host
     /// tuple is used only when that project has no local compiler. An automatically discovered
@@ -131,6 +142,11 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         let variable = LocalHostVariable::NudoxTypeScriptCompiler;
         let role = LocalHostPathRole::Native(NativeTool::TypeScriptCompiler);
         let explicit_compiler = self.optional_absolute_path(variable)?;
+        let explicit_node = self.optional_absolute_path(LocalHostVariable::NudoxTypeScriptNode)?;
+        let explicit_module_root =
+            self.optional_absolute_path(LocalHostVariable::NudoxTypeScriptModuleRoot)?;
+        let explicit_report_program =
+            self.optional_absolute_path(LocalHostVariable::NudoxTypeScriptReportProgram)?;
         let captured_default_compiler = if self.discovery == LocalHostDiscovery::ClosedSnapshot {
             self.optional_absolute_path(LocalHostVariable::NudoxTypeScriptDefaultCompiler)?
                 .map(|path| {
@@ -154,6 +170,12 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             None => typescript_compiler_candidates(home, self.environment.search_path()),
         };
 
+        let explicit_report = self.executable(
+            LocalHostVariable::NudoxTypeScriptReportProgram,
+            LocalHostPathRole::TypeScriptReportProgram,
+            ArrayVec::new(),
+        )?;
+
         for candidate in compiler_candidates {
             let compiler = if explicit_compiler.is_some() {
                 candidate
@@ -171,8 +193,46 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 return Ok(TypeScriptHostSelection {
                     compiler: Some(compiler),
                     compiler_explicit: explicit_compiler.is_some(),
+                    compiler_origin: if explicit_compiler.is_some() {
+                        TypeScriptSelectionOrigin::ExplicitConfiguration
+                    } else if self.discovery == LocalHostDiscovery::ClosedSnapshot
+                        && captured_default_compiler
+                            .as_deref()
+                            .is_some_and(|compiler| {
+                                is_bundled_typescript_compiler(
+                                    std::env::current_exe().ok().as_deref(),
+                                    compiler,
+                                )
+                            })
+                    {
+                        TypeScriptSelectionOrigin::ValidatedApplicationBundle
+                    } else {
+                        TypeScriptSelectionOrigin::InstalledHostSelection
+                    },
                     node,
                     module_root,
+                    report_program: explicit_report.clone(),
+                });
+            }
+        }
+
+        if explicit_compiler.is_none()
+            && explicit_node.is_none()
+            && explicit_module_root.is_none()
+            && explicit_report_program.is_none()
+            && self.discovery != LocalHostDiscovery::ClosedSnapshot
+        {
+            if let Some(sdk) = bundled_typescript_sdk(std::env::current_exe().ok().as_deref())? {
+                return Ok(TypeScriptHostSelection {
+                    compiler: Some(sdk.compiler),
+                    compiler_explicit: false,
+                    compiler_origin: TypeScriptSelectionOrigin::ValidatedApplicationBundle,
+                    node: Some(TypeScriptNodeSelection {
+                        path: sdk.node,
+                        origin: TypeScriptSelectionOrigin::ValidatedApplicationBundle,
+                    }),
+                    module_root: Some(sdk.module_root),
+                    report_program: Some(sdk.report_program),
                 });
             }
         }
@@ -180,8 +240,10 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         Ok(TypeScriptHostSelection {
             compiler: None,
             compiler_explicit: false,
+            compiler_origin: TypeScriptSelectionOrigin::InstalledHostSelection,
             node: self.typescript_node_executable(home, None)?,
             module_root: self.typescript_module_root(None)?,
+            report_program: explicit_report,
         })
     }
 
@@ -834,6 +896,9 @@ fn single_component(value: &OsStr) -> bool {
 const MAX_BUNDLE_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_BUNDLE_EXECUTABLE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_BUNDLED_NODE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_BUNDLE_HELPER_RECEIPT_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_BUNDLE_TYPESCRIPT_PACKAGE_FILES: usize = 512;
+const MAX_BUNDLE_TYPESCRIPT_PACKAGE_BYTES: u64 = 96 * 1024 * 1024;
 
 /// Discovers a Node runtime only for an executable directly installed in a recognized Nudox
 /// macOS application bundle. The bundle's own finite inventory must bind both this executable
@@ -974,6 +1039,515 @@ fn bundled_typescript_node(
         });
     }
     Ok(Some(canonical_runtime))
+}
+
+/// Resolves the compiler, Node runtime, module root, and report program as one receipt-bound SDK.
+/// Every path is derived from the recognized application bundle, so the archive remains
+/// relocatable and selection never falls back to a build-machine store path.
+fn bundled_typescript_sdk(
+    executable: Option<&Path>,
+) -> Result<Option<BundledTypeScriptSdk>, LocalCompilerHostError> {
+    let Some(executable) = executable else {
+        return Ok(None);
+    };
+    let Ok(executable) = fs::canonicalize(executable) else {
+        return Ok(None);
+    };
+    let Some(macos) = executable.parent() else {
+        return Ok(None);
+    };
+    let Some(contents) = macos.parent() else {
+        return Ok(None);
+    };
+    let Some(bundle_root) = contents.parent() else {
+        return Ok(None);
+    };
+    if macos.file_name() != Some(OsStr::new("MacOS"))
+        || contents.file_name() != Some(OsStr::new("Contents"))
+        || !bundle_root
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|name| name.ends_with(".app"))
+        || !matches!(
+            executable.file_name().and_then(OsStr::to_str),
+            Some("backend-desktop" | "backend-cli" | "backend-mcp" | "backend-locald")
+        )
+    {
+        return Ok(None);
+    }
+
+    let manifest_path = contents.join("Resources/build-manifest.json");
+    if fs::canonicalize(&manifest_path).ok().as_deref() != Some(manifest_path.as_path()) {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: manifest_path.into_boxed_path(),
+            message: "bundle manifest is not at its canonical resource path".into(),
+        });
+    }
+    let manifest_metadata = fs::symlink_metadata(&manifest_path).map_err(|source| {
+        LocalCompilerHostError::BundleManifest {
+            path: manifest_path.clone().into_boxed_path(),
+            message: source.to_string().into_boxed_str(),
+        }
+    })?;
+    if !manifest_metadata.is_file() || manifest_metadata.file_type().is_symlink() {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: manifest_path.into_boxed_path(),
+            message: "expected a regular non-symlink bundle manifest".into(),
+        });
+    }
+    let manifest_bytes =
+        read_bounded(&manifest_path, MAX_BUNDLE_MANIFEST_BYTES).map_err(|source| {
+            LocalCompilerHostError::BundleManifest {
+                path: manifest_path.clone().into_boxed_path(),
+                message: source.to_string().into_boxed_str(),
+            }
+        })?;
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&manifest_bytes).map_err(|source| {
+            LocalCompilerHostError::BundleManifest {
+                path: manifest_path.clone().into_boxed_path(),
+                message: source.to_string().into_boxed_str(),
+            }
+        })?;
+    if manifest.get("schema").and_then(serde_json::Value::as_u64) != Some(1)
+        || manifest.get("product").and_then(serde_json::Value::as_str) != Some("Nudox")
+        || manifest
+            .get("bundle")
+            .and_then(|bundle| bundle.get("identifier"))
+            .and_then(serde_json::Value::as_str)
+            != Some("dev.nudox.desktop")
+    {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: manifest_path.into_boxed_path(),
+            message: "manifest does not describe a supported Nudox app bundle".into(),
+        });
+    }
+    let inventory = manifest
+        .get("files")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| LocalCompilerHostError::BundleManifest {
+            path: manifest_path.clone().into_boxed_path(),
+            message: "manifest is missing its file inventory".into(),
+        })?;
+    let executable_relative = executable
+        .strip_prefix(bundle_root)
+        .ok()
+        .and_then(Path::to_str)
+        .map(|path| path.replace('\\', "/"))
+        .ok_or_else(|| LocalCompilerHostError::BundleManifest {
+            path: manifest_path.clone().into_boxed_path(),
+            message: "current executable is outside the bundle inventory".into(),
+        })?;
+    let executable_record = inventory.get(&executable_relative).ok_or_else(|| {
+        LocalCompilerHostError::BundleManifest {
+            path: manifest_path.clone().into_boxed_path(),
+            message: "manifest inventory does not contain the current application executable"
+                .into(),
+        }
+    })?;
+    validate_bundle_inventory_file(
+        executable_record,
+        &bundle_root.join(&executable_relative),
+        MAX_BUNDLE_EXECUTABLE_BYTES,
+        &manifest_path,
+    )?;
+
+    // Older/partial app bundles can still provide their separately validated Node runtime,
+    // while only a manifest with the complete helper receipt may supply a default SDK.
+    let Some(helpers) = manifest.get("compiler_helpers") else {
+        return Ok(None);
+    };
+    let Some(version) = helpers
+        .get("tools")
+        .and_then(|tools| tools.get("typescript"))
+        .and_then(|typescript| typescript.get("version"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|version| !version.is_empty())
+    else {
+        return Ok(None);
+    };
+    if helpers
+        .get("files")
+        .and_then(serde_json::Value::as_object)
+        .is_none()
+    {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: manifest_path.clone().into_boxed_path(),
+            message: "compiler helper manifest is missing its file receipt".into(),
+        });
+    }
+
+    let helper_receipt_relative = "Contents/Resources/Build Evidence/compiler-helpers-receipt.json";
+    let helper_receipt_path = bundle_root.join(helper_receipt_relative);
+    let helper_receipt_record = inventory.get(helper_receipt_relative).ok_or_else(|| {
+        LocalCompilerHostError::BundleManifest {
+            path: manifest_path.clone().into_boxed_path(),
+            message: "manifest inventory does not contain the compiler-helper receipt".into(),
+        }
+    })?;
+    validate_bundle_inventory_file(
+        helper_receipt_record,
+        &helper_receipt_path,
+        MAX_BUNDLE_HELPER_RECEIPT_BYTES,
+        &manifest_path,
+    )?;
+    let (_, helper_receipt_digest) =
+        sha256_file(&helper_receipt_path, MAX_BUNDLE_HELPER_RECEIPT_BYTES)?;
+    if helpers
+        .get("receipt_sha256")
+        .and_then(serde_json::Value::as_str)
+        != Some(helper_receipt_digest.as_str())
+    {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: manifest_path.clone().into_boxed_path(),
+            message: "compiler-helper receipt digest differs from the bundle manifest".into(),
+        });
+    }
+    let helper_receipt_bytes = read_bounded(&helper_receipt_path, MAX_BUNDLE_HELPER_RECEIPT_BYTES)
+        .map_err(|source| LocalCompilerHostError::BundleManifest {
+            path: helper_receipt_path.clone().into_boxed_path(),
+            message: source.to_string().into_boxed_str(),
+        })?;
+    let helper_receipt: serde_json::Value =
+        serde_json::from_slice(&helper_receipt_bytes).map_err(|source| {
+            LocalCompilerHostError::BundleManifest {
+                path: helper_receipt_path.clone().into_boxed_path(),
+                message: source.to_string().into_boxed_str(),
+            }
+        })?;
+    if helper_receipt
+        .get("schema")
+        .and_then(serde_json::Value::as_u64)
+        != Some(1)
+        || helper_receipt.get("source") != manifest.get("source")
+        || helper_receipt.get("files") != helpers.get("files")
+        || helper_receipt.get("tools") != helpers.get("tools")
+        || helper_receipt
+            .get("target")
+            .and_then(serde_json::Value::as_str)
+            != manifest
+                .get("target")
+                .and_then(|target| target.get("triple"))
+                .and_then(serde_json::Value::as_str)
+    {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: helper_receipt_path.into_boxed_path(),
+            message: "compiler-helper receipt differs from the admitted bundle metadata".into(),
+        });
+    }
+    let receipt_typescript_version = helper_receipt
+        .get("tools")
+        .and_then(|tools| tools.get("typescript"))
+        .and_then(|typescript| typescript.get("version"))
+        .and_then(serde_json::Value::as_str);
+    if receipt_typescript_version != Some(version) {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: helper_receipt_path.into_boxed_path(),
+            message: "TypeScript version differs between helper and bundle receipts".into(),
+        });
+    }
+
+    let node_receipt_digest = helper_receipt
+        .get("files")
+        .and_then(|files| files.get("typescript/node/bin/node"))
+        .and_then(serde_json::Value::as_str);
+    let node_tool_digest = helper_receipt
+        .get("tools")
+        .and_then(|tools| tools.get("node"))
+        .and_then(|node| node.get("sha256"))
+        .and_then(serde_json::Value::as_str);
+    if node_receipt_digest.is_none() || node_receipt_digest != node_tool_digest {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: helper_receipt_path.into_boxed_path(),
+            message:
+                "bundled Node digest differs between the TypeScript SDK receipt and tool identity"
+                    .into(),
+        });
+    }
+
+    let helper_root_relative = "Contents/Resources/Helpers";
+    let package_relative = "typescript/node_modules/typescript";
+    let package_prefix = format!("{package_relative}/");
+    let receipt_files = helper_receipt
+        .get("files")
+        .and_then(serde_json::Value::as_object)
+        .expect("receipt files were compared with the required helper inventory");
+    let mut expected_package_files = std::collections::BTreeSet::new();
+    let mut package_bytes = 0_u64;
+    let mut package_file_count = 0_usize;
+    for (relative, receipt_digest) in receipt_files {
+        let Some(package_file) = relative.strip_prefix(&package_prefix) else {
+            continue;
+        };
+        if package_file.is_empty()
+            || relative.contains('\\')
+            || Path::new(relative)
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+            || !expected_package_files.insert(package_file.to_owned())
+        {
+            return Err(LocalCompilerHostError::BundleManifest {
+                path: helper_receipt_path.clone().into_boxed_path(),
+                message: "TypeScript package receipt contains an unsafe or duplicate path".into(),
+            });
+        }
+        package_file_count += 1;
+        if package_file_count > MAX_BUNDLE_TYPESCRIPT_PACKAGE_FILES {
+            return Err(LocalCompilerHostError::BundleManifest {
+                path: helper_receipt_path.clone().into_boxed_path(),
+                message: "TypeScript package receipt exceeds its file-count bound".into(),
+            });
+        }
+        let bundle_relative = format!("{helper_root_relative}/{relative}");
+        let file_record = inventory.get(&bundle_relative).ok_or_else(|| {
+            LocalCompilerHostError::BundleManifest {
+                path: manifest_path.clone().into_boxed_path(),
+                message: "bundle file inventory omits a receipted TypeScript package file".into(),
+            }
+        })?;
+        let top_level_digest = file_record
+            .get("sha256")
+            .and_then(serde_json::Value::as_str);
+        if receipt_digest.as_str() != top_level_digest {
+            return Err(LocalCompilerHostError::BundleManifest {
+                path: manifest_path.clone().into_boxed_path(),
+                message: "TypeScript package digest differs between bundle receipts".into(),
+            });
+        }
+        let path = bundle_root.join(&bundle_relative);
+        validate_bundle_inventory_file(
+            file_record,
+            &path,
+            MAX_BUNDLE_TYPESCRIPT_PACKAGE_BYTES,
+            &manifest_path,
+        )?;
+        let metadata =
+            fs::metadata(&path).map_err(|source| LocalCompilerHostError::BundleManifest {
+                path: path.clone().into_boxed_path(),
+                message: source.to_string().into_boxed_str(),
+            })?;
+        package_bytes = package_bytes.saturating_add(metadata.len());
+        if package_bytes > MAX_BUNDLE_TYPESCRIPT_PACKAGE_BYTES {
+            return Err(LocalCompilerHostError::BundleManifest {
+                path: manifest_path.clone().into_boxed_path(),
+                message: "TypeScript package exceeds its total-byte bound".into(),
+            });
+        }
+    }
+    if !expected_package_files.contains("package.json")
+        || !expected_package_files.contains("bin/tsc")
+    {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: helper_receipt_path.clone().into_boxed_path(),
+            message: "TypeScript package receipt omits package.json or bin/tsc".into(),
+        });
+    }
+
+    let package_root =
+        bundle_root.join("Contents/Resources/Helpers/typescript/node_modules/typescript");
+    let package_root_canonical = fs::canonicalize(&package_root).map_err(|source| {
+        LocalCompilerHostError::BundleManifest {
+            path: package_root.clone().into_boxed_path(),
+            message: source.to_string().into_boxed_str(),
+        }
+    })?;
+    if package_root_canonical != package_root {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: package_root.into_boxed_path(),
+            message: "TypeScript package tree resolves through a symlink".into(),
+        });
+    }
+    let mut actual_package_files = std::collections::BTreeSet::new();
+    collect_bundle_typescript_files(&package_root, &package_root, 0, &mut actual_package_files)?;
+    if actual_package_files != expected_package_files {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: package_root.into_boxed_path(),
+            message: "installed TypeScript package tree differs from its complete receipt".into(),
+        });
+    }
+    let package_manifest_path = package_root.join("package.json");
+    let package_manifest_bytes =
+        read_bounded(&package_manifest_path, 64 * 1024).map_err(|source| {
+            LocalCompilerHostError::BundleManifest {
+                path: package_manifest_path.clone().into_boxed_path(),
+                message: source.to_string().into_boxed_str(),
+            }
+        })?;
+    let package_manifest: serde_json::Value = serde_json::from_slice(&package_manifest_bytes)
+        .map_err(|source| LocalCompilerHostError::BundleManifest {
+            path: package_manifest_path.clone().into_boxed_path(),
+            message: source.to_string().into_boxed_str(),
+        })?;
+    if package_manifest
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        != Some(version)
+    {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: package_manifest_path.into_boxed_path(),
+            message: "installed TypeScript package version differs from its SDK receipt".into(),
+        });
+    }
+
+    let driver_relative = "Contents/Resources/Helpers/typescript/checker-main.cjs";
+    let driver_record =
+        inventory
+            .get(driver_relative)
+            .ok_or_else(|| LocalCompilerHostError::BundleManifest {
+                path: manifest_path.clone().into_boxed_path(),
+                message: "bundle omits the TypeScript report-program driver".into(),
+            })?;
+    validate_bundle_inventory_file(
+        driver_record,
+        &bundle_root.join(driver_relative),
+        16 * 1024 * 1024,
+        &manifest_path,
+    )?;
+    let (_, driver_digest) = sha256_file(&bundle_root.join(driver_relative), 16 * 1024 * 1024)?;
+    if helper_receipt
+        .get("typescript_driver_sha256")
+        .and_then(serde_json::Value::as_str)
+        != Some(driver_digest.as_str())
+        || helpers
+            .get("typescript_driver_sha256")
+            .and_then(serde_json::Value::as_str)
+            != Some(driver_digest.as_str())
+    {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: manifest_path.clone().into_boxed_path(),
+            message: "TypeScript report driver differs from its source receipt".into(),
+        });
+    }
+
+    let runtime_relative = "Contents/Resources/Helpers/typescript/node/bin/node";
+    let compiler_wrapper_relative = "Contents/Resources/Helpers/typescript/tsc";
+    let report_relative = "Contents/Resources/Helpers/typescript/report-program";
+    for (relative, maximum) in [
+        (runtime_relative, MAX_BUNDLED_NODE_BYTES),
+        (compiler_wrapper_relative, 16 * 1024 * 1024),
+        (report_relative, 16 * 1024 * 1024),
+    ] {
+        let record =
+            inventory
+                .get(relative)
+                .ok_or_else(|| LocalCompilerHostError::BundleManifest {
+                    path: manifest_path.clone().into_boxed_path(),
+                    message: format!("bundle inventory omits the TypeScript SDK asset {relative}")
+                        .into_boxed_str(),
+                })?;
+        validate_bundle_inventory_file(
+            record,
+            &bundle_root.join(relative),
+            maximum,
+            &manifest_path,
+        )?;
+    }
+    let compiler = package_root.join("bin/tsc");
+    let node = canonicalize_executable_existing(
+        LocalHostPathRole::TypeScriptNode,
+        &bundle_root.join(runtime_relative),
+    )?;
+    let module_root = bundle_root.join("Contents/Resources/Helpers/typescript/node_modules");
+    let report_program = canonicalize_executable_existing(
+        LocalHostPathRole::TypeScriptReportProgram,
+        &bundle_root.join(report_relative),
+    )?;
+    for path in [&compiler, &node, &module_root, &report_program] {
+        let expected = bundle_root.join("Contents/Resources");
+        if !path.starts_with(&expected) {
+            return Err(LocalCompilerHostError::BundleManifest {
+                path: path.clone().into_boxed_path(),
+                message: "TypeScript SDK path escaped the bundle resources".into(),
+            });
+        }
+    }
+    Ok(Some(BundledTypeScriptSdk {
+        compiler,
+        node,
+        module_root,
+        report_program,
+    }))
+}
+
+fn is_bundled_typescript_compiler(executable: Option<&Path>, compiler: &Path) -> bool {
+    let Some(executable) = executable else {
+        return false;
+    };
+    let Ok(executable) = fs::canonicalize(executable) else {
+        return false;
+    };
+    let Some(contents) = executable.parent().and_then(Path::parent) else {
+        return false;
+    };
+    let Some(bundle_root) = contents.parent() else {
+        return false;
+    };
+    let expected =
+        bundle_root.join("Contents/Resources/Helpers/typescript/node_modules/typescript/bin/tsc");
+    fs::canonicalize(expected).ok().as_deref() == Some(compiler)
+}
+
+fn collect_bundle_typescript_files(
+    directory: &Path,
+    package_root: &Path,
+    depth: usize,
+    files: &mut std::collections::BTreeSet<String>,
+) -> Result<(), LocalCompilerHostError> {
+    if depth > 32 {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: directory.to_path_buf().into_boxed_path(),
+            message: "TypeScript package directory depth exceeds its bound".into(),
+        });
+    }
+    let entries =
+        fs::read_dir(directory).map_err(|source| LocalCompilerHostError::BundleManifest {
+            path: directory.to_path_buf().into_boxed_path(),
+            message: source.to_string().into_boxed_str(),
+        })?;
+    for entry in entries {
+        let entry = entry.map_err(|source| LocalCompilerHostError::BundleManifest {
+            path: directory.to_path_buf().into_boxed_path(),
+            message: source.to_string().into_boxed_str(),
+        })?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|source| {
+            LocalCompilerHostError::BundleManifest {
+                path: path.clone().into_boxed_path(),
+                message: source.to_string().into_boxed_str(),
+            }
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(LocalCompilerHostError::BundleManifest {
+                path: path.into_boxed_path(),
+                message: "TypeScript package tree contains a symlink".into(),
+            });
+        }
+        if metadata.is_dir() {
+            collect_bundle_typescript_files(&path, package_root, depth + 1, files)?;
+        } else if metadata.is_file() {
+            let relative = path
+                .strip_prefix(package_root)
+                .ok()
+                .and_then(Path::to_str)
+                .map(|path| path.replace('\\', "/"))
+                .ok_or_else(|| LocalCompilerHostError::BundleManifest {
+                    path: path.clone().into_boxed_path(),
+                    message: "TypeScript package path is not a portable relative path".into(),
+                })?;
+            if files.len() >= MAX_BUNDLE_TYPESCRIPT_PACKAGE_FILES || !files.insert(relative) {
+                return Err(LocalCompilerHostError::BundleManifest {
+                    path: path.into_boxed_path(),
+                    message: "TypeScript package tree exceeds its file-count bound".into(),
+                });
+            }
+        } else {
+            return Err(LocalCompilerHostError::BundleManifest {
+                path: path.into_boxed_path(),
+                message: "TypeScript package tree contains a special file".into(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn validate_bundle_inventory_file(
@@ -1433,6 +2007,201 @@ mod tests {
         fs::write(&runtime, b"modified Node").expect("change bundled Node bytes");
         assert!(matches!(
             bundled_typescript_node(Some(&executable)),
+            Err(LocalCompilerHostError::BundleManifest { .. })
+        ));
+        fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
+    fn bundled_typescript_sdk_is_a_complete_receipt_bound_relative_resource_set() {
+        let root = private_test_directory("typescript-bundle-sdk");
+        let bundle = root.join("Nudox.app");
+        let executable = bundle.join("Contents/MacOS/backend-mcp");
+        let helper_root = bundle.join("Contents/Resources/Helpers/typescript");
+        let node = helper_root.join("node/bin/node");
+        let compiler = helper_root.join("node_modules/typescript/bin/tsc");
+        let package_json = helper_root.join("node_modules/typescript/package.json");
+        let typescript_api = helper_root.join("node_modules/typescript/lib/typescript.js");
+        let compiler_wrapper = helper_root.join("tsc");
+        let report_program = helper_root.join("report-program");
+        let driver = helper_root.join("checker-main.cjs");
+        for path in [
+            &executable,
+            &node,
+            &compiler,
+            &package_json,
+            &typescript_api,
+            &compiler_wrapper,
+            &report_program,
+            &driver,
+        ] {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("create SDK fixture directory");
+            }
+        }
+        fs::write(&executable, b"fixture executable").expect("write executable");
+        fs::write(&node, b"fixture node").expect("write bundled Node");
+        fs::write(&compiler, b"#!/usr/bin/env node\n").expect("write package tsc entrypoint");
+        fs::write(&package_json, br#"{"version":"5.7.2"}"#).expect("write package metadata");
+        fs::write(&typescript_api, b"module.exports = { version: '5.7.2' };\n")
+            .expect("write compiler API");
+        fs::write(&compiler_wrapper, b"#!/bin/sh\nexit 0\n").expect("write tsc wrapper");
+        fs::write(&report_program, b"#!/bin/sh\nexit 0\n").expect("write report wrapper");
+        fs::write(&driver, b"'use strict';\n").expect("write report driver");
+        for path in [&node, &report_program] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+                .expect("make SDK runtime executable");
+        }
+
+        let helper_relative_files = [
+            "typescript/node/bin/node",
+            "typescript/node_modules/typescript/bin/tsc",
+            "typescript/node_modules/typescript/package.json",
+            "typescript/node_modules/typescript/lib/typescript.js",
+        ];
+        let helper_file_hashes = helper_relative_files
+            .iter()
+            .map(|relative| {
+                let path = bundle.join("Contents/Resources/Helpers").join(relative);
+                let (_, digest) = sha256_file(&path, MAX_BUNDLE_EXECUTABLE_BYTES)
+                    .expect("hash receipted helper file");
+                ((*relative).to_owned(), serde_json::Value::String(digest))
+            })
+            .collect::<serde_json::Map<_, _>>();
+        let node_digest = helper_file_hashes
+            .get("typescript/node/bin/node")
+            .and_then(serde_json::Value::as_str)
+            .expect("Node digest");
+        let driver_digest = sha256_file(&driver, MAX_BUNDLE_EXECUTABLE_BYTES)
+            .expect("hash report driver")
+            .1;
+        let tools = serde_json::json!({
+            "node": {"version":"v22.0.0", "sha256":node_digest},
+            "typescript": {"version":"5.7.2"}
+        });
+        let source =
+            serde_json::json!({"git_revision":"source-revision", "git_tree":"source-tree"});
+        let helper_receipt = serde_json::json!({
+            "schema":1,
+            "source":source,
+            "target":"aarch64-apple-darwin",
+            "files":helper_file_hashes,
+            "tools":tools,
+            "typescript_driver_sha256":driver_digest,
+        });
+        let helper_receipt_bytes =
+            serde_json::to_vec(&helper_receipt).expect("serialize helper receipt");
+        let helper_receipt_path =
+            bundle.join("Contents/Resources/Build Evidence/compiler-helpers-receipt.json");
+        fs::create_dir_all(helper_receipt_path.parent().expect("receipt parent"))
+            .expect("create receipt directory");
+        fs::write(&helper_receipt_path, &helper_receipt_bytes).expect("write helper receipt");
+        let receipt_digest = sha256_file(&helper_receipt_path, MAX_BUNDLE_HELPER_RECEIPT_BYTES)
+            .expect("hash helper receipt")
+            .1;
+
+        let inventory_entry = |path: &Path| {
+            let (size_bytes, sha256) =
+                sha256_file(path, MAX_BUNDLE_EXECUTABLE_BYTES).expect("hash bundle fixture");
+            serde_json::json!({
+                "kind":"file",
+                "size_bytes":size_bytes,
+                "sha256":sha256,
+            })
+        };
+        let mut inventory = serde_json::Map::new();
+        let bundle_paths = [
+            ("Contents/MacOS/backend-mcp", &executable),
+            ("Contents/Resources/Helpers/typescript/node/bin/node", &node),
+            (
+                "Contents/Resources/Helpers/typescript/node_modules/typescript/bin/tsc",
+                &compiler,
+            ),
+            (
+                "Contents/Resources/Helpers/typescript/node_modules/typescript/package.json",
+                &package_json,
+            ),
+            (
+                "Contents/Resources/Helpers/typescript/node_modules/typescript/lib/typescript.js",
+                &typescript_api,
+            ),
+            (
+                "Contents/Resources/Helpers/typescript/tsc",
+                &compiler_wrapper,
+            ),
+            (
+                "Contents/Resources/Helpers/typescript/report-program",
+                &report_program,
+            ),
+            (
+                "Contents/Resources/Helpers/typescript/checker-main.cjs",
+                &driver,
+            ),
+        ];
+        for (relative, path) in bundle_paths {
+            inventory.insert(relative.to_owned(), inventory_entry(path));
+        }
+        inventory.insert(
+            "Contents/Resources/Build Evidence/compiler-helpers-receipt.json".to_owned(),
+            inventory_entry(&helper_receipt_path),
+        );
+        let helpers = serde_json::json!({
+            "receipt_sha256":receipt_digest,
+            "files":helper_receipt["files"],
+            "tools":tools,
+            "typescript_driver_sha256":driver_digest,
+        });
+        let manifest = serde_json::json!({
+            "schema":1,
+            "product":"Nudox",
+            "source":source,
+            "target":{"triple":"aarch64-apple-darwin"},
+            "bundle":{"identifier":"dev.nudox.desktop"},
+            "compiler_helpers":helpers,
+            "files":inventory,
+        });
+        let manifest_path = bundle.join("Contents/Resources/build-manifest.json");
+        let manifest_bytes = serde_json::to_vec(&manifest).expect("serialize bundle manifest");
+        fs::write(&manifest_path, &manifest_bytes).expect("write bundle manifest");
+
+        let admitted = bundled_typescript_sdk(Some(&executable))
+            .expect("validate bundled TypeScript SDK")
+            .expect("complete SDK is available");
+        assert_eq!(
+            admitted.compiler,
+            fs::canonicalize(&compiler).expect("canonical compiler")
+        );
+        assert_eq!(
+            admitted.node,
+            fs::canonicalize(&node).expect("canonical Node")
+        );
+        assert_eq!(
+            admitted.module_root,
+            fs::canonicalize(helper_root.join("node_modules")).expect("canonical module root")
+        );
+        assert_eq!(
+            admitted.report_program,
+            fs::canonicalize(&report_program).expect("canonical report program")
+        );
+
+        let mut incompatible_manifest: serde_json::Value =
+            serde_json::from_slice(&manifest_bytes).expect("read fixture manifest");
+        incompatible_manifest["target"]["triple"] =
+            serde_json::Value::String("x86_64-apple-darwin".to_owned());
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec(&incompatible_manifest).expect("serialize mismatched target"),
+        )
+        .expect("write mismatched target manifest");
+        assert!(matches!(
+            bundled_typescript_sdk(Some(&executable)),
+            Err(LocalCompilerHostError::BundleManifest { .. })
+        ));
+        fs::write(&manifest_path, &manifest_bytes).expect("restore bundle manifest");
+
+        fs::write(&typescript_api, b"module.exports = {};\n").expect("tamper with SDK tree");
+        assert!(matches!(
+            bundled_typescript_sdk(Some(&executable)),
             Err(LocalCompilerHostError::BundleManifest { .. })
         ));
         fs::remove_dir_all(root).expect("remove test directory");
