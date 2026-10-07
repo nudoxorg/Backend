@@ -3,7 +3,6 @@
 
 use super::*;
 use std::borrow::Cow;
-use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct FileId(usize);
@@ -425,41 +424,63 @@ struct SourceKey {
 }
 
 struct CachedCalls {
-    key: SourceKey,
-    calls: Arc<ProjectCalls>,
+    key: Option<SourceKey>,
+    calls: ProjectCalls,
 }
-static CALLS: OnceLock<Mutex<Option<CachedCalls>>> = OnceLock::new();
 
-/// One retained project, keyed by the checked workspace root (including its
-/// manifest and complete file-facts relation) and package. Fixture sources
-/// without an authenticated selected root bypass residence entirely.
-pub(super) fn project_calls(
-    sources: &IndexedSources,
-    package: backend_engine::PackageKey,
-) -> Result<Arc<ProjectCalls>, BuiltinModelError> {
-    let key = sources.source_snapshot.as_ref().map(|source| SourceKey {
-        workspace: source.workspace_root(),
-        package,
-    });
-    let cache = CALLS.get_or_init(|| Mutex::new(None));
-    if let Some(key) = key {
-        let resident = cache
-            .lock()
-            .map_err(|_| BuiltinModelError("structural calls residence is poisoned".to_owned()))?;
-        if let Some(resident) = resident.as_ref().filter(|resident| resident.key == key) {
-            return Ok(Arc::clone(&resident.calls));
-        }
-    }
-    let calls = Arc::new(ProjectCalls::build(sources, package)?);
-    if let Some(key) = key {
-        *cache.lock().map_err(|_| {
-            BuiltinModelError("structural calls residence is poisoned".to_owned())
-        })? = Some(CachedCalls {
-            key,
-            calls: Arc::clone(&calls),
+/// One bounded source projection owned by one command adapter. The checked
+/// workspace root binds the manifest and complete file facts; fixture inputs
+/// without that authenticated root are rebuilt on every request.
+#[derive(Default)]
+pub(crate) struct StructuralCallResidence {
+    current: Option<CachedCalls>,
+    #[cfg(test)]
+    builds: usize,
+}
+
+impl StructuralCallResidence {
+    pub(super) fn project_calls(
+        &mut self,
+        sources: &IndexedSources,
+        package: backend_engine::PackageKey,
+    ) -> Result<&ProjectCalls, BuiltinModelError> {
+        let key = sources.source_snapshot.as_ref().map(|source| SourceKey {
+            workspace: source.workspace_root(),
+            package,
         });
+        let hit = key.is_some()
+            && self
+                .current
+                .as_ref()
+                .is_some_and(|current| current.key == key);
+        if !hit {
+            // Finish admission before replacing the previous exact projection.
+            let calls = ProjectCalls::build(sources, package)?;
+            self.current = Some(CachedCalls { key, calls });
+            #[cfg(test)]
+            {
+                self.builds += 1;
+            }
+        }
+        Ok(&self
+            .current
+            .as_ref()
+            .expect("projection admitted above")
+            .calls)
     }
-    Ok(calls)
+
+    pub(crate) fn coordinate_pairs(
+        &mut self,
+        sources: &IndexedSources,
+        package: backend_engine::PackageKey,
+    ) -> Result<Vec<(String, String)>, BuiltinModelError> {
+        Ok(self.project_calls(sources, package)?.coordinate_pairs())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn build_count(&self) -> usize {
+        self.builds
+    }
 }
 
 #[cfg(test)]
@@ -637,7 +658,8 @@ mod tests {
             ("two/target.ts", TypeScript, decoy.clone()),
         ])?;
         assert!(
-            project_calls(&missing, package)
+            StructuralCallResidence::default()
+                .project_calls(&missing, package)
                 .map_err(|e| e.to_string())?
                 .coordinate_pairs()
                 .is_empty()
@@ -648,7 +670,8 @@ mod tests {
             ("one/target.ts", TypeScript, target),
         ])?;
         assert_eq!(
-            project_calls(&added, package)
+            StructuralCallResidence::default()
+                .project_calls(&added, package)
                 .map_err(|e| e.to_string())?
                 .coordinate_pairs(),
             vec![(

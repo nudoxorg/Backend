@@ -1290,14 +1290,16 @@ fn declares_a_nominal_type(kind: DeclarationKind) -> bool {
 
 #[path = "structural_calls.rs"]
 mod calls;
+pub(crate) use calls::StructuralCallResidence;
 
 /// Same-file and import-resolved pairs from the exact selected source facts.
 /// Graph and references share the immutable typed projection behind this view.
+#[cfg(test)]
 pub(crate) fn structural_call_coordinate_pairs(
     sources: &IndexedSources,
     package: backend_engine::PackageKey,
 ) -> Result<Vec<(String, String)>, BuiltinModelError> {
-    Ok(calls::project_calls(sources, package)?.coordinate_pairs())
+    StructuralCallResidence::default().coordinate_pairs(sources, package)
 }
 
 struct ParsedDeclarationCoordinate {
@@ -1437,7 +1439,26 @@ pub(crate) fn structural_call_graph_relations_mapped(
 /// Same-file and import-resolved call edges inferred from bounded declaration
 /// excerpts when no complete semantic publication supplies compiler-proven
 /// `Calls` links.
+#[cfg(test)]
 pub(crate) fn structural_call_graph_relations(
+    view: &backend_engine::ViewRoot,
+    sources: &IndexedSources,
+    package: backend_engine::PackageKey,
+    source_id: RowId,
+    include_incoming: bool,
+) -> Result<Option<Vec<backend_engine::GraphRelation>>, BuiltinModelError> {
+    structural_call_graph_relations_resident(
+        &mut StructuralCallResidence::default(),
+        view,
+        sources,
+        package,
+        source_id,
+        include_incoming,
+    )
+}
+
+pub(crate) fn structural_call_graph_relations_resident(
+    residence: &mut StructuralCallResidence,
     view: &backend_engine::ViewRoot,
     sources: &IndexedSources,
     package: backend_engine::PackageKey,
@@ -1449,7 +1470,7 @@ pub(crate) fn structural_call_graph_relations(
             "structural call graph source is absent from the view".to_owned(),
         ));
     }
-    let calls = calls::project_calls(sources, package)?;
+    let calls = residence.project_calls(sources, package)?;
     let source = view.row_ref(source_id).expect("source row checked above");
     let mut relations = BTreeSet::new();
     // Only materialize the requested neighborhood. Incoming edges use the
@@ -1493,7 +1514,22 @@ pub(crate) fn structural_call_graph_relations(
 }
 
 /// Incoming call sites for one declaration when semantic references are absent.
+#[cfg(test)]
 pub(crate) fn structural_reference_facts(
+    view: &backend_engine::ViewRoot,
+    sources: &IndexedSources,
+    target: &str,
+) -> Result<Vec<backend_engine::ReferenceFact>, BuiltinModelError> {
+    structural_reference_facts_resident(
+        &mut StructuralCallResidence::default(),
+        view,
+        sources,
+        target,
+    )
+}
+
+pub(crate) fn structural_reference_facts_resident(
+    residence: &mut StructuralCallResidence,
     view: &backend_engine::ViewRoot,
     sources: &IndexedSources,
     target: &str,
@@ -1514,7 +1550,9 @@ pub(crate) fn structural_reference_facts(
         };
         (target_row.id, target_symbol, package)
     };
-    let Some(relations) = structural_call_graph_relations(view, sources, package, target_id, true)?
+    let Some(relations) = structural_call_graph_relations_resident(
+        residence, view, sources, package, target_id, true,
+    )?
     else {
         return Ok(Vec::new());
     };

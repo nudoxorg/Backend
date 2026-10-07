@@ -861,6 +861,7 @@ fn structural_calls_rebuild_negative_results_on_source_and_complete_manifest_cha
         .expect("complete manifest");
         (record, Some(facts))
     }
+    let mut residence = view_build::StructuralCallResidence::default();
     let workspace = TempWorkspace::new();
     let label = "pkg:npm/structural-call-cache@1.0.0";
     let package = PackageKey::from_value(label);
@@ -881,15 +882,69 @@ fn structural_calls_rebuild_negative_results_on_source_and_complete_manifest_cha
     let initial = read_package_sources(&daemon.engine().daemon().owner().snapshot(), package)
         .expect("exact initial source");
     assert!(
-        view_build::structural_call_coordinate_pairs(&initial, package)
+        residence
+            .coordinate_pairs(&initial, package)
             .unwrap()
             .is_empty()
     );
     assert!(
-        view_build::structural_call_coordinate_pairs(&initial, package)
+        residence
+            .coordinate_pairs(&initial, package)
             .unwrap()
             .is_empty(),
         "repeated negative result on the exact selected closure"
+    );
+    assert_eq!(
+        residence.build_count(),
+        1,
+        "negative hit does no projection work"
+    );
+    // A second command owner with the same package name has its own exact root
+    // and residence. Its requests cannot replace the first owner's projection.
+    let other_workspace = TempWorkspace::new();
+    let mut other_daemon = open_daemon(other_workspace.0.path());
+    commit_files(
+        &mut other_daemon,
+        package,
+        label,
+        1,
+        &[
+            caller.clone(),
+            file(package, "one/target.ts", "export function validate() {}\n"),
+        ],
+    );
+    let other_sources =
+        read_package_sources(&other_daemon.engine().daemon().owner().snapshot(), package)
+            .expect("independent workspace source");
+    assert_ne!(
+        initial.source_snapshot.as_ref().unwrap().workspace_root(),
+        other_sources
+            .source_snapshot
+            .as_ref()
+            .unwrap()
+            .workspace_root()
+    );
+    let mut other_residence = view_build::StructuralCallResidence::default();
+    let other_expected = vec![(
+        format!("{label}::one/caller.ts:2::caller"),
+        format!("{label}::one/target.ts:1::validate"),
+    )];
+    assert_eq!(
+        other_residence
+            .coordinate_pairs(&other_sources, package)
+            .unwrap(),
+        other_expected
+    );
+    assert!(
+        residence
+            .coordinate_pairs(&initial, package)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        residence.build_count(),
+        1,
+        "another owner cannot evict this owner"
     );
     let prefix = (0..900)
         .map(|at| format!("export function filler_{at}() {{}}\n"))
@@ -921,7 +976,7 @@ fn structural_calls_rebuild_negative_results_on_source_and_complete_manifest_cha
         format!("{label}::one/target.ts:901::validate"),
     )];
     assert_eq!(
-        view_build::structural_call_coordinate_pairs(&added, package).unwrap(),
+        residence.coordinate_pairs(&added, package).unwrap(),
         expected,
         "new module invalidates the old negative import and uses the complete declaration beyond the compact row"
     );
@@ -948,14 +1003,31 @@ fn structural_calls_rebuild_negative_results_on_source_and_complete_manifest_cha
         changed.source_snapshot.as_ref().unwrap().workspace_root()
     );
     assert!(
-        view_build::structural_call_coordinate_pairs(&changed, package)
+        residence
+            .coordinate_pairs(&changed, package)
             .unwrap()
             .is_empty(),
         "changing the target facts manifest invalidates a positive call projection"
     );
     assert_eq!(
-        view_build::structural_call_coordinate_pairs(&added, package).unwrap(),
+        residence.coordinate_pairs(&added, package).unwrap(),
         expected,
         "retained older exact snapshots remain independent of the latest resident entry"
+    );
+    assert_eq!(
+        residence.build_count(),
+        4,
+        "each exact root change rebuilds once"
+    );
+    assert_eq!(
+        other_residence
+            .coordinate_pairs(&other_sources, package)
+            .unwrap(),
+        other_expected
+    );
+    assert_eq!(
+        other_residence.build_count(),
+        1,
+        "interleaving root changes stay owner local"
     );
 }

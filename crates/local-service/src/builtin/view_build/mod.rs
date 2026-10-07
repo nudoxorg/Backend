@@ -54,9 +54,14 @@ pub(super) use query::semantic_query_corpus;
 pub(crate) use semantic::compiled_source_path;
 pub(super) use semantic::{ForeignPublication, rows_for_indexed_sources};
 pub(crate) use structural::{
-    structural_call_coordinate_pairs, structural_call_graph_relations,
-    structural_call_graph_relations_mapped, structural_call_span, structural_file_span,
-    structural_reference_facts, structural_symbol_identity, view_row_for_structural_coordinate,
+    StructuralCallResidence, structural_call_graph_relations_mapped,
+    structural_call_graph_relations_resident, structural_call_span, structural_file_span,
+    structural_reference_facts_resident, structural_symbol_identity,
+    view_row_for_structural_coordinate,
+};
+#[cfg(test)]
+pub(crate) use structural::{
+    structural_call_coordinate_pairs, structural_call_graph_relations, structural_reference_facts,
 };
 
 #[cfg(test)]
