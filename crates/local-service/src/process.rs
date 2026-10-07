@@ -1534,9 +1534,13 @@ pub fn run_process<O: OwnerService + 'static>(owner: O, config: ProcessConfig) -
             ExitCode::from(EX_USAGE)
         }
         Err(
-            error @ (ProcessError::Profile(_)
+            error @ (ProcessError::OwnerContended { .. }
             | ProcessError::Listener(ListenerError::AlreadyRunning)),
         ) => {
+            report_process_failure(&error);
+            ExitCode::from(backend_runtime::OWNER_CONTENDED_EXIT_CODE)
+        }
+        Err(error @ ProcessError::Profile(_)) => {
             report_process_failure(&error);
             ExitCode::from(EX_UNAVAILABLE)
         }
@@ -1623,6 +1627,12 @@ pub enum ProcessError {
     Help,
     /// A compiled profile could not construct its checked composition.
     Profile(String),
+    /// Another process holds the checked workspace lease; its listener may
+    /// still be opening. This is not a refused compiler or damaged state.
+    OwnerContended {
+        /// Exact workspace whose owner lease refused this contender.
+        workspace: PathBuf,
+    },
     /// The workspace is intact but was written by another build of the
     /// product, in a layout this build does not read. The message names what
     /// was recognised. Nothing here is corrupt: a host that owns its
@@ -1644,6 +1654,11 @@ impl fmt::Display for ProcessError {
             Self::Profile(message) => {
                 write!(formatter, "compiled locald profile failed: {message}")
             }
+            Self::OwnerContended { workspace } => write!(
+                formatter,
+                "another process owns workspace {}; waiting for its local endpoint is safe, but replacing its state is not",
+                workspace.display()
+            ),
             Self::StateFromAnotherBuild(message) => {
                 write!(
                     formatter,

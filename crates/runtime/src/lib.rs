@@ -74,12 +74,14 @@ const AUTHORITY_FILE: &str = "authority.secret";
 /// command that was already working. A live child is evidence that startup is
 /// progressing, so waiting on it is not the same act as waiting on nothing.
 const LIVE_START_TIMEOUT: Duration = Duration::from_secs(90);
+/// A checked owner-lease contender must await the already-opening winner.
+/// This is distinct from a failed owner composition or an unavailable profile.
+pub const OWNER_CONTENDED_EXIT_CODE: u8 = 75;
 /// How long to keep waiting after the spawned child has exited.
 ///
-/// A contender that won the owner lease can publish its listener shortly after
-/// this child gives up, so an exit is not yet proof that no owner will appear.
-/// It is proof that *this* process will not produce one, which is why the
-/// window after an exit is short and the window before it is not.
+/// Ordinary failure exits get a short final endpoint check. A typed owner-lease
+/// contention exit retains the original cold-start budget instead: its winner
+/// may still be replaying a healthy workspace before binding the listener.
 const EXITED_START_GRACE: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const PASSIVE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -465,12 +467,11 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
         if child_exit.is_none()
             && let Some(status) = child.try_wait().map_err(RuntimeError::Io)?
         {
-            // A concurrent caller may have won the owner lease while this
-            // child was composing. Its listener can appear shortly after the
-            // losing child exits, so the wait continues for a short grace
-            // window rather than failing on the exit itself.
+            // A losing contender is not a failed startup. Preserve the
+            // original cold-open budget for its actual lease winner; an
+            // ordinary failed child cannot extend or restart that budget.
             child_exit = Some(status.code());
-            deadline = Instant::now() + EXITED_START_GRACE;
+            deadline = deadline_after_exit(deadline, Instant::now(), status.code());
         }
         if Instant::now() >= deadline {
             return child_exit.map_or_else(
@@ -484,6 +485,14 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
             );
         }
         thread::sleep(POLL_INTERVAL);
+    }
+}
+
+fn deadline_after_exit(original: Instant, now: Instant, code: Option<i32>) -> Instant {
+    if code == Some(i32::from(OWNER_CONTENDED_EXIT_CODE)) {
+        original
+    } else {
+        original.min(now + EXITED_START_GRACE)
     }
 }
 
@@ -1097,6 +1106,41 @@ impl std::error::Error for RuntimeError {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_owner_contender_keeps_the_cold_open_budget_without_extending_it() {
+        let start = Instant::now();
+        let original = start + LIVE_START_TIMEOUT;
+        let early_exit = start + Duration::from_millis(100);
+        let cold_winner = start + Duration::from_secs(18);
+        let contender = deadline_after_exit(
+            original,
+            early_exit,
+            Some(i32::from(OWNER_CONTENDED_EXIT_CODE)),
+        );
+        assert!(
+            cold_winner < contender,
+            "a healthy cold winner must not inherit a losing child's five-second window"
+        );
+        assert!(
+            cold_winner > deadline_after_exit(original, early_exit, Some(70)),
+            "a genuine startup failure retains only its final endpoint-check grace"
+        );
+        let late_exit = original - Duration::from_millis(10);
+        assert_eq!(
+            deadline_after_exit(original, late_exit, Some(70)),
+            original,
+            "late exits never restart the overall startup budget"
+        );
+        assert_eq!(
+            deadline_after_exit(
+                original,
+                late_exit,
+                Some(i32::from(OWNER_CONTENDED_EXIT_CODE))
+            ),
+            original
+        );
+    }
 
     /// Runs the actual owner launcher against an explicitly supplied private
     /// runtime fixture. This is kept out of ordinary unit runs.

@@ -60,6 +60,14 @@ pub(super) fn owner_open_refusal(
 ) -> ProcessError {
     if matches!(
         &error,
+        crate::LocaldError::Workspace(backend_engine::WorkspaceError::AlreadyOwned)
+    ) {
+        return ProcessError::OwnerContended {
+            workspace: workspace.to_path_buf(),
+        };
+    }
+    if matches!(
+        &error,
         crate::LocaldError::Workspace(backend_engine::WorkspaceError::Model(_))
     ) && let Ok(evidence) = probe_retired_layout(workspace)
     {
@@ -69,6 +77,27 @@ pub(super) fn owner_open_refusal(
         ));
     }
     ProcessError::Profile(error.to_string())
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+
+    #[test]
+    fn a_kernel_owner_contention_keeps_its_type_and_never_probes_retired_state() {
+        let workspace = std::path::Path::new("/not-created-by-a-contention-report");
+        let error = owner_open_refusal(
+            workspace,
+            crate::LocaldError::Workspace(backend_engine::WorkspaceError::AlreadyOwned),
+        );
+        assert!(
+            matches!(error, ProcessError::OwnerContended { workspace: owned } if owned == workspace)
+        );
+        assert!(
+            !workspace.exists(),
+            "recognising contention must not create or alter workspace state"
+        );
+    }
 }
 
 /// The environment [`backend_engine::application::LocalCompilerHost::production_at`]
