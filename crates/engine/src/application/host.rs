@@ -795,13 +795,27 @@ impl LocalCompilerHost<WorkspaceCompilerEnvironment> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use backend_semantic::vocabulary::{LanguageProfile, RustEdition};
+    use backend_semantic::vocabulary::{
+        GoVersion, LanguageProfile, PythonVersion, RustEdition, Stage, TypeScriptSource,
+    };
+    use std::ffi::OsString;
 
     struct InspectionEnvironment(PathBuf);
 
     impl LocalHostEnvironment for InspectionEnvironment {
         fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
             (variable == LocalHostVariable::NudoxDataRoot).then(|| self.0.clone().into_os_string())
+        }
+    }
+
+    struct StartupEnvironment(Vec<(LocalHostVariable, OsString)>);
+
+    impl LocalHostEnvironment for StartupEnvironment {
+        fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
+            self.0
+                .iter()
+                .find(|(candidate, _)| *candidate == variable)
+                .map(|(_, value)| value.clone())
         }
     }
 
@@ -901,6 +915,97 @@ mod tests {
             capability.state() == crate::application::LocalCompilerCapabilityState::Unavailable
         }));
         assert!(!data_root.exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires privately admitted Go, Node, and TypeScript installations"]
+    fn failed_optional_go_admission_does_not_block_typescript_or_native_python_owner_startup()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use backend_library::interface::{CompilerCapability, CompilerRequest};
+
+        fn required_path(variable: &str) -> Result<PathBuf, io::Error> {
+            let path = std::env::var_os(variable)
+                .ok_or_else(|| io::Error::other(format!("{variable} is required")))?;
+            let path = PathBuf::from(path);
+            if !path.is_absolute() {
+                return Err(io::Error::other(format!("{variable} must be absolute")));
+            }
+            Ok(path)
+        }
+
+        let fixture_root = required_path("NUDOX_GO_DEBIAN_FIXTURE_ROOT")?;
+        let go = fixture_root.join("usr/lib/go-1.24/bin/go");
+        let typescript = required_path("NUDOX_GO_STARTUP_TSC")?;
+        let node = required_path("NUDOX_GO_STARTUP_NODE")?;
+        let module_root = required_path("NUDOX_GO_STARTUP_TYPESCRIPT_MODULE_ROOT")?;
+
+        let state = tempfile::tempdir()?;
+        let data_root = state.path().join("owner-data");
+        let invalid_go_module_cache = state.path().join("invalid-go-module-cache");
+        fs::write(&invalid_go_module_cache, b"not a directory")?;
+        let environment = StartupEnvironment(vec![
+            (LocalHostVariable::NudoxDataRoot, data_root.into_os_string()),
+            (
+                LocalHostVariable::NudoxTypeScriptCompiler,
+                typescript.into_os_string(),
+            ),
+            (
+                LocalHostVariable::NudoxTypeScriptNode,
+                node.into_os_string(),
+            ),
+            (
+                LocalHostVariable::NudoxTypeScriptModuleRoot,
+                module_root.into_os_string(),
+            ),
+            (LocalHostVariable::NudoxGo, go.into_os_string()),
+            (
+                LocalHostVariable::NudoxGoRoot,
+                invalid_go_module_cache.into_os_string(),
+            ),
+        ]);
+        let mut client = LocalCompilerHost::new(environment, LocalHostDiscovery::ExplicitOnly)
+            .open()
+            .expect("optional Go authority failure must not stop owner startup");
+
+        assert_eq!(
+            client
+                .capabilities()
+                .for_profile(LanguageProfile::Go(GoVersion::Go125))
+                .state(),
+            crate::application::LocalCompilerCapabilityState::ProbeFailed,
+            "the explicit bad Go module-cache root remains a Go-only failure",
+        );
+        client
+            .generate(CompilerRequest {
+                profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+                stage: Stage::LowerIr,
+                source: "export const answer: number = 42;\n",
+            })
+            .expect("the configured TypeScript lane must remain usable");
+        client
+            .generate(CompilerRequest {
+                profile: LanguageProfile::Python(PythonVersion::Python314),
+                stage: Stage::LowerIr,
+                source: "answer = 42\n",
+            })
+            .expect("the native Python lane must remain usable");
+        assert_eq!(
+            client
+                .capabilities()
+                .for_profile(LanguageProfile::TypeScript(TypeScriptSource::TypeScript))
+                .state(),
+            crate::application::LocalCompilerCapabilityState::Ready,
+        );
+        assert_eq!(
+            client
+                .capabilities()
+                .for_profile(LanguageProfile::Python(PythonVersion::Python314))
+                .state(),
+            crate::application::LocalCompilerCapabilityState::Ready,
+        );
+        drop(client);
+        Ok(())
     }
 }
 
