@@ -258,7 +258,7 @@ pub use surface::{
     IndexOperationSemanticUnavailableReason, IndexOperationSourceCaptureReceipt,
     IndexOperationSourceProfile, IndexOperationState, IndexOperationStatus,
     IndexOperationUnresolvedReason, IndexProgressPage, IndexSearchCursor, IndexSearchPage,
-    IndexSearchResultCount, IndexStartResult, LocalDeclarationSearchRecord,
+    IndexSearchResultCount, IndexStartResult, LocalDeclarationSearchRecord, LocalDeclarationSource,
     MAX_INDEX_PROGRESS_EVENTS, MAX_INDEX_SEARCH_CURSOR_BYTES, MAX_PRODUCT_ROWS,
     MAX_PRODUCT_TEXT_BYTES, MAX_SELECTED_PROJECT_FRONTIER_FILES, PackageCompilerFailure,
     PackageCompilerFailureCause, PackageCompilerFailurePhase, PackageCompilerFragmentFaultFacts,

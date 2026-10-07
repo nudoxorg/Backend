@@ -20,16 +20,16 @@ use backend_library::{
     AdvisoryPackageDto, CommandMutation, DeclarationRecord, DependencyFacts, DependentSources,
     ForgeDiscoveryCandidate, ForgeManifestRecord, ForgeRepositoryMetadataRecord, Fragment,
     IndexSearchCursor, IndexSearchPage, IndexSearchResultCount, IndexedCheckedPackageGraph,
-    LocalDeclarationSearchRecord, PackageCoordinate as ProductPackageCoordinate,
-    PackageDependencyLookup, PackageDependencyRecord, PackageGraphSourceAuthority,
-    PackageGraphSourceKey, PackageReference, ProductText, ProjectId, ProjectName, ProjectRecord,
-    ProjectSelector, RegistryDiscoveryCandidate, RegistryDiscoveryCompleteness,
-    RegistryDiscoveryFreshness, RegistryDiscoveryStanding, RegistryDownloadCount,
-    RegistryEcosystem, RegistryFactAvailability, RegistryMetadata, RegistryNativeMetadata,
-    RegistryPackageRecord, RegistryPackageSearchGroup, RegistryReleaseMatchScope,
-    RegistryReleaseStanding, RegistrySearchGroupKind, RegistrySearchHit, RegistrySearchRelease,
-    ReleaseRecord, Row, SemanticVersionRecord, SubscriptionRecord, TreeNodeRecord, TreeOpener,
-    TreeSubject, command_spec,
+    LocalDeclarationSearchRecord, LocalDeclarationSource,
+    PackageCoordinate as ProductPackageCoordinate, PackageDependencyLookup,
+    PackageDependencyRecord, PackageGraphSourceAuthority, PackageGraphSourceKey, PackageReference,
+    ProductText, ProjectId, ProjectName, ProjectRecord, ProjectSelector,
+    RegistryDiscoveryCandidate, RegistryDiscoveryCompleteness, RegistryDiscoveryFreshness,
+    RegistryDiscoveryStanding, RegistryDownloadCount, RegistryEcosystem, RegistryFactAvailability,
+    RegistryMetadata, RegistryNativeMetadata, RegistryPackageRecord, RegistryPackageSearchGroup,
+    RegistryReleaseMatchScope, RegistryReleaseStanding, RegistrySearchGroupKind, RegistrySearchHit,
+    RegistrySearchRelease, ReleaseRecord, Row, SemanticVersionRecord, SubscriptionRecord,
+    TreeNodeRecord, TreeOpener, TreeSubject, command_spec,
 };
 use backend_platform::durable;
 use base64::Engine as _;
@@ -295,16 +295,26 @@ impl ProductState {
             SurfaceCommand::References { .. } => {
                 return Err("references require compiler publication authority".to_owned());
             }
-            SurfaceCommand::Explore { query, limit } => (
-                SurfaceReply::Explored(explore_page(
-                    view,
-                    catalog,
-                    catalog_index,
-                    query.as_ref(),
-                    limit,
-                )?),
-                false,
-            ),
+            SurfaceCommand::Explore { query, limit } => {
+                let reply = if let Some(query_text) = &query
+                    && let Some(project_root) = indexed_project_for_query(view, query_text.as_str())
+                {
+                    SurfaceReply::ExploredDeclarations(indexed_explore_page(
+                        view,
+                        &project_root,
+                        query_text.as_str(),
+                        limit,
+                    )?)
+                } else {
+                    SurfaceReply::Explored(catalog_page(
+                        catalog,
+                        catalog_index,
+                        query.as_ref(),
+                        limit,
+                    )?)
+                };
+                (reply, false)
+            }
             SurfaceCommand::IndexSearch {
                 query,
                 limit,
@@ -912,30 +922,6 @@ fn owner_page(
     Ok(RegistryMetadata::Recorded(records.into_boxed_slice()))
 }
 
-fn explore_page(
-    view: &ViewRoot,
-    catalog: &[RegistryPackageRecord],
-    catalog_index: &CatalogLookupIndex,
-    query: Option<&ProductText>,
-    limit: u16,
-) -> Result<Box<[RegistryPackageRecord]>, String> {
-    if let Some(query_text) = query
-        && let Some(project_root) = indexed_project_for_query(view, query_text.as_str())
-    {
-        return indexed_explore_page(view, &project_root, query_text.as_str(), limit);
-    }
-    let registry = catalog_page(catalog, catalog_index, query, limit)?;
-    if !registry.is_empty() {
-        return Ok(registry);
-    }
-    if let Some(query_text) = query
-        && let Some(project_root) = indexed_project_for_query(view, query_text.as_str())
-    {
-        return indexed_explore_page(view, &project_root, query_text.as_str(), limit);
-    }
-    Ok(registry)
-}
-
 fn package_label(view: &ViewRoot, label: &str) -> Option<String> {
     match view.row_by_label(label) {
         Some(row) if matches!(row.id, RowId::Package(_)) => Some(row.label.clone()),
@@ -972,7 +958,7 @@ fn indexed_explore_page(
     project_root: &str,
     query: &str,
     limit: u16,
-) -> Result<Box<[RegistryPackageRecord]>, String> {
+) -> Result<Box<[LocalDeclarationSearchRecord]>, String> {
     let prefix = format!("{project_root}::");
     let filter = query.to_ascii_lowercase();
     let mut records = Vec::new();
@@ -990,7 +976,7 @@ fn indexed_explore_page(
         {
             continue;
         }
-        records.push(declaration_explore_record(row)?);
+        records.push(declaration_search_record(row)?);
         if records.len() >= usize::from(limit) {
             break;
         }
@@ -1024,44 +1010,24 @@ fn declaration_identity(row: &Row) -> Result<(String, String), String> {
 }
 
 fn declaration_search_record(row: &Row) -> Result<LocalDeclarationSearchRecord, String> {
-    let (name, path) = declaration_identity(row)?;
+    let name = row
+        .label
+        .rsplit("::")
+        .next()
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| format!("declaration {} has no name", row.label))?;
+    let source = match row.source.captured() {
+        Some(location) => LocalDeclarationSource::Captured {
+            path: ProductText::new(location.path()).map_err(|error| error.to_string())?,
+            line: std::num::NonZeroU32::new(location.start_line())
+                .ok_or_else(|| "captured declaration line is zero".to_owned())?,
+        },
+        None => LocalDeclarationSource::NotCaptured,
+    };
     Ok(LocalDeclarationSearchRecord {
         coordinate: ProductText::new(row.label.clone()).map_err(|error| error.to_string())?,
         name: ProductText::new(name).map_err(|error| error.to_string())?,
-        path: ProductText::new(path).map_err(|error| error.to_string())?,
-        line: row
-            .source
-            .captured()
-            .and_then(|location| std::num::NonZeroU32::new(location.start_line())),
-    })
-}
-
-fn declaration_explore_record(row: &Row) -> Result<RegistryPackageRecord, String> {
-    let (name, path) = declaration_identity(row)?;
-    Ok(RegistryPackageRecord {
-        coordinate: PackageReference::Local(
-            ProductText::new(row.label.clone()).map_err(|error| error.to_string())?,
-        ),
-        ecosystem: RegistryEcosystem::Cargo,
-        name: ProductText::new(name).map_err(|error| error.to_string())?,
-        version: ProductText::new(path).map_err(|error| error.to_string())?,
-        bytes: 0,
-        standing: RegistryReleaseStanding::Available,
-        downloads: RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unsupported),
-        facts_version: [0; 32],
-        authority: None,
-        native_metadata_version: RegistryNativeMetadata::unavailable(
-            RegistryEcosystem::Cargo,
-            "indexed declaration",
-        )
-        .identity()
-        .map_err(|error| error.to_string())?,
-        native_metadata: RegistryNativeMetadata::unavailable(
-            RegistryEcosystem::Cargo,
-            "indexed declaration",
-        ),
-        forge_sources: Box::new([]),
-        advisory: AdvisoryPackageDto::unknown(),
+        source,
     })
 }
 
@@ -1088,27 +1054,6 @@ fn resolve_tree_subject(
             title.unwrap_or_else(|| subject_title(&other)),
         )),
     }
-}
-
-fn index_search_page(
-    view: &ViewRoot,
-    catalog: &[RegistryPackageRecord],
-    catalog_index: &CatalogLookupIndex,
-    query: Option<&ProductText>,
-    limit: u16,
-) -> Result<Box<[RegistryPackageRecord]>, String> {
-    let mut records = catalog_page(catalog, catalog_index, query, limit)?.into_vec();
-    let needle = query.map_or("", ProductText::as_str);
-    for row in view.row_refs() {
-        if !matches!(row.id, RowId::Symbol(_)) || !row_matches_index_query(row, needle) {
-            continue;
-        }
-        records.push(declaration_explore_record(row)?);
-        if records.len() >= usize::from(limit) {
-            break;
-        }
-    }
-    Ok(records.into_boxed_slice())
 }
 
 fn index_search_page_with_discovery(
@@ -3786,6 +3731,34 @@ mod tests {
         }
     }
 
+    #[test]
+    fn local_declaration_exploration_does_not_promote_coordinate_text_to_source_capture() {
+        let label = "/project::src/react.tsx:17::react";
+        let (view, _) = super::super::initial_view().expect("view");
+        let row = Row::new(
+            RowId::Symbol(backend_engine::symbol_key(label)),
+            view.basis(),
+            label,
+        );
+        let prepared = view
+            .prepare(
+                backend_engine::ViewDelta::Upsert { row },
+                super::super::test_builtin_view_capability().expect("capability"),
+            )
+            .expect("prepare");
+        let (view, _) = view.commit(prepared).expect("commit");
+        let records = indexed_explore_page(&view, "/project", "/project", 8).expect("explore");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].source, LocalDeclarationSource::NotCaptured);
+        let reply = SurfaceReply::ExploredDeclarations(records);
+        reply.admit(reply.id()).expect("reply");
+        let value = serde_json::to_value(&reply).expect("encode");
+        assert_eq!(value["result"], "explored-declarations");
+        assert_eq!(value["data"][0]["source"]["state"], "not-captured");
+        assert!(value["data"][0]["source"].get("path").is_none());
+        assert!(value["data"][0].get("ecosystem").is_none());
+    }
+
     fn registry_source_view(package: &str, source: &str) -> ViewRoot {
         let (view, _) = super::super::initial_view().expect("initial view");
         let label = format!("{package}::{source}:1::exported");
@@ -3901,8 +3874,13 @@ mod tests {
             .with_source(backend_library::SourceLocation::new(path, line).expect("location"));
             let record = declaration_search_record(&row).expect("source-backed declaration");
             assert_eq!(record.coordinate.as_str(), label);
-            assert_eq!(record.path.as_str(), path);
-            assert_eq!(record.line.map(std::num::NonZeroU32::get), Some(line));
+            assert_eq!(
+                record.source,
+                LocalDeclarationSource::Captured {
+                    path: ProductText::new(path).expect("path"),
+                    line: std::num::NonZeroU32::new(line).expect("line"),
+                }
+            );
             let encoded =
                 serde_json::to_value(RegistrySearchHit::LocalDeclaration(record)).expect("encode");
             assert_eq!(encoded["state"], "local-declaration");

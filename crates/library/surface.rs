@@ -4131,8 +4131,23 @@ fn forge_manifest_coordinate(manifest: &ForgePackageManifestDetail) -> Option<Pa
     .ok()
 }
 
-/// One local declaration in combined search, backed by the selected source view.
-/// A declaration has a source location, not a registry ecosystem or release.
+/// Source capture supplied by the selected declaration producer.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum LocalDeclarationSource {
+    /// Exact producer-captured file location.
+    Captured {
+        /// Captured source path.
+        path: ProductText,
+        /// One-based captured start line.
+        line: NonZeroU32,
+    },
+    /// The declaration producer did not capture a source location.
+    NotCaptured,
+}
+
+/// One declaration in combined search, backed by the selected source view.
+/// Its source capture is independent of registry ecosystems and releases.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LocalDeclarationSearchRecord {
@@ -4140,24 +4155,36 @@ pub struct LocalDeclarationSearchRecord {
     pub coordinate: ProductText,
     /// Name supplied by the selected declaration row.
     pub name: ProductText,
-    /// Source path, never a package release version.
-    pub path: ProductText,
-    /// Captured one-based start line; absent when only the label supplied a path.
-    pub line: Option<NonZeroU32>,
+    /// Explicit capture availability; coordinate text never establishes capture.
+    pub source: LocalDeclarationSource,
 }
 
 impl LocalDeclarationSearchRecord {
     fn admit(&self) -> Result<(), ProductAdmissionError> {
-        if self
-            .coordinate
-            .as_str()
-            .rsplit_once("::")
-            .is_some_and(|(scope, name)| !scope.is_empty() && name == self.name.as_str())
-        {
-            Ok(())
-        } else {
-            Err(ProductAdmissionError::LocalDeclarationSearchShape)
+        let Some((location, name)) = self.coordinate.as_str().rsplit_once("::") else {
+            return Err(ProductAdmissionError::LocalDeclarationSearchShape);
+        };
+        if location.is_empty() || name != self.name.as_str() {
+            return Err(ProductAdmissionError::LocalDeclarationSearchShape);
         }
+        if let LocalDeclarationSource::Captured { path, line } = &self.source
+            && let Some((scope, native_location)) = location.rsplit_once("::")
+            && let Some((native_path, native_line)) = native_location.rsplit_once(':')
+            && let Ok(native_line) = native_line.parse::<NonZeroU32>()
+        {
+            let captured = std::path::Path::new(path.as_str());
+            let native = std::path::Path::new(native_path);
+            let scope = std::path::Path::new(scope);
+            // Absolute registry stage locations cannot be reconstructed from
+            // a PURL scope. Their physical root is checked by the source owner.
+            let comparable = !captured.is_absolute() || native.is_absolute() || scope.is_absolute();
+            let path_matches = captured == native
+                || (!native.is_absolute() && scope.is_absolute() && scope.join(native) == captured);
+            if native_line != *line || (comparable && !path_matches) {
+                return Err(ProductAdmissionError::LocalDeclarationSearchShape);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -4556,6 +4583,8 @@ pub enum SurfaceReply {
     Diff(Box<[DiffRecord]>),
     /// Bounded catalog page.
     Explored(Box<[RegistryPackageRecord]>),
+    /// Declarations explored within one selected local project.
+    ExploredDeclarations(Box<[LocalDeclarationSearchRecord]>),
     /// Exact package records.
     Package(Box<[RegistryPackageRecord]>),
     /// Exact source metadata, kept separate from acquired package authority.
@@ -4676,7 +4705,7 @@ impl SurfaceReply {
             Self::Read(_) => CommandId::Read,
             Self::References { .. } => CommandId::References,
             Self::Diff(_) => CommandId::Diff,
-            Self::Explored(_) => CommandId::Explore,
+            Self::Explored(_) | Self::ExploredDeclarations(_) => CommandId::Explore,
             Self::Package(_) => CommandId::Package,
             Self::PackageDiscovery { .. } => CommandId::Package,
             Self::PackageDetails { .. } => CommandId::Package,
@@ -4753,6 +4782,7 @@ impl SurfaceReply {
                     .checked_add(row.links.len())
                     .ok_or(ProductAdmissionError::RowBound)
             })?,
+            Self::ExploredDeclarations(v) => v.len(),
             Self::Explored(v)
             | Self::Package(v)
             | Self::IndexSearch(v)
@@ -4881,6 +4911,11 @@ impl SurfaceReply {
                 | Self::PackageVersions(rows) => {
                     for row in rows {
                         admit_registry_record(row)?;
+                    }
+                }
+                Self::ExploredDeclarations(records) => {
+                    for record in records {
+                        record.admit()?;
                     }
                 }
                 Self::IndexSearchWithDiscovery(hits) => {
@@ -5019,13 +5054,13 @@ impl SurfaceReply {
             | Self::Owner(RegistryMetadata::Partial { value, reason }) => {
                 registry_records_bound(value).saturating_add(text_bound(reason))
             }
+            Self::ExploredDeclarations(records) => fixed_record_bound()
+                .saturating_add(serde_json::to_vec(records).map_or(0, |bytes| bytes.len())),
             Self::IndexSearchWithDiscovery(hits) => hits.iter().fold(0_usize, |bound, hit| {
                 bound.saturating_add(match hit {
                     RegistrySearchHit::Acquired(record) => registry_package_record_bound(record),
                     RegistrySearchHit::LocalDeclaration(record) => fixed_record_bound()
-                        .saturating_add(text_bound(&record.coordinate))
-                        .saturating_add(text_bound(&record.name))
-                        .saturating_add(text_bound(&record.path)),
+                        .saturating_add(serde_json::to_vec(record).map_or(0, |bytes| bytes.len())),
                     RegistrySearchHit::Discovered(candidate) => {
                         fixed_record_bound().saturating_add(candidate.coordinate.as_str().len())
                     }

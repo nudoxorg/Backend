@@ -18,14 +18,15 @@ use backend_library::{
     AcquisitionDecision, AdvisoryPackageDto, DeclarationChange, DeclarationRecord, DependencyFacts,
     DiffRecord, ForgeFact, ForgePackageDetailRecord, ForgePackagePin, ForgePackageRecord,
     IndexSearchCursor, IndexSearchPage, IndexSearchResultCount, LocalDeclarationSearchRecord,
-    PackageDependencyRecord, PackageReference, ProjectRecord, RegistryDiscoveryCandidate,
-    RegistryEvidenceFacet, RegistryMetadata, RegistryNativeAvailability, RegistryNativeDetails,
-    RegistryNativeMetadata, RegistryPackageFactAuthority, RegistryPackageFactFreshness,
-    RegistryPackageRecord, RegistryPackageSearchGroup, RegistryReleaseMatchScope,
-    RegistrySearchGroupKind, RegistrySearchHit, RegistrySearchRelease, ReleaseRecord,
-    SelectedProjectSourceFrontier, SemanticHistoryPublicationStatus, SemanticLanguageProfile,
-    SemanticVersionFreshness, SemanticVersionRecord, SubscriptionRecord, SurfaceReply,
-    TreeNodeRecord, TreeOpener, TreeSubject, encode_id,
+    LocalDeclarationSource, PackageDependencyRecord, PackageReference, ProjectRecord,
+    RegistryDiscoveryCandidate, RegistryEvidenceFacet, RegistryMetadata,
+    RegistryNativeAvailability, RegistryNativeDetails, RegistryNativeMetadata,
+    RegistryPackageFactAuthority, RegistryPackageFactFreshness, RegistryPackageRecord,
+    RegistryPackageSearchGroup, RegistryReleaseMatchScope, RegistrySearchGroupKind,
+    RegistrySearchHit, RegistrySearchRelease, ReleaseRecord, SelectedProjectSourceFrontier,
+    SemanticHistoryPublicationStatus, SemanticLanguageProfile, SemanticVersionFreshness,
+    SemanticVersionRecord, SubscriptionRecord, SurfaceReply, TreeNodeRecord, TreeOpener,
+    TreeSubject, encode_id,
 };
 use backend_library::{
     IndexCancelReceipt, IndexCancelStatus, IndexJobObservation, IndexJobOutcome,
@@ -770,6 +771,10 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
             ProductView::rows("diff", records.iter().map(diff_row).collect())
         }
         SurfaceReply::Explored(records) => ProductView::rows("explore", registry_rows(records)),
+        SurfaceReply::ExploredDeclarations(records) => ProductView::rows(
+            "explore",
+            records.iter().map(local_declaration_search_row).collect(),
+        ),
         SurfaceReply::Package(records) => ProductView::rows("package", registry_rows(records)),
         SurfaceReply::PackageDiscovery {
             package,
@@ -1303,14 +1308,14 @@ fn discovery_row(candidate: &backend_library::RegistryDiscoveryCandidate) -> Pro
 }
 
 fn local_declaration_search_row(record: &LocalDeclarationSearchRecord) -> ProductRecord {
-    let location = record.line.map_or_else(
-        || record.path.as_str().to_owned(),
-        |line| format!("{}:{line}", record.path.as_str()),
-    );
+    let source = match &record.source {
+        LocalDeclarationSource::Captured { path, line } => format!("{}:{line}", path.as_str()),
+        LocalDeclarationSource::NotCaptured => "source not captured".to_owned(),
+    };
     ProductRecord::new(
         record.name.as_str(),
         Some(record.coordinate.as_str().to_owned()),
-        vec!["local declaration".to_owned(), location],
+        vec!["local declaration".to_owned(), source],
     )
     .with_local_declaration(record.clone())
 }
@@ -2899,8 +2904,10 @@ mod tests {
         let record = LocalDeclarationSearchRecord {
             coordinate: coordinate.clone(),
             name: backend_library::ProductText::new("react").expect("name"),
-            path: backend_library::ProductText::new("src/react.tsx").expect("path"),
-            line: std::num::NonZeroU32::new(17),
+            source: LocalDeclarationSource::Captured {
+                path: backend_library::ProductText::new("src/react.tsx").expect("path"),
+                line: std::num::NonZeroU32::new(17).expect("line"),
+            },
         };
         let reply = SurfaceReply::IndexSearchWithDiscovery(Box::new([
             RegistrySearchHit::LocalDeclaration(record.clone()),
@@ -2931,6 +2938,45 @@ mod tests {
         assert_eq!(dto.records[0].local_declaration.as_ref(), Some(&record));
         assert!(dto.records[0].native_metadata.is_none());
         assert!(dto.records[0].package_group.is_none());
+        let explored = SurfaceReply::ExploredDeclarations(Box::new([record.clone()]));
+        explored
+            .admit(explored.id())
+            .expect("typed local exploration");
+        assert_eq!(
+            crate::dto::ProductDto::new(&product_view(&explored)).records[0]
+                .local_declaration
+                .as_ref(),
+            Some(&record)
+        );
+        let mut mismatched = record.clone();
+        mismatched.source = LocalDeclarationSource::Captured {
+            path: backend_library::ProductText::new("src/other.tsx").expect("path"),
+            line: std::num::NonZeroU32::new(17).expect("line"),
+        };
+        let mismatched = SurfaceReply::ExploredDeclarations(Box::new([mismatched]));
+        assert!(mismatched.admit(mismatched.id()).is_err());
+        let mut wrong_line = record.clone();
+        wrong_line.source = LocalDeclarationSource::Captured {
+            path: backend_library::ProductText::new("src/react.tsx").expect("path"),
+            line: std::num::NonZeroU32::new(18).expect("line"),
+        };
+        let wrong_line = SurfaceReply::ExploredDeclarations(Box::new([wrong_line]));
+        assert!(wrong_line.admit(wrong_line.id()).is_err());
+        let mut uncaptured = record.clone();
+        uncaptured.source = LocalDeclarationSource::NotCaptured;
+        let uncaptured = local_declaration_search_row(&uncaptured);
+        assert!(
+            uncaptured
+                .tags()
+                .iter()
+                .any(|tag| tag == "source not captured")
+        );
+        assert!(
+            !uncaptured
+                .tags()
+                .iter()
+                .any(|tag| tag.contains("src/react.tsx"))
+        );
         let mut invalid = record;
         invalid.coordinate =
             backend_library::ProductText::new("pkg:npm/react@19.2.0").expect("purl");
