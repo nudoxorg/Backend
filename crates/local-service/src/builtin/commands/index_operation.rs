@@ -72,6 +72,10 @@ pub(super) struct StoredOperation {
     pub(super) operation_key: IndexOperationKey,
     pub(super) request_digest: [u8; 32],
     pub(super) package: PackageReference,
+    /// Exact producer namespace admitted before any indexing work. The caller
+    /// package and request digest retain the spelling originally submitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) producer_package: Option<PackageReference>,
     pub(super) execution_intent: CompileExecutionIntent,
     /// Structural capture committed before semantic completion, when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -82,6 +86,12 @@ pub(super) struct StoredOperation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) source_capture_base: Option<SourceCaptureBase>,
     pub(super) state: StoredOperationState,
+}
+
+impl StoredOperation {
+    pub(super) fn source_package(&self) -> &PackageReference {
+        self.producer_package.as_ref().unwrap_or(&self.package)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -298,6 +308,7 @@ impl IndexOperationJournal {
                         operation_key,
                         request_digest,
                         package,
+                        producer_package: None,
                         execution_intent,
                         source_capture: None,
                         source_capture_base: None,
@@ -374,6 +385,31 @@ impl IndexOperationJournal {
                 base_workspace_sequence,
             };
             Ok(entry)
+        })
+    }
+
+    /// Bind the producer's package identity before filesystem or compiler work
+    /// starts. Recovery uses this durable identity rather than resolving a
+    /// caller alias again after it may have been retargeted.
+    pub(super) fn bind_producer_package(
+        &mut self,
+        operation_key: IndexOperationKey,
+        package: PackageReference,
+    ) -> Result<(), JournalError> {
+        self.transition(operation_key, |mut entry| {
+            if !matches!(entry.state, StoredOperationState::Accepted)
+                || entry.source_capture.is_some()
+            {
+                return Err(JournalError::InvalidTransition);
+            }
+            match &entry.producer_package {
+                Some(existing) if existing != &package => Err(JournalError::InvalidTransition),
+                Some(_) => Ok(entry),
+                None => {
+                    entry.producer_package = Some(package);
+                    Ok(entry)
+                }
+            }
         })
     }
 
@@ -1525,6 +1561,53 @@ mod tests {
         {
             let _ = fs::remove_dir_all(root);
         }
+    }
+
+    #[test]
+    fn producer_namespace_reopens_without_rewriting_the_caller_request() -> Result<(), String> {
+        let path = path();
+        let operation = key(73);
+        let caller = PackageReference::parse("/tmp/caller-project")
+            .map_err(|error| format!("caller package: {error:?}"))?;
+        let producer = PackageReference::parse("/private/tmp/caller-project")
+            .map_err(|error| format!("producer package: {error:?}"))?;
+        let other = PackageReference::parse("/private/tmp/retargeted-project")
+            .map_err(|error| format!("different producer package: {error:?}"))?;
+        let digest = index_operation_request_digest(&caller, CompileExecutionIntent::Interactive);
+        let mut journal = IndexOperationJournal::open(&path).map_err(|error| error.to_string())?;
+        journal.accept(operation, caller.clone(), CompileExecutionIntent::Interactive)
+            .map_err(|error| format!("accept exact caller request: {error}"))?;
+        journal.bind_producer_package(operation, producer.clone())
+            .map_err(|error| format!("bind producer before work: {error}"))?;
+        journal.bind_producer_package(operation, producer.clone())
+            .map_err(|error| format!("repeat identical producer binding: {error}"))?;
+        assert_eq!(journal.bind_producer_package(operation, other), Err(JournalError::InvalidTransition));
+        drop(journal);
+
+        let mut journal = IndexOperationJournal::open(&path).map_err(|error| error.to_string())?;
+        let Some(JournalEntry::Retained(entry)) = journal.entry(operation)
+            .map_err(|error| format!("read cold producer binding: {error}"))? else {
+                return Err("cold operation lost its exact producer binding".to_owned());
+            };
+        assert_eq!(entry.package, caller);
+        assert_eq!(entry.request_digest, digest);
+        assert_eq!(entry.source_package(), &producer);
+        let mut legacy = serde_json::to_value(&entry)
+            .map_err(|error| format!("encode retained operation: {error}"))?;
+        legacy.as_object_mut().ok_or("operation encoding is not an object")?
+            .remove("producer_package");
+        let legacy: StoredOperation = serde_json::from_value(legacy)
+            .map_err(|error| format!("read pre-binding operation format: {error}"))?;
+        assert_eq!(legacy.source_package(), &entry.package);
+        assert_eq!(legacy.request_digest, digest);
+        assert_eq!(journal.accept(operation, producer.clone(), CompileExecutionIntent::Interactive), Err(JournalError::KeyConflict));
+        assert_eq!(journal.accept(operation, caller, CompileExecutionIntent::Interactive).map_err(|error| error.to_string())?, Acceptance::Existing);
+        journal.prepare(operation, Some([4; 32]), [5; 32], 9)
+            .map_err(|error| format!("prepare exact mutation: {error}"))?;
+        assert_eq!(journal.bind_producer_package(operation, producer), Err(JournalError::InvalidTransition));
+        drop(journal);
+        cleanup(&path);
+        Ok(())
     }
 
     #[test]
