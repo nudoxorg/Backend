@@ -220,6 +220,8 @@ pub struct AuthenticatedLocalPeer {
     #[cfg(windows)]
     user: UserSid,
     endpoint_digest: [u8; 32],
+    endpoint: std::path::PathBuf,
+    endpoint_instance: backend_platform::file_identity::FileIdentity,
 }
 
 #[cfg(any(unix, windows))]
@@ -268,13 +270,47 @@ impl AuthenticatedLocalPeer {
         }
         let endpoint_digest =
             *blake3::hash(endpoint.as_os_str().to_string_lossy().as_bytes()).as_bytes();
+        let endpoint_instance =
+            backend_platform::file_identity::FileIdentity::of_path_nofollow(endpoint)
+                .map_err(|error| LocalPeerAuthenticationError::EndpointIo(error.kind()))?;
         Ok(Self {
             #[cfg(unix)]
             effective_uid,
             #[cfg(windows)]
             user,
             endpoint_digest,
+            endpoint: endpoint.to_path_buf(),
+            endpoint_instance,
         })
+    }
+
+    /// Admits exactly one deferred command ACK on this authenticated channel.
+    /// The principal is derived from this affine token, never from an ACK field.
+    /// # Errors
+    /// Refuses a foreign request, owner, envelope version, or unbounded deadline.
+    pub fn admit_deferred_command_ack(
+        &self,
+        bytes: &[u8],
+        original: &[u8],
+        dto_version: u16,
+    ) -> Result<std::time::Duration, crate::DeferredCommandError> {
+        if backend_platform::file_identity::FileIdentity::of_path_nofollow(&self.endpoint).ok()
+            != Some(self.endpoint_instance)
+        {
+            return Err(crate::DeferredCommandError(
+                "deferred ACK endpoint instance has retired",
+            ));
+        }
+        #[cfg(unix)]
+        let identity = self.effective_uid.to_be_bytes();
+        #[cfg(windows)]
+        let identity = self.user.as_bytes();
+        crate::DeferredCommandAck::admit(
+            bytes,
+            original,
+            owner_binding(&identity, self.endpoint_digest, self.endpoint_instance),
+            dto_version,
+        )
     }
 
     /// Returns the authenticated effective UID for diagnostics.
@@ -404,4 +440,40 @@ mod tests {
         );
         let _ = std::fs::remove_file(path);
     }
+}
+
+/// Derives the serving process principal for an already authorized local stream.
+/// Listener peer admission and private endpoint ownership remain prerequisites.
+/// # Errors
+/// Refuses failure to obtain the operating-system user identity.
+#[cfg(any(unix, windows))]
+pub fn current_local_owner_binding(endpoint: &Path) -> Result<[u8; 32], PeerCredentialError> {
+    #[cfg(unix)]
+    let identity = current_effective_uid()?.to_be_bytes();
+    #[cfg(windows)]
+    let user = backend_platform::win32::identity::current_user()
+        .map_err(|error| PeerCredentialError::Io(error.kind()))?;
+    #[cfg(windows)]
+    let identity = user.as_bytes();
+    let instance = backend_platform::file_identity::FileIdentity::of_path_nofollow(endpoint)
+        .map_err(|error| PeerCredentialError::Io(error.kind()))?;
+    Ok(owner_binding(
+        &identity,
+        *blake3::hash(endpoint.as_os_str().to_string_lossy().as_bytes()).as_bytes(),
+        instance,
+    ))
+}
+
+#[cfg(any(unix, windows))]
+fn owner_binding(
+    identity: &[u8],
+    endpoint: [u8; 32],
+    instance: backend_platform::file_identity::FileIdentity,
+) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"backend.local.deferred-command.owner.v1\0");
+    hash.update(identity);
+    hash.update(&endpoint);
+    hash.update(&instance.to_bytes());
+    *hash.finalize().as_bytes()
 }

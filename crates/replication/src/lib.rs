@@ -13,6 +13,7 @@
 mod authority;
 mod codec;
 mod coverage;
+mod deferred_command;
 mod execution;
 mod identities;
 mod ir_generation_store;
@@ -32,6 +33,7 @@ mod unix_endpoint;
 pub use authority::*;
 pub use codec::{decode_message, encode_message};
 pub use coverage::*;
+pub use deferred_command::*;
 pub use execution::*;
 pub use identities::*;
 pub use ir_generation_store::{

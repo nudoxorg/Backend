@@ -24,6 +24,7 @@ pub(super) struct ConnectionContext {
     pub(super) timeout: Duration,
     pub(super) request_idle: Duration,
     pub(super) owner_reply: Duration,
+    pub(super) owner_binding: [u8; 32],
 }
 
 pub(super) fn connection_worker(
@@ -41,6 +42,7 @@ pub(super) fn connection_worker(
         timeout,
         request_idle,
         owner_reply,
+        owner_binding,
     } = context;
     let mut frames = 0usize;
     while !stop.load(Ordering::Acquire) && frames < limits.max_frames_per_connection {
@@ -67,6 +69,7 @@ pub(super) fn connection_worker(
             ServeWindows {
                 handoff: timeout,
                 owner_reply,
+                owner_binding,
             },
             limits,
         ) else {
@@ -94,6 +97,7 @@ struct ServeWindows {
     handoff: Duration,
     /// How long the owner itself may take to answer.
     owner_reply: Duration,
+    owner_binding: [u8; 32],
 }
 
 /// Hands one payload to the owner loop and returns its response.
@@ -109,11 +113,37 @@ fn serve_one_frame(
     windows: ServeWindows,
     limits: FrameLimits,
 ) -> Option<Vec<u8>> {
-    let (reply_sender, reply_receiver) = mpsc::sync_channel(1);
+    // A legacy command receives exactly one terminal frame. Opt-in commands
+    // may receive one admitted ACK and one terminal, with no renewal channel.
+    let (reply_sender, reply_receiver) = mpsc::sync_channel(2);
+    let started = Instant::now();
+    let (payload, admission_ack) = match backend_replication::unwrap_deferred_command(
+        &payload,
+        backend_library::DTO_VERSION,
+    ) {
+        Ok(Some(original)) => {
+            let ack = backend_replication::DeferredCommandAck::admitted(
+                original,
+                windows.owner_binding,
+                windows
+                    .owner_reply
+                    .min(backend_replication::MAX_DEFERRED_COMMAND_WAIT),
+            )
+            .ok()?;
+            (
+                original.to_vec(),
+                Some(ack.encode(backend_library::DTO_VERSION)),
+            )
+        }
+        Ok(None) => (payload, None),
+        Err(_) => return None,
+    };
+    let expected_ack = admission_ack.clone();
     let correlation = crate::service::RequestCorrelation::from_payload(&payload);
     let response_waiter = super::ResponseWaiter::for_stream(stream).ok()?;
     let inbound = Inbound {
         payload,
+        admission_ack,
         reply: reply_sender,
         response_waiter: response_waiter.clone(),
     };
@@ -132,27 +162,50 @@ fn serve_one_frame(
     // project is not an I/O deadline, so it gets its own fixed window. Short
     // receive ticks let listener shutdown release this response waiter
     // promptly without cancelling the accepted owner operation.
-    match wait_for_owner_reply(&reply_receiver, stop, &response_waiter, windows.owner_reply) {
-        OwnerReplyWait::Reply(Ok(response)) => Some(response),
-        // The owner loop has already validated the request and framed a
-        // correlated reply for it. Whether that reply carries `Ok` or a
-        // typed failure (for example a `related` probe that legitimately
-        // found no edges) says nothing about the wire itself, so only a
-        // fault that can leave the byte stream desynchronized — a decode or
-        // I/O failure below the owner, never a clean `CommandExecution`
-        // outcome — closes the connection. Closing on every typed failure
-        // used to send an unrelated *next* request to a freshly reopened
-        // connection, which could observe different state than the one the
-        // caller was already talking to.
-        OwnerReplyWait::Reply(Err(error)) if error.closes_connection() => refuse(stream, &error),
-        // A recoverable typed failure is framed exactly like a success reply
-        // and handed to the caller's normal write path so the connection
-        // keeps serving this client's next frame.
-        OwnerReplyWait::Reply(Err(error)) => {
-            Some(crate::service::error_payload(correlation, &error, limits))
+    let mut acknowledged = false;
+    loop {
+        let remaining = windows.owner_reply.saturating_sub(started.elapsed());
+        match wait_for_owner_reply(&reply_receiver, stop, &response_waiter, remaining) {
+            OwnerReplyWait::Reply(Ok(response))
+                if response.starts_with(&backend_replication::DEFERRED_COMMAND_ACK_MAGIC) =>
+            {
+                if acknowledged || expected_ack.as_deref() != Some(response.as_slice()) {
+                    response_waiter.abandon();
+                    return refuse(
+                        stream,
+                        &ProtocolError::InvalidControl("unexpected deferred command ACK"),
+                    );
+                }
+                if write_frame(stream, &response, limits).is_err() {
+                    response_waiter.abandon();
+                    return None;
+                }
+                acknowledged = true;
+                continue;
+            }
+            OwnerReplyWait::Reply(Ok(response)) => return Some(response),
+            // The owner loop has already validated the request and framed a
+            // correlated reply for it. Whether that reply carries `Ok` or a
+            // typed failure (for example a `related` probe that legitimately
+            // found no edges) says nothing about the wire itself, so only a
+            // fault that can leave the byte stream desynchronized — a decode or
+            // I/O failure below the owner, never a clean `CommandExecution`
+            // outcome — closes the connection. Closing on every typed failure
+            // used to send an unrelated *next* request to a freshly reopened
+            // connection, which could observe different state than the one the
+            // caller was already talking to.
+            OwnerReplyWait::Reply(Err(error)) if error.closes_connection() => {
+                return refuse(stream, &error);
+            }
+            // A recoverable typed failure is framed exactly like a success reply
+            // and handed to the caller's normal write path so the connection
+            // keeps serving this client's next frame.
+            OwnerReplyWait::Reply(Err(error)) => {
+                return Some(crate::service::error_payload(correlation, &error, limits));
+            }
+            OwnerReplyWait::TimedOut => return refuse(stream, &ProtocolError::Timeout),
+            OwnerReplyWait::Stopped | OwnerReplyWait::Disconnected => return None,
         }
-        OwnerReplyWait::TimedOut => refuse(stream, &ProtocolError::Timeout),
-        OwnerReplyWait::Stopped | OwnerReplyWait::Disconnected => None,
     }
 }
 
