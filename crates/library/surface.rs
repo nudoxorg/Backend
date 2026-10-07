@@ -1300,7 +1300,8 @@ fn admit_source_capture_parts(
             .windows(2)
             .any(|window| window[0].profile >= window[1].profile)
         || profiles.iter().any(|profile| {
-            profile.source_version.iter().all(|byte| *byte == 0)
+            profile.profile.profile().is_err()
+                || profile.source_version.iter().all(|byte| *byte == 0)
                 || profile.input_digest.iter().all(|byte| *byte == 0)
                 || profile.observation_sequence == 0
                 || !valid_index_operation_profile_state(profile.state)
@@ -6746,6 +6747,13 @@ mod tests {
             refused_profiles: refused_profiles.clone(),
         };
         partial.admit().expect("unkeyed partial retains exact checked partition");
+        let mut foreign_profile = serde_json::to_value(&partial).expect("partial fixture");
+        let published_index = partial.source_capture.profiles.iter().position(|profile|
+            matches!(profile.state, IndexOperationSemanticProfileState::Published { .. })).expect("published profile");
+        foreign_profile["source_capture"]["profiles"][published_index]["profile"] = serde_json::json!([255, 255]);
+        assert!(serde_json::from_value::<IndexJobPartialPublication>(foreign_profile).is_err(),
+            "a published outcome cannot smuggle an unknown compiler profile past refusal validation");
+
         let reply = crate::ReplyDto::new(42, crate::CommandReply::Failed(crate::CommandFailure::PartiallyPublished(partial.clone())));
         let requested = crate::CommandDto::new(42, crate::Command::Add {
             package: crate::package_key(partial.package.as_str()), execution_intent: crate::CompileExecutionIntent::Interactive });
