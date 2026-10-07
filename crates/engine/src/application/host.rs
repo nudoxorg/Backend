@@ -32,7 +32,8 @@ use paths::create_directory;
 use crate::application::{
     DEFAULT_RUST_CARGO_METADATA_POLICY, EmbeddingProvisioningFailure, EmbeddingRequirement,
     LocalCompilerCapabilities, LocalCompilerClient, LocalCompilerRuntimeConfiguration,
-    LocalCompilerRuntimePaths, LocalCompilerScratch, LocalCompilerTimeout, ToolchainProbeLimits,
+    LocalCompilerRuntimePaths, LocalCompilerScratch, LocalCompilerTimeout,
+    LocalRuntimeGoAuthorityFailure, ToolchainProbeLimits,
 };
 
 pub use error::LocalCompilerHostError;
@@ -285,6 +286,7 @@ pub struct LocalCompilerHost<Environment> {
     pub discovery: LocalHostDiscovery,
     /// Cargo registry policy used while resolving Rust package metadata.
     pub rust_cargo_metadata_policy: RustCargoMetadataPolicy,
+    go_authority_failure: Option<LocalRuntimeGoAuthorityFailure>,
     embedding_cache_directory: Option<DirectoryCapability>,
 }
 
@@ -296,6 +298,7 @@ impl<Environment> LocalCompilerHost<Environment> {
             environment,
             discovery,
             rust_cargo_metadata_policy: DEFAULT_RUST_CARGO_METADATA_POLICY,
+            go_authority_failure: None,
             embedding_cache_directory: None,
         }
     }
@@ -316,6 +319,16 @@ impl<Environment> LocalCompilerHost<Environment> {
         self.rust_cargo_metadata_policy = policy;
         self
     }
+
+    /// Retains a captured Go-only admission failure until a Go request arrives.
+    #[must_use]
+    pub const fn with_go_authority_failure(
+        mut self,
+        failure: Option<LocalRuntimeGoAuthorityFailure>,
+    ) -> Self {
+        self.go_authority_failure = failure;
+        self
+    }
 }
 
 impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
@@ -324,8 +337,10 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
     /// a long-lived owner. PATH and Go cache variables are consulted only during this call.
     ///
     /// Explicit NUDOX_* paths take precedence and are validated as their declared object
-    /// kind. An invalid explicit path returns its typed error instead of choosing a PATH
-    /// alternative. The returned selection contains no ambient search inputs.
+    /// kind. An invalid explicit Go path is retained as a Go-only admission failure so it
+    /// cannot prevent other languages from starting; other invalid explicit paths return their
+    /// typed error instead of choosing a PATH alternative. The returned selection contains no
+    /// ambient search inputs.
     ///
     /// # Errors
     ///
@@ -341,6 +356,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         let home = self.optional_absolute_path(LocalHostVariable::Home)?;
         let mut paths =
             Vec::with_capacity(LocalHostVariable::CLOSED_ENVIRONMENT_SNAPSHOT_ROLE_COUNT);
+        let mut go_failure = None;
         for variable in LocalHostVariable::closed_environment_snapshot_roles() {
             if matches!(
                 variable,
@@ -400,12 +416,17 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 NativeTool::GoCompiler,
             ),
         ] {
-            if let Some(path) = self.executable(
+            match self.executable(
                 variable,
                 role,
                 self.executable_candidates(home.as_deref(), tool),
-            )? {
-                paths.push((variable, path));
+            ) {
+                Ok(Some(path)) => paths.push((variable, path)),
+                Ok(None) => {}
+                Err(error) if tool == NativeTool::GoCompiler => {
+                    go_failure = Some(authority::go_authority_failure(&error));
+                }
+                Err(error) => return Err(error),
             }
         }
         if let Some(pyrefly) = self.executable(
@@ -415,20 +436,26 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         )? {
             paths.push((LocalHostVariable::NudoxPyrefly, pyrefly));
         }
-        if let Some(go_root) = self.directory(
+        match self.directory(
             LocalHostVariable::NudoxGoRoot,
             LocalHostPathRole::PackageRoot(backend_library::interface::PackageEcosystem::Golang),
             self.package_root_candidates(
                 home.as_deref(),
                 backend_library::interface::PackageEcosystem::Golang,
             ),
-        )? {
-            paths.push((LocalHostVariable::NudoxGoRoot, go_root));
+        ) {
+            Ok(Some(go_root)) => paths.push((LocalHostVariable::NudoxGoRoot, go_root)),
+            Ok(None) => {}
+            Err(error) => {
+                if go_failure.is_none() {
+                    go_failure = Some(authority::go_authority_failure(&error));
+                }
+            }
         }
 
         let snapshot = ClosedLocalHostEnvironmentSnapshot::from_paths(paths)
             .map_err(LocalCompilerHostError::HostSnapshot)?;
-        LocalCompilerHostSelection::captured_installed_tools(snapshot)
+        LocalCompilerHostSelection::captured_installed_tools(snapshot, go_failure)
             .map_err(LocalCompilerHostError::HostSnapshot)
     }
 
@@ -437,8 +464,10 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
     /// # Errors
     ///
     /// Returns exact path, resource-bound, authority, configuration, or worker-startup causes.
-    /// Explicitly configured broken paths fail admission; they never become silent unavailable
-    /// rows. A genuinely absent optional tool remains an honest unavailable row.
+    /// Broken Go configuration is retained as a Go-only unavailable state and fails when a Go
+    /// package is requested; it does not block unrelated language owners. Other explicitly
+    /// configured broken paths fail admission. A genuinely absent optional tool remains an
+    /// honest unavailable row.
     pub fn open(&self) -> Result<LocalCompilerClient, LocalCompilerHostError> {
         self.open_with_embedding_state(None, None, EmbeddingRequirement::Optional)
     }
@@ -541,6 +570,20 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             .environment
             .value(LocalHostVariable::NudoxPyrefly)
             .is_some();
+        let (go, mut go_discovery_failure) = match self.executable(
+            LocalHostVariable::NudoxGo,
+            LocalHostPathRole::Native(NativeTool::GoCompiler),
+            self.executable_candidates(home.as_deref(), NativeTool::GoCompiler),
+        ) {
+            Ok(go) => (go, None),
+            Err(_) => (
+                None,
+                Some(LocalRuntimeGoAuthorityFailure::ExecutableUnavailable),
+            ),
+        };
+        if self.go_authority_failure.is_some() {
+            go_discovery_failure = self.go_authority_failure;
+        }
         let executables = NativeExecutables {
             rustc: self.executable(
                 LocalHostVariable::NudoxRustc,
@@ -572,11 +615,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 None
             },
             typescript: typescript_host.compiler.clone(),
-            go: self.executable(
-                LocalHostVariable::NudoxGo,
-                LocalHostPathRole::Native(NativeTool::GoCompiler),
-                self.executable_candidates(home.as_deref(), NativeTool::GoCompiler),
-            )?,
+            go,
             java: self.executable(
                 LocalHostVariable::NudoxJavaCompiler,
                 LocalHostPathRole::Native(NativeTool::JavaCompiler),
@@ -606,7 +645,10 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 typescript_host.module_root.as_deref(),
             )
         };
-        let package_roots = self.package_roots(home.as_deref())?;
+        let (package_roots, go_root_failure) = self.package_roots(home.as_deref())?;
+        if go_discovery_failure.is_none() {
+            go_discovery_failure = go_root_failure;
+        }
         let go_module_cache = package_roots
             .iter()
             .find(|root| root.ecosystem == backend_library::interface::PackageEcosystem::Golang)
@@ -619,6 +661,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             go_module_cache.as_deref(),
             &paths.native_work_directory,
             probe_limits,
+            go_discovery_failure,
         )?;
         if let crate::application::LocalRuntimePythonCheckerAdmission::Native { authority } =
             &package_authority.python_checker

@@ -1,6 +1,7 @@
 //! Closed, versioned compiler-host environment snapshots.
 
 use super::LocalHostVariable;
+use crate::application::LocalRuntimeGoAuthorityFailure;
 use backend_platform::{NativePath, NativePathError, NativePathWire};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -42,6 +43,11 @@ pub enum LocalCompilerHostSelectionIssue {
     MissingPyreflyChecker,
     /// No Go compiler was captured.
     MissingGoCompiler,
+    /// A selected Go toolchain or package root could not be admitted.
+    GoAuthorityUnavailable {
+        /// Exact bounded Go-only admission cause.
+        cause: LocalRuntimeGoAuthorityFailure,
+    },
     /// Legacy status for hosts without an explicitly selected Go module cache.
     MissingGoModuleCache,
 }
@@ -64,6 +70,9 @@ impl LocalCompilerHostSelectionIssue {
                 "Native Python source processing can run without an external Pyrefly checker; configure NUDOX_PYREFLY only to select one."
             }
             Self::MissingGoCompiler => "Install Go or configure NUDOX_GO, then restart locald.",
+            Self::GoAuthorityUnavailable { .. } => {
+                "Go was found but its package authority could not be admitted; check the Go toolchain and restart locald. Other language tools remain available."
+            }
             Self::MissingGoModuleCache => {
                 "Go source processing can use its private module cache; no cache environment variable is required."
             }
@@ -80,6 +89,7 @@ pub struct LocalCompilerHostSelection {
     source: LocalCompilerHostSelectionSource,
     fingerprint: [u8; 32],
     issues: Vec<LocalCompilerHostSelectionIssue>,
+    go_failure: Option<LocalRuntimeGoAuthorityFailure>,
 }
 
 impl LocalCompilerHostSelection {
@@ -95,37 +105,47 @@ impl LocalCompilerHostSelection {
         Self::new(
             snapshot,
             LocalCompilerHostSelectionSource::IncomingClosedSnapshot,
+            None,
         )
     }
 
     pub(super) fn captured_installed_tools(
         snapshot: ClosedLocalHostEnvironmentSnapshot,
+        go_failure: Option<LocalRuntimeGoAuthorityFailure>,
     ) -> Result<Self, ClosedLocalHostEnvironmentSnapshotError> {
         Self::new(
             snapshot,
             LocalCompilerHostSelectionSource::CapturedInstalledTools,
+            go_failure,
         )
     }
 
     fn new(
         snapshot: ClosedLocalHostEnvironmentSnapshot,
         source: LocalCompilerHostSelectionSource,
+        go_failure: Option<LocalRuntimeGoAuthorityFailure>,
     ) -> Result<Self, ClosedLocalHostEnvironmentSnapshotError> {
         let encoded = snapshot.encode()?;
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"backend-local-compiler-host-selection-v1\0");
+        hasher.update(b"backend-local-compiler-host-selection-v2\0");
         hasher.update(&[match source {
             LocalCompilerHostSelectionSource::CapturedInstalledTools => 1,
             LocalCompilerHostSelectionSource::IncomingClosedSnapshot => 2,
         }]);
         hasher.update(encoded.as_bytes());
+        hasher.update(&[go_failure.map_or(0, go_failure_identity)]);
         let fingerprint = *hasher.finalize().as_bytes();
-        let issues = selection_issues(&snapshot);
+        let mut issues = selection_issues(&snapshot);
+        if let Some(cause) = go_failure {
+            issues.retain(|issue| *issue != LocalCompilerHostSelectionIssue::MissingGoCompiler);
+            issues.push(LocalCompilerHostSelectionIssue::GoAuthorityUnavailable { cause });
+        }
         Ok(Self {
             snapshot,
             source,
             fingerprint,
             issues,
+            go_failure,
         })
     }
 
@@ -159,6 +179,12 @@ impl LocalCompilerHostSelection {
         &self.issues
     }
 
+    /// Returns a Go-only admission failure for the owner to retain until a Go request arrives.
+    #[must_use]
+    pub const fn go_authority_failure(&self) -> Option<LocalRuntimeGoAuthorityFailure> {
+        self.go_failure
+    }
+
     /// Encodes a bounded receipt suitable for private locald state and a setup doctor.
     ///
     /// The nested snapshot keeps the receipt's native path encoding lossless. It is data, not a
@@ -175,17 +201,29 @@ impl LocalCompilerHostSelection {
             fingerprint: String,
             snapshot: String,
             issues: &'a [LocalCompilerHostSelectionIssue],
+            go_failure: Option<LocalRuntimeGoAuthorityFailure>,
         }
 
         let receipt = Receipt {
-            version: 1,
+            version: 2,
             source: self.source,
             fingerprint: self.fingerprint_hex(),
             snapshot: self.snapshot.encode()?,
             issues: &self.issues,
+            go_failure: self.go_failure,
         };
         serde_json::to_string(&receipt)
             .map_err(|_| ClosedLocalHostEnvironmentSnapshotError::InvalidEncoding)
+    }
+}
+
+const fn go_failure_identity(failure: LocalRuntimeGoAuthorityFailure) -> u8 {
+    match failure {
+        LocalRuntimeGoAuthorityFailure::ExecutableUnavailable => 1,
+        LocalRuntimeGoAuthorityFailure::GoRootUnavailable => 2,
+        LocalRuntimeGoAuthorityFailure::ModuleCacheUnavailable => 3,
+        LocalRuntimeGoAuthorityFailure::ToolchainIdentityUnavailable => 4,
+        LocalRuntimeGoAuthorityFailure::OracleUnavailable => 5,
     }
 }
 

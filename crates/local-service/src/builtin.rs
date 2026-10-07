@@ -1619,6 +1619,7 @@ pub(crate) fn compose_owner(
         },
         backend_engine::application::LocalHostDiscovery::ClosedSnapshot,
     )
+    .with_go_authority_failure(compiler_selection.go_authority_failure())
     .with_rust_cargo_metadata_policy(cargo_metadata_policy);
     if let Ok(cache_directory) = daemon
         .engine()

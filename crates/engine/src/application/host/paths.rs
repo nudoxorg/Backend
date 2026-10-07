@@ -1513,6 +1513,71 @@ mod tests {
     }
 
     #[test]
+    fn invalid_explicit_go_root_is_retained_without_blocking_installed_selection() {
+        let (root, mut environment) = installed_fixture("installed-tools-invalid-go-root", false);
+        let invalid_root = root.join("go-root-file");
+        fs::write(&invalid_root, b"not a directory").expect("create invalid Go root");
+        environment.set(LocalHostVariable::NudoxGoRoot, &invalid_root);
+
+        let selection = LocalCompilerHost::new(environment, LocalHostDiscovery::InstalledTools)
+            .capture_installed_selection()
+            .expect("optional Go root failure must not block other tool capture");
+
+        assert!(
+            selection
+                .snapshot()
+                .path(LocalHostVariable::NudoxGo)
+                .is_some()
+        );
+        assert!(
+            selection
+                .snapshot()
+                .path(LocalHostVariable::NudoxGoRoot)
+                .is_none()
+        );
+        assert_eq!(
+            selection.go_authority_failure(),
+            Some(crate::application::LocalRuntimeGoAuthorityFailure::GoRootUnavailable),
+        );
+        assert!(selection.issues().contains(
+            &super::super::LocalCompilerHostSelectionIssue::GoAuthorityUnavailable {
+                cause: crate::application::LocalRuntimeGoAuthorityFailure::GoRootUnavailable,
+            }
+        ));
+        let receipt = selection.encode_receipt().expect("encode typed failure");
+        assert!(receipt.contains("go_root_unavailable"));
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn invalid_explicit_go_executable_is_deferred_to_the_go_language_lane() {
+        let (root, mut environment) = installed_fixture("installed-tools-invalid-go", false);
+        let invalid_go = root.join("missing/go");
+        environment.set(LocalHostVariable::NudoxGo, &invalid_go);
+
+        let selection = LocalCompilerHost::new(environment, LocalHostDiscovery::InstalledTools)
+            .capture_installed_selection()
+            .expect("optional Go path failure must not block other tool capture");
+
+        assert!(
+            selection
+                .snapshot()
+                .path(LocalHostVariable::NudoxGo)
+                .is_none()
+        );
+        assert_eq!(
+            selection.go_authority_failure(),
+            Some(crate::application::LocalRuntimeGoAuthorityFailure::ExecutableUnavailable),
+        );
+        assert!(selection.issues().contains(
+            &super::super::LocalCompilerHostSelectionIssue::GoAuthorityUnavailable {
+                cause: crate::application::LocalRuntimeGoAuthorityFailure::ExecutableUnavailable,
+            }
+        ));
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
     fn installed_capture_preserves_bad_explicit_overrides_and_reports_missing_pyrefly() {
         let (root, mut environment) = installed_fixture("installed-tools-invalid", false);
         let missing_node = root.join("absent/node");
