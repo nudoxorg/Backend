@@ -890,6 +890,125 @@ const MAX_BUNDLE_HELPER_RECEIPT_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_BUNDLE_TYPESCRIPT_PACKAGE_FILES: usize = 512;
 const MAX_BUNDLE_TYPESCRIPT_PACKAGE_BYTES: u64 = 96 * 1024 * 1024;
 
+/// Admits only the helper receipt metadata; package bytes remain lazy until that SDK wins.
+fn admitted_bundle_helper_receipt(
+    bundle_root: &Path,
+    manifest_path: &Path,
+    manifest: &serde_json::Value,
+    inventory: &serde_json::Map<String, serde_json::Value>,
+    proof: &mut BundleTypeScriptResourceProof,
+) -> Result<Option<(PathBuf, serde_json::Value)>, LocalCompilerHostError> {
+    let Some(helpers) = manifest.get("compiler_helpers") else {
+        return Ok(None);
+    };
+    if helpers
+        .get("files")
+        .and_then(serde_json::Value::as_object)
+        .is_none()
+    {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: manifest_path.to_path_buf().into_boxed_path(),
+            message: "compiler helper manifest is missing its file receipt".into(),
+        });
+    }
+
+    let helper_receipt_relative = "Contents/Resources/Build Evidence/compiler-helpers-receipt.json";
+    let helper_receipt_path = bundle_root.join(helper_receipt_relative);
+    let helper_receipt_record = inventory.get(helper_receipt_relative).ok_or_else(|| {
+        LocalCompilerHostError::BundleManifest {
+            path: manifest_path.to_path_buf().into_boxed_path(),
+            message: "manifest inventory does not contain the compiler-helper receipt".into(),
+        }
+    })?;
+    validate_bundle_inventory_file(
+        helper_receipt_record,
+        &helper_receipt_path,
+        MAX_BUNDLE_HELPER_RECEIPT_BYTES,
+        manifest_path,
+    )?;
+    let (_, helper_receipt_digest) =
+        sha256_file(&helper_receipt_path, MAX_BUNDLE_HELPER_RECEIPT_BYTES)?;
+    if helpers
+        .get("receipt_sha256")
+        .and_then(serde_json::Value::as_str)
+        != Some(helper_receipt_digest.as_str())
+    {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: manifest_path.to_path_buf().into_boxed_path(),
+            message: "compiler-helper receipt digest differs from the bundle manifest".into(),
+        });
+    }
+    let helper_receipt_bytes = read_bounded(&helper_receipt_path, MAX_BUNDLE_HELPER_RECEIPT_BYTES)
+        .map_err(|source| LocalCompilerHostError::BundleManifest {
+            path: helper_receipt_path.clone().into_boxed_path(),
+            message: source.to_string().into_boxed_str(),
+        })?;
+    let helper_proof = BundleTypeScriptResourceProof::from_bytes(
+        &helper_receipt_path,
+        MAX_BUNDLE_HELPER_RECEIPT_BYTES,
+        &helper_receipt_bytes,
+    )?;
+    if helper_proof.files[0].2 != helper_receipt_digest {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: helper_receipt_path.clone().into_boxed_path(),
+            message: "helper receipt changed between inventory admission and parsing".into(),
+        });
+    }
+    proof.files.extend(helper_proof.files);
+    let helper_receipt: serde_json::Value =
+        serde_json::from_slice(&helper_receipt_bytes).map_err(|source| {
+            LocalCompilerHostError::BundleManifest {
+                path: helper_receipt_path.clone().into_boxed_path(),
+                message: source.to_string().into_boxed_str(),
+            }
+        })?;
+    if helper_receipt
+        .get("schema")
+        .and_then(serde_json::Value::as_u64)
+        != Some(1)
+        || helper_receipt.get("source") != manifest.get("source")
+        || helper_receipt.get("files") != helpers.get("files")
+        || helper_receipt.get("tools") != helpers.get("tools")
+        || helper_receipt
+            .get("target")
+            .and_then(serde_json::Value::as_str)
+            != manifest
+                .get("target")
+                .and_then(|target| target.get("triple"))
+                .and_then(serde_json::Value::as_str)
+    {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: helper_receipt_path.clone().into_boxed_path(),
+            message: "compiler-helper receipt differs from the admitted bundle metadata".into(),
+        });
+    }
+    Ok(Some((helper_receipt_path, helper_receipt)))
+}
+
+fn selected_bundle_node_version(
+    receipt_path: &Path,
+    receipt: &serde_json::Value,
+    runtime_record: &serde_json::Value,
+) -> Result<Box<str>, LocalCompilerHostError> {
+    let file_digest = receipt["files"]["typescript/node/bin/node"].as_str();
+    let tool_digest = receipt["tools"]["node"]["sha256"].as_str();
+    let inventory_digest = runtime_record["sha256"].as_str();
+    if file_digest.is_none() || file_digest != tool_digest || file_digest != inventory_digest {
+        return Err(LocalCompilerHostError::BundleManifest {
+            path: receipt_path.to_path_buf().into_boxed_path(),
+            message: "selected Node digest differs between bundle inventory, SDK receipt and tool identity".into(),
+        });
+    }
+    receipt["tools"]["node"]["version"]
+        .as_str()
+        .filter(|version| !version.is_empty())
+        .map(Into::into)
+        .ok_or_else(|| LocalCompilerHostError::BundleManifest {
+            path: receipt_path.to_path_buf().into_boxed_path(),
+            message: "selected SDK Node has no recorded version identity".into(),
+        })
+}
+
 /// Discovers a Node runtime only for an executable directly installed in a recognized Nudox
 /// macOS application bundle. The bundle's own finite inventory must bind both this executable
 /// and the runtime bytes before the runtime is considered a candidate.
@@ -1047,13 +1166,13 @@ fn bundled_typescript_node(
             message: "bundled TypeScript Node runtime resolves through a symlink".into(),
         });
     }
-    proof.expected_node_version = manifest
-        .get("compiler_helpers")
-        .and_then(|helpers| helpers.get("tools"))
-        .and_then(|tools| tools.get("node"))
-        .and_then(|node| node.get("version"))
-        .and_then(serde_json::Value::as_str)
-        .map(Into::into);
+    if let Some((receipt_path, receipt)) = admitted_bundle_helper_receipt(
+        bundle_root, &manifest_path, &manifest, inventory, &mut proof,
+    )? {
+        proof.expected_node_version = Some(selected_bundle_node_version(
+            &receipt_path, &receipt, runtime_record,
+        )?);
+    }
     proof.validate_current()?;
     Ok(Some((canonical_runtime, proof)))
 }
@@ -1202,87 +1321,9 @@ pub(crate) fn bundled_typescript_sdk(
     else {
         return Ok(None);
     };
-    if helpers
-        .get("files")
-        .and_then(serde_json::Value::as_object)
-        .is_none()
-    {
-        return Err(LocalCompilerHostError::BundleManifest {
-            path: manifest_path.clone().into_boxed_path(),
-            message: "compiler helper manifest is missing its file receipt".into(),
-        });
-    }
-
-    let helper_receipt_relative = "Contents/Resources/Build Evidence/compiler-helpers-receipt.json";
-    let helper_receipt_path = bundle_root.join(helper_receipt_relative);
-    let helper_receipt_record = inventory.get(helper_receipt_relative).ok_or_else(|| {
-        LocalCompilerHostError::BundleManifest {
-            path: manifest_path.clone().into_boxed_path(),
-            message: "manifest inventory does not contain the compiler-helper receipt".into(),
-        }
-    })?;
-    validate_bundle_inventory_file(
-        helper_receipt_record,
-        &helper_receipt_path,
-        MAX_BUNDLE_HELPER_RECEIPT_BYTES,
-        &manifest_path,
-    )?;
-    let (_, helper_receipt_digest) =
-        sha256_file(&helper_receipt_path, MAX_BUNDLE_HELPER_RECEIPT_BYTES)?;
-    if helpers
-        .get("receipt_sha256")
-        .and_then(serde_json::Value::as_str)
-        != Some(helper_receipt_digest.as_str())
-    {
-        return Err(LocalCompilerHostError::BundleManifest {
-            path: manifest_path.clone().into_boxed_path(),
-            message: "compiler-helper receipt digest differs from the bundle manifest".into(),
-        });
-    }
-    let helper_receipt_bytes = read_bounded(&helper_receipt_path, MAX_BUNDLE_HELPER_RECEIPT_BYTES)
-        .map_err(|source| LocalCompilerHostError::BundleManifest {
-            path: helper_receipt_path.clone().into_boxed_path(),
-            message: source.to_string().into_boxed_str(),
-        })?;
-    let helper_proof = BundleTypeScriptResourceProof::from_bytes(
-        &helper_receipt_path,
-        MAX_BUNDLE_HELPER_RECEIPT_BYTES,
-        &helper_receipt_bytes,
-    )?;
-    if helper_proof.files[0].2 != helper_receipt_digest {
-        return Err(LocalCompilerHostError::BundleManifest {
-            path: helper_receipt_path.clone().into_boxed_path(),
-            message: "helper receipt changed between inventory admission and parsing".into(),
-        });
-    }
-    proof.files.extend(helper_proof.files);
-    let helper_receipt: serde_json::Value =
-        serde_json::from_slice(&helper_receipt_bytes).map_err(|source| {
-            LocalCompilerHostError::BundleManifest {
-                path: helper_receipt_path.clone().into_boxed_path(),
-                message: source.to_string().into_boxed_str(),
-            }
-        })?;
-    if helper_receipt
-        .get("schema")
-        .and_then(serde_json::Value::as_u64)
-        != Some(1)
-        || helper_receipt.get("source") != manifest.get("source")
-        || helper_receipt.get("files") != helpers.get("files")
-        || helper_receipt.get("tools") != helpers.get("tools")
-        || helper_receipt
-            .get("target")
-            .and_then(serde_json::Value::as_str)
-            != manifest
-                .get("target")
-                .and_then(|target| target.get("triple"))
-                .and_then(serde_json::Value::as_str)
-    {
-        return Err(LocalCompilerHostError::BundleManifest {
-            path: helper_receipt_path.into_boxed_path(),
-            message: "compiler-helper receipt differs from the admitted bundle metadata".into(),
-        });
-    }
+    let (helper_receipt_path, helper_receipt) = admitted_bundle_helper_receipt(
+        bundle_root, &manifest_path, &manifest, inventory, &mut proof,
+    )?.expect("complete SDK has compiler helper metadata");
     let receipt_typescript_version = helper_receipt
         .get("tools")
         .and_then(|tools| tools.get("typescript"))
@@ -1467,6 +1508,9 @@ pub(crate) fn bundled_typescript_sdk(
                 message: "bundle inventory omits the selected Node runtime".into(),
             }
         })?;
+        proof.expected_node_version = Some(selected_bundle_node_version(
+            &helper_receipt_path, &helper_receipt, runtime_record,
+        )?);
     validate_bundle_inventory_file(
             runtime_record,
         &runtime_path,
@@ -1485,17 +1529,6 @@ pub(crate) fn bundled_typescript_sdk(
     } else {
         None
     };
-    if runtime_required {
-        proof.expected_node_version = Some(
-            helper_receipt["tools"]["node"]["version"]
-                .as_str()
-                .ok_or_else(|| LocalCompilerHostError::BundleManifest {
-                    path: helper_receipt_path.clone().into_boxed_path(),
-                    message: "selected SDK Node has no recorded version identity".into(),
-                })?
-                .into(),
-        );
-    }
     proof.validate_current()?;
     Ok(Some(BundledTypeScriptSdk {
         compiler,
@@ -2707,6 +2740,15 @@ mod tests {
             .unwrap();
         assert!(external_runtime_sdk.node.is_none());
         assert!(bundled_typescript_sdk(Some(&executable), true).is_err());
+        fs::write(&node, b"different fixture node").expect("change Node with matching outer inventory");
+        let mut incoherent_node_manifest = manifest.clone();
+        incoherent_node_manifest["files"]["Contents/Resources/Helpers/typescript/node/bin/node"] = inventory_entry(&node);
+        fs::write(&manifest_path, serde_json::to_vec(&incoherent_node_manifest).unwrap()).unwrap();
+        assert!(bundled_typescript_sdk(Some(&executable), true).is_err());
+        assert!(bundled_typescript_node(Some(&executable)).is_err());
+        // An external selected runtime leaves this unused bundled Node outside authority.
+        assert!(bundled_typescript_sdk(Some(&executable), false).is_ok());
+        fs::write(&manifest_path, &manifest_bytes).expect("restore coherent Node inventory");
         fs::write(&node, b"fixture node").expect("restore bundle Node");
         let extra = helper_root.join("node_modules/typescript/unreceipted-empty-directory");
         fs::create_dir(&extra).expect("create extra empty directory");
@@ -2729,6 +2771,12 @@ mod tests {
         fs::write(&manifest_path, &manifest_bytes).expect("restore bundle manifest");
 
         fs::write(&typescript_api, b"module.exports = {};\n").expect("tamper with SDK tree");
+        let selected_runtime = bundled_typescript_node(Some(&executable))
+            .expect("unused project SDK package does not block selected bundle runtime").unwrap();
+        assert_eq!(selected_runtime.1.expected_node_version.as_deref(), Some("v22.0.0"));
+        fs::write(&helper_receipt_path, b"changed selected receipt").unwrap();
+        assert!(selected_runtime.1.validate_current().is_err());
+        fs::write(&helper_receipt_path, &helper_receipt_bytes).unwrap();
         assert!(matches!(
             bundled_typescript_sdk(Some(&executable), true),
             Err(LocalCompilerHostError::BundleManifest { .. })
