@@ -26,7 +26,7 @@ def main []: nothing -> nothing {
     let system = (^nix eval --raw --impure --expr "builtins.currentSystem" | str trim)
     let installables = fast-flake-checks | each {|check| $"path:.#checks.($system).($check)" }
     let checks = ci-step "fast" "structural flake checks" {||
-        with-plain-tmp {|| run-external "nix" "build" "-L" "--keep-going" "--no-link" ...$installables }
+        with-plain-tmp {|| run-bounded 20min "nix" "build" "-L" "--keep-going" "--no-link" ...$installables }
     }
     stop-if-superseded "fast"
     # Native first: a plain compile error shows up before the foreign targets
@@ -38,7 +38,7 @@ def main []: nothing -> nothing {
     ) | uniq
     let compiles = ci-step "fast" $"cargo check ($targets | str join ', ')" {||
         with-env {NUDOX_CROSS_CHECK_TARGETS: ($targets | str join " ")} {
-            run-external "nu" "--no-config-file" ($env.FILE_PWD | path join "cross-check.nu") "--compile-only"
+            run-bounded 30min "nu" "--no-config-file" ($env.FILE_PWD | path join "cross-check.nu") "--compile-only"
         }
     }
     reclaim-build-output

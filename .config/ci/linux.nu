@@ -153,7 +153,7 @@ def main [
         true
     } else {
         ci-step "linux" "root flake check" {||
-            with-plain-tmp {|| run-external "nix" "flake" "check" "-L" "--keep-going" "path:." }
+            with-plain-tmp {|| run-bounded 45min "nix" "flake" "check" "-L" "--keep-going" "path:." }
         }
     }
 
@@ -188,7 +188,7 @@ def main [
     ci-step "linux" "warm the Cargo cache for registry tests" {|| warm-registry-cache } | ignore
     stop-if-superseded "linux"
     let tests = (with-env $test_env {
-        ci-step "linux" "backend test pr" {|| run-external "sh" "-c" "umask 077 && exec backend test pr" }
+        ci-step "linux" "backend test pr" {|| run-bounded 75min "sh" "-c" "umask 077 && exec backend test pr" }
     })
     if not $tests { print-captured-failures }
 
