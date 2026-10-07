@@ -118,7 +118,7 @@ static SECRET_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 pub struct WorkspacePaths {
     project: PathBuf,
     data: PathBuf,
-    private_application_root: Option<PathBuf>,
+    private_application_root: Option<ApplicationStateRoot>,
     endpoint: PathBuf,
     authority_secret: PathBuf,
 }
@@ -151,8 +151,8 @@ impl WorkspacePaths {
             None => {
                 let state_root = application_state_root()?;
                 (
-                    default_workspace_path(&project, &state_root),
-                    Some(state_root.join(APPLICATION_DIRECTORY)),
+                    default_workspace_path(&project, &state_root.path()),
+                    Some(state_root),
                 )
             }
         };
@@ -244,8 +244,12 @@ impl WorkspacePaths {
     /// Returns an error when the workspace directories cannot be admitted as
     /// private state.
     pub fn initialize_data_directory(&self) -> Result<(), RuntimeError> {
-        if let Some(application_root) = self.private_application_root.as_deref() {
-            initialize_default_state(application_root, &self.data).map_err(RuntimeError::Io)?;
+        if let Some(application_root) = self.private_application_root.as_ref() {
+            initialize_default_state(application_root, &self.data).map_err(|source| {
+                RuntimeError::DefaultStateInitialization {
+                    path: application_root.path().join(APPLICATION_DIRECTORY), source,
+                }
+            })?;
         } else {
             backend_platform::durable::ensure_private_directory(&self.data)
                 .map_err(RuntimeError::Io)?;
@@ -254,13 +258,50 @@ impl WorkspacePaths {
     }
 }
 
-fn initialize_default_state(application_root: &Path, data: &Path) -> std::io::Result<()> {
-    backend_platform::durable::ensure_private_child_directory(application_root)?;
-    let projects = application_root.join(PROJECTS_DIRECTORY);
-    backend_platform::durable::ensure_private_directory(&projects)?;
-    backend_platform::durable::ensure_private_directory(data)
+/// An existing user profile/data anchor plus only the platform's known suffix.
+/// Discovery freezes this choice; initialization never reads a second environment.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ApplicationStateRoot {
+    anchor: PathBuf,
+    suffix: &'static [&'static str],
 }
 
+impl ApplicationStateRoot {
+    fn new(anchor: PathBuf, suffix: &'static [&'static str]) -> Self {
+        Self { anchor, suffix }
+    }
+
+    fn path(&self) -> PathBuf {
+        self.suffix
+            .iter()
+            .fold(self.anchor.clone(), |path, name| path.join(name))
+    }
+}
+
+fn initialize_default_state(state: &ApplicationStateRoot, data: &Path) -> std::io::Result<()> {
+    let application = backend_platform::OwnedWorkspaceDirectory::under_user_data(
+        &state.anchor,
+        state.suffix,
+        APPLICATION_DIRECTORY,
+    )?;
+    let projects = application.child(PROJECTS_DIRECTORY)?;
+    let name = data
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "default project state has no name",
+            )
+        })?;
+    if !same_path_identity(&normalize_identity(&projects.path().join(name)), data) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "default project state is outside the captured application directory",
+        ));
+    }
+    projects.child(name)?.verify_path()
+}
 /// Selects the repository boundary from any descendant directory. A Git root
 /// wins over nested package manifests so CLI, MCP, and desktop sessions share
 /// one durable workspace across a monorepo. Outside Git, the nearest common
@@ -580,7 +621,7 @@ fn default_workspace_path(project: &Path, state_root: &Path) -> PathBuf {
 
 /// Selects the operating system's per-user durable state directory without
 /// creating it. Callers share this path across CLI, GUI, MCP, and locald.
-fn application_state_root() -> Result<PathBuf, RuntimeError> {
+fn application_state_root() -> Result<ApplicationStateRoot, RuntimeError> {
     #[cfg(target_os = "macos")]
     {
         let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
@@ -589,7 +630,7 @@ fn application_state_root() -> Result<PathBuf, RuntimeError> {
                 "the user's home directory is unavailable",
             ))
         })?;
-        return Ok(home.join("Library").join("Application Support"));
+        return Ok(ApplicationStateRoot::new(home, &["Library", "Application Support"]));
     }
 
     #[cfg(target_os = "windows")]
@@ -597,7 +638,7 @@ fn application_state_root() -> Result<PathBuf, RuntimeError> {
         if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
             let path = PathBuf::from(local_app_data);
             if path.is_absolute() {
-                return Ok(path);
+                return Ok(ApplicationStateRoot::new(path, &[]));
             }
         }
         let profile = std::env::var_os("USERPROFILE")
@@ -608,7 +649,7 @@ fn application_state_root() -> Result<PathBuf, RuntimeError> {
                     "the user's LocalAppData directory is unavailable",
                 ))
             })?;
-        return Ok(profile.join("AppData").join("Local"));
+        return Ok(ApplicationStateRoot::new(profile, &["AppData", "Local"]));
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -616,13 +657,13 @@ fn application_state_root() -> Result<PathBuf, RuntimeError> {
         if let Some(state) = std::env::var_os("XDG_STATE_HOME") {
             let path = PathBuf::from(state);
             if path.is_absolute() {
-                return Ok(path);
+                return Ok(ApplicationStateRoot::new(path, &[]));
             }
         }
         if let Some(data) = std::env::var_os("XDG_DATA_HOME") {
             let path = PathBuf::from(data);
             if path.is_absolute() {
-                return Ok(path.join("state"));
+                return Ok(ApplicationStateRoot::new(path, &["state"]));
             }
         }
         let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
@@ -631,7 +672,7 @@ fn application_state_root() -> Result<PathBuf, RuntimeError> {
                 "the user's XDG state and home directories are unavailable",
             ))
         })?;
-        return Ok(home.join(".local").join("state"));
+        return Ok(ApplicationStateRoot::new(home, &[".local", "state"]));
     }
 
     #[allow(unreachable_code)]
@@ -989,6 +1030,13 @@ fn validate_authority_secret(path: &Path) -> Result<(), RuntimeError> {
 pub enum RuntimeError {
     /// A filesystem or process operation failed.
     Io(std::io::Error),
+    /// The captured platform-default state location could not be initialized.
+    DefaultStateInitialization {
+        /// Application directory below the selected user profile/data anchor.
+        path: PathBuf,
+        /// Original filesystem admission or creation cause.
+        source: std::io::Error,
+    },
     /// One selected path was empty.
     InvalidPath(&'static str),
     /// The configured workspace state belongs to another checkout.
@@ -1046,6 +1094,9 @@ impl fmt::Display for RuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(formatter, "local runtime I/O failed: {error}"),
+            Self::DefaultStateInitialization { path, source } => write!(formatter,
+                "initialize default state at {}: {source}; the user profile/data directories must be owned by this user and not writable by other users",
+                path.display()),
             Self::InvalidPath(message) => formatter.write_str(message),
             Self::WorkspaceProjectMismatch {
                 project,
@@ -1106,6 +1157,7 @@ impl std::error::Error for RuntimeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(source)
+            | Self::DefaultStateInitialization { source, .. }
             | Self::EndpointUnavailable { source, .. }
             | Self::Spawn { source, .. } => Some(source),
             Self::InvalidPath(_)
@@ -1586,11 +1638,11 @@ mod tests {
         assert!(second_state.starts_with(state.join(APPLICATION_DIRECTORY)));
 
         fs::create_dir_all(&state).expect("create OS app-data parent");
-        initialize_default_state(&state.join(APPLICATION_DIRECTORY), &first_state)
+        initialize_default_state(&ApplicationStateRoot::new(state.clone(), &[]), &first_state)
             .expect("initialize first project state");
-        initialize_default_state(&state.join(APPLICATION_DIRECTORY), &second_state)
+        initialize_default_state(&ApplicationStateRoot::new(state.clone(), &[]), &second_state)
             .expect("initialize second project state");
-        initialize_default_state(&state.join(APPLICATION_DIRECTORY), &first_state)
+        initialize_default_state(&ApplicationStateRoot::new(state.clone(), &[]), &first_state)
             .expect("cold reopen first project state");
         assert!(first_state.is_dir());
         assert!(second_state.is_dir());
@@ -1600,6 +1652,136 @@ mod tests {
         );
 
         fs::remove_dir_all(root).expect("remove app-data fixture");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn empty_home_default_state_creates_only_known_suffix_and_preserves_parent_modes() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        for (platform, suffix) in [
+            ("macos", &["Library", "Application Support"][..]),
+            ("linux", &[".local", "state"][..]),
+            ("windows", &["AppData", "Local"][..]),
+        ] {
+            for existing in [false, true] {
+                for home_mode in [0o700, 0o755] {
+                    let root = test_directory(&format!(
+                        "default-empty-home-{platform}-{existing}-{home_mode}"
+                    ));
+                    fs::create_dir(&root).expect("fixture home");
+                    fs::set_permissions(&root, fs::Permissions::from_mode(home_mode))
+                        .expect("home mode");
+                    assert_eq!(
+                        fs::read_dir(&root).unwrap().count(),
+                        0,
+                        "genuinely empty home"
+                    );
+                    let state = ApplicationStateRoot::new(root.clone(), suffix);
+                    if existing {
+                        let mut parent = root.clone();
+                        for name in suffix {
+                            parent.push(name);
+                            fs::create_dir(&parent).expect("existing conventional parent");
+                            fs::set_permissions(&parent, fs::Permissions::from_mode(0o755))
+                                .unwrap();
+                        }
+                    }
+                    let data = default_workspace_path(&root.join("project"), &state.path());
+                    let paths = WorkspacePaths {
+                        project: root.join("project"),
+                        data: data.clone(),
+                        private_application_root: Some(state.clone()),
+                        endpoint: default_endpoint(&data),
+                        authority_secret: data.join(AUTHORITY_FILE),
+                    };
+                    paths
+                        .initialize()
+                        .expect("first-run default state and authority");
+                    paths.initialize().expect("reopen same state");
+                    assert!(data.is_dir());
+                    assert_eq!(fs::metadata(paths.authority_secret()).unwrap().len(), 32);
+                    assert_eq!(fs::metadata(&root).unwrap().mode() & 0o777, home_mode);
+                    let mut parent = root.clone();
+                    for name in suffix {
+                        parent.push(name);
+                        assert_eq!(
+                            fs::metadata(&parent).unwrap().mode() & 0o777,
+                            if existing { 0o755 } else { 0o700 }
+                        );
+                    }
+                    assert_eq!(
+                        fs::metadata(state.path().join(APPLICATION_DIRECTORY))
+                            .unwrap()
+                            .mode()
+                            & 0o777,
+                        0o700
+                    );
+                    fs::remove_dir_all(&root).unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn default_state_refuses_file_link_and_writable_components_without_repair() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink};
+        for blocker in ["file", "link", "writable"] {
+            for component in [0, 1] {
+                let root = test_directory(&format!("default-state-blocker-{blocker}-{component}"));
+                fs::create_dir(&root).unwrap();
+                fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+                let state =
+                    ApplicationStateRoot::new(root.clone(), &["Library", "Application Support"]);
+                let blocked = if component == 0 {
+                    root.join("Library")
+                } else {
+                    let parent = root.join("Library");
+                    fs::create_dir(&parent).unwrap();
+                    fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+                    parent.join("Application Support")
+                };
+                let outside = root.join("outside");
+                match blocker {
+                    "file" => fs::write(&blocked, "retained blocker").unwrap(),
+                    "link" => {
+                        fs::create_dir(&outside).unwrap();
+                        symlink(&outside, &blocked).unwrap();
+                    }
+                    _ => {
+                        fs::create_dir(&blocked).unwrap();
+                        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o775)).unwrap();
+                    }
+                }
+                let data = default_workspace_path(&root.join("project"), &state.path());
+                assert!(initialize_default_state(&state, &data).is_err());
+                assert!(!data.exists());
+                assert_eq!(fs::metadata(&root).unwrap().mode() & 0o777, 0o755);
+                match blocker {
+                    "file" => assert_eq!(fs::read_to_string(&blocked).unwrap(), "retained blocker"),
+                    "link" => {
+                        assert!(
+                            fs::symlink_metadata(&blocked)
+                                .unwrap()
+                                .file_type()
+                                .is_symlink()
+                        );
+                        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+                    }
+                    _ => assert_eq!(fs::metadata(&blocked).unwrap().mode() & 0o777, 0o775),
+                }
+                fs::remove_dir_all(&root).unwrap();
+            }
+        }
+        let root = test_directory("default-state-public-anchor-writable");
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o775)).unwrap();
+        let state = ApplicationStateRoot::new(root.clone(), &[".local", "state"]);
+        let data = default_workspace_path(&root.join("project"), &state.path());
+        assert!(initialize_default_state(&state, &data).is_err());
+        assert_eq!(fs::metadata(&root).unwrap().mode() & 0o777, 0o775);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
