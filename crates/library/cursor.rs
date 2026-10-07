@@ -289,11 +289,11 @@ impl Cursor {
         if envelope_schema != CURSOR_SCHEMA || cursor_schema != CURSOR_SCHEMA {
             return Err("unsupported subscription cursor schema".to_owned());
         }
-        u64::from_be_bytes(
+        Ok(u64::from_be_bytes(
             bytes[164..172]
                 .try_into()
                 .map_err(|_| "invalid subscription cursor sequence".to_owned())?,
-        )
+        ))
     }
 
     /// Encodes this cursor for a bounded query continuation.
