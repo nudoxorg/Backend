@@ -303,6 +303,33 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
+    /// Executes the real desktop environment composition against the standalone owner policy.
+    /// The supervisor supplies a private HOME/PATH with an actual installed npm SDK symlink;
+    /// it must not set NUDOX_TSC/Node/module-root overrides for the default-environment gate.
+    #[test]
+    #[ignore = "requires a pinned actual installed Linux/npm or macOS application environment"]
+    fn actual_default_launch_matches_standalone_installed_tool_selection() {
+        for variable in ["NUDOX_TSC", "NUDOX_TYPESCRIPT_NODE", "NUDOX_TYPESCRIPT_MODULE_ROOT",
+            backend_local_service::COMPILER_ENVIRONMENT_ENV] {
+            assert!(std::env::var_os(variable).is_none(), "default gate cannot configure {variable}");
+        }
+        let expected_compiler = std::fs::canonicalize(std::env::var_os("NUDOX_SETUP_EXPECTED_GLOBAL_TSC")
+            .expect("pinned global npm tsc entrypoint")).expect("canonical global compiler");
+        let expected_node = std::fs::canonicalize(std::env::var_os("NUDOX_SETUP_EXPECTED_NODE")
+            .expect("pinned installed Node runtime")).expect("canonical Node runtime");
+        let desktop = prepared_by_the_process().expect("actual desktop composition");
+        let locald = LocalCompilerHost::new(backend_local_service::ProcessHostEnvironment,
+            LocalHostDiscovery::InstalledTools).capture_installed_selection().expect("standalone owner composition");
+        assert_eq!(&desktop, locald.snapshot(), "GUI and CLI/MCP select the same exact host paths");
+        assert_eq!(desktop.path(LocalHostVariable::NudoxTypeScriptDefaultCompiler), Some(expected_compiler.as_path()));
+        assert_eq!(desktop.path(LocalHostVariable::NudoxTypeScriptCompiler), None);
+        assert_eq!(desktop.path(LocalHostVariable::NudoxTypeScriptNode), Some(expected_node.as_path()));
+        assert!(desktop.path(LocalHostVariable::NudoxTypeScriptModuleRoot).is_some());
+        let restarted = prepared_by_the_process().expect("repeat actual desktop composition");
+        assert_eq!(desktop, restarted, "unchanged launch inputs yield the same closed owner paths");
+        println!("actual-default-host-snapshot={}", desktop.encode().expect("closed snapshot receipt"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn desktop_and_locald_capture_the_same_global_npm_symlink_and_node() {
