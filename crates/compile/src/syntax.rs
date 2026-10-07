@@ -1129,9 +1129,11 @@ fn declaration_signature(language: SourceLanguage, node: Node<'_>, source: &str)
         // prefix and multiline header; exclude every docstring/body token.
         let end = if let Some(body) = root.child_by_field_name("body") {
             let mut cursor = root.walk();
-            let separator = root.children(&mut cursor)
+            let separator = root
+                .children(&mut cursor)
                 .find(|child| child.kind() == ":" && child.end_byte() <= body.start_byte());
-            separator.map(|colon| colon.end_byte().saturating_sub(root.start_byte()))
+            separator
+                .map(|colon| colon.end_byte().saturating_sub(root.start_byte()))
                 .unwrap_or_else(|| body.start_byte().saturating_sub(root.start_byte()))
         } else {
             source_text.len()
@@ -1666,7 +1668,9 @@ fn push_rust_use_argument(
             let Some((specifier, exported)) = rust_value_path_parts(node, text) else {
                 return;
             };
-            imports.push(value_import(&exported, line, &specifier, &exported, excerpt));
+            imports.push(value_import(
+                &exported, line, &specifier, &exported, excerpt,
+            ));
         }
         "identifier" => {
             let local = node_text(node, text);
