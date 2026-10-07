@@ -112,7 +112,7 @@ pub use self::toolchain_probe::{
     ToolchainProbeLimits, ToolchainProbeLimitsView, ToolchainProbePrimary,
     ToolchainProbeStreamError,
 };
-pub(crate) use self::typescript_host::TypeScriptProjectInvocationLease;
+pub(crate) use self::typescript_host::{TypeScriptProjectInvocationLease, is_module_tsc_script};
 pub use self::typescript_host::{TypeScriptProjectHost, TypeScriptProjectHostError};
 pub use self::unit_authority_v2::{
     AdmittedCompilationUnitV2, CapturedUnitMemberV2, CompilationUnitKindV2, CompilationUnitPlanV2,
