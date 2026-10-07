@@ -1,0 +1,261 @@
+[
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-ceefaed-attempt01-fleet.json",
+    "raw_sha256": "228a69bb6adc3e726fbd5bbce0c46a066c4fa6b643ba2700802d45da95c5c25b",
+    "raw_bytes": 20111,
+    "retained": "pending-capture-ceefaed-attempt01-fleet.json",
+    "retained_sha256": "228a69bb6adc3e726fbd5bbce0c46a066c4fa6b643ba2700802d45da95c5c25b"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-ceefaed-attempt01.complete.json",
+    "raw_sha256": "2c2a8b23b8b63b70536b3443a595142463f20b406e549d93ed029d91ae802aea",
+    "raw_bytes": 644,
+    "retained": "pending-capture-ceefaed-attempt01.complete.json",
+    "retained_sha256": "2c2a8b23b8b63b70536b3443a595142463f20b406e549d93ed029d91ae802aea"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-ceefaed-attempt01.launch.json",
+    "raw_sha256": "218be22e22501b712e109e797519c9a102ed9e8cbc775b64246f46ed122cea90",
+    "raw_bytes": 582,
+    "retained": "pending-capture-ceefaed-attempt01.launch.json",
+    "retained_sha256": "218be22e22501b712e109e797519c9a102ed9e8cbc775b64246f46ed122cea90"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-ceefaed-attempt01.stderr",
+    "raw_sha256": "930aa2585378da65581a564f1f78c03aa4050f458b740019d0f73f46aae2f900",
+    "raw_bytes": 309578,
+    "retained": "pending-capture-ceefaed-attempt01.stderr.gz",
+    "retained_sha256": "5f71dd05b100ebc87bd278d71edd4a75465f9b49674de168afc9b02de88a09c1"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-ceefaed-attempt01.stdout",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "retained": "pending-capture-ceefaed-attempt01.stdout.gz",
+    "retained_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/run-pending-capture-ceefaed-attempt01.sh",
+    "raw_sha256": "9dd25e69195923a09b29310ddc0abc156c54400e47249a63b5bf9c57b1d092a6",
+    "raw_bytes": 885,
+    "retained": "run-pending-capture-ceefaed-attempt01.sh",
+    "retained_sha256": "9dd25e69195923a09b29310ddc0abc156c54400e47249a63b5bf9c57b1d092a6"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/locked-pending-capture-ceefaed-attempt01.py",
+    "raw_sha256": "0b67e62caef68a790ee4d781c861b91eb405885ef121658bb1e5469a94999f15",
+    "raw_bytes": 1386,
+    "retained": "locked-pending-capture-ceefaed-attempt01.py",
+    "retained_sha256": "0b67e62caef68a790ee4d781c861b91eb405885ef121658bb1e5469a94999f15"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-d3c6-attempt01-fleet.json",
+    "raw_sha256": "ac2d84fc455ccbf279638018b045c40920777929ef3348d064ba1cade255e007",
+    "raw_bytes": 19745,
+    "retained": "pending-capture-d3c6-attempt01-fleet.json",
+    "retained_sha256": "ac2d84fc455ccbf279638018b045c40920777929ef3348d064ba1cade255e007"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-d3c6-attempt01.complete.json",
+    "raw_sha256": "eb411a303f10ca63fa20c3bcb9ba5f0bb809079011f95dbd6c82af74e840eb80",
+    "raw_bytes": 637,
+    "retained": "pending-capture-d3c6-attempt01.complete.json",
+    "retained_sha256": "eb411a303f10ca63fa20c3bcb9ba5f0bb809079011f95dbd6c82af74e840eb80"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-d3c6-attempt01.launch.json",
+    "raw_sha256": "2e427aefbceae109bda46192febcd54379c81693f3fe31663c3f4bebc13dc6cf",
+    "raw_bytes": 575,
+    "retained": "pending-capture-d3c6-attempt01.launch.json",
+    "retained_sha256": "2e427aefbceae109bda46192febcd54379c81693f3fe31663c3f4bebc13dc6cf"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-d3c6-attempt01.stderr",
+    "raw_sha256": "242fcbba6ad4f584bcea7c151007f15c05758104f0e6cc33838fd8089aa703ad",
+    "raw_bytes": 303427,
+    "retained": "pending-capture-d3c6-attempt01.stderr.gz",
+    "retained_sha256": "85959cfac7d8c05f9c94c84a8d901f17a8076de63068af9215058425c14f6dce"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-d3c6-attempt01.stdout",
+    "raw_sha256": "1d7549408bc5730b460bded10f88325182530ee5bc607503143b94f4fcbfe3c4",
+    "raw_bytes": 609,
+    "retained": "pending-capture-d3c6-attempt01.stdout.gz",
+    "retained_sha256": "b5fa254bb69731b25ecfe5057ef1ef1e05c55fed0c4acdf4bb56eb3c44e70ed3"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/run-pending-capture-d3c6-attempt01.sh",
+    "raw_sha256": "b97837e5359cec7947de2b54a6227df11cb44629df33608b4b20578f1d169f2f",
+    "raw_bytes": 885,
+    "retained": "run-pending-capture-d3c6-attempt01.sh",
+    "retained_sha256": "b97837e5359cec7947de2b54a6227df11cb44629df33608b4b20578f1d169f2f"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/locked-pending-capture-d3c6-attempt01.py",
+    "raw_sha256": "af3b41d3a6cc936386fe74d6cbe6937a8ef3dc1ddb8c715fcd9b06813796aa1b",
+    "raw_bytes": 1384,
+    "retained": "locked-pending-capture-d3c6-attempt01.py",
+    "retained_sha256": "af3b41d3a6cc936386fe74d6cbe6937a8ef3dc1ddb8c715fcd9b06813796aa1b"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-199b-attempt01-fleet.json",
+    "raw_sha256": "045722cc2e7880c0173173655b4f1e297cfca9b62d5cb9ac874f4e607d7ffe20",
+    "raw_bytes": 18471,
+    "retained": "pending-capture-199b-attempt01-fleet.json",
+    "retained_sha256": "045722cc2e7880c0173173655b4f1e297cfca9b62d5cb9ac874f4e607d7ffe20"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-199b-attempt01.complete.json",
+    "raw_sha256": "77d86565ab998745c1db81bb01452dd29bc5bb9b5160d97724060aff93af1eb1",
+    "raw_bytes": 633,
+    "retained": "pending-capture-199b-attempt01.complete.json",
+    "retained_sha256": "77d86565ab998745c1db81bb01452dd29bc5bb9b5160d97724060aff93af1eb1"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-199b-attempt01.launch.json",
+    "raw_sha256": "854651f0ba9ffc95453d5ce3d847f242c5d48fe4d0bd723669185d492be7391a",
+    "raw_bytes": 573,
+    "retained": "pending-capture-199b-attempt01.launch.json",
+    "retained_sha256": "854651f0ba9ffc95453d5ce3d847f242c5d48fe4d0bd723669185d492be7391a"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-199b-attempt01.stderr",
+    "raw_sha256": "20a6177cde1988dd8b6a93a8c4eac1d4b4c932bd852606aa494de7aa50ca6e4d",
+    "raw_bytes": 302968,
+    "retained": "pending-capture-199b-attempt01.stderr.gz",
+    "retained_sha256": "bc5576e254aa55dd0660ccd42864cddfa8e882788674a79fbbe1651b82b16ccc"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-199b-attempt01.stdout",
+    "raw_sha256": "23a45cc160550f002b20791a2539be629fb3b7eb946b00245962891f8193c32e",
+    "raw_bytes": 465,
+    "retained": "pending-capture-199b-attempt01.stdout.gz",
+    "retained_sha256": "360d70d58d379787db17fa906b39cfcb3d840c92be8744befa29eeee33de2f6a"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/run-pending-capture-199b-attempt01.sh",
+    "raw_sha256": "927936b932b7ab12797a99458584988366df523a1b35757572484c99269875e8",
+    "raw_bytes": 907,
+    "retained": "run-pending-capture-199b-attempt01.sh",
+    "retained_sha256": "927936b932b7ab12797a99458584988366df523a1b35757572484c99269875e8"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/locked-pending-capture-199b-attempt01.py",
+    "raw_sha256": "e51e1430949a979a9aaa34e0bf05a6e092f456a0af90002d360f930f9d059e2f",
+    "raw_bytes": 1384,
+    "retained": "locked-pending-capture-199b-attempt01.py",
+    "retained_sha256": "e51e1430949a979a9aaa34e0bf05a6e092f456a0af90002d360f930f9d059e2f"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-199b-adapter-attempt01-fleet.json",
+    "raw_sha256": "b93012cc85abc39a06ee4609a4de6c0ddfe0deb83d4538ef8fed7b7ca5283b23",
+    "raw_bytes": 22069,
+    "retained": "pending-capture-199b-adapter-attempt01-fleet.json",
+    "retained_sha256": "b93012cc85abc39a06ee4609a4de6c0ddfe0deb83d4538ef8fed7b7ca5283b23"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-199b-adapter-attempt01.complete.json",
+    "raw_sha256": "23952f10ee299e3c044edcafd5c1c2b2d0637e7d4127bbd55dc2901f957ccce2",
+    "raw_bytes": 651,
+    "retained": "pending-capture-199b-adapter-attempt01.complete.json",
+    "retained_sha256": "23952f10ee299e3c044edcafd5c1c2b2d0637e7d4127bbd55dc2901f957ccce2"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-199b-adapter-attempt01.launch.json",
+    "raw_sha256": "d618cda237c10ce9a0f4a0c5616a46fa2a16581bd61dd48a4565e6cb50954216",
+    "raw_bytes": 591,
+    "retained": "pending-capture-199b-adapter-attempt01.launch.json",
+    "retained_sha256": "d618cda237c10ce9a0f4a0c5616a46fa2a16581bd61dd48a4565e6cb50954216"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-199b-adapter-attempt01.stderr",
+    "raw_sha256": "743fd0012552409498f15902b4e69340ad3e4e8a24a7b1137feedd51a6f1ff23",
+    "raw_bytes": 303226,
+    "retained": "pending-capture-199b-adapter-attempt01.stderr.gz",
+    "retained_sha256": "f5279c4dac0a4e74586c6c61998eb72af5560c1f736de0e90c63270e5d05a080"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-199b-adapter-attempt01.stdout",
+    "raw_sha256": "1a05b6b62c171dade95a7b1fb8796168c4daa7382b3bca85270ce6986c40a4ce",
+    "raw_bytes": 2295,
+    "retained": "pending-capture-199b-adapter-attempt01.stdout.gz",
+    "retained_sha256": "310b6ce085da75a59ac9748d7b9bba4eff40280cd6b74bf11aa130312599fccd"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/run-pending-capture-199b-adapter-attempt01.sh",
+    "raw_sha256": "91b10341d6f43065899e92d871656ec755c3adb52920b2ed5d9de5905d33f8e0",
+    "raw_bytes": 923,
+    "retained": "run-pending-capture-199b-adapter-attempt01.sh",
+    "retained_sha256": "91b10341d6f43065899e92d871656ec755c3adb52920b2ed5d9de5905d33f8e0"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/locked-pending-capture-199b-adapter-attempt01.py",
+    "raw_sha256": "7ad2df952829d522002cc8968f735f98688ab7c6a45548aa95350bb3dfbe4a50",
+    "raw_bytes": 1392,
+    "retained": "locked-pending-capture-199b-adapter-attempt01.py",
+    "retained_sha256": "7ad2df952829d522002cc8968f735f98688ab7c6a45548aa95350bb3dfbe4a50"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-199b-trio-attempt01-fleet.json",
+    "raw_sha256": "c72fabc60988687c94cc27ec04d6f62155e2190c22b45806941d3b68511756d2",
+    "raw_bytes": 22071,
+    "retained": "pending-capture-199b-trio-attempt01-fleet.json",
+    "retained_sha256": "c72fabc60988687c94cc27ec04d6f62155e2190c22b45806941d3b68511756d2"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-199b-trio-attempt01.complete.json",
+    "raw_sha256": "cadf73aa4989d565df4b72a900045e63819177c7650e06279f801c7c55fbcaa3",
+    "raw_bytes": 645,
+    "retained": "pending-capture-199b-trio-attempt01.complete.json",
+    "retained_sha256": "cadf73aa4989d565df4b72a900045e63819177c7650e06279f801c7c55fbcaa3"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-199b-trio-attempt01.launch.json",
+    "raw_sha256": "5a4dcadd95e2023a4748bc1cd87025bb2d11234cad5bd805ff20fa2e9c04d61c",
+    "raw_bytes": 585,
+    "retained": "pending-capture-199b-trio-attempt01.launch.json",
+    "retained_sha256": "5a4dcadd95e2023a4748bc1cd87025bb2d11234cad5bd805ff20fa2e9c04d61c"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-199b-trio-attempt01.stderr",
+    "raw_sha256": "5640658ff33c6d843a1952bcb68c5b5665b7053b68ad02a32e2ee9160a015c6a",
+    "raw_bytes": 1942,
+    "retained": "pending-capture-199b-trio-attempt01.stderr.gz",
+    "retained_sha256": "fc3042cfaeede2f8656177325b317dd5f9b36b81115aebb7622bc26802b5147b"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-199b-trio-attempt01.stdout",
+    "raw_sha256": "b63e348569541aa9a1f8b3ba513fd097d63c852b8f33fb3dee0da278fe834508",
+    "raw_bytes": 2493866,
+    "retained": "pending-capture-199b-trio-attempt01.stdout.gz",
+    "retained_sha256": "1474963397d985efccddf1462ed32758397ee5d66eeec17837caefffd59f4cde"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/run-pending-capture-199b-trio-attempt01.sh",
+    "raw_sha256": "c6f891c8d2520aefd67ed7b8ee12e4520cb43acb46f4ef7952c9f3bb6824a90e",
+    "raw_bytes": 897,
+    "retained": "run-pending-capture-199b-trio-attempt01.sh",
+    "retained_sha256": "c6f891c8d2520aefd67ed7b8ee12e4520cb43acb46f4ef7952c9f3bb6824a90e"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/locked-pending-capture-199b-trio-attempt01.py",
+    "raw_sha256": "d0ec3ef04266bc6b1f71da8034a7f197c03e5989182b02173df20b859566a2e5",
+    "raw_bytes": 1389,
+    "retained": "locked-pending-capture-199b-trio-attempt01.py",
+    "retained_sha256": "d0ec3ef04266bc6b1f71da8034a7f197c03e5989182b02173df20b859566a2e5"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-199b-debug-runtime-build-manifest.json",
+    "raw_sha256": "ca7dff266b0355459fe09b097433abbca8a3f6138fb33659c8b27826f5b37024",
+    "raw_bytes": 3841,
+    "retained": "pending-capture-199b-debug-runtime-build-manifest.json",
+    "retained_sha256": "ca7dff266b0355459fe09b097433abbca8a3f6138fb33659c8b27826f5b37024"
+  },
+  {
+    "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/original-96b-exclusive-loan-to-fresh-20261007.json",
+    "raw_sha256": "5957ac037cfe5663b79c26f3c0546fc942ce4535e3849ce044222a16b6ecb3d3",
+    "raw_bytes": 2994,
+    "retained": "original-96b-exclusive-loan-to-fresh-20261007.json",
+    "retained_sha256": "5957ac037cfe5663b79c26f3c0546fc942ce4535e3849ce044222a16b6ecb3d3"
+  }
+]

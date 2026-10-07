@@ -1,0 +1,87 @@
+[
+  {
+    "permit_pid": 51012,
+    "launcher_pid": 51016,
+    "source_commit": "ceefaed472f920eebf791cf8a204878294926773",
+    "started": "2026-10-07T00:39:40.935588+00:00",
+    "lock": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/compiler-index.lock",
+    "admission": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-ceefaed-attempt01-fleet.json",
+    "admission_age_seconds": 31.577804,
+    "argv": [
+      "/bin/bash",
+      "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/run-pending-capture-ceefaed-attempt01.sh"
+    ],
+    "exit": 101,
+    "ended": "2026-10-07T00:45:27.410586+00:00",
+    "prefix": "pending-capture-ceefaed-attempt01",
+    "admission_complies_30_seconds": false
+  },
+  {
+    "permit_pid": 95317,
+    "launcher_pid": 95320,
+    "source_commit": "d3c6d2e14a7ff2e12f92ab92af3f85210446f608",
+    "started": "2026-10-07T00:47:26.039036+00:00",
+    "lock": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/compiler-index.lock",
+    "admission": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-d3c6-attempt01-fleet.json",
+    "admission_age_seconds": 5.062928,
+    "argv": [
+      "/bin/bash",
+      "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/run-pending-capture-d3c6-attempt01.sh"
+    ],
+    "exit": 101,
+    "ended": "2026-10-07T00:49:37.351681+00:00",
+    "prefix": "pending-capture-d3c6-attempt01",
+    "admission_complies_30_seconds": true
+  },
+  {
+    "permit_pid": 4701,
+    "launcher_pid": 4703,
+    "source_commit": "199bef18b011e41493a3a973f8765015b29ab412",
+    "started": "2026-10-07T00:54:10.061238+00:00",
+    "lock": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/compiler-index.lock",
+    "admission": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-199b-attempt01-fleet.json",
+    "admission_age_seconds": 5.001616,
+    "argv": [
+      "/bin/bash",
+      "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/run-pending-capture-199b-attempt01.sh"
+    ],
+    "exit": 0,
+    "ended": "2026-10-07T00:56:27.953328+00:00",
+    "prefix": "pending-capture-199b-attempt01",
+    "admission_complies_30_seconds": true
+  },
+  {
+    "permit_pid": 18838,
+    "launcher_pid": 18843,
+    "source_commit": "199bef18b011e41493a3a973f8765015b29ab412",
+    "started": "2026-10-07T00:57:34.750385+00:00",
+    "lock": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/compiler-index.lock",
+    "admission": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-199b-adapter-attempt01-fleet.json",
+    "admission_age_seconds": 4.948427,
+    "argv": [
+      "/bin/bash",
+      "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/run-pending-capture-199b-adapter-attempt01.sh"
+    ],
+    "exit": 0,
+    "ended": "2026-10-07T00:57:54.197386+00:00",
+    "prefix": "pending-capture-199b-adapter-attempt01",
+    "admission_complies_30_seconds": true
+  },
+  {
+    "permit_pid": 24567,
+    "launcher_pid": 24574,
+    "source_commit": "199bef18b011e41493a3a973f8765015b29ab412",
+    "started": "2026-10-07T00:59:30.637955+00:00",
+    "lock": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/compiler-index.lock",
+    "admission": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/pending-capture-199b-trio-attempt01-fleet.json",
+    "admission_age_seconds": 5.222304,
+    "argv": [
+      "/bin/bash",
+      "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination/run-pending-capture-199b-trio-attempt01.sh"
+    ],
+    "exit": 0,
+    "ended": "2026-10-07T01:02:06.362683+00:00",
+    "prefix": "pending-capture-199b-trio-attempt01",
+    "admission_complies_30_seconds": true
+  }
+]
