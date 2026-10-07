@@ -1,0 +1,59 @@
+{
+  "native_source": "6383b38dd4aa4127be09241f1fcedf1b3b71eaf6",
+  "integrated_code_head": "2f2e0c46399dcbf1f1aa6a3ddb57b9fed2964b58",
+  "all_changed_source_blobs_equal": [
+    {
+      "path": "crates/local-service/src/builtin/commands/adapter.rs",
+      "native_source_blob": "947faf4903ac7913e5d82554c4899369846d6c09",
+      "integrated_blob": "947faf4903ac7913e5d82554c4899369846d6c09"
+    },
+    {
+      "path": "crates/local-service/src/builtin/commands/semantic_query.rs",
+      "native_source_blob": "7fea502c0c931284d681daea879a6d6842c33607",
+      "integrated_blob": "7fea502c0c931284d681daea879a6d6842c33607"
+    },
+    {
+      "path": "crates/local-service/src/builtin/profile_source_facts_tests.rs",
+      "native_source_blob": "66aa02efbf8fe67cd14246c2869a4111eb469707",
+      "integrated_blob": "66aa02efbf8fe67cd14246c2869a4111eb469707"
+    },
+    {
+      "path": "crates/local-service/src/builtin/view_build/mod.rs",
+      "native_source_blob": "efa6621dca0766c084ddef22e3ebb401acb32739",
+      "integrated_blob": "efa6621dca0766c084ddef22e3ebb401acb32739"
+    },
+    {
+      "path": "crates/local-service/src/builtin/view_build/structural.rs",
+      "native_source_blob": "59c78e821558d605c4eca7c34b3b598f7c3f0a1f",
+      "integrated_blob": "59c78e821558d605c4eca7c34b3b598f7c3f0a1f"
+    },
+    {
+      "path": "crates/local-service/src/builtin/view_build/structural_calls.rs",
+      "native_source_blob": "aad0b80f81025b73e35949b828918dcb2347e01a",
+      "integrated_blob": "aad0b80f81025b73e35949b828918dcb2347e01a"
+    }
+  ],
+  "archive_sha256": "11b2829aa91c94c542cf9e7644d67a82cbea98f1949e0923d286691ab0b51e5c",
+  "verified_artifacts": 42,
+  "distinct_test_union": {
+    "structural": 25,
+    "view": 37,
+    "unique": 56,
+    "overlap": [
+      "builtin::view_build::tests::a_stale_publication_suppresses_structural_rows_instead_of_silently_falling_back",
+      "builtin::view_build::tests::a_structural_row_carries_its_facts_and_no_invented_documentation",
+      "builtin::view_build::tests::an_unavailable_publication_types_the_structural_cause_with_its_reason",
+      "builtin::view_build::tests::duplicate_structural_coordinates_keep_each_identity_and_close_parent_edges",
+      "builtin::view_build::tests::structural_excerpt_calls_matches_real_body_calls_only",
+      "builtin::view_build::tests::the_structural_fallback_answers_with_typed_provenance"
+    ]
+  },
+  "actual_raw_test_summaries": {
+    "final638/structural-native-03/cargo.log": [
+      "test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 1053 filtered out; finished in 4.52s"
+    ],
+    "final638/view-build-native-02/cargo.log": [
+      "test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 1041 filtered out; finished in 1.95s"
+    ]
+  }
+}
