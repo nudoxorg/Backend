@@ -116,12 +116,14 @@ pub(crate) fn supplied_among(
 
 /// Derivation does not create directories. Explicit paths are kept verbatim so
 /// the owner, including its normal invalid-path refusal, remains the authority.
+#[cfg(test)]
 struct CompilerSelection {
     paths: Vec<(LocalHostVariable, PathBuf)>,
     #[cfg(test)]
     inferred_cargo_home: Option<PathBuf>,
 }
 
+#[cfg(test)]
 impl CompilerSelection {
     #[cfg(test)]
     fn derive(variable: &dyn Fn(&str) -> Option<OsString>, system: &[(PathBuf, Place)]) -> Self {
@@ -184,12 +186,7 @@ pub(crate) fn prepared_by_the_process() -> io::Result<ClosedLocalHostEnvironment
     let system = backend_local_service::installed_rust_system_locations();
     let found = find_rust(&variable, &system);
     *REPORT.write().unwrap_or_else(PoisonError::into_inner) = Some(found);
-    let selected = CompilerSelection {
-        paths: closed_paths(&variable),
-        #[cfg(test)]
-        inferred_cargo_home: None,
-    };
-    let snapshot = installed_snapshot(&captured, &selected)?;
+    let snapshot = installed_snapshot(&captured)?;
     Ok(snapshot)
 }
 
@@ -219,21 +216,16 @@ fn incoming_closed_snapshot() -> io::Result<Option<ClosedLocalHostEnvironmentSna
     Ok(None)
 }
 
-/// The desktop supplies its Rust pair, then delegates installed authority selection to the
-/// same engine policy as CLI/MCP locald composition. This reader is already frozen and never
+/// Delegates raw installed launch inputs to the same engine policy as CLI/MCP locald
+/// composition. This reader is already frozen and never
 /// falls back to the live process, including for absent and explicitly empty variables.
 struct DesktopLaunchEnvironment<'a> {
     captured: &'a BTreeMap<&'static str, OsString>,
-    selected: &'a CompilerSelection,
 }
 
 impl LocalHostEnvironment for DesktopLaunchEnvironment<'_> {
     fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
-        self.selected
-            .paths
-            .iter()
-            .find(|(key, _)| *key == variable)
-            .map(|(_, path)| path.as_os_str().to_owned())
+        self.captured.get(variable.environment_name()).cloned()
     }
 
     fn search_path(&self) -> Option<OsString> {
@@ -251,10 +243,9 @@ impl LocalHostEnvironment for DesktopLaunchEnvironment<'_> {
 
 fn installed_snapshot(
     captured: &BTreeMap<&'static str, OsString>,
-    selected: &CompilerSelection,
 ) -> io::Result<ClosedLocalHostEnvironmentSnapshot> {
     LocalCompilerHost::new(
-        DesktopLaunchEnvironment { captured, selected },
+        DesktopLaunchEnvironment { captured },
         LocalHostDiscovery::InstalledTools,
     )
     .capture_installed_selection()
@@ -354,12 +345,10 @@ mod tests {
             ("HOME", home.into_os_string()),
             ("PATH", bin.into_os_string()),
         ]);
-        let selected = CompilerSelection { paths: closed_paths(&|name| captured.get(name).cloned()), inferred_cargo_home: None };
-        let desktop = installed_snapshot(&captured, &selected).expect("desktop capture");
+        let desktop = installed_snapshot(&captured).expect("desktop capture");
         let locald = LocalCompilerHost::new(
             DesktopLaunchEnvironment {
                 captured: &captured,
-                selected: &selected,
             },
             LocalHostDiscovery::InstalledTools,
         )
@@ -391,8 +380,7 @@ mod tests {
             machine.root.join("missing/tsc").into_os_string(),
         ] {
             captured.insert("NUDOX_TSC", value);
-            let selected = CompilerSelection::derive(&|name| captured.get(name).cloned(), &[]);
-            assert!(installed_snapshot(&captured, &selected).is_err());
+            assert!(installed_snapshot(&captured).is_err());
         }
         std::fs::remove_dir_all(machine.root).expect("owned fixture cleanup");
     }
@@ -751,3 +739,25 @@ mod tests {
         );
     }
 }
+    #[test]
+    fn installed_capture_keeps_cargo_and_windows_home_as_raw_launch_inputs() {
+        let captured = BTreeMap::from([
+            ("CARGO_HOME", OsString::from("/person/cache")),
+            ("USERPROFILE", OsString::from("/person/home")),
+        ]);
+        let environment = DesktopLaunchEnvironment { captured: &captured };
+        assert_eq!(environment.value(LocalHostVariable::NudoxCargoHome), None);
+        assert_eq!(environment.value(LocalHostVariable::Home), None);
+        assert_eq!(environment.cargo_home(), captured.get("CARGO_HOME").cloned());
+        assert_eq!(environment.user_profile(), captured.get("USERPROFILE").cloned());
+        // Present explicit settings are still distinct from ordinary Cargo/OS inputs.
+        let captured = BTreeMap::from([
+            ("NUDOX_CARGO_HOME", OsString::new()),
+            ("CARGO_HOME", OsString::from("/person/cache")),
+        ]);
+        assert_eq!(
+            DesktopLaunchEnvironment { captured: &captured }
+                .value(LocalHostVariable::NudoxCargoHome),
+            Some(OsString::new())
+        );
+    }
