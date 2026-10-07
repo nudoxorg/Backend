@@ -93,9 +93,13 @@ pub(crate) fn reply_certificate(
             Some(document_certificate(document, owner_root, base)?)
         }
         CommandReply::Outline(outline) => Some(outline_certificate(outline, owner_root, base)?),
-        CommandReply::GraphQueryPage(page) => {
-            Some(graph_query_certificate(command, page, owner_root, base)?)
-        }
+        CommandReply::GraphQueryPage(page) => Some(graph_query_certificate(
+            command,
+            page,
+            owner_root,
+            owner_cursor,
+            base,
+        )?),
         CommandReply::SemanticShapes(batch) => Some(semantic_shape_certificate(
             command, batch, owner_root, base,
         )?),
@@ -310,6 +314,7 @@ fn graph_query_certificate(
     command: &Command,
     page: &backend_engine::GraphQueryPage,
     owner_root: &ViewRoot,
+    owner_cursor: backend_engine::Cursor,
     base: Option<WireCertificate>,
 ) -> Result<WireCertificate, BuiltinModelError> {
     let Command::GraphQuery(request) = command else {
@@ -317,6 +322,9 @@ fn graph_query_certificate(
             "structured graph-query page does not match its command".to_owned(),
         ));
     };
+    request
+        .admit_page_against(page, owner_cursor)
+        .map_err(|error| BuiltinModelError(error.to_string()))?;
     if !page.revision.matches(owner_root.root()) || page.source != owner_root.basis().object {
         return Err(BuiltinModelError(
             "structured graph-query page does not match the selected owner revision".to_owned(),
@@ -329,7 +337,15 @@ fn graph_query_certificate(
     })?;
     if let PageTerminal::More(continuation) = page.terminal {
         let cursor = continuation.cursor();
-        if cursor.recipe() != request.recipe() || cursor.root() != owner_root.root() {
+        let offset = usize::try_from(cursor.query_offset()).map_err(|_| {
+            BuiltinModelError(
+                "structured graph-query continuation offset is not representable".to_owned(),
+            )
+        })?;
+        let expected = request
+            .next_continuation(owner_cursor, offset)
+            .map_err(|error| BuiltinModelError(error.to_string()))?;
+        if continuation != expected {
             return Err(BuiltinModelError(
                 "structured graph-query continuation does not match its request".to_owned(),
             ));
@@ -342,16 +358,6 @@ fn graph_query_certificate(
                 value: request.recipe_preimage(),
             },
         );
-        certificate = WireCertificate::from_claims(
-            certificate
-                .claims
-                .iter()
-                .filter(|claim| !matches!(claim, WireClaim::Cursor { .. }))
-                .cloned()
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        );
-        append_cursor_claim(&mut certificate, cursor);
     }
     Ok(certificate)
 }

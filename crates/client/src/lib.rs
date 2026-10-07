@@ -1187,6 +1187,21 @@ impl Session {
         continuation: Option<PageContinuation>,
         cancel: bool,
     ) -> Result<GraphQueryPage, ClientError> {
+        if let Some(prepared) = self.prepared_query.take() {
+            let Command::GraphQuery(query) = &prepared.command else {
+                return Err(ClientError::Protocol(
+                    "continuation changed query family".to_owned(),
+                ));
+            };
+            if query.input() != &input
+                || query.page().limit().get() != limit
+                || query.page().continuation() != continuation
+            {
+                return Err(ClientError::Protocol(
+                    "continuation changed graph query arguments".to_owned(),
+                ));
+            }
+        }
         let revision = self.revision()?;
         let limit = QueryLimit::new(limit)
             .ok_or_else(|| ClientError::Protocol("query limit is outside its bound".to_owned()))?;
@@ -1197,15 +1212,28 @@ impl Session {
         if cancel {
             request = request.cancelled();
         }
-        let reply = self.send_success(
-            Command::GraphQuery(request),
-            Some(self.page_certificate(revision.certificate, continuation)),
-        )?;
+        request
+            .start_offset(revision.cursor())
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        let issuing_owner = revision.cursor();
+        let page_contract = request.clone();
+        // The owner cursor remains the authority claim. The query's distinct
+        // projection recipe is canonical from this admitted input, view and
+        // limit, including when a fresh session resumes an opaque token.
+        let certificate = revision.certificate.with_claim_once(WireClaim::KeyBytes {
+            schema: WireSchema::ViewRecipe,
+            id: encode_id(request.recipe().as_bytes()),
+            value: request.recipe_preimage(),
+        });
+        let reply = self.send_success(Command::GraphQuery(request), Some(certificate))?;
         let CommandReply::GraphQueryPage(page) = reply.reply else {
             return Err(ClientError::Protocol(
                 "graph query reply changed shape".to_owned(),
             ));
         };
+        page_contract
+            .admit_page_against(&page, issuing_owner)
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
         Ok(page)
     }
 
@@ -1546,8 +1574,11 @@ impl Session {
         command: Command,
         certificate: Option<WireCertificate>,
     ) -> Result<ReplyDto, ClientError> {
-        let portable = matches!(&command, Command::Search(_) | Command::Name(_))
-            .then(|| (command.clone(), certificate.clone()));
+        let portable = matches!(
+            &command,
+            Command::Search(_) | Command::Name(_) | Command::GraphQuery(_)
+        )
+        .then(|| (command.clone(), certificate.clone()));
         let reply = require_command_success(self.send(command, certificate)?)?;
         self.remember_continuation(&reply);
         if let Some((command, Some(certificate))) = portable {

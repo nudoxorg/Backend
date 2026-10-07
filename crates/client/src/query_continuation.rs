@@ -61,7 +61,7 @@ impl std::io::Write for ProofBudget {
 }
 
 impl Session {
-    /// Whether this admitted cursor carries a portable Search/Name command.
+    /// Whether this admitted cursor carries a portable query command.
     #[must_use]
     pub fn has_portable_query_continuation(&self, continuation: PageContinuation) -> bool {
         self.continuations
@@ -107,6 +107,31 @@ impl Session {
         owner_certificate: &WireCertificate,
         reply: &ReplyDto,
     ) -> Result<(), ClientError> {
+        if let (Command::GraphQuery(query), CommandReply::GraphQueryPage(page)) =
+            (&command, &reply.reply)
+        {
+            let observed = reply
+                .certificate()
+                .ok_or_else(|| ClientError::Protocol("query page omitted proof".to_owned()))?;
+            if scope(owner_certificate)? != scope(observed)? {
+                return Err(ClientError::StaleCursor);
+            }
+            let PageTerminal::More(next) = page.terminal else {
+                return Ok(());
+            };
+            // A portable graph request carries the owner claim unchanged;
+            // its projection is reconstructed from the canonical arguments.
+            let proof = owner_certificate.clone();
+            let request = CommandDto::new(
+                1,
+                Command::GraphQuery(query.clone().with_continuation(next)),
+            )
+            .with_certificate(proof);
+            if let Some(retained) = self.continuations.get_mut(&next.cursor()) {
+                retained.next_request = Some(request);
+            }
+            return Ok(());
+        }
         let next = match &reply.reply {
             CommandReply::Search(page) | CommandReply::Names(page) => page.next,
             _ => None,
@@ -167,8 +192,90 @@ impl Session {
         let body = decode_portable_body(token)?;
         // The existing strict command codec rehashes every cursor preimage.
         // Its result is still an imported request, not admitted owner state.
-        let imported =
-            backend_library::decode_command_body(&body).map_err(ClientError::Protocol)?;
+        let imported = match backend_library::decode_command_body(&body) {
+            Ok(imported) => imported,
+            Err(error) => {
+                // Inspect only a bounded sequence; the strict owner-aware codec
+                // then compares every identity against fresh, typed authority.
+                let envelope: serde_json::Value = serde_json::from_slice(&body)
+                    .map_err(|error| ClientError::Protocol(error.to_string()))?;
+                // Ordinary proofs must pass their standalone strict decoder
+                // before any RPC. Only a graph continuation needs the fresh
+                // owner to reopen its constant-size root commitment. This
+                // untrusted tag selects that decoder; it admits no identity.
+                if envelope
+                    .get("command")
+                    .and_then(|command| command.get("kind"))
+                    .and_then(serde_json::Value::as_str)
+                    != Some("graph_query")
+                {
+                    return Err(ClientError::Protocol(error));
+                }
+                let certificate: WireCertificate =
+                    serde_json::from_value(envelope.get("certificate").cloned().ok_or_else(
+                        || ClientError::Protocol("query token omitted certificate".to_owned()),
+                    )?)
+                    .map_err(|error| ClientError::Protocol(error.to_string()))?;
+                let mut sequences = certificate.claims.iter().filter_map(|claim| {
+                    if let WireClaim::Cursor { sequence, .. } = claim {
+                        Some(*sequence)
+                    } else {
+                        None
+                    }
+                });
+                let sequence = sequences.next().ok_or_else(|| {
+                    ClientError::Protocol("query token omitted owner cursor".to_owned())
+                })?;
+                let revision = self.revision()?;
+                let owner = revision.cursor();
+                if sequences.next().is_some() || sequence > owner.sequence() {
+                    return Err(ClientError::StaleCursor);
+                }
+                if scope(&certificate)? != scope(&revision.certificate)? {
+                    return Err(ClientError::StaleCursor);
+                }
+                let retained_owner = backend_library::Cursor::for_view(
+                    owner.recipe(),
+                    owner.version(),
+                    backend_library::Frontier::new(
+                        owner.branch(),
+                        owner.log(),
+                        owner.schema(),
+                        owner.root(),
+                        sequence,
+                    ),
+                );
+                let imported =
+                    backend_library::decode_command_body_for_owner(&body, retained_owner)
+                        .map_err(ClientError::Protocol)?;
+                let Command::GraphQuery(query) = &imported.command else {
+                    return Err(ClientError::Protocol(
+                        "token is not a graph query".to_owned(),
+                    ));
+                };
+                let continuation = query.page().continuation().ok_or_else(|| {
+                    ClientError::Protocol("query token omitted predecessor".to_owned())
+                })?;
+                if imported.request_id != 1
+                    || query.control() != backend_library::GraphQueryControl::Continue
+                {
+                    return Err(ClientError::Protocol(
+                        "query token has invalid continuation metadata".to_owned(),
+                    ));
+                }
+                query
+                    .start_offset(owner)
+                    .map_err(|error| ClientError::Protocol(error.to_string()))?;
+                let fresh = revision.certificate.with_claim_once(WireClaim::KeyBytes {
+                    schema: WireSchema::ViewRecipe,
+                    id: encode_id(query.recipe().as_bytes()),
+                    value: query.recipe_preimage(),
+                });
+                self.prepared_query =
+                    Some(CommandDto::new(1, imported.command).with_certificate(fresh));
+                return Ok(continuation);
+            }
+        };
         let (_, _, _, Some(cursor)) = query_parts(&imported.command)
             .ok_or_else(|| ClientError::Protocol("token is not a continued query".to_owned()))?
         else {
