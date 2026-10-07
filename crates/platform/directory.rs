@@ -884,7 +884,16 @@ impl DirectoryCapability {
     /// and its checks is discarded and the name is opened again: see [`IfUnlinked::Reopen`].
     pub fn open_private_file_read_write(&self, name: &str, create: bool) -> io::Result<File> {
         open_private(IfUnlinked::Reopen, || {
-            self.open_file_read_write(name, create)
+            if !create {
+                return self.open_file_read_write(name, false);
+            }
+            match self.create_file_exclusive(name) {
+                Ok(file) => Ok(file),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    self.open_file_read_write(name, false)
+                }
+                Err(error) => Err(error),
+            }
         })
     }
 
@@ -1708,6 +1717,182 @@ mod tests {
             fs::read(child.join("known-child")).expect("read known child"),
             b"held"
         );
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn simultaneous_private_writable_opens_share_one_file_in_a_pinned_directory() {
+        use super::FileIdentity;
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        use std::sync::{Arc, Barrier};
+
+        const WORKERS: usize = 24;
+        let root = scratch();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+            .expect("make private directory");
+        let directory = DirectoryCapability::open(&root).expect("pin private directory");
+        let barrier = Arc::new(Barrier::new(WORKERS));
+        let workers = (0..WORKERS)
+            .map(|_| {
+                let directory = directory.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let file = directory.open_private_file_read_write("lease.lock", true)?;
+                    file.lock()?;
+                    let metadata = file.metadata()?;
+                    Ok::<_, std::io::Error>((
+                        FileIdentity::of_file(&file)?,
+                        metadata.uid(),
+                        metadata.mode(),
+                        metadata.nlink(),
+                    ))
+                })
+            })
+            .collect::<Vec<_>>();
+        let opened = workers
+            .into_iter()
+            .map(|worker| {
+                worker
+                    .join()
+                    .expect("private file opener thread")
+                    .expect("open or admit the shared private file")
+            })
+            .collect::<Vec<_>>();
+
+        let identity = opened[0].0;
+        assert!(
+            opened.iter().all(|entry| entry.0 == identity),
+            "every descriptor must retain the same file identity"
+        );
+        let named = root.join("lease.lock");
+        assert_eq!(
+            FileIdentity::of_path_nofollow(&named).expect("named file identity"),
+            identity,
+            "the admitted descriptors must still refer to the named file"
+        );
+        let metadata = fs::symlink_metadata(&named).expect("named file metadata");
+        assert!(metadata.file_type().is_file(), "named child must be regular");
+        assert_eq!(
+            metadata.uid(),
+            rustix::process::geteuid().as_raw(),
+            "named file must remain owned by the current user"
+        );
+        assert!(
+            opened.iter().all(|entry| entry.1 == metadata.uid()),
+            "every descriptor must retain current-owner identity"
+        );
+        assert_eq!(metadata.mode() & 0o777, 0o600, "file must remain private");
+        assert_eq!(metadata.nlink(), 1, "file must retain one name");
+
+        drop(directory);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_writable_open_refuses_unsafe_existing_children_unchanged() {
+        use super::FileIdentity;
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink};
+
+        let root = scratch();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+            .expect("make private directory");
+        let directory = DirectoryCapability::open(&root).expect("pin private directory");
+
+        let target = root.join("target");
+        fs::write(&target, b"keep target bytes").expect("write safe target");
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600))
+            .expect("protect safe target");
+        let target_identity = FileIdentity::of_path_nofollow(&target).expect("target identity");
+        let link = root.join("link");
+        symlink(&target, &link).expect("create symlink");
+        let link_identity = FileIdentity::of_path_nofollow(&link).expect("link identity");
+        assert!(
+            directory
+                .open_private_file_read_write("link", true)
+                .is_err(),
+            "a symlink must not be followed or admitted"
+        );
+        assert!(
+            fs::symlink_metadata(&link)
+                .expect("link remains present")
+                .file_type()
+                .is_symlink(),
+            "refusal must leave the symlink in place"
+        );
+        assert_eq!(
+            FileIdentity::of_path_nofollow(&link).expect("link remains the same object"),
+            link_identity
+        );
+        assert_eq!(
+            FileIdentity::of_path_nofollow(&target).expect("target remains the same object"),
+            target_identity
+        );
+        assert_eq!(fs::read(&target).expect("read target"), b"keep target bytes");
+
+        let hard = root.join("hard");
+        fs::write(&hard, b"keep hard-linked bytes").expect("write hard-linked file");
+        fs::set_permissions(&hard, fs::Permissions::from_mode(0o600))
+            .expect("protect hard-linked file");
+        let alias = root.join("hard-alias");
+        fs::hard_link(&hard, &alias).expect("create hard link");
+        let hard_identity = FileIdentity::of_path_nofollow(&hard).expect("hard file identity");
+        let alias_identity = FileIdentity::of_path_nofollow(&alias).expect("alias identity");
+        let hard_error = directory
+            .open_private_file_read_write("hard", true)
+            .expect_err("multi-link file must be refused");
+        assert_eq!(hard_error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            FileIdentity::of_path_nofollow(&hard).expect("hard file remains"),
+            hard_identity
+        );
+        assert_eq!(
+            FileIdentity::of_path_nofollow(&alias).expect("alias remains"),
+            alias_identity
+        );
+        assert_eq!(
+            fs::symlink_metadata(&hard).expect("hard metadata").nlink(),
+            2,
+            "refusal must not unlink either name"
+        );
+        assert_eq!(fs::read(&hard).expect("read hard file"), b"keep hard-linked bytes");
+
+        let loose = root.join("loose");
+        fs::write(&loose, b"keep loose-mode bytes").expect("write loosely protected file");
+        fs::set_permissions(&loose, fs::Permissions::from_mode(0o644))
+            .expect("set deliberately broad mode");
+        let loose_identity = FileIdentity::of_path_nofollow(&loose).expect("loose identity");
+        let loose_error = directory
+            .open_private_file_read_write("loose", true)
+            .expect_err("group-readable file must be refused");
+        assert_eq!(loose_error.kind(), std::io::ErrorKind::PermissionDenied);
+        let loose_metadata = fs::symlink_metadata(&loose).expect("loose metadata");
+        assert_eq!(loose_metadata.mode() & 0o777, 0o644, "refusal must not chmod");
+        assert_eq!(
+            FileIdentity::of_path_nofollow(&loose).expect("loose file remains"),
+            loose_identity
+        );
+        assert_eq!(fs::read(&loose).expect("read loose file"), b"keep loose-mode bytes");
+
+        let non_file = root.join("directory");
+        fs::create_dir(&non_file).expect("create non-file child");
+        let directory_identity = FileIdentity::of_path_nofollow(&non_file)
+            .expect("non-file child identity");
+        assert!(
+            directory
+                .open_private_file_read_write("directory", true)
+                .is_err(),
+            "a directory must not be admitted as a file"
+        );
+        assert_eq!(
+            FileIdentity::of_path_nofollow(&non_file).expect("directory remains"),
+            directory_identity
+        );
+        assert!(non_file.is_dir(), "refusal must preserve the directory");
+
+        drop(directory);
         fs::remove_dir_all(root).expect("remove fixture");
     }
 
