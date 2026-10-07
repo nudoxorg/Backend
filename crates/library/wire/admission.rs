@@ -464,6 +464,9 @@ pub fn reply_memory_bound(reply: &ReplyDto) -> usize {
         CommandReply::Error(message) => {
             add_bound(&mut bound, 512usize.saturating_add(message.len()));
         }
+        CommandReply::Failed(crate::CommandFailure::PartiallyPublished(partial)) => {
+            add_bound(&mut bound, 512usize.saturating_add(partial.encoded_size_bound()));
+        }
         CommandReply::Failed(failure) => {
             add_bound(
                 &mut bound,
@@ -630,6 +633,16 @@ fn add_claim_bound(bound: &mut usize, claim: &WireClaim) {
 
 fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), ReplyAdmissionError> {
     let valid = match (command, reply) {
+        (Command::Add { package, .. }, CommandReply::Failed(crate::CommandFailure::PartiallyPublished(partial))) => {
+            partial.admit().map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
+            if crate::package_key(partial.package.as_str()) != *package {
+                return Err(ReplyAdmissionError::Protocol("partial add reply does not match the requested package".to_owned()));
+            }
+            true
+        }
+        (_, CommandReply::Failed(crate::CommandFailure::PartiallyPublished(_))) => {
+            return Err(ReplyAdmissionError::Protocol("partial add publication does not match this command".to_owned()));
+        }
         (_, CommandReply::Error(_) | CommandReply::Failed(_))
         | (Command::Packages, CommandReply::Packages(_))
         | (Command::Name(_), CommandReply::Names(_))

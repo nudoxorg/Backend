@@ -2783,6 +2783,11 @@ impl<'de> Deserialize<'de> for IndexJobPartialPublication {
 }
 
 impl IndexJobPartialPublication {
+    /// Counts this closed payload without allocating a serialized copy.
+    pub(crate) fn encoded_size_bound(&self) -> usize {
+        serialized_json_size(self)
+    }
+
     /// Rejects incomplete, pending, cancelled, foreign or malformed partitions.
     pub fn admit(&self) -> Result<(), ProductAdmissionError> {
         self.source_capture.admit()?;
@@ -6741,6 +6746,21 @@ mod tests {
             refused_profiles: refused_profiles.clone(),
         };
         partial.admit().expect("unkeyed partial retains exact checked partition");
+        let reply = crate::ReplyDto::new(42, crate::CommandReply::Failed(crate::CommandFailure::PartiallyPublished(partial.clone())));
+        let requested = crate::CommandDto::new(42, crate::Command::Add {
+            package: crate::package_key(partial.package.as_str()), execution_intent: crate::CompileExecutionIntent::Interactive });
+        crate::admit_reply(&requested, &reply).expect("exact legacy Add caller binding");
+        let encoded_reply = serde_json::to_vec(&reply).expect("full wire partial");
+        let decoded_reply = crate::wire::decode_reply_body(&encoded_reply).expect("strict partial wire decode");
+        crate::admit_reply(&requested, &decoded_reply).expect("decoded exact Add");
+        assert!(crate::reply_memory_bound(&reply) >= encoded_reply.len(), "partial bound includes every profile and compiler refusal");
+        for command in [crate::Command::Health,
+            crate::Command::Remove { package: crate::package_key(partial.package.as_str()) },
+            crate::Command::Add { package: crate::package_key("/workspace/foreign"), execution_intent: crate::CompileExecutionIntent::Interactive }] {
+            assert!(crate::admit_reply(&crate::CommandDto::new(42, command), &decoded_reply).is_err(),
+                "generic Failed arm cannot authorize a partial publication for another request");
+        }
+
         let terminal = IndexJobTerminal {
             ticket: IndexJobTicket::new(NonZeroU64::new(42).expect("ticket"), [9; 16], status.package.clone()),
             outcome: IndexJobOutcome::PartiallyPublished(partial.clone()),
