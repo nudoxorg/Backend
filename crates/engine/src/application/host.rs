@@ -995,9 +995,18 @@ mod tests {
             .inspect_capabilities()
             .expect("capabilities can be inspected without an installed toolchain");
 
-        assert!(capabilities.as_slice().iter().all(|capability| {
-            capability.state() == crate::application::LocalCompilerCapabilityState::Unavailable
-        }));
+        for capability in capabilities.as_slice() {
+            if capability.profile().language() == backend_semantic::vocabulary::Language::Python {
+                // Python's producer is compiled into this host. Its admitted identity is
+                // available without an interpreter, cache, or runtime directory.
+                assert_eq!(capability.state(), crate::application::LocalCompilerCapabilityState::Ready);
+                assert!(capability.toolchain_identity().is_some());
+                assert!(capability.local_authority_fingerprint().is_some());
+            } else {
+                assert_eq!(capability.state(), crate::application::LocalCompilerCapabilityState::Unavailable,
+                    "an unconfigured external authority cannot be advertised ready: {capability:?}");
+            }
+        }
         assert!(!data_root.exists());
     }
 
