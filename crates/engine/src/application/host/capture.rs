@@ -154,7 +154,11 @@ mod tests {
             home.map(Path::to_path_buf),
             None,
             None,
-            super::super::probe_limits(),
+            crate::application::ToolchainProbeLimits::new(
+                super::super::VERSION_PROBE_TIMEOUT,
+                super::super::nonzero(super::super::VERSION_PROBE_STREAM_BYTES),
+            )
+            .expect("host probe limits"),
         )
         .with_installed_default(Some(global_compiler.clone()), tuple.module_root);
         let admitted = project
