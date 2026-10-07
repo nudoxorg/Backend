@@ -8,6 +8,7 @@
 
 #![allow(clippy::expect_used, clippy::naive_bytecount, clippy::panic)]
 
+use super::tools::QUERY_TOOL;
 use super::*;
 use backend_library::{
     Basis, COMMANDS, CommandReply, CompileExecutionIntent, Coverage, DeclarationKind, Document,

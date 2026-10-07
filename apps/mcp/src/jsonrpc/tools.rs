@@ -204,16 +204,16 @@ pub(super) fn validate_registry_arguments(
         };
         if spec.is_repeated() {
             let Some(values) = value.as_array() else {
-                return Err(argument_fault(spec, "an array"));
+                return Err(argument_fault(*spec, "an array"));
             };
             if values.is_empty() {
-                return Err(argument_fault(spec, "a non-empty array"));
+                return Err(argument_fault(*spec, "a non-empty array"));
             }
             for value in values {
-                validate_scalar(spec, value)?;
+                validate_scalar(*spec, value)?;
             }
         } else {
-            validate_scalar(spec, value)?;
+            validate_scalar(*spec, value)?;
         }
     }
     Ok(())
