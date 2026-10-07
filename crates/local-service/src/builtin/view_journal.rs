@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 const MAGIC: &[u8; 8] = b"BVIEWJ01";
-const VERSION: u8 = 3;
+const VERSION: u8 = backend_library::JournalViewGrammarV3::CONTAINER_VERSION;
 const SNAPSHOT: u8 = 1;
 const EVENT: u8 = 2;
 const HEADER_BYTES: usize = 8 + 1 + 1 + 8 + 32;
@@ -220,12 +220,18 @@ impl ViewJournal {
             ));
         }
         let wire = version(envelope.get("view"))?;
-        (wire != u64::from(backend_library::DTO_VERSION)).then(|| {
-            format!(
-                "its view snapshot is wire version {wire} and this build reads {}",
-                backend_library::DTO_VERSION
-            )
-        })
+        let grammar =
+            backend_library::JournalViewGrammarV3::from_checked_container(VERSION).ok()?;
+        u16::try_from(wire)
+            .ok()
+            .and_then(|wire| grammar.check_envelope_version(wire).ok())
+            .is_none()
+            .then(|| {
+                format!(
+                    "its view snapshot is wire version {wire} and this build reads {}",
+                    backend_library::DTO_VERSION
+                )
+            })
     }
 
     fn persist_snapshot(
@@ -647,6 +653,7 @@ fn capability_fingerprint(capability: &CoverageCapability) -> [u8; 32] {
 }
 
 struct DecodedEnvelope {
+    grammar: backend_library::JournalViewGrammarV3,
     workspace_root: [u8; 32],
     capability: Option<[u8; 32]>,
     cursor: Vec<u8>,
@@ -657,6 +664,23 @@ struct DecodedEnvelope {
 
 fn decode_envelope(payload: &[u8]) -> Result<DecodedEnvelope, String> {
     let value: serde_json::Value = serde_json::from_slice(payload).map_err(json_error)?;
+    let fields = value
+        .as_object()
+        .ok_or_else(|| "view journal envelope is not an object".to_owned())?;
+    if fields.keys().any(|field| {
+        !matches!(
+            field.as_str(),
+            "version"
+                | "workspace_root"
+                | "capability"
+                | "cursor"
+                | "descriptor"
+                | "view"
+                | "event"
+        )
+    }) {
+        return Err("view journal envelope has an unknown field".to_owned());
+    }
     let version = value
         .get("version")
         .and_then(serde_json::Value::as_u64)
@@ -698,7 +722,14 @@ fn decode_envelope(payload: &[u8]) -> Result<DecodedEnvelope, String> {
         .map(serde_json::to_vec)
         .transpose()
         .map_err(json_error)?;
+    if view.is_some() == event.is_some() {
+        return Err("view journal envelope requires one snapshot or event".to_owned());
+    }
     Ok(DecodedEnvelope {
+        // The frame scanner already checked magic/version/size/checksum;
+        // all container fields above have now been decoded without admitting
+        // an opaque workspace identity or a producer capability.
+        grammar: backend_library::JournalViewGrammarV3::from_checked_container(VERSION)?,
         workspace_root,
         capability,
         cursor,
@@ -784,12 +815,12 @@ fn admit_snapshot(
     if envelope.capability != Some(live) {
         return Ok(Scoped::Stale);
     }
-    let view = decode_view(
+    let view = envelope.grammar.decode_snapshot(
         envelope
             .view
             .as_deref()
             .ok_or_else(|| "view journal snapshot has no view".to_owned())?,
-        Some(capability.clone()),
+        capability.clone(),
     )?;
     let root = view.snapshot.root;
     ensure_descriptor(&root, &envelope.descriptor)?;
@@ -836,9 +867,10 @@ fn apply_event(
     let event_bytes = envelope
         .event
         .ok_or_else(|| "view journal event has no event".to_owned())?;
-    let (target_cursor, committed) =
-        backend_engine::decode_compact_view_event(&event_bytes, *current_cursor, current_root)
-            .map_err(|error| format!("view journal compact event: {error}"))?;
+    let (target_cursor, committed) = envelope
+        .grammar
+        .decode_event(&event_bytes, *current_cursor, current_root)
+        .map_err(|error| format!("view journal compact event: {error}"))?;
     let target_root = committed
         .clone()
         .apply_to(current_root)
@@ -863,10 +895,6 @@ fn apply_event(
         events.remove(0);
     }
     Ok(())
-}
-
-fn decode_view(bytes: &[u8], capability: Option<CoverageCapability>) -> Result<ViewDto, String> {
-    ViewDto::decode_with_certificate(bytes, capability)
 }
 
 fn write_frame(file: &mut File, kind: u8, payload: &[u8]) -> Result<(), String> {

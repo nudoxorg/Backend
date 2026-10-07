@@ -12,6 +12,7 @@ mod codec;
 mod command;
 mod event;
 mod event_dto;
+mod journal_grammar;
 mod reply;
 mod reply_admission;
 mod reply_capability;
@@ -37,6 +38,7 @@ pub use codec::{
 };
 pub use command::{CommandDto, ReplyDto, ViewDto};
 pub use event_dto::EventDto;
+pub use journal_grammar::JournalViewGrammarV3;
 pub use reply::{SemanticShapeExport, semantic_shape_batch_key};
 pub use subscription::{SubscriptionDto, encode_compact_subscription};
 pub use subscription_snapshot::{
@@ -65,9 +67,8 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current transport DTO version. Version 21 distinguishes anonymous callable
-/// shape members from source names and adds exact registry discovery outcomes.
-/// Version 20 bound continuations to their query family and page credit and
-/// added required-tool refusals; version 19 added complete-package history and
-/// durable compiler failures. Clients and services must use matching contracts.
-pub const DTO_VERSION: u16 = 21;
+/// Current transport DTO version. Version 22 keeps a copied document locator
+/// separate from the actual native row key and certifies that exact selection
+/// under the complete source basis. Version 21 peers require the locator hash
+/// as the document identity and cannot admit this native-key reply contract.
+pub const DTO_VERSION: u16 = 22;

@@ -1062,3 +1062,341 @@ fn capture_only_generation_rebind_cold_recovers_then_retains_compact_events() {
         base.row_count()
     );
 }
+
+fn journal_v3_test_advance(
+    view: ViewRoot,
+    cursor: Cursor,
+    capability: &CoverageCapability,
+    label: &str,
+) -> (ViewRoot, Cursor, CursorEvent) {
+    let row = backend_engine::Row::new(
+        backend_engine::RowId::Symbol(backend_engine::symbol_key(label)),
+        view.basis(),
+        label,
+    );
+    let prepared = view
+        .prepare(
+            backend_engine::ViewDelta::Upsert { row },
+            capability.clone(),
+        )
+        .expect("checked journal transition");
+    let (target, delta) = view.commit(prepared).expect("checked journal commit");
+    let event = CursorEvent::View {
+        delta: Box::new(delta),
+    };
+    let cursor = cursor
+        .advance_event(&event)
+        .expect("checked cursor transition");
+    (target, cursor, event)
+}
+
+fn journal_v3_v21_payload(bytes: &[u8], field: &str) -> Vec<u8> {
+    // These regression operands differ only in the declared version of the
+    // unchanged payload grammar. Authentic old-build journals are exercised
+    // separately through the public owner; this helper supplies no authority.
+    let mut value: serde_json::Value = serde_json::from_slice(bytes).expect("envelope");
+    value[field]["version"] = serde_json::json!(21);
+    serde_json::to_vec(&value).expect("known v21 envelope")
+}
+
+#[test]
+fn journal_v3_known_v21_snapshots_events_chain_to_v22_without_replacing_history() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("backend-journal-v21-to-v22-{stamp}"));
+    let head = super::super::genesis().expect("head");
+    let capability = super::super::test_builtin_view_capability().expect("coverage");
+    let (base, cursor) = super::super::initial_view().expect("base");
+    let (first, first_cursor, _) =
+        journal_v3_test_advance(base, cursor, &capability, "legacy::first");
+    let snapshot = journal_v3_v21_payload(
+        &encode_envelope(head.root(), first_cursor, &first, None).expect("snapshot"),
+        "view",
+    );
+    let (second, second_cursor, legacy_event) =
+        journal_v3_test_advance(first.clone(), first_cursor, &capability, "legacy::second");
+    let event = journal_v3_v21_payload(
+        &encode_envelope(head.root(), second_cursor, &second, Some(&legacy_event)).expect("event"),
+        "event",
+    );
+    let mut journal = ViewJournal::open(&path).expect("journal");
+    journal
+        .append(SNAPSHOT, &snapshot)
+        .expect("checksummed v21 snapshot");
+    journal
+        .append(EVENT, &event)
+        .expect("checksummed v21 compact event");
+    let legacy_bytes = fs::read(&path).expect("legacy bytes");
+    let recovered = journal
+        .load_for_workspace(head.root(), &capability)
+        .expect("known grammar")
+        .expect("retained view");
+    assert_eq!(recovered.view.root(), second.root());
+    assert_eq!(recovered.cursor, second_cursor);
+    assert_eq!(recovered.events.len(), 1);
+    assert_eq!(fs::read(&path).expect("unchanged recovery"), legacy_bytes);
+    assert!(journal.written_by_another_build().is_none());
+    let old_view: serde_json::Value = serde_json::from_slice(&snapshot).expect("snapshot JSON");
+    let old_event: serde_json::Value = serde_json::from_slice(&event).expect("event JSON");
+    assert!(
+        ViewDto::decode_with_certificate(
+            &serde_json::to_vec(&old_view["view"]).expect("view"),
+            Some(capability.clone())
+        )
+        .is_err(),
+        "live view peers stay strict22"
+    );
+    assert!(
+        backend_engine::decode_compact_view_event(
+            &serde_json::to_vec(&old_event["event"]).expect("event"),
+            first_cursor,
+            &first
+        )
+        .is_err(),
+        "live compact codec stays strict22"
+    );
+    let (third, third_cursor, checked_v22_event) = journal_v3_test_advance(
+        recovered.view,
+        recovered.cursor,
+        &capability,
+        "current::third",
+    );
+    journal
+        .persist(head.root(), &third, third_cursor, Some(&checked_v22_event))
+        .expect("append checked v22 event");
+    let updated_bytes = fs::read(&path).expect("mixed journal");
+    assert!(
+        updated_bytes.starts_with(&legacy_bytes),
+        "old history is never rewritten or reset"
+    );
+    let mut versions = Vec::new();
+    journal
+        .scan_frames(|_, bytes| {
+            let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(json_error)?;
+            versions.push(
+                (value
+                    .get("view")
+                    .filter(|v| !v.is_null())
+                    .or_else(|| value.get("event")))
+                .expect("record")["version"]
+                    .as_u64()
+                    .expect("wire version"),
+            );
+            Ok(())
+        })
+        .expect("scan mixed history");
+    assert_eq!(versions, [21, 21, 22]);
+    for _ in 0..2 {
+        let cold = ViewJournal::open(&path).expect("cold open");
+        let recovered = cold
+            .load_for_workspace(head.root(), &capability)
+            .expect("cold exact grammar")
+            .expect("cold current view");
+        assert_eq!(recovered.view.root(), third.root());
+        assert_eq!(recovered.cursor, third_cursor);
+        assert_eq!(recovered.events.len(), 2);
+        assert_eq!(recovered.view.row_count(), third.row_count());
+        assert_eq!(
+            fs::read(&path).expect("cold unchanged bytes"),
+            updated_bytes
+        );
+    }
+    fs::remove_file(path).expect("remove test journal");
+}
+
+#[test]
+fn journal_v3_refuses_unknown_versions_fields_proof_basis_and_descriptor_changes() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let head = super::super::genesis().expect("head");
+    let capability = super::super::test_builtin_view_capability().expect("coverage");
+    let (base, cursor) = super::super::initial_view().expect("base");
+    let (first, first_cursor, _) = journal_v3_test_advance(base, cursor, &capability, "old::first");
+    let snapshot = journal_v3_v21_payload(
+        &encode_envelope(head.root(), first_cursor, &first, None).expect("snapshot"),
+        "view",
+    );
+    let (second, second_cursor, event) =
+        journal_v3_test_advance(first, first_cursor, &capability, "old::second");
+    let event = journal_v3_v21_payload(
+        &encode_envelope(head.root(), second_cursor, &second, Some(&event)).expect("event"),
+        "event",
+    );
+    assert!(backend_library::JournalViewGrammarV3::from_checked_container(VERSION - 1).is_err());
+    for (kind, bytes, inner) in [(SNAPSHOT, &snapshot, "view"), (EVENT, &event, "event")] {
+        for (at, tamper) in [
+            "old-version",
+            "future-version",
+            "unknown-inner",
+            "unknown-outer",
+            "proof",
+            "basis",
+            "descriptor",
+            "both-records",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let path = std::env::temp_dir()
+                .join(format!("backend-journal-v3-refusal-{stamp}-{kind}-{at}"));
+            let journal = ViewJournal::open(&path).expect("journal");
+            if kind == EVENT {
+                journal.append(SNAPSHOT, &snapshot).expect("valid base");
+            }
+            let mut value: serde_json::Value = serde_json::from_slice(bytes).expect("JSON");
+            match tamper {
+                "old-version" => value[inner]["version"] = serde_json::json!(20),
+                "future-version" => value[inner]["version"] = serde_json::json!(23),
+                "unknown-inner" => {
+                    value[inner]["future_locator"] = serde_json::json!("not-supported")
+                }
+                "unknown-outer" => value["future_locator"] = serde_json::json!("not-supported"),
+                "proof" => {
+                    value[inner]["certificate"]["claims"][0]["data"]["id"] =
+                        serde_json::json!("00".repeat(32))
+                }
+                "basis" if kind == SNAPSHOT => {
+                    value[inner]["snapshot"]["root"]["basis"]["schema"] = serde_json::json!(99)
+                }
+                "basis" => {
+                    value[inner]["event"]["data"]["source"]["schema"] = serde_json::json!(99)
+                }
+                "descriptor" => value["descriptor"][0] = serde_json::json!(255),
+                "both-records" => {
+                    value[if kind == SNAPSHOT { "event" } else { "view" }] =
+                        serde_json::json!({"version":21})
+                }
+                _ => unreachable!(),
+            }
+            journal
+                .append(kind, &serde_json::to_vec(&value).expect("tampered payload"))
+                .expect("valid checksum around invalid payload");
+            let before = fs::read(&path).expect("before refusal");
+            assert!(
+                journal
+                    .load_for_workspace(head.root(), &capability)
+                    .is_err(),
+                "kind={kind} tamper={tamper}"
+            );
+            assert_eq!(
+                fs::read(&path).expect("refused bytes preserved"),
+                before,
+                "{tamper}"
+            );
+            fs::remove_file(path).expect("remove refused test journal");
+        }
+    }
+}
+
+#[test]
+fn journal_v3_native_v21_fixture_appends_checked_v22_and_reopens_twice() {
+    assert_eq!(backend_library::DTO_VERSION, 22);
+    // Exact historical codec output: native ARM64 source 9b0001b3af, whose
+    // production persisted grammar is still v21. No field/version rewrite.
+    let native = include_bytes!("fixtures/view-journal-v3-native-v21.bin");
+    assert_eq!(
+        blake3::hash(native).to_hex().as_str(),
+        "faed3440288d7bb208272069220d1dcdb87a84a230302d0e331d6b917d2d1a8e"
+    );
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("backend-native-journal-v21-v22-{stamp}"));
+    fs::write(&path, native).expect("copy historical operands into private test journal");
+    let head = super::super::genesis().expect("checked head");
+    let capability = super::super::test_builtin_view_capability().expect("coverage");
+    let (base, cursor) = super::super::initial_view().expect("base");
+    let (first, first_cursor, _) =
+        journal_v3_test_advance(base, cursor, &capability, "legacy::first");
+    let (second, second_cursor, _) =
+        journal_v3_test_advance(first.clone(), first_cursor, &capability, "legacy::second");
+    let mut journal = ViewJournal::open(&path).expect("historical journal");
+    let recovered = journal
+        .load_for_workspace(head.root(), &capability)
+        .expect("strict historical grammar and proof admission")
+        .expect("historical selected view");
+    assert_eq!(recovered.view.descriptor(), second.descriptor());
+    assert_eq!(recovered.view.rows(), second.rows());
+    assert_eq!(recovered.cursor, second_cursor);
+    assert_eq!(recovered.events.len(), 1);
+    assert_eq!(
+        fs::read(&path).expect("unchanged native bytes").as_slice(),
+        native.as_slice()
+    );
+    let mut versions = Vec::new();
+    journal
+        .scan_frames(|kind, bytes| {
+            let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(json_error)?;
+            let (field, live_refused) = if kind == SNAPSHOT {
+                (
+                    "view",
+                    ViewDto::decode_with_certificate(
+                        &serde_json::to_vec(&value["view"]).map_err(json_error)?,
+                        Some(capability.clone()),
+                    )
+                    .is_err(),
+                )
+            } else {
+                (
+                    "event",
+                    backend_engine::decode_compact_view_event(
+                        &serde_json::to_vec(&value["event"]).map_err(json_error)?,
+                        first_cursor,
+                        &first,
+                    )
+                    .is_err(),
+                )
+            };
+            versions.push(value[field]["version"].as_u64().expect("native version"));
+            assert!(
+                live_refused,
+                "historical bytes cannot enter the live v22 codec"
+            );
+            Ok(())
+        })
+        .expect("historical snapshot and event frames");
+    assert_eq!(versions, [21, 21]);
+    let (third, third_cursor, event) = journal_v3_test_advance(
+        recovered.view,
+        recovered.cursor,
+        &capability,
+        "current::third",
+    );
+    journal
+        .persist(head.root(), &third, third_cursor, Some(&event))
+        .expect("append checked native v22 transition");
+    let mixed = fs::read(&path).expect("mixed grammar journal");
+    assert!(
+        mixed.starts_with(native),
+        "historical bytes are never rewritten"
+    );
+    versions.clear();
+    journal
+        .scan_frames(|kind, bytes| {
+            let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(json_error)?;
+            let field = if kind == SNAPSHOT { "view" } else { "event" };
+            versions.push(value[field]["version"].as_u64().expect("native version"));
+            Ok(())
+        })
+        .expect("mixed native frames");
+    assert_eq!(versions, [21, 21, 22]);
+    drop(journal);
+    for _ in 0..2 {
+        let cold = ViewJournal::open(&path).expect("independent cold journal");
+        let recovered = cold
+            .load_for_workspace(head.root(), &capability)
+            .expect("cold exact proof/closure admission")
+            .expect("current view");
+        assert_eq!(recovered.view.descriptor(), third.descriptor());
+        assert_eq!(recovered.view.rows(), third.rows());
+        assert_eq!(recovered.cursor, third_cursor);
+        assert_eq!(recovered.events.len(), 2);
+        assert_eq!(fs::read(&path).expect("cold byte preservation"), mixed);
+    }
+    fs::remove_file(path).expect("remove private test journal");
+}

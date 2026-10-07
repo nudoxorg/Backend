@@ -1,11 +1,11 @@
 use super::reply::{BasisWire, basis_from_wire, basis_to_wire};
 use super::reply_admission::CoverageAdmission;
 use super::{EmptyWire, TextWire, WireCertificate, WireSchema};
-use crate::canonical::{PackageSchema, SymbolSchema, encode_id};
+use crate::canonical::{DocumentSchema, PackageSchema, SymbolSchema, encode_id};
 use crate::{
-    CoverageCapability, DeclarationFacts, Deprecation, Document, Fact, Fragment, Obligation,
-    Outline, OutlineExtent, OutlineNode, SourceAvailability, SourceExcerpt, SourceExcerptExtent,
-    SourceLocation,
+    CoverageCapability, DeclarationFacts, Deprecation, Document, DocumentSelection, Fact, Fragment,
+    Obligation, Outline, OutlineExtent, OutlineNode, SourceAvailability, SourceExcerpt,
+    SourceExcerptExtent, SourceLocation,
 };
 use serde::{Deserialize, Serialize};
 
@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub(crate) struct DocumentWire {
     symbol: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    selection: Option<DocumentSelectionWire>,
     basis: String,
     source: Option<BasisWire>,
     fragments: Vec<FragmentWire>,
@@ -22,6 +24,15 @@ pub(crate) struct DocumentWire {
     excerpt: SourceExcerptWire,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     facts: Option<FactsWire>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DocumentSelectionWire {
+    symbol: String,
+    source: BasisWire,
+    coordinate: String,
+    version: String,
 }
 
 /// Declaration facts on the wire. The field is omitted when the producer
@@ -193,6 +204,15 @@ pub(crate) struct OutlineNodeWire {
 pub(crate) fn document_to_wire(document: &Document) -> DocumentWire {
     DocumentWire {
         symbol: encode_id(document.symbol.as_bytes()),
+        selection: document
+            .selection
+            .as_ref()
+            .map(|selection| DocumentSelectionWire {
+                symbol: encode_id(selection.symbol().as_bytes()),
+                source: basis_to_wire(selection.source()),
+                coordinate: selection.coordinate().to_owned(),
+                version: encode_id(selection.version().as_bytes()),
+            }),
         basis: encode_id(document.basis().as_bytes()),
         source: document.source_basis().map(basis_to_wire),
         fragments: document.fragments.iter().map(fragment_to_wire).collect(),
@@ -330,8 +350,40 @@ pub(crate) fn document_from_wire_with_admission<A: CoverageAdmission>(
         None => certificate
             .row_identity_or_key_value::<SymbolSchema>(WireSchema::Symbol, &value.symbol)?,
     };
-    Ok(Document {
+    let selection = value
+        .selection
+        .map(|selected| -> Result<DocumentSelection, String> {
+            let capability = capability.as_ref().ok_or_else(|| {
+                "document selection requires authenticated source coverage".to_owned()
+            })?;
+            let selected_symbol = certificate.row_identity_or_key_or_producer::<SymbolSchema>(
+                WireSchema::Symbol,
+                &selected.symbol,
+                capability,
+            )?;
+            let selected_source = super::reply::basis_from_wire_with_capability(
+                &selected.source,
+                certificate,
+                capability,
+            )?;
+            let selection = DocumentSelection::from_admitted_parts(
+                selected_symbol,
+                selected_source,
+                selected.coordinate,
+            )
+            .map_err(str::to_owned)?;
+            let canonical = selection.canonical_bytes();
+            let committed = certificate
+                .version_value::<DocumentSchema>(WireSchema::Document, &selected.version)?;
+            if committed != crate::DocumentVersion::from_value(&canonical) {
+                return Err("document selection does not match its owner commitment".to_owned());
+            }
+            Ok(selection)
+        })
+        .transpose()?;
+    let document = Document {
         symbol,
+        selection: None,
         basis,
         source,
         fragments: fragments.into_boxed_slice(),
@@ -339,7 +391,11 @@ pub(crate) fn document_from_wire_with_admission<A: CoverageAdmission>(
         location: source_availability_from_wire(value.location)?,
         excerpt: source_excerpt_from_wire(value.excerpt)?,
         facts: facts_from_wire(value.facts)?,
-    })
+    };
+    match selection {
+        Some(selection) => document.with_selection(selection).map_err(str::to_owned),
+        None => Ok(document),
+    }
 }
 
 pub(crate) fn outline_to_wire(outline: &Outline) -> OutlineWire {
