@@ -77,7 +77,7 @@ impl IndexOperationClaim {
         if !self.admits_observation(&incoming) { return None; }
         if matches!(incoming, IndexOperationObservation::OutsideReceiptWindow { .. }) {
             if let Some(retained @ IndexOperationObservation::Known(status)) = &self.observation {
-                if matches!(status.state, IndexOperationState::Published(_)) && self.admits_observation(retained) {
+                if matches!(status.state, IndexOperationState::Published(_) | IndexOperationState::PartiallyPublished { .. }) && self.admits_observation(retained) {
                     return Some(retained.clone());
                 }
             }
@@ -107,6 +107,7 @@ impl IndexOperationClaim {
         self.observation.as_ref().is_some_and(|observation| self.admits_observation(observation)
             && matches!(observation, backend_library::IndexOperationObservation::Known(status)
                 if matches!(status.state, backend_library::IndexOperationState::Published(_)
+                    | backend_library::IndexOperationState::PartiallyPublished { .. }
                     | backend_library::IndexOperationState::Failed { .. })))
     }
 
@@ -142,6 +143,7 @@ impl IndexOperationClaim {
                     IndexJobStage::Publishing => "Publishing the index",
                 },
                 IndexOperationState::Published(_) => "Index published",
+                IndexOperationState::PartiallyPublished { .. } => "Index partially published; some profiles are unavailable",
                 IndexOperationState::Failed { .. } => "Index stopped before publication",
                 IndexOperationState::Unresolved { .. } => "Index outcome is unresolved",
             },
@@ -189,6 +191,127 @@ pub(crate) mod tests {
         let receipt = backend_library::IndexOperationPublicationReceipt::from_published_view(
             Some([1; 32]), [2; 32], [3; 32], 1, &view, backend_library::Cursor::for_view_root(&view)).expect("checked fixture receipt");
         observation(operation, backend_library::IndexOperationState::Published(receipt))
+    }
+
+    /// Checked mixed-profile transport fixture; it performs no compilation.
+    pub(crate) fn partially_published(
+        operation: &IndexOperationClaim,
+    ) -> Result<backend_library::IndexOperationObservation, String> {
+        use backend_library::{
+            IndexOperationProfileRefusal, IndexOperationSemanticCoverage,
+            IndexOperationSemanticProfileState, IndexOperationSemanticUnavailableReason,
+            IndexOperationSourceCaptureReceipt, IndexOperationSourceProfile,
+            SemanticLanguageProfile,
+        };
+        let python = SemanticLanguageProfile::from_name("python")
+            .ok_or_else(|| "closed Python profile missing".to_owned())?;
+        let typescript = SemanticLanguageProfile::from_name("typescript")
+            .ok_or_else(|| "closed TypeScript profile missing".to_owned())?;
+        let mut profiles = vec![
+            IndexOperationSourceProfile {
+                profile: python,
+                source_version: [5; 32],
+                input_digest: [6; 32],
+                observation_sequence: 7,
+                source_count: 2,
+                state: IndexOperationSemanticProfileState::Published {
+                    generation: [8; 32],
+                    coverage: IndexOperationSemanticCoverage::Complete,
+                },
+            },
+            IndexOperationSourceProfile {
+                profile: typescript,
+                source_version: [5; 32],
+                input_digest: [9; 32],
+                observation_sequence: 10,
+                source_count: 3,
+                state: IndexOperationSemanticProfileState::Unavailable {
+                    reason: IndexOperationSemanticUnavailableReason::Toolchain,
+                },
+            },
+        ];
+        profiles.sort_by_key(|profile| profile.profile);
+        let capture = IndexOperationSourceCaptureReceipt::from_checked_parts(
+            operation.key,
+            [2; 32],
+            [3; 32],
+            8,
+            profiles.into_boxed_slice(),
+        )
+        .map_err(|error| format!("mixed source receipt: {error:?}"))?;
+        let root = backend_library::view_state_root(&[]);
+        let basis = backend_library::Basis::new(
+            root,
+            backend_library::object_version(b"desktop-partial-fixture"),
+        );
+        let frontier = backend_library::Frontier::new(
+            backend_library::branch_key("main"),
+            backend_library::log_key("library"),
+            backend_library::CURSOR_SCHEMA,
+            root,
+            0,
+        );
+        let view = backend_library::ViewRoot::new_incomplete(
+            backend_library::view_key(b"desktop-partial-fixture"),
+            basis,
+            frontier,
+            Vec::new(),
+            Vec::new(),
+        )
+        .map_err(|error| format!("mixed checked view: {error:?}"))?;
+        let receipt = backend_library::IndexOperationPublicationReceipt::from_published_view(
+            Some([1; 32]),
+            [11; 32],
+            [12; 32],
+            9,
+            &view,
+            backend_library::Cursor::for_view_root(&view),
+        )
+        .map_err(|error| format!("mixed publication receipt: {error:?}"))?;
+        Ok(backend_library::IndexOperationObservation::Known(
+            backend_library::IndexOperationStatus::new(
+                operation.key,
+                operation.package.clone(),
+                operation.execution_intent,
+                backend_library::IndexOperationState::PartiallyPublished {
+                    receipt,
+                    refused_profiles: vec![IndexOperationProfileRefusal {
+                        profile: typescript,
+                        reason: IndexOperationSemanticUnavailableReason::Toolchain,
+                        compiler_failure: None,
+                    }]
+                    .into_boxed_slice(),
+                },
+            )
+            .with_source_capture(Some(capture)),
+        ))
+    }
+
+    #[test]
+    fn exact_partial_receipt_is_terminal_and_survives_a_consumed_key_tombstone()
+    -> Result<(), String> {
+        let project = LocalProjectId::new("/fixture/partial-operation")
+            .map_err(|error| format!("project: {error}"))?;
+        let mut operation = claim(&project, 0x81);
+        let partial = partially_published(&operation)?;
+        assert!(operation.admits_observation(&partial));
+        operation.observation = Some(partial.clone());
+        assert!(operation.has_terminal_observation());
+        assert!(!operation.needs_observation());
+        assert_eq!(
+            operation.observation_for(outside(&operation)),
+            Some(partial.clone())
+        );
+        assert!(!operation.admits_observation(&partially_published(&claim(&project, 0x82))?));
+        let mut malformed = partial;
+        if let backend_library::IndexOperationObservation::Known(status) = &mut malformed {
+            status.source_capture = None;
+        }
+        assert!(
+            !operation.admits_observation(&malformed),
+            "absence cannot assert partial publication"
+        );
+        Ok(())
     }
 
     #[test]

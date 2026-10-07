@@ -382,7 +382,24 @@ fn cancelling_a_replacement_read_never_readmits_its_retained_predecessor(cx: &mu
             assert_eq!(admission(store, &rig.main), (false, true));
             assert!(store.pages().is_owner_read_revoked(&rig.main));
         });
+        rig.store.update(cx, |store, cx| {
+            let before = store.stats().submitted;
+            if store.focused().contains(&rig.main) {
+                store.ensure(rig.main.clone(), cx);
+            }
+            assert_eq!(
+                store.stats().submitted,
+                before,
+                "covered body cannot renew through retained chrome"
+            );
+            assert!(!store.is_loading(&rig.main));
+        });
         rig.release();
+        rig.until(cx, |store| store.pool_activity().is_idle());
+        rig.store.read_with(cx, |store, _| {
+            assert_eq!(admission(store, &rig.main), (false, true));
+            assert!(store.pages().is_owner_read_revoked(&rig.main));
+        });
         rig.go(cx, route, None);
         rig.until(cx, |store| admission(store, &rig.main).0);
         rig.store.read_with(cx, |store, _| {

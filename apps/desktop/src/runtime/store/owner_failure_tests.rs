@@ -5,7 +5,7 @@ use super::*;
 use crate::core::{Activity, ResourceTerminal, VersionedRoot};
 use crate::model::ServiceMode;
 use crate::model::pages::{PageValue, SeedEntry};
-use crate::runtime::owner::OwnerState;
+use crate::runtime::owner::{OwnerState, PublicationAdmission};
 use crate::runtime::reads::{PageReader, ReadContext};
 use crate::runtime::{
     DesktopRuntime, EngineActor, EngineClient, EngineDto, EngineFault, EngineRequest, UiEntityGraph,
@@ -448,11 +448,37 @@ fn actual_owner_watcher_repeats_refresh_retry_without_republishing_the_fault_res
     until(store, cx, "starting then failure still lands", |store| {
         store.health().terminal() == &ResourceTerminal::Fault(owner_failure_value(&changed))
     });
-    let next = root("new-authority");
+    // Recovery needs a complete, checked publication for the new attachment,
+    // not just the revision responder's Ready state.
+    let view = crate::runtime::owner::publication_tests::view();
+    let cursor = backend_library::Cursor::for_view_root_at(&view, 0);
+    let next = VersionedRoot::from_revision(14, cursor, 0);
     gate.publish(OwnerState::Ready {
         key: next,
         mode: ServiceMode::Attached,
     });
+    until(
+        store,
+        cx,
+        "uncertified responder updates the root only",
+        |store| store.snapshot.key().same_authority(next),
+    );
+    store.read_with(cx, |store, _| {
+        assert!(!store.owner_serving());
+        assert_eq!(
+            store.health().terminal(),
+            &ResourceTerminal::Fault(owner_failure_value(&changed))
+        );
+        assert!(Arc::ptr_eq(
+            store.health().loaded_arc().expect("retained"),
+            &retained
+        ));
+    });
+    let attachment = gate.ready_epoch().expect("replacement attachment");
+    assert_eq!(
+        gate.publish_view(attachment, view, cursor),
+        PublicationAdmission::Admitted
+    );
     until(
         store,
         cx,
@@ -712,11 +738,36 @@ fn actual_watcher_replaces_changed_seeded_quiet_faults_and_keeps_identical_failu
     });
     // Ready at another authority must still attempt a genuine quiet worker
     // read rather than rebasing the saved bytes into current evidence.
-    let next = root("seeded-next-authority");
+    let view = crate::runtime::owner::publication_tests::view();
+    let cursor = backend_library::Cursor::for_view_root_at(&view, 0);
+    let next = VersionedRoot::from_revision(14, cursor, 0);
     gate.publish(OwnerState::Ready {
         key: next,
         mode: ServiceMode::Attached,
     });
+    until(
+        store,
+        cx,
+        "uncertified responder retains the seeded fault",
+        |store| store.snapshot.key().same_authority(next),
+    );
+    store.read_with(cx, |store, _| {
+        assert!(!store.owner_serving());
+        assert_eq!(
+            store.symbol(&reference).terminal(),
+            &ResourceTerminal::Fault(owner_failure_value(&changed))
+        );
+        assert!(Arc::ptr_eq(
+            store.symbol(&reference).loaded_arc().expect("seeded predecessor"),
+            &retained
+        ));
+        assert!(store.pages.is_seeded(&key));
+    });
+    let attachment = gate.ready_epoch().expect("replacement attachment");
+    assert_eq!(
+        gate.publish_view(attachment, view, cursor),
+        PublicationAdmission::Admitted
+    );
     until(
         store,
         cx,

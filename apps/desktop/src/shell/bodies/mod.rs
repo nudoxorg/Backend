@@ -44,6 +44,7 @@ use facet::{Measure, Palette, Reveal};
 use gpui::{AnyElement, App, Context, FocusHandle, SharedString, WeakEntity};
 use std::collections::BTreeMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// One block of a page, with its margin note.
 pub(crate) struct Leaf {
@@ -548,4 +549,32 @@ pub(crate) fn saved_world(store: &DataStore, route: &Route, overlay: Option<Over
 
 pub(crate) fn saved_source_generation(store: &DataStore, route: &Route, overlay: Option<Overlay>) -> Option<[u8; 32]> {
     retained::source_generation(store, route, overlay)
+}
+
+/// The primary pane's admitted reading destination. Saved bytes are a
+/// display-only destination; current content and action admission still
+/// belongs to RouteDependencies and the serving owner.
+pub(crate) enum ReadingDestination {
+    Owner(crate::core::ReadPhase),
+    Retained(Arc<crate::runtime::snapshot::RetainedDisplay>),
+}
+
+impl ReadingDestination {
+    pub(crate) fn pending(&self) -> bool {
+        matches!(self, Self::Owner(crate::core::ReadPhase::Pending))
+    }
+
+    pub(crate) fn displayed(&self) -> bool {
+        match self {
+            Self::Owner(phase) => *phase == crate::core::ReadPhase::Ready,
+            Self::Retained(display) => !display.served(),
+        }
+    }
+}
+
+pub(crate) fn reading_destination(store: &DataStore, route: &Route, overlay: Option<Overlay>) -> ReadingDestination {
+    retained::select(store, route, overlay).map_or_else(
+        || ReadingDestination::Owner(RouteDependencies::new(route, overlay).display_phase(store)),
+        ReadingDestination::Retained,
+    )
 }

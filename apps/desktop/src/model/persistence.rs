@@ -1237,7 +1237,7 @@ impl PersistentState {
                     use backend_library::{IndexOperationObservation, IndexOperationState, IndexOperationFailureReason};
                     match operation.observation.as_ref() {
                         Some(IndexOperationObservation::Known(status)) => match &status.state {
-                            IndexOperationState::Published(_) => ProjectPhase::Ready,
+                            IndexOperationState::Published(_) | IndexOperationState::PartiallyPublished { .. } => ProjectPhase::Ready,
                             IndexOperationState::Failed { reason, .. } => if *reason == IndexOperationFailureReason::Cancelled {
                                 ProjectPhase::Cancelled
                             } else { ProjectPhase::Failed },
@@ -1570,6 +1570,50 @@ mod tests {
         assert_eq!(archived.projects[0].index_status_text(), Some("Index receipt is outside the evidence window"));
         assert!(!archived.projects[0].operation.as_ref().expect("claim").needs_observation());
         fs::remove_dir_all(directory).expect("cleanup");
+    }
+
+    #[test]
+    fn cold_restart_keeps_the_exact_partial_receipt_and_profile_refusals() -> Result<(), String> {
+        let directory = fixture("durable-partial-state");
+        let project =
+            LocalProjectId::from_path(&directory).map_err(|error| format!("project: {error}"))?;
+        let store = PersistentState::at(directory.join("desktop.json"));
+        let added = crate::navigation::reduce(
+            &AppSnapshot::empty(crate::core::VersionedRoot::unserved()),
+            crate::navigation::Intent::AddProject {
+                project: project.clone(),
+            },
+        )
+        .snapshot;
+        let mut operation = crate::model::index_operation::tests::claim(&project, 0x84);
+        operation.observation = Some(crate::model::index_operation::tests::partially_published(
+            &operation,
+        )?);
+        let mut value = PersistentState::project(&added);
+        value.shelf[0].operation = Some(operation.clone());
+        value.shelf[0].phase = PersistedProjectPhase::Unconfirmed;
+        store
+            .save(&value)
+            .map_err(|error| format!("save partial receipt: {error}"))?;
+        let decoded = store
+            .load()
+            .map_err(|error| format!("cold partial receipt: {error}"))?;
+        let restored = store.cold_workspace(&decoded);
+        let row = &restored.projects[0];
+        assert_eq!(row.phase, ProjectPhase::Ready);
+        assert_eq!(row.operation.as_ref(), Some(&operation));
+        assert_eq!(
+            row.lifecycle(),
+            crate::model::ProjectLifecycle::PartiallyPublished
+        );
+        assert_eq!(
+            row.partial_refusal_words().as_deref(),
+            Some("typescript: the compiler is unavailable.")
+        );
+        assert_eq!(row.request, None);
+        fs::remove_dir_all(directory)
+            .map_err(|error| format!("remove partial fixture: {error}"))?;
+        Ok(())
     }
 
     #[test]

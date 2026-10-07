@@ -1060,7 +1060,8 @@ fn group_head(words: String, count: usize, measure: &Measure, palette: &facet::P
 
 #[cfg(test)]
 mod tests {
-    use super::{Choice, Group, QueryDraft, QueryReject, matched_range, step_index};
+    use super::{Choice, Group, QueryDraft, QueryReject, SubmitRefusal, current_input_query, matched_range, step_index};
+    use gpui_component::input::InputEvent;
     use crate::core::{LocalProjectId, VersionedRoot};
     use crate::model::{AppSnapshot, SessionState};
     use crate::model::pages::{DeclRef, Gap, GapReason, Known, MatchReason, PageValue, ReadFailure, SearchPage, SearchRow};
@@ -1559,7 +1560,35 @@ mod tests {
         let mystery = ledger.texts.iter().find(|text| text.content == "Mystery").unwrap_or_else(|| panic!("the row is painted: {:?}", ledger.texts.iter().map(|t| &t.content).collect::<Vec<_>>()));
         assert_eq!(mystery.region.as_deref(), Some("ask"), "Ask's row is in Ask's region");
         let route_before = rig.route();
+        let observed_ask = ask.clone();
+        let input_sequence = Rc::new(RefCell::new(Vec::new()));
+        let observed_sequence = Rc::clone(&input_sequence);
+        let _input_events = rig.cx.update(|_, cx| cx.subscribe(&input, move |input, event: &InputEvent, cx| {
+            let event = match event {
+                InputEvent::Change => "change".to_owned(),
+                InputEvent::PressEnter { secondary, shift } => format!("enter secondary={secondary} shift={shift}"),
+                InputEvent::Focus => "focus".to_owned(),
+                InputEvent::Blur => "blur".to_owned(),
+            };
+            observed_sequence.borrow_mut().push(event.clone());
+            eprintln!("ASK-DISPATCH input-event={event} value={:?} refusal={:?}", input.read(cx).value(), observed_ask.read(cx).refusal.as_ref().map(SubmitRefusal::words));
+        }));
+        let _key_events = rig.cx.update(|_, cx| cx.observe_keystrokes(|event, _, _| {
+            if event.keystroke.key == "enter" {
+                eprintln!("ASK-DISPATCH action={:?} contexts={:?}", event.action.as_ref().map(|action| action.name()), event.context_stack);
+            }
+        }));
+        let admission = rig.cx.update(|window, cx| (
+            input.read(cx).focus_handle(cx).is_focused(window),
+            window.is_action_available(&gpui_component::input::Enter { secondary: false, shift: false }, cx),
+            ask.read(cx).links.snapshot(cx).overlay(),
+            ask.read(cx).draft.query().is_some_and(|query| current_input_query(&input, query, cx)),
+        ));
+        eprintln!("ASK-DISPATCH before-enter focused/action-available/overlay/exact-query={admission:?}");
         rig.keys("enter");
+        eprintln!("ASK-DISPATCH after-enter refusal={:?}", ask.read_with(rig.cx, |ask, _| ask.refusal.as_ref().map(SubmitRefusal::words)));
+        assert_eq!(input_sequence.borrow().as_slice(), ["enter secondary=false shift=false"],
+            "one Enter submits once without a second unchanged editor Change");
         assert_eq!(rig.route(), route_before, "a row with no place does not move the page");
         let (ask_open, _, _) = rig.shell.read_with(rig.cx, |shell, _| shell.transients());
         assert!(ask_open, "a refused destination preserves the active query");

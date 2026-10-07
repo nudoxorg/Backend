@@ -740,6 +740,9 @@ impl DataStore {
     pub fn ensure(&mut self, key: PageKey, cx: &mut Context<Self>) -> Stamp {
         if self.close_paused { return self.pages.stamp(&key); }
         self.keep_focused_resident();
+        if self.holds_revoked_body_read(&key) {
+            return self.pages.stamp(&key);
+        }
         match self.owner.phase() {
             OwnerPhase::Serving => {}
             OwnerPhase::Starting => {
@@ -793,6 +796,7 @@ impl DataStore {
         let dropped = self.focused.difference(&next).cloned().collect::<Vec<_>>();
         self.owner.retain_held(|key| next.contains(key));
         self.focused = next;
+        self.pages.set_resident_keys(&self.focused);
         for key in dropped {
             if self.prefetching.contains(&key) {
                 continue;
@@ -800,6 +804,14 @@ impl DataStore {
             self.cancel_key(&key, cx);
         }
         for key in keys {
+            if self.holds_revoked_body_read(&key) {
+                // A titlebar can retain the same key after an overlay hides
+                // its body. That does not transfer the body's replacement
+                // read to the chrome or readmit its revoked predecessor.
+                self.prefetching.remove(&key);
+                self.cancel_key(&key, cx);
+                continue;
+            }
             if is_cargo_source_resource(&key)
                 && (!previous.contains(&key)
                     || (file_changed
@@ -865,6 +877,18 @@ impl DataStore {
         for key in &self.focused {
             self.pages.touch(key);
         }
+    }
+
+    /// Revoked body bytes may remain visible in an overlay's titlebar, but
+    /// their replacement read waits until the body owns the key again.
+    fn holds_revoked_body_read(&self, key: &PageKey) -> bool {
+        matches!(
+            self.snapshot.overlay(),
+            Some(crate::navigation::Overlay::Settings(_) | crate::navigation::Overlay::Inbox)
+        ) && self.pages.is_owner_read_revoked(key)
+            && RouteDependencies::new(self.snapshot.route(), None)
+                .content_keys()
+                .contains(key)
     }
 
     /// Cancels a prefetch that has not been promoted by a view.

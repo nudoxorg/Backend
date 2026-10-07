@@ -20,6 +20,31 @@ fn root() -> VersionedRoot {
 }
 
 #[test]
+fn visible_idle_browse_slot_survives_an_entirely_running_cache_until_route_release() {
+    use crate::model::browse::BrowseKey;
+    use crate::core::LocalProjectId;
+    let key = |at| PageKey::Browse(BrowseKey::Tree(
+        LocalProjectId::new(&format!("/fixture/resident-{at}")).expect("browse address"),
+    ));
+    let visible = key(0);
+    let mut store = PageStore::default();
+    let generation = store.begin(&visible, root()).expect("generation").expect("visible read");
+    assert_eq!(store.land(&visible, generation, Err(ReadFailure::Unavailable(
+        UnavailableReason::Unsupported, "idle visible result".into(),
+    ))), Landing::Applied);
+    let stamp = store.stamp(&visible);
+    store.set_resident_keys(&BTreeSet::from([visible.clone()]));
+    for at in 1..=8 {
+        assert!(store.begin(&key(at), root()).expect("admission").is_some());
+        assert!(store.contains(&visible), "running auxiliary reads cannot evict visible ownership");
+        assert_eq!(store.stamp(&visible), stamp, "residency changes no resource admission");
+    }
+    store.set_resident_keys(&BTreeSet::new());
+    assert!(store.begin(&key(9), root()).expect("admission").is_some());
+    assert!(!store.contains(&visible), "leaving the route releases the idle slot for normal eviction");
+}
+
+#[test]
 fn publication_invalidates_same_root_seed_and_cannot_land_an_old_generation() {
     let package = PackageRef::parse(PACKAGE).expect("package");
     let key = PageKey::Package(package.clone());

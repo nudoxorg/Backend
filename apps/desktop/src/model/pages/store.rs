@@ -20,7 +20,7 @@ use super::search::SearchPage;
 use super::source::SourceView;
 use super::symbol::SymbolPage;
 use crate::core::{Activity, ErrorValue, Resource, ResourceTerminal, UnavailableReason, VersionedRoot};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 use std::sync::Arc;
 
@@ -274,6 +274,8 @@ impl<T> Slot<T> {
 struct Slots<K: Ord, T> {
     map: BTreeMap<K, Slot<T>>,
     capacity: usize,
+    /// Exact keys owned by the visible route, independently of read activity.
+    resident: BTreeSet<K>,
 }
 
 impl<K: Ord + Clone, T> Slots<K, T> {
@@ -281,6 +283,7 @@ impl<K: Ord + Clone, T> Slots<K, T> {
         Self {
             map: BTreeMap::new(),
             capacity,
+            resident: BTreeSet::new(),
         }
     }
 
@@ -410,21 +413,21 @@ impl<K: Ord + Clone, T> Slots<K, T> {
         }
     }
 
-    /// Evicts the least recently used idle slot while the map is full.
+    /// Evicts the least recently used idle, nonresident slot while full.
     fn evict_for_insert(&mut self) {
         while self.map.len() >= self.capacity.max(1) {
             let victim = self
                 .map
                 .iter()
-                .filter(|(_, slot)| !slot.running())
+                .filter(|(key, slot)| !slot.running() && !self.resident.contains(*key))
                 .min_by_key(|(_, slot)| slot.used)
                 .map(|(key, _)| key.clone());
             match victim {
                 Some(key) => {
                     self.map.remove(&key);
                 }
-                // Every slot is in flight: grow past the bound rather than
-                // drop a request a view is waiting on.
+                // Every slot is in flight or belongs to the visible route:
+                // preserve that ownership until the request or route ends.
                 None => break,
             }
         }
@@ -972,6 +975,22 @@ impl PageStore {
         self.clock = self.clock.next();
         let clock = self.clock;
         dispatch!(self, key, |slots, k| slots.touch(k, clock));
+    }
+
+    /// Replaces the visible route's residency independently of LRU recency.
+    /// This neither starts a read nor changes a resource's authority or stamp.
+    pub(crate) fn set_resident_keys(&mut self, keys: &BTreeSet<PageKey>) {
+        self.symbols.resident.clear();
+        self.sources.resident.clear();
+        self.cargo_sources.resident.clear();
+        self.packages.resident.clear();
+        self.searches.resident.clear();
+        self.orbit.resident.clear();
+        self.health.resident.clear();
+        self.browse.resident.clear();
+        for key in keys {
+            dispatch!(self, key, |slots, k| { slots.resident.insert(k.clone()); });
+        }
     }
 
     /// Admits one result if it names the slot's current generation.

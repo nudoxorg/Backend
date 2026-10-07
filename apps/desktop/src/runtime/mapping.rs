@@ -283,7 +283,7 @@ pub fn map_event(current: &AppSnapshot, event: EngineEvent) -> Result<AppSnapsho
                 IndexOperationObservation::Known(status) => match &status.state {
                     IndexOperationState::Accepted => (ProjectPhase::Indexing, None),
                     IndexOperationState::Active { .. } => (ProjectPhase::Indexing, None),
-                    IndexOperationState::Published(_) => (ProjectPhase::Ready, None),
+                    IndexOperationState::Published(_) | IndexOperationState::PartiallyPublished { .. } => (ProjectPhase::Ready, None),
                     IndexOperationState::Failed { reason, detail, .. } => (
                         if *reason == IndexOperationFailureReason::Cancelled { ProjectPhase::Cancelled } else { ProjectPhase::Failed },
                         Some(Arc::from(detail.as_str())),

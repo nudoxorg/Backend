@@ -870,6 +870,10 @@ fn cold_source_repaints_share_prepared_index_and_old_pager_callback_cannot_cross
             assert!(Arc::ptr_eq(display.source_text().expect("reused index"), &indexed));
             assert!(Arc::ptr_eq(display.source_text().expect("source").prepared_line_index().expect("offsets"), &offsets));
             assert!(!display.served());
+            assert!(matches!(crate::shell::bodies::reading_destination(store, &route, None),
+                crate::shell::bodies::ReadingDestination::Retained(_)));
+            assert_eq!(crate::runtime::store::RouteDependencies::new(&route, None).display_phase(store),
+                crate::core::ReadPhase::Pending, "readable saved bytes never admit current owner content");
         });
     }
     rig.cx.update(|window, _| window.set_a11y_forced(true));
@@ -880,10 +884,12 @@ fn cold_source_repaints_share_prepared_index_and_old_pager_callback_cannot_cross
     let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
     let (target, bounds) = targets.iter().find(|(target, _)| target.label == "Next saved text").expect("local pager");
     assert!(bounds.size.width > gpui::px(0.0) && bounds.size.height > gpui::px(0.0));
-    let stale = target.action.callback();
     rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
     rig.draw();
     assert!(rig.said().iter().any(|line| line.contains("retained line 064")), "native activation reaches the next bounded source page");
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
+    let stale = targets.iter().find(|(target, _)| target.label == "Next saved text")
+        .expect("second page native callback").0.action.callback();
     rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Home)));
     rig.cx.update(|window, app| stale(window, app));
     rig.draw();
@@ -892,6 +898,18 @@ fn cold_source_repaints_share_prepared_index_and_old_pager_callback_cannot_cross
     rig.go(Intent::Back);
     assert_eq!(rig.route(), route);
     assert!(rig.said().iter().any(|line| line.contains("retained line 064")), "Back restores only its own local pager position");
+    rig.graph.store.read_with(rig.cx, |store, _| {
+        let display = store.retained_display(&route).expect("returned exact saved destination");
+        assert!(Arc::ptr_eq(display.source_text().expect("returned prepared index"), &indexed));
+        assert!(Arc::ptr_eq(display.source_text().expect("returned source").prepared_line_index()
+            .expect("returned offsets"), &offsets));
+    });
+    rig.cx.update(|window, app| stale(window, app));
+    rig.draw();
+    assert!(rig.said().iter().any(|line| line.contains("retained line 064")),
+        "the returned same-address visit keeps its own saved cursor");
+    assert!(!rig.said().iter().any(|line| line.contains("retained line 128")),
+        "a callback with the matching old cursor still cannot cross the visit boundary");
     let _ = std::fs::remove_dir_all(dir);
 }
 

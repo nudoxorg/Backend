@@ -291,8 +291,8 @@ fn index(store: &super::Pages, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     let mut leaves = vec![title("Index & registries", ctx)];
     let measure = ctx.measure;
     let palette = ctx.palette;
-    // What compiles your code: the Rust the app found (or where it looked),
-    // in the words the first run says it in.
+    // This report describes Rust only. Other selected language profiles
+    // retain their own exact toolchain and publication evidence.
     if let Some(rust) = crate::host::toolchain::report() {
         let missing = matches!(rust, crate::host::toolchain::Rust::Missing { .. });
         let ink = if missing {
@@ -300,7 +300,7 @@ fn index(store: &super::Pages, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
         } else {
             palette.ink1
         };
-        leaves.push(value_row("Compiler", rust.words(), ty::SMALL, ink, ctx));
+        leaves.push(value_row("Rust toolchain", rust.words(), ty::SMALL, ink, ctx));
     }
     let health = store.health();
     match health.loaded_value() {

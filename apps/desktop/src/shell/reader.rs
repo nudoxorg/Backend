@@ -42,7 +42,6 @@ use crate::model::AppSnapshot;
 use crate::model::pages::{PageKey, Stamp};
 use crate::navigation::{BrowseRoute, OrbitRoute, Overlay, Route, View};
 use crate::runtime::store::{Branch, CargoReadAdmission, DataStore, OwnerAttachment, RouteDependencies, StoreEvent};
-use crate::core::ReadPhase as DestinationState;
 use facet::anatomy::symbol::key::FoldKey;
 use facet::motion::{Carry, Edge, Presence, band, masked, offset, print};
 use facet::tokens::ty;
@@ -1023,8 +1022,7 @@ impl Reader {
         let Some(place) = self.places.last().map(|place| place.key) else { return false; };
         if !mounts_scroll_body(self.links.store.read(cx), snapshot.route(), snapshot.page_overlay())
             || !self.native_input_for(snapshot.route(), snapshot.page_overlay())
-            || RouteDependencies::new(snapshot.route(), snapshot.page_overlay())
-                .display_phase(self.links.store.read(cx)) == DestinationState::Pending
+            || bodies::reading_destination(self.links.store.read(cx), snapshot.route(), snapshot.page_overlay()).pending()
             || self.pending_scroll_restore.is_some()
             || self.scroll_mounted.get() != Some(place)
         {
@@ -2906,8 +2904,8 @@ impl Render for Reader {
             self.find_held_root = None;
         }
         let Some(requested) = self.places.last().cloned() else { return div(); };
-        let readiness = RouteDependencies::new(&requested.route, requested.overlay).display_phase(self.links.store.read(cx));
-        let waiting = readiness == DestinationState::Pending;
+        let destination = bodies::reading_destination(self.links.store.read(cx), &requested.route, requested.overlay);
+        let waiting = destination.pending();
         // A read has not painted its destination yet. Keep the last actual
         // departure as the one presentation until the real terminal answer;
         // its existing motion may finish, but no new empty plate grows.
@@ -2930,10 +2928,10 @@ impl Render for Reader {
         let Layout { pad, right_pad, top, folio, beside, content, .. } = layout;
         let scale = measure.scale();
         let mut restored_origin = None;
-        // Scroll restoration waits for the primary pane's current read. The
-        // requested route itself paints even when that read is pending, so
-        // local navigation and later focus belong to its own visit.
-        if !waiting && RouteDependencies::new(&current.route, current.overlay).display_loaded(self.links.store.read(cx)) {
+        // Local scroll restoration belongs to a displayed destination,
+        // including its admitted saved text. It grants no current source
+        // actions; those still require the separate owner read admission.
+        if !waiting && destination.displayed() {
             if let Some(restore) = self.pending_scroll_restore.take() {
                 if restore.place == current.key {
                     self.scroll.set_offset(restore.offset);

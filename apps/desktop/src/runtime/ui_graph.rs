@@ -1262,7 +1262,7 @@ fn newly_published_local_projects(
         if !matches!(
             operation.observation.as_ref(),
             Some(backend_library::IndexOperationObservation::Known(status))
-                if matches!(status.state, backend_library::IndexOperationState::Published(_))
+                if matches!(status.state, backend_library::IndexOperationState::Published(_) | backend_library::IndexOperationState::PartiallyPublished { .. })
         ) {
             return None;
         }
@@ -1573,5 +1573,31 @@ mod connection_probe_tests {
             Some(Intent::ConnectionProbeAborted { previous: ConnectionStatus::Connected }),
             "a current attachment cannot promote a result asked at an old root",
         );
+    }
+}
+
+#[cfg(test)]
+mod partial_publication_tests {
+    #[test]
+    fn partial_publication_announces_content_once_for_the_exact_operation() -> Result<(), String> {
+        let before = crate::model::AppSnapshot::empty(crate::core::VersionedRoot::unserved());
+        let project = crate::core::LocalProjectId::new("/fixture/partial-content")
+            .map_err(|error| format!("project: {error}"))?;
+        let mut row = crate::model::WorkspaceProject::indexing_with_id(project.clone());
+        let mut operation = crate::model::index_operation::tests::claim(&project, 0x86);
+        operation.observation = Some(crate::model::index_operation::tests::partially_published(
+            &operation,
+        )?);
+        row.phase = crate::model::ProjectPhase::Ready;
+        row.operation = Some(operation);
+        let mut workspace = before.workspace().clone();
+        workspace.projects = std::sync::Arc::from([row]);
+        let after = before.with_workspace(workspace);
+        assert_eq!(
+            super::newly_published_local_projects(&before, &after),
+            std::collections::BTreeSet::from([project])
+        );
+        assert!(super::newly_published_local_projects(&after, &after).is_empty());
+        Ok(())
     }
 }

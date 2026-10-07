@@ -234,18 +234,16 @@ fn finder_launch_child() {
 #[test]
 fn a_finder_launch_compiles_rust_with_the_rust_the_person_installed() {
     let home = std::env::var_os("HOME").expect("HOME");
-    let expected = super::toolchain::find_rust(
-        &|name| match name {
-            "HOME" => Some(home.clone()),
-            "PATH" => Some(FINDER_PATH.into()),
-            _ => None,
+    let expected = backend_local_service::find_installed_rust(
+        &backend_local_service::InstalledRustInputs {
+            configured_rustc: None,
+            home: Some(home.clone()),
+            cargo_home: None,
+            search_path: Some(FINDER_PATH.into()),
         },
-        &[
-            (PathBuf::from("/opt/homebrew/bin"), super::toolchain::Place::Homebrew),
-            (PathBuf::from("/usr/local/bin"), super::toolchain::Place::Homebrew),
-        ],
+        &backend_local_service::installed_rust_system_locations(),
     );
-    let super::toolchain::Rust::Found { rustc: expected, .. } = expected else {
+    let backend_local_service::InstalledRustToolchain::Found { rustc: expected, .. } = expected else {
         panic!("this machine has no Rust a person installed (rustup or Homebrew): {expected:?}")
     };
     let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
