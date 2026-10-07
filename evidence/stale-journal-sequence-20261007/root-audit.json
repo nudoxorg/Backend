@@ -1,0 +1,28 @@
+{
+  "archive_sha256": "1f1e1d0b93a1493b3691d509f29e7972395c7824871b27d6b137b18f893dd24d",
+  "verified_artifacts": 82,
+  "native_source": "ca73530bd41ec471acf1707ee506f1a9d224316a",
+  "native_tree": "7a6af4b67f98c39e426f5f66cadcfbf4b4293e47",
+  "native_binary": {
+    "original_path": "/root/sol61-startup-c5-evidence-20261007/build-linuxtests/.nudox-cargo/slot-0/release/deps/backend_local_service-b63534a27f1b7b34",
+    "preserved_path": "/root/sol61-startup-c5-evidence-20261007/n14-native-gates-20261007/artifacts/attempt09-backend_local_service-b63534a27f1b7b34",
+    "size_bytes": 176761056,
+    "sha256": "bcc5041d21adfcad3f3922320c2188bcc7323f0636ce91f6f9e133f6ffa77463"
+  },
+  "distinct_passed": 27,
+  "failed": 0,
+  "exact_final_blobs": [
+    "crates/library/cursor.rs",
+    "crates/local-service/src/builtin/view_journal.rs",
+    "Cargo.lock"
+  ],
+  "canonical_composition_blobs": [
+    "crates/local-service/src/builtin.rs",
+    "crates/local-service/src/builtin/view_journal_tests.rs"
+  ],
+  "prior_failed_attempts": [
+    "05 compile errors, no tests",
+    "07 26 passed, 1 diagnostic-contract failure",
+    "08 disk-floor termination, no tests"
+  ]
+}

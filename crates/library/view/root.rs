@@ -653,6 +653,7 @@ impl ViewRoot {
                 || self.capability.is_some())
             && self.capability.as_ref().is_none_or(|capability| {
                 capability.scope_root() == ScopeRoot::from_bytes(self.basis.object.to_bytes())
+                    && self.relation.coverage() == capability.clone().witness()
             })
             && self.relation.root() == self.root
             && relation_metadata_matches(self)

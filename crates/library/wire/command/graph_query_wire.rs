@@ -31,11 +31,12 @@ pub(crate) fn request_from_wire_against_owner(
     let continuation = value.page.continuation.take();
     let page = page_request_from_wire(value.page, certificate)?;
     let mut request = GraphQueryRequest::bind(input, page.basis(), page.limit());
+    certificate.cursor_claim(owner)?;
+    let projection = request
+        .projection(owner)
+        .map_err(|error| error.to_string())?;
     if let Some(value) = continuation {
-        let cursor = cursor_from_wire_against_owner(&value, certificate, owner)?;
-        if cursor.recipe() != request.recipe() {
-            return Err("graph query cursor recipe does not match its request".to_owned());
-        }
+        let cursor = cursor_from_wire_against_owner(&value, certificate, &projection)?;
         request = request.with_continuation(PageContinuation::from_cursor(cursor));
     }
     if value.cancelled {

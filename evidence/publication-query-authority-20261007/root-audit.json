@@ -1,0 +1,160 @@
+{
+  "native_source": "c61e767e22ab871e175a07f5f063aedf38aedb93",
+  "native_tree": "123ef5e28aac1e1750262a23d4eb89ba9792545f",
+  "integrated_code_head": "af6773747ff7c69d76979e4e77623a1df39b5537",
+  "changed_blobs": [
+    {
+      "path": "crates/client/src/fixtures/real-cachetools-first-token.json",
+      "native_blob": "eba1c588c224ae1bd8affb7d9ce0bf2314811c90",
+      "integrated_blob": "eba1c588c224ae1bd8affb7d9ce0bf2314811c90",
+      "equal": true
+    },
+    {
+      "path": "crates/client/src/lib.rs",
+      "native_blob": "83fa10690a39d8f53e2818d80f7e041d19ddf86a",
+      "integrated_blob": "83fa10690a39d8f53e2818d80f7e041d19ddf86a",
+      "equal": true
+    },
+    {
+      "path": "crates/client/src/query_continuation.rs",
+      "native_blob": "e9d70247b6695158820b0081c4aee919beab2855",
+      "integrated_blob": "e9d70247b6695158820b0081c4aee919beab2855",
+      "equal": true
+    },
+    {
+      "path": "crates/client/src/query_continuation_tests.rs",
+      "native_blob": "a85d3520b4828246e084cd74f791650b379f03d1",
+      "integrated_blob": "a85d3520b4828246e084cd74f791650b379f03d1",
+      "equal": true
+    },
+    {
+      "path": "crates/engine/src/daemon/query.rs",
+      "native_blob": "5ade72864a5d43d2c97e0b765ef9aa22bd1dc7a1",
+      "integrated_blob": "5ade72864a5d43d2c97e0b765ef9aa22bd1dc7a1",
+      "equal": true
+    },
+    {
+      "path": "crates/library/graph_query.rs",
+      "native_blob": "c14cc6694528d50713afb4e0d78276ba1a402596",
+      "integrated_blob": "c14cc6694528d50713afb4e0d78276ba1a402596",
+      "equal": true
+    },
+    {
+      "path": "crates/library/tests.rs",
+      "native_blob": "8f4e8e589a600b1cdc86abf0f1e7c2dbb26fba9b",
+      "integrated_blob": "8f4e8e589a600b1cdc86abf0f1e7c2dbb26fba9b",
+      "equal": true
+    },
+    {
+      "path": "crates/library/view/root.rs",
+      "native_blob": "37b85d49d03dcd43851eedf35c8f4e5185ba4e9f",
+      "integrated_blob": "37b85d49d03dcd43851eedf35c8f4e5185ba4e9f",
+      "equal": true
+    },
+    {
+      "path": "crates/library/view/transition.rs",
+      "native_blob": "dabf4ad1a1bcda35840ee47b0d4fa589eb1bc2f6",
+      "integrated_blob": "dabf4ad1a1bcda35840ee47b0d4fa589eb1bc2f6",
+      "equal": true
+    },
+    {
+      "path": "crates/library/wire/admission.rs",
+      "native_blob": "ffa1b59a8cf141caf4a20e867c16bb1f3300691f",
+      "integrated_blob": "ffa1b59a8cf141caf4a20e867c16bb1f3300691f",
+      "equal": true
+    },
+    {
+      "path": "crates/library/wire/command/cursor_wire.rs",
+      "native_blob": "333281036fd7fd629be63ff7f03550144a9cbddd",
+      "integrated_blob": "333281036fd7fd629be63ff7f03550144a9cbddd",
+      "equal": true
+    },
+    {
+      "path": "crates/library/wire/command/graph_query_wire.rs",
+      "native_blob": "ca086187525572206d3e3ba658b333fc9e16f262",
+      "integrated_blob": "ca086187525572206d3e3ba658b333fc9e16f262",
+      "equal": true
+    },
+    {
+      "path": "crates/library/wire/event.rs",
+      "native_blob": "323263a2764d12f7e925ff36295c771e0302dc7c",
+      "integrated_blob": "323263a2764d12f7e925ff36295c771e0302dc7c",
+      "equal": true
+    },
+    {
+      "path": "crates/library/wire/tests.rs",
+      "native_blob": "6725632532897117b02f0367309f07213000ca54",
+      "integrated_blob": "6725632532897117b02f0367309f07213000ca54",
+      "equal": true
+    },
+    {
+      "path": "crates/local-service/src/builtin.rs",
+      "native_blob": "ba43ede89473ed4b6c6236674441f033a4bbf1cb",
+      "integrated_blob": "45c977db5b2e086ea28da93dc8daeb77c1a5edf2",
+      "equal": false
+    },
+    {
+      "path": "crates/local-service/src/builtin/projection.rs",
+      "native_blob": "c097a8d074e5e5fd5da3ba1e282a618cf0e881da",
+      "integrated_blob": "c097a8d074e5e5fd5da3ba1e282a618cf0e881da",
+      "equal": true
+    },
+    {
+      "path": "crates/local-service/src/builtin/publication_transport_tests.rs",
+      "native_blob": "2a92a6ecb81ae0f6aa05ef039158692f2cc24e00",
+      "integrated_blob": "2a92a6ecb81ae0f6aa05ef039158692f2cc24e00",
+      "equal": true
+    },
+    {
+      "path": "crates/local-service/src/builtin/view_journal_tests.rs",
+      "native_blob": "c43f98b4725baa4ba62214850c387572e131fe9a",
+      "integrated_blob": "c43f98b4725baa4ba62214850c387572e131fe9a",
+      "equal": true
+    },
+    {
+      "path": "crates/version/src/delta/mod.rs",
+      "native_blob": "74dbf151f71c7e1d5b81a49933216e1220040a57",
+      "integrated_blob": "74dbf151f71c7e1d5b81a49933216e1220040a57",
+      "equal": true
+    },
+    {
+      "path": "crates/version/src/delta/state.rs",
+      "native_blob": "267e83426c95073897dd133294f01b47cf74aeab",
+      "integrated_blob": "267e83426c95073897dd133294f01b47cf74aeab",
+      "equal": true
+    },
+    {
+      "path": "crates/version/src/lib.rs",
+      "native_blob": "a42b299d78b8d63d049dd6ab4977211e48d37d42",
+      "integrated_blob": "a42b299d78b8d63d049dd6ab4977211e48d37d42",
+      "equal": true
+    },
+    {
+      "path": "crates/version/src/tests.rs",
+      "native_blob": "4cb27e86faf27e1d4abb6c6a1ce1f128c316b245",
+      "integrated_blob": "4cb27e86faf27e1d4abb6c6a1ce1f128c316b245",
+      "equal": true
+    }
+  ],
+  "verified_raw_artifacts": 33,
+  "raw_test_summaries": {
+    "remote/transport-contract-client-20261007T201920Z/cargo.log": [
+      "test result: ok. 103 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.27s"
+    ],
+    "remote/transport-contract-journal-20261007T201840Z/cargo.log": [
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1067 filtered out; finished in 0.66s"
+    ],
+    "remote/transport-contract-kernel-20261007T195418Z/cargo.log": [
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 105 filtered out; finished in 0.00s"
+    ],
+    "remote/transport-contract-library-20261007T194821Z/cargo.log": [
+      "test result: ok. 305 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 4.69s"
+    ],
+    "remote/transport-contract-publication-20261007T190219Z/cargo.log": [
+      "test result: FAILED. 3 passed; 2 failed; 0 ignored; 0 measured; 1063 filtered out; finished in 24.17s"
+    ],
+    "remote/transport-contract-publication-20261007T195442Z/cargo.log": [
+      "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 1063 filtered out; finished in 143.74s"
+    ]
+  }
+}

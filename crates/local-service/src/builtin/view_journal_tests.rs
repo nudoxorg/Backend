@@ -238,6 +238,260 @@ fn workspace_head_change_starts_with_a_snapshot_before_any_view_event() {
 }
 
 #[test]
+fn stale_selected_head_rebuild_keeps_only_the_lineage_checked_cursor_sequence() {
+    let temp = tempfile::tempdir().expect("private owner workspace");
+    let profile =
+        super::super::profile_descriptor(super::super::BuiltinProfile::Product).expect("profile");
+    let dispatcher = super::super::builtin_dispatcher(
+        Some(super::super::ECHO_AUTHORITY_SECRET),
+        Arc::clone(&profile),
+        60_000,
+    )
+    .expect("dispatcher");
+    let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
+        temp.path(),
+        super::super::BuiltinModel,
+        super::super::genesis().expect("genesis"),
+        dispatcher,
+        backend_engine::DaemonConfig::default(),
+        super::super::product_relation_registry().expect("registry"),
+    )
+    .expect("owner");
+
+    let prior = daemon.engine().daemon().owner().snapshot();
+    let (prior_view, _) = super::super::initial_view_for_workspace(&prior).expect("prior view");
+    let prior_cursor = Cursor::for_view_root_at(&prior_view, 5);
+    let path = temp.path().join("n14-view.journal");
+    let mut journal = ViewJournal::open(&path).expect("journal");
+    journal
+        .persist(prior.root(), &prior_view, prior_cursor, None)
+        .expect("prior selected snapshot");
+    let prior_row = backend_engine::Row::new(
+        backend_engine::RowId::Symbol(backend_engine::symbol_key("n14::prior")),
+        prior_view.basis(),
+        "n14::prior",
+    );
+    let prepared = prior_view
+        .prepare(
+            backend_engine::ViewDelta::Upsert { row: prior_row },
+            super::super::builtin_view_capability_for_workspace(&prior).expect("prior capability"),
+        )
+        .expect("prepare prior event");
+    let (prior_next_view, prior_delta) = prior_view.commit(prepared).expect("prior event");
+    let prior_event = CursorEvent::View {
+        delta: Box::new(prior_delta),
+    };
+    let prior_next_cursor = prior_cursor
+        .advance_event(&prior_event)
+        .expect("prior event sequence");
+    assert_eq!(prior_next_cursor.sequence(), 6);
+    journal
+        .persist(
+            prior.root(),
+            &prior_next_view,
+            prior_next_cursor,
+            Some(&prior_event),
+        )
+        .expect("prior compact event");
+
+    // The owner durably advances to a new checked root while the view journal
+    // still names its previous selected base, matching the startup crash seam.
+    let label = "fixture:n14-selected-head";
+    let intent = BuiltinIntent::add(backend_engine::package_key(label), label).expect("intent");
+    crate::builtin::commands::commit_builtin_intent(&mut daemon, 1, &intent)
+        .expect("durable owner transition");
+    let selected = daemon.engine().daemon().owner().snapshot();
+    assert_ne!(selected.root(), prior.root());
+    assert_eq!(selected.transition_base(), prior.root());
+    let capability = super::super::builtin_view_capability_for_workspace(&selected)
+        .expect("selected capability");
+
+    // A partial final header is repaired, and the complete checked snapshot
+    // still supplies its sequence without carrying its old root or view.
+    let mut tail = fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .expect("open journal tail");
+    tail.write_all(&MAGIC[..7]).expect("append torn header");
+    drop(tail);
+    let recovery = journal
+        .recover_for_workspace(selected.root(), Some(selected.transition_base()), &capability)
+        .expect("recover prior lineage");
+    assert!(recovery.recovered.is_none(), "old view is never admitted");
+    assert_eq!(
+        recovery.cursor_sequence_floor,
+        CursorSequenceFloor::Proven(6)
+    );
+    drop(journal);
+
+    // Simulate a crash before publishing the rebuilt snapshot: another cold
+    // start must still get the same scalar floor from the unchanged old frame.
+    let journal = ViewJournal::open(&path).expect("reopen before rebuilt publish");
+    let recovery = journal
+        .recover_for_workspace(selected.root(), Some(selected.transition_base()), &capability)
+        .expect("repeat recovery after crash");
+    assert!(recovery.recovered.is_none());
+    assert_eq!(
+        recovery.cursor_sequence_floor,
+        CursorSequenceFloor::Proven(6)
+    );
+    drop(journal);
+
+    let (rebuilt, _) = super::super::initial_view_for_workspace(&selected).expect("rebuilt view");
+    assert_eq!(rebuilt.capability(), Some(capability.clone()));
+    let view_sequence = rebuilt.frontier().sequence;
+    let cursor = Cursor::for_view_root_at(
+        &rebuilt,
+        match recovery.cursor_sequence_floor {
+            CursorSequenceFloor::Proven(sequence) => sequence.max(view_sequence),
+            CursorSequenceFloor::Empty | CursorSequenceFloor::Unproven => unreachable!(),
+        },
+    );
+    assert_eq!(cursor.sequence(), 6);
+
+    // The rebuilt snapshot is a new generation. A second crash after this
+    // durable write must recover the new checked view at the retained floor.
+    let mut journal = ViewJournal::open(&path).expect("journal before rebuilt publish");
+    journal
+        .persist(selected.root(), &rebuilt, cursor, None)
+        .expect("publish rebuilt snapshot");
+    drop(journal);
+    let mut journal = ViewJournal::open(&path).expect("reopen rebuilt snapshot");
+    let recovery = journal
+        .recover_for_workspace(selected.root(), Some(selected.transition_base()), &capability)
+        .expect("recover rebuilt snapshot");
+    let recovered = recovery.recovered.expect("new selected view");
+    assert_eq!(recovered.cursor, cursor);
+    assert_eq!(recovered.view, rebuilt);
+    assert_eq!(recovered.view.capability(), Some(capability.clone()));
+    assert!(recovered.events.is_empty());
+
+    let row = backend_engine::Row::new(
+        backend_engine::RowId::Symbol(backend_engine::symbol_key("n14::next")),
+        rebuilt.basis(),
+        "n14::next",
+    );
+    let prepared = rebuilt
+        .prepare(
+            backend_engine::ViewDelta::Upsert { row },
+            capability.clone(),
+        )
+        .expect("prepare next checked event");
+    let (next, delta) = rebuilt.commit(prepared).expect("commit next checked event");
+    let event = CursorEvent::View {
+        delta: Box::new(delta),
+    };
+    let next_cursor = cursor.advance_event(&event).expect("advance sequence");
+    assert_eq!(next_cursor.sequence(), 7);
+    journal
+        .persist(selected.root(), &next, next_cursor, Some(&event))
+        .expect("persist next event");
+    drop(journal);
+    let reopened = ViewJournal::open(&path).expect("cold reopen after next event");
+    let recovered = reopened
+        .load_for_workspace(selected.root(), &capability)
+        .expect("load next event")
+        .expect("current selected view");
+    assert_eq!(recovered.cursor, next_cursor);
+    assert_eq!(recovered.cursor.sequence(), 7);
+}
+
+#[test]
+fn stale_sequence_floor_refuses_foreign_lineage_gaps_and_exhaustion() {
+    let temp = tempfile::tempdir().expect("private owner workspace");
+    let selected = super::super::genesis().expect("selected head");
+    let capability = super::super::test_builtin_view_capability().expect("coverage");
+    let (view, _) = super::super::initial_view().expect("view");
+    let label = "fixture:foreign-workspace";
+    let intent = BuiltinIntent::add(backend_engine::package_key(label), label).expect("intent");
+    let relation = super::super::workspace_relation(Some(&intent)).expect("relation");
+    let semantic = super::super::semantic_relation().expect("semantic relation");
+    let foreign = super::super::workspace_manifest(&relation, &semantic)
+        .expect("foreign checked manifest")
+        .root();
+    assert_ne!(foreign, selected.root());
+
+    let foreign_path = temp.path().join("foreign.journal");
+    let mut foreign_journal = ViewJournal::open(&foreign_path).expect("foreign journal");
+    foreign_journal
+        .persist(
+            foreign,
+            &view,
+            Cursor::for_view_root_at(&view, 6),
+            None,
+        )
+        .expect("foreign frame");
+    let foreign_recovery = foreign_journal
+        .recover_for_workspace(selected.root(), Some(selected.root()), &capability)
+        .expect("foreign cache miss");
+    assert!(foreign_recovery.recovered.is_none());
+    assert_eq!(
+        foreign_recovery.cursor_sequence_floor,
+        CursorSequenceFloor::Unproven
+    );
+
+    let gap_path = temp.path().join("gap.journal");
+    let mut gap_journal = ViewJournal::open(&gap_path).expect("gap journal");
+    let base_cursor = Cursor::for_view_root_at(&view, 5);
+    gap_journal
+        .persist(selected.root(), &view, base_cursor, None)
+        .expect("base snapshot");
+    let row = backend_engine::Row::new(
+        backend_engine::RowId::Symbol(backend_engine::symbol_key("n14::gap")),
+        view.basis(),
+        "n14::gap",
+    );
+    let prepared = view
+        .prepare(
+            backend_engine::ViewDelta::Upsert { row },
+            capability.clone(),
+        )
+        .expect("prepare checked event");
+    let (next, delta) = view.clone().commit(prepared).expect("commit checked event");
+    let event = CursorEvent::View {
+        delta: Box::new(delta),
+    };
+    let next_cursor = base_cursor.advance_event(&event).expect("event cursor");
+    let payload = encode_envelope(selected.root(), next_cursor, &next, Some(&event))
+        .expect("valid compact event");
+    let mut envelope: serde_json::Value =
+        serde_json::from_slice(&payload).expect("event envelope");
+    envelope["cursor"][171] = serde_json::json!(7);
+    gap_journal
+        .append(
+            EVENT,
+            &serde_json::to_vec(&envelope).expect("gapped event envelope"),
+        )
+        .expect("checksummed gapped event");
+    assert!(gap_journal
+        .recover_for_workspace(selected.root(), None, &capability)
+        .expect_err("event sequence gap must refuse recovery")
+        .contains("sequence does not advance"));
+
+    let exhausted_path = temp.path().join("exhausted.journal");
+    let mut exhausted = ViewJournal::open(&exhausted_path).expect("exhausted journal");
+    exhausted
+        .persist(
+            selected.root(),
+            &view,
+            Cursor::for_view_root_at(&view, u64::MAX),
+            None,
+        )
+        .expect("max sequence snapshot");
+    assert!(exhausted
+        .recover_for_workspace(selected.root(), None, &capability)
+        .expect_err("exhausted cursor cannot advance")
+        .contains("sequence is exhausted"));
+
+    let corrupt_path = temp.path().join("corrupt.journal");
+    let corrupt = ViewJournal::open(&corrupt_path).expect("corrupt journal");
+    corrupt.append(SNAPSHOT, b"{}").expect("checksummed malformed frame");
+    assert!(corrupt
+        .recover_for_workspace(selected.root(), None, &capability)
+        .is_err());
+}
+
+#[test]
 fn compact_event_record_does_not_grow_with_the_visible_view() {
     let (base, base_cursor) = super::super::initial_view().expect("initial view");
     let capability = super::super::test_builtin_view_capability().expect("coverage");
@@ -978,6 +1232,10 @@ fn capture_only_generation_rebind_cold_recovers_then_retains_compact_events() {
         assert_eq!(recovered.view.descriptor(), rebound.descriptor());
         assert_eq!(recovered.view.capability(), rebound.capability());
         assert_eq!(recovered.view.rows(), rebound.rows());
+        assert_eq!(
+            recovered.view, rebound,
+            "cold hydration preserves the current relation authority"
+        );
         assert!(recovered.events.is_empty());
     }
     journal
@@ -992,6 +1250,10 @@ fn capture_only_generation_rebind_cold_recovers_then_retains_compact_events() {
     assert_eq!(recovered.view.descriptor(), rebound.descriptor());
     assert_eq!(recovered.view.capability(), rebound.capability());
     assert_eq!(recovered.view.rows(), rebound.rows());
+    assert_eq!(
+        recovered.view, rebound,
+        "the published root equals its cold reconstruction"
+    );
     assert_eq!(recovered.cursor, cursor);
     assert_eq!(recovered.view.capability(), Some(cap.clone()));
     assert_eq!(recovered.view.row_count(), base.row_count());

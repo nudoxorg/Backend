@@ -446,6 +446,11 @@ where
         if start > self.view_events.len() {
             return self.subscription_reset(credit, source, CursorResetReason::Pruned);
         }
+        // The process encoder publishes the current owner cursor. A credited
+        // prefix cannot be paired with that owner's later root or certificate.
+        if self.view_events.len() - start > credit as usize {
+            return self.subscription_reset(credit, source, CursorResetReason::Pruned);
+        }
         let mut sub = CursorSub::from_cursor(cursor, credit);
         let read = sub.read(
             &source,
@@ -460,12 +465,12 @@ where
                 // a one-shot request that has no stream handle.
                 self.finish_cursor_poll(request_id, sub, SubscriptionReply::Accepted { credit })
             }
-            Ok(CursorRead::Events { cursor, events })
+            Ok(CursorRead::Events { cursor: _, events })
                 if events.iter().any(|event| {
                     matches!(
                         event,
                         backend_library::CursorEvent::View { delta }
-                            if matches!(delta.delta(), backend_library::ViewDelta::Reset { .. })
+                            if !delta.is_compact_replayable()
                     )
                 }) || events
                     .iter()
@@ -473,10 +478,13 @@ where
                         backend_library::CursorEvent::Intent { .. } => 0,
                         backend_library::CursorEvent::View { delta } => delta.changed_row_count(),
                     })
-                    .sum::<usize>()
+                    .fold(0usize, usize::saturating_add)
                     > backend_library::MAX_SNAPSHOT_PAGE_ROWS =>
             {
-                self.subscription_reset(credit, cursor, CursorResetReason::Pruned)
+                // A credited prefix may end before the current owner root.
+                // The snapshot route must pair the replacement root with
+                // its exact current cursor, never that partial prefix.
+                self.subscription_reset(credit, source, CursorResetReason::Pruned)
             }
             Ok(CursorRead::Events { cursor, events }) => self.finish_cursor_poll(
                 request_id,

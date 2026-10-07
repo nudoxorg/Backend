@@ -43,8 +43,10 @@ pub(crate) fn cursor_from_wire_with_capability(
 pub(crate) fn cursor_from_wire_against_owner(
     value: &CursorWire,
     certificate: &WireCertificate,
-    owner: Cursor,
+    projection: &crate::graph_query::GraphQueryProjection<'_>,
 ) -> Result<Cursor, String> {
+    let owner = projection.owner();
+    certificate.cursor_claim(owner)?;
     let admitted = cursor(value, certificate, |certificate, encoded| {
         certificate
             .root_commitment_bytes::<crate::ViewRelation>(WireSchema::ViewRelation, encoded)?;
@@ -53,10 +55,9 @@ pub(crate) fn cursor_from_wire_against_owner(
         }
         Ok(owner.root())
     })?;
-    if !admitted.matches_owner(owner) {
-        return Err("cursor does not match the owner context".to_owned());
-    }
-    certificate.cursor_claim(admitted.with_query_offset(0))?;
+    projection
+        .admit(admitted)
+        .map_err(|error| error.to_string())?;
     Ok(admitted)
 }
 

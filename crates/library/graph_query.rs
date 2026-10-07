@@ -208,6 +208,30 @@ pub struct GraphQueryRequest {
     control: GraphQueryControl,
 }
 
+/// A query projection and the distinct owner authority it borrows. A query
+/// recipe is never substituted into the owner's certified cursor claim.
+pub(crate) struct GraphQueryProjection<'a> {
+    request: &'a GraphQueryRequest,
+    owner: Cursor,
+}
+
+impl GraphQueryProjection<'_> {
+    pub(crate) fn owner(&self) -> Cursor {
+        self.owner
+    }
+
+    pub(crate) fn admit(&self, cursor: Cursor) -> Result<usize, GraphQueryError> {
+        if cursor.recipe() != self.request.recipe() || !cursor.matches_owner(self.owner) {
+            return Err(GraphQueryError::ContinuationMismatch);
+        }
+        let offset =
+            usize::try_from(cursor.query_offset()).map_err(|_| GraphQueryError::OffsetTooLarge)?;
+        (offset > 0)
+            .then_some(offset)
+            .ok_or(GraphQueryError::ContinuationMismatch)
+    }
+}
+
 impl GraphQueryRequest {
     /// Admits a first-page query and its canonical variable map.
     ///
@@ -287,10 +311,15 @@ impl GraphQueryRequest {
         self.control
     }
 
-    /// Returns the identity of the exact query text and canonical variables.
+    /// Returns the identity of the exact query input, selected view and limit.
     #[must_use]
     pub fn recipe(&self) -> ViewRecipeId {
-        self.input.recipe()
+        view_identity_bytes(&[
+            b"graph-query-page",
+            &self.input.recipe_preimage(),
+            self.page.basis().as_bytes(),
+            &self.page.limit().get().to_be_bytes(),
+        ])
     }
 
     /// Returns the canonical key preimage for the query recipe.
@@ -299,7 +328,29 @@ impl GraphQueryRequest {
     /// cursor changes the ordinary view recipe slot to the graph-query recipe.
     #[must_use]
     pub fn recipe_preimage(&self) -> Box<[u8]> {
-        self.input.recipe_preimage()
+        let mut preimage = Vec::new();
+        for part in [
+            b"graph-query-page".as_slice(),
+            &self.input.recipe_preimage(),
+            self.page.basis().as_bytes(),
+            &self.page.limit().get().to_be_bytes(),
+        ] {
+            append_bytes(&mut preimage, part);
+        }
+        preimage.into_boxed_slice()
+    }
+
+    pub(crate) fn projection(
+        &self,
+        owner: Cursor,
+    ) -> Result<GraphQueryProjection<'_>, GraphQueryError> {
+        if owner.query_offset() != 0 || !self.page.basis().matches(owner.root()) {
+            return Err(GraphQueryError::ContinuationMismatch);
+        }
+        Ok(GraphQueryProjection {
+            request: self,
+            owner,
+        })
     }
 
     /// Admits this page's continuation against the selected owner cursor.
@@ -309,22 +360,80 @@ impl GraphQueryRequest {
     /// Returns [`GraphQueryError::ContinuationMismatch`] for a foreign or
     /// stale continuation and [`GraphQueryError::OffsetTooLarge`] when its
     /// offset is not representable on this host.
+    /// A preceding sequence remains resumable only when the exact view root,
+    /// version and owner stream are unchanged, including from a cold session.
     pub fn start_offset(&self, owner: Cursor) -> Result<usize, GraphQueryError> {
-        if !self.page.basis().matches(owner.root()) {
-            return Err(GraphQueryError::ContinuationMismatch);
-        }
+        let projection = self.projection(owner)?;
         let Some(continuation) = self.page.continuation() else {
             return Ok(0);
         };
-        let cursor = continuation.cursor();
-        if cursor.recipe() != self.recipe() || !cursor.matches_owner(owner) {
+        projection.admit(continuation.cursor())
+    }
+
+    /// Checks the bounded row and terminal contract independently of transport.
+    ///
+    /// # Errors
+    /// Refuses oversized pages, non-advancing continuations and wrong terminals.
+    pub fn admit_page(&self, page: &GraphQueryPage) -> Result<(), GraphQueryError> {
+        if page.revision != self.page.basis()
+            || page.rows.len() > usize::from(self.page.limit().get())
+        {
             return Err(GraphQueryError::ContinuationMismatch);
         }
-        let offset =
-            usize::try_from(cursor.query_offset()).map_err(|_| GraphQueryError::OffsetTooLarge)?;
-        (offset > 0)
-            .then_some(offset)
-            .ok_or(GraphQueryError::ContinuationMismatch)
+        if self.control == GraphQueryControl::Cancel {
+            return if page.rows.is_empty() && page.terminal == PageTerminal::Cancelled {
+                Ok(())
+            } else {
+                Err(GraphQueryError::ContinuationMismatch)
+            };
+        }
+        match page.terminal {
+            PageTerminal::Cancelled => Err(GraphQueryError::ContinuationMismatch),
+            PageTerminal::Complete => Ok(()),
+            PageTerminal::More(next) => {
+                let start = self
+                    .page
+                    .continuation()
+                    .map_or(0, |value| value.cursor().query_offset());
+                let offset = start
+                    .checked_add(page.rows.len() as u64)
+                    .ok_or(GraphQueryError::OffsetTooLarge)?;
+                let cursor = next.cursor();
+                if page.rows.len() != usize::from(self.page.limit().get())
+                    || cursor.query_offset() != offset
+                    || cursor.recipe() != self.recipe()
+                    || !page.revision.matches(cursor.root())
+                    || self
+                        .page
+                        .continuation()
+                        .is_some_and(|previous| !previous.cursor().matches_owner(cursor))
+                {
+                    return Err(GraphQueryError::ContinuationMismatch);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Admits a result page against the separately admitted issuing owner.
+    ///
+    /// # Errors
+    /// Refuses a page or continuation outside the exact owner frontier.
+    pub fn admit_page_against(
+        &self,
+        page: &GraphQueryPage,
+        owner: Cursor,
+    ) -> Result<(), GraphQueryError> {
+        self.projection(owner)?;
+        self.admit_page(page)?;
+        if let PageTerminal::More(next) = page.terminal {
+            let offset = usize::try_from(next.cursor().query_offset())
+                .map_err(|_| GraphQueryError::OffsetTooLarge)?;
+            if self.next_continuation(owner, offset)? != next {
+                return Err(GraphQueryError::ContinuationMismatch);
+            }
+        }
+        Ok(())
     }
 
     /// Creates the next opaque continuation after owner-side execution.

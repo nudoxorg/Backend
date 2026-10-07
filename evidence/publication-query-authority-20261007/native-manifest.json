@@ -1,0 +1,200 @@
+{
+  "sealed_utc": "2026-10-07T20:30:38.371676+00:00",
+  "source": {
+    "commit": "c61e767e22ab871e175a07f5f063aedf38aedb93",
+    "tree": "123ef5e28aac1e1750262a23d4eb89ba9792545f",
+    "clean": true,
+    "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+  },
+  "base": "bdda1229dca475ea1ed3fdb3e8a8aa543cd3152a",
+  "independent_commits": [
+    "0db3fb35e101cd3ebdaca8ed53696bf051e14a47",
+    "5354b90686230e8e8f1ec0ff79d82f33eee82bec",
+    "c61e767e22ab871e175a07f5f063aedf38aedb93"
+  ],
+  "local_worktree": "/private/tmp/nudox-transport-contract-20261007",
+  "remote_worktree": "/root/codex-worktrees/sol61-transport-contract-20261007",
+  "source_bundle": "/private/tmp/nudox-transport-contract-c61e-final-source.bundle",
+  "source_bundle_sha256": "e8ba6804f19d00a041ec20bed9790fdf0ba706a62361ac55fc1340f1e170fcd7",
+  "gates": {
+    "kernel": {
+      "receipt": "/private/tmp/transport-contract-c61e-native-receipts/kernel.json",
+      "receipt_sha256": "5cad944a1c77188088f8904f7d43f82c3164cc9d7ae5e2d7a024f8d99f11cd67",
+      "remote_output": "/root/transport-contract-kernel-20261007T195418Z",
+      "source_before": {
+        "commit": "c61e767e22ab871e175a07f5f063aedf38aedb93",
+        "tree": "123ef5e28aac1e1750262a23d4eb89ba9792545f",
+        "clean": true,
+        "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "source_after": {
+        "commit": "c61e767e22ab871e175a07f5f063aedf38aedb93",
+        "tree": "123ef5e28aac1e1750262a23d4eb89ba9792545f",
+        "clean": true,
+        "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "test_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 105 filtered out; finished in 0.00s"
+      ],
+      "test_binary_receipts": [
+        {
+          "path": "/root/codex-worktrees/sol61-transport-contract-20261007/.local/owned-build-role/.nudox-cargo/slot-0/release/deps/backend_version-4379dc150dc29b86",
+          "sha256": "1cf32d169d28ff2d8cb191d16f79407642f824cec6a9b177fe879d5bd86a4ea7",
+          "size": 2051768,
+          "links": 1,
+          "mtime_ns": 1791401996256982454
+        }
+      ],
+      "started_utc": "2026-10-07T19:54:28.855448+00:00",
+      "ended_utc": "2026-10-07T19:54:30.090214+00:00",
+      "retirement": "owned-child-kernel-wait"
+    },
+    "library": {
+      "receipt": "/private/tmp/transport-contract-c61e-native-receipts/library.json",
+      "receipt_sha256": "7e6ea00fdff0812c437f7f5d9373b505e1a95fb5437540ad91303eddb50d2cd9",
+      "remote_output": "/root/transport-contract-library-20261007T194821Z",
+      "source_before": {
+        "commit": "c61e767e22ab871e175a07f5f063aedf38aedb93",
+        "tree": "123ef5e28aac1e1750262a23d4eb89ba9792545f",
+        "clean": true,
+        "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "source_after": {
+        "commit": "c61e767e22ab871e175a07f5f063aedf38aedb93",
+        "tree": "123ef5e28aac1e1750262a23d4eb89ba9792545f",
+        "clean": true,
+        "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "test_results": [
+        "test result: ok. 305 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 4.69s"
+      ],
+      "test_binary_receipts": [
+        {
+          "path": "/root/codex-worktrees/sol61-transport-contract-20261007/.local/owned-build-role/.nudox-cargo/slot-0/release/deps/backend_library-544ad9f0fc16b06e",
+          "sha256": "50b752ddd334a9cfd6efa18a71bebee1ca35b236a3b5cb8ec98e47b9ade0a1c0",
+          "size": 21523184,
+          "links": 1,
+          "mtime_ns": 1791402786494427099
+        }
+      ],
+      "started_utc": "2026-10-07T19:48:30.559918+00:00",
+      "ended_utc": "2026-10-07T19:53:11.477653+00:00",
+      "retirement": "owned-child-kernel-wait"
+    },
+    "publication": {
+      "receipt": "/private/tmp/transport-contract-c61e-native-receipts/publication.json",
+      "receipt_sha256": "0e9a2b36f4f3938762bcaf5fdb64c19fafc8376bcd9dcc85648df76eb2d6dfb0",
+      "remote_output": "/root/transport-contract-publication-20261007T195442Z",
+      "source_before": {
+        "commit": "c61e767e22ab871e175a07f5f063aedf38aedb93",
+        "tree": "123ef5e28aac1e1750262a23d4eb89ba9792545f",
+        "clean": true,
+        "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "source_after": {
+        "commit": "c61e767e22ab871e175a07f5f063aedf38aedb93",
+        "tree": "123ef5e28aac1e1750262a23d4eb89ba9792545f",
+        "clean": true,
+        "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "test_results": [
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 1063 filtered out; finished in 143.74s"
+      ],
+      "test_binary_receipts": [
+        {
+          "path": "/root/codex-worktrees/sol61-transport-contract-20261007/.local/owned-build-role/.nudox-cargo/slot-0/release/deps/backend_local_service-b63534a27f1b7b34",
+          "sha256": "5171d54772bdd18e79e0af4d37d3cd8f287805d85e2e9ce86b096deca451b622",
+          "size": 177148960,
+          "links": 1,
+          "mtime_ns": 1791404064330900093
+        }
+      ],
+      "started_utc": "2026-10-07T19:54:52.720265+00:00",
+      "ended_utc": "2026-10-07T20:16:51.690239+00:00",
+      "retirement": "owned-child-kernel-wait"
+    },
+    "journal": {
+      "receipt": "/private/tmp/transport-contract-c61e-native-receipts/journal.json",
+      "receipt_sha256": "518f9a78f6815a11a2c9ab601e33f3e2c6e72c2d6a8e8b1b9c8eddfbd5da4c5c",
+      "remote_output": "/root/transport-contract-journal-20261007T201840Z",
+      "source_before": {
+        "commit": "c61e767e22ab871e175a07f5f063aedf38aedb93",
+        "tree": "123ef5e28aac1e1750262a23d4eb89ba9792545f",
+        "clean": true,
+        "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "source_after": {
+        "commit": "c61e767e22ab871e175a07f5f063aedf38aedb93",
+        "tree": "123ef5e28aac1e1750262a23d4eb89ba9792545f",
+        "clean": true,
+        "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "test_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1067 filtered out; finished in 0.66s"
+      ],
+      "test_binary_receipts": [
+        {
+          "path": "/root/codex-worktrees/sol61-transport-contract-20261007/.local/owned-build-role/.nudox-cargo/slot-0/release/deps/backend_local_service-b63534a27f1b7b34",
+          "sha256": "5171d54772bdd18e79e0af4d37d3cd8f287805d85e2e9ce86b096deca451b622",
+          "size": 177148960,
+          "links": 1,
+          "mtime_ns": 1791404064330900093
+        }
+      ],
+      "started_utc": "2026-10-07T20:18:50.383264+00:00",
+      "ended_utc": "2026-10-07T20:18:52.307563+00:00",
+      "retirement": "owned-child-kernel-wait"
+    },
+    "client": {
+      "receipt": "/private/tmp/transport-contract-c61e-native-receipts/client.json",
+      "receipt_sha256": "0b4e0fd5146ac43816fc4e93da795f9f284c0e47b4be609e6f96a331e3655aa4",
+      "remote_output": "/root/transport-contract-client-20261007T201920Z",
+      "source_before": {
+        "commit": "c61e767e22ab871e175a07f5f063aedf38aedb93",
+        "tree": "123ef5e28aac1e1750262a23d4eb89ba9792545f",
+        "clean": true,
+        "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "source_after": {
+        "commit": "c61e767e22ab871e175a07f5f063aedf38aedb93",
+        "tree": "123ef5e28aac1e1750262a23d4eb89ba9792545f",
+        "clean": true,
+        "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "test_results": [
+        "test result: ok. 103 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.27s"
+      ],
+      "test_binary_receipts": [
+        {
+          "path": "/root/codex-worktrees/sol61-transport-contract-20261007/.local/owned-build-role/.nudox-cargo/slot-0/release/deps/backend_client-12f8c3774d26d8f2",
+          "sha256": "829004a62471513fd97b13d89d4db5bf13622fc5db6647e0c320389b3d6c23fe",
+          "size": 48249104,
+          "links": 1,
+          "mtime_ns": 1791404915341344296
+        }
+      ],
+      "started_utc": "2026-10-07T20:19:31.071321+00:00",
+      "ended_utc": "2026-10-07T20:28:39.418757+00:00",
+      "retirement": "owned-child-kernel-wait"
+    }
+  },
+  "total_passed": 415,
+  "total_failed": 0,
+  "unchanged_ignored_test": "wire::claim_index_tests::live_frame_admission_cost requires NUDOX_LIVE_VIEW_FRAME",
+  "proof_scope": [
+    "actual owned daemon subscription leases and admitted authenticated wire hydration, bounded publication0/1/256/257/478/4097 and racing backlog/cancel/corruption",
+    "full library and client suites, cold portable GraphQuery Session transport, query/scope/limit/view/stream and bounded reply refusals",
+    "typed same-scope complete relation authority rebind preserves4097-entry tree/root/delta IDs; partial source cannot be promoted",
+    "strict exact ViewRoot cold journal equality"
+  ],
+  "scope_limits": [
+    "native source is independent baseDTO22 cohort, not joined metadata/Partial/DeferredCommandAck release",
+    "actual fresh MCP process plus immutable HTTPie same-state acceptance reserved for parent matched integrated runtime trio",
+    "old GUI Ordinary29 compact failure cause remains unproven; no failing old compact packet was captured"
+  ],
+  "retained_pre_rebind_receipts": [
+    "/private/tmp/transport-contract-c61e-native-receipts/pre-rebind-publication-failure-5354.json",
+    "/private/tmp/transport-contract-c61e-native-receipts/pre-rebind-client-pass-5354.json",
+    "/private/tmp/transport-contract-c61e-native-receipts/pre-rebind-journal-pass-5354.json"
+  ]
+}

@@ -277,6 +277,57 @@ pub struct DirEntry {
 }
 
 impl WorkspaceRoot {
+    /// Creates the known OS data suffix beneath an admitted existing profile
+    /// anchor, preserving existing inherited ACLs and rejecting foreign writers.
+    /// Every subsequent name is opened or created relative to its pinned parent.
+    pub fn under_user_data(anchor: &Path, suffix: &[&str], application: &str) -> io::Result<Self> {
+        let (drive_root, parts) = absolute_drive_components(anchor)?;
+        let Some((last, ancestors)) = parts.split_last() else {
+            return Err(invalid_data("user data anchor cannot be a drive root"));
+        };
+        let mut current = open_drive_root(&drive_root)?;
+        for part in ancestors {
+            current = open_directory_child_unchecked(&current, ExistingName::parse(part)?)?;
+        }
+        current = open_directory_child_writable(&current, ExistingName::parse(last)?)?;
+        ensure_user_data_handle(current.handle.as_raw_handle())?;
+        let mut parent = Self(current);
+        for name in suffix {
+            let name = NewName::parse(name)?;
+            let existing = || open_directory_child_writable(&parent.0, name.existing()).map(Self);
+            let child = match existing() {
+                Ok(child) => child,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    match parent.create_child_dir_exclusive(name.as_str()) {
+                        Ok(child) => child,
+                        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => existing()?,
+                        Err(error) => return Err(error),
+                    }
+                }
+                Err(error) => return Err(error),
+            };
+            ensure_user_data_handle(child.0.handle.as_raw_handle())?;
+            parent.flush_dir()?;
+            parent = child;
+        }
+        let name = NewName::parse(application)?;
+        let existing = || open_directory_child(&parent.0, name.existing()).map(Self);
+        let child = match existing() {
+            Ok(child) => child,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                match parent.create_child_dir_exclusive(name.as_str()) {
+                    Ok(child) => child,
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => existing()?,
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(error) => return Err(error),
+        };
+        child.flush_dir()?;
+        parent.flush_dir()?;
+        Ok(child)
+    }
+
     /// Opens an existing absolute local-drive directory, walking from its drive
     /// root without following any reparse point. Relative paths, UNC paths,
     /// device namespaces, and `.`/`..` components are rejected.
@@ -1971,6 +2022,128 @@ fn ensure_regular_file_handle_with(handle: *mut c_void, linkage: Linkage) -> io:
     Ok(())
 }
 
+/// Ordinary profile/data ACLs can inherit read grants and OS administration
+/// grants. They must still be owned by this user and admit no other writer.
+fn ensure_user_data_handle(handle: *mut c_void) -> io::Result<()> {
+    use windows_sys::Win32::Foundation::GENERIC_WRITE;
+    use windows_sys::Win32::Security::{
+        ACE_HEADER, GetLengthSid, INHERIT_ONLY_ACE, IsValidSid, IsWellKnownSid,
+        WinBuiltinAdministratorsSid, WinLocalSystemSid,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_APPEND_DATA, FILE_WRITE_ATTRIBUTES, FILE_WRITE_EA, WRITE_OWNER,
+    };
+    use windows_sys::Win32::System::SystemServices::ACCESS_DENIED_ACE_TYPE;
+    if !is_owned_by_current_user(&owner_of(&HandleRef(handle))?)? {
+        return Err(invalid_data("user data anchor has a foreign owner"));
+    }
+    let mut dacl: *mut ACL = ptr::null_mut();
+    let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+    // SAFETY: GetSecurityInfo fills an allocated descriptor for this held handle.
+    let status = unsafe {
+        GetSecurityInfo(
+            handle,
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &raw mut dacl,
+            ptr::null_mut(),
+            &raw mut descriptor,
+        )
+    };
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    if descriptor.is_null() {
+        return Err(invalid_data("user data security descriptor is absent"));
+    }
+    let _allocation = SecurityDescriptor(descriptor.cast());
+    if dacl.is_null() {
+        return Err(invalid_data("user data directory has an unrestricted DACL"));
+    }
+    let mut info = ACL_SIZE_INFORMATION::default();
+    // SAFETY: dacl belongs to the live descriptor allocation above.
+    if unsafe {
+        GetAclInformation(
+            dacl,
+            (&raw mut info).cast(),
+            size_of::<ACL_SIZE_INFORMATION>() as u32,
+            AclSizeInformation,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let user = current_user()?;
+    let writes = GENERIC_ALL
+        | GENERIC_WRITE
+        | FILE_WRITE_DATA
+        | FILE_APPEND_DATA
+        | FILE_WRITE_EA
+        | FILE_WRITE_ATTRIBUTES
+        | DELETE
+        | FILE_DELETE_CHILD
+        | WRITE_DAC
+        | WRITE_OWNER;
+    for index in 0..info.AceCount {
+        let mut ace = ptr::null_mut();
+        // SAFETY: index is bounded by the ACL's validated ACE count.
+        if unsafe { GetAce(dacl, index, &raw mut ace) } == 0 || ace.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: every ACL entry starts with ACE_HEADER.
+        let header = unsafe { &*ace.cast::<ACE_HEADER>() };
+        // This ACE does not grant access to the parent itself. New children
+        // have protected private DACLs, so they do not inherit these grants.
+        if u32::from(header.AceFlags) & INHERIT_ONLY_ACE != 0 {
+            continue;
+        }
+        if u32::from(header.AceType) == ACCESS_DENIED_ACE_TYPE {
+            continue;
+        }
+        if u32::from(header.AceType) != ACCESS_ALLOWED_ACE_TYPE
+            || usize::from(header.AceSize) < offset_of!(ACCESS_ALLOWED_ACE, SidStart) + 8
+        {
+            return Err(invalid_data("user data directory has an unsupported grant"));
+        }
+        // SAFETY: the type and minimum fixed header size were checked above.
+        let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
+        if allowed.Mask & writes == 0 {
+            continue;
+        }
+        let sid = (&raw const allowed.SidStart).cast_mut().cast();
+        // SAFETY: the minimum ACE size above covers the eight-byte SID header.
+        let count = unsafe { *sid.cast::<u8>().add(1) } as usize;
+        let encoded_len = 8 + 4 * count;
+        if offset_of!(ACCESS_ALLOWED_ACE, SidStart) + encoded_len > usize::from(header.AceSize) {
+            return Err(invalid_data("user data grant SID exceeds its ACE"));
+        }
+        // SAFETY: the entire encoded SID is bounded by this ACE above.
+        if unsafe { IsValidSid(sid) } == 0 {
+            return Err(invalid_data("user data grant has an invalid SID"));
+        }
+        let len = unsafe { GetLengthSid(sid) } as usize;
+        if offset_of!(ACCESS_ALLOWED_ACE, SidStart)
+            .checked_add(len)
+            .is_none_or(|end| end > usize::from(header.AceSize))
+        {
+            return Err(invalid_data("user data grant SID exceeds its ACE"));
+        }
+        // SAFETY: the SID's exact byte range is bounded by the ACE above.
+        let bytes = unsafe { std::slice::from_raw_parts(sid.cast::<u8>(), len) };
+        if bytes != user.as_bytes()
+            // SAFETY: the SID is valid and bounded for both well-known checks.
+            && unsafe { IsWellKnownSid(sid, WinLocalSystemSid) } == 0
+            && unsafe { IsWellKnownSid(sid, WinBuiltinAdministratorsSid) } == 0
+        {
+            return Err(invalid_data(
+                "user data directory grants write access to another user",
+            ));
+        }
+    }
+    Ok(())
+}
 fn ensure_private_handle(handle: *mut c_void) -> io::Result<()> {
     if !is_owned_by_current_user(&owner_of(&HandleRef(handle))?)? {
         return Err(invalid_data("workspace object has a foreign owner"));

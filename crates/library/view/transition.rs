@@ -189,6 +189,14 @@ impl PreparedViewDelta {
             .relation
             .commit(&base.relation)
             .map_err(|_| ViewError::InvalidRelationDelta)?;
+        let backend_version::CoverageWitness::Complete(authorized) =
+            self.capability.clone().witness()
+        else {
+            return Err(ViewError::InvalidCoverage);
+        };
+        let target_relation = target_relation
+            .rebind_authorized_coverage(authorized)
+            .map_err(|_| ViewError::InvalidCoverage)?;
         if target_relation.root() != self.target_root {
             return Err(ViewError::WrongTarget);
         }
@@ -329,6 +337,17 @@ impl CommittedViewDelta {
     #[must_use]
     pub const fn delta(&self) -> &ViewDelta {
         &self.delta
+    }
+
+    /// Whether a receiver can replay this transition using only its checked
+    /// base root and the bounded row changes. Compact events inherit the
+    /// base's producer authority; a new capability must be transferred by
+    /// the authenticated snapshot route before any new root is admitted.
+    #[must_use]
+    pub fn is_compact_replayable(&self) -> bool {
+        !matches!(self.delta, ViewDelta::Reset { .. })
+            && self.base.capability.as_ref() == Some(&self.capability)
+            && self.changed_row_count() <= MAX_VIEW_PATCH_ROWS
     }
 
     /// Returns the number of visible rows affected by this transition.
