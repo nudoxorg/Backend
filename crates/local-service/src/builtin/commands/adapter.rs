@@ -301,6 +301,7 @@ pub(in crate::builtin) struct CommandAdapter {
     manifests: super::super::local_manifest::LocalManifestResidence,
     project_roots: super::super::project_root_residence::ProjectRootResidence,
     image_rows: super::super::view_build::ImageRowResidence,
+    structural_calls: super::super::view_build::StructuralCallResidence,
     generations: super::super::generation_residence::SemanticGenerationResidence,
     semantic_authority: super::super::semantic_authority::SemanticAuthority,
     owner_cluster: Option<Arc<super::super::cluster_dispatch::OwnerCompilerClusterRuntime>>,
@@ -600,6 +601,7 @@ impl CommandAdapter {
             manifests: super::super::local_manifest::LocalManifestResidence::default(),
             project_roots: super::super::project_root_residence::ProjectRootResidence::default(),
             image_rows,
+            structural_calls: super::super::view_build::StructuralCallResidence::default(),
             generations,
             semantic_authority,
             owner_cluster,
@@ -3600,6 +3602,7 @@ impl CommandAdapter {
         include_incoming: bool,
     ) -> Result<Option<backend_engine::ViewSnapshot>, BuiltinModelError> {
         match execute_semantic_graph(
+            &mut self.structural_calls,
             daemon,
             &self.compiler,
             &mut self.generations,
@@ -3608,7 +3611,12 @@ impl CommandAdapter {
             include_incoming,
         )? {
             Some(snapshot) => Ok(Some(snapshot)),
-            None => execute_structural_call_graph(daemon, query, include_incoming),
+            None => execute_structural_call_graph(
+                &mut self.structural_calls,
+                daemon,
+                query,
+                include_incoming,
+            ),
         }
     }
 
@@ -3800,6 +3808,7 @@ impl CommandAdapter {
                 )),
             },
             backend_engine::SurfaceCommand::References { target } => execute_references(
+                &mut self.structural_calls,
                 daemon,
                 &self.compiler,
                 &mut self.generations,
