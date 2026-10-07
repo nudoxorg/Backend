@@ -2362,7 +2362,7 @@ pub fn run(config: ProcessConfig) -> ExitCode {
     match compose_owner(&config) {
         Ok(owner) => crate::process::run_process(owner, config),
         Err(error) => {
-            eprintln!("backend-locald: {error}");
+            crate::process::report_process_failure(&error);
             ExitCode::from(70)
         }
     }

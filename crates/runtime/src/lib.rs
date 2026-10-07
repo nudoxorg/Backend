@@ -33,6 +33,9 @@ pub use backend_discovery::DiscoveryPolicy;
 /// Bounded physical-credit admission and one-owner execution.
 pub mod server;
 
+mod startup;
+pub use startup::{STARTUP_DIAGNOSTIC_ENV, StartupDiagnostic, StartupFailureReporter};
+
 use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, OpenOptions};
@@ -431,6 +434,7 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
     // from "somebody else is already listening".
     unlink_dead_endpoint(paths.endpoint());
     let executable = locald_executable()?;
+    let startup = startup::StartupAttempt::prepare(paths.data()).map_err(RuntimeError::Io)?;
     let mut command = Command::new(&executable);
     // locald derives its configured project from the working directory when
     // no project flag exists, and rejects a workspace owned by a different
@@ -447,6 +451,7 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    startup.configure(&mut command);
     detach(&mut command);
     let mut child = command
         .spawn()
@@ -470,7 +475,12 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
         if Instant::now() >= deadline {
             return child_exit.map_or_else(
                 || Err(RuntimeError::StartTimeout(paths.endpoint.clone())),
-                |code| Err(RuntimeError::DaemonExited(code)),
+                |code| {
+                    Err(RuntimeError::DaemonExited {
+                        code,
+                        diagnostic: startup.failure(),
+                    })
+                },
             );
         }
         thread::sleep(POLL_INTERVAL);
@@ -993,7 +1003,12 @@ pub enum RuntimeError {
         source: std::io::Error,
     },
     /// The daemon exited before accepting clients.
-    DaemonExited(Option<i32>),
+    DaemonExited {
+        /// Exit status of the attempted owner process.
+        code: Option<i32>,
+        /// Original bounded startup cause, when the owner could report one.
+        diagnostic: Option<StartupDiagnostic>,
+    },
     /// The daemon did not become ready before the bounded deadline.
     StartTimeout(PathBuf),
     /// Automatic local composition is unavailable on this platform.
@@ -1043,8 +1058,12 @@ impl fmt::Display for RuntimeError {
                 "no existing local owner answered at {}: {source}",
                 endpoint.display()
             ),
-            Self::DaemonExited(code) => {
-                write!(formatter, "backend-locald exited during startup ({code:?})")
+            Self::DaemonExited { code, diagnostic } => {
+                write!(formatter, "backend-locald exited during startup ({code:?})")?;
+                if let Some(diagnostic) = diagnostic {
+                    write!(formatter, ": {diagnostic}")?;
+                }
+                Ok(())
             }
             Self::StartTimeout(path) => {
                 write!(formatter, "backend-locald did not open {}", path.display())
@@ -1067,7 +1086,7 @@ impl std::error::Error for RuntimeError {
             | Self::InvalidCredential(_)
             | Self::EndpointTooLong { .. }
             | Self::MissingExecutable(_)
-            | Self::DaemonExited(_)
+            | Self::DaemonExited { .. }
             | Self::StartTimeout(_)
             | Self::Unsupported => None,
         }
@@ -1590,7 +1609,7 @@ mod tests {
         Path::new("/tmp").join(directory.file_name().expect("fixture directory name"))
     }
 
-    fn test_directory(label: &str) -> PathBuf {
+    pub(super) fn test_directory(label: &str) -> PathBuf {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -1607,7 +1626,7 @@ mod tests {
     /// that will hold it must be private itself: mode 0700 on Unix, and the
     /// protected current-user ACL on Windows, where a plain `create_dir`
     /// inherits the (shared) temporary directory's ACL.
-    fn create_private_fixture(path: &Path) {
+    pub(super) fn create_private_fixture(path: &Path) {
         #[cfg(unix)]
         {
             use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
