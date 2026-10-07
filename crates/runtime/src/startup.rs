@@ -451,11 +451,17 @@ mod tests {
             .lock()
             .expect("hold the reporter's exclusive lease");
         assert!(
-            second.file.try_lock().is_err(),
+            matches!(
+                second.file.try_lock(),
+                Err(std::fs::TryLockError::WouldBlock)
+            ),
             "duplicate writer must wait"
         );
         assert!(
-            reader.try_lock_shared().is_err(),
+            matches!(
+                reader.try_lock_shared(),
+                Err(std::fs::TryLockError::WouldBlock)
+            ),
             "reader must wait for the writer"
         );
         first.file.unlock().expect("release exclusive lease");
