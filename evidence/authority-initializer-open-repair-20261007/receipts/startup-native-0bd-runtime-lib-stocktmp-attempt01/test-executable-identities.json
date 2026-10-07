@@ -1,0 +1,14 @@
+{
+  "schema": "nudox.native-test-executables.v1",
+  "source": "0bd76200c5c0eaa9d469b5310512e81e4b4d7de2",
+  "profile": "dev test",
+  "actual_running_lines_only": true,
+  "executables": [
+    {
+      "source_path": "/Users/rmccrar6/codex-worktrees/sol61-index-native-test-20261006/.local/build/point-metadata-test/.nudox-cargo/slot-0/debug/deps/backend_runtime-f403b30f5a909ec5",
+      "immutable_image_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/receipts/startup-native-0bd-runtime-lib-stocktmp-attempt01/test-images/backend_runtime-f403b30f5a909ec5",
+      "bytes": 3218160,
+      "sha256": "bc7305dd043a1cb7e2e551d7eff6e0e09ef88a3816f7ba592893fc489a33bd5e"
+    }
+  ]
+}

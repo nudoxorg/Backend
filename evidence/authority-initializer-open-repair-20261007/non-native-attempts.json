@@ -1,0 +1,29 @@
+{
+  "schema": "nudox.native-verification-non-credit-attempts.v1",
+  "attempts": [
+    {
+      "phase": "startup-native-813-concurrent-repeat-attempt01",
+      "result": "supervisor preflight rejected an invalid commit identifier",
+      "cargo_started": false,
+      "native_test_started": false,
+      "pass_credit": false,
+      "receipt_state": "empty directory only"
+    },
+    {
+      "phase": "startup-private-open-isolated-runtime-repeat-20261007-attempt01",
+      "result": "supervisor rejected stale fleet proof; measured admission age was 30.51007890701294 seconds against a 30-second limit",
+      "cargo_started": false,
+      "native_test_started": false,
+      "pass_credit": false,
+      "receipt_state": "no completion receipt"
+    },
+    {
+      "phase": "startup-native-813-openat-trace-attempt01",
+      "result": "managed runner was passed `cargo test` instead of its expected `test` subcommand and returned `no such command: cargo`",
+      "cargo_started": false,
+      "native_test_started": false,
+      "pass_credit": false,
+      "receipt": "receipts/startup-native-813-openat-trace-attempt01/"
+    }
+  ]
+}

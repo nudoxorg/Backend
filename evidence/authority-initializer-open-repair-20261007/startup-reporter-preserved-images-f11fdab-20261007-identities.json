@@ -1,0 +1,21 @@
+{
+  "schema": "nudox.test-executable-preservation.v1",
+  "source_commit": "f11fdab20d7197616a38fb389752d8a4dba9619a",
+  "source_tree": "f835bc5e1c4c2497adeaa903379a34decf45a061",
+  "executables": [
+    {
+      "name": "backend_platform-13d074c9dc81c8ba",
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/startup-reporter-preserved-images-f11fdab-20261007/backend_platform-13d074c9dc81c8ba",
+      "bytes": 3221296,
+      "sha256": "68f359cc476781caa4eb9c022f813b6732981831fa6577b11635ea9ada492800",
+      "file": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/startup-reporter-preserved-images-f11fdab-20261007/backend_platform-13d074c9dc81c8ba: Mach-O 64-bit executable arm64"
+    },
+    {
+      "name": "backend_runtime-f403b30f5a909ec5",
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/startup-reporter-preserved-images-f11fdab-20261007/backend_runtime-f403b30f5a909ec5",
+      "bytes": 3335376,
+      "sha256": "c285c953811a51ca709d1e8e3e04f582b6e1d7e5e7118e6e827fc034b93f1932",
+      "file": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/startup-reporter-preserved-images-f11fdab-20261007/backend_runtime-f403b30f5a909ec5: Mach-O 64-bit executable arm64"
+    }
+  ]
+}

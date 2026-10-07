@@ -1,0 +1,12 @@
+{
+  "schema": "nudox.startup-native-supervisor-refusal.v1",
+  "phase": "startup-reporter-focused-attempt02",
+  "commit": "f11fdab20d7197616a38fb389752d8a4dba9619a",
+  "tree": "f835bc5e1c4c2497adeaa903379a34decf45a061",
+  "cause": "supervisor rejected stale fleet admission before lock acquisition or Cargo launch",
+  "observed_fleet_age_seconds": 34.133517265319824,
+  "max_allowed_fleet_age_seconds": 30,
+  "cargo_launched": false,
+  "exit_code": 1,
+  "raw_stderr_capture": "stderr.log is a faithful transcription of the supervisor traceback returned by the exec tool; the remote supervisor failed before writing launch/completion records."
+}
