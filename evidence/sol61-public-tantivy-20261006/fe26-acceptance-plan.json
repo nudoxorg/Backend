@@ -1,0 +1,167 @@
+{
+  "schema": "nudox.actual-public-lifecycle-plan.v1",
+  "status": "prepared-not-executed",
+  "expected_source": "fe26d8326ad07911a3d3e2cb9e548dbbc05c559d",
+  "expected_tree": "428ad1f552295ce4b63787a2956b4283b1b4ea3b",
+  "expected_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268",
+  "fresh_fleet_admission_before_every_owner": true,
+  "common_flags": [
+    "--native-default",
+    "--offline-acquisition"
+  ],
+  "source": "official immutable cachetools 7.2.1 dossier copied to a fresh private absolute project",
+  "eligible_frontier": "all .py/.pyi/.pyw inputs; actual current+selected+complete artifact and frontier counts",
+  "operator_scope": {
+    "resolve": "library catalog leafgram arrangements",
+    "search": "local lexical native TantivySource durable v4 provider",
+    "catalog": "separate package catalog operator; no catalog coverage inferred from local search"
+  },
+  "phases": [
+    {
+      "phase": "initial",
+      "flags": [
+        "--publish",
+        "--matrix",
+        "--surface-checks",
+        "--recapture-to",
+        "warm-late.json"
+      ]
+    },
+    {
+      "phase": "retry",
+      "flags": [
+        "--refresh",
+        "--verify-selected",
+        "--tokens",
+        "warm-late.json",
+        "--recapture-to",
+        "retry-late.json"
+      ]
+    },
+    {
+      "phase": "unicode",
+      "flags": [
+        "--unicode-edit",
+        "--refresh",
+        "--stale-tokens",
+        "--tokens",
+        "retry-late.json",
+        "--capture-to",
+        "unicode-early.json",
+        "--recapture-to",
+        "unicode-late.json",
+        "--matrix",
+        "--require-unicode-hit",
+        "--surface-checks"
+      ]
+    },
+    {
+      "phase": "unicode-cold-1",
+      "flags": [
+        "--replay",
+        "--verify-selected",
+        "--tokens",
+        "unicode-early.json",
+        "--require-unicode-hit",
+        "--matrix",
+        "--surface-checks",
+        "--recapture-to",
+        "unicode-cold-1-late.json"
+      ]
+    },
+    {
+      "phase": "unicode-cold-2",
+      "flags": [
+        "--replay",
+        "--verify-selected",
+        "--tokens",
+        "unicode-cold-1-late.json",
+        "--require-unicode-hit",
+        "--matrix",
+        "--contract-negatives",
+        "--surface-checks"
+      ]
+    },
+    {
+      "phase": "unicode-retry",
+      "flags": [
+        "--refresh",
+        "--verify-selected",
+        "--tokens",
+        "unicode-cold-1-late.json",
+        "--require-unicode-hit",
+        "--matrix",
+        "--recapture-to",
+        "unicode-retry-late.json"
+      ]
+    },
+    {
+      "phase": "removed",
+      "flags": [
+        "--remove",
+        "--stale-tokens",
+        "--tokens",
+        "unicode-retry-late.json"
+      ]
+    },
+    {
+      "phase": "removed-verify",
+      "flags": [
+        "--expect-removed",
+        "--stale-tokens",
+        "--tokens",
+        "unicode-retry-late.json"
+      ]
+    },
+    {
+      "phase": "readded",
+      "flags": [
+        "--refresh",
+        "--require-unicode-hit",
+        "--capture-to",
+        "readded-early.json",
+        "--recapture-to",
+        "readded-late.json",
+        "--matrix"
+      ]
+    },
+    {
+      "phase": "readded-cold",
+      "flags": [
+        "--replay",
+        "--verify-selected",
+        "--tokens",
+        "readded-late.json",
+        "--surface-checks"
+      ]
+    },
+    {
+      "phase": "restored",
+      "flags": [
+        "--restore-source",
+        "--refresh",
+        "--stale-tokens",
+        "--tokens",
+        "readded-late.json",
+        "--capture-to",
+        "restored-early.json",
+        "--recapture-to",
+        "restored-late.json",
+        "--matrix"
+      ]
+    },
+    {
+      "phase": "restored-cold",
+      "flags": [
+        "--replay",
+        "--verify-selected",
+        "--tokens",
+        "restored-late.json",
+        "--matrix",
+        "--surface-checks"
+      ]
+    }
+  ],
+  "coverage": "20 authentic queries x Names/Search x CLI/MCP x credits 1/3/7 = 240 complete traversals per matrix, full rows/order/multiplicities, byte ceilings, default searches and graph page credits 1/3/7",
+  "promotion": "held; this plan supplies no acceptance credit"
+}

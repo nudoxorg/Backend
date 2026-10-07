@@ -1,0 +1,449 @@
+{
+  "schema": "nudox.actual-public-phase-summary.v1",
+  "phase": "readded-cold",
+  "source": {
+    "commit": "fe26d8326ad07911a3d3e2cb9e548dbbc05c559d",
+    "tree": "428ad1f552295ce4b63787a2956b4283b1b4ea3b",
+    "clean": true
+  },
+  "pass": true,
+  "error": null,
+  "owner_pid": 73360,
+  "eligible_inputs": 23,
+  "elapsed_seconds": 7.252584934234619,
+  "receipt": {
+    "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/readded-cold/receipt.json",
+    "bytes": 43880,
+    "sha256": "757e52c7d877f3d6e488ee9cb1073717bc1144fc6dca40dedebd7c9c96451bd0"
+  },
+  "wire": {
+    "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/readded-cold/wire.jsonl",
+    "bytes": 1123850,
+    "sha256": "b82bafa73cd921a975dff29a56dd6435c8e3ce73bd1505c28da269220da7da09"
+  },
+  "old_token_new_owner_replays": [
+    {
+      "surface": "cli",
+      "route": "resolve",
+      "query": "cached",
+      "credit": 3,
+      "rows": 28,
+      "pages": 10,
+      "token_sizes": [
+        {
+          "public_token_bytes": 4488,
+          "owner_token_bytes": 4488,
+          "decoded_command_bytes": 15981,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4330,
+          "owner_token_bytes": 4330,
+          "decoded_command_bytes": 16976,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5795,
+          "owner_token_bytes": 5795,
+          "decoded_command_bytes": 36593,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4395,
+          "owner_token_bytes": 4395,
+          "decoded_command_bytes": 15785,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4803,
+          "owner_token_bytes": 4803,
+          "decoded_command_bytes": 18547,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4540,
+          "owner_token_bytes": 4540,
+          "decoded_command_bytes": 16399,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4986,
+          "owner_token_bytes": 4986,
+          "decoded_command_bytes": 21051,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4394,
+          "owner_token_bytes": 4394,
+          "decoded_command_bytes": 16835,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4011,
+          "owner_token_bytes": 4011,
+          "decoded_command_bytes": 16222,
+          "owner_version": "pc3"
+        }
+      ],
+      "pass": true
+    },
+    {
+      "surface": "mcp",
+      "route": "resolve",
+      "query": "cached",
+      "credit": 3,
+      "rows": 28,
+      "pages": 10,
+      "token_sizes": [
+        {
+          "public_token_bytes": 6033,
+          "owner_token_bytes": 4488,
+          "decoded_command_bytes": 15981,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5823,
+          "owner_token_bytes": 4330,
+          "decoded_command_bytes": 16976,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 7776,
+          "owner_token_bytes": 5795,
+          "decoded_command_bytes": 36593,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5909,
+          "owner_token_bytes": 4395,
+          "decoded_command_bytes": 15785,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 6453,
+          "owner_token_bytes": 4803,
+          "decoded_command_bytes": 18547,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 6103,
+          "owner_token_bytes": 4540,
+          "decoded_command_bytes": 16399,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 6697,
+          "owner_token_bytes": 4986,
+          "decoded_command_bytes": 21051,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5908,
+          "owner_token_bytes": 4394,
+          "decoded_command_bytes": 16835,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5397,
+          "owner_token_bytes": 4011,
+          "decoded_command_bytes": 16222,
+          "owner_version": "pc3"
+        }
+      ],
+      "pass": true
+    },
+    {
+      "surface": "cli",
+      "route": "resolve",
+      "query": "__getitem__",
+      "credit": 3,
+      "rows": 7,
+      "pages": 3,
+      "token_sizes": [
+        {
+          "public_token_bytes": 4284,
+          "owner_token_bytes": 4284,
+          "decoded_command_bytes": 15980,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4199,
+          "owner_token_bytes": 4199,
+          "decoded_command_bytes": 15878,
+          "owner_version": "pc3"
+        }
+      ],
+      "pass": true
+    },
+    {
+      "surface": "mcp",
+      "route": "resolve",
+      "query": "__getitem__",
+      "credit": 3,
+      "rows": 7,
+      "pages": 3,
+      "token_sizes": [
+        {
+          "public_token_bytes": 5761,
+          "owner_token_bytes": 4284,
+          "decoded_command_bytes": 15980,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5648,
+          "owner_token_bytes": 4199,
+          "decoded_command_bytes": 15878,
+          "owner_version": "pc3"
+        }
+      ],
+      "pass": true
+    },
+    {
+      "surface": "cli",
+      "route": "search",
+      "query": "cached",
+      "credit": 3,
+      "rows": 33,
+      "pages": 11,
+      "token_sizes": [
+        {
+          "public_token_bytes": 3998,
+          "owner_token_bytes": 3998,
+          "decoded_command_bytes": 16221,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4371,
+          "owner_token_bytes": 4371,
+          "decoded_command_bytes": 17190,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4596,
+          "owner_token_bytes": 4596,
+          "decoded_command_bytes": 22860,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4431,
+          "owner_token_bytes": 4431,
+          "decoded_command_bytes": 15850,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5234,
+          "owner_token_bytes": 5234,
+          "decoded_command_bytes": 30657,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 3951,
+          "owner_token_bytes": 3951,
+          "decoded_command_bytes": 14862,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4726,
+          "owner_token_bytes": 4726,
+          "decoded_command_bytes": 18211,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4115,
+          "owner_token_bytes": 4115,
+          "decoded_command_bytes": 15730,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4738,
+          "owner_token_bytes": 4738,
+          "decoded_command_bytes": 20459,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4162,
+          "owner_token_bytes": 4162,
+          "decoded_command_bytes": 13239,
+          "owner_version": "pc3"
+        }
+      ],
+      "pass": true
+    },
+    {
+      "surface": "mcp",
+      "route": "search",
+      "query": "cached",
+      "credit": 3,
+      "rows": 33,
+      "pages": 11,
+      "token_sizes": [
+        {
+          "public_token_bytes": 5380,
+          "owner_token_bytes": 3998,
+          "decoded_command_bytes": 16221,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5877,
+          "owner_token_bytes": 4371,
+          "decoded_command_bytes": 17190,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 6177,
+          "owner_token_bytes": 4596,
+          "decoded_command_bytes": 22860,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5957,
+          "owner_token_bytes": 4431,
+          "decoded_command_bytes": 15850,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 7028,
+          "owner_token_bytes": 5234,
+          "decoded_command_bytes": 30657,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5317,
+          "owner_token_bytes": 3951,
+          "decoded_command_bytes": 14862,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 6351,
+          "owner_token_bytes": 4726,
+          "decoded_command_bytes": 18211,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5536,
+          "owner_token_bytes": 4115,
+          "decoded_command_bytes": 15730,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 6367,
+          "owner_token_bytes": 4738,
+          "decoded_command_bytes": 20459,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5599,
+          "owner_token_bytes": 4162,
+          "decoded_command_bytes": 13239,
+          "owner_version": "pc3"
+        }
+      ],
+      "pass": true
+    },
+    {
+      "surface": "cli",
+      "route": "search",
+      "query": "__getitem__",
+      "credit": 3,
+      "rows": 12,
+      "pages": 4,
+      "token_sizes": [
+        {
+          "public_token_bytes": 4338,
+          "owner_token_bytes": 4338,
+          "decoded_command_bytes": 16359,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4384,
+          "owner_token_bytes": 4384,
+          "decoded_command_bytes": 16382,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4219,
+          "owner_token_bytes": 4219,
+          "decoded_command_bytes": 14700,
+          "owner_version": "pc3"
+        }
+      ],
+      "pass": true
+    },
+    {
+      "surface": "mcp",
+      "route": "search",
+      "query": "__getitem__",
+      "credit": 3,
+      "rows": 12,
+      "pages": 4,
+      "token_sizes": [
+        {
+          "public_token_bytes": 5833,
+          "owner_token_bytes": 4338,
+          "decoded_command_bytes": 16359,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5895,
+          "owner_token_bytes": 4384,
+          "decoded_command_bytes": 16382,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5675,
+          "owner_token_bytes": 4219,
+          "decoded_command_bytes": 14700,
+          "owner_version": "pc3"
+        }
+      ],
+      "pass": true
+    }
+  ],
+  "contract_negatives": 0,
+  "stale_root_refusals": 0,
+  "surface_checks": 9,
+  "issued_token_sets": [],
+  "retained_mcp_token_expiry_observations": [
+    {
+      "route": "resolve",
+      "query": "cached",
+      "issued_at_unix": 1791335229.969297,
+      "request_at_unix": 1791335582.806689,
+      "expires_at_unix": 1791336130,
+      "before_expiry": true,
+      "age_seconds": 352.8373920917511
+    },
+    {
+      "route": "resolve",
+      "query": "__getitem__",
+      "issued_at_unix": 1791335229.969297,
+      "request_at_unix": 1791335582.977736,
+      "expires_at_unix": 1791336130,
+      "before_expiry": true,
+      "age_seconds": 353.0084390640259
+    },
+    {
+      "route": "search",
+      "query": "cached",
+      "issued_at_unix": 1791335229.969297,
+      "request_at_unix": 1791335584.046806,
+      "expires_at_unix": 1791336130,
+      "before_expiry": true,
+      "age_seconds": 354.0775091648102
+    },
+    {
+      "route": "search",
+      "query": "__getitem__",
+      "issued_at_unix": 1791335229.969297,
+      "request_at_unix": 1791335584.3413749,
+      "expires_at_unix": 1791336130,
+      "before_expiry": true,
+      "age_seconds": 354.37207794189453
+    }
+  ],
+  "token_file": {
+    "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/readded-late.json",
+    "bytes": 366712,
+    "sha256": "3b753deefe8d17ad9081111f29611cadb9a4886f2094ebfa177b82cc1309b0dd"
+  }
+}

@@ -1,0 +1,130 @@
+{
+  "schema": "nudox.actual-public-matrix-summary.v1",
+  "phase": "initial",
+  "all_pass": true,
+  "cases": 240,
+  "pages": 7086,
+  "row_occurrences": 14256,
+  "multi_page_cases": 178,
+  "unique_large_credit_refusals": [
+    {
+      "route": "resolve",
+      "query": "Cache",
+      "surface": "cli",
+      "credit": 200,
+      "fault": {
+        "slug": "transport",
+        "operand": "response",
+        "cause": "oversized",
+        "detail": "response is 180417 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+        "answer": "fault"
+      }
+    },
+    {
+      "route": "resolve",
+      "query": "Cache",
+      "surface": "mcp",
+      "credit": 200,
+      "fault": {
+        "slug": "transport",
+        "operand": "response",
+        "cause": "oversized",
+        "detail": "response is 181591 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+        "answer": "fault"
+      }
+    },
+    {
+      "route": "search",
+      "query": "Cache",
+      "surface": "cli",
+      "credit": 200,
+      "fault": {
+        "slug": "transport",
+        "operand": "response",
+        "cause": "oversized",
+        "detail": "response is 183290 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+        "answer": "fault"
+      }
+    },
+    {
+      "route": "search",
+      "query": "Cache",
+      "surface": "mcp",
+      "credit": 200,
+      "fault": {
+        "slug": "transport",
+        "operand": "response",
+        "cause": "oversized",
+        "detail": "response is 184472 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+        "answer": "fault"
+      }
+    },
+    {
+      "route": "search",
+      "query": "cache_clear",
+      "surface": "cli",
+      "credit": 200,
+      "fault": {
+        "slug": "transport",
+        "operand": "response",
+        "cause": "oversized",
+        "detail": "response is 50195 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+        "answer": "fault"
+      }
+    },
+    {
+      "route": "search",
+      "query": "cache_clear",
+      "surface": "mcp",
+      "credit": 200,
+      "fault": {
+        "slug": "transport",
+        "operand": "response",
+        "cause": "oversized",
+        "detail": "response is 50195 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+        "answer": "fault"
+      }
+    },
+    {
+      "route": "search",
+      "query": "cache_info",
+      "surface": "cli",
+      "credit": 200,
+      "fault": {
+        "slug": "transport",
+        "operand": "response",
+        "cause": "oversized",
+        "detail": "response is 55228 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+        "answer": "fault"
+      }
+    },
+    {
+      "route": "search",
+      "query": "cache_info",
+      "surface": "mcp",
+      "credit": 200,
+      "fault": {
+        "slug": "transport",
+        "operand": "response",
+        "cause": "oversized",
+        "detail": "response is 55228 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+        "answer": "fault"
+      }
+    }
+  ],
+  "maximum_token_sizes": {
+    "public_token_bytes": 13621,
+    "owner_token_bytes": 10179,
+    "decoded_command_bytes": 89354
+  },
+  "matrix": {
+    "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/initial/matrix.json",
+    "bytes": 1303304,
+    "sha256": "6473ae8ae1019de8fb764ce4057a3c858ee76e24f3895d81ee7a86b15e479d04"
+  },
+  "wire": {
+    "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/initial/wire.jsonl",
+    "bytes": 95559543,
+    "sha256": "6b3ab468229c6d43e9bd1c1bf052e4f4ecdcdb5e2b254df54c476ae857648fc3"
+  }
+}

@@ -1,0 +1,680 @@
+{
+  "schema": "nudox.actual-public-phase-summary.v1",
+  "phase": "unicode-cold-2",
+  "source": {
+    "commit": "fe26d8326ad07911a3d3e2cb9e548dbbc05c559d",
+    "tree": "428ad1f552295ce4b63787a2956b4283b1b4ea3b",
+    "clean": true
+  },
+  "pass": true,
+  "error": null,
+  "owner_pid": 91178,
+  "eligible_inputs": 23,
+  "elapsed_seconds": 328.8490319252014,
+  "receipt": {
+    "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/unicode-cold-2/receipt.json",
+    "bytes": 76218,
+    "sha256": "9afcc89eabfe49384e766dde514674d4c3cfe143b1381b99ececb3da2a7a4846"
+  },
+  "wire": {
+    "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/unicode-cold-2/wire.jsonl",
+    "bytes": 96651429,
+    "sha256": "1afc68cbbfef7f122c91974b09defc8e0143858c7eead68856d4b298647b49d4"
+  },
+  "old_token_new_owner_replays": [
+    {
+      "surface": "cli",
+      "route": "resolve",
+      "query": "cached",
+      "credit": 3,
+      "rows": 28,
+      "pages": 10,
+      "token_sizes": [
+        {
+          "public_token_bytes": 4471,
+          "owner_token_bytes": 4471,
+          "decoded_command_bytes": 15977,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4292,
+          "owner_token_bytes": 4292,
+          "decoded_command_bytes": 16958,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5776,
+          "owner_token_bytes": 5776,
+          "decoded_command_bytes": 36577,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4374,
+          "owner_token_bytes": 4374,
+          "decoded_command_bytes": 15779,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4790,
+          "owner_token_bytes": 4790,
+          "decoded_command_bytes": 18529,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4520,
+          "owner_token_bytes": 4520,
+          "decoded_command_bytes": 16385,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4979,
+          "owner_token_bytes": 4979,
+          "decoded_command_bytes": 21045,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4382,
+          "owner_token_bytes": 4382,
+          "decoded_command_bytes": 16824,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 3990,
+          "owner_token_bytes": 3990,
+          "decoded_command_bytes": 16208,
+          "owner_version": "pc3"
+        }
+      ],
+      "pass": true
+    },
+    {
+      "surface": "mcp",
+      "route": "resolve",
+      "query": "cached",
+      "credit": 3,
+      "rows": 28,
+      "pages": 10,
+      "token_sizes": [
+        {
+          "public_token_bytes": 6011,
+          "owner_token_bytes": 4471,
+          "decoded_command_bytes": 15977,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5772,
+          "owner_token_bytes": 4292,
+          "decoded_command_bytes": 16958,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 7751,
+          "owner_token_bytes": 5776,
+          "decoded_command_bytes": 36577,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5881,
+          "owner_token_bytes": 4374,
+          "decoded_command_bytes": 15779,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 6436,
+          "owner_token_bytes": 4790,
+          "decoded_command_bytes": 18529,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 6076,
+          "owner_token_bytes": 4520,
+          "decoded_command_bytes": 16385,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 6688,
+          "owner_token_bytes": 4979,
+          "decoded_command_bytes": 21045,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5892,
+          "owner_token_bytes": 4382,
+          "decoded_command_bytes": 16824,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5369,
+          "owner_token_bytes": 3990,
+          "decoded_command_bytes": 16208,
+          "owner_version": "pc3"
+        }
+      ],
+      "pass": true
+    },
+    {
+      "surface": "cli",
+      "route": "resolve",
+      "query": "__getitem__",
+      "credit": 3,
+      "rows": 7,
+      "pages": 3,
+      "token_sizes": [
+        {
+          "public_token_bytes": 4264,
+          "owner_token_bytes": 4264,
+          "decoded_command_bytes": 15973,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4191,
+          "owner_token_bytes": 4191,
+          "decoded_command_bytes": 15861,
+          "owner_version": "pc3"
+        }
+      ],
+      "pass": true
+    },
+    {
+      "surface": "mcp",
+      "route": "resolve",
+      "query": "__getitem__",
+      "credit": 3,
+      "rows": 7,
+      "pages": 3,
+      "token_sizes": [
+        {
+          "public_token_bytes": 5735,
+          "owner_token_bytes": 4264,
+          "decoded_command_bytes": 15973,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5637,
+          "owner_token_bytes": 4191,
+          "decoded_command_bytes": 15861,
+          "owner_version": "pc3"
+        }
+      ],
+      "pass": true
+    },
+    {
+      "surface": "cli",
+      "route": "search",
+      "query": "cached",
+      "credit": 3,
+      "rows": 33,
+      "pages": 11,
+      "token_sizes": [
+        {
+          "public_token_bytes": 3984,
+          "owner_token_bytes": 3984,
+          "decoded_command_bytes": 16207,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4370,
+          "owner_token_bytes": 4370,
+          "decoded_command_bytes": 17189,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4580,
+          "owner_token_bytes": 4580,
+          "decoded_command_bytes": 22846,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4420,
+          "owner_token_bytes": 4420,
+          "decoded_command_bytes": 15835,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5216,
+          "owner_token_bytes": 5216,
+          "decoded_command_bytes": 30643,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 3947,
+          "owner_token_bytes": 3947,
+          "decoded_command_bytes": 14846,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4716,
+          "owner_token_bytes": 4716,
+          "decoded_command_bytes": 18200,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4112,
+          "owner_token_bytes": 4112,
+          "decoded_command_bytes": 15728,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4735,
+          "owner_token_bytes": 4735,
+          "decoded_command_bytes": 20448,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4152,
+          "owner_token_bytes": 4152,
+          "decoded_command_bytes": 13236,
+          "owner_version": "pc3"
+        }
+      ],
+      "pass": true
+    },
+    {
+      "surface": "mcp",
+      "route": "search",
+      "query": "cached",
+      "credit": 3,
+      "rows": 33,
+      "pages": 11,
+      "token_sizes": [
+        {
+          "public_token_bytes": 5361,
+          "owner_token_bytes": 3984,
+          "decoded_command_bytes": 16207,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5876,
+          "owner_token_bytes": 4370,
+          "decoded_command_bytes": 17189,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 6156,
+          "owner_token_bytes": 4580,
+          "decoded_command_bytes": 22846,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5943,
+          "owner_token_bytes": 4420,
+          "decoded_command_bytes": 15835,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 7004,
+          "owner_token_bytes": 5216,
+          "decoded_command_bytes": 30643,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5312,
+          "owner_token_bytes": 3947,
+          "decoded_command_bytes": 14846,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 6337,
+          "owner_token_bytes": 4716,
+          "decoded_command_bytes": 18200,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5532,
+          "owner_token_bytes": 4112,
+          "decoded_command_bytes": 15728,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 6363,
+          "owner_token_bytes": 4735,
+          "decoded_command_bytes": 20448,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5585,
+          "owner_token_bytes": 4152,
+          "decoded_command_bytes": 13236,
+          "owner_version": "pc3"
+        }
+      ],
+      "pass": true
+    },
+    {
+      "surface": "cli",
+      "route": "search",
+      "query": "__getitem__",
+      "credit": 3,
+      "rows": 12,
+      "pages": 4,
+      "token_sizes": [
+        {
+          "public_token_bytes": 4328,
+          "owner_token_bytes": 4328,
+          "decoded_command_bytes": 16342,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4370,
+          "owner_token_bytes": 4370,
+          "decoded_command_bytes": 16368,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 4207,
+          "owner_token_bytes": 4207,
+          "decoded_command_bytes": 14688,
+          "owner_version": "pc3"
+        }
+      ],
+      "pass": true
+    },
+    {
+      "surface": "mcp",
+      "route": "search",
+      "query": "__getitem__",
+      "credit": 3,
+      "rows": 12,
+      "pages": 4,
+      "token_sizes": [
+        {
+          "public_token_bytes": 5820,
+          "owner_token_bytes": 4328,
+          "decoded_command_bytes": 16342,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5876,
+          "owner_token_bytes": 4370,
+          "decoded_command_bytes": 16368,
+          "owner_version": "pc3"
+        },
+        {
+          "public_token_bytes": 5659,
+          "owner_token_bytes": 4207,
+          "decoded_command_bytes": 14688,
+          "owner_version": "pc3"
+        }
+      ],
+      "pass": true
+    }
+  ],
+  "contract_negatives": 60,
+  "stale_root_refusals": 0,
+  "surface_checks": 9,
+  "issued_token_sets": [],
+  "matrix": {
+    "artifact": {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/unicode-cold-2/matrix.json",
+      "bytes": 1303299,
+      "sha256": "ee9b73b544a62c411d9fe9d0b699d9697560d0c6a1a7e48760e643d9b19db3d5"
+    },
+    "pass": true,
+    "cases": 240,
+    "pages": 7086,
+    "row_occurrences": 14262,
+    "multi_page_cases": 178,
+    "unique_large_credit_refusals": [
+      {
+        "route": "resolve",
+        "query": "Cache",
+        "surface": "cli",
+        "credit": 200,
+        "fault": {
+          "slug": "transport",
+          "operand": "response",
+          "cause": "oversized",
+          "detail": "response is 180472 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+          "answer": "fault"
+        }
+      },
+      {
+        "route": "resolve",
+        "query": "Cache",
+        "surface": "mcp",
+        "credit": 200,
+        "fault": {
+          "slug": "transport",
+          "operand": "response",
+          "cause": "oversized",
+          "detail": "response is 181649 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+          "answer": "fault"
+        }
+      },
+      {
+        "route": "search",
+        "query": "Cache",
+        "surface": "cli",
+        "credit": 200,
+        "fault": {
+          "slug": "transport",
+          "operand": "response",
+          "cause": "oversized",
+          "detail": "response is 183458 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+          "answer": "fault"
+        }
+      },
+      {
+        "route": "search",
+        "query": "Cache",
+        "surface": "mcp",
+        "credit": 200,
+        "fault": {
+          "slug": "transport",
+          "operand": "response",
+          "cause": "oversized",
+          "detail": "response is 184643 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+          "answer": "fault"
+        }
+      },
+      {
+        "route": "search",
+        "query": "cache_clear",
+        "surface": "cli",
+        "credit": 200,
+        "fault": {
+          "slug": "transport",
+          "operand": "response",
+          "cause": "oversized",
+          "detail": "response is 50207 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+          "answer": "fault"
+        }
+      },
+      {
+        "route": "search",
+        "query": "cache_clear",
+        "surface": "mcp",
+        "credit": 200,
+        "fault": {
+          "slug": "transport",
+          "operand": "response",
+          "cause": "oversized",
+          "detail": "response is 50207 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+          "answer": "fault"
+        }
+      },
+      {
+        "route": "search",
+        "query": "cache_info",
+        "surface": "cli",
+        "credit": 200,
+        "fault": {
+          "slug": "transport",
+          "operand": "response",
+          "cause": "oversized",
+          "detail": "response is 55228 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+          "answer": "fault"
+        }
+      },
+      {
+        "route": "search",
+        "query": "cache_info",
+        "surface": "mcp",
+        "credit": 200,
+        "fault": {
+          "slug": "transport",
+          "operand": "response",
+          "cause": "oversized",
+          "detail": "response is 55228 bytes, above the 49152 byte budget; lower limit or request detail=summary",
+          "answer": "fault"
+        }
+      }
+    ],
+    "maximum_token_sizes": {
+      "public_token_bytes": 12409,
+      "owner_token_bytes": 9270,
+      "decoded_command_bytes": 84812
+    }
+  },
+  "retained_mcp_token_expiry_observations": [
+    {
+      "route": "resolve",
+      "query": "cached",
+      "issued_at_unix": 1791333849.409439,
+      "request_at_unix": 1791333892.502956,
+      "expires_at_unix": 1791334749,
+      "before_expiry": true,
+      "age_seconds": 43.09351682662964
+    },
+    {
+      "route": "resolve",
+      "query": "__getitem__",
+      "issued_at_unix": 1791333849.409439,
+      "request_at_unix": 1791333892.728946,
+      "expires_at_unix": 1791334749,
+      "before_expiry": true,
+      "age_seconds": 43.319506883621216
+    },
+    {
+      "route": "search",
+      "query": "cached",
+      "issued_at_unix": 1791333849.409439,
+      "request_at_unix": 1791333893.7511601,
+      "expires_at_unix": 1791334749,
+      "before_expiry": true,
+      "age_seconds": 44.341721057891846
+    },
+    {
+      "route": "search",
+      "query": "__getitem__",
+      "issued_at_unix": 1791333849.409439,
+      "request_at_unix": 1791333894.0644841,
+      "expires_at_unix": 1791334749,
+      "before_expiry": true,
+      "age_seconds": 44.65504503250122
+    },
+    {
+      "route": "resolve",
+      "query": "cached",
+      "issued_at_unix": 1791333849.409439,
+      "request_at_unix": 1791333894.581855,
+      "expires_at_unix": 1791334749,
+      "before_expiry": true,
+      "age_seconds": 45.17241597175598
+    },
+    {
+      "route": "resolve",
+      "query": "cached",
+      "issued_at_unix": 1791333849.409439,
+      "request_at_unix": 1791333894.5821052,
+      "expires_at_unix": 1791334749,
+      "before_expiry": true,
+      "age_seconds": 45.17266607284546
+    },
+    {
+      "route": "resolve",
+      "query": "cached",
+      "issued_at_unix": 1791333849.409439,
+      "request_at_unix": 1791333894.582259,
+      "expires_at_unix": 1791334749,
+      "before_expiry": true,
+      "age_seconds": 45.17281985282898
+    },
+    {
+      "route": "resolve",
+      "query": "__getitem__",
+      "issued_at_unix": 1791333849.409439,
+      "request_at_unix": 1791333895.092127,
+      "expires_at_unix": 1791334749,
+      "before_expiry": true,
+      "age_seconds": 45.68268799781799
+    },
+    {
+      "route": "resolve",
+      "query": "__getitem__",
+      "issued_at_unix": 1791333849.409439,
+      "request_at_unix": 1791333895.0923,
+      "expires_at_unix": 1791334749,
+      "before_expiry": true,
+      "age_seconds": 45.68286085128784
+    },
+    {
+      "route": "resolve",
+      "query": "__getitem__",
+      "issued_at_unix": 1791333849.409439,
+      "request_at_unix": 1791333895.092392,
+      "expires_at_unix": 1791334749,
+      "before_expiry": true,
+      "age_seconds": 45.682952880859375
+    },
+    {
+      "route": "search",
+      "query": "cached",
+      "issued_at_unix": 1791333849.409439,
+      "request_at_unix": 1791333895.588186,
+      "expires_at_unix": 1791334749,
+      "before_expiry": true,
+      "age_seconds": 46.178746938705444
+    },
+    {
+      "route": "search",
+      "query": "cached",
+      "issued_at_unix": 1791333849.409439,
+      "request_at_unix": 1791333895.588459,
+      "expires_at_unix": 1791334749,
+      "before_expiry": true,
+      "age_seconds": 46.179019927978516
+    },
+    {
+      "route": "search",
+      "query": "cached",
+      "issued_at_unix": 1791333849.409439,
+      "request_at_unix": 1791333895.58866,
+      "expires_at_unix": 1791334749,
+      "before_expiry": true,
+      "age_seconds": 46.1792209148407
+    },
+    {
+      "route": "search",
+      "query": "__getitem__",
+      "issued_at_unix": 1791333849.409439,
+      "request_at_unix": 1791333896.0796108,
+      "expires_at_unix": 1791334749,
+      "before_expiry": true,
+      "age_seconds": 46.6701717376709
+    },
+    {
+      "route": "search",
+      "query": "__getitem__",
+      "issued_at_unix": 1791333849.409439,
+      "request_at_unix": 1791333896.079756,
+      "expires_at_unix": 1791334749,
+      "before_expiry": true,
+      "age_seconds": 46.67031693458557
+    },
+    {
+      "route": "search",
+      "query": "__getitem__",
+      "issued_at_unix": 1791333849.409439,
+      "request_at_unix": 1791333896.0799181,
+      "expires_at_unix": 1791334749,
+      "before_expiry": true,
+      "age_seconds": 46.67047905921936
+    }
+  ],
+  "token_file": {
+    "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/runs/sol61-fe26-native-cachetools-20261007T0016Z/unicode-cold-1-late.json",
+    "bytes": 366571,
+    "sha256": "9e7d7577485a1df4332e4e41b7f5c3055944c919997a1cd54f505952b2d95c08"
+  }
+}

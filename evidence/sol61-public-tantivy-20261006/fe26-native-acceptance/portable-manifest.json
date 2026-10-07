@@ -1,0 +1,99 @@
+{
+  "schema": "nudox.mac-cli-diagnostic-preview.v1",
+  "source": "fe26d8326ad07911a3d3e2cb9e548dbbc05c559d",
+  "runtime_manifest_sha256": "c6c6a791ff6d31fafc73bce3e65a2b005101d18d1fe027a96b4c434b5b9da035",
+  "signing": "ad-hoc",
+  "notarized": false,
+  "production_ready": false,
+  "semantic_acceptance": "diagnostic canonical release-profile trio; authentic Unicode edit/retry/two-cold complete-frontier acceptance pending PublicTantivy",
+  "known_unresolved_failure": "Authentic Immer full native compilation reached duplicate declaration identity after a39 ownership repair; not accepted",
+  "files": [
+    {
+      "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/images-canonical-release-fe26d8326a-attempt01/backend-cli",
+      "original_sha256": "92e0d3c5df85b402e1ada328a85d670787e37fbcfb1f15ddecbd5a170f393c33",
+      "packaged": "bin/backend-cli",
+      "loads": [
+        {
+          "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+          "relocated": "@loader_path/../lib/libiconv.2.dylib",
+          "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1"
+        }
+      ],
+      "packaged_sha256": "5073db235f521e025c7f084cbae208033924190c5099c5cdfb597dfd3b9f1881"
+    },
+    {
+      "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/images-canonical-release-fe26d8326a-attempt01/backend-mcp",
+      "original_sha256": "9823643296d5092f98972214e14f59c26be569667ef605482f823a6f5fb94be9",
+      "packaged": "bin/backend-mcp",
+      "loads": [
+        {
+          "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+          "relocated": "@loader_path/../lib/libiconv.2.dylib",
+          "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1"
+        }
+      ],
+      "packaged_sha256": "9ef12fc28640f67a637c6286509f32de776bf60a9af83c13ceccfe5ed386bb1c"
+    },
+    {
+      "original": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/images-canonical-release-fe26d8326a-attempt01/backend-locald",
+      "original_sha256": "8c6fad4cbea0eb15af9cef9bc1ef16d90c7d41763ae576760d9d626223debf7e",
+      "packaged": "bin/backend-locald",
+      "loads": [
+        {
+          "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+          "relocated": "@loader_path/../lib/libiconv.2.dylib",
+          "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1"
+        }
+      ],
+      "packaged_sha256": "e5777e05492070919ddccce353574b6265198eea3585403d33c8a35bf8fb2ce5"
+    },
+    {
+      "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+      "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1",
+      "packaged": "lib/libiconv.2.dylib",
+      "loads": [
+        {
+          "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib",
+          "relocated": "@loader_path/libiconv.2.dylib",
+          "original_sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1"
+        },
+        {
+          "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libcharset.1.dylib",
+          "relocated": "@loader_path/libcharset.1.dylib",
+          "original_sha256": "cd965d293a43242b9073190e31af8b4cfa3bacca3f0262edc7fd47abce360959"
+        }
+      ],
+      "packaged_sha256": "2fbbe9796199ea41388cef1d4a707dafb2f45d2ceafb0554b9b75cf75bfe613d"
+    },
+    {
+      "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libcharset.1.dylib",
+      "original_sha256": "cd965d293a43242b9073190e31af8b4cfa3bacca3f0262edc7fd47abce360959",
+      "packaged": "lib/libcharset.1.dylib",
+      "loads": [
+        {
+          "original": "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libcharset.1.dylib",
+          "relocated": "@loader_path/libcharset.1.dylib",
+          "original_sha256": "cd965d293a43242b9073190e31af8b4cfa3bacca3f0262edc7fd47abce360959"
+        }
+      ],
+      "packaged_sha256": "cbde7311dae0ec0bcd8af251f00b5a5794986fc800270fadb5f6a5563dc47ce9"
+    }
+  ],
+  "zero_nudox_fresh_home_help": [
+    {
+      "name": "backend-cli",
+      "exit": 0,
+      "stdout_bytes": 8687
+    },
+    {
+      "name": "backend-mcp",
+      "exit": 0,
+      "stdout_bytes": 108
+    },
+    {
+      "name": "backend-locald",
+      "exit": 0,
+      "stdout_bytes": 1623
+    }
+  ]
+}
