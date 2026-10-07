@@ -227,12 +227,7 @@ fn validate_scalar(spec: ArgumentSpec, value: &Value) -> Result<(), Fault> {
         "object" => value.is_object(),
         _ => false,
     };
-    let valid = type_matches
-        && (spec.kind() != ArgumentKind::Limit
-            || value.as_u64().is_some_and(|limit| {
-                (1..=u64::from(backend_library::QueryLimit::MAX)).contains(&limit)
-            }));
-    if valid {
+    if type_matches {
         Ok(())
     } else {
         let expected = if spec.kind() == ArgumentKind::Limit {
