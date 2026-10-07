@@ -36,7 +36,11 @@ use std::fmt;
 use std::path::Path;
 
 pub use backend_engine::application::{
-    ClosedLocalHostEnvironmentSnapshot, ClosedLocalHostEnvironmentSnapshotError, LocalHostVariable,
+    InstalledRustInputs, InstalledRustSelectionSource, InstalledRustToolchain, InstalledToolPlace, find_installed_rust, installed_rust_system_locations,
+    ClosedLocalHostEnvironmentSnapshot, ClosedLocalHostEnvironmentSnapshotError, LocalCompilerHost,
+    LocalHostDiscovery, LocalHostEnvironment, LocalHostVariable, LocalCompilerHostSelection,
+    LocalRuntimeGoAuthorityFailure,
+    ProcessHostEnvironment,
     MAX_CLOSED_LOCAL_HOST_ENVIRONMENT_BYTES,
 };
 pub use embedded::{EmbeddedLocalService, ServiceStart, start_or_attach};

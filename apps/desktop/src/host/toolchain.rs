@@ -1,164 +1,41 @@
-//! The compiler paths the desktop supplies to the owner it embeds.
+//! Frozen compiler launch inputs for the desktop's embedded owner.
 //!
-//! The owner finds its compilers only through explicit absolute paths
-//! (`NUDOX_*`, never `PATH`): "an operator can opt into a toolchain by
-//! supplying its absolute typed path". The desktop that embeds an owner is that
-//! operator. Since the index merge the owner needs, for Rust, a Cargo and a
-//! Cargo home as well as `NUDOX_RUSTC` (a lone `NUDOX_RUSTC` used to be enough
-//! and the development shell still exports only that), and for Go a module
-//! cache. Without them the owner's Rust and Go adapters are absent and every
-//! root of those languages is refused as `Unavailable { language, stage:
-//! LowerIr }`.
-//!
-//! What is supplied is derived from what the process was given, never guessed:
-//! Cargo is the one beside the selected `rustc`, Cargo's home is where Cargo
-//! keeps it (`CARGO_HOME`, else `~/.cargo`), Go's module cache where Go keeps
-//! it (`GOMODCACHE`, else `GOPATH/pkg/mod`, else `~/go/pkg/mod`). A path is
-//! supplied only when the process has not set that variable itself. Derived
-//! tools and caches must exist as the owner requires, except that the default
-//! Cargo home can be safely created under the existing home. Configured paths
-//! stay exact, including invalid ones the owner must honestly refuse.
-//!
-//! A person who opens the app from the Finder gives it no `NUDOX_*` variable
-//! and a `PATH` of `/usr/bin:/bin:/usr/sbin:/sbin`. For them the desktop looks
-//! for the Rust they installed ([`find_rust`]): the process's `PATH`, then
-//! rustup's `~/.cargo/bin`, Homebrew, and Nix profiles, and takes the first
-//! directory that holds both `rustc` and `cargo` (a pair from one install,
-//! never a `rustc` from one and a `cargo` from another). An explicit
-//! `NUDOX_RUSTC` still wins. What it found, or where it looked in vain, is
-//! [`report`]ed, so the window can say it in words instead of every Rust
-//! package being refused as unavailable.
+//! Desktop and CLI/MCP use the engine's shared installed-tool policy, including
+//! Rust pair/cache selection and canonical TypeScript SDK/Node discovery. Only
+//! selected typed paths enter the closed owner snapshot. Explicit values retain
+//! their normal typed failures; an incoming closed snapshot is never expanded.
 
-use backend_local_service::{ClosedLocalHostEnvironmentSnapshot, LocalHostVariable};
+use backend_local_service::{
+    ClosedLocalHostEnvironmentSnapshot, LocalCompilerHost, LocalHostDiscovery,
+    LocalHostEnvironment, LocalHostVariable,
+};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+#[cfg(test)]
+use std::path::Path;
 use std::sync::{PoisonError, RwLock};
 
-/// Where a person's Rust was found.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Place {
-    /// The process named it (`NUDOX_RUSTC`: the development shell, an operator).
-    Named,
-    /// A directory on the process's `PATH`.
-    Path,
-    /// rustup's proxies (`$CARGO_HOME/bin`, else `~/.cargo/bin`).
-    Rustup,
-    /// Homebrew (`/opt/homebrew/bin`, `/usr/local/bin`).
-    Homebrew,
-    /// A Nix profile.
-    Nix,
-}
+// Installed Rust pair discovery is shared with CLI/MCP host capture.
+pub(crate) use backend_local_service::InstalledRustToolchain as Rust;
+use backend_local_service::{
+    InstalledRustInputs, InstalledToolPlace as Place,
+};
 
-impl Place {
-    /// How a person names it.
-    pub(crate) const fn words(self) -> &'static str {
-        match self {
-            Self::Named => "as configured",
-            Self::Path => "on your PATH",
-            Self::Rustup => "from rustup",
-            Self::Homebrew => "from Homebrew",
-            Self::Nix => "from Nix",
-        }
-    }
-}
-
-/// The Rust the owner compiles with, as this launch found it.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Rust {
-    /// A `rustc` with its `cargo` beside it.
-    Found {
-        rustc: PathBuf,
-        place: Place,
-        /// `rustc --version`'s first line, when it answered.
-        version: Option<String>,
-    },
-    /// No directory it looked in held both; each looked-in directory, in order.
-    Missing { looked: Vec<PathBuf> },
-}
-
-impl Rust {
-    /// What the window says about it.
-    pub(crate) fn words(&self) -> String {
-        match self {
-            Self::Found { rustc, place, version } => {
-                let name = version.as_deref().and_then(|version| version.split_whitespace().nth(1)).map_or_else(|| "Rust".to_owned(), |number| format!("Rust {number}"));
-                format!("{name} at {} ({})", rustc.display(), place.words())
-            }
-            Self::Missing { .. } => {
-                "No Rust toolchain was found. Install one with rustup (rustup.rs) or Homebrew (brew install rust), then quit and reopen Nudox.".to_owned()
-            }
-        }
-    }
-}
-
-/// Directories people install Rust into outside their home, in the order they
-/// are tried after the process's `PATH` and rustup's.
-const SYSTEM_BINS: [(&str, Place); 5] = [
-    ("/opt/homebrew/bin", Place::Homebrew),
-    ("/usr/local/bin", Place::Homebrew),
-    ("/run/current-system/sw/bin", Place::Nix),
-    ("/nix/var/nix/profiles/default/bin", Place::Nix),
-    ("/etc/profiles/per-user", Place::Nix),
-];
-
-/// The file name a `tool` executable has on this platform (`rustc.exe` on
-/// Windows, `rustc` elsewhere).
-fn executable(tool: &str) -> String {
-    format!("{tool}{}", std::env::consts::EXE_SUFFIX)
-}
-
-/// The person's home directory variable: `HOME`, and on Windows, which does
-/// not set it, `USERPROFILE` (where rustup puts `.cargo`).
+#[cfg(test)]
+fn executable(tool: &str) -> String { format!("{tool}{}", std::env::consts::EXE_SUFFIX) }
 fn home_variable(value: &dyn Fn(&str) -> Option<OsString>) -> Option<OsString> {
     value("HOME").or_else(|| if cfg!(windows) { value("USERPROFILE") } else { None })
 }
 
-/// The first directory that holds both `rustc` and `cargo`: an explicit
-/// `NUDOX_RUSTC`, else the process's `PATH`, rustup's proxies, Homebrew, Nix.
-/// `system` is [`SYSTEM_BINS`] in production (a test gives its own).
-pub(crate) fn find_rust(variable: &dyn Fn(&str) -> Option<OsString>, system: &[(PathBuf, Place)]) -> Rust {
-    let value = |name: &str| variable(name).filter(|value| !value.is_empty());
-    if let Some(rustc) = value("NUDOX_RUSTC") {
-        return Rust::Found { rustc: PathBuf::from(rustc), place: Place::Named, version: None };
-    }
-    let home = home_variable(&value).map(PathBuf::from).filter(|home| home.is_absolute());
-    let mut places = Vec::new();
-    if let Some(path) = value("PATH") {
-        places.extend(std::env::split_paths(&path).filter(|dir| dir.is_absolute()).map(|dir| (dir, Place::Path)));
-    }
-    let cargo_home = value("CARGO_HOME").map(PathBuf::from).filter(|home| home.is_absolute()).or_else(|| home.as_ref().map(|home| home.join(".cargo")));
-    if let Some(cargo_home) = cargo_home {
-        places.push((cargo_home.join("bin"), Place::Rustup));
-    }
-    for (dir, place) in system {
-        // `/etc/profiles/per-user` is per user: NixOS and nix-darwin's.
-        let dir = if dir.ends_with("per-user") {
-            match home.as_ref().and_then(|home| home.file_name()) {
-                Some(user) => dir.join(user).join("bin"),
-                None => continue,
-            }
-        } else {
-            dir.clone()
-        };
-        places.push((dir, *place));
-    }
-    if let Some(home) = &home {
-        places.push((home.join(".nix-profile/bin"), Place::Nix));
-    }
-    let mut looked = Vec::new();
-    for (dir, place) in places {
-        if looked.contains(&dir) {
-            continue;
-        }
-        let (rustc, cargo) = (dir.join(executable("rustc")), dir.join(executable("cargo")));
-        if rustc.is_file() && cargo.is_file() {
-            return Rust::Found { rustc, place, version: None };
-        }
-        looked.push(dir);
-    }
-    Rust::Missing { looked }
+fn find_rust(variable: &dyn Fn(&str) -> Option<OsString>, system: &[(PathBuf, Place)]) -> Rust {
+    backend_local_service::find_installed_rust(&InstalledRustInputs {
+        configured_rustc: variable("NUDOX_RUSTC"),
+        home: home_variable(variable),
+        cargo_home: variable("CARGO_HOME"),
+        search_path: variable("PATH"),
+    }, system)
 }
 
 /// What this launch found, once the owner was started.
@@ -167,34 +44,6 @@ static REPORT: RwLock<Option<Rust>> = RwLock::new(None);
 /// The Rust this launch found for the owner, once it started.
 pub(crate) fn report() -> Option<Rust> {
     REPORT.read().unwrap_or_else(PoisonError::into_inner).clone()
-}
-
-/// `rustc --version`'s first line, within two seconds (a rustup proxy may
-/// first resolve its toolchain).
-fn version_of(rustc: &Path) -> Option<String> {
-    let mut child = std::process::Command::new(rustc)
-        .arg("--version")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
-    let started = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => break,
-            Ok(Some(_)) | Err(_) => return None,
-            Ok(None) if started.elapsed() > std::time::Duration::from_secs(2) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
-        }
-    }
-    let mut out = String::new();
-    std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out).ok()?;
-    out.lines().next().map(str::trim).filter(|line| !line.is_empty()).map(str::to_owned)
 }
 
 /// The paths to supply, given the process's variables.
@@ -207,6 +56,7 @@ pub(crate) fn supplied(
 
 /// [`supplied`], with a person's Rust looked for in `system` too when the
 /// process named none ([`find_rust`]).
+#[cfg(test)]
 pub(crate) fn supplied_among(
     variable: &dyn Fn(&str) -> Option<OsString>,
     system: &[(PathBuf, Place)],
@@ -267,12 +117,16 @@ pub(crate) fn supplied_among(
 
 /// Derivation does not create directories. Explicit paths are kept verbatim so
 /// the owner, including its normal invalid-path refusal, remains the authority.
+#[cfg(test)]
 struct CompilerSelection {
     paths: Vec<(LocalHostVariable, PathBuf)>,
+    #[cfg(test)]
     inferred_cargo_home: Option<PathBuf>,
 }
 
+#[cfg(test)]
 impl CompilerSelection {
+    #[cfg(test)]
     fn derive(variable: &dyn Fn(&str) -> Option<OsString>, system: &[(PathBuf, Place)]) -> Self {
         let mut paths = supplied_among(variable, system);
         let rust = find_rust(variable, system);
@@ -313,6 +167,7 @@ impl CompilerSelection {
 
     /// Only a default cache below the existing home may be created. Existing
     /// user caches, configured paths, ancestors and permissions stay untouched.
+    #[cfg(test)]
     fn realize(&self) -> io::Result<()> {
         let Some(path) = &self.inferred_cargo_home else { return Ok(()); };
         if path.is_dir() { return Ok(()); }
@@ -324,36 +179,89 @@ impl CompilerSelection {
 /// Freeze operator variables once, realize only inferred state, and hand the
 /// owner the same typed paths that a later MCP client configuration exports.
 pub(crate) fn prepared_by_the_process() -> io::Result<ClosedLocalHostEnvironmentSnapshot> {
+    if let Some(snapshot) = incoming_closed_snapshot()? {
+        record_closed_report(&snapshot);
+        return Ok(snapshot);
+    }
     let captured = process_variables();
     let variable = |name: &str| captured.get(name).cloned();
-    let system = SYSTEM_BINS.iter().map(|(dir, place)| (PathBuf::from(dir), *place)).collect::<Vec<_>>();
-    let found = match find_rust(&variable, &system) {
-        Rust::Found { rustc, place, .. } => {
-            let version = version_of(&rustc);
-            Rust::Found { rustc, place, version }
-        }
-        missing @ Rust::Missing { .. } => missing,
-    };
+    let system = backend_local_service::installed_rust_system_locations();
+    let found = find_rust(&variable, &system);
     *REPORT.write().unwrap_or_else(PoisonError::into_inner) = Some(found);
-    let selected = CompilerSelection::derive(&variable, &system);
-    let snapshot = closed_snapshot(selected.paths.clone())?;
-    selected.realize()?;
+    let snapshot = installed_snapshot(&captured)?;
     Ok(snapshot)
+}
+
+fn record_closed_report(snapshot: &ClosedLocalHostEnvironmentSnapshot) {
+    *REPORT.write().unwrap_or_else(PoisonError::into_inner) = Some(Rust::from_closed_snapshot(snapshot));
 }
 
 /// Attaching does not discover tools or create caches. The local registry
 /// source may use this client's existing Cargo cache, without claiming that
 /// these are the attached owner's compiler or policy settings.
 pub(crate) fn captured_by_the_process() -> io::Result<ClosedLocalHostEnvironmentSnapshot> {
-    if let Some(encoded) = std::env::var_os(backend_local_service::COMPILER_ENVIRONMENT_ENV) {
-        let encoded = encoded.to_str().ok_or_else(|| io::Error::new(
-            io::ErrorKind::InvalidInput, "closed compiler environment must be UTF-8",
-        ))?;
-        return ClosedLocalHostEnvironmentSnapshot::parse(encoded)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error));
+    if let Some(snapshot) = incoming_closed_snapshot()? {
+        return Ok(snapshot);
     }
     let captured = process_variables();
     closed_snapshot(closed_paths(&|name| captured.get(name).cloned()))
+}
+
+fn incoming_closed_snapshot() -> io::Result<Option<ClosedLocalHostEnvironmentSnapshot>> {
+    if let Some(encoded) = std::env::var_os(backend_local_service::COMPILER_ENVIRONMENT_ENV) {
+        let encoded = encoded.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "closed compiler environment must be UTF-8",
+            )
+        })?;
+        return ClosedLocalHostEnvironmentSnapshot::parse(encoded)
+            .map(Some)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error));
+    }
+    Ok(None)
+}
+
+/// Delegates raw installed launch inputs to the same engine policy as CLI/MCP locald
+/// composition. This reader is already frozen and never
+/// falls back to the live process, including for absent and explicitly empty variables.
+struct DesktopLaunchEnvironment<'a> {
+    captured: &'a BTreeMap<&'static str, OsString>,
+}
+
+impl LocalHostEnvironment for DesktopLaunchEnvironment<'_> {
+    fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
+        self.captured.get(variable.environment_name()).cloned()
+    }
+
+    fn search_path(&self) -> Option<OsString> {
+        self.captured.get("PATH").cloned()
+    }
+    fn go_module_cache(&self) -> Option<OsString> {
+        self.captured.get("GOMODCACHE").cloned()
+    }
+    fn go_path(&self) -> Option<OsString> {
+        self.captured.get("GOPATH").cloned()
+    }
+    fn cargo_home(&self) -> Option<OsString> { self.captured.get("CARGO_HOME").cloned() }
+    fn user_profile(&self) -> Option<OsString> { self.captured.get("USERPROFILE").cloned() }
+}
+
+fn installed_snapshot(
+    captured: &BTreeMap<&'static str, OsString>,
+) -> io::Result<ClosedLocalHostEnvironmentSnapshot> {
+    LocalCompilerHost::new(
+        DesktopLaunchEnvironment { captured },
+        LocalHostDiscovery::InstalledTools,
+    )
+    .capture_installed_selection()
+    .map(|selection| selection.snapshot().clone())
+    .map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("capture installed compiler selection: {error}"),
+        )
+    })
 }
 
 fn process_variables() -> BTreeMap<&'static str, OsString> {
@@ -391,6 +299,151 @@ fn closed_snapshot(paths: Vec<(LocalHostVariable, PathBuf)>) -> io::Result<Close
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    /// Executes the real desktop environment composition against the standalone owner policy.
+    /// The supervisor supplies a private HOME/PATH with an actual installed npm SDK symlink;
+    /// it must not set NUDOX_TSC/Node/module-root overrides for the default-environment gate.
+    #[test]
+    #[ignore = "requires a pinned actual installed Linux/npm or macOS application environment"]
+    fn actual_default_launch_matches_standalone_installed_tool_selection() {
+        for variable in ["NUDOX_TSC", "NUDOX_TYPESCRIPT_NODE", "NUDOX_TYPESCRIPT_MODULE_ROOT",
+            backend_local_service::COMPILER_ENVIRONMENT_ENV] {
+            assert!(std::env::var_os(variable).is_none(), "default gate cannot configure {variable}");
+        }
+        let expected_compiler = std::fs::canonicalize(std::env::var_os("NUDOX_SETUP_EXPECTED_GLOBAL_TSC")
+            .expect("pinned global npm tsc entrypoint")).expect("canonical global compiler");
+        let expected_node = std::fs::canonicalize(std::env::var_os("NUDOX_SETUP_EXPECTED_NODE")
+            .expect("pinned installed Node runtime")).expect("canonical Node runtime");
+        let desktop = prepared_by_the_process().expect("actual desktop composition");
+        let locald = LocalCompilerHost::new(backend_local_service::ProcessHostEnvironment,
+            LocalHostDiscovery::InstalledTools).capture_installed_selection().expect("standalone owner composition");
+        assert_eq!(&desktop, locald.snapshot(), "GUI and CLI/MCP select the same exact host paths");
+        assert_eq!(desktop.path(LocalHostVariable::NudoxTypeScriptDefaultCompiler), Some(expected_compiler.as_path()));
+        assert_eq!(desktop.path(LocalHostVariable::NudoxTypeScriptCompiler), None);
+        assert_eq!(desktop.path(LocalHostVariable::NudoxTypeScriptDefaultNode), Some(expected_node.as_path()));
+        assert!(desktop.path(LocalHostVariable::NudoxTypeScriptModuleRoot).is_some());
+        let restarted = prepared_by_the_process().expect("repeat actual desktop composition");
+        assert_eq!(desktop, restarted, "unchanged launch inputs yield the same closed owner paths");
+        println!("actual-default-host-snapshot={}", desktop.encode().expect("closed snapshot receipt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn desktop_and_locald_capture_the_same_global_npm_symlink_and_node() {
+        use std::os::unix::{fs::PermissionsExt as _, fs::symlink};
+        let machine = machine("typescript-shared");
+        let home = machine.root.join("home");
+        let module_root = home.join(".local/lib/node_modules");
+        let package = module_root.join("typescript");
+        let compiler = package.join("bin/tsc");
+        std::fs::create_dir_all(compiler.parent().expect("compiler parent")).expect("package");
+        std::fs::write(&compiler, "#!/usr/bin/env node\n").expect("compiler");
+        std::fs::set_permissions(&compiler, std::fs::Permissions::from_mode(0o700))
+            .expect("compiler permissions");
+        let bin = home.join(".local/bin");
+        std::fs::create_dir_all(&bin).expect("user bin");
+        symlink(&compiler, bin.join("tsc")).expect("npm tsc symlink");
+        let node = bin.join("node");
+        std::fs::write(&node, "#!/bin/sh\nexit 0\n").expect("node");
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o700))
+            .expect("node permissions");
+        let mut captured = BTreeMap::from([
+            ("HOME", home.into_os_string()),
+            ("PATH", bin.into_os_string()),
+        ]);
+        let desktop = installed_snapshot(&captured).expect("desktop capture");
+        let locald = LocalCompilerHost::new(
+            DesktopLaunchEnvironment {
+                captured: &captured,
+            },
+            LocalHostDiscovery::InstalledTools,
+        )
+        .capture_installed_selection()
+        .expect("locald capture");
+        assert_eq!(&desktop, locald.snapshot());
+        assert_eq!(
+            desktop.path(LocalHostVariable::NudoxTypeScriptDefaultCompiler),
+            Some(compiler.as_path())
+        );
+        assert_eq!(
+            desktop.path(LocalHostVariable::NudoxTypeScriptCompiler),
+            None,
+            "discovered host fallback cannot override project-local SDK precedence"
+        );
+        assert_eq!(
+            desktop.path(LocalHostVariable::NudoxTypeScriptModuleRoot),
+            Some(module_root.as_path())
+        );
+        assert_eq!(
+            desktop.path(LocalHostVariable::NudoxTypeScriptDefaultNode),
+            Some(node.as_path())
+        );
+
+        // Explicit invalid settings must not be repaired by the working PATH pair.
+        for value in [
+            OsString::new(),
+            OsString::from("relative/tsc"),
+            machine.root.join("missing/tsc").into_os_string(),
+        ] {
+            captured.insert("NUDOX_TSC", value);
+            assert!(installed_snapshot(&captured).is_err());
+        }
+        std::fs::remove_dir_all(machine.root).expect("owned fixture cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn desktop_and_standalone_keep_the_same_closed_go_only_refusal() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use backend_local_service::{LocalCompilerHostSelection, LocalRuntimeGoAuthorityFailure as Failure};
+        let machine = machine("go-only-closed-handoff");
+        let home = machine.root.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let module_root = machine.root.join("lib/node_modules");
+        let tsc = module_root.join("typescript/bin/tsc");
+        std::fs::create_dir_all(tsc.parent().unwrap()).unwrap();
+        std::fs::write(&tsc, "#!/bin/sh\nexit 0\n").unwrap();
+        let node = tsc.with_file_name(executable("node"));
+        std::fs::write(&node, "#!/bin/sh\nexit 0\n").unwrap();
+        for path in [&tsc, &node] {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let mut captured = BTreeMap::from([("HOME", home.into_os_string()),
+            ("PATH", tsc.parent().unwrap().as_os_str().to_owned())]);
+        for (name, cause) in [("NUDOX_GO", Failure::ExecutableUnavailable),
+            ("NUDOX_GO_ROOT", Failure::GoRootUnavailable), ("NUDOX_GO_ORACLE", Failure::OracleUnavailable)] {
+            for value in [OsString::new(), OsString::from("relative-object"), machine.root.join("missing-object").into_os_string()] {
+                captured.insert(name, value);
+                let desktop = installed_snapshot(&captured).expect("desktop preserves Go-only failure");
+                let standalone = LocalCompilerHost::new(DesktopLaunchEnvironment { captured: &captured },
+                    LocalHostDiscovery::InstalledTools).capture_installed_selection().unwrap();
+                assert_eq!(&desktop, standalone.snapshot());
+                let transported = ClosedLocalHostEnvironmentSnapshot::parse(&desktop.encode().unwrap()).unwrap();
+                let owner = LocalCompilerHostSelection::from_closed_snapshot(transported).unwrap();
+                assert_eq!(owner.go_authority_failure(), Some(cause));
+                assert_eq!(owner.snapshot().path(LocalHostVariable::NudoxTypeScriptDefaultCompiler), Some(tsc.as_path()));
+                assert_eq!(owner.snapshot().path(LocalHostVariable::NudoxTypeScriptDefaultNode), Some(node.as_path()));
+            }
+            captured.remove(name);
+        }
+        std::fs::remove_dir_all(machine.root).unwrap();
+    }
+
+    #[test]
+    fn closed_report_replaces_stale_rust_without_ambient_discovery_or_version_claims() {
+        let path = std::env::temp_dir().join("closed-selection-does-not-probe/rustc");
+        let snapshot = ClosedLocalHostEnvironmentSnapshot::from_paths([
+            (LocalHostVariable::NudoxRustc, path.clone()),
+        ]).unwrap();
+        record_closed_report(&snapshot);
+        let selected = report().unwrap();
+        assert!(matches!(selected, Rust::Found { rustc, place: Place::ClosedSnapshot, version: None } if rustc == path));
+        assert!(!path.exists(), "reporting cannot realize or probe a closed selection");
+        record_closed_report(&ClosedLocalHostEnvironmentSnapshot::from_paths([]).unwrap());
+        let absent = report().unwrap();
+        assert!(matches!(absent, Rust::Missing { source: backend_local_service::InstalledRustSelectionSource::ClosedSnapshot, .. }));
+        assert_eq!(absent.words(), "Rust is absent from the closed compiler environment.");
+    }
 
     /// A toolchain directory and a home, on disk, under a scratch root.
     struct Machine {
@@ -666,7 +719,7 @@ mod tests {
         let finder = env(&finder_vars);
         let system = [(empty.clone(), Place::Homebrew)];
         let found = find_rust(&finder, &system);
-        let Rust::Missing { looked } = &found else { panic!("no rustc anywhere: {found:?}") };
+        let Rust::Missing { looked, .. } = &found else { panic!("no rustc anywhere: {found:?}") };
         let [first, second] = path_dirs;
         assert_eq!(
             looked,
@@ -743,6 +796,29 @@ mod tests {
         assert!(
             supplied(&env(&[("HOME", &home)])).is_empty(),
             "no Go selected: no Go root"
+        );
+    }
+
+    #[test]
+    fn installed_capture_keeps_cargo_and_windows_home_as_raw_launch_inputs() {
+        let captured = BTreeMap::from([
+            ("CARGO_HOME", OsString::from("/person/cache")),
+            ("USERPROFILE", OsString::from("/person/home")),
+        ]);
+        let environment = DesktopLaunchEnvironment { captured: &captured };
+        assert_eq!(environment.value(LocalHostVariable::NudoxCargoHome), None);
+        assert_eq!(environment.value(LocalHostVariable::Home), None);
+        assert_eq!(environment.cargo_home(), captured.get("CARGO_HOME").cloned());
+        assert_eq!(environment.user_profile(), captured.get("USERPROFILE").cloned());
+        // Present explicit settings are still distinct from ordinary Cargo/OS inputs.
+        let captured = BTreeMap::from([
+            ("NUDOX_CARGO_HOME", OsString::new()),
+            ("CARGO_HOME", OsString::from("/person/cache")),
+        ]);
+        assert_eq!(
+            DesktopLaunchEnvironment { captured: &captured }
+                .value(LocalHostVariable::NudoxCargoHome),
+            Some(OsString::new())
         );
     }
 }

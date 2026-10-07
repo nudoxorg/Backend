@@ -133,6 +133,14 @@ impl LocalHostEnvironment for EmbeddedCompilerEnvironment {
             .then(|| ProcessHostEnvironment.go_path())
             .flatten()
     }
+
+    fn cargo_home(&self) -> Option<OsString> {
+        self.compiler_environment.is_none().then(|| ProcessHostEnvironment.cargo_home()).flatten()
+    }
+
+    fn user_profile(&self) -> Option<OsString> {
+        self.compiler_environment.is_none().then(|| ProcessHostEnvironment.user_profile()).flatten()
+    }
 }
 
 impl EmbeddedCompilerEnvironment {

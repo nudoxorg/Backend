@@ -310,6 +310,23 @@ pub enum LocalRuntimePythonCheckerProbeFailure {
     Cleanup(super::toolchain_probe::ToolchainProbeCleanupAction),
 }
 
+/// Retained cause when an optional Go installation was selected but could not
+/// be admitted for package authority. The owner remains usable for other
+/// languages; Go requests receive this exact typed cause at their boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum LocalRuntimeGoAuthorityFailure {
+    /// The selected executable path could not be admitted.
+    ExecutableUnavailable,
+    /// The selected Go compiler could not provide an admissible GOROOT.
+    GoRootUnavailable,
+    /// A private or configured Go module cache could not be admitted.
+    ModuleCacheUnavailable,
+    /// The selected Go executable or GOROOT identity could not be captured.
+    ToolchainIdentityUnavailable,
+    /// An explicitly selected Go oracle producer could not be admitted.
+    OracleUnavailable,
+}
+
 /// One closed Python checker admission state.
 ///
 /// Native authority carries its actual compiled producer identity. External `Ready`
@@ -1276,6 +1293,12 @@ fn capability_setup_issue(
     runtime: Option<&LocalRuntimeToolchain>,
     authority: &LocalRuntimePackageAuthority,
 ) -> Option<CompilerToolIssue> {
+    if profile.language() == Language::Go && authority.go_unavailable.is_some() {
+        return Some(CompilerToolIssue {
+            requirement: CompilerToolRequirement::Native(NativeTool::GoCompiler),
+            failure: CompilerToolFailure::ProbeFailed,
+        });
+    }
     let native_tool = CompilerToolRequirement::Native(profile.language().native_tool());
     match runtime.map(|candidate| candidate.state) {
         Some(LocalRuntimeToolchainState::Unavailable) | None => {
@@ -2271,6 +2294,8 @@ pub struct LocalRuntimePackageAuthority {
     pub rust: Option<LocalRuntimeRustAuthority>,
     /// Go package oracle authority.
     pub go: Option<ConfiguredGoOracle>,
+    /// Retained Go-only admission failure; it never prevents unrelated owners from starting.
+    pub go_unavailable: Option<LocalRuntimeGoAuthorityFailure>,
     /// C# Roslyn helper authority.
     pub csharp: Option<LocalRuntimeCSharpAuthority>,
     /// Java JDK/doclet authority.
@@ -3566,6 +3591,7 @@ fn run_worker_generation(
         python_checker: configuration.package_authority.python_checker.as_ref(),
         rust,
         go: configuration.package_authority.go.as_ref(),
+        go_unavailable: configuration.package_authority.go_unavailable,
         csharp,
         java,
         maximum_image_bytes: configuration
@@ -4700,7 +4726,7 @@ mod input_witness_store_tests {
 mod portable_recipe_tests {
     use super::*;
     use crate::test_support::host_path;
-    use backend_semantic::vocabulary::{PythonVersion, RustEdition};
+    use backend_semantic::vocabulary::{GoVersion, PythonVersion, RustEdition};
 
     fn rust_recipe(
         policy: RustCargoMetadataPolicy,
@@ -4848,6 +4874,28 @@ mod portable_recipe_tests {
             } => assert_eq!(observed, proof),
             other => panic!("ready checker admission lost its paired adapter/proof: {other:?}"),
         }
+    }
+
+    #[test]
+    fn failed_optional_go_admission_is_a_go_only_probe_failure() {
+        let profile = LanguageProfile::Go(GoVersion::Go125);
+        let compiler = LocalRuntimeToolchain::resolved(
+            NativeTool::GoCompiler,
+            host_path("/test/bin/go").to_path_buf(),
+            b"go version go1.25 test",
+        )
+        .expect("absolute selected Go toolchain");
+        let mut authority = LocalRuntimePackageAuthority::default();
+        authority.go_unavailable =
+            Some(LocalRuntimeGoAuthorityFailure::ToolchainIdentityUnavailable);
+
+        assert_eq!(
+            capability_setup_issue(profile, Some(&compiler), &authority),
+            Some(CompilerToolIssue {
+                requirement: CompilerToolRequirement::Native(NativeTool::GoCompiler),
+                failure: CompilerToolFailure::ProbeFailed,
+            }),
+        );
     }
 
     #[test]

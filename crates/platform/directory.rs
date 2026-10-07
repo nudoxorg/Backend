@@ -19,6 +19,7 @@ use crate::linkage::{IfUnlinked, Linkage, open_admitted};
 use std::os::unix::ffi::OsStringExt;
 
 const MAX_DIRECTORY_CLEANUP_ENTRIES: usize = 1_000_000;
+const MAX_DIRECTORY_LINK_TARGET_BYTES: usize = 4096;
 
 /// Kind of one direct child reported by a pinned directory capability.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -568,6 +569,40 @@ impl DirectoryCapability {
         #[cfg(not(any(unix, windows)))]
         {
             let _ = name;
+            Err(unsupported())
+        }
+    }
+
+    /// Reads the raw target of one direct symbolic-link child without
+    /// following it. The caller supplies a bound no larger than the platform
+    /// capability limit; an overlong target is refused instead of truncated.
+    pub fn read_link_target(&self, name: &str, maximum_bytes: usize) -> io::Result<PathBuf> {
+        validate_component(name)?;
+        if maximum_bytes > MAX_DIRECTORY_LINK_TARGET_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "symbolic-link target bound exceeds the capability limit",
+            ));
+        }
+        #[cfg(unix)]
+        {
+            use rustix::fs::readlinkat_raw;
+            use std::mem::MaybeUninit;
+
+            let mut storage = [MaybeUninit::<u8>::uninit(); MAX_DIRECTORY_LINK_TARGET_BYTES + 1];
+            let capacity = maximum_bytes + 1;
+            let (target, _) = readlinkat_raw(self.handle.as_ref(), name, &mut storage[..capacity])?;
+            if target.len() > maximum_bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::FileTooLarge,
+                    "symbolic-link target exceeds the requested limit",
+                ));
+            }
+            return Ok(PathBuf::from(OsString::from_vec(target.to_vec())));
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (name, maximum_bytes);
             Err(unsupported())
         }
     }
@@ -1745,6 +1780,35 @@ mod tests {
         assert!(
             !outside.join("new").exists(),
             "refused creation has no side effect through the symlink"
+        );
+
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn bounded_link_target_reads_raw_text_without_following_or_truncating() {
+        let root = scratch();
+        symlink("missing-target", root.join("dangling-link")).expect("create dangling link");
+        fs::write(root.join("ordinary-file"), b"ordinary bytes").expect("create regular file");
+        let capability = DirectoryCapability::open_read_only_source(&root).expect("pin root");
+
+        assert_eq!(
+            capability
+                .read_link_target("dangling-link", 32)
+                .expect("read raw link target"),
+            PathBuf::from("missing-target")
+        );
+        assert!(
+            capability.read_link_target("dangling-link", 4).is_err(),
+            "an overlong target must be refused rather than truncated"
+        );
+        assert!(
+            capability.read_link_target("dangling-link", 4097).is_err(),
+            "callers cannot raise the capability-wide bound"
+        );
+        assert!(
+            capability.read_link_target("ordinary-file", 32).is_err(),
+            "reading a regular file as a link must fail"
         );
 
         fs::remove_dir_all(root).expect("remove fixture");
