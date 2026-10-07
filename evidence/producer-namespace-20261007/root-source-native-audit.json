@@ -1,0 +1,192 @@
+{
+  "root_source": "1f636609d3d6176b7e33516b7556664ec20252e7",
+  "worker_final_source": "495bb765df55c7be9dd631326a9e792b10d185d8",
+  "exact_changed_file_blobs": {
+    "crates/local-service/src/builtin/commands/adapter.rs": "fbe0bfbdac4bd982fdd89d7d730c52c57588afc9",
+    "crates/local-service/src/builtin/commands/index_operation.rs": "a9abf84a46c85096a805f627c644693bcc912109"
+  },
+  "native_controls": [
+    {
+      "source": {
+        "commit": "495bb765df55c7be9dd631326a9e792b10d185d8",
+        "tree": "9a0c9843bfc1cbd43d56881869737424b92d99fa",
+        "status": "",
+        "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "filter": "producer_namespace_reopens_without_rewriting_the_caller_request",
+      "stdout_sha256": "92f053289ee256ee92080ddd6891a2b052b3968af99288b3987227ff67d73740",
+      "receipt_sha256": "5e657dd4cc98b2a4b5d18027aed998172d016c4aabd560b97cbd21bdd566b211",
+      "native_images": {
+        "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/.local/build/runtime-fcb/.nudox-cargo/slot-0/release/deps/backend_local_service-54fd18644b0f0c36": {
+          "sha256": "4b2014319e043fd19c9a7edb6ce443131d5554a5f58bc95986da8da3eec9bc75",
+          "bytes": 151992016,
+          "frozen_copy": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/receipts/sol61-bootstrap-lifecycle-495bb7-producer-namespace-20261007-attempt27/frozen-test-executables/backend_local_service-54fd18644b0f0c36"
+        }
+      },
+      "passed": 1,
+      "failed": 0,
+      "gui_interaction_acceptance": false
+    },
+    {
+      "source": {
+        "commit": "495bb765df55c7be9dd631326a9e792b10d185d8",
+        "tree": "9a0c9843bfc1cbd43d56881869737424b92d99fa",
+        "status": "",
+        "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "filter": "reconstructed_publication_rejects_pending_capture_before_encoding",
+      "stdout_sha256": "0e900fb7b73e6319c214b0a4c21975d5de822dd71a22af815cc712b764cf0184",
+      "receipt_sha256": "04ee0c5fdd716a3007837c964f11d6f8df130dd110d8e5b15fba260ee4d71dd6",
+      "native_images": {
+        "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/.local/build/runtime-fcb/.nudox-cargo/slot-0/release/deps/backend_local_service-54fd18644b0f0c36": {
+          "sha256": "4b2014319e043fd19c9a7edb6ce443131d5554a5f58bc95986da8da3eec9bc75",
+          "bytes": 151992016,
+          "frozen_copy": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/receipts/sol61-bootstrap-lifecycle-495bb7-reconstructed-publication-20261007-attempt28/frozen-test-executables/backend_local_service-54fd18644b0f0c36"
+        }
+      },
+      "passed": 1,
+      "failed": 0,
+      "gui_interaction_acceptance": false
+    }
+  ],
+  "real_owner_receipt": {
+    "capture_script": {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/sol61-gui-publication-native-capture-v15.py",
+      "sha256": "5d0ae3315eaa2d834e5cc48b4c68d68ff4ca4dea96473dbf8d4f993900f361e3"
+    },
+    "schema": "nudox.native-bootstrap-regression.v1",
+    "source_before": {
+      "commit": "387120e65d2d4b472bc834c7c3281656c880c6a6",
+      "tree": "caffba0b4db207cc5b72a0259220891a2f9baa2d",
+      "status": "",
+      "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+    },
+    "profile": "release",
+    "target": "native-aarch64-apple-darwin",
+    "command": [
+      "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/.local/fcb-managed-runner/cargo",
+      "test",
+      "--release",
+      "--locked",
+      "--offline",
+      "-j4",
+      "--message-format=json",
+      "-p",
+      "backend-desktop",
+      "--lib",
+      "host::publication_native_tests::real_private_owner_tracks_exact_index_publication_and_cold_reopen",
+      "--",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "actual_invocation": [
+      "/bin/bash",
+      "-c",
+      "set -eu; source \"$1\"; ulimit -n 8192; export SCCACHE_DIR=\"$2/.local/sccache-fcb-attempt02\"; unset SCCACHE_SERVER_UDS; export CARGO_BUILD_JOBS=4 NIX_BUILD_CORES=4 NUDOX_CARGO_BUILD_SLOTS=6; export CARGO_BUILD_BUILD_DIR=\"$2/.local/build/runtime-fcb\" CARGO_TARGET_DIR=\"$2/.local/target\"; exec \"$3\" \"${@:4}\"",
+      "sol61-bootstrap-native",
+      "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/fcb-native-environment.sh",
+      "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006",
+      "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/.local/fcb-managed-runner/cargo",
+      "test",
+      "--release",
+      "--locked",
+      "--offline",
+      "-j4",
+      "--message-format=json",
+      "-p",
+      "backend-desktop",
+      "--lib",
+      "host::publication_native_tests::real_private_owner_tracks_exact_index_publication_and_cold_reopen",
+      "--",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "tools_before": {
+      "cargo": {
+        "path": "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+        "sha256": "ad6923e08f2383443d5258a5b4896136e46305730347618ea18808ba8d9b85ac",
+        "version": "cargo 1.97.1 (c980f4866 2026-06-30)"
+      },
+      "rustc": {
+        "path": "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/rustc",
+        "sha256": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da",
+        "version": "rustc 1.97.1 (8bab26f4f 2026-07-14)"
+      },
+      "rustdoc": {
+        "path": "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/rustdoc",
+        "sha256": "aa94960b6a477441f6d1a797394daf4cafcc889d837550c8fa462b102e3fa5da",
+        "version": "rustdoc 1.97.1 (8bab26f4f 2026-07-14)"
+      }
+    },
+    "runner": {
+      "path": "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/.local/fcb-managed-runner/cargo",
+      "sha256": "5903ebebc554d60410570fc4abce21d86e1d757981ec01cddb78e00fad6cd62e"
+    },
+    "environment": {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/artifacts/fcb-native-environment.sh",
+      "sha256": "dfcbb9a52f71e4697efd7b036ba7413794d4ff7195e7d7f1de8375ac4e5b763a"
+    },
+    "fleet_proof_sha256": "4f7ad52ed8425df87caa7af5cf251e224911a6f3e538e25c6d000e348779db75",
+    "supervisor_pid": 20964,
+    "started_utc": "2026-10-07T17:51:03.049983+00:00",
+    "exit_code": 0,
+    "guard_reason": null,
+    "gui_interaction_acceptance": false,
+    "test_executables": {
+      "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/.local/build/runtime-fcb/.nudox-cargo/slot-0/release/deps/backend_desktop-997caff1cfc7f23b": {
+        "sha256": "5d929f79f896a0f859caa9dac145b64ff9738f18a3709957f9a479d8b48cd7ef",
+        "bytes": 194750512,
+        "frozen_copy": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/receipts/sol61-bootstrap-publication-387120-real-20261007-attempt19/frozen-test-executables/backend_desktop-997caff1cfc7f23b"
+      }
+    },
+    "runtime_allocation": {
+      "scope": "Root authorized sol61_gui_lifecycle_remote new isolated private production owner",
+      "lease": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol-fresh-remote-runtime/coordination/sol61-gui-private-publication-owner.lock",
+      "lease_held_through_child_exit": true
+    },
+    "owned_process_group": 20989,
+    "finished_utc": "2026-10-07T17:51:28.441180+00:00",
+    "source_after": {
+      "commit": "387120e65d2d4b472bc834c7c3281656c880c6a6",
+      "tree": "caffba0b4db207cc5b72a0259220891a2f9baa2d",
+      "status": "",
+      "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+    },
+    "source_unchanged": true,
+    "tools_after": {
+      "cargo": {
+        "path": "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+        "sha256": "ad6923e08f2383443d5258a5b4896136e46305730347618ea18808ba8d9b85ac",
+        "version": "cargo 1.97.1 (c980f4866 2026-06-30)"
+      },
+      "rustc": {
+        "path": "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/rustc",
+        "sha256": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da",
+        "version": "rustc 1.97.1 (8bab26f4f 2026-07-14)"
+      },
+      "rustdoc": {
+        "path": "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/rustdoc",
+        "sha256": "aa94960b6a477441f6d1a797394daf4cafcc889d837550c8fa462b102e3fa5da",
+        "version": "rustdoc 1.97.1 (8bab26f4f 2026-07-14)"
+      }
+    },
+    "tools_unchanged": true,
+    "assets_unchanged": true,
+    "raw_logs": {
+      "cargo.stdout.jsonl": {
+        "bytes": 4593322,
+        "sha256": "7d2d3960d3c830923eaea3a88b1d3b8f7fbd85a5b5545e9b0cd6fed3b42ff318"
+      },
+      "cargo.stderr.log": {
+        "bytes": 732,
+        "sha256": "ffb5697c1170328e705a850b8e295730d920a390bbf8bfe8676674a7f975456e"
+      },
+      "resources.jsonl": {
+        "bytes": 585,
+        "sha256": "616350b0d4d9dd07d7c948d0519739ff87d8a9a84271beb926a586afb056c243"
+      }
+    }
+  },
+  "scope": "two native controls plus one real production-owner publication/restart test; not visual screenshots or all-language GUI acceptance",
+  "missing_raw_logs": []
+}
