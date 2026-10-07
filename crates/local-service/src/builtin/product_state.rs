@@ -2600,14 +2600,23 @@ fn registry_project_root(
             continue;
         }
         if let Some(location) = row.source.captured() {
-            let mut dir = Path::new(location.path());
-            while let Some(parent) = dir.parent() {
-                if let Some(manifest) = super::local_manifest::read_local_manifest(dir)? {
-                    if package_reference_matches(&expected, &manifest.record.coordinate) {
-                        return Ok(dir.to_path_buf());
-                    }
+            let file = Path::new(location.path());
+            // A package-relative path is not authority to inspect the client's
+            // working directory. Its source root is the authenticated stage.
+            if !file.is_absolute() {
+                continue;
+            }
+            // Captured locations identify files. Manifest lookup starts at
+            // their parent, never by treating a source file as a directory.
+            let mut directory = file.parent();
+            while let Some(dir) = directory {
+                if dir.is_dir()
+                    && let Some(manifest) = super::local_manifest::read_local_manifest(dir)?
+                    && package_reference_matches(&expected, &manifest.record.coordinate)
+                {
+                    return Ok(dir.to_path_buf());
                 }
-                dir = parent;
+                directory = dir.parent();
             }
         }
     }
@@ -3265,6 +3274,23 @@ fn package_versions(
     package: &PackageReference,
     workspace: Option<&Path>,
 ) -> Result<OrderedRegistryVersions, String> {
+    // Registry releases retain the selected catalog's source authority,
+    // native metadata and conflicts. A captured declaration path must not
+    // replace those facts with a local manifest projection.
+    if matches!(package, PackageReference::Purl(_)) {
+        let mut rows = catalog_index
+            .records_for(catalog, package, true)?
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        if !rows.is_empty() {
+            let order = sort_registry_versions(&mut rows);
+            return Ok(OrderedRegistryVersions {
+                rows: rows.into_boxed_slice(),
+                order,
+            });
+        }
+    }
     let indexed = indexed_package_records(view, package, workspace)?;
     let mut rows = if !indexed.is_empty() {
         indexed
@@ -3758,6 +3784,105 @@ mod tests {
             forge_sources: Box::new([]),
             advisory: AdvisoryPackageDto::unknown(),
         }
+    }
+
+    fn registry_source_view(package: &str, source: &str) -> ViewRoot {
+        let (view, _) = super::super::initial_view().expect("initial view");
+        let label = format!("{package}::{source}:1::exported");
+        let rows = vec![
+            Row::new(
+                RowId::Package(backend_engine::package_key(package)),
+                view.basis(),
+                package,
+            ),
+            Row::new(
+                RowId::Symbol(backend_engine::symbol_key(&label)),
+                view.basis(),
+                label,
+            )
+            .with_source(backend_library::SourceLocation::new(source, 1).expect("location")),
+        ];
+        ViewRoot::new_incomplete(
+            backend_engine::view_key(b"registry source root tests"),
+            view.basis(),
+            backend_engine::Frontier::new(
+                view.basis().branch,
+                view.basis().log,
+                view.basis().schema,
+                view.basis().root,
+                0,
+            ),
+            rows,
+            Vec::new(),
+        )
+        .expect("registry source view")
+    }
+
+    #[test]
+    fn registry_package_versions_preserve_catalog_authorities_over_relative_source_paths() {
+        let package = PackageReference::parse("pkg:npm/react@19.3.0").expect("package");
+        let view = registry_source_view(package.as_str(), "cjs/react.development.js");
+        let mut first = registry_row(package.as_str(), "react");
+        let mut second = first.clone();
+        let mut first_authority = current_test_authority(&first);
+        first_authority.source = [0x11; 32];
+        first.authority = Some(first_authority);
+        let mut second_authority = current_test_authority(&second);
+        second_authority.source = [0x22; 32];
+        second.authority = Some(second_authority);
+        let catalog = vec![first, second];
+        let index = CatalogLookupIndex::from_catalog(&catalog);
+        let versions =
+            package_versions(&view, &catalog, &index, &package, None).expect("catalog versions");
+        assert_eq!(versions.rows.len(), 2);
+        assert_eq!(versions.rows[0].native_metadata, catalog[0].native_metadata);
+        assert_ne!(versions.rows[0].authority, versions.rows[1].authority);
+        assert!(
+            latest_available_version(&versions).is_none(),
+            "conflicting registry sources stay ambiguous"
+        );
+        assert!(matches!(
+            profile(&view, &catalog, &index, &package, None).expect("profile"),
+            SurfaceReply::PackageProfile {
+                latest: None,
+                versions: 2,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn registry_source_roots_resolve_relative_files_from_stage_and_absolute_file_parents() {
+        let workspace = fixture("registry-source-parent");
+        let root = workspace.join("registry-staging/archive/package");
+        fs::create_dir_all(root.join("cjs")).expect("source directories");
+        fs::write(
+            root.join("package.json"),
+            r#"{"name":"react","version":"19.3.0"}"#,
+        )
+        .expect("manifest");
+        fs::write(root.join("cjs/react.development.js"), "export const x = 1;").expect("source");
+        let package = "pkg:npm/react@19.3.0";
+        let relative = registry_source_view(package, "cjs/react.development.js");
+        assert_eq!(
+            registry_project_root(&relative, package, Some(&workspace)).expect("staged root"),
+            root
+        );
+        let absolute = registry_source_view(
+            package,
+            root.join("cjs/react.development.js")
+                .to_str()
+                .expect("absolute source"),
+        );
+        assert_eq!(
+            registry_project_root(&absolute, package, None).expect("parent root"),
+            root
+        );
+        assert!(
+            registry_project_root(&relative, package, None).is_err(),
+            "relative paths cannot borrow the working directory"
+        );
+        let _ = fs::remove_dir_all(workspace);
     }
 
     #[test]
