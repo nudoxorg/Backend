@@ -2363,7 +2363,11 @@ pub fn run(config: ProcessConfig) -> ExitCode {
         Ok(owner) => crate::process::run_process(owner, config),
         Err(error) => {
             crate::process::report_process_failure(&error);
-            ExitCode::from(70)
+            if matches!(error, ProcessError::OwnerContended { .. }) {
+                ExitCode::from(backend_runtime::OWNER_CONTENDED_EXIT_CODE)
+            } else {
+                ExitCode::from(70)
+            }
         }
     }
 }
