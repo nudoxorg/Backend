@@ -2640,3 +2640,6 @@ fn graph_query_page_wire_admission_enforces_credit_and_exact_progress() {
         "repeated offset"
     );
 }
+
+#[path = "index_ticket_reply_tests.rs"]
+mod index_ticket_reply;
