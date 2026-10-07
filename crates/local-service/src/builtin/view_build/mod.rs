@@ -2768,6 +2768,19 @@ pub fn decoy_mention() { let _ = "parse_config("; }
                 "graph edge should keep the later label, got {relations:?}"
             ));
         }
+        if !calls_relations(&doubled, &sources, package, original, true)?.is_empty() {
+            return Err(
+                "first duplicate callee must not receive the later graph identity's edge"
+                    .to_owned(),
+            );
+        }
+        let incoming = calls_relations(&doubled, &sources, package, RowId::Symbol(later), true)?;
+        if incoming.len() != 1 || incoming[0].from != sync || incoming[0].to != RowId::Symbol(later)
+        {
+            return Err(format!(
+                "later duplicate callee lost its incoming edge: {incoming:?}"
+            ));
+        }
         let pairs = structural_call_coordinate_pairs(&sources, package)
             .map_err(|error| error.to_string())?;
         let mapped = structural_call_graph_relations_mapped(&doubled, &pairs, package, sync, false);
@@ -2790,6 +2803,39 @@ pub fn decoy_mention() { let _ = "parse_config("; }
         };
         if unique.len() != 1 || unique[0].site != sync_symbol {
             return Err(format!("expected one reference fact, got {unique:?}"));
+        }
+        let later_caller = (0..10_000)
+            .map(|index| symbol_key(&format!("duplicate-caller-{index}")))
+            .find(|candidate| RowId::Symbol(*candidate) > sync)
+            .ok_or("no symbol key sorts after the original caller")?;
+        let mut duplicated_callers = doubled.row_refs().cloned().collect::<Vec<_>>();
+        duplicated_callers.push(Row::in_package(
+            RowId::Symbol(later_caller),
+            doubled.basis(),
+            package,
+            "fixture::weeks.ts:2::syncWorkout",
+        ));
+        let duplicated_callers = republish(&doubled, duplicated_callers)?;
+        if !calls_relations(&duplicated_callers, &sources, package, sync, false)?.is_empty() {
+            return Err(
+                "first duplicate caller must not inherit the later graph identity's edge"
+                    .to_owned(),
+            );
+        }
+        let outgoing = calls_relations(
+            &duplicated_callers,
+            &sources,
+            package,
+            RowId::Symbol(later_caller),
+            false,
+        )?;
+        if outgoing.len() != 1
+            || outgoing[0].from != RowId::Symbol(later_caller)
+            || outgoing[0].to != RowId::Symbol(later)
+        {
+            return Err(format!(
+                "later duplicate caller lost its outgoing edge: {outgoing:?}"
+            ));
         }
         Ok(())
     }

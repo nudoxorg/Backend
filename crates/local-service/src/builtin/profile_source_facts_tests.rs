@@ -2,6 +2,7 @@
 //! These storage laws do not stand in for semantic compiler acceptance.
 use super::membership_tests::{TempWorkspace, open_daemon};
 use super::*;
+use crate::builtin::{read_package_sources, view_build};
 use backend_engine::builtin::{
     ProductSourceFileFactsAdmission, ProductSourceFileFactsRecord, ProductSourceFileFactsUpdate,
     admit_product_source_file_facts, build_product_source_file_facts,
@@ -929,7 +930,17 @@ fn structural_calls_rebuild_negative_results_on_source_and_complete_manifest_cha
         "one/target.ts",
         &(prefix + "export function unrelated() {}\n"),
     );
-    commit_files(&mut daemon, package, label, 3, &[caller, decoy, changed]);
+    // Keep the project version and membership unchanged. The exact file and
+    // auxiliary complete-facts manifest alone must invalidate residence.
+    let (intent, _) = prepare_files_at_source_version(
+        &daemon,
+        package,
+        label,
+        [2; 32],
+        &[caller, decoy, changed],
+    );
+    crate::builtin::commands::commit_builtin_intent(&mut daemon, 3, &intent)
+        .expect("commit changed complete facts at the same project version");
     let changed = read_package_sources(&daemon.engine().daemon().owner().snapshot(), package)
         .expect("source after complete manifest edit");
     assert_ne!(
