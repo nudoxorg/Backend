@@ -39,9 +39,13 @@ use crate::application::{
 };
 
 pub use capture::CapturedLocalHostEnvironment;
-pub use rust_selection::{InstalledRustInputs, InstalledRustSelectionSource, InstalledRustToolchain, InstalledToolPlace, find_installed_rust, installed_rust_system_locations};
 pub use error::LocalCompilerHostError;
+pub(crate) use paths::{
+    BundleTypeScriptResourceProof, bundled_typescript_runtime, bundled_typescript_sdk,
+};
 pub use paths::{LocalHostDirectory, LocalHostPathKind, LocalHostPathRole};
+pub use rust_selection::{InstalledRustInputs, InstalledRustSelectionSource, InstalledRustToolchain, InstalledToolPlace, find_installed_rust, installed_rust_system_locations,
+};
 pub use snapshot::{
     ClosedLocalHostEnvironmentSnapshot, ClosedLocalHostEnvironmentSnapshotError,
     LocalCompilerHostSelection, LocalCompilerHostSelectionIssue, LocalCompilerHostSelectionSource,
@@ -103,8 +107,12 @@ pub enum LocalHostVariable {
     NudoxTypeScriptDefaultNode,
     /// Internal Node selection validated against an application bundle's byte inventory.
     NudoxTypeScriptBundledNode,
+    /// Frozen application executable locating a relocatable SDK; validated only if selected.
+    NudoxTypeScriptBundledApplication,
     /// Explicit Node module root containing the TypeScript compiler API.
     NudoxTypeScriptModuleRoot,
+    /// Frozen installed module root; preserves project precedence across closed handoff.
+    NudoxTypeScriptDefaultModuleRoot,
     /// Explicit program that directly emits TypeScript authority reports.
     NudoxTypeScriptReportProgram,
     /// Explicit Pyrefly executable.
@@ -137,7 +145,7 @@ impl LocalHostVariable {
     /// The order is the stable order used by closed host-environment snapshots. Keep this list
     /// exhaustive when adding a new variant. Renaming an existing variable's process spelling or
     /// changing its role meaning requires a snapshot protocol version change.
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 34] = [
         Self::NudoxDataRoot,
         Self::Home,
         Self::XdgDataHome,
@@ -170,6 +178,8 @@ impl LocalHostVariable {
         Self::NudoxGenericRoot,
         Self::NudoxTypeScriptDefaultNode,
         Self::NudoxTypeScriptBundledNode,
+        Self::NudoxTypeScriptBundledApplication,
+        Self::NudoxTypeScriptDefaultModuleRoot,
     ];
 
     /// Number of closed snapshot roles after excluding the workspace-owned data root.
@@ -394,10 +404,12 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         let home = match home {
             Some(home) => Some(home),
             None => self.environment.user_profile().map(PathBuf::from)
-                .map(|path| if path.is_absolute() { Ok(path) } else {
+                .map(|path| {
+                    if path.is_absolute() { Ok(path) } else {
                     Err(LocalCompilerHostError::RelativeEnvironmentPath {
                         variable: LocalHostVariable::Home, path: path.into_boxed_path(),
                     })
+                    }
                 }).transpose()?,
         };
         let mut paths =
@@ -413,7 +425,9 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                     | LocalHostVariable::NudoxTypeScriptNode
                     | LocalHostVariable::NudoxTypeScriptDefaultNode
                     | LocalHostVariable::NudoxTypeScriptBundledNode
+                    | LocalHostVariable::NudoxTypeScriptBundledApplication
                     | LocalHostVariable::NudoxTypeScriptModuleRoot
+                    | LocalHostVariable::NudoxTypeScriptDefaultModuleRoot
                     | LocalHostVariable::NudoxTypeScriptReportProgram
                     | LocalHostVariable::NudoxPyrefly
                     | LocalHostVariable::NudoxGo
@@ -432,7 +446,8 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                     path: path.into_boxed_path(),
                 });
             }
-            paths.push((variable, self.canonical_configured_selection_path(variable, path)?));
+            paths.push((variable, self.canonical_configured_selection_path(variable, path)?,
+            ));
         }
         if let Some(home) = home.as_ref() {
             paths.push((LocalHostVariable::Home, home.clone()));
@@ -458,7 +473,17 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             paths.push((variable, node.path));
         }
         if let Some(module_root) = typescript.module_root {
-            paths.push((LocalHostVariable::NudoxTypeScriptModuleRoot, module_root));
+            let variable = if typescript.module_root_explicit {
+                LocalHostVariable::NudoxTypeScriptModuleRoot
+            } else {
+                LocalHostVariable::NudoxTypeScriptDefaultModuleRoot
+            };
+            paths.push((variable, module_root));
+        }
+        if let Some(application) = typescript.bundled_application {
+            paths.push((LocalHostVariable::NudoxTypeScriptBundledApplication,
+                application,
+            ));
         }
         if let Some(report_program) = typescript.report_program {
             paths.push((
@@ -1054,7 +1079,8 @@ mod tests {
         let decoded = ClosedLocalHostEnvironmentSnapshot::parse(&snapshot.encode().unwrap()).unwrap();
         let selection = LocalCompilerHostSelection::from_closed_snapshot(decoded).unwrap();
         let environment = StartupEnvironment(vec![(LocalHostVariable::NudoxDataRoot,
-            root.join("owner").into_os_string())]);
+            root.join("owner").into_os_string(),
+        )]);
         let mut client = LocalCompilerHost::new(environment, LocalHostDiscovery::ClosedSnapshot)
             .with_go_authority_failure(selection.go_authority_failure()).open()
             .expect("closed Go refusal cannot block native Python startup");
@@ -1192,7 +1218,13 @@ const fn variable_name(variable: LocalHostVariable) -> &'static str {
         LocalHostVariable::NudoxTypeScriptNode => "NUDOX_TYPESCRIPT_NODE",
         LocalHostVariable::NudoxTypeScriptDefaultNode => "BACKEND_LOCALD_DEFAULT_TYPESCRIPT_NODE",
         LocalHostVariable::NudoxTypeScriptBundledNode => "BACKEND_LOCALD_BUNDLED_TYPESCRIPT_NODE",
+        LocalHostVariable::NudoxTypeScriptBundledApplication => {
+            "BACKEND_LOCALD_TYPESCRIPT_BUNDLED_APPLICATION"
+        }
         LocalHostVariable::NudoxTypeScriptModuleRoot => "NUDOX_TYPESCRIPT_MODULE_ROOT",
+        LocalHostVariable::NudoxTypeScriptDefaultModuleRoot => {
+            "BACKEND_LOCALD_DEFAULT_TYPESCRIPT_MODULE_ROOT"
+        }
         LocalHostVariable::NudoxTypeScriptReportProgram => "NUDOX_TYPESCRIPT_REPORT_PROGRAM",
         LocalHostVariable::NudoxPyrefly => "NUDOX_PYREFLY",
         LocalHostVariable::NudoxGoOracle => "NUDOX_GO_ORACLE",

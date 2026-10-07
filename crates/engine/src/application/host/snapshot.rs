@@ -36,6 +36,8 @@ pub enum LocalCompilerHostSelectionSource {
 pub enum LocalCompilerHostSelectionIssue {
     /// No Node runtime was captured for project-local TypeScript.
     MissingTypeScriptNode,
+    /// Packaged resources are located but no project request has admitted their SDK yet.
+    TypeScriptResourcesAwaitProjectAdmission,
     /// A captured global TypeScript script has no package module root.
     MissingTypeScriptModuleRoot,
     /// Legacy status for hosts that do not select an external Python interpreter.
@@ -58,6 +60,9 @@ impl LocalCompilerHostSelectionIssue {
     #[must_use]
     pub const fn guidance(self) -> &'static str {
         match self {
+            Self::TypeScriptResourcesAwaitProjectAdmission => {
+                "Packaged TypeScript resources will be validated when a project is added; semantic readiness is not established yet."
+            }
             Self::MissingTypeScriptNode => {
                 "Install Node.js or configure NUDOX_TYPESCRIPT_NODE, then restart locald."
             }
@@ -240,11 +245,18 @@ fn selection_issues(
         && !has(LocalHostVariable::NudoxTypeScriptDefaultNode)
         && !has(LocalHostVariable::NudoxTypeScriptBundledNode)
     {
-        issues.push(LocalCompilerHostSelectionIssue::MissingTypeScriptNode);
+        issues.push(
+            if has(LocalHostVariable::NudoxTypeScriptBundledApplication) {
+                LocalCompilerHostSelectionIssue::TypeScriptResourcesAwaitProjectAdmission
+            } else {
+                LocalCompilerHostSelectionIssue::MissingTypeScriptNode
+            },
+        );
     }
     if (has(LocalHostVariable::NudoxTypeScriptCompiler)
         || has(LocalHostVariable::NudoxTypeScriptDefaultCompiler))
         && !has(LocalHostVariable::NudoxTypeScriptModuleRoot)
+        && !has(LocalHostVariable::NudoxTypeScriptDefaultModuleRoot)
     {
         issues.push(LocalCompilerHostSelectionIssue::MissingTypeScriptModuleRoot);
     }

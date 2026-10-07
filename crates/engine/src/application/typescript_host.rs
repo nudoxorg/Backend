@@ -204,6 +204,8 @@ pub(crate) enum TypeScriptSelectionOrigin {
     ValidatedApplicationBundle = 5,
     /// A Node runtime in the same executable directory as a selected global `tsc`.
     PairedHostInstall = 6,
+    /// Runtime/package resources selected from the sealed standalone distribution.
+    ValidatedStandalonePackage = 8,
     /// A host-installed compiler selected once and carried by the closed locald snapshot.
     InstalledHostSelection = 7,
 }
@@ -1117,9 +1119,21 @@ pub(crate) struct TypeScriptProjectWitness {
     loaded_source_files: std::sync::Mutex<std::collections::BTreeMap<PathBuf, FileSnapshot>>,
     fingerprint: [u8; 32],
     invocation_lease: TypeScriptProjectInvocationLease,
+    resource_proof: Option<crate::application::host::BundleTypeScriptResourceProof>,
 }
 
 impl TypeScriptProjectWitness {
+    fn selection_fingerprint(&self) -> [u8; 32] {
+        let Some(proof) = &self.resource_proof else {
+            return self.fingerprint;
+        };
+        let mut hash = Hasher::new();
+        hash.update(b"compiler.typescript.selected-sdk.v1\0");
+        hash.update(&self.fingerprint);
+        hash.update(&proof.fingerprint());
+        *hash.finalize().as_bytes()
+    }
+
     fn invocation_lease(&self) -> &TypeScriptProjectInvocationLease {
         &self.invocation_lease
     }
@@ -1320,6 +1334,7 @@ impl TypeScriptProjectWitness {
             loaded_source_files: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             fingerprint,
             invocation_lease,
+            resource_proof: None,
         })
     }
 
@@ -1412,6 +1427,10 @@ impl TypeScriptProjectWitness {
     }
 
     pub(crate) fn validate_current(&self) -> Result<(), TypeScriptProjectHostError> {
+        if let Some(proof) = &self.resource_proof {
+            proof.validate_current().map_err(bundle_admission_error)?;
+        }
+
         let current_project =
             match find_project_typescript_with_home(&self.project_root, self.home_root.as_deref())?
             {
@@ -2822,6 +2841,7 @@ pub struct TypeScriptProjectHost {
     home_root: Option<Box<Path>>,
     explicit_module_root: Option<Box<Path>>,
     report_program: Option<Box<Path>>,
+    bundled_application: Option<Box<Path>>,
     probe_limits: ToolchainProbeLimits,
     node_identity: std::sync::Arc<std::sync::Mutex<Option<NodeRuntimeIdentity>>>,
 }
@@ -2874,6 +2894,7 @@ impl TypeScriptProjectHost {
             home_root: home_root.map(PathBuf::into_boxed_path),
             explicit_module_root: explicit_module_root.map(PathBuf::into_boxed_path),
             report_program: report_program.map(PathBuf::into_boxed_path),
+            bundled_application: None,
             probe_limits,
             node_identity: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
@@ -2898,6 +2919,13 @@ impl TypeScriptProjectHost {
         origin: TypeScriptSelectionOrigin,
     ) -> Self {
         self.installed_default_origin = origin;
+        self
+    }
+
+    /// Keeps only the captured distribution locator. The request selects project authority
+    /// before any bundle SDK bytes are hashed; no current executable or ambient path is read.
+    pub(crate) fn with_bundled_application(mut self, application: Option<PathBuf>) -> Self {
+        self.bundled_application = application.map(PathBuf::into_boxed_path);
         self
     }
 
@@ -2982,11 +3010,54 @@ impl TypeScriptProjectHost {
                 })
             })
             .transpose()?;
+        let mut resource_proof = None;
+        let mut bundled_node = None;
+        let mut bundled_origin = TypeScriptSelectionOrigin::ValidatedApplicationBundle;
         let project = match find_project_typescript_with_home(&project_root, home_root.as_deref())?
         {
             ProjectTypeScriptSearch::Found(project) => Some(project),
             ProjectTypeScriptSearch::NotFound => {
-                self.installed_host_project(&project_root, home_root.as_deref())?
+                match self.installed_host_project(&project_root, home_root.as_deref())? {
+                    Some(project) => Some(project),
+                    None if self.explicit_compiler.is_none()
+                        && self.explicit_module_root.is_none()
+                        && self.report_program.is_none() =>
+                    {
+                        match self.bundled_application.as_deref() {
+                            Some(application) => {
+                                let sdk = crate::application::host::bundled_typescript_sdk(
+                                    Some(application),
+                                    self.node.is_none(),
+                                )
+                                .map_err(bundle_admission_error)?;
+                                match sdk {
+                                    Some(sdk) => {
+                                        let (module_root, version) =
+                                            read_typescript_module(&sdk.module_root)?;
+                                        resource_proof = Some(sdk.proof);
+                                        bundled_node = sdk.node;
+                                        bundled_origin = sdk.origin;
+                                        Some(ProjectTypeScript {
+                                            module_root,
+                                            compiler: sdk.compiler,
+                                            version,
+                                            workspace: discover_workspace_boundary(
+                                                &project_root,
+                                                home_root.as_deref(),
+                                            )?,
+                                            discovery_origin:
+                                                TypeScriptProjectDiscoveryOrigin::InstalledFallback,
+                                            compiler_origin: sdk.origin,
+                                        })
+                                    }
+                                    None => None,
+                                }
+                            }
+                            None => None,
+                        }
+                    }
+                    None => None,
+                }
             }
             ProjectTypeScriptSearch::Pnp(marker) => {
                 return Err(TypeScriptProjectHostError::YarnPnpUnsupported {
@@ -3009,12 +3080,39 @@ impl TypeScriptProjectHost {
                 source,
             }
         })?;
-        let selected_node =
-            self.node
-                .as_deref()
-                .ok_or_else(|| TypeScriptProjectHostError::NodeUnavailable {
-                    package_root: project_root.clone().into_boxed_path(),
-                })?;
+        // Runtime selection is independent of package origin but is closed before probing.
+        // A project SDK may use the bundled runtime without admitting the bundled package.
+        let bundled_runtime;
+        let (selected_node, node_origin) = match self.node.as_deref() {
+            Some(node) => (
+                node,
+                self.node_origin
+                    .unwrap_or(TypeScriptSelectionOrigin::PlatformLocation),
+            ),
+            None => {
+                bundled_runtime = match bundled_node {
+                    Some(node) => node,
+                    None => {
+                        let runtime = self
+                            .bundled_application
+                            .as_deref()
+                            .map(crate::application::host::bundled_typescript_runtime)
+                            .transpose()
+                            .map_err(bundle_admission_error)?
+                            .flatten();
+                        let Some((node, origin, proof)) = runtime else {
+                            return Err(TypeScriptProjectHostError::NodeUnavailable {
+                                package_root: project_root.clone().into_boxed_path(),
+                            });
+                        };
+                        resource_proof = Some(proof);
+                        bundled_origin = origin;
+                        node
+                    }
+                };
+                (bundled_runtime.as_path(), bundled_origin)
+            }
+        };
         let node = fs::canonicalize(selected_node).map_err(|source| {
             TypeScriptProjectHostError::NodePath {
                 node: selected_node.to_path_buf().into_boxed_path(),
@@ -3053,7 +3151,22 @@ impl TypeScriptProjectHost {
             });
         }
         let node_identity = self.admit_node_runtime(&node)?;
-        let witness = TypeScriptProjectWitness::capture_with_node_snapshot(
+        if let Some(expected) = resource_proof
+            .as_ref()
+            .and_then(|proof| proof.expected_node_version.as_deref())
+        {
+            let observed = std::str::from_utf8(&node_identity.version)
+                .ok()
+                .map(str::trim);
+            if observed != Some(expected) {
+                return Err(TypeScriptProjectHostError::BundledSdkAdmission {
+                    path: node.clone().into_boxed_path(),
+                    message: format!("selected Node version differs from its SDK receipt: expected {expected}, observed {}", bounded_text(&node_identity.version)).into_boxed_str(),
+                });
+            }
+        }
+
+        let mut witness = TypeScriptProjectWitness::capture_with_node_snapshot(
             &project_root,
             home_root.as_deref(),
             &project,
@@ -3064,6 +3177,7 @@ impl TypeScriptProjectHost {
             project.workspace.as_ref(),
             Some(&node_identity.snapshot),
         )?;
+        witness.resource_proof = resource_proof;
         witness.validate_current()?;
         let node_version = node_identity.version;
 
@@ -3128,10 +3242,9 @@ impl TypeScriptProjectHost {
             &expected_version,
             &node_version,
             checker.local_configuration_fingerprint(),
-            witness.fingerprint,
+            witness.selection_fingerprint(),
             compiler_origin,
-            self.node_origin
-                .unwrap_or(TypeScriptSelectionOrigin::PlatformLocation),
+            node_origin,
         );
         Ok(Some(AdmittedTypeScriptProject {
             checker,
@@ -3141,9 +3254,7 @@ impl TypeScriptProjectHost {
             compiler_invocation,
             node: node.to_path_buf().into_boxed_path(),
             node_version,
-            node_origin: self
-                .node_origin
-                .unwrap_or(TypeScriptSelectionOrigin::PlatformLocation),
+            node_origin,
             module_root: module_root.into_boxed_path(),
             fingerprint,
             witness: std::sync::Arc::new(witness),
@@ -3813,11 +3924,27 @@ fn project_fingerprint(
 
 /// Typed terminal from resolving or probing one project-owned TypeScript installation.
 ///
+fn bundle_admission_error(
+    source: crate::application::host::LocalCompilerHostError,
+) -> TypeScriptProjectHostError {
+    match source {
+        crate::application::host::LocalCompilerHostError::BundleManifest { path, message } => {
+            TypeScriptProjectHostError::BundledSdkAdmission { path, message }
+        }
+        other => TypeScriptProjectHostError::BundledSdkAdmission {
+            path: PathBuf::from("selected SDK resource").into_boxed_path(),
+            message: other.to_string().into_boxed_str(),
+        },
+    }
+}
+
 /// Each variant's display text identifies the selected path or the bounded process failure.
 /// Its field names are intentionally descriptive in the structured error chain.
 #[derive(Debug, Error)]
 #[allow(missing_docs)]
 pub enum TypeScriptProjectHostError {
+    #[error("selected bundled TypeScript resource refused at {path:?}: {message}")]
+    BundledSdkAdmission { path: Box<Path>, message: Box<str> },
     #[error("admitted TypeScript executable could not be bound to its version identity")]
     ToolchainResolution {
         #[source]
@@ -5223,6 +5350,56 @@ if [ "$1" = "--version" ]; then printf 'v22.0.0\n'; elif [ "$2" = "--version" ];
             fs::canonicalize(local_modules).expect("canonical project-local module root")
         );
         assert_eq!(admitted.inputs().compiler_version, b"Version 5.8.4\n");
+    }
+
+    #[test]
+    fn project_sdk_and_selected_node_do_not_admit_an_unused_bundle() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = Fixture::new();
+        let workspace = fixture.0.join("project");
+        let modules = workspace.join("node_modules");
+        install_at(&modules, "5.7.2");
+        let host_modules = fixture.0.join("host/node_modules");
+        install_at(&host_modules, "5.9.3");
+        let node = fixture.0.join("explicit-node");
+        fs::write(&node, r#"#!/bin/sh
+if [ "$1" = "--version" ]; then printf 'v24.21.0\n'; elif [ "$2" = "--version" ]; then printf 'Version 5.7.2\n'; else exit 9; fi
+"#).expect("write admitted Node probe");
+        fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
+        let node = fs::canonicalize(node).unwrap();
+        // No receipt exists. If bundle fallback is evaluated, this control cannot admit.
+        let bundle_application = fixture.0.join("unused.app/Contents/MacOS/backend-mcp");
+        let admitted =
+            TypeScriptProjectHost::new(None, Some(node.clone()), None, None, Fixture::limits())
+                .with_installed_default(
+                    Some(host_modules.join("typescript/bin/tsc")),
+                    Some(host_modules),
+                )
+                .with_bundled_application(Some(bundle_application))
+                .admit(&workspace)
+                .expect("project authority precedes all bundle work")
+                .unwrap();
+        assert_eq!(
+            admitted.inputs().compiler_origin,
+            TypeScriptSelectionOrigin::ProjectLocalInstallation
+        );
+        assert_eq!(admitted.inputs().compiler_version, b"Version 5.7.2\n");
+        assert_eq!(admitted.inputs().node_version, b"v24.21.0\n");
+        assert_eq!(admitted.inputs().node_path, node);
+        assert!(admitted.witness.resource_proof.is_none());
+        let expected = Checker::default()
+            .with_node(node, fs::canonicalize(modules).unwrap())
+            .unwrap();
+        assert_eq!(
+            admitted.checker.local_configuration_fingerprint(),
+            expected.local_configuration_fingerprint(),
+            "the report recipe uses exactly the selected Node and project Compiler API"
+        );
+        admitted
+            .resolved_toolchain()
+            .unwrap()
+            .validate_invocation()
+            .unwrap();
     }
 
     fn installed_fallback_witness(fixture: &Fixture) -> TypeScriptProjectWitness {
