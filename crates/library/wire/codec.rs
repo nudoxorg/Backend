@@ -31,12 +31,27 @@ pub(super) fn parse_reply_body<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, S
     // Inspect only the bounded envelope version before allocating strict nested
     // payloads. A different protocol can add fields our reader does not know;
     // the useful refusal is the version mismatch, before those shape errors.
+    check_live_version(bytes, "reply")?;
+    serde_json::from_slice(bytes).map_err(|error| error.to_string())
+}
+
+// This header supplies no authority and never replaces the original bytes.
+// Duplicate versions remain a parse error; current payloads are subsequently
+// decoded through their closed, certificate-aware grammar.
+pub(super) fn check_live_version(bytes: &[u8], kind: &str) -> Result<(), String> {
     #[derive(serde::Deserialize)]
     struct VersionHeader {
         version: u16,
     }
     let header: VersionHeader = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-    super::ensure_version(header.version, "reply")?;
+    super::ensure_version(header.version, kind)
+}
+
+pub(super) fn parse_command_body<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, String> {
+    if bytes.len() > MAX_COMMAND_BODY {
+        return Err(format!("command body exceeds {MAX_COMMAND_BODY} bytes"));
+    }
+    check_live_version(bytes, "command")?;
     serde_json::from_slice(bytes).map_err(|error| error.to_string())
 }
 
@@ -66,10 +81,7 @@ pub fn command_request_id(bytes: &[u8]) -> Option<u64> {
 /// Returns an error for malformed JSON, unknown fields, unsupported versions,
 /// or missing canonical claims for identity-bearing commands.
 pub fn decode_command_body(bytes: &[u8]) -> Result<CommandDto, String> {
-    if bytes.len() > MAX_COMMAND_BODY {
-        return Err(format!("command body exceeds {MAX_COMMAND_BODY} bytes"));
-    }
-    let request: CommandDto = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    let request: CommandDto = parse_command_body(bytes)?;
     crate::admit_request(&request).map_err(|error| error.to_string())?;
     Ok(request)
 }
@@ -280,6 +292,79 @@ mod tests {
         assert!(
             decode_reply_body(&current).is_err(),
             "same-version grammar stays closed"
+        );
+    }
+
+    #[test]
+    fn old_live_view_subscription_and_page_headers_refuse_before_nested_fields() {
+        let reply = certified_health_reply();
+        let cursor = reply.health_cursor().expect("certified health cursor");
+        let crate::CommandReply::Health(root) = reply.reply else {
+            panic!("certified health fixture");
+        };
+        let bytes = br#"{"version":23,"kind":"future","future_nested_contract":{"python_metadata":true,"partial_terminal":true}}"#;
+        for (kind, error) in [
+            (
+                "view",
+                crate::ViewDto::decode_with_certificate(bytes, None).expect_err("old view"),
+            ),
+            (
+                "event",
+                crate::EventDto::decode_with_certificate(bytes, None).expect_err("old event"),
+            ),
+            (
+                "compact view event",
+                crate::decode_compact_view_event(bytes, cursor, &root)
+                    .expect_err("old compact event"),
+            ),
+            (
+                "subscription",
+                crate::SubscriptionDto::decode_against_root(bytes, cursor, &root, None)
+                    .expect_err("old subscription"),
+            ),
+            (
+                "snapshot page",
+                crate::SnapshotPageDto::decode(bytes, cursor, None, None)
+                    .expect_err("old snapshot page"),
+            ),
+        ] {
+            assert!(error.contains(&format!("{kind} DTO version 23")));
+            assert!(!error.contains("unknown field"));
+        }
+    }
+
+    #[test]
+    fn live_command_version_refusal_precedes_unknown_nested_contracts() {
+        let expected = crate::CommandDto::new(41, crate::Command::Health);
+        for version in [23, crate::DTO_VERSION + 1] {
+            // Version is last: checking only an initial prefix cannot pass.
+            let bytes = format!(
+                r#"{{"request_id":41,"command":{{"kind":"surface","data":{{"future_partial_contract":true}}}},"certificate":{{"future_python_contract":true}},"version":{version}}}"#
+            ).into_bytes();
+            for error in [
+                crate::decode_command_body(&bytes).expect_err("old command protocol"),
+                crate::decode_command_body_for_owner(&bytes, Cursor::new())
+                    .expect_err("old owner-scoped command protocol"),
+                crate::CommandDto::decode_against(&bytes, &expected)
+                    .expect_err("old expected command protocol"),
+            ] {
+                assert!(error.contains(&format!("command DTO version {version}")));
+                assert!(!error.contains("unknown field"));
+            }
+        }
+        let current = format!(
+            r#"{{"version":{},"request_id":41,"command":{{"kind":"health","data":{{"future_field":true}}}}}}"#,
+            crate::DTO_VERSION
+        );
+        assert!(crate::decode_command_body(current.as_bytes()).is_err());
+        let duplicate = format!(
+            r#"{{"version":23,"version":{},"request_id":41,"command":{{"kind":"health"}}}}"#,
+            crate::DTO_VERSION
+        );
+        assert!(
+            crate::decode_command_body(duplicate.as_bytes())
+                .expect_err("ambiguous version")
+                .contains("duplicate field")
         );
     }
 

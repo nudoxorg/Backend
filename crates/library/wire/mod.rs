@@ -67,10 +67,10 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current transport DTO version. Version 23 adds an exact partially-published
-/// operation terminal, evidenced Python source metadata and incomplete
-/// dependency declarations, and exact TypeScript authority failures to closed
-/// operation/forge/profile/compiler payloads. Version
-/// 22 peers cannot admit these variants and fields; live clients and services
-/// must negotiate the same DTO version before dispatch.
-pub const DTO_VERSION: u16 = 23;
+/// Current transport DTO version. Version 24 composes the exact partial
+/// publication terminal and TypeScript authority failures with evidenced
+/// Python source metadata and incomplete dependency declarations. Separate
+/// version-23 producer cohorts do not share this closed operation/forge/profile/
+/// compiler grammar. Live clients and services must use version 24 together;
+/// the explicitly maintained journal grammar is a separate persisted domain.
+pub const DTO_VERSION: u16 = 24;

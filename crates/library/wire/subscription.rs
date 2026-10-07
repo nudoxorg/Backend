@@ -222,6 +222,7 @@ fn decode_subscription(
     capability: Option<crate::CoverageCapability>,
     base: Option<&crate::ViewRoot>,
 ) -> Result<CursorRead, String> {
+    super::codec::check_live_version(bytes, "subscription")?;
     let value: Value = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
     let kind = value
         .get("kind")

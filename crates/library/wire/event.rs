@@ -376,6 +376,7 @@ pub fn decode_compact_view_event(
     previous: Cursor,
     base: &ViewRoot,
 ) -> Result<(Cursor, CommittedViewDelta), String> {
+    super::codec::check_live_version(bytes, "compact view event")?;
     let envelope: CompactEventEnvelopeWire =
         serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
     ensure_version(envelope.version, "compact view event")?;
@@ -612,6 +613,7 @@ pub(crate) fn decode_event_with_certificate(
     bytes: &[u8],
     capability: Option<CoverageCapability>,
 ) -> Result<EventDto, String> {
+    super::codec::check_live_version(bytes, "event")?;
     let value: EventEnvelopeWire =
         serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
     ensure_version(value.version, "event")?;

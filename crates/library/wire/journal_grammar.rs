@@ -1,7 +1,7 @@
 //! The maintained grammar of checked BVIEWJ01 version-3 journal frames.
 //!
 //! Snapshot rows, bases, certificates and compact transition records have
-//! identical fields and admission rules in envelopes 21, 22 and 23. Document
+//! identical fields and admission rules in envelopes 21, 22, 23 and 24. Document
 //! selections, failure replies and Python metadata changed only live replies.
 //! Incompatible persisted fields require a new journal grammar; increasing
 //! the live DTO version never extends this domain implicitly.
@@ -39,11 +39,11 @@ impl JournalViewGrammarV3 {
     /// # Errors
     /// Refuses unknown and incompatible persisted envelope versions.
     pub fn check_envelope_version(self, version: u16) -> Result<(), String> {
-        if matches!(version, 21 | 22 | 23) {
+        if matches!(version, 21 | 22 | 23 | 24) {
             Ok(())
         } else {
             Err(format!(
-                "unsupported persisted view envelope version {version}; journal grammar 3 reads 21, 22 and 23"
+                "unsupported persisted view envelope version {version}; journal grammar 3 reads 21, 22, 23 and 24"
             ))
         }
     }
