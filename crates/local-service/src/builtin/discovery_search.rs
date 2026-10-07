@@ -254,7 +254,13 @@ impl ForgeSourcePinSearchDocument {
             }
             let description = match &record.metadata.description {
                 ForgeFact::Recorded(value) => DiscoveryFacet::Known(value.as_str().to_owned()),
-                ForgeFact::Unavailable(_) => DiscoveryFacet::Unknown,
+                ForgeFact::Unavailable(_) => manifest
+                    .python_metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.description.recorded())
+                    .map_or(DiscoveryFacet::Unknown, |value| {
+                        DiscoveryFacet::Known(value.clone())
+                    }),
             };
             let readme = match &record.metadata.readme {
                 ForgeFact::Recorded(value) => DiscoveryFacet::Known(value.as_str().to_owned()),
@@ -267,6 +273,20 @@ impl ForgeSourcePinSearchDocument {
                 hex(&record.archive),
                 manifest.path.to_string(),
             ];
+            if let Some(metadata) = &manifest.python_metadata {
+                for fact in [
+                    &metadata.documentation,
+                    &metadata.repository,
+                    &metadata.homepage,
+                ] {
+                    if let Some(value) = fact.recorded() {
+                        generic_terms.push(value.clone());
+                    }
+                }
+                if let Some(declarations) = metadata.dependencies.recorded() {
+                    generic_terms.extend(declarations.iter().map(|dep| dep.requirement.clone()));
+                }
+            }
             if let Some(tree) = &record.resolution.tree {
                 generic_terms.push(tree.as_hex());
             }
@@ -4265,12 +4285,29 @@ fn forge_search_document(
         hex(&result.archive),
         manifest.path.to_string(),
     ];
+    if let Some(metadata) = &manifest.python_metadata {
+        for fact in [
+            &metadata.documentation,
+            &metadata.repository,
+            &metadata.homepage,
+        ] {
+            if let Some(value) = fact.recorded() {
+                generic_terms.push(value.clone());
+            }
+        }
+    }
     if let Some(tree) = &result.resolution.tree {
         generic_terms.push(tree.as_hex());
     }
     let description = match &result.metadata.description {
         ForgeFact::Recorded(value) => DiscoveryFacet::Known(value.as_str().to_owned()),
-        ForgeFact::Unavailable(_) => DiscoveryFacet::Unknown,
+        ForgeFact::Unavailable(_) => manifest
+            .python_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.description.recorded())
+            .map_or(DiscoveryFacet::Unknown, |value| {
+                DiscoveryFacet::Known(value.clone())
+            }),
     };
     let readme = match &result.metadata.readme {
         ForgeFact::Recorded(value) => DiscoveryFacet::Known(value.as_str().to_owned()),
@@ -6871,6 +6908,7 @@ mod tests {
                 dependencies: DependencyFacts::Unknown(backend_library::ProductText::from_static(
                     "source-only fixture",
                 )),
+                python_metadata: None,
             }]
             .into_boxed_slice(),
         };

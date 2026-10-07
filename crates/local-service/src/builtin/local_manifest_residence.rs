@@ -172,9 +172,9 @@ fn input_digest(root: &Path) -> Result<[u8; 32], String> {
     } else if root.join("package.json").is_file() {
         hasher.update(b"npm");
         hash_path(&mut hasher, &root.join("package.json"))?;
-    } else if root.join("pyproject.toml").is_file() {
+    } else if super::has_python_manifest(root) {
         hasher.update(b"python");
-        hash_path(&mut hasher, &root.join("pyproject.toml"))?;
+        hasher.update(&super::python_input_digest(root));
     } else if root.join("go.mod").is_file() {
         hasher.update(b"go");
         hash_path(&mut hasher, &root.join("go.mod"))?;
@@ -407,6 +407,68 @@ mod tests {
             fs::create_dir_all(parent).expect("parent");
         }
         fs::write(path, bytes).expect("write");
+    }
+
+    #[test]
+    fn malformed_python_root_keeps_its_error_and_other_roots_facts() {
+        let root = fixture("python-error-isolation");
+        let broken = root.join("broken");
+        let valid = root.join("valid");
+        write(
+            &broken.join("setup.cfg"),
+            "[metadata]\nname=broken\nname=duplicate\n",
+        );
+        write(
+            &valid.join("setup.cfg"),
+            "[metadata]\nname=valid\nversion=1.0\n[options]\ninstall_requires=requests\n",
+        );
+        let mut residence = LocalManifestResidence::default();
+        let error = residence
+            .refresh([broken.as_path(), valid.as_path()])
+            .expect_err("malformed root");
+        assert!(named(&residence, "pkg:pypi/valid@1.0"));
+        assert_eq!(residence.parses(), 2);
+        assert_eq!(
+            residence
+                .refresh([broken.as_path(), valid.as_path()])
+                .expect_err("cached malformed root"),
+            error
+        );
+        assert_eq!(residence.parses(), 2);
+        assert!(named(&residence, "pkg:pypi/valid@1.0"));
+        write(
+            &broken.join("setup.cfg"),
+            "[metadata]\nname=broken\nversion=1.0\n[options]\ninstall_requires=\n",
+        );
+        residence
+            .refresh([broken.as_path(), valid.as_path()])
+            .expect("repaired metadata");
+        assert_eq!(residence.parses(), 3);
+        assert!(named(&residence, "pkg:pypi/broken@1.0"));
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn python_attribute_source_change_invalidates_cached_dependency_identity() {
+        let root = fixture("python-attr");
+        write(
+            &root.join("setup.cfg"),
+            "[metadata]\nname=legacy\nversion=attr: legacy.__version__\n[options]\ninstall_requires=requests>=2,<3\n",
+        );
+        write(&root.join("legacy/__init__.py"), "__version__='1.0'\n");
+        let mut residence = LocalManifestResidence::default();
+        residence.refresh([root.as_path()]).expect("first parse");
+        assert!(named(&residence, "pkg:pypi/legacy@1.0"));
+        residence
+            .refresh([root.as_path()])
+            .expect("unchanged parse");
+        assert_eq!(residence.parses(), 1);
+        write(&root.join("legacy/__init__.py"), "__version__='2.0'\n");
+        residence.refresh([root.as_path()]).expect("changed source");
+        assert_eq!(residence.parses(), 2);
+        assert!(named(&residence, "pkg:pypi/legacy@2.0"));
+        assert!(!named(&residence, "pkg:pypi/legacy@1.0"));
+        fs::remove_dir_all(root).expect("remove fixture");
     }
 
     #[test]

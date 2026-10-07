@@ -15,6 +15,7 @@ use backend_semantic::vocabulary::{
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -369,7 +370,7 @@ pub(crate) fn read_local_manifest(
     if project_root.join("package.json").is_file() {
         return read_npm_manifest(project_root);
     }
-    if project_root.join("pyproject.toml").is_file() {
+    if has_python_manifest(project_root) {
         return read_python_manifest(project_root);
     }
     if project_root.join("go.mod").is_file() {
@@ -388,6 +389,9 @@ pub(crate) fn read_local_manifest(
 /// Returns an error when the manifest is missing, malformed, or unprovable.
 pub(crate) fn require_local_manifest(project_root: &Path) -> Result<LocalPackageManifest, String> {
     read_local_manifest(project_root)?.ok_or_else(|| {
+        if has_python_manifest(project_root) {
+            return format!("indexed Python project {} has dynamic or omitted package identity; inspect pyproject.toml, setup.cfg, or setup.py static metadata (Python code is never executed)", project_root.display());
+        }
         format!(
             "indexed project {} has no supported manifest",
             project_root.display()
@@ -448,17 +452,34 @@ fn manifest_record(
     coordinate: PackageReference,
     bytes: &[u8],
 ) -> Result<RegistryPackageRecord, String> {
+    manifest_record_evidence(
+        ecosystem,
+        name,
+        version,
+        coordinate,
+        u64::try_from(bytes.len()).map_err(|_| "local manifest byte count overflow".to_owned())?,
+        *blake3::hash(bytes).as_bytes(),
+    )
+}
+
+fn manifest_record_evidence(
+    ecosystem: RegistryEcosystem,
+    name: &str,
+    version: &str,
+    coordinate: PackageReference,
+    bytes: u64,
+    facts_version: [u8; 32],
+) -> Result<RegistryPackageRecord, String> {
     let native_metadata = RegistryNativeMetadata::unavailable(ecosystem, "local manifest");
     Ok(RegistryPackageRecord {
         coordinate,
         ecosystem,
         name: ProductText::new(name).map_err(|error| error.to_string())?,
         version: ProductText::new(version).map_err(|error| error.to_string())?,
-        bytes: u64::try_from(bytes.len())
-            .map_err(|_| "local manifest byte count overflow".to_owned())?,
+        bytes,
         standing: RegistryReleaseStanding::Available,
         downloads: RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unsupported),
-        facts_version: *blake3::hash(bytes).as_bytes(),
+        facts_version,
         authority: None,
         native_metadata_version: native_metadata
             .identity()
@@ -485,6 +506,7 @@ thread_local! {
 
 struct ManifestFileCache {
     files: HashMap<PathBuf, Result<Arc<[u8]>, String>>,
+    python_metadata: HashMap<PathBuf, PythonMetadataRead>,
     disk_reads: u64,
 }
 
@@ -492,6 +514,7 @@ impl Default for ManifestFileCache {
     fn default() -> Self {
         Self {
             files: HashMap::new(),
+            python_metadata: HashMap::new(),
             disk_reads: 0,
         }
     }
@@ -534,7 +557,11 @@ fn read_manifest_from_disk(path: &Path) -> Result<Vec<u8>, String> {
     fs::read(path).map_err(|error| format!("read local manifest {}: {error}", path.display()))
 }
 
-fn read_cached_manifest(cache: &mut ManifestFileCache, path: &Path) -> Result<Vec<u8>, String> {
+fn read_cached_manifest(
+    cache: &mut ManifestFileCache,
+    path: &Path,
+    read: impl FnOnce() -> Result<Vec<u8>, String>,
+) -> Result<Vec<u8>, String> {
     if let Some(cached) = cache.files.get(path) {
         return match cached {
             Ok(bytes) => Ok(bytes.to_vec()),
@@ -542,7 +569,7 @@ fn read_cached_manifest(cache: &mut ManifestFileCache, path: &Path) -> Result<Ve
         };
     }
     cache.disk_reads = cache.disk_reads.saturating_add(1);
-    let read = read_manifest_from_disk(path).map(Arc::<[u8]>::from);
+    let read = read().map(Arc::<[u8]>::from);
     let returned = match &read {
         Ok(bytes) => Ok(bytes.to_vec()),
         Err(error) => Err(error.clone()),
@@ -551,11 +578,18 @@ fn read_cached_manifest(cache: &mut ManifestFileCache, path: &Path) -> Result<Ve
     returned
 }
 
-fn read_manifest_bytes(path: &Path) -> Result<Vec<u8>, String> {
+fn read_manifest_bytes_with(
+    path: &Path,
+    read: impl FnOnce() -> Result<Vec<u8>, String>,
+) -> Result<Vec<u8>, String> {
     MANIFEST_FILES.with(|slot| match slot.borrow_mut().as_mut() {
-        Some(cache) => read_cached_manifest(cache, path),
-        None => read_manifest_from_disk(path),
+        Some(cache) => read_cached_manifest(cache, path, read),
+        None => read(),
     })
+}
+
+fn read_manifest_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    read_manifest_bytes_with(path, || read_manifest_from_disk(path))
 }
 
 fn read_npm_manifest(project_root: &Path) -> Result<Option<LocalPackageManifest>, String> {
@@ -605,74 +639,233 @@ fn read_npm_manifest(project_root: &Path) -> Result<Option<LocalPackageManifest>
     }))
 }
 
+pub(super) fn has_python_manifest(project_root: &Path) -> bool {
+    ["pyproject.toml", "setup.cfg", "setup.py"]
+        .iter()
+        .any(|path| project_root.join(path).is_file())
+}
+
+#[derive(Clone)]
+struct PythonMetadataRead {
+    inputs: [u8; 32],
+    outcome: Result<Option<backend_library::PythonProjectMetadata>, String>,
+}
+
+pub(super) fn python_input_digest(project_root: &Path) -> [u8; 32] {
+    python_metadata_read(project_root).inputs
+}
+
+pub(super) fn read_python_metadata(
+    project_root: &Path,
+) -> Result<Option<backend_library::PythonProjectMetadata>, String> {
+    python_metadata_read(project_root).outcome
+}
+
+fn python_metadata_read(project_root: &Path) -> PythonMetadataRead {
+    if let Some(cached) = MANIFEST_FILES.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .and_then(|cache| cache.python_metadata.get(project_root).cloned())
+    }) {
+        return cached;
+    }
+    let mut inputs = blake3::Hasher::new();
+    inputs.update(b"nudox.local-python.inputs.v1\0");
+    let outcome = read_python_metadata_uncached(project_root, &mut inputs);
+    if let Err(error) = &outcome {
+        inputs.update(b"rejected\0");
+        inputs.update(error.as_bytes());
+    }
+    let result = PythonMetadataRead {
+        inputs: *inputs.finalize().as_bytes(),
+        outcome,
+    };
+    MANIFEST_FILES.with(|slot| {
+        if let Some(cache) = slot.borrow_mut().as_mut() {
+            cache
+                .python_metadata
+                .insert(project_root.to_path_buf(), result.clone());
+        }
+    });
+    result
+}
+
+fn read_python_metadata_uncached(
+    project_root: &Path,
+    inputs: &mut blake3::Hasher,
+) -> Result<Option<backend_library::PythonProjectMetadata>, String> {
+    read_python_metadata_with_preopen(project_root, inputs, |_| Ok(()))
+}
+
+fn read_python_metadata_with_preopen(
+    project_root: &Path,
+    inputs: &mut blake3::Hasher,
+    mut before_open: impl FnMut(&Path) -> Result<(), String>,
+) -> Result<Option<backend_library::PythonProjectMetadata>, String> {
+    let canonical_root = fs::canonicalize(project_root)
+        .map_err(|error| format!("resolve Python project root: {error}"))?;
+    #[cfg(unix)]
+    let root_descriptor = rustix::fs::open(
+        &canonical_root,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::NOFOLLOW,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|error| format!("open Python source root: {error}"))?;
+    backend_engine::python_project::extract_python_project(|relative| {
+        let outcome = (|| {
+            let path = project_root.join(relative);
+            match fs::symlink_metadata(&path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => {
+                    return Err(format!(
+                        "inspect Python metadata {}: {error}",
+                        path.display()
+                    ));
+                }
+                Ok(_) => {}
+            }
+            let canonical = fs::canonicalize(&path)
+                .map_err(|error| format!("resolve Python metadata {}: {error}", path.display()))?;
+            if !canonical.starts_with(&canonical_root) {
+                return Err(format!(
+                    "Python metadata {} escapes project root",
+                    path.display()
+                ));
+            }
+            let file = fs::metadata(&canonical)
+                .map_err(|error| format!("inspect Python metadata {}: {error}", path.display()))?;
+            if !file.is_file()
+                || file.len() > backend_engine::python_project::MAX_PYTHON_METADATA_BYTES as u64
+            {
+                return Err(format!(
+                    "Python metadata {} is not a bounded file",
+                    path.display()
+                ));
+            }
+            let mut component_path = canonical_root.clone();
+            for component in Path::new(relative).components() {
+                component_path.push(component.as_os_str());
+                if fs::symlink_metadata(&component_path)
+                    .map_err(|error| format!("inspect Python source component: {error}"))?
+                    .file_type()
+                    .is_symlink()
+                {
+                    return Err(format!(
+                        "Python metadata {} is a symlink or escapes project root",
+                        path.display()
+                    ));
+                }
+            }
+            read_manifest_bytes_with(&path, || {
+                before_open(&path)?;
+                #[cfg(unix)]
+                let file = {
+                    use rustix::fs::{Mode, OFlags, openat};
+                    let parts: Vec<_> = relative.split('/').collect();
+                    let mut parent = None;
+                    for part in &parts[..parts.len() - 1] {
+                        let descriptor = openat(
+                            parent.as_ref().unwrap_or(&root_descriptor),
+                            *part,
+                            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                            Mode::empty(),
+                        )
+                        .map_err(|error| format!("open Python source directory: {error}"))?;
+                        parent = Some(descriptor);
+                    }
+                    let descriptor = openat(
+                        parent.as_ref().unwrap_or(&root_descriptor),
+                        parts[parts.len() - 1],
+                        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+                        Mode::empty(),
+                    )
+                    .map_err(|error| format!("open Python source file: {error}"))?;
+                    fs::File::from(descriptor)
+                };
+                #[cfg(not(unix))]
+                let file = unavailable_python_source_handle()?;
+                let metadata = file
+                    .metadata()
+                    .map_err(|error| format!("inspect opened Python source: {error}"))?;
+                if !metadata.is_file()
+                    || metadata.len()
+                        > backend_engine::python_project::MAX_PYTHON_METADATA_BYTES as u64
+                {
+                    return Err("opened Python metadata is not a bounded regular file".to_owned());
+                }
+                let mut bytes = Vec::new();
+                file.take(backend_engine::python_project::MAX_PYTHON_METADATA_BYTES as u64 + 1)
+                    .read_to_end(&mut bytes)
+                    .map_err(|error| format!("read Python source: {error}"))?;
+                if bytes.len() > backend_engine::python_project::MAX_PYTHON_METADATA_BYTES {
+                    return Err("Python metadata exceeds source bound".to_owned());
+                }
+                Ok(bytes)
+            })
+            .map(Some)
+        })();
+        inputs.update(&(relative.len() as u64).to_le_bytes());
+        inputs.update(relative.as_bytes());
+        match &outcome {
+            Ok(Some(bytes)) => {
+                inputs.update(b"present");
+                inputs.update(&(bytes.len() as u64).to_le_bytes());
+                inputs.update(blake3::hash(bytes).as_bytes());
+            }
+            Ok(None) => {
+                inputs.update(b"absent");
+            }
+            Err(error) => {
+                inputs.update(b"unavailable");
+                inputs.update(error.as_bytes());
+            }
+        }
+        outcome
+    })
+}
+
+// Check-then-open is insufficient on these platforms. Do not follow potentially
+// raced symlinks until a handle-relative no-follow implementation is available.
+#[cfg(not(unix))]
+fn unavailable_python_source_handle() -> Result<fs::File, String> {
+    Err("Python source metadata unavailable: secure handle-relative source reads are unsupported on this platform".to_owned())
+}
+
 fn read_python_manifest(project_root: &Path) -> Result<Option<LocalPackageManifest>, String> {
-    let path = project_root.join("pyproject.toml");
-    let bytes = read_manifest_bytes(&path)?;
-    let text = std::str::from_utf8(&bytes)
-        .map_err(|_| format!("local manifest {} is not UTF-8", path.display()))?;
-    let root = toml::from_str::<toml::Value>(text)
-        .map_err(|error| format!("parse local manifest {}: {error}", path.display()))?;
-    let Some(project) = root.get("project").and_then(toml::Value::as_table) else {
+    let Some(metadata) = read_python_metadata(project_root)? else {
         return Ok(None);
     };
-    let name = match project.get("name") {
-        Some(toml::Value::String(name)) if !name.is_empty() => name.as_str(),
-        Some(_) => {
-            return Err(format!(
-                "local manifest {} has a non-string project name",
-                path.display()
-            ));
-        }
-        None => {
-            return Err(format!(
-                "local manifest {} omits project.name",
-                path.display()
-            ));
-        }
-    };
-    let Some(version) = python_version(project) else {
+    let (Some(name), Some(version)) = (metadata.name.recorded(), metadata.version.recorded())
+    else {
         return Ok(None);
     };
+    if name.is_empty() || version.is_empty() {
+        return Ok(None);
+    }
     let coordinate = coordinate_for(RegistryEcosystem::Pypi, name, version)?;
-    let record = manifest_record(RegistryEcosystem::Pypi, name, version, coordinate, &bytes)?;
+    let manifest_bytes = metadata
+        .evidence
+        .iter()
+        .find(|source| source.path == metadata.manifest_path)
+        .ok_or("Python manifest evidence missing")?
+        .bytes;
+    let record = manifest_record_evidence(
+        RegistryEcosystem::Pypi,
+        name,
+        version,
+        coordinate,
+        manifest_bytes,
+        metadata.digest(),
+    )?;
     Ok(Some(LocalPackageManifest {
-        profile: python_profile(project)?,
+        // Interpreter support constraints do not establish a compiler grammar.
+        // Keep the established grammar default; preserve the requirement as evidence.
+        profile: LanguageProfile::Python(PythonVersion::Python314),
         record,
     }))
-}
-
-fn python_version(project: &toml::Table) -> Option<&str> {
-    match project.get("version") {
-        Some(toml::Value::String(version)) if !version.is_empty() && !version.contains("${") => {
-            Some(version.as_str())
-        }
-        _ => None,
-    }
-}
-
-fn python_profile(project: &toml::Table) -> Result<LanguageProfile, String> {
-    let Some(value) = project.get("requires-python") else {
-        return Ok(LanguageProfile::Python(PythonVersion::Python314));
-    };
-    let Some(text) = value.as_str() else {
-        return Err("local manifest requires-python is not a string".to_owned());
-    };
-    Ok(LanguageProfile::Python(python_version_token(text)))
-}
-
-fn python_version_token(text: &str) -> PythonVersion {
-    for (token, version) in [
-        ("3.10", PythonVersion::Python310),
-        ("3.11", PythonVersion::Python311),
-        ("3.12", PythonVersion::Python312),
-        ("3.13", PythonVersion::Python313),
-        ("3.14", PythonVersion::Python314),
-    ] {
-        if text.contains(token) {
-            return version;
-        }
-    }
-    PythonVersion::Python314
 }
 
 fn read_go_manifest(project_root: &Path) -> Result<Option<LocalPackageManifest>, String> {
@@ -1053,9 +1246,11 @@ mod tests {
     use super::{
         LanguageProfile, PythonVersion, RustEdition, TypeScriptSource, cargo_language_profile,
         cargo_package_fields, directory_version, indexed_package_source_root, read_local_manifest,
+        read_python_metadata, read_python_metadata_with_preopen, require_local_manifest,
     };
     use backend_semantic::vocabulary::{GoVersion, JavaRelease};
     use std::fs;
+    use std::io::Read as _;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1077,6 +1272,145 @@ mod tests {
             fs::create_dir_all(parent).expect("fixture parent");
         }
         fs::write(path, bytes).expect("fixture manifest");
+    }
+
+    #[test]
+    fn python_setup_cfg_literal_source_changes_identity_without_execution() {
+        let root = fixture("python-cfg-attr");
+        write(
+            &root.join("setup.cfg"),
+            "[metadata]\nname=legacy\nversion=attr: legacy.__version__\n[options]\ninstall_requires=\n requests>=2,<3\n",
+        );
+        write(
+            &root.join("setup.py"),
+            "from setuptools import setup\nsetup()\n",
+        );
+        write(&root.join("legacy/__init__.py"), "__version__='1.0'\n");
+        let first = read_local_manifest(&root)
+            .expect("cfg metadata")
+            .expect("identity");
+        assert_eq!(first.record.coordinate.as_str(), "pkg:pypi/legacy@1.0");
+        write(&root.join("legacy/__init__.py"), "__version__='2.0'\n");
+        let second = read_local_manifest(&root)
+            .expect("changed source")
+            .expect("identity");
+        assert_eq!(second.record.coordinate.as_str(), "pkg:pypi/legacy@2.0");
+        assert_ne!(first.record.facts_version, second.record.facts_version);
+        write(
+            &root.join("legacy/__init__.py"),
+            "__version__=dangerous()\n",
+        );
+        assert!(
+            read_local_manifest(&root)
+                .expect("dynamic identity")
+                .is_none()
+        );
+        assert!(
+            require_local_manifest(&root)
+                .expect_err("unavailable identity")
+                .contains("dynamic or omitted package identity")
+        );
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn python_source_fifo_replacement_after_preflight_never_blocks_refresh() {
+        use rustix::fs::{CWD, Mode, OFlags, mkfifoat, open};
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let root = fixture("python-open-race-fifo");
+        write(
+            &root.join("setup.cfg"),
+            "[metadata]\nname=sample\nversion=1\n",
+        );
+        let worker_root = root.clone();
+        let (ready_send, ready_recv) = mpsc::channel();
+        let (result_send, result_recv) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut inputs = blake3::Hasher::new();
+            let result = read_python_metadata_with_preopen(&worker_root, &mut inputs, |path| {
+                // Deterministic seam: the regular-file preflight has passed.
+                fs::remove_file(path).map_err(|error| error.to_string())?;
+                mkfifoat(CWD, path, Mode::from_bits_truncate(0o600))
+                    .map_err(|error| error.to_string())?;
+                ready_send.send(()).map_err(|error| error.to_string())?;
+                Ok(())
+            });
+            let _ = result_send.send(result);
+        });
+        ready_recv
+            .recv_timeout(Duration::from_secs(5))
+            .expect("race seam reached");
+        let result = result_recv.recv_timeout(Duration::from_secs(5));
+        // Rescue an accidentally blocking reader before failing this bounded
+        // regression control; the test must never strand a build/test process.
+        let rescue = if result.is_err() {
+            open(
+                root.join("setup.cfg"),
+                OFlags::WRONLY | OFlags::NONBLOCK,
+                Mode::empty(),
+            )
+            .ok()
+        } else {
+            None
+        };
+        worker.join().expect("reader terminated");
+        drop(rescue);
+        let error = result
+            .expect("FIFO open must finish without a writer")
+            .expect_err("opened special file cannot become source evidence");
+        assert!(error.contains("not a bounded regular file"), "{error}");
+        fs::remove_dir_all(root).expect("remove FIFO fixture");
+    }
+
+    #[test]
+    fn interpreter_constraints_preserve_evidence_without_selecting_compiler_grammar() {
+        let root = fixture("python-interpreter-constraint");
+        for constraint in [
+            ">3.12",
+            "<3.14",
+            ">=3.11,!=3.11.*",
+            ">=3.11,<3.13.0a1",
+            "==3.12.*",
+        ] {
+            write(
+                &root.join("pyproject.toml"),
+                &format!("[project]\nname='sample'\nversion='1'\nrequires-python='{constraint}'\n"),
+            );
+            let manifest = read_local_manifest(&root)
+                .expect("manifest")
+                .expect("identity");
+            assert_eq!(
+                manifest.profile,
+                LanguageProfile::Python(PythonVersion::Python314)
+            );
+            let metadata = read_python_metadata(&root)
+                .expect("metadata")
+                .expect("source");
+            assert_eq!(
+                metadata.requires_python.recorded().map(String::as_str),
+                Some(constraint)
+            );
+        }
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn python_attribute_symlink_cannot_borrow_identity_outside_project() {
+        let root = fixture("python-symlink");
+        let project = root.join("project");
+        write(
+            &project.join("setup.cfg"),
+            "[metadata]\nname=legacy\nversion=attr: legacy.__version__\n",
+        );
+        write(&root.join("outside.py"), "__version__='1.0'\n");
+        std::os::unix::fs::symlink(root.join("outside.py"), project.join("legacy.py"))
+            .expect("escaped source symlink");
+        let error = read_python_metadata(&project).expect_err("must reject escaped source");
+        assert!(error.contains("escapes project root"));
+        fs::remove_dir_all(root).expect("remove fixture");
     }
 
     #[test]
@@ -1124,7 +1458,7 @@ mod tests {
         );
         assert_eq!(
             python_manifest.profile,
-            LanguageProfile::Python(PythonVersion::Python312)
+            LanguageProfile::Python(PythonVersion::Python314)
         );
 
         let omitted = root.join("python-omitted");

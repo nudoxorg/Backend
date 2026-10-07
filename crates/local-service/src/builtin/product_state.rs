@@ -1782,6 +1782,7 @@ fn product_forge_package_detail(
         name: fact(&detail.manifest.name, |value| Ok(value.clone()))?,
         version: fact(&detail.manifest.version, |value| Ok(value.clone()))?,
         dependencies: detail.manifest.dependencies.clone(),
+        python_metadata: detail.manifest.python_metadata.clone(),
     };
     let metadata = backend_library::ForgeRepositoryMetadataRecord {
         owner: fact(&detail.repository_metadata.owner, |value| Ok(value.clone()))?,
@@ -2358,6 +2359,7 @@ fn forge_discovery_candidate(
         name: Some(ProductText::new(name).map_err(|error| error.to_string())?),
         version: Some(ProductText::new(&version).map_err(|error| error.to_string())?),
         dependencies: manifest.dependencies.clone(),
+        python_metadata: manifest.python_metadata.clone(),
     };
     let commit = ProductText::new(&record.resolution.commit.as_hex())
         .map(backend_library::ForgeFact::Recorded)
@@ -2539,7 +2541,7 @@ fn indexed_package_records(
             let manifest = match super::local_manifest::read_local_manifest(project_root) {
                 Ok(Some(manifest)) => manifest,
                 Ok(None) => {
-                    if requested {
+                    if requested && !super::local_manifest::has_python_manifest(project_root) {
                         return Err(format!(
                             "indexed project {} has no supported manifest",
                             project_root.display()
@@ -2554,7 +2556,7 @@ fn indexed_package_records(
                     continue;
                 }
             };
-            if package_matches(package, &manifest.record) {
+            if requested || package_matches(package, &manifest.record) {
                 records.push(manifest.record);
             }
             continue;
@@ -3282,11 +3284,69 @@ fn profile(
         .as_ref()
         .and_then(|row| row.authority)
         .or_else(|| withheld_candidate_authority(&ordered));
+    let source_metadata = local_profile_source_metadata(view, package, &ordered.rows, workspace)?;
     Ok(SurfaceReply::PackageProfile {
         latest,
         versions: ordered.rows.len() as u64,
         candidate_authority,
+        source_metadata,
     })
+}
+
+fn local_profile_source_metadata(
+    view: &ViewRoot,
+    package: &PackageReference,
+    local_records: &[RegistryPackageRecord],
+    workspace: Option<&Path>,
+) -> Result<Option<backend_library::PythonProjectMetadata>, String> {
+    let mut matching = None;
+    for row in view
+        .row_refs()
+        .filter(|row| matches!(row.id, RowId::Package(_)))
+    {
+        let root = if Path::new(&row.label).is_dir() {
+            PathBuf::from(&row.label)
+        } else if row.label.starts_with("pkg:")
+            && package_reference_matches(
+                package,
+                &PackageReference::parse(&row.label).map_err(|error| error.to_string())?,
+            )
+        {
+            registry_project_root(view, &row.label, workspace)?
+        } else {
+            continue;
+        };
+        let requested = matches!(package, PackageReference::Local(label) if label.as_str() == row.label.as_str());
+        if matches!(package, PackageReference::Local(_)) && !requested {
+            continue;
+        }
+        if !super::local_manifest::has_python_manifest(&root) {
+            continue;
+        }
+        let metadata = match super::local_manifest::read_python_metadata(&root) {
+            Ok(Some(metadata)) => metadata,
+            Ok(None) => continue,
+            Err(error) if requested => return Err(error),
+            Err(_) => continue,
+        };
+        if requested {
+            return Ok(Some(metadata));
+        }
+        if local_records.iter().any(|record| {
+            record.authority.is_none()
+                && record.ecosystem == RegistryEcosystem::Pypi
+                && metadata.name.recorded().map(String::as_str) == Some(record.name.as_str())
+                && metadata.version.recorded().map(String::as_str) == Some(record.version.as_str())
+                && metadata.digest() == record.facts_version
+        }) {
+            if matching.is_some() {
+                // A PURL does not select one of multiple local source roots.
+                return Ok(None);
+            }
+            matching = Some(metadata);
+        }
+    }
+    Ok(matching)
 }
 
 fn latest_available_version(ordered: &OrderedRegistryVersions) -> Option<RegistryPackageRecord> {
@@ -5385,6 +5445,7 @@ mod tests {
                     name: ForgeFact::Recorded(ProductText::new("widget").expect("package name")),
                     version: ForgeFact::Recorded(ProductText::new("1.0.0").expect("version")),
                     dependencies: DependencyFacts::Known(vec![dependency].into_boxed_slice()),
+                    python_metadata: None,
                 },
                 backend_engine::ForgePackageManifest {
                     path: "examples/source-pin/Cargo.toml".into(),
@@ -5396,6 +5457,7 @@ mod tests {
                         backend_engine::ForgeUnavailableReason::AuthorityOmitted,
                     ),
                     dependencies: DependencyFacts::Known(Box::default()),
+                    python_metadata: None,
                 },
             ]
             .into_boxed_slice(),
@@ -5850,6 +5912,168 @@ edition = \"2021\"
             reused_ns[reused_ns.len() / 2]
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn python_local_profile_exposes_static_source_metadata_and_dynamic_absence() {
+        let root = fixture("python-profile");
+        fs::write(root.join("setup.cfg"), "[metadata]\nname=httpie\nversion=attr: httpie.__version__\ndescription=HTTP client\nproject_urls=\n Documentation=https://example.test/docs\n GitHub=https://example.test/repo\n[options]\ninstall_requires=requests[socks]>=2,<3\n").expect("manifest");
+        fs::create_dir(root.join("httpie")).expect("package");
+        fs::write(root.join("httpie/__init__.py"), "__version__='3.2.4'\n")
+            .expect("literal source");
+        let view = package_view(b"python-profile", &[root.as_path()]);
+        let package = PackageReference::parse(root.display().to_string()).expect("local path");
+        let reply = profile(
+            &view,
+            &[],
+            &CatalogLookupIndex::from_catalog(&[]),
+            &package,
+            None,
+        )
+        .expect("profile");
+        reply
+            .admit(backend_library::CommandId::PackageProfile)
+            .expect("bounded source evidence");
+        let SurfaceReply::PackageProfile {
+            latest: None,
+            versions: 1,
+            source_metadata: Some(metadata),
+            ..
+        } = reply
+        else {
+            panic!("local source metadata is independent of authoritative latest");
+        };
+        assert_eq!(metadata.name.recorded().map(String::as_str), Some("httpie"));
+        assert_eq!(
+            metadata.version.recorded().map(String::as_str),
+            Some("3.2.4")
+        );
+        assert_eq!(
+            metadata.documentation.recorded().map(String::as_str),
+            Some("https://example.test/docs")
+        );
+        fs::write(root.join("httpie/__init__.py"), "__version__=dynamic()\n")
+            .expect("dynamic source");
+        let reply = profile(
+            &view,
+            &[],
+            &CatalogLookupIndex::from_catalog(&[]),
+            &package,
+            None,
+        )
+        .expect("dynamic profile");
+        let SurfaceReply::PackageProfile {
+            latest: None,
+            source_metadata: Some(metadata),
+            ..
+        } = reply
+        else {
+            panic!("explicit unavailable version profile");
+        };
+        assert!(matches!(
+            metadata.version,
+            backend_library::PythonMetadataFact::Dynamic { .. }
+        ));
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn duplicate_purl_sources_withhold_unqualified_metadata_but_local_paths_select_it() {
+        let first = fixture("python-profile-duplicate-first");
+        let second = fixture("python-profile-duplicate-second");
+        for (root, description) in [(&first, "first source"), (&second, "second source")] {
+            fs::write(
+                root.join("pyproject.toml"),
+                format!("[project]\nname='sample'\nversion='1'\ndescription='{description}'\n"),
+            )
+            .expect("manifest");
+        }
+        let purl = PackageReference::parse("pkg:pypi/sample@1").expect("PURL");
+        for roots in [
+            [first.as_path(), second.as_path()],
+            [second.as_path(), first.as_path()],
+        ] {
+            let view = package_view(b"duplicate-python-source-profile", &roots);
+            let reply = profile(
+                &view,
+                &[],
+                &CatalogLookupIndex::from_catalog(&[]),
+                &purl,
+                None,
+            )
+            .expect("PURL profile");
+            assert!(
+                matches!(
+                    reply,
+                    SurfaceReply::PackageProfile {
+                        source_metadata: None,
+                        ..
+                    }
+                ),
+                "PURL cannot select among multiple source roots"
+            );
+            for (root, description) in [(&first, "first source"), (&second, "second source")] {
+                let local =
+                    PackageReference::parse(root.to_str().expect("path")).expect("local operand");
+                let reply = profile(
+                    &view,
+                    &[],
+                    &CatalogLookupIndex::from_catalog(&[]),
+                    &local,
+                    None,
+                )
+                .expect("local profile");
+                let SurfaceReply::PackageProfile {
+                    source_metadata: Some(metadata),
+                    ..
+                } = reply
+                else {
+                    panic!("exact local source");
+                };
+                assert_eq!(
+                    metadata.description.recorded().map(String::as_str),
+                    Some(description)
+                );
+            }
+        }
+        // Identical declarations in different roots still need the exact path
+        // operand; matching content digests alone must not hide that selection.
+        fs::copy(second.join("pyproject.toml"), first.join("pyproject.toml"))
+            .expect("identical source declarations");
+        let view = package_view(b"identical-python-source-profile", &[&second, &first]);
+        for root in [&first, &second] {
+            let local = PackageReference::parse(root.to_str().expect("path")).expect("local");
+            assert!(matches!(
+                profile(
+                    &view,
+                    &[],
+                    &CatalogLookupIndex::from_catalog(&[]),
+                    &local,
+                    None
+                )
+                .expect("exact local profile"),
+                SurfaceReply::PackageProfile {
+                    source_metadata: Some(_),
+                    ..
+                }
+            ));
+        }
+        assert!(matches!(
+            profile(
+                &view,
+                &[],
+                &CatalogLookupIndex::from_catalog(&[]),
+                &purl,
+                None
+            )
+            .expect("ambiguous PURL"),
+            SurfaceReply::PackageProfile {
+                source_metadata: None,
+                ..
+            }
+        ));
+        fs::remove_dir_all(first).expect("remove first");
+        fs::remove_dir_all(second).expect("remove second");
     }
 
     /// Builds a view whose `RowId::Package` rows are indexed local directories,

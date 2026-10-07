@@ -863,6 +863,9 @@ pub struct ProductRecordDto {
     /// Typed native registry facts when this row came from a package release.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_metadata: Option<RegistryNativeMetadata>,
+    /// Static Python source declarations, independent of registry metadata authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_metadata: Option<backend_library::PythonProjectMetadata>,
     /// Exact bounded forge commit, manifest, and repository metadata facts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub forge: Option<backend_library::ForgePackageRecord>,
@@ -898,6 +901,7 @@ impl ProductDto {
                     operand: record.operand().map(ToOwned::to_owned),
                     tags: record.tags().to_vec(),
                     native_metadata: record.native_metadata().cloned(),
+                    source_metadata: record.source_metadata().cloned(),
                     forge: record.forge_details().cloned(),
                     forge_package_detail: record.forge_package_detail().cloned(),
                     discovery: record.discovery_details().cloned(),

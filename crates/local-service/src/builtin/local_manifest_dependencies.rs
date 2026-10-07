@@ -25,7 +25,7 @@ pub(super) fn local_dependency_facts(
     let source = identity.record.coordinate;
     let facts = if project_root.join("package.json").is_file() {
         npm_dependency_facts(project_root, &source)?
-    } else if project_root.join("pyproject.toml").is_file() {
+    } else if super::has_python_manifest(project_root) {
         python_dependency_facts(project_root, &source)?
     } else if project_root.join("go.mod").is_file() {
         go_dependency_facts(project_root, &source)?
@@ -147,174 +147,19 @@ fn python_dependency_facts(
     project_root: &Path,
     source: &PackageReference,
 ) -> Result<DependencyFacts<Box<[PackageDependencyRecord]>>, String> {
-    let path = project_root.join("pyproject.toml");
-    let bytes = read_manifest_bytes(&path)?;
-    let text = std::str::from_utf8(&bytes)
-        .map_err(|_| format!("local manifest {} is not UTF-8", path.display()))?;
-    let root = toml::from_str::<toml::Value>(text)
-        .map_err(|error| format!("parse local manifest {}: {error}", path.display()))?;
-    let Some(project) = root.get("project").and_then(toml::Value::as_table) else {
-        return known_facts(Vec::new());
+    let Some(metadata) = super::read_python_metadata(project_root)? else {
+        return Ok(DependencyFacts::Unavailable(ProductText::from_static(
+            "Python packaging metadata is absent",
+        )));
     };
     let frontier = manifest_frontier(project_root);
-    let mut rows = Vec::new();
-    if let Some(dependencies) = project.get("dependencies") {
-        let Some(dependencies) = dependencies.as_array() else {
-            return Err(format!(
-                "local manifest {} project.dependencies is not an array",
-                path.display()
-            ));
-        };
-        for requirement in dependencies {
-            let Some(requirement) = requirement.as_str() else {
-                return Err(format!(
-                    "local manifest {} has a non-string project dependency",
-                    path.display()
-                ));
-            };
-            let name = pep508_name(requirement)?;
-            let extra = pep508_extra(requirement);
-            let scope = if extra {
-                DependencyScope::Optional
-            } else {
-                DependencyScope::Runtime
-            };
-            rows.push(dependency_row(
-                source,
-                RegistryEcosystem::Pypi,
-                name,
-                requirement,
-                scope,
-                extra,
-                &bytes,
-                frontier,
-            )?);
-        }
-    }
-    if let Some(extras) = project.get("optional-dependencies") {
-        let Some(extras) = extras.as_table() else {
-            return Err(format!(
-                "local manifest {} optional-dependencies is not a table",
-                path.display()
-            ));
-        };
-        for (group, values) in extras {
-            let Some(values) = values.as_array() else {
-                return Err(format!(
-                    "local manifest {} optional dependency group {group} is not an array",
-                    path.display()
-                ));
-            };
-            for requirement in values {
-                let Some(requirement) = requirement.as_str() else {
-                    return Err(format!(
-                        "local manifest {} optional dependency group {group} has a non-string requirement",
-                        path.display()
-                    ));
-                };
-                let name = pep508_name(requirement)?;
-                rows.push(dependency_row(
-                    source,
-                    RegistryEcosystem::Pypi,
-                    name,
-                    requirement,
-                    DependencyScope::Optional,
-                    true,
-                    &bytes,
-                    frontier,
-                )?);
-            }
-        }
-    }
-    known_facts(rows)
-}
-
-fn pep508_name(requirement: &str) -> Result<&str, String> {
-    let end = requirement
-        .find(|character: char| {
-            character.is_whitespace()
-                || matches!(character, '[' | ';' | '<' | '>' | '=' | '!' | '~' | '@')
-        })
-        .unwrap_or(requirement.len());
-    let Some(name) = requirement.get(..end) else {
-        return Err(format!(
-            "local manifest requirement {requirement} has no package name"
-        ));
-    };
-    if name.is_empty()
-        || !name
-            .chars()
-            .next()
-            .is_some_and(|character| character.is_ascii_alphanumeric())
-        || !name.chars().all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.')
-        })
-    {
-        return Err(format!(
-            "local manifest requirement {requirement} has no package name"
-        ));
-    }
-    Ok(name)
-}
-
-fn pep508_extra(requirement: &str) -> bool {
-    let Some((_, marker)) = requirement.split_once(';') else {
-        return false;
-    };
-    let bytes = marker.as_bytes();
-    let mut index = 0;
-    let mut quoted = false;
-    let mut quote = b'"';
-    while index < bytes.len() {
-        let Some(byte) = bytes.get(index).copied() else {
-            break;
-        };
-        if quoted {
-            if byte == quote {
-                quoted = false;
-            }
-            index += 1;
-            continue;
-        }
-        if byte == b'"' || byte == b'\'' {
-            quoted = true;
-            quote = byte;
-            index += 1;
-            continue;
-        }
-        if marker[index..].starts_with("extra") {
-            let before = index == 0
-                || bytes
-                    .get(index - 1)
-                    .is_none_or(|previous| !is_marker_identifier_byte(*previous));
-            let after = index + 5;
-            let after_boundary = bytes
-                .get(after)
-                .is_none_or(|next| !is_marker_identifier_byte(*next));
-            if before && after_boundary {
-                let rest = marker[after..].trim_start();
-                if rest.starts_with("===")
-                    || rest.starts_with("==")
-                    || rest.starts_with("!=")
-                    || rest.starts_with("~=")
-                    || rest.starts_with("<=")
-                    || rest.starts_with(">=")
-                    || rest.starts_with('<')
-                    || rest.starts_with('>')
-                    || rest.starts_with("in")
-                    || rest.starts_with("not")
-                {
-                    return true;
-                }
-            }
-        }
-        index += 1;
-    }
-    false
-}
-
-fn is_marker_identifier_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_'
+    Ok(backend_engine::python_project::python_dependency_facts(
+        &metadata,
+        source,
+        PackageGraphSourceAuthority::Local(frontier),
+        DependencyAuthority::LocalManifest,
+        frontier,
+    ))
 }
 
 fn go_dependency_facts(
@@ -894,24 +739,47 @@ mod tests {
             .expect("python")
             .expect("facts");
         let rows = known(&facts);
+        assert_eq!(rows.len(), 3);
+        assert!(
+            rows.iter()
+                .any(|row| { row.target.requirement.as_str() == "requests>=2" && !row.optional })
+        );
+        assert!(rows.iter().any(|row| {
+            row.target.requirement.as_str() == "packaging>=21; extra == \"dev\""
+                && row.scope == DependencyScope::Runtime
+                && row.optional
+        }));
+        assert!(rows.iter().any(|row| {
+            row.target.requirement.as_str() == "pytest>=7"
+                && row.scope == DependencyScope::Optional
+                && row.optional
+        }));
+        let metadata = super::super::read_python_metadata(&python)
+            .expect("metadata")
+            .expect("source");
+        let rows = metadata
+            .dependencies
+            .recorded()
+            .expect("original declarations");
+        assert_eq!(rows.len(), 3);
         assert_eq!(
             rows.iter()
-                .find(|row| row.target.name.as_str() == "requests")
+                .find(|row| row.requirement.starts_with("requests"))
                 .expect("requests")
                 .scope,
             DependencyScope::Runtime
         );
         assert_eq!(
             rows.iter()
-                .find(|row| row.target.name.as_str() == "packaging")
-                .expect("extra")
+                .find(|row| row.requirement.starts_with("packaging"))
+                .expect("marker")
                 .scope,
-            DependencyScope::Optional
+            DependencyScope::Runtime
         );
         assert_eq!(
             rows.iter()
-                .find(|row| row.target.name.as_str() == "pytest")
-                .expect("pytest")
+                .find(|row| row.requirement.starts_with("pytest"))
+                .expect("extra group")
                 .scope,
             DependencyScope::Optional
         );

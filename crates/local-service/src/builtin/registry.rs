@@ -4888,6 +4888,7 @@ mod tests {
             latest,
             versions,
             candidate_authority,
+            ..
         } = profile_reply
         else {
             panic!("profile reply shape");

@@ -233,6 +233,7 @@ mod tests {
             name: ForgeFact::Recorded(ProductText::new("widget").expect("name text")),
             version,
             dependencies: DependencyFacts::Known(Box::default()),
+            python_metadata: None,
         };
         ForgeSearchRecord {
             coordinate,

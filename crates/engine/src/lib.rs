@@ -54,6 +54,9 @@ pub mod index_publish;
 pub mod journal;
 pub mod platform;
 pub mod publication;
+/// Static source-attributed Python packaging declarations.
+pub mod python_project;
+pub(crate) mod python_requirement;
 pub mod queue;
 pub mod registry;
 pub mod retrieval;

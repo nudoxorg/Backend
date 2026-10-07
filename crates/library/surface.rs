@@ -3988,6 +3988,9 @@ pub struct ForgeDiscoveryCandidate {
 impl ForgeDiscoveryCandidate {
     /// Checks that the source coordinate and package identity remain bound.
     pub fn admit(&self) -> Result<(), ProductAdmissionError> {
+        if let Some(metadata) = &self.manifest.python_metadata {
+            metadata.admit()?;
+        }
         let source = ForgeCoordinate::parse(self.forge_coordinate.as_str().to_owned())
             .map_err(|_| ProductAdmissionError::ForgeSearchShape)?;
         let parsed = PackageCoordinate::parse(self.coordinate.as_str().to_owned())
@@ -4037,6 +4040,9 @@ impl ForgePackageDetailRecord {
             || self.manifest.path.as_str().is_empty()
         {
             return Err(ProductAdmissionError::ForgePackageDetailShape);
+        }
+        if let Some(metadata) = &self.manifest.python_metadata {
+            metadata.admit()?;
         }
         match (&self.pin, &self.package_coordinate) {
             (ForgePackagePin::PackageVersion { coordinate }, Some(package_coordinate))
@@ -4088,6 +4094,9 @@ pub struct ForgePackageManifestDetail {
     pub version: ForgeFact<ProductText>,
     /// Dependency facts admitted from the manifest.
     pub dependencies: DependencyFacts<Box<[PackageDependencyRecord]>>,
+    /// Static Python declarations with source evidence, independent of registry authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub python_metadata: Option<crate::PythonProjectMetadata>,
 }
 
 /// Registry-only evidence attached to a forge manifest.
@@ -4331,6 +4340,9 @@ pub struct ForgeManifestRecord {
     /// Dependency facts admitted from this source manifest. Unknown and
     /// unavailable facts remain distinct from a known empty edge set.
     pub dependencies: DependencyFacts<Box<[PackageDependencyRecord]>>,
+    /// Static Python declarations with source evidence, independent of registry authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub python_metadata: Option<crate::PythonProjectMetadata>,
 }
 
 /// Product DTO for a source acquired from GitHub, GitLab, Codeberg, or generic HTTPS Git.
@@ -4581,6 +4593,9 @@ pub enum SurfaceReply {
         /// This remains populated when `latest` is withheld as historical.
         #[serde(default)]
         candidate_authority: Option<RegistryPackageFactAuthority>,
+        /// Source packaging declarations from the selected local project; no registry authority implied.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_metadata: Option<crate::PythonProjectMetadata>,
     },
     /// Subscription after mutation.
     Subscribed(SubscriptionRecord),
@@ -4908,14 +4923,38 @@ impl SurfaceReply {
                         row.admit()?;
                     }
                 }
+                Self::ForgePackageAdded(record) | Self::ForgePackageReferenced(record) => {
+                    for manifest in &record.manifests {
+                        if let Some(metadata) = &manifest.python_metadata {
+                            metadata.admit()?;
+                        }
+                    }
+                }
                 Self::PackageProfile {
-                    latest: Some(row),
+                    latest,
                     candidate_authority,
+                    source_metadata,
                     ..
                 } => {
-                    admit_registry_record(row)?;
-                    if candidate_authority != &row.authority {
-                        return Err(ProductAdmissionError::RegistryAuthority);
+                    if let Some(row) = latest {
+                        admit_registry_record(row)?;
+                        if candidate_authority != &row.authority {
+                            return Err(ProductAdmissionError::RegistryAuthority);
+                        }
+                    }
+                    if let Some(metadata) = source_metadata {
+                        metadata.admit()?;
+                        if latest.as_ref().is_some_and(|row| {
+                            row.authority.is_none()
+                                && row.ecosystem == RegistryEcosystem::Pypi
+                                && (metadata.name.recorded().map(String::as_str)
+                                    != Some(row.name.as_str())
+                                    || metadata.version.recorded().map(String::as_str)
+                                        != Some(row.version.as_str())
+                                    || metadata.digest() != row.facts_version)
+                        }) {
+                            return Err(ProductAdmissionError::PythonMetadata);
+                        }
                     }
                 }
                 _ => {}
@@ -5040,13 +5079,15 @@ impl SurfaceReply {
             Self::PackageProfile {
                 latest,
                 candidate_authority,
+                source_metadata,
                 ..
             } => latest
                 .as_ref()
                 .map_or(64, registry_package_record_bound)
                 .saturating_add(
                     serde_json::to_vec(candidate_authority).map_or(0, |bytes| bytes.len()),
-                ),
+                )
+                .saturating_add(serde_json::to_vec(source_metadata).map_or(0, |bytes| bytes.len())),
             Self::Subscribed(record) => subscription_record_bound(record),
             Self::Unsubscribed(_) | Self::ProjectDeleted(_) | Self::TreeClosed(_) => 64,
             Self::Subscriptions(records) => records.iter().fold(0_usize, |bound, record| {
@@ -5291,6 +5332,8 @@ pub enum ProductAdmissionError {
     SemanticVersionShape,
     /// A dependency row has a stale or duplicated content identity.
     DependencyShape,
+    /// Static Python declarations have malformed bounds or detached source evidence.
+    PythonMetadata,
     /// Native registry metadata is malformed, oversized, or has a stale identity.
     NativeMetadata,
     /// Registry fact authority is inconsistent with the selected package facts.
@@ -5338,6 +5381,7 @@ impl core::fmt::Display for ProductAdmissionError {
             Self::DiffShape => "semantic diff has inconsistent identities or evidence",
             Self::SemanticVersionShape => "semantic version selection is inconsistent",
             Self::DependencyShape => "dependency fact has an invalid or duplicate identity",
+            Self::PythonMetadata => "Python metadata has invalid source evidence or bounds",
             Self::NativeMetadata => "native registry metadata is invalid or has a stale identity",
             Self::RegistryAuthority => {
                 "registry fact authority is inconsistent with selected package facts"
