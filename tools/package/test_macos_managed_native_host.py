@@ -504,15 +504,25 @@ class ManagedNativeTests(unittest.TestCase):
             with self.assertRaisesRegex(bundle.PackageError,'operator plan'):
                 bundle.validate_app_build(receipt,artifacts,source,'aarch64-apple-darwin',runner['sha256'])
 
+    def sign_fixture(self,root):
+        output=root/'release';build=output/'build';build.mkdir(parents=True)
+        app=output/'package/Nudox.app';resources=app/'Contents/Resources';resources.mkdir(parents=True)
+        images=app/'Contents/MacOS';images.mkdir()
+        executables={}
+        for name in native.PACKAGES:
+            path=images/name;path.write_bytes(b'compiled '+name.encode())
+            executables[name]=native.digest(path.read_bytes())
+        proof={'kind':native.KIND,'operator_plan_sha256':'f'*64}
+        raw=native.canonical({'cargo_provenance':proof,'executables':executables})
+        (build/'application-build-receipt.json').write_bytes(raw)
+        (resources/'build-manifest.json').write_bytes(native.canonical({'application_build':{
+            'cargo_provenance':proof,'executables':executables,'receipt_sha256':native.digest(raw)}}))
+        return {'source_root':str(root),'output_dir':str(output),'managed_native_host_plan':str(root/'plan.json'),
+                'expected_managed_plan_sha256':'f'*64},output
+
     def test_sign_rechecks_selected_plan_before_any_codesign(self):
         with tempfile.TemporaryDirectory() as d:
-            root=Path(d);output=root/'release';build=output/'build';build.mkdir(parents=True)
-            resources=output/'package/Nudox.app/Contents/Resources';resources.mkdir(parents=True)
-            proof={'kind':native.KIND,'operator_plan_sha256':'f'*64}
-            (build/'application-build-receipt.json').write_bytes(native.canonical({'cargo_provenance':proof}))
-            (resources/'build-manifest.json').write_bytes(native.canonical({'application_build':{'cargo_provenance':proof}}))
-            config={'source_root':str(root),'output_dir':str(output),'managed_native_host_plan':str(root/'plan.json'),
-                    'expected_managed_plan_sha256':'e'*64}
+            config,output=self.sign_fixture(Path(d));config['expected_managed_plan_sha256']='e'*64
             with patch.object(release,'preflight',return_value={'ready':True}),patch.object(release,'run') as run:
                 with self.assertRaisesRegex(ValueError,'external selected plan'):release.finalize(config)
                 run.assert_not_called()
@@ -521,5 +531,36 @@ class ManagedNativeTests(unittest.TestCase):
             del config['managed_native_host_plan']
             with self.assertRaisesRegex(ValueError,'requires an external selected plan'):
                 release.selected_managed_build(config,output)
+
+    def test_sign_rehashes_all_four_packaged_images_before_any_codesign(self):
+        for sdk_only in (False,True):
+            for name in native.PACKAGES:
+                with self.subTest(sdk_only=sdk_only,image=name),tempfile.TemporaryDirectory() as d:
+                    config,output=self.sign_fixture(Path(d));config['sdk_only']=sdk_only
+                    release.selected_managed_build(config,output)
+                    (output/'package/Nudox.app/Contents/MacOS'/name).write_bytes(b'substituted after bundling')
+                    with patch.object(release,'preflight',return_value={'ready':True}),patch.object(release,'run') as run:
+                        with self.assertRaisesRegex(ValueError,'executable differs from the selected build receipt'):
+                            release.finalize(config)
+                        run.assert_not_called()
+
+    def test_sign_binds_external_receipt_and_exact_four_image_map(self):
+        for changed in ('receipt','missing','extra','packaged-map'):
+            with self.subTest(changed=changed),tempfile.TemporaryDirectory() as d:
+                config,output=self.sign_fixture(Path(d))
+                receipt=output/'build/application-build-receipt.json';manifest=output/'package/Nudox.app/Contents/Resources/build-manifest.json'
+                build=json.loads(receipt.read_bytes());evidence=json.loads(manifest.read_bytes())
+                if changed=='receipt':build['changed_after_bundling']=True
+                elif changed=='missing':del build['executables']['backend-cli']
+                elif changed=='extra':build['executables']['unexpected']='a'*64
+                else:evidence['application_build']['executables']['backend-cli']='a'*64
+                raw=native.canonical(build);receipt.write_bytes(raw)
+                if changed in ('missing','extra'):
+                    evidence['application_build']['executables']=build['executables']
+                    evidence['application_build']['receipt_sha256']=native.digest(raw)
+                manifest.write_bytes(native.canonical(evidence))
+                with patch.object(release,'preflight',return_value={'ready':True}),patch.object(release,'run') as run:
+                    with self.assertRaisesRegex(ValueError,'external selected build receipt'):release.finalize(config)
+                    run.assert_not_called()
 
 if __name__=='__main__':unittest.main()

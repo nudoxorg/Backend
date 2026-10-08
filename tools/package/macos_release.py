@@ -13,7 +13,7 @@ import tomllib
 from pathlib import Path
 
 from release_contract import ASSET, sha256
-from linux_release_package import read_regular_bytes
+from linux_release_package import admit_file_digest, read_regular_bytes
 
 HERE = Path(__file__).resolve().parent
 MACHO = {b"\xfe\xed\xfa\xcf", b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca", b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca"}
@@ -46,10 +46,23 @@ def selected_managed_build(config, output):
             raise ValueError('managed-native-host signing requires an external selected plan')
         return
     pin=config.get('expected_managed_plan_sha256')
-    build=json.loads(read_regular_bytes(output/'build/application-build-receipt.json',16*1024**2,'selected application build receipt'))
+    build_bytes=read_regular_bytes(output/'build/application-build-receipt.json',16*1024**2,'selected application build receipt')
+    build=json.loads(build_bytes)
     for proof in (build.get('cargo_provenance',{}),manifest.get('application_build',{}).get('cargo_provenance',{})):
         if proof.get('kind')!='managed-native-host' or proof.get('operator_plan_sha256')!=pin:
             raise ValueError('packaged managed-native-host build differs from the external selected plan pin')
+    import macos_managed_native_host as managed
+    packaged=manifest.get('application_build',{})
+    executables=build.get('executables')
+    if (packaged.get('receipt_sha256')!=hashlib.sha256(build_bytes).hexdigest()
+            or not isinstance(executables,dict) or set(executables)!=set(managed.PACKAGES)
+            or packaged.get('executables')!=executables):
+        raise ValueError('packaged application differs from the external selected build receipt')
+    app=output/'package/Nudox.app'
+    for name in managed.PACKAGES:
+        _,digest=admit_file_digest(app/'Contents/MacOS'/name,managed.MAX_IMAGE)
+        if digest!=executables[name]:
+            raise ValueError('packaged application executable differs from the selected build receipt: '+name)
 
 
 def preflight(config, stage="build"):
