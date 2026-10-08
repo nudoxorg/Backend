@@ -10,6 +10,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, ensure};
+use backend_frontend_rust::legacy::ra_ap_syntax::ast::HasName;
 use backend_frontend_rust::legacy::{
     RustAnalysisControl, RustCargoMetadataPolicy, RustDefinition, RustFeatureControl,
     RustToolchain, RustWorkspace, SemanticKind, SourceByteLimit, SourceOrigin,
