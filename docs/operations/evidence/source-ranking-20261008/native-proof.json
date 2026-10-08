@@ -1,0 +1,314 @@
+{
+  "schema": "nudox.search-source-ranking.native-proof.v1",
+  "created_utc": "2026-10-08T11:17:49.457557+00:00",
+  "native_source": "234abddf8b1cd82f0517a268c78c291cafae5b59",
+  "native_tree": "fcc9a7ce64c434684cfb49f16afae6bc250a8ee1",
+  "original_source": "2a030eee2ff8ebd0a56b1cb57ec2f8258e419516",
+  "original_tree": "9c6707f9bb58e07a0681fd194b6974f50432df4f",
+  "plan": "/private/tmp/sol61-search-ranking-native-234a-plan04.json",
+  "plan_sha256": "ce9568399cbbb190bbf51654843c449ca8a28d2361390e67cfbfaf0cd4334c7b",
+  "source_packet": "/private/tmp/sol61-search-source-ranking-final-review-source-map.json",
+  "source_packet_sha256": "19d9df3b83ad4547f356e17c97f541b5e7b918e174a6273321acd17c323d0653",
+  "gates": [
+    {
+      "gate": 0,
+      "expected_passed": 4,
+      "source": {
+        "commit": "234abddf8b1cd82f0517a268c78c291cafae5b59",
+        "tree": "fcc9a7ce64c434684cfb49f16afae6bc250a8ee1",
+        "clean": true,
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e"
+      },
+      "argv": [
+        "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+        "test",
+        "--verbose",
+        "--locked",
+        "--offline",
+        "--message-format=json",
+        "-j2",
+        "-p",
+        "backend-local-service",
+        "--lib",
+        "source_declaration_ranking",
+        "--",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "child_pid": 99323,
+      "supervisor_pid": 99304,
+      "results": [
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1144 filtered out; finished in 3.97s"
+      ],
+      "binary_sha256": "5e172dea3291f8af021fda90dd8ceb7630613ddc96fe8145db23ad4e6c1ec2e3",
+      "cargo_fresh": false,
+      "admission_slots": {
+        "fleet": 7,
+        "hosts": {
+          "h16001mac": 1,
+          "ilo": 2,
+          "local": 4
+        }
+      },
+      "admission": {
+        "memory_guard_scope": "destination",
+        "destination_memory_only_for_remote": true,
+        "sampled_at_utc": "2026-10-08T11:10:43.458246+00:00",
+        "age_at_validation_seconds": 3.979,
+        "fleet_groups": 7,
+        "destination_groups": 1,
+        "destination_available_memory_bytes": 63851823104,
+        "destination_root_disk_available_bytes": 1145013071872
+      },
+      "completion": "/private/tmp/sol61-search-ranking-native-234a-gate0-attempt01/native/completion.json",
+      "completion_sha256": "0d30aa74413db2514d46f4125a775f479695d66720f9b11fbe9d8332f9e3ec35",
+      "launch_sha256": "9ddf30a6290cecdf4cd90d58be37e69fe0a10c99c2e296278298aa852928a83c",
+      "fleet_sha256": "5550a4a61aa0ba4876fe2a1616751c54eaf1f9dafcf7e03e214df91117e68fbb",
+      "orchestration_sha256": "e8c6c0d096b6549a42c92ee45797bc13645b5380f02b16cd44f04d1fc2647914",
+      "retirement": "owned-child-kernel-wait",
+      "all_pins_unchanged": true,
+      "permit_retired": true,
+      "leases_empty": true
+    },
+    {
+      "gate": 1,
+      "expected_passed": 1,
+      "source": {
+        "commit": "234abddf8b1cd82f0517a268c78c291cafae5b59",
+        "tree": "fcc9a7ce64c434684cfb49f16afae6bc250a8ee1",
+        "clean": true,
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e"
+      },
+      "argv": [
+        "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+        "test",
+        "--verbose",
+        "--locked",
+        "--offline",
+        "--message-format=json",
+        "-j2",
+        "-p",
+        "backend-local-service",
+        "--lib",
+        "the_words_place_the_declaration_they_name_in_the_package_they_name_first",
+        "--",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "child_pid": 3184,
+      "supervisor_pid": 3165,
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1147 filtered out; finished in 0.00s"
+      ],
+      "binary_sha256": "5e172dea3291f8af021fda90dd8ceb7630613ddc96fe8145db23ad4e6c1ec2e3",
+      "cargo_fresh": true,
+      "admission_slots": {
+        "fleet": 9,
+        "hosts": {
+          "h16001mac": 1,
+          "ilo": 4,
+          "local": 4
+        }
+      },
+      "admission": {
+        "memory_guard_scope": "destination",
+        "destination_memory_only_for_remote": true,
+        "sampled_at_utc": "2026-10-08T11:15:36.011987+00:00",
+        "age_at_validation_seconds": 4.421,
+        "fleet_groups": 8,
+        "destination_groups": 1,
+        "destination_available_memory_bytes": 61807149056,
+        "destination_root_disk_available_bytes": 1144112721920
+      },
+      "completion": "/private/tmp/sol61-search-ranking-native-234a-gate1-attempt01/native/completion.json",
+      "completion_sha256": "3ca8cf8d12532eccc6811699d041ec2f2415c7fb0e14fa1cd237a245a247402d",
+      "launch_sha256": "316c352a6aa32495579178ac2b783ac3aa0184dd52323737d318fb04ef8bf9ef",
+      "fleet_sha256": "7443b54b045711b78b04188ba7b0bbc5f81412cb727b95a3b79727bc5a8b40a5",
+      "orchestration_sha256": "c738bf8bcc6417d59f743c10c7bd52554d9668a9cb84cab9a97336a0b8ef7d82",
+      "retirement": "owned-child-kernel-wait",
+      "all_pins_unchanged": true,
+      "permit_retired": true,
+      "leases_empty": true
+    },
+    {
+      "gate": 2,
+      "expected_passed": 1,
+      "source": {
+        "commit": "234abddf8b1cd82f0517a268c78c291cafae5b59",
+        "tree": "fcc9a7ce64c434684cfb49f16afae6bc250a8ee1",
+        "clean": true,
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e"
+      },
+      "argv": [
+        "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+        "test",
+        "--verbose",
+        "--locked",
+        "--offline",
+        "--message-format=json",
+        "-j2",
+        "-p",
+        "backend-local-service",
+        "--lib",
+        "semantic_lane_only_reorders_local_matches_and_suppresses_unknown_ids",
+        "--",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "child_pid": 3917,
+      "supervisor_pid": 3893,
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1147 filtered out; finished in 0.01s"
+      ],
+      "binary_sha256": "5e172dea3291f8af021fda90dd8ceb7630613ddc96fe8145db23ad4e6c1ec2e3",
+      "cargo_fresh": true,
+      "admission_slots": {
+        "fleet": 8,
+        "hosts": {
+          "h16001mac": 2,
+          "ilo": 2,
+          "local": 4
+        }
+      },
+      "admission": {
+        "memory_guard_scope": "destination",
+        "destination_memory_only_for_remote": true,
+        "sampled_at_utc": "2026-10-08T11:16:11.587412+00:00",
+        "age_at_validation_seconds": 3.978,
+        "fleet_groups": 8,
+        "destination_groups": 2,
+        "destination_available_memory_bytes": 60575301632,
+        "destination_root_disk_available_bytes": 1144128139264
+      },
+      "completion": "/private/tmp/sol61-search-ranking-native-234a-gate2-attempt01/native/completion.json",
+      "completion_sha256": "26cca8b0ed23ebc05befefcc076a945e751b1ec333da51f1d046a7166e049f6b",
+      "launch_sha256": "dd86d5f14532100abc7695ddcfadd47a8a9dcaea8d7ff7dae04caa1499aa58b7",
+      "fleet_sha256": "d990022132f395141646092929f44bbbd7733ad73fe6b9fd6eec3461db93ab50",
+      "orchestration_sha256": "4171904d79882f1b27892b9706c78dd4206332b8b34a57636e55c7094f16f59e",
+      "retirement": "owned-child-kernel-wait",
+      "all_pins_unchanged": true,
+      "permit_retired": true,
+      "leases_empty": true
+    },
+    {
+      "gate": 3,
+      "expected_passed": 1,
+      "source": {
+        "commit": "234abddf8b1cd82f0517a268c78c291cafae5b59",
+        "tree": "fcc9a7ce64c434684cfb49f16afae6bc250a8ee1",
+        "clean": true,
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e"
+      },
+      "argv": [
+        "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+        "test",
+        "--verbose",
+        "--locked",
+        "--offline",
+        "--message-format=json",
+        "-j2",
+        "-p",
+        "backend-local-service",
+        "--lib",
+        "search_page_continuation_uses_stable_scores_and_rejects_changed_inputs",
+        "--",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "child_pid": 5055,
+      "supervisor_pid": 5024,
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1147 filtered out; finished in 0.04s"
+      ],
+      "binary_sha256": "5e172dea3291f8af021fda90dd8ceb7630613ddc96fe8145db23ad4e6c1ec2e3",
+      "cargo_fresh": true,
+      "admission_slots": {
+        "fleet": 10,
+        "hosts": {
+          "h16001mac": 3,
+          "ilo": 2,
+          "local": 5
+        }
+      },
+      "admission": {
+        "memory_guard_scope": "destination",
+        "destination_memory_only_for_remote": true,
+        "sampled_at_utc": "2026-10-08T11:16:55.329663+00:00",
+        "age_at_validation_seconds": 4.115,
+        "fleet_groups": 10,
+        "destination_groups": 3,
+        "destination_available_memory_bytes": 59774287872,
+        "destination_root_disk_available_bytes": 1144238194688
+      },
+      "completion": "/private/tmp/sol61-search-ranking-native-234a-gate3-attempt01/native/completion.json",
+      "completion_sha256": "259c8ceef6fc880e99db058d324b946587a8ffff2a5eb7f627775b2f9157ddbc",
+      "launch_sha256": "50ad7017c27f91ed154ef0ff2942b7ef2e6650381a25e3fe737ca6cef14ff1cb",
+      "fleet_sha256": "47fb6d6ff0d754f1ceda361a0aae33f15d10ed8984e65793845358234960c771",
+      "orchestration_sha256": "d7fe576889c5f266a9e65c608531822e46a1c75aa1b8fae9166f71e595da49b9",
+      "retirement": "owned-child-kernel-wait",
+      "all_pins_unchanged": true,
+      "permit_retired": true,
+      "leases_empty": true
+    }
+  ],
+  "total_passed": 7,
+  "total_failed": 0,
+  "binary_sha256": "5e172dea3291f8af021fda90dd8ceb7630613ddc96fe8145db23ad4e6c1ec2e3",
+  "preserved_prior_attempts": [
+    {
+      "directory": "/private/tmp/sol61-search-ranking-native-13940-gate0-attempt01",
+      "orchestration_sha256": "74604c8330e3e980fda773dec290bbf7ba481ce8132e6228a802a0540e0a6b6d",
+      "guard_exit": 75,
+      "native_launched": false,
+      "completion_sha256": null,
+      "fleet_sha256": "6f3aaa27e29d3a95ca23ce44f97f441c108c7e19ddff18a2b986d1dba64318ca",
+      "reason": [
+        "ilo:active-cargo-jobs-exceed-4"
+      ]
+    },
+    {
+      "directory": "/private/tmp/sol61-search-ranking-native-13940-gate0-attempt02",
+      "orchestration_sha256": "5d91b966d1a66c637ca3da47b6abcf24e9f7044736071af9ebaf4cfdd91d949b",
+      "guard_exit": 75,
+      "native_launched": false,
+      "completion_sha256": null,
+      "fleet_sha256": "9b32085ef1f67c0f06abc26d11ca886c7074658f6958d96483296788acc7749b",
+      "reason": [
+        "ilo:active-cargo-jobs-exceed-4"
+      ]
+    },
+    {
+      "directory": "/private/tmp/sol61-search-ranking-native-13940-gate0-attempt03",
+      "orchestration_sha256": "4f29c2482f6658bcc3919099865fba755d3008df56e47f65bdde79b59fec11f8",
+      "guard_exit": 0,
+      "native_launched": true,
+      "completion_sha256": "2d4566dfdf112449660c0e6067fbd83e5aa30cd190fcfcdfa22a5138a8a941db",
+      "fleet_sha256": "52034c295d5b75a3f97a2404dcd7d0880e3e163dee6a8707675c3f9d1f267949",
+      "reason": []
+    },
+    {
+      "directory": "/private/tmp/sol61-search-ranking-native-0a64-gate0-attempt01",
+      "orchestration_sha256": "618a90f54fa8e9dd4e190f119b7567d292096fd574b37bf59bdb8a5fbfa22992",
+      "guard_exit": 75,
+      "native_launched": false,
+      "completion_sha256": null,
+      "fleet_sha256": "e650806e8b5cf3f3e4efa1e2876cd141bc223bc19d7d5b37c360d4de529f2aaf",
+      "reason": [
+        "ilo:active-cargo-jobs-exceed-4"
+      ]
+    },
+    {
+      "directory": "/private/tmp/sol61-search-ranking-native-0a64-gate0-attempt02",
+      "orchestration_sha256": "61741c25c1af1a0aec6a229b70ded88cf832301c30e5b8ac723c3c9d26fe32dc",
+      "guard_exit": 0,
+      "native_launched": true,
+      "completion_sha256": "0212718de0dc8923346762fd0203e4814e23b63eef5bf7b9f916a2c96b9eb8db",
+      "fleet_sha256": "b3bebd8bbccf45ee8cb8a010b6bf4d4489195e18d19e968ae19d0a8f0320db68",
+      "reason": [
+        "test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 1144 filtered out; finished in 1.14s"
+      ]
+    }
+  ],
+  "scope": "One genuine nativePython34-source compiler/IR/projection/search fixture; admitted typed TS/Py/Go/Rust ranking controls; availability/semantic-provider/external controls; existing declaration-placement/semantic-lane/paging tests only. No installed actualMealie or packed full200 runtime claim.",
+  "graph_return": "pending final owner check; no further native launches planned"
+}

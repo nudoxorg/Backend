@@ -1,0 +1,61 @@
+{
+  "base": "52bee7f1b0b46db1ee7d07f62aaefa69c8f51c30",
+  "head": "2a030eee2ff8ebd0a56b1cb57ec2f8258e419516",
+  "tree": "9c6707f9bb58e07a0681fd194b6974f50432df4f",
+  "clean": true,
+  "source_atoms": [
+    "73864000233b0dcfcf4c8dd5e6c88f7db0672a65",
+    "f47b3f191fe7281d2ac42b8c86fc5094775efca4",
+    "b507dfb4163beba5bc92c83acf067c998b2ec641",
+    "2a030eee2ff8ebd0a56b1cb57ec2f8258e419516"
+  ],
+  "files": [
+    {
+      "path": "crates/local-service/src/builtin/view_build/mod.rs",
+      "blob": "2f49a6e4f55cea6d5de292d64662b77e73fa62ac",
+      "sha256": "45134af6ddfa1b934f6913eb3b9c0f796be5e7c29f36539846428b18126e3639"
+    },
+    {
+      "path": "crates/local-service/src/builtin/view_build/search_ranking_native.rs",
+      "blob": "80e395d0f15a7da69f7a1d9005297c465464c092",
+      "sha256": "e6fdc924e199512be2f6baab60808a84ebc6419f1ce4112810bbbe63347e15a2"
+    },
+    {
+      "path": "crates/local-service/src/query/local.rs",
+      "blob": "de3bc32683b1ae1b9345d3618e8fb6f070464c0e",
+      "sha256": "0f83840496201622ca504e35dae2a298998a8851ff31e963e5530a5d599d1ae9"
+    },
+    {
+      "path": "crates/local-service/src/query/semantic.rs",
+      "blob": "f78efe94bddd36b35d8810f30eb63546d509e8a1",
+      "sha256": "b17fbaa1e71710affd50907013b756445fc97bfd9f6b9f1c2d5ffddd9d5cff2c"
+    },
+    {
+      "path": "crates/local-service/src/query/source_ranking_tests.rs",
+      "blob": "fa5570a0102359cff7b5b5695fe91694ff1b2e05",
+      "sha256": "63503a0fc6744fc07cb7a7f583f659f900447667fc191526095d5a391d50511a"
+    },
+    {
+      "path": "crates/local-service/src/query/tests.rs",
+      "blob": "3f16100ba99aa6af0d684d6ec196a35bf1669a55",
+      "sha256": "fe9160f747661ef96f79c0b58ccac5932917fe32fe1df2b859f8a17f9fe1ca7b"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "/private/tmp/sol61-search-source-ranking-final-review.patch",
+      "sha256": "cd79ff6a8443bd654f579af57f99d06269d6d896bc7bdab81709e1ec6b84f8f6"
+    },
+    {
+      "path": "/private/tmp/sol61-search-source-ranking-final-review.bundle",
+      "sha256": "6014adf068a94843e70bb47e38f8d370dc512c000d90de3aef489ee794d014e2"
+    }
+  ],
+  "native_binding": {
+    "composition": "234abddf8b1cd82f0517a268c78c291cafae5b59",
+    "tree": "fcc9a7ce64c434684cfb49f16afae6bc250a8ee1",
+    "base": "7382f9f8a31990f3b0fe2e2b44093717699ad934",
+    "virtual_atom": "703790fa49",
+    "pending_test_evidence": true
+  }
+}
