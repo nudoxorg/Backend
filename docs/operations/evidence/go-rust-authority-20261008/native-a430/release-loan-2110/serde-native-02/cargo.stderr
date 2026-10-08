@@ -1,0 +1,15 @@
+warning: resolver for the non root package will be ignored, specify resolver at the workspace root:
+package:   /root/codex-worktrees/sol61-go-rust-public-tails-20261008/vendor/gpui_ce_components/Cargo.toml
+workspace: /root/codex-worktrees/sol61-go-rust-public-tails-20261008/Cargo.toml
+warning: unused variable: `error`
+    --> crates/compile/src/supervisor.rs:2496:17
+     |
+2496 |             Err(error) => {
+     |                 ^^^^^ help: if this is intentional, prefix it with an underscore: `_error`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `backend-compile` (lib) generated 1 warning (run `cargo fix --lib -p backend-compile` to apply 1 suggestion)
+   Compiling backend-frontend-rust v0.2.0 (/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/rust)
+    Finished `release` profile [optimized] target(s) in 1m 18s
+     Running `/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/target/release/examples/serde_workspace_authority /root/sol61-real-app-tail-20261008/serde/project /nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/rustc /nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16 /nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/cargo /root/sol61-go-rust-public-repairs-20261008/serde-native-authority-cargo-home-02`

@@ -1,0 +1,107 @@
+{
+  "utc": "2026-10-08T08:04:43.784686+00:00",
+  "owned_processes": [
+    {
+      "pid": 2454619,
+      "start_ticks": "79022616",
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/roots/fleet-census-python3-3.14.6/bin/python3",
+        "-",
+        "library-go",
+        "01"
+      ],
+      "wchan": "hrtimer_nanosleep",
+      "status": [
+        "Name:\tpython3",
+        "State:\tS (sleeping)",
+        "VmHWM:\t   22808 kB",
+        "VmRSS:\t   15688 kB"
+      ],
+      "selected_env": []
+    },
+    {
+      "pid": 2454699,
+      "start_ticks": "79022669",
+      "argv": [
+        "/nix/store/v8llyqw71lygr2llhmcc8ya5bdlzq45v-bash-5.3p9/bin/bash",
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--release",
+        "-j2",
+        "-p",
+        "backend-library",
+        "--lib",
+        "go_",
+        "--",
+        "--nocapture"
+      ],
+      "wchan": "do_wait",
+      "status": [
+        "Name:\tcargo",
+        "State:\tS (sleeping)",
+        "VmHWM:\t    3140 kB",
+        "VmRSS:\t    3140 kB"
+      ],
+      "selected_env": [
+        "RUSTC=/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/rustc",
+        "CARGO_HOME=/root/.cargo",
+        "CARGO_BUILD_BUILD_DIR=/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role"
+      ]
+    },
+    {
+      "pid": 2531849,
+      "start_ticks": "79080754",
+      "argv": [
+        "sleep",
+        "0.05"
+      ],
+      "wchan": "hrtimer_nanosleep",
+      "status": [
+        "Name:\tsleep",
+        "State:\tS (sleeping)",
+        "VmHWM:\t    2848 kB",
+        "VmRSS:\t    2848 kB"
+      ],
+      "selected_env": [
+        "RUSTC=/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/rustc",
+        "CARGO_HOME=/root/.cargo",
+        "CARGO_BUILD_BUILD_DIR=/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0"
+      ]
+    },
+    {
+      "pid": 2454882,
+      "start_ticks": "79022701",
+      "argv": [
+        "/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--release",
+        "-j2",
+        "-p",
+        "backend-library",
+        "--lib",
+        "go_",
+        "--",
+        "--nocapture"
+      ],
+      "wchan": "futex_do_wait",
+      "status": [
+        "Name:\tcargo",
+        "State:\tS (sleeping)",
+        "VmHWM:\t  172556 kB",
+        "VmRSS:\t   66264 kB"
+      ],
+      "selected_env": [
+        "RUSTC=/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/rustc",
+        "CARGO_HOME=/root/.cargo",
+        "CARGO_BUILD_BUILD_DIR=/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0"
+      ]
+    }
+  ],
+  "stdout_tail": "",
+  "stderr_tail": "n<u32>,\n    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: missing documentation for a variant\n    --> crates/library/surface/package_compiler_failure.rs:1045:5\n     |\n1045 |     Unavailable,\n     |     ^^^^^^^^^^^\n\nwarning: missing documentation for a variant\n    --> crates/library/surface/package_compiler_failure.rs:1046:5\n     |\n1046 |     Root,\n     |     ^^^^\n\nwarning: missing documentation for a variant\n    --> crates/library/surface/package_compiler_failure.rs:1047:5\n     |\n1047 |     Bound { parent: u32 },\n     |     ^^^^^\n\nwarning: missing documentation for a struct field\n    --> crates/library/surface/package_compiler_failure.rs:1047:13\n     |\n1047 |     Bound { parent: u32 },\n     |             ^^^^^^^^^^^\n\nwarning: missing documentation for a variant\n    --> crates/library/surface/package_compiler_failure.rs:1048:5\n     |\n1048 |     UnrepresentedAuthorityOwner { identity: [u8; 16] },\n     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: missing documentation for a struct field\n    --> crates/library/surface/package_compiler_failure.rs:1048:35\n     |\n1048 |     UnrepresentedAuthorityOwner { identity: [u8; 16] },\n     |                                   ^^^^^^^^^^^^^^^^^^\n\nwarning: missing documentation for a variant\n    --> crates/library/surface/package_compiler_failure.rs:1055:5\n     |\n1055 |     EmptyPath,\n     |     ^^^^^^^^^\n\nwarning: missing documentation for a variant\n    --> crates/library/surface/package_compiler_failure.rs:1056:5\n     |\n1056 |     BackslashInPath,\n     |     ^^^^^^^^^^^^^^^\n\nwarning: missing documentation for a variant\n    --> crates/library/surface/package_compiler_failure.rs:1063:5\n     |\n1063 |     EmptyEcosystem,\n     |     ^^^^^^^^^^^^^^\n\nwarning: missing documentation for a variant\n    --> crates/library/surface/package_compiler_failure.rs:1064:5\n     |\n1064 |     EmptyPackage,\n     |     ^^^^^^^^^^^^\n\nwarning: missing documentation for a variant\n    --> crates/library/surface/package_compiler_failure.rs:1065:5\n     |\n1065 |     SeparatorInEcosystem,\n     |     ^^^^^^^^^^^^^^^^^^^^\n\nwarning: missing documentation for a variant\n    --> crates/library/surface/package_compiler_failure.rs:1066:5\n     |\n1066 |     SeparatorInPackage,\n     |     ^^^^^^^^^^^^^^^^^^\n\nwarning: missing documentation for a variant\n    --> crates/library/surface/package_compiler_failure.rs:1067:5\n     |\n1067 |     BackslashEcosystem,\n     |     ^^^^^^^^^^^^^^^^^^\n\nwarning: missing documentation for a variant\n    --> crates/library/surface/package_compiler_failure.rs:1068:5\n     |\n1068 |     BackslashPackage,\n     |     ^^^^^^^^^^^^^^^^\n\nwarning: missing documentation for a variant\n    --> crates/library/surface/package_compiler_failure.rs:1069:5\n     |\n1069 |     BackslashInvalid { segment: u8 },\n     |     ^^^^^^^^^^^^^^^^\n\nwarning: missing documentation for a struct field\n    --> crates/library/surface/package_compiler_failure.rs:1069:24\n     |\n1069 |     BackslashInvalid { segment: u8 },\n     |                        ^^^^^^^^^^^\n\n",
+  "io_pressure": "some avg10=3.56 avg60=7.65 avg300=11.67 total=83722620287\nfull avg10=3.39 avg60=6.35 avg300=9.80 total=78661868308\n"
+}

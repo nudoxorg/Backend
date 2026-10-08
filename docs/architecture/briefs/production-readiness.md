@@ -1,5 +1,15 @@
 # Production readiness: what still needs attention
 
+
+### Go/Rust integration checkpoint — 2026-10-08, 08:57 UTC
+
+The four-language priority is unchanged. This checkpoint adds ordinary Go module-cache selection before dependency setup, fresh selected-dependency authority and cause-specific recovery. Root reviewed all eighteen changed paths and independently checked raw native results and canonical source preservation. The resulting production/test tree is `ba33606a3db84f287ebc40ec78e34668fdcd285f`; Cargo.lock is unchanged from canonical `8c18`. [The audit](../../audits/go-rust-authority-checkpoint-20261008.md) separates 33 actual test result rows and two genuine online/offline Serde phases from earlier overlapping cohorts. Go now has an exact foreign call and independently inferred return-type control, including a fresh offline owner. Rust has no production rewrite in this stack.
+
+This is not an installed product pass: presentation compilation timed out before its test body, engine Go/cache controls are unrun, and public installed GNU Caddy/Serde startup remains unresolved. The separately built canonical `8c18` trio does not contain this new Go source. No new installer/release is certified.
+
+New adversarial findings are being repaired outside this checkpoint: TypeScript body publication/cache removal ordering, delayed environment mirrors, definition removal/ID reuse, and stable absent dependency metadata; MCP HTTP's leftover eager credential helper after the stdio cutover; packed-output receipt/token coherence and oversized-envelope preflight. GUI native resize/200%/Escape input now passes on exact `e79a`, while the transition diagnostic remains red at its actionable-node fixture helper and the current canonical composition is still compiling. Controlled GUI captures and unit source reviews are not real live-index user-flow acceptance. The following 08:15 ledger is retained as the preceding checkpoint; its pending rows are not silently reclassified.
+
+
 ### Current acceptance ledger — 2026-10-08, 08:15 UTC
 
 TypeScript, Python, Go and Rust have equal acceptance priority. Root has merged [PR65](https://dev.nudox.org/git/Nudox/Backend/pulls/65), compatible managed Cargo permits; [PR66](https://dev.nudox.org/git/Nudox/Backend/pulls/66), empty Python module source coordinates; [PR67](https://dev.nudox.org/git/Nudox/Backend/pulls/67), CLI/MCP typed reads, retry operands and portable graph continuations; and [PR68](https://dev.nudox.org/git/Nudox/Backend/pulls/68), publication barriers and post-commit wakeups. Canonical before this checkpoint is `49bc00a8e77cc375d15426665bee92f204ea6d1e`. This checkpoint adds canonical Python dependency graph projection, preserving all source declarations while deduplicating only identical complete graph edges. Native proof and public product acceptance remain separate below.
