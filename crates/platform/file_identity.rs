@@ -19,6 +19,16 @@ pub struct FileIdentity {
 }
 
 impl FileIdentity {
+    /// Returns the stable platform-independent volume/object identity bytes.
+    /// These bytes identify one filesystem instance, rather than its path.
+    #[must_use]
+    pub fn to_bytes(self) -> [u8; 24] {
+        let mut bytes = [0; 24];
+        bytes[..8].copy_from_slice(&self.volume.to_be_bytes());
+        bytes[8..].copy_from_slice(&self.object.to_be_bytes());
+        bytes
+    }
+
     /// Reads the identity of the object an open file handle refers to.
     ///
     /// # Errors

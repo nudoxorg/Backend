@@ -178,6 +178,15 @@ impl SemanticGenerationResidence {
         self.selected_loader = Some(loader);
     }
 
+    /// A preparation worker shares only the typed loader capability. Its
+    /// bounded cache remains exclusive, so publication never borrows a worker's
+    /// mutable residence and captured image reads do not hold the control loop.
+    pub(crate) fn for_preparation(&self) -> Self {
+        let mut residence = Self::with_budget(self.budget);
+        residence.selected_loader = self.selected_loader.clone();
+        residence
+    }
+
     pub(crate) fn has_selected_loader(&self) -> bool {
         self.selected_loader.is_some()
     }

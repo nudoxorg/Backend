@@ -259,6 +259,7 @@ impl std::error::Error for PeerPolicyError {}
 
 struct Inbound {
     payload: Vec<u8>,
+    admission_ack: Option<Vec<u8>>,
     reply: SyncSender<Result<Vec<u8>, ProtocolError>>,
     response_waiter: ResponseWaiter,
 }
@@ -313,6 +314,7 @@ pub struct UnixListenerService<O> {
     listener: backend_engine::LocalListener,
     service: LocaldService<O>,
     path: PathBuf,
+    owner_binding: [u8; 32],
     stop: Arc<AtomicBool>,
     active: Arc<AtomicUsize>,
     /// Number of workers that currently own an admitted request and still
@@ -389,6 +391,8 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
         let listener = backend_engine::LocalListener::bind(&path)
             .map_err(|error| ListenerError::Io(error.kind()))?;
         set_private_socket_permissions(&path)?;
+        let owner_binding = backend_replication::current_local_owner_binding(&path)
+            .map_err(|_| ListenerError::Io(io::ErrorKind::PermissionDenied))?;
         listener
             .set_nonblocking(true)
             .map_err(|error| ListenerError::Io(error.kind()))?;
@@ -406,6 +410,7 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
             listener,
             service,
             path,
+            owner_binding,
             stop,
             active: Arc::new(AtomicUsize::new(0)),
             inflight: Arc::new(AtomicUsize::new(0)),
@@ -584,6 +589,7 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
         let timeout = self.config.io_timeout;
         let request_idle = self.config.request_idle_timeout;
         let owner_reply = self.config.owner_reply_timeout;
+        let owner_binding = self.owner_binding;
         let connection_id = self.next_connection_id.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut active_streams) = self.streams.lock()
             && let Ok(clone) = stream.try_clone()
@@ -606,6 +612,7 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
                     timeout,
                     request_idle,
                     owner_reply,
+                    owner_binding,
                 },
             );
         });
@@ -671,6 +678,13 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
                         if inbound.response_waiter.is_abandoned() {
                             self.service.abandon_deferred_reply(ticket);
                         } else {
+                            // The exact command has passed owner admission and
+                            // obtained its finite ticket. The channel has room
+                            // for this one ACK plus its one terminal response;
+                            // owner progress never waits for a native worker.
+                            if let Some(ack) = inbound.admission_ack {
+                                let _ = inbound.reply.try_send(Ok(ack));
+                            }
                             self.deferred.insert(
                                 ticket,
                                 DeferredReply {
@@ -860,7 +874,7 @@ impl<O> UnixListenerService<O> {
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::protocol::{EngineRequest, EngineStatus, FrameLimits, read_frame};
+    use crate::protocol::{EngineRequest, EngineStatus, FrameLimits, read_frame, write_frame};
     use crate::service::OwnerService;
     use crate::test_support::socket_path;
     use std::io::Write;
@@ -909,6 +923,71 @@ mod tests {
                 .join()
                 .unwrap_or_else(|_| panic!("listener thread panicked"))
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deferred_command_ack_owner_acceptance_control_fairness_and_single_abandonment() {
+        let path = socket_path("command-ack");
+        let mut config = ListenerConfig::new(path.clone());
+        config.limits = limits();
+        config.poll_interval = Duration::from_millis(1);
+        config.idle_timeout = None;
+        let state = Arc::new(DeferredState::default());
+        let service =
+            LocaldService::new(GatedOwner(Arc::clone(&state)), config.limits).expect("gated owner");
+        let mut listener = UnixListenerService::bind(service, config).expect("listener");
+        let mut keeper = backend_engine::LocalStream::connect(&path).expect("keeper");
+        let mut abandoned = backend_engine::LocalStream::connect(&path).expect("abandoned waiter");
+        let peer = backend_replication::AuthenticatedLocalPeer::authenticate(&keeper, &path)
+            .expect("owner token");
+        let original = command_body(7);
+        let wrapped =
+            backend_replication::wrap_deferred_command(&original, backend_library::DTO_VERSION)
+                .expect("opt in");
+        let second_wrapped =
+            backend_replication::wrap_deferred_command(&original, backend_library::DTO_VERSION)
+                .expect("separate fresh nonce");
+        for (client, request) in [(&mut keeper, &wrapped), (&mut abandoned, &second_wrapped)] {
+            client
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("test lease");
+            write_frame(client, request, limits()).expect("request");
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while state.accepted.load(Ordering::Acquire) < 2 {
+            assert!(Instant::now() < deadline);
+            listener.run_once().expect("admit requests");
+        }
+        let ack = read_frame(&mut keeper, limits()).expect("accepted ACK");
+        assert_eq!(
+            peer.admit_deferred_command_ack(&ack, &wrapped, backend_library::DTO_VERSION)
+                .expect("authenticated exact ACK"),
+            DEFAULT_OWNER_REPLY_TIMEOUT
+        );
+        let second = read_frame(&mut abandoned, limits()).expect("second ACK");
+        assert_ne!(ack, second, "identical DTOs carry distinct request nonces");
+        drop(abandoned);
+        let mut control = backend_engine::LocalStream::connect(&path).expect("control");
+        control
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("control lease");
+        write_frame(&mut control, &command_body(8), limits()).expect("health-like immediate read");
+        while state.abandoned.lock().expect("records").is_empty() || listener.report.frames == 0 {
+            assert!(Instant::now() < deadline);
+            listener.run_once().expect("owner responsive");
+        }
+        assert_eq!(client_reply(&mut control).request_id, 8);
+        assert_eq!(state.abandoned.lock().expect("records").len(), 1);
+        assert_eq!(
+            listener.deferred.len(),
+            1,
+            "only disconnected waiter dropped"
+        );
+        state.released.store(true, Ordering::Release);
+        listener.run_once().expect("complete keeper");
+        assert_eq!(client_reply(&mut keeper).request_id, 7);
+        listener.shutdown();
     }
 
     #[cfg(unix)]

@@ -219,6 +219,35 @@ pub(super) fn execute_search(
     image_rows: &mut super::super::view_build::ImageRowResidence,
     query: &backend_engine::Query,
 ) -> Result<(CommandReply, backend_library::SemanticSearchStatus), BuiltinModelError> {
+    let selection = capture_search(daemon, compiler, snapshots, generations, image_rows)?;
+    let coverage = selection.coverage;
+    let coordinator = snapshots
+        .select(
+            selection.workspace,
+            selection.view,
+            selection.capability,
+            coverage,
+            selection.corpus,
+        )
+        .map_err(|error| BuiltinModelError(error.to_string()))?;
+    super::super::query::search_page(
+        coordinator,
+        daemon.engine().daemon().library(),
+        remote_semantic,
+        coverage,
+        query,
+    )
+    .map(|(page, status)| (CommandReply::Search(page), status))
+    .map_err(|error| BuiltinModelError(error.to_string()))
+}
+
+pub(super) fn capture_search(
+    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    compiler: &LocalCompilerClient,
+    snapshots: &mut super::super::query::SearchSnapshotOwner,
+    generations: &mut super::super::generation_residence::SemanticGenerationResidence,
+    image_rows: &mut super::super::view_build::ImageRowResidence,
+) -> Result<super::search_lane::Selection, BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let expected_view_capability = super::super::builtin_view_capability_for_workspace(&snapshot)?;
     let coverage = super::super::admitted_coverage()?;
@@ -235,24 +264,13 @@ pub(super) fn execute_search(
             )
         },
     )?;
-    let coordinator = snapshots
-        .select(
-            snapshot.root(),
-            daemon.engine().daemon().library().view().clone(),
-            expected_view_capability,
-            coverage,
-            semantic_evidence,
-        )
-        .map_err(|error| BuiltinModelError(error.to_string()))?;
-    super::super::query::search_page(
-        coordinator,
-        daemon.engine().daemon().library(),
-        remote_semantic,
+    Ok(super::search_lane::Selection {
+        workspace: snapshot.root(),
+        view: daemon.engine().daemon().library().view().clone(),
+        capability: expected_view_capability,
         coverage,
-        query,
-    )
-    .map(|(page, status)| (CommandReply::Search(page), status))
-    .map_err(|error| BuiltinModelError(error.to_string()))
+        corpus: semantic_evidence,
+    })
 }
 
 pub(super) fn execute_certified_graph_query(
