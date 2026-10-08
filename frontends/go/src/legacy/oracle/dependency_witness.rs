@@ -36,6 +36,32 @@ pub enum GoDependencyClosureFailure {
     Limit,
 }
 
+impl GoDependencyClosureFailure {
+    pub(super) const fn recovery(self) -> &'static str {
+        match self {
+            Self::Invocation => {
+                "verify the selected Go toolchain and its invocation diagnostics, then retry"
+            }
+            Self::Protocol => {
+                "verify that the selected Go version emits the supported package listing, then retry"
+            }
+            Self::PackageLoad => {
+                "run `go mod download` in the project, correct any module or replacement errors, then retry"
+            }
+            Self::EmptyGraph => "select a project root containing Go packages, then retry",
+            Self::IncompleteFiles => {
+                "ensure selected dependency files are readable and stable, then retry"
+            }
+            Self::UnsafePath => {
+                "keep selected dependency files within the admitted module, cache, or local roots, then retry"
+            }
+            Self::Limit => {
+                "reduce the selected package or file closure to the existing witness bounds, then retry"
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct GoDependencyClosureWitness {
     environment: GoOracleChildEnvironment,
@@ -411,6 +437,58 @@ fn capture_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn closure_refusal_recovery_is_specific_to_the_failure() {
+        let expected = [
+            (
+                GoDependencyClosureFailure::Invocation,
+                "Invocation",
+                "verify the selected Go toolchain and its invocation diagnostics, then retry",
+            ),
+            (
+                GoDependencyClosureFailure::Protocol,
+                "Protocol",
+                "verify that the selected Go version emits the supported package listing, then retry",
+            ),
+            (
+                GoDependencyClosureFailure::PackageLoad,
+                "PackageLoad",
+                "run `go mod download` in the project, correct any module or replacement errors, then retry",
+            ),
+            (
+                GoDependencyClosureFailure::EmptyGraph,
+                "EmptyGraph",
+                "select a project root containing Go packages, then retry",
+            ),
+            (
+                GoDependencyClosureFailure::IncompleteFiles,
+                "IncompleteFiles",
+                "ensure selected dependency files are readable and stable, then retry",
+            ),
+            (
+                GoDependencyClosureFailure::UnsafePath,
+                "UnsafePath",
+                "keep selected dependency files within the admitted module, cache, or local roots, then retry",
+            ),
+            (
+                GoDependencyClosureFailure::Limit,
+                "Limit",
+                "reduce the selected package or file closure to the existing witness bounds, then retry",
+            ),
+        ];
+        for (failure, kind, remedy) in expected {
+            let error = super::super::OracleError::DependencyClosureUnavailable { failure };
+            assert_eq!(
+                error.to_string(),
+                format!("Go dependency closure is unavailable ({kind}); {remedy}")
+            );
+            assert_eq!(
+                error.to_string().contains("go mod download"),
+                failure == GoDependencyClosureFailure::PackageLoad
+            );
+        }
+    }
 
     #[test]
     fn same_length_dependency_change_invalidates_content_witness() {

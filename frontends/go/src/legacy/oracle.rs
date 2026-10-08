@@ -851,7 +851,7 @@ pub enum OracleError {
     #[error("Go package authority witness changed before oracle execution")]
     PackageAuthorityWitnessChanged,
     /// Offline Go package selection did not admit a complete dependency graph.
-    #[error("Go dependency closure is unavailable ({failure:?}); run `go mod download` in the project and retry")]
+    #[error("Go dependency closure is unavailable ({failure:?}); {}", failure.recovery())]
     DependencyClosureUnavailable { failure: GoDependencyClosureFailure },
     /// The configured oracle tool is unavailable.
     #[error("Go oracle tooling unavailable ({tool}): {source}")]
