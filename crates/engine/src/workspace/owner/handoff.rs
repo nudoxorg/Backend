@@ -41,6 +41,7 @@ pub struct WorkspaceCandidateClaim {
 /// deliberately neither Clone nor Copy. Cancellation loses arbitration once
 /// this grant has been issued: the durable result must be reconciled/installed.
 #[derive(Debug)]
+#[must_use = "the single-use grant must be published or explicitly settled with its writer"]
 pub struct PublishGrant {
     claim: WorkspaceCandidateClaim,
 }
@@ -48,6 +49,7 @@ pub struct PublishGrant {
 /// Privately durable immutable bytes, still unselected. Only a matching grant
 /// can move this capability through the existing physical publication law.
 #[derive(Debug)]
+#[must_use = "the prepared candidate must stay with its exclusively owned writer"]
 pub struct PreparedWorkspaceCandidate {
     claim: WorkspaceCandidateClaim,
     durable: DurablePublication,
@@ -70,6 +72,7 @@ struct CommittedWorkspaceCandidate {
 /// The selected result and its sole writer are inseparable. Only publication
 /// or same-writer reconciliation can mint this capability; a foreign owner
 /// must return it intact so the correct owner can still install the head.
+#[must_use = "install the selected result or retain the whole capability for retry"]
 pub struct PublishedWorkspaceWriter<M: WorkspaceModel> {
     writer: WorkspaceWriter<M>,
     committed: CommittedWorkspaceCandidate,
@@ -143,6 +146,7 @@ impl<M: WorkspaceModel> std::fmt::Debug for WorkspacePublicationFailure<M> {
 /// Worker-verified observation that a granted attempt did not select any new
 /// root. This is not cancellation: the caller retains the real failure.
 #[derive(Debug)]
+#[must_use = "return the exact proved-unselected writer to its owner"]
 pub struct UnselectedWorkspaceCandidate {
     claim: WorkspaceCandidateClaim,
 }
@@ -176,6 +180,7 @@ impl WriterState {
 /// The unique writer owns the actual kernel lease and diagnostic journal for
 /// its entire lifetime. Its private owner is inaccessible to callers; no
 /// competing write or GC can execute through the serving owner while reserved.
+#[must_use = "the sole kernel lease must be returned or settled, never silently discarded"]
 pub struct WorkspaceWriter<M: WorkspaceModel> {
     owner: WorkspaceOwner<M>,
     binding: Binding,
