@@ -456,15 +456,18 @@ fn document_relation_admission_profile() {
         .map(|value| value.parse::<usize>().expect("profile byte count"))
         .unwrap_or(16 * 1024 * 1024);
     assert!((64..=64 * 1024 * 1024).contains(&text_bytes));
+    let limits = Limits::default();
+    let document_count = text_bytes.div_ceil(limits.max_field_bytes);
+    let documents = (0..document_count).map(|row| {
+        let bytes = (text_bytes - row * limits.max_field_bytes).min(limits.max_field_bytes);
+        (
+            document(18 + u64::try_from(row).expect("bounded profile row")),
+            vec![("body".to_owned(), "x".repeat(bytes))],
+        )
+    });
     let (_, coverage) = binding(&[]);
-    let relation = RelationState::<IndexRelation>::from_entries(
-        [(
-            document(18),
-            vec![("body".to_owned(), "x".repeat(text_bytes))],
-        )],
-        coverage,
-    )
-    .expect("immutable profile input");
+    let relation = RelationState::<IndexRelation>::from_entries(documents, coverage)
+        .expect("immutable profile input under the default document and tree-node limits");
     let binding = Binding::new(
         workspace(),
         relation.root(),
@@ -472,11 +475,6 @@ fn document_relation_admission_profile() {
         Authority::from_value(&[2; 32]),
         ReadManifest::from_value(&[3; 32]),
     );
-    let limits = Limits {
-        max_field_bytes: text_bytes,
-        max_total_text_bytes: text_bytes + 4,
-        ..Limits::default()
-    };
     let started = std::time::Instant::now();
     let allocations = allocation_counter::measure(|| {
         for _ in 0..64 {
@@ -487,7 +485,7 @@ fn document_relation_admission_profile() {
         }
     });
     println!(
-        "document_relation_admission text_bytes={text_bytes} iterations=64 elapsed_ns={} allocation_count={} allocation_bytes={} allocation_peak_bytes={}",
+        "document_relation_admission text_bytes={text_bytes} iterations=64 elapsed_ns={} allocation_count={} allocation_bytes={} allocation_peak_bytes={} documents={document_count}",
         started.elapsed().as_nanos(), allocations.count_total,
         allocations.bytes_total, allocations.bytes_max,
     );
