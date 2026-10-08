@@ -1735,7 +1735,9 @@ pub(crate) fn compose_owner(
         .engine_mut()
         .daemon_mut()
         .set_view_persistence(Box::new(view_journal))
-        .map_err(|(_, error)| ProcessError::Profile(format!("install view persistence: {error}")))?;
+        .map_err(|(_, error)| {
+            ProcessError::Profile(format!("install view persistence: {error}"))
+        })?;
     if let Some(recovered) = recovered_view {
         let admission = BuiltinViewAdmission {
             workspace_root,

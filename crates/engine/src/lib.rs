@@ -369,9 +369,10 @@ pub use backend_replication::{
 pub use backend_replication::{PeerCredentialError, peer_is_same_effective_uid};
 pub use daemon::{
     CompletionNotice, Daemon, DaemonConfig, DaemonError, DaemonHandle, DaemonProtocolConfig,
-    DaemonReply, DaemonRequest, Operation, QueryState, ReplicationReply, SubscriptionReply,
-    ViewBinding, ViewBindingAdmission, ViewBindingState, ViewPersistence,
-    PublishedReadHead, ReadHeadPublicationFailure, ReadHeadWriter, RetiredReadHead, SelectedReadHead,
+    DaemonReply, DaemonRequest, Operation, PublishedReadHead, QueryState,
+    ReadHeadPublicationFailure, ReadHeadWriter, ReplicationReply, RetiredReadHead,
+    SelectedReadHead, SubscriptionReply, ViewBinding, ViewBindingAdmission, ViewBindingState,
+    ViewPersistence,
 };
 pub use dispatch::{
     AcceptedResultProof, AuthoritySnapshot, AuthorityTransition, Blake3AuthorityVerifier,
