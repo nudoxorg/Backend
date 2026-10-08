@@ -1,0 +1,169 @@
+{
+  "exit": 0,
+  "timed_out": false,
+  "elapsed_seconds": 11.608084916020744,
+  "source": {
+    "commit": "2110a5daf2abf523e0d3c092da0d24320fa12719",
+    "tree": "c20c06e21a75f19a5e34bfdb5971d26d8324e9f5",
+    "cargo_lock_sha256": "5d0b0b75a5acb9fd95db98d160ede1e3c780069cdc9989561491fe2cb5ba3da0",
+    "clean": true
+  },
+  "owner_source_unchanged": true,
+  "stamps_unchanged": true,
+  "children_kernel_retired": true,
+  "owned_adopted_waits": [],
+  "observed_child_identities": [
+    {
+      "pid": 2375434,
+      "start_ticks": "78931752",
+      "state": "S",
+      "pgid": 2375434
+    },
+    {
+      "pid": 2375628,
+      "start_ticks": "78931773",
+      "state": "D",
+      "pgid": 2375434
+    },
+    {
+      "pid": 2375667,
+      "start_ticks": "78931802",
+      "state": "R",
+      "pgid": 2375434
+    },
+    {
+      "pid": 2375997,
+      "start_ticks": "78931947",
+      "state": "S",
+      "pgid": 2375434
+    },
+    {
+      "pid": 2376055,
+      "start_ticks": "78931952",
+      "state": "S",
+      "pgid": 2375434
+    },
+    {
+      "pid": 2376266,
+      "start_ticks": "78931999",
+      "state": "S",
+      "pgid": 2375434
+    },
+    {
+      "pid": 2376296,
+      "start_ticks": "78932050",
+      "state": "S",
+      "pgid": 2375434
+    },
+    {
+      "pid": 2376338,
+      "start_ticks": "78932101",
+      "state": "S",
+      "pgid": 2375434
+    },
+    {
+      "pid": 2376371,
+      "start_ticks": "78932153",
+      "state": "S",
+      "pgid": 2375434
+    },
+    {
+      "pid": 2376389,
+      "start_ticks": "78932199",
+      "state": "S",
+      "pgid": 2375434
+    },
+    {
+      "pid": 2376420,
+      "start_ticks": "78932250",
+      "state": "S",
+      "pgid": 2375434
+    },
+    {
+      "pid": 2376456,
+      "start_ticks": "78932301",
+      "state": "S",
+      "pgid": 2375434
+    },
+    {
+      "pid": 2376541,
+      "start_ticks": "78932353",
+      "state": "S",
+      "pgid": 2375434
+    },
+    {
+      "pid": 2376515,
+      "start_ticks": "78932342",
+      "state": "S",
+      "pgid": 2375434
+    },
+    {
+      "pid": 2376671,
+      "start_ticks": "78932399",
+      "state": "S",
+      "pgid": 2375434
+    },
+    {
+      "pid": 2376698,
+      "start_ticks": "78932450",
+      "state": "S",
+      "pgid": 2375434
+    },
+    {
+      "pid": 2376730,
+      "start_ticks": "78932502",
+      "state": "S",
+      "pgid": 2375434
+    },
+    {
+      "pid": 2376761,
+      "start_ticks": "78932553",
+      "state": "S",
+      "pgid": 2375434
+    },
+    {
+      "pid": 2376791,
+      "start_ticks": "78932599",
+      "state": "S",
+      "pgid": 2375434
+    },
+    {
+      "pid": 2376910,
+      "start_ticks": "78932651",
+      "state": "S",
+      "pgid": 2375434
+    },
+    {
+      "pid": 2376983,
+      "start_ticks": "78932702",
+      "state": "S",
+      "pgid": 2375434
+    },
+    {
+      "pid": 2377166,
+      "start_ticks": "78932754",
+      "state": "S",
+      "pgid": 2375434
+    },
+    {
+      "pid": 2377256,
+      "start_ticks": "78932800",
+      "state": "S",
+      "pgid": 2375434
+    },
+    {
+      "pid": 2377313,
+      "start_ticks": "78932841",
+      "state": "R",
+      "pgid": 2375434
+    }
+  ],
+  "survivors": [],
+  "pressure_after": {
+    "io": "some avg10=10.40 avg60=17.30 avg300=20.37 total=83586739804\nfull avg10=9.03 avg60=14.84 avg300=18.54 total=78542610471\n",
+    "cpu": "some avg10=0.07 avg60=0.72 avg300=0.52 total=7581525268\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+    "memory": "some avg10=0.01 avg60=0.03 avg300=0.02 total=421663028\nfull avg10=0.01 avg60=0.03 avg300=0.02 total=402565979\n"
+  },
+  "real_app_source_unchanged": null,
+  "completed_utc": "2026-10-08T07:40:05.401823+00:00"
+}

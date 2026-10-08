@@ -1,0 +1,1069 @@
+{
+  "utc": "2026-10-08T08:29:09.743744+00:00",
+  "admission": {
+    "advisory_allowed": true,
+    "allow_local_over_cap_for_remote": true,
+    "collector_elapsed_seconds": 2.689,
+    "collector_started_at_utc": "2026-10-08T08:29:03.661172+00:00",
+    "current_fleet_compiler_group_count": 9,
+    "destination": "ilo",
+    "destination_memory_only_for_remote": true,
+    "evidence_path": "/Users/mileswirht/Downloads/sol61-real-app-tail-matrix-20261008/admission-20261008T082903479261Z.json",
+    "fleet_compiler_group_limit": 16,
+    "host_compiler_group_limits": {
+      "h16001mac": 8,
+      "ilo": 8,
+      "local": 5
+    },
+    "hosts": {
+      "h16001mac": {
+        "age_seconds": 1.183,
+        "available_memory_bytes": 64669122560,
+        "available_memory_source": "darwin-vm-stat-free-inactive-speculative",
+        "cargo_entries": 0,
+        "census_sha256": "8d15d0096151d2cb3c7228d063ec740df633e54b516ddde4dcad7648924cd213",
+        "compiler_group_count": 1,
+        "compiler_groups": [
+          {
+            "cargo_pids": [],
+            "classification": "runtime-owner",
+            "job_limit_known": false,
+            "kind": "runtime-owner",
+            "pgid": 63153,
+            "pids": [
+              63164
+            ],
+            "requested_cargo_jobs": null,
+            "runtime_owner_pids": [
+              63164
+            ],
+            "rustc_process_count": 0
+          }
+        ],
+        "complete": true,
+        "host_limit": 8,
+        "memory_floor_applies": false,
+        "resource_sampled_at_utc": "2026-10-08T08:29:05.197090+00:00",
+        "root_disk_available_bytes": 1171278524416,
+        "sample_finished_at_utc": "2026-10-08T08:29:05.196974+00:00",
+        "sample_started_at_utc": "2026-10-08T08:29:05.165671+00:00",
+        "snapshot_issue_counts": {},
+        "snapshot_race_counts": {},
+        "visible_process_count": 898
+      },
+      "ilo": {
+        "age_seconds": 0.069,
+        "available_memory_bytes": 59054522368,
+        "available_memory_source": "linux-proc-meminfo-MemAvailable",
+        "cargo_entries": 1,
+        "census_sha256": "ca32b06d47805eb7704bb54c9d443c2b918603c4b4e9801e5ff55fc256ce0728",
+        "compiler_group_count": 2,
+        "compiler_groups": [
+          {
+            "cargo_pids": [],
+            "classification": "runtime-owner",
+            "job_limit_known": false,
+            "kind": "runtime-owner",
+            "pgid": 557079,
+            "pids": [
+              557079
+            ],
+            "requested_cargo_jobs": null,
+            "runtime_owner_pids": [
+              557079
+            ],
+            "rustc_process_count": 0
+          },
+          {
+            "cargo_pids": [
+              2693753
+            ],
+            "classification": "build",
+            "job_limit_known": true,
+            "kind": "cargo",
+            "pgid": 2693582,
+            "pids": [
+              2693753,
+              2693778
+            ],
+            "requested_cargo_jobs": 2,
+            "runtime_owner_pids": [],
+            "rustc_process_count": 1
+          }
+        ],
+        "complete": true,
+        "host_limit": 8,
+        "memory_floor_applies": true,
+        "resource_sampled_at_utc": "2026-10-08T08:29:06.321522+00:00",
+        "root_disk_available_bytes": 81989976064,
+        "sample_finished_at_utc": "2026-10-08T08:29:06.321411+00:00",
+        "sample_started_at_utc": "2026-10-08T08:29:06.279695+00:00",
+        "snapshot_issue_counts": {},
+        "snapshot_race_counts": {
+          "pid-exited-during-scan": 280
+        },
+        "visible_process_count": 443
+      },
+      "local": {
+        "age_seconds": 2.5,
+        "available_memory_bytes": 10686087168,
+        "available_memory_source": "darwin-vm-stat-free-inactive-speculative",
+        "cargo_entries": 2,
+        "census_sha256": "260b1b35a4491288b2bd8deeeb9ea41a7b983cdccbc05f14bfdbcee92b6db86a",
+        "compiler_group_count": 6,
+        "compiler_groups": [
+          {
+            "cargo_pids": [],
+            "classification": "runtime-owner",
+            "job_limit_known": false,
+            "kind": "runtime-owner",
+            "pgid": 749,
+            "pids": [
+              749
+            ],
+            "requested_cargo_jobs": null,
+            "runtime_owner_pids": [
+              749
+            ],
+            "rustc_process_count": 0
+          },
+          {
+            "cargo_pids": [],
+            "classification": "runtime-owner",
+            "job_limit_known": false,
+            "kind": "runtime-owner",
+            "pgid": 4707,
+            "pids": [
+              4707
+            ],
+            "requested_cargo_jobs": null,
+            "runtime_owner_pids": [
+              4707
+            ],
+            "rustc_process_count": 0
+          },
+          {
+            "cargo_pids": [],
+            "classification": "unknown",
+            "job_limit_known": false,
+            "kind": "unknown",
+            "pgid": 11935,
+            "pids": [
+              11939
+            ],
+            "requested_cargo_jobs": null,
+            "runtime_owner_pids": [],
+            "rustc_process_count": 0
+          },
+          {
+            "cargo_pids": [],
+            "classification": "unknown",
+            "job_limit_known": false,
+            "kind": "unknown",
+            "pgid": 11950,
+            "pids": [
+              11955
+            ],
+            "requested_cargo_jobs": null,
+            "runtime_owner_pids": [],
+            "rustc_process_count": 0
+          },
+          {
+            "cargo_pids": [
+              65901
+            ],
+            "classification": "build",
+            "job_limit_known": false,
+            "kind": "cargo",
+            "pgid": 56056,
+            "pids": [
+              65901,
+              67155
+            ],
+            "requested_cargo_jobs": null,
+            "runtime_owner_pids": [],
+            "rustc_process_count": 1
+          },
+          {
+            "cargo_pids": [
+              8501
+            ],
+            "classification": "build",
+            "job_limit_known": false,
+            "kind": "cargo",
+            "pgid": 92851,
+            "pids": [
+              8501,
+              42361
+            ],
+            "requested_cargo_jobs": null,
+            "runtime_owner_pids": [],
+            "rustc_process_count": 1
+          }
+        ],
+        "complete": true,
+        "host_limit": 5,
+        "memory_floor_applies": false,
+        "resource_sampled_at_utc": "2026-10-08T08:29:03.920471+00:00",
+        "root_disk_available_bytes": 57227030528,
+        "sample_finished_at_utc": "2026-10-08T08:29:03.920251+00:00",
+        "sample_started_at_utc": "2026-10-08T08:29:03.848933+00:00",
+        "snapshot_issue_counts": {},
+        "snapshot_race_counts": {
+          "pid-exited-during-scan": 11
+        },
+        "visible_process_count": 680
+      }
+    },
+    "limitations": [
+      "local:unresolved-compiler-group-counted-conservatively",
+      "local:active-cargo-jobs-unknown-group-counted-conservatively",
+      "local:over-host-cap-remote-admission-authorized"
+    ],
+    "managed_host_permit_required": true,
+    "max_cargo_jobs_per_group": 4,
+    "max_sample_age_seconds": 30,
+    "memory_guard_scope": "destination",
+    "minimum_available_memory_bytes_destination": 8589934592,
+    "minimum_available_memory_bytes_each_host": null,
+    "minimum_destination_root_disk_bytes": 17179869184,
+    "processes_signaled": [],
+    "raw_samples": {
+      "h16001mac": {
+        "census": {
+          "argv_budget_exhausted": false,
+          "capacity": {
+            "conservative_local_occupancy": 0,
+            "decision_reason": "local-build-capacity-available",
+            "exited_cargo_processes": 0,
+            "introspection_processes": 0,
+            "known_build_processes": 0,
+            "local_build_capacity": 3,
+            "reserved_remote_builds": 1,
+            "snapshot_allows_new_local_build": true,
+            "total_build_capacity": 4,
+            "unknown_cargo_processes": 0
+          },
+          "captured_argv_bytes": 0,
+          "captured_argv_processes": 0,
+          "compiler_groups": [
+            {
+              "cargo_pids": [],
+              "classification": "runtime-owner",
+              "job_limit_known": false,
+              "kind": "runtime-owner",
+              "pgid": 63153,
+              "pids": [
+                63164
+              ],
+              "requested_cargo_jobs": null,
+              "runtime_owner_pids": [
+                63164
+              ],
+              "rustc_process_count": 0
+            }
+          ],
+          "compiler_groups_omitted_count": 0,
+          "complete": true,
+          "effective_uid": 1893584017,
+          "entries": [],
+          "entries_omitted_count": 0,
+          "process_scope": "host-visible-process-table",
+          "processes_signaled": [],
+          "resource_snapshot": {
+            "available_memory_bytes": 64669122560,
+            "available_memory_source": "darwin-vm-stat-free-inactive-speculative",
+            "root_disk_available_bytes": 1171278524416,
+            "root_disk_total_bytes": 1995218165760,
+            "root_disk_used_bytes": 823939641344,
+            "sampled_at_utc": "2026-10-08T08:29:05.197090+00:00"
+          },
+          "resource_snapshot_complete": true,
+          "sample_finished_at_utc": "2026-10-08T08:29:05.196974+00:00",
+          "sample_started_at_utc": "2026-10-08T08:29:05.165671+00:00",
+          "schema": "build-census.v1",
+          "scope_note": "Foreign Cargo, rustc, and locald/backend-locald/backend-desktop-looking rows are inspected; inaccessible candidates count as occupied unknown process groups. Same-UID process executable paths are inspected, and paths that remain unavailable count as unknown occupied process groups. Cargo argv is read through native process APIs and redacted. Other foreign rows and processes hidden by OS namespaces or permissions are not validated, so this advisory cannot guarantee whole-machine capacity.",
+          "slot_reserved": false,
+          "snapshot_atomic": false,
+          "snapshot_issue_counts": {},
+          "snapshot_race_counts": {},
+          "visible_process_count": 898
+        },
+        "census_sha256": "8d15d0096151d2cb3c7228d063ec740df633e54b516ddde4dcad7648924cd213",
+        "collector_finished_at_utc": "2026-10-08T08:29:05.227401+00:00",
+        "collector_started_at_utc": "2026-10-08T08:29:03.684698+00:00",
+        "host": "h16001mac",
+        "return_code": 0,
+        "stderr_bytes": 0,
+        "transport_complete": true
+      },
+      "ilo": {
+        "census": {
+          "argv_budget_exhausted": false,
+          "capacity": {
+            "conservative_local_occupancy": 1,
+            "decision_reason": "local-build-capacity-available",
+            "exited_cargo_processes": 0,
+            "introspection_processes": 0,
+            "known_build_processes": 1,
+            "local_build_capacity": 3,
+            "reserved_remote_builds": 1,
+            "snapshot_allows_new_local_build": true,
+            "total_build_capacity": 4,
+            "unknown_cargo_processes": 0
+          },
+          "captured_argv_bytes": 284,
+          "captured_argv_processes": 1,
+          "compiler_groups": [
+            {
+              "cargo_pids": [],
+              "classification": "runtime-owner",
+              "job_limit_known": false,
+              "kind": "runtime-owner",
+              "pgid": 557079,
+              "pids": [
+                557079
+              ],
+              "requested_cargo_jobs": null,
+              "runtime_owner_pids": [
+                557079
+              ],
+              "rustc_process_count": 0
+            },
+            {
+              "cargo_pids": [
+                2693753
+              ],
+              "classification": "build",
+              "job_limit_known": true,
+              "kind": "cargo",
+              "pgid": 2693582,
+              "pids": [
+                2693753,
+                2693778
+              ],
+              "requested_cargo_jobs": 2,
+              "runtime_owner_pids": [],
+              "rustc_process_count": 1
+            }
+          ],
+          "compiler_groups_omitted_count": 0,
+          "complete": true,
+          "effective_uid": 0,
+          "entries": [
+            {
+              "ancestry": [
+                {
+                  "pid": 2693606,
+                  "start_token": "linux:2ead60ad-39e1-4149-89bf-ffaca12e4235:79225712"
+                },
+                {
+                  "pid": 2693582,
+                  "start_token": "linux:2ead60ad-39e1-4149-89bf-ffaca12e4235:79225704"
+                },
+                {
+                  "pid": 2693579,
+                  "start_token": "linux:2ead60ad-39e1-4149-89bf-ffaca12e4235:79225664"
+                },
+                {
+                  "pid": 2693561,
+                  "start_token": "linux:2ead60ad-39e1-4149-89bf-ffaca12e4235:79225447"
+                },
+                {
+                  "pid": 276742,
+                  "start_token": "linux:2ead60ad-39e1-4149-89bf-ffaca12e4235:16525242"
+                },
+                {
+                  "pid": 1,
+                  "start_token": "linux:2ead60ad-39e1-4149-89bf-ffaca12e4235:22"
+                }
+              ],
+              "ancestry_complete": true,
+              "argv": {
+                "argc": 13,
+                "status": "complete",
+                "tokens": [
+                  "cargo",
+                  "test",
+                  "--locked",
+                  "--offline",
+                  "-j<redacted>",
+                  "--message-format=<redacted>",
+                  "-p",
+                  "<arg>",
+                  "--lib",
+                  "<arg>",
+                  "--",
+                  "--test-threads=<redacted>",
+                  "--nocapture"
+                ],
+                "truncated": false
+              },
+              "argv_verb": "test",
+              "classification": "build",
+              "classification_reason": null,
+              "executable": "cargo",
+              "identity_validated": true,
+              "pgid": 2693582,
+              "pid": 2693753,
+              "ppid": 2693606,
+              "requested_cargo_jobs": 2,
+              "start_token": "linux:2ead60ad-39e1-4149-89bf-ffaca12e4235:79225744"
+            }
+          ],
+          "entries_omitted_count": 0,
+          "process_scope": "host-visible-process-table",
+          "processes_signaled": [],
+          "resource_snapshot": {
+            "available_memory_bytes": 59054522368,
+            "available_memory_source": "linux-proc-meminfo-MemAvailable",
+            "root_disk_available_bytes": 81989976064,
+            "root_disk_total_bytes": 501864161280,
+            "root_disk_used_bytes": 394305658880,
+            "sampled_at_utc": "2026-10-08T08:29:06.321522+00:00"
+          },
+          "resource_snapshot_complete": true,
+          "sample_finished_at_utc": "2026-10-08T08:29:06.321411+00:00",
+          "sample_started_at_utc": "2026-10-08T08:29:06.279695+00:00",
+          "schema": "build-census.v1",
+          "scope_note": "Foreign Cargo, rustc, and locald/backend-locald/backend-desktop-looking rows are inspected; inaccessible candidates count as occupied unknown process groups. Same-UID process executable paths are inspected, and paths that remain unavailable count as unknown occupied process groups. Cargo argv is read through native process APIs and redacted. Other foreign rows and processes hidden by OS namespaces or permissions are not validated, so this advisory cannot guarantee whole-machine capacity.",
+          "slot_reserved": false,
+          "snapshot_atomic": false,
+          "snapshot_issue_counts": {},
+          "snapshot_race_counts": {
+            "pid-exited-during-scan": 280
+          },
+          "visible_process_count": 443
+        },
+        "census_sha256": "ca32b06d47805eb7704bb54c9d443c2b918603c4b4e9801e5ff55fc256ce0728",
+        "collector_finished_at_utc": "2026-10-08T08:29:06.344809+00:00",
+        "collector_started_at_utc": "2026-10-08T08:29:03.677053+00:00",
+        "host": "ilo",
+        "return_code": 0,
+        "stderr_bytes": 0,
+        "transport_complete": true
+      },
+      "local": {
+        "census": {
+          "argv_budget_exhausted": false,
+          "capacity": {
+            "conservative_local_occupancy": 2,
+            "decision_reason": "local-build-capacity-available",
+            "exited_cargo_processes": 0,
+            "introspection_processes": 0,
+            "known_build_processes": 2,
+            "local_build_capacity": 3,
+            "reserved_remote_builds": 1,
+            "snapshot_allows_new_local_build": true,
+            "total_build_capacity": 4,
+            "unknown_cargo_processes": 0
+          },
+          "captured_argv_bytes": 14064,
+          "captured_argv_processes": 2,
+          "compiler_groups": [
+            {
+              "cargo_pids": [],
+              "classification": "runtime-owner",
+              "job_limit_known": false,
+              "kind": "runtime-owner",
+              "pgid": 749,
+              "pids": [
+                749
+              ],
+              "requested_cargo_jobs": null,
+              "runtime_owner_pids": [
+                749
+              ],
+              "rustc_process_count": 0
+            },
+            {
+              "cargo_pids": [],
+              "classification": "runtime-owner",
+              "job_limit_known": false,
+              "kind": "runtime-owner",
+              "pgid": 4707,
+              "pids": [
+                4707
+              ],
+              "requested_cargo_jobs": null,
+              "runtime_owner_pids": [
+                4707
+              ],
+              "rustc_process_count": 0
+            },
+            {
+              "cargo_pids": [],
+              "classification": "unknown",
+              "job_limit_known": false,
+              "kind": "unknown",
+              "pgid": 11935,
+              "pids": [
+                11939
+              ],
+              "requested_cargo_jobs": null,
+              "runtime_owner_pids": [],
+              "rustc_process_count": 0
+            },
+            {
+              "cargo_pids": [],
+              "classification": "unknown",
+              "job_limit_known": false,
+              "kind": "unknown",
+              "pgid": 11950,
+              "pids": [
+                11955
+              ],
+              "requested_cargo_jobs": null,
+              "runtime_owner_pids": [],
+              "rustc_process_count": 0
+            },
+            {
+              "cargo_pids": [
+                65901
+              ],
+              "classification": "build",
+              "job_limit_known": false,
+              "kind": "cargo",
+              "pgid": 56056,
+              "pids": [
+                65901,
+                67155
+              ],
+              "requested_cargo_jobs": null,
+              "runtime_owner_pids": [],
+              "rustc_process_count": 1
+            },
+            {
+              "cargo_pids": [
+                8501
+              ],
+              "classification": "build",
+              "job_limit_known": false,
+              "kind": "cargo",
+              "pgid": 92851,
+              "pids": [
+                8501,
+                42361
+              ],
+              "requested_cargo_jobs": null,
+              "runtime_owner_pids": [],
+              "rustc_process_count": 1
+            }
+          ],
+          "compiler_groups_omitted_count": 0,
+          "complete": true,
+          "effective_uid": 501,
+          "entries": [
+            {
+              "ancestry": [
+                {
+                  "pid": 92851,
+                  "start_token": "darwin:1791446764:091854"
+                },
+                {
+                  "pid": 579,
+                  "start_token": "darwin:1791436081:666692"
+                },
+                {
+                  "pid": 97086,
+                  "start_token": "darwin:1791436078:791675"
+                }
+              ],
+              "ancestry_complete": false,
+              "ancestry_error": "missing-parent",
+              "argv": {
+                "argc": 14,
+                "status": "complete",
+                "tokens": [
+                  "cargo",
+                  "build",
+                  "-Z<redacted>",
+                  "--locked",
+                  "--manifest-path",
+                  "<arg>",
+                  "-p",
+                  "<arg>",
+                  "--target",
+                  "<arg>",
+                  "--release",
+                  "--no-default-features",
+                  "--features",
+                  "<arg>"
+                ],
+                "truncated": false
+              },
+              "argv_verb": "build",
+              "classification": "build",
+              "classification_reason": null,
+              "executable": "cargo",
+              "identity_validated": true,
+              "pgid": 92851,
+              "pid": 8501,
+              "ppid": 92851,
+              "requested_cargo_jobs": null,
+              "start_token": "darwin:1791446786:399868"
+            },
+            {
+              "ancestry": [
+                {
+                  "pid": 56643,
+                  "start_token": "darwin:1791447851:066947"
+                },
+                {
+                  "pid": 56056,
+                  "start_token": "darwin:1791447850:296581"
+                },
+                {
+                  "pid": 579,
+                  "start_token": "darwin:1791436081:666692"
+                },
+                {
+                  "pid": 97086,
+                  "start_token": "darwin:1791436078:791675"
+                }
+              ],
+              "ancestry_complete": false,
+              "ancestry_error": "missing-parent",
+              "argv": {
+                "argc": 12,
+                "status": "complete",
+                "tokens": [
+                  "cargo",
+                  "bench",
+                  "--locked",
+                  "-p",
+                  "<arg>",
+                  "--no-default-features",
+                  "--features",
+                  "<arg>",
+                  "--bench",
+                  "<arg>",
+                  "--",
+                  "--allocations"
+                ],
+                "truncated": false
+              },
+              "argv_verb": "bench",
+              "classification": "build",
+              "classification_reason": null,
+              "executable": "cargo",
+              "identity_validated": true,
+              "pgid": 56056,
+              "pid": 65901,
+              "ppid": 56643,
+              "requested_cargo_jobs": null,
+              "start_token": "darwin:1791448134:809546"
+            }
+          ],
+          "entries_omitted_count": 0,
+          "process_scope": "host-visible-process-table",
+          "processes_signaled": [],
+          "resource_snapshot": {
+            "available_memory_bytes": 10686087168,
+            "available_memory_source": "darwin-vm-stat-free-inactive-speculative",
+            "root_disk_available_bytes": 57227030528,
+            "root_disk_total_bytes": 994662584320,
+            "root_disk_used_bytes": 937435553792,
+            "sampled_at_utc": "2026-10-08T08:29:03.920471+00:00"
+          },
+          "resource_snapshot_complete": true,
+          "sample_finished_at_utc": "2026-10-08T08:29:03.920251+00:00",
+          "sample_started_at_utc": "2026-10-08T08:29:03.848933+00:00",
+          "schema": "build-census.v1",
+          "scope_note": "Foreign Cargo, rustc, and locald/backend-locald/backend-desktop-looking rows are inspected; inaccessible candidates count as occupied unknown process groups. Same-UID process executable paths are inspected, and paths that remain unavailable count as unknown occupied process groups. Cargo argv is read through native process APIs and redacted. Other foreign rows and processes hidden by OS namespaces or permissions are not validated, so this advisory cannot guarantee whole-machine capacity.",
+          "slot_reserved": false,
+          "snapshot_atomic": false,
+          "snapshot_issue_counts": {},
+          "snapshot_race_counts": {
+            "pid-exited-during-scan": 11
+          },
+          "visible_process_count": 680
+        },
+        "census_sha256": "260b1b35a4491288b2bd8deeeb9ea41a7b983cdccbc05f14bfdbcee92b6db86a",
+        "collector_finished_at_utc": "2026-10-08T08:29:03.966878+00:00",
+        "collector_started_at_utc": "2026-10-08T08:29:03.668116+00:00",
+        "host": "local",
+        "return_code": 0,
+        "stderr_bytes": 0,
+        "transport_complete": true
+      }
+    },
+    "reasons": [],
+    "requested_cargo_jobs": 2,
+    "sampled_at_utc": "2026-10-08T08:29:06.348625+00:00",
+    "sampler_path": "/Users/mileswirht/Downloads/nudox-active-20261005/root-quality-integration-20261007/.config/scripts/build-census.py",
+    "sampler_sha256": "95895b8959d2803a0e01f1b05c9462a46ed1b2e9976382bcae6ee9744f4cfea4",
+    "schema": "compiler-capacity-admission.v5",
+    "slot_reserved": false
+  },
+  "loan_sha256": "6ccf27452254a5a88c72cb4fc983b55cefdffa17344af8ad26e741cd0cea12cd",
+  "managed_leases_empty": true,
+  "rows": [
+    {
+      "package": "backend-present",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/backend-present-b719b90813ffcf90/lib-backend_present.json",
+      "features": "[]",
+      "profile": 15835967862822672174,
+      "path_hash": 13508941885543657516,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libbackend_present-b719b90813ffcf90.rlib",
+      "artifact_exists": false,
+      "artifact_bytes": null,
+      "invocation_to_fingerprint_seconds": 4.007001876831055,
+      "fingerprint_utc": "2026-10-08T06:37:15.397009+00:00"
+    },
+    {
+      "package": "backend-present",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/backend-present-e7f4ae8008c910df/lib-backend_present.json",
+      "features": "[]",
+      "profile": 15539858850874456967,
+      "path_hash": 13508941885543657516,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libbackend_present-e7f4ae8008c910df.rlib",
+      "artifact_exists": true,
+      "artifact_bytes": 20655254,
+      "invocation_to_fingerprint_seconds": 41.68682074546814,
+      "fingerprint_utc": "2026-10-08T05:56:16.964513+00:00"
+    },
+    {
+      "package": "backend-engine",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/backend-engine-a71ced0e781abce0/lib-backend_engine.json",
+      "features": "[]",
+      "profile": 15539858850874456967,
+      "path_hash": 12611433567052899258,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libbackend_engine-a71ced0e781abce0.rlib",
+      "artifact_exists": true,
+      "artifact_bytes": 85768338,
+      "invocation_to_fingerprint_seconds": 110.22205328941345,
+      "fingerprint_utc": "2026-10-08T05:57:08.793537+00:00"
+    },
+    {
+      "package": "backend-engine",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/backend-engine-d722af38a3c0b5ba/lib-backend_engine.json",
+      "features": "[]",
+      "profile": 15835967862822672174,
+      "path_hash": 12611433567052899258,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libbackend_engine-d722af38a3c0b5ba.rlib",
+      "artifact_exists": false,
+      "artifact_bytes": null,
+      "invocation_to_fingerprint_seconds": 22.062011241912842,
+      "fingerprint_utc": "2026-10-08T06:37:10.596007+00:00"
+    },
+    {
+      "package": "backend-engine",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/backend-engine-d218c9f2c30d278b/lib-backend_engine.json",
+      "features": "[]",
+      "profile": 13687605181774697196,
+      "path_hash": 12611433567052899258,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libbackend_engine-d218c9f2c30d278b.rlib",
+      "artifact_exists": true,
+      "artifact_bytes": 88425646,
+      "invocation_to_fingerprint_seconds": 130.02306509017944,
+      "fingerprint_utc": "2026-10-08T08:24:28.647721+00:00"
+    },
+    {
+      "package": "backend-frontend-typescript",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/backend-frontend-typescript-df6b02a04eb3b3eb/lib-backend_frontend_typescript.json",
+      "features": "[]",
+      "profile": 15835967862822672174,
+      "path_hash": 18185906702228546454,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libbackend_frontend_typescript-df6b02a04eb3b3eb.rlib",
+      "artifact_exists": false,
+      "artifact_bytes": null,
+      "invocation_to_fingerprint_seconds": 0.6117498874664307,
+      "fingerprint_utc": "2026-10-08T06:36:38.859991+00:00"
+    },
+    {
+      "package": "backend-frontend-typescript",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/backend-frontend-typescript-e7ce7dd0b23161b6/lib-backend_frontend_typescript.json",
+      "features": "[]",
+      "profile": 15539858850874456967,
+      "path_hash": 18185906702228546454,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libbackend_frontend_typescript-e7ce7dd0b23161b6.rlib",
+      "artifact_exists": true,
+      "artifact_bytes": 5200092,
+      "invocation_to_fingerprint_seconds": 8.983005285263062,
+      "fingerprint_utc": "2026-10-08T05:51:20.459355+00:00"
+    },
+    {
+      "package": "backend-frontend-typescript",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/backend-frontend-typescript-d626fd71eaa35868/lib-backend_frontend_typescript.json",
+      "features": "[]",
+      "profile": 13687605181774697196,
+      "path_hash": 18185906702228546454,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libbackend_frontend_typescript-d626fd71eaa35868.rlib",
+      "artifact_exists": true,
+      "artifact_bytes": 5497536,
+      "invocation_to_fingerprint_seconds": 9.604004144668579,
+      "fingerprint_utc": "2026-10-08T08:21:27.424633+00:00"
+    },
+    {
+      "package": "opentelemetry_sdk",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/opentelemetry_sdk-25eb755437b4836a/lib-opentelemetry_sdk.json",
+      "features": "[\"default\", \"internal-logs\", \"logs\", \"metrics\", \"percent-encoding\", \"rand\", \"trace\"]",
+      "profile": 12338459118494140019,
+      "path_hash": 7568125502094968451,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libopentelemetry_sdk-25eb755437b4836a.rlib",
+      "artifact_exists": true,
+      "artifact_bytes": 6390112,
+      "invocation_to_fingerprint_seconds": 6.630003929138184,
+      "fingerprint_utc": "2026-10-08T05:51:45.721370+00:00"
+    },
+    {
+      "package": "opentelemetry_sdk",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/opentelemetry_sdk-1174e6495e00406c/lib-opentelemetry_sdk.json",
+      "features": "[\"default\", \"internal-logs\", \"logs\", \"metrics\", \"percent-encoding\", \"rand\", \"trace\"]",
+      "profile": 10224331036212431588,
+      "path_hash": 7568125502094968451,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libopentelemetry_sdk-1174e6495e00406c.rlib",
+      "artifact_exists": false,
+      "artifact_bytes": null,
+      "invocation_to_fingerprint_seconds": 1.5670006275177002,
+      "fingerprint_utc": "2026-10-08T06:36:47.023995+00:00"
+    },
+    {
+      "package": "opentelemetry_sdk",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/opentelemetry_sdk-3fcaeeca7afff181/lib-opentelemetry_sdk.json",
+      "features": "[\"default\", \"internal-logs\", \"logs\", \"metrics\", \"percent-encoding\", \"rand\", \"trace\"]",
+      "profile": 6750705402296785819,
+      "path_hash": 7568125502094968451,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libopentelemetry_sdk-3fcaeeca7afff181.rlib",
+      "artifact_exists": true,
+      "artifact_bytes": 6646428,
+      "invocation_to_fingerprint_seconds": 6.8600029945373535,
+      "fingerprint_utc": "2026-10-08T08:22:10.153652+00:00"
+    },
+    {
+      "package": "tokio",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/tokio-af3f47aee194b52a/lib-tokio.json",
+      "features": "[\"bytes\", \"default\", \"fs\", \"full\", \"io-std\", \"io-util\", \"libc\", \"macros\", \"mio\", \"net\", \"parking_lot\", \"process\", \"rt\", \"rt-multi-thread\", \"signal\", \"signal-hook-registry\", \"socket2\", \"sync\", \"test-util\", \"time\", \"tokio-macros\"]",
+      "profile": 3239845286634789643,
+      "path_hash": 8907049090996115283,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libtokio-af3f47aee194b52a.rlib",
+      "artifact_exists": true,
+      "artifact_bytes": 12567158,
+      "invocation_to_fingerprint_seconds": 7.601961135864258,
+      "fingerprint_utc": "2026-10-08T08:08:24.329229+00:00"
+    },
+    {
+      "package": "tokio",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/tokio-rustls-d0b4e6ddbd67a89a/lib-tokio_rustls.json",
+      "features": "[\"logging\", \"ring\", \"tls12\"]",
+      "profile": 15020529087257182687,
+      "path_hash": 10462429488188042666,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libtokio-rustls-d0b4e6ddbd67a89a.rlib",
+      "artifact_exists": false,
+      "artifact_bytes": null,
+      "invocation_to_fingerprint_seconds": 0.3751809597015381,
+      "fingerprint_utc": "2026-10-08T06:34:18.770101+00:00"
+    },
+    {
+      "package": "tokio",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/tokio-rustls-63aaf54f52361862/lib-tokio_rustls.json",
+      "features": "[\"logging\", \"ring\", \"tls12\"]",
+      "profile": 3332037424762146565,
+      "path_hash": 10462429488188042666,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libtokio-rustls-63aaf54f52361862.rlib",
+      "artifact_exists": false,
+      "artifact_bytes": null,
+      "invocation_to_fingerprint_seconds": 0.27460432052612305,
+      "fingerprint_utc": "2026-10-08T05:37:49.828814+00:00"
+    },
+    {
+      "package": "tokio",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/tokio-util-2eb509bd58245274/lib-tokio_util.json",
+      "features": "[\"codec\", \"compat\", \"default\", \"full\", \"futures-io\", \"io\", \"io-util\", \"net\", \"rt\", \"slab\", \"time\"]",
+      "profile": 16864349624179186615,
+      "path_hash": 14961024668502406881,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libtokio-util-2eb509bd58245274.rlib",
+      "artifact_exists": false,
+      "artifact_bytes": null,
+      "invocation_to_fingerprint_seconds": 0.48200011253356934,
+      "fingerprint_utc": "2026-10-08T08:10:38.689338+00:00"
+    },
+    {
+      "package": "tokio",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/tokio-macros-4bfd8b163704af4c/lib-tokio_macros.json",
+      "features": "[]",
+      "profile": 6106819568684150222,
+      "path_hash": 18389126160668770248,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libtokio-macros-4bfd8b163704af4c.rlib",
+      "artifact_exists": false,
+      "artifact_bytes": null,
+      "invocation_to_fingerprint_seconds": 0.32889890670776367,
+      "fingerprint_utc": "2026-10-08T05:31:23.647038+00:00"
+    },
+    {
+      "package": "tokio",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/tokio-stream-a5ac8c068bdd1544/lib-tokio_stream.json",
+      "features": "[\"default\", \"sync\", \"time\", \"tokio-util\"]",
+      "profile": 3239845286634789643,
+      "path_hash": 1050169550676264085,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libtokio-stream-a5ac8c068bdd1544.rlib",
+      "artifact_exists": false,
+      "artifact_bytes": null,
+      "invocation_to_fingerprint_seconds": 0.4000246524810791,
+      "fingerprint_utc": "2026-10-08T08:14:04.187460+00:00"
+    },
+    {
+      "package": "tokio",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/tokio-util-7ec855b1cba90bac/lib-tokio_util.json",
+      "features": "[\"codec\", \"default\", \"futures-util\", \"io\", \"io-util\", \"libc\", \"rt\"]",
+      "profile": 11348814329156892014,
+      "path_hash": 5853734710238739013,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libtokio-util-7ec855b1cba90bac.rlib",
+      "artifact_exists": false,
+      "artifact_bytes": null,
+      "invocation_to_fingerprint_seconds": 1.451002836227417,
+      "fingerprint_utc": "2026-10-08T05:34:56.575284+00:00"
+    },
+    {
+      "package": "tokio",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/tokio-rustls-773966514bdf17dc/lib-tokio_rustls.json",
+      "features": "[\"logging\", \"ring\", \"tls12\"]",
+      "profile": 4088916033920487538,
+      "path_hash": 10462429488188042666,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libtokio-rustls-773966514bdf17dc.rlib",
+      "artifact_exists": false,
+      "artifact_bytes": null,
+      "invocation_to_fingerprint_seconds": 0.19099998474121094,
+      "fingerprint_utc": "2026-10-08T08:11:20.786359+00:00"
+    },
+    {
+      "package": "tokio",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/tokio-util-70fa4c56a54f8534/lib-tokio_util.json",
+      "features": "[\"codec\", \"default\", \"futures-util\", \"io\", \"io-util\", \"libc\", \"rt\"]",
+      "profile": 4212150063675703756,
+      "path_hash": 5853734710238739013,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libtokio-util-70fa4c56a54f8534.rlib",
+      "artifact_exists": false,
+      "artifact_bytes": null,
+      "invocation_to_fingerprint_seconds": 0.48400020599365234,
+      "fingerprint_utc": "2026-10-08T06:33:51.367906+00:00"
+    },
+    {
+      "package": "tokio",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/tokio-6296dcb50dee8c65/lib-tokio.json",
+      "features": "[\"bytes\", \"default\", \"fs\", \"full\", \"io-std\", \"io-util\", \"libc\", \"macros\", \"mio\", \"net\", \"parking_lot\", \"process\", \"rt\", \"rt-multi-thread\", \"signal\", \"signal-hook-registry\", \"socket2\", \"sync\", \"test-util\", \"time\", \"tokio-macros\"]",
+      "profile": 4212150063675703756,
+      "path_hash": 8907049090996115283,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libtokio-6296dcb50dee8c65.rlib",
+      "artifact_exists": false,
+      "artifact_bytes": null,
+      "invocation_to_fingerprint_seconds": 3.427001714706421,
+      "fingerprint_utc": "2026-10-08T06:32:43.455871+00:00"
+    },
+    {
+      "package": "tokio",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/tokio-util-05f9bb5eb1a78139/lib-tokio_util.json",
+      "features": "[\"codec\", \"compat\", \"default\", \"full\", \"futures-io\", \"io\", \"io-util\", \"net\", \"rt\", \"slab\", \"time\"]",
+      "profile": 64934875481003978,
+      "path_hash": 14961024668502406881,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libtokio-util-05f9bb5eb1a78139.rlib",
+      "artifact_exists": false,
+      "artifact_bytes": null,
+      "invocation_to_fingerprint_seconds": 0.43200016021728516,
+      "fingerprint_utc": "2026-10-08T06:34:07.074914+00:00"
+    },
+    {
+      "package": "tokio",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/tokio-4a735a47caba1d26/lib-tokio.json",
+      "features": "[\"bytes\", \"default\", \"fs\", \"full\", \"io-std\", \"io-util\", \"libc\", \"macros\", \"mio\", \"net\", \"parking_lot\", \"process\", \"rt\", \"rt-multi-thread\", \"signal\", \"signal-hook-registry\", \"socket2\", \"sync\", \"test-util\", \"time\", \"tokio-macros\"]",
+      "profile": 11348814329156892014,
+      "path_hash": 8907049090996115283,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libtokio-4a735a47caba1d26.rlib",
+      "artifact_exists": true,
+      "artifact_bytes": 11951532,
+      "invocation_to_fingerprint_seconds": 7.299901962280273,
+      "fingerprint_utc": "2026-10-08T05:31:32.059038+00:00"
+    },
+    {
+      "package": "tokio",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/tokio-stream-2a0475388e68e197/lib-tokio_stream.json",
+      "features": "[\"default\", \"sync\", \"time\", \"tokio-util\"]",
+      "profile": 4212150063675703756,
+      "path_hash": 1050169550676264085,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libtokio-stream-2a0475388e68e197.rlib",
+      "artifact_exists": false,
+      "artifact_bytes": null,
+      "invocation_to_fingerprint_seconds": 0.3230001926422119,
+      "fingerprint_utc": "2026-10-08T06:35:09.903946+00:00"
+    },
+    {
+      "package": "tokio",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/tokio-util-a8eed63f64bc0125/lib-tokio_util.json",
+      "features": "[\"codec\", \"default\", \"futures-util\", \"io\", \"io-util\", \"libc\", \"rt\"]",
+      "profile": 3239845286634789643,
+      "path_hash": 5853734710238739013,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libtokio-util-a8eed63f64bc0125.rlib",
+      "artifact_exists": false,
+      "artifact_bytes": null,
+      "invocation_to_fingerprint_seconds": 1.583000659942627,
+      "fingerprint_utc": "2026-10-08T08:09:59.457319+00:00"
+    },
+    {
+      "package": "tokio",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/tokio-websockets-81191b9c88e39ac1/lib-tokio_websockets.json",
+      "features": "[\"client\", \"getrandom\", \"rand\", \"ring\", \"rustls-bring-your-own-connector\", \"server\", \"sha1_smol\"]",
+      "profile": 3332037424762146565,
+      "path_hash": 7963815707190875260,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libtokio-websockets-81191b9c88e39ac1.rlib",
+      "artifact_exists": false,
+      "artifact_bytes": null,
+      "invocation_to_fingerprint_seconds": 1.1380009651184082,
+      "fingerprint_utc": "2026-10-08T05:44:17.516048+00:00"
+    },
+    {
+      "package": "tokio",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/tokio-websockets-ae42a1cd54ef8396/lib-tokio_websockets.json",
+      "features": "[\"client\", \"getrandom\", \"rand\", \"ring\", \"rustls-bring-your-own-connector\", \"server\", \"sha1_smol\"]",
+      "profile": 15020529087257182687,
+      "path_hash": 7963815707190875260,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libtokio-websockets-ae42a1cd54ef8396.rlib",
+      "artifact_exists": false,
+      "artifact_bytes": null,
+      "invocation_to_fingerprint_seconds": 0.5840003490447998,
+      "fingerprint_utc": "2026-10-08T06:35:37.934960+00:00"
+    },
+    {
+      "package": "tokio",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/tokio-stream-19906db752e8547a/lib-tokio_stream.json",
+      "features": "[\"default\", \"sync\", \"time\", \"tokio-util\"]",
+      "profile": 11348814329156892014,
+      "path_hash": 1050169550676264085,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libtokio-stream-19906db752e8547a.rlib",
+      "artifact_exists": false,
+      "artifact_bytes": null,
+      "invocation_to_fingerprint_seconds": 0.6830005645751953,
+      "fingerprint_utc": "2026-10-08T05:42:18.244932+00:00"
+    },
+    {
+      "package": "tokio",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/tokio-websockets-7bac667719202f53/lib-tokio_websockets.json",
+      "features": "[\"client\", \"getrandom\", \"rand\", \"ring\", \"rustls-bring-your-own-connector\", \"server\", \"sha1_smol\"]",
+      "profile": 4088916033920487538,
+      "path_hash": 7963815707190875260,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libtokio-websockets-7bac667719202f53.rlib",
+      "artifact_exists": false,
+      "artifact_bytes": null,
+      "invocation_to_fingerprint_seconds": 1.475804328918457,
+      "fingerprint_utc": "2026-10-08T08:15:06.888556+00:00"
+    },
+    {
+      "package": "tokio",
+      "fingerprint": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/.fingerprint/tokio-util-361c995a60b76870/lib-tokio_util.json",
+      "features": "[\"codec\", \"compat\", \"default\", \"full\", \"futures-io\", \"io\", \"io-util\", \"net\", \"rt\", \"slab\", \"time\"]",
+      "profile": 14492915971515637737,
+      "path_hash": 14961024668502406881,
+      "artifact": "/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0/release/deps/libtokio-util-361c995a60b76870.rlib",
+      "artifact_exists": false,
+      "artifact_bytes": null,
+      "invocation_to_fingerprint_seconds": 0.5865950584411621,
+      "fingerprint_utc": "2026-10-08T05:37:19.298542+00:00"
+    }
+  ],
+  "engine_test_artifact_exists": false,
+  "tsz_test_support_rlib_exists": false,
+  "opentelemetry_testing_rlib_exists": false,
+  "engine_genuinely_warm": false,
+  "remaining_engine_compile_seconds_estimate": null,
+  "remaining_estimate_reason": "No measured engine unit-test compile/link sample exists unless an exact completed test recipe is present; component invocation durations are reported rather than an invented estimate."
+}

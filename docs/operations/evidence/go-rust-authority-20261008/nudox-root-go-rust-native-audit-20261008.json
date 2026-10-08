@@ -1,0 +1,214 @@
+{
+  "schema": "nudox.root-go-rust-native-review.v1",
+  "checks": [
+    {
+      "phase": "rust-session-01",
+      "exit": 0,
+      "test_summary": [
+        [
+          "1",
+          "0",
+          "0"
+        ]
+      ],
+      "result_names": [
+        "package_workspace_reuses_database_for_root_and_sibling_sources"
+      ],
+      "source": {
+        "commit": "2110a5daf2abf523e0d3c092da0d24320fa12719",
+        "tree": "c20c06e21a75f19a5e34bfdb5971d26d8324e9f5",
+        "cargo_lock_sha256": "5d0b0b75a5acb9fd95db98d160ede1e3c780069cdc9989561491fe2cb5ba3da0",
+        "clean": true
+      },
+      "elapsed_seconds": 362.5087267989293,
+      "raw_hashes_verified": true
+    },
+    {
+      "phase": "rust-types-01",
+      "exit": 0,
+      "test_summary": [
+        [
+          "1",
+          "0",
+          "0"
+        ]
+      ],
+      "result_names": [
+        "borrowed_authority_preserves_hir_types_resolution_macros_and_exact_spans"
+      ],
+      "source": {
+        "commit": "2110a5daf2abf523e0d3c092da0d24320fa12719",
+        "tree": "c20c06e21a75f19a5e34bfdb5971d26d8324e9f5",
+        "cargo_lock_sha256": "5d0b0b75a5acb9fd95db98d160ede1e3c780069cdc9989561491fe2cb5ba3da0",
+        "clean": true
+      },
+      "elapsed_seconds": 11.608084916020744,
+      "raw_hashes_verified": true
+    },
+    {
+      "phase": "serde-native-01",
+      "exit": 101,
+      "test_summary": [],
+      "result_names": [],
+      "source": {
+        "commit": "2110a5daf2abf523e0d3c092da0d24320fa12719",
+        "tree": "c20c06e21a75f19a5e34bfdb5971d26d8324e9f5",
+        "cargo_lock_sha256": "5d0b0b75a5acb9fd95db98d160ede1e3c780069cdc9989561491fe2cb5ba3da0",
+        "clean": true
+      },
+      "elapsed_seconds": 288.47777907398995,
+      "raw_hashes_verified": true
+    },
+    {
+      "phase": "serde-native-02",
+      "exit": 0,
+      "test_summary": [],
+      "result_names": [],
+      "source": {
+        "commit": "04a4c338bbdcbb39c0879fcce3b3148ea6d25e40",
+        "tree": "d78f5ddc58fd5c350988ac3ed5aef65fdc409fd0",
+        "cargo_lock_sha256": "5d0b0b75a5acb9fd95db98d160ede1e3c780069cdc9989561491fe2cb5ba3da0",
+        "clean": true
+      },
+      "elapsed_seconds": 86.14917098695878,
+      "raw_hashes_verified": true
+    },
+    {
+      "phase": "library-go-01",
+      "exit": 0,
+      "test_summary": [
+        [
+          "22",
+          "0",
+          "0"
+        ]
+      ],
+      "result_names": [
+        "cargo_aliases::tests::aliases_are_bound_to_each_exact_profile_observation",
+        "cargo_aliases::tests::alias_bounds_report_truncation_and_reject_orphaned_wire_names",
+        "cargo_aliases::tests::evidence_merge_stops_before_expanding_more_than_four_profiles",
+        "cargo_aliases::tests::profile_merge_stops_at_the_fixed_observation_bound",
+        "cargo_aliases::tests::virtual_workspace_root_does_not_guess_a_member_alias",
+        "cargo_source::tests::external_path_sources_use_opaque_display_labels",
+        "cargo_aliases::tests::selected_member_is_not_reused_for_a_different_requested_manifest",
+        "cargo_source::tests::malformed_or_noncanonical_authorities_fail_closed",
+        "browse::cargo::source_tests::pinned_cargo_197_metadata_uses_resolve_reachability_for_target_inventory",
+        "cargo_source::tests::package_source_paths_reject_ambiguous_or_traversing_spellings",
+        "cargo_source::tests::qualified_package_reference_round_trips_the_exact_authority_digest",
+        "cargo_source::tests::readme_link_resolution_is_relative_bounded_and_root_scoped",
+        "cargo_source::tests::registry_sparse_git_query_commit_and_path_root_are_distinct",
+        "cargo_source::tests::readme_result_binds_exact_package_authority_path_and_content_digest",
+        "cargo_source::tests::source_qualified_reference_rejects_uncommitted_extra_qualifiers",
+        "cargo_source::tests::serde_rejects_a_tampered_authority_digest",
+        "registry_native::tests::cargo_features_must_be_lexically_sorted",
+        "interface::compiler_go::tests::public_go_failure_contract_has_exact_closed_names_and_guidance",
+        "registry_native::tests::cargo_native_admission_rejects_impossible_publication_date",
+        "registry_native::tests::cargo_publish_time_requires_exact_valid_utc_calendar",
+        "surface::tests::go_authority_failures_round_trip_and_refuse_contradictory_markers",
+        "browse::cargo::source_tests::cargo_generated_lockfile_unqualified_edge_uses_unique_registry_authority"
+      ],
+      "source": {
+        "commit": "04a4c338bbdcbb39c0879fcce3b3148ea6d25e40",
+        "tree": "d78f5ddc58fd5c350988ac3ed5aef65fdc409fd0",
+        "cargo_lock_sha256": "5d0b0b75a5acb9fd95db98d160ede1e3c780069cdc9989561491fe2cb5ba3da0",
+        "clean": true
+      },
+      "elapsed_seconds": 627.6290999420453,
+      "raw_hashes_verified": true
+    },
+    {
+      "phase": "present-go-01",
+      "exit": 143,
+      "test_summary": [],
+      "result_names": [],
+      "source": {
+        "commit": "04a4c338bbdcbb39c0879fcce3b3148ea6d25e40",
+        "tree": "d78f5ddc58fd5c350988ac3ed5aef65fdc409fd0",
+        "cargo_lock_sha256": "5d0b0b75a5acb9fd95db98d160ede1e3c780069cdc9989561491fe2cb5ba3da0",
+        "clean": true
+      },
+      "elapsed_seconds": 1204.7179435309954,
+      "raw_hashes_verified": true
+    },
+    {
+      "phase": "engine-go-01",
+      "outcome": "UNRUN",
+      "reason": "Root prioritizes matched current trio public replay unless exact engine unit/test prerequisites are warm"
+    },
+    {
+      "phase": "engine-cache-01",
+      "outcome": "UNRUN",
+      "reason": "Root prioritizes matched current trio public replay unless exact engine unit/test prerequisites are warm"
+    },
+    {
+      "phase": "focused-tests-09-go-selected-01",
+      "source": {
+        "commit": "a43002073e617308e98cabec35d5d9ada9c375b6",
+        "tree": "645e2d6fa93164857d926efabc5a8ca67f1a2766",
+        "cargo_lock_sha256": "5d0b0b75a5acb9fd95db98d160ede1e3c780069cdc9989561491fe2cb5ba3da0",
+        "clean": true
+      },
+      "passed": 1,
+      "result_names": [
+        "real_selected_loader_refreshes_missing_dependencies_without_owner_restart"
+      ],
+      "raw_hashes_verified": true,
+      "receipt_sha256": "0de60825c217d78258df7ce991597d76880abe4129c619f172f68c4d5b0006b7"
+    },
+    {
+      "phase": "focused-tests-10-go-remedy-01",
+      "source": {
+        "commit": "10abbe5bc20524817a297716763940f754307830",
+        "tree": "3792e98a4605d5b68856f061ffec877d30534238",
+        "cargo_lock_sha256": "5d0b0b75a5acb9fd95db98d160ede1e3c780069cdc9989561491fe2cb5ba3da0",
+        "clean": true
+      },
+      "passed": 8,
+      "result_names": [
+        "legacy::oracle::dependency_witness::tests::closure_refusal_recovery_is_specific_to_the_failure",
+        "legacy::oracle::dependency_witness::tests::dependency_directory_is_refused_as_a_source_file",
+        "legacy::oracle::dependency_witness::tests::cancelled_dependency_read_does_not_admit_content",
+        "legacy::oracle::dependency_witness::tests::oversized_dependency_never_becomes_a_complete_witness",
+        "legacy::oracle::dependency_witness::tests::dependency_symlink_cannot_escape_the_admitted_root",
+        "legacy::oracle::dependency_witness::tests::missing_dependency_and_later_setup_have_different_witnesses",
+        "legacy::oracle::dependency_witness::tests::dependency_path_cannot_escape_the_admitted_root",
+        "legacy::oracle::dependency_witness::tests::same_length_dependency_change_invalidates_content_witness"
+      ],
+      "raw_hashes_verified": true,
+      "receipt_sha256": "7d9a6f118b49690cfbd296f0f25cba148fb2364667b415bbc5268e4f57032154"
+    }
+  ],
+  "production_read_by_root": true,
+  "test_successors_read_by_root": true,
+  "integrated_source": "a9645b79e83cc209a4910eb8a3b5701c84cf0981",
+  "tree": "ba33606a3db84f287ebc40ec78e34668fdcd285f",
+  "base": "8c18a3d29b641a10a697c160d7e1fb1d35661ae6",
+  "replay_tree_identical": true,
+  "changed_paths": [
+    "crates/engine/src/application/compiler.rs",
+    "crates/engine/src/application/host.rs",
+    "crates/engine/src/application/host/authority.rs",
+    "crates/engine/src/application/host/paths.rs",
+    "crates/engine/src/application/package_authority.rs",
+    "crates/engine/src/application/runtime.rs",
+    "crates/engine/src/driver/types/authority.rs",
+    "crates/library/interface/compiler.rs",
+    "crates/library/interface/compiler_go.rs",
+    "crates/library/interface/mod.rs",
+    "crates/library/surface.rs",
+    "crates/library/surface/package_compiler_failure.rs",
+    "crates/present/compiler_fault_tests.rs",
+    "frontends/go/src/legacy/oracle.rs",
+    "frontends/go/src/legacy/oracle/authority_witness.rs",
+    "frontends/go/src/legacy/oracle/dependency_witness.rs",
+    "frontends/go/tests/selected_dependency_loader.rs",
+    "frontends/rust/examples/serde_workspace_authority.rs"
+  ],
+  "canonical_lock_unchanged": true,
+  "public_cli_mcp_acceptance": false,
+  "limitations": [
+    "Native checks run by worker on exact recorded sources; Root independently audited raw output, hashes, source trees and retirement.",
+    "Canonical replay is source-only; engine and present Go test gates remain unrun/timed out as recorded.",
+    "No current installed CLI/MCP or GUI acceptance is inferred from frontend tests."
+  ]
+}

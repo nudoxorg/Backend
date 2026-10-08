@@ -1367,6 +1367,8 @@ fn admit_terminal_profile_partition(
                     && language != backend_semantic::vocabulary::Language::Python)
                     || (facts.typescript_failure.is_some()
                         && language != backend_semantic::vocabulary::Language::TypeScript)
+                    || (facts.go_failure.is_some()
+                        && language != backend_semantic::vocabulary::Language::Go)
                     || matches!(
                         facts.python_failure,
                         Some(crate::interface::PythonAuthorityFailureKind::Cancelled)
@@ -2464,6 +2466,12 @@ fn sanitize_package_compiler_detail(value: &str, source_truncated: bool) -> (Str
 
 fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, bool) {
     if let PackageCompilerFailureCause::Authority {
+        diagnostic: Some(CompilerAuthorityDiagnosticFacts { go_failure: Some(failure), .. }),
+        ..
+    } = cause {
+        return sanitize_package_compiler_detail(failure.detail(), false);
+    }
+    if let PackageCompilerFailureCause::Authority {
         diagnostic:
             Some(CompilerAuthorityDiagnosticFacts {
                 python_failure: Some(failure),
@@ -2579,7 +2587,8 @@ fn package_cause_is_valid(cause: &PackageCompilerFailureCause) -> bool {
         PackageCompilerFailureCause::Authority {
             diagnostic: Some(facts),
             ..
-        } => !(facts.python_failure.is_some() && facts.typescript_failure.is_some()),
+        } => [facts.python_failure.is_some(), facts.typescript_failure.is_some(),
+            facts.go_failure.is_some()].into_iter().filter(|present| *present).count() <= 1,
         PackageCompilerFailureCause::Authority {
             diagnostic: None, ..
         } => true,
@@ -6235,6 +6244,53 @@ mod tests {
                 .is_err(),
                 "unknown closed TS causes refused"
             );
+        }
+    }
+
+    #[test]
+    fn go_authority_failures_round_trip_and_refuse_contradictory_markers() {
+        use crate::interface::{AuthorityDiagnosticClass, AuthorityPhase, CompilerAttempt,
+            CompilerCause, CompilerDiagnostic, CompilerTerminal, GoAuthorityFailureKind as G,
+            SourceAuthority};
+        for kind in [G::DependencyInvocation, G::DependencyProtocol, G::DependencyPackageLoad,
+            G::DependencyEmptyGraph, G::DependencyIncompleteFiles, G::DependencyUnsafePath,
+            G::DependencyLimit] {
+            let private = b"private dependency path /home/user/go/pkg/mod and native stderr";
+            let terminal = CompilerTerminal::Compile {
+                attempted: CompilerAttempt {
+                    source: SourceAuthority {
+                        identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"package main\n"),
+                        byte_len: 13,
+                    },
+                    recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"selected-go-loader"),
+                },
+                cause: CompilerCause::Authority {
+                    phase: AuthorityPhase::Resolve,
+                    class: AuthorityDiagnosticClass::Authority,
+                    diagnostic: CompilerDiagnostic::from_native(private, private.len(), false)
+                        .map(|value| value.with_go_failure(kind)),
+                },
+            };
+            let failure = PackageCompilerFailure::from_package_terminal("src/main.go", &terminal)
+                .expect("closed Go projection").expect("authority refusal");
+            assert_eq!(failure.kind_tag(), kind.kind_tag());
+            assert_eq!(failure.detail(), kind.detail());
+            assert!(!failure.cause().requires_tool_configuration());
+            let encoded = failure.encode_bounded_json().expect("bounded Go refusal");
+            assert!(!String::from_utf8_lossy(&encoded).contains("/home/user"));
+            let reopened = PackageCompilerFailure::decode_bounded_json(&encoded).expect("Go codec");
+            assert_eq!(reopened, failure);
+            assert!(reopened.retained_diagnostic_for_local_debug().is_none());
+            let original: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+            for (python, typescript) in [(true, false), (false, true), (true, true)] {
+                let mut mutant = original.clone();
+                if python { mutant["cause"]["fault"]["diagnostic"]["python_failure"] = serde_json::json!("project_panic"); }
+                if typescript { mutant["cause"]["fault"]["diagnostic"]["typescript_failure"] = serde_json::json!("checker_exit"); }
+                assert!(PackageCompilerFailure::decode_bounded_json(&serde_json::to_vec(&mutant).unwrap()).is_err());
+            }
+            let mut unknown = original;
+            unknown["cause"]["fault"]["diagnostic"]["go_failure"] = serde_json::json!("invented_cause");
+            assert!(PackageCompilerFailure::decode_bounded_json(&serde_json::to_vec(&unknown).unwrap()).is_err());
         }
     }
 

@@ -1,0 +1,208 @@
+{
+  "worktree": "/Users/mileswirht/Downloads/nudox-active-20261005/sol61-go-rust-replay-8c18-20261008",
+  "base": "8c18a3d29b641a10a697c160d7e1fb1d35661ae6",
+  "rows": [
+    {
+      "original": "bc80d1bcbfdff4fb4acba1d0caf6d5bc9abbab3a",
+      "exit": 0,
+      "stdout": "Auto-merging crates/engine/src/application/host/paths.rs\n[codex/sol61-go-rust-replay-8c18-20261008 1a7f6a0468] fix(go): preserve ordinary module cache before dependency setup\n Date: Thu Oct 8 05:52:27 2026 +0000\n 3 files changed, 107 insertions(+), 15 deletions(-)\n",
+      "stderr": "",
+      "replayed_commit": "1a7f6a0468a2d66546a61236d310a8bdbc52e66b",
+      "changed_paths": [
+        "crates/engine/src/application/host.rs",
+        "crates/engine/src/application/host/authority.rs",
+        "crates/engine/src/application/host/paths.rs"
+      ]
+    },
+    {
+      "original": "deb894f58b2aaca01c4e8e7fa7b83d27a70b1344",
+      "exit": 0,
+      "stdout": "[codex/sol61-go-rust-replay-8c18-20261008 2dcf7100c8] fix(go): witness selected offline dependencies on each request\n Date: Thu Oct 8 06:00:53 2026 +0000\n 11 files changed, 579 insertions(+), 26 deletions(-)\n create mode 100644 crates/library/interface/compiler_go.rs\n create mode 100644 frontends/go/src/legacy/oracle/dependency_witness.rs\n",
+      "stderr": "",
+      "replayed_commit": "2dcf7100c825352c392cb4729bd81fc8ee0031e7",
+      "changed_paths": [
+        "crates/engine/src/application/compiler.rs",
+        "crates/engine/src/application/runtime.rs",
+        "crates/engine/src/driver/types/authority.rs",
+        "crates/library/interface/compiler.rs",
+        "crates/library/interface/compiler_go.rs",
+        "crates/library/interface/mod.rs",
+        "crates/library/surface.rs",
+        "crates/library/surface/package_compiler_failure.rs",
+        "frontends/go/src/legacy/oracle.rs",
+        "frontends/go/src/legacy/oracle/authority_witness.rs",
+        "frontends/go/src/legacy/oracle/dependency_witness.rs"
+      ]
+    },
+    {
+      "original": "d836fa946e0b159c7738c63308e4369b80089cb5",
+      "exit": 0,
+      "stdout": "Auto-merging crates/present/compiler_fault_tests.rs\n[codex/sol61-go-rust-replay-8c18-20261008 5a1a092a63] fix(go): close dependency admission and cancellation gaps\n Date: Thu Oct 8 06:14:28 2026 +0000\n 9 files changed, 592 insertions(+), 45 deletions(-)\n create mode 100644 frontends/go/tests/selected_dependency_loader.rs\n",
+      "stderr": "",
+      "replayed_commit": "5a1a092a6326e9b411d3d528a77909f0644e633c",
+      "changed_paths": [
+        "crates/engine/src/application/compiler.rs",
+        "crates/engine/src/application/package_authority.rs",
+        "crates/library/interface/compiler_go.rs",
+        "crates/library/surface.rs",
+        "crates/present/compiler_fault_tests.rs",
+        "frontends/go/src/legacy/oracle.rs",
+        "frontends/go/src/legacy/oracle/authority_witness.rs",
+        "frontends/go/src/legacy/oracle/dependency_witness.rs",
+        "frontends/go/tests/selected_dependency_loader.rs"
+      ]
+    },
+    {
+      "original": "6f6e0e0e1fe24661f648d8fb5286746c90515b5d",
+      "exit": 0,
+      "stdout": "[codex/sol61-go-rust-replay-8c18-20261008 6722f940d5] test(go): pin public dependency refusal names and guidance\n Date: Thu Oct 8 06:19:15 2026 +0000\n 1 file changed, 62 insertions(+)\n",
+      "stderr": "",
+      "replayed_commit": "6722f940d5beee86a24200f89f039fbf2b7f884d",
+      "changed_paths": [
+        "crates/library/interface/compiler_go.rs"
+      ]
+    },
+    {
+      "original": "6e9ff38935d561d577fe13d8701b5132be3ca033",
+      "exit": 0,
+      "stdout": "[codex/sol61-go-rust-replay-8c18-20261008 d8c346ce08] test(go): observe the actual helper child before cancellation\n Date: Thu Oct 8 06:22:09 2026 +0000\n 1 file changed, 51 insertions(+), 3 deletions(-)\n",
+      "stderr": "",
+      "replayed_commit": "d8c346ce0814baf092585c2965d5b57093c9041d",
+      "changed_paths": [
+        "frontends/go/tests/selected_dependency_loader.rs"
+      ]
+    },
+    {
+      "original": "d2958312c6b0f6a24d361301901e5c98be15b1cb",
+      "exit": 0,
+      "stdout": "[codex/sol61-go-rust-replay-8c18-20261008 5a760e5f8e] test(go): scope cache assertion helpers to unit tests\n Date: Thu Oct 8 07:13:41 2026 +0000\n 1 file changed, 2 insertions(+)\n",
+      "stderr": "",
+      "replayed_commit": "5a760e5f8ec082f95ed0d1cc63008826cdb6a358",
+      "changed_paths": [
+        "frontends/go/src/legacy/oracle.rs"
+      ]
+    },
+    {
+      "original": "aa0467dcaf5ef5f9eb2549aecc9738dec1c15a1f",
+      "exit": 0,
+      "stdout": "[codex/sol61-go-rust-replay-8c18-20261008 c7a8a7043c] test(rust): add real Serde cold native authority probe\n Date: Thu Oct 8 07:15:58 2026 +0000\n 1 file changed, 143 insertions(+)\n create mode 100644 frontends/rust/examples/serde_workspace_authority.rs\n",
+      "stderr": "",
+      "replayed_commit": "c7a8a7043c22ce3417e107e006712996346fe40d",
+      "changed_paths": [
+        "frontends/rust/examples/serde_workspace_authority.rs"
+      ]
+    },
+    {
+      "original": "2110a5daf2abf523e0d3c092da0d24320fa12719",
+      "exit": 0,
+      "stdout": "[codex/sol61-go-rust-replay-8c18-20261008 1e2db8ed77] test(rust): bind real caller and reject recursive unknown types\n Date: Thu Oct 8 07:19:58 2026 +0000\n 1 file changed, 5 insertions(+), 2 deletions(-)\n",
+      "stderr": "",
+      "replayed_commit": "1e2db8ed7727c227917c0220d01f18da8a63c4fe",
+      "changed_paths": [
+        "frontends/rust/examples/serde_workspace_authority.rs"
+      ]
+    },
+    {
+      "original": "04a4c338bbdcbb39c0879fcce3b3148ea6d25e40",
+      "exit": 0,
+      "stdout": "[codex/sol61-go-rust-replay-8c18-20261008 7cf068de75] test(rust): import exact caller name trait for native probe\n Date: Thu Oct 8 07:48:05 2026 +0000\n 1 file changed, 1 insertion(+)\n",
+      "stderr": "",
+      "replayed_commit": "7cf068de75eb02ef7002399b2a88ef01d1f52593",
+      "changed_paths": [
+        "frontends/rust/examples/serde_workspace_authority.rs"
+      ]
+    },
+    {
+      "original": "a857db8424b2d51e16e64fd84604d747ecb39054",
+      "exit": 0,
+      "stdout": "[codex/sol61-go-rust-replay-8c18-20261008 adecd5e792] test(go): prove exact foreign call types across cold reopen\n Date: Thu Oct 8 08:32:53 2026 +0000\n 1 file changed, 105 insertions(+), 1 deletion(-)\n",
+      "stderr": "",
+      "replayed_commit": "adecd5e792ac809b862a58131a52b843a4e7cc06",
+      "changed_paths": [
+        "frontends/go/tests/selected_dependency_loader.rs"
+      ]
+    },
+    {
+      "original": "a43002073e617308e98cabec35d5d9ada9c375b6",
+      "exit": 0,
+      "stdout": "[codex/sol61-go-rust-replay-8c18-20261008 1c2cb227fb] test(go): require dependency-derived inferred result type\n Date: Thu Oct 8 08:35:27 2026 +0000\n 1 file changed, 31 insertions(+), 2 deletions(-)\n",
+      "stderr": "",
+      "replayed_commit": "1c2cb227fbcdf9b4542e62b504c2b1a3503683cf",
+      "changed_paths": [
+        "frontends/go/tests/selected_dependency_loader.rs"
+      ]
+    },
+    {
+      "original": "10abbe5bc20524817a297716763940f754307830",
+      "exit": 0,
+      "stdout": "[codex/sol61-go-rust-replay-8c18-20261008 518262c0de] fix(go): match closure refusal guidance to its cause\n Date: Thu Oct 8 08:46:46 2026 +0000\n 2 files changed, 79 insertions(+), 1 deletion(-)\n",
+      "stderr": "",
+      "replayed_commit": "518262c0de4c33a7788f481a3af65d29865f568b",
+      "changed_paths": [
+        "frontends/go/src/legacy/oracle.rs",
+        "frontends/go/src/legacy/oracle/dependency_witness.rs"
+      ]
+    }
+  ],
+  "complete": true,
+  "base_tree": "c1a4d5f2062fa0ed11ebddf25fd7b2bdc13f9121",
+  "head": "518262c0de4c33a7788f481a3af65d29865f568b",
+  "tree": "ba33606a3db84f287ebc40ec78e34668fdcd285f",
+  "source_only": true,
+  "native_build_or_runtime_run": false,
+  "tracked_clean": true,
+  "allowed_paths": [
+    "crates/engine/src/application/compiler.rs",
+    "crates/engine/src/application/host.rs",
+    "crates/engine/src/application/host/authority.rs",
+    "crates/engine/src/application/host/paths.rs",
+    "crates/engine/src/application/package_authority.rs",
+    "crates/engine/src/application/runtime.rs",
+    "crates/engine/src/driver/types/authority.rs",
+    "crates/library/interface/compiler.rs",
+    "crates/library/interface/compiler_go.rs",
+    "crates/library/interface/mod.rs",
+    "crates/library/surface.rs",
+    "crates/library/surface/package_compiler_failure.rs",
+    "crates/present/compiler_fault_tests.rs",
+    "frontends/go/src/legacy/oracle.rs",
+    "frontends/go/src/legacy/oracle/authority_witness.rs",
+    "frontends/go/src/legacy/oracle/dependency_witness.rs",
+    "frontends/go/tests/selected_dependency_loader.rs",
+    "frontends/rust/examples/serde_workspace_authority.rs"
+  ],
+  "actual_changed_paths": [
+    "crates/engine/src/application/compiler.rs",
+    "crates/engine/src/application/host.rs",
+    "crates/engine/src/application/host/authority.rs",
+    "crates/engine/src/application/host/paths.rs",
+    "crates/engine/src/application/package_authority.rs",
+    "crates/engine/src/application/runtime.rs",
+    "crates/engine/src/driver/types/authority.rs",
+    "crates/library/interface/compiler.rs",
+    "crates/library/interface/compiler_go.rs",
+    "crates/library/interface/mod.rs",
+    "crates/library/surface.rs",
+    "crates/library/surface/package_compiler_failure.rs",
+    "crates/present/compiler_fault_tests.rs",
+    "frontends/go/src/legacy/oracle.rs",
+    "frontends/go/src/legacy/oracle/authority_witness.rs",
+    "frontends/go/src/legacy/oracle/dependency_witness.rs",
+    "frontends/go/tests/selected_dependency_loader.rs",
+    "frontends/rust/examples/serde_workspace_authority.rs"
+  ],
+  "unrelated_tree_entries": 17680,
+  "unrelated_entries_all_identical": true,
+  "unrelated_mode_type_oid_manifest_sha256": "51ccf34d1b901870c7af9891ce25fef4fc9cb082698b34cc8968f3470dfae8b8",
+  "lock_unchanged": true,
+  "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+  "original_lock_sha256": "5d0b0b75a5acb9fd95db98d160ede1e3c780069cdc9989561491fe2cb5ba3da0",
+  "shared_files_with_canonical_changes_preserved": [
+    "crates/engine/src/application/host/paths.rs",
+    "crates/present/compiler_fault_tests.rs"
+  ],
+  "patch": "/private/tmp/sol61-go-rust-replayed-on-8c18-20261008.patch",
+  "patch_sha256": "ad965c4bc6af1d117eb3e7c54fa2cab105442b43f4f9fadd2f2244d5105a30a6",
+  "diff_stat": " crates/engine/src/application/compiler.rs          |  58 +-\n crates/engine/src/application/host.rs              |  12 +-\n crates/engine/src/application/host/authority.rs    |  15 +-\n crates/engine/src/application/host/paths.rs        |  95 +++-\n crates/engine/src/application/package_authority.rs |  11 +-\n crates/engine/src/application/runtime.rs           |  56 +-\n crates/engine/src/driver/types/authority.rs        |   4 +-\n crates/library/interface/compiler.rs               |  14 +\n crates/library/interface/compiler_go.rs            | 129 +++++\n crates/library/interface/mod.rs                    |   2 +\n crates/library/surface.rs                          |  58 +-\n crates/library/surface/package_compiler_failure.rs |   8 +\n crates/present/compiler_fault_tests.rs             |  31 ++\n frontends/go/src/legacy/oracle.rs                  |  99 +++-\n .../go/src/legacy/oracle/authority_witness.rs      |  63 ++-\n .../go/src/legacy/oracle/dependency_witness.rs     | 607 +++++++++++++++++++++\n frontends/go/tests/selected_dependency_loader.rs   | 365 +++++++++++++\n .../rust/examples/serde_workspace_authority.rs     | 147 +++++\n 18 files changed, 1718 insertions(+), 56 deletions(-)\n",
+  "native_evidence_remains_bound_to_original_sources": true
+}

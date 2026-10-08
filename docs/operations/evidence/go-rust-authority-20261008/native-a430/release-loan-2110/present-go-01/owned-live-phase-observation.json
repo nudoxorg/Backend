@@ -1,0 +1,238 @@
+{
+  "utc": "2026-10-08T08:18:52.980724+00:00",
+  "owned_processes": [
+    {
+      "pid": 2550157,
+      "start_ticks": "79100112",
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/roots/fleet-census-python3-3.14.6/bin/python3",
+        "-",
+        "present-go",
+        "01"
+      ],
+      "wchan": "hrtimer_nanosleep",
+      "status": [
+        "Name:\tpython3",
+        "State:\tS (sleeping)",
+        "VmHWM:\t   22880 kB",
+        "VmRSS:\t   15780 kB"
+      ],
+      "selected_env": []
+    },
+    {
+      "pid": 2550837,
+      "start_ticks": "79100302",
+      "argv": [
+        "/nix/store/7zffm7cyixa34n4py7bm1rkyg6nnnqgc-sccache-0.16.0/bin/sccache"
+      ],
+      "wchan": "futex_do_wait",
+      "status": [
+        "Name:\tsccache",
+        "State:\tS (sleeping)",
+        "VmHWM:\t  309368 kB",
+        "VmRSS:\t  294248 kB"
+      ],
+      "selected_env": [
+        "CARGO=/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+        "CARGO_BUILD_BUILD_DIR=/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0",
+        "CARGO_HOME=/root/.cargo",
+        "RUSTC=/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/rustc"
+      ]
+    },
+    {
+      "pid": 2632606,
+      "start_ticks": "79164199",
+      "argv": [
+        "/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/rustc",
+        "--crate-name",
+        "tantivy",
+        "--edition=2021",
+        "/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tantivy-0.26.2/src/lib.rs",
+        "--error-format",
+        "json",
+        "--json",
+        "diagnostic-rendered-ansi,artifacts,future-incompat",
+        "--crate-type",
+        "rlib",
+        "--emit",
+        "dep-info,metadata,link",
+        "-C",
+        "opt-level=3",
+        "-C",
+        "linker-plugin-lto",
+        "-C"
+      ],
+      "wchan": "futex_do_wait",
+      "status": [
+        "Name:\trustc",
+        "State:\tS (sleeping)",
+        "VmHWM:\t 1029436 kB",
+        "VmRSS:\t  641500 kB"
+      ],
+      "selected_env": [
+        "CARGO=/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+        "CARGO_BUILD_BUILD_DIR=/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0",
+        "CARGO_HOME=/root/.cargo",
+        "RUSTC=/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/rustc"
+      ]
+    },
+    {
+      "pid": 2550344,
+      "start_ticks": "79100170",
+      "argv": [
+        "/nix/store/v8llyqw71lygr2llhmcc8ya5bdlzq45v-bash-5.3p9/bin/bash",
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--release",
+        "-j2",
+        "-p",
+        "backend-present",
+        "--lib",
+        "go_dependency_refusals",
+        "--",
+        "--nocapture"
+      ],
+      "wchan": "do_wait",
+      "status": [
+        "Name:\tcargo",
+        "State:\tS (sleeping)",
+        "VmHWM:\t    3108 kB",
+        "VmRSS:\t    3108 kB"
+      ],
+      "selected_env": [
+        "RUSTC=/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/rustc",
+        "CARGO_HOME=/root/.cargo",
+        "CARGO_BUILD_BUILD_DIR=/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role"
+      ]
+    },
+    {
+      "pid": 2635140,
+      "start_ticks": "79165674",
+      "argv": [
+        "sleep",
+        "0.05"
+      ],
+      "wchan": "hrtimer_nanosleep",
+      "status": [
+        "Name:\tsleep",
+        "State:\tS (sleeping)",
+        "VmHWM:\t    2756 kB",
+        "VmRSS:\t    2756 kB"
+      ],
+      "selected_env": [
+        "RUSTC=/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/rustc",
+        "CARGO_HOME=/root/.cargo",
+        "CARGO_BUILD_BUILD_DIR=/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0"
+      ]
+    },
+    {
+      "pid": 2550637,
+      "start_ticks": "79100206",
+      "argv": [
+        "/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--release",
+        "-j2",
+        "-p",
+        "backend-present",
+        "--lib",
+        "go_dependency_refusals",
+        "--",
+        "--nocapture"
+      ],
+      "wchan": "futex_do_wait",
+      "status": [
+        "Name:\tcargo",
+        "State:\tS (sleeping)",
+        "VmHWM:\t  244408 kB",
+        "VmRSS:\t   77392 kB"
+      ],
+      "selected_env": [
+        "RUSTC=/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/rustc",
+        "CARGO_HOME=/root/.cargo",
+        "CARGO_BUILD_BUILD_DIR=/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0"
+      ]
+    },
+    {
+      "pid": 2632748,
+      "start_ticks": "79164245",
+      "argv": [
+        "/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/rustc",
+        "--crate-name",
+        "pyrefly",
+        "--edition=2024",
+        "vendor/pyrefly_native_1_2/lib/lib.rs",
+        "--error-format=json",
+        "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+        "--crate-type",
+        "lib",
+        "--emit=dep-info,metadata,link",
+        "-C",
+        "opt-level=3",
+        "-C",
+        "linker-plugin-lto",
+        "-C",
+        "codegen-units=1",
+        "--warn=unexpected_cfgs",
+        "--check-cfg"
+      ],
+      "wchan": "futex_do_wait",
+      "status": [
+        "Name:\trustc",
+        "State:\tS (sleeping)",
+        "VmHWM:\t 1525020 kB",
+        "VmRSS:\t 1525020 kB"
+      ],
+      "selected_env": [
+        "RUSTC=/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/rustc",
+        "CARGO_HOME=/root/.cargo",
+        "CARGO_BUILD_BUILD_DIR=/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0",
+        "CARGO=/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/cargo"
+      ]
+    },
+    {
+      "pid": 2632532,
+      "start_ticks": "79164138",
+      "argv": [
+        "/nix/store/7zffm7cyixa34n4py7bm1rkyg6nnnqgc-sccache-0.16.0/bin/sccache",
+        "/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/rustc",
+        "--crate-name",
+        "tantivy",
+        "--edition=2021",
+        "/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tantivy-0.26.2/src/lib.rs",
+        "--error-format=json",
+        "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+        "--crate-type",
+        "lib",
+        "--emit=dep-info,metadata,link",
+        "-C",
+        "opt-level=3",
+        "-C",
+        "linker-plugin-lto",
+        "-C",
+        "codegen-units=1",
+        "--cfg"
+      ],
+      "wchan": "unix_stream_read_generic",
+      "status": [
+        "Name:\tsccache",
+        "State:\tS (sleeping)",
+        "VmHWM:\t    9104 kB",
+        "VmRSS:\t    9104 kB"
+      ],
+      "selected_env": [
+        "RUSTC=/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/rustc",
+        "CARGO_HOME=/root/.cargo",
+        "CARGO_BUILD_BUILD_DIR=/root/codex-worktrees/sol61-current-sdk-06697079-20261008/.local/sdk-release-role/.nudox-cargo/slot-0",
+        "CARGO=/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/cargo"
+      ]
+    }
+  ],
+  "stdout_tail": "",
+  "stderr_tail": "----------------------- method in this implementation\n...\n783 |     pub(crate) fn contains_unnameable_self_referential_application(&self, type_id: TypeId) -> bool {\n    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\n   Compiling ra_ap_proc_macro_api v0.0.341\n   Compiling pyrefly_graph v1.2.0-dev.1 (https://github.com/facebook/pyrefly?rev=30b5ca5250db9f2d9264d5e889662cf1224a75b7#30b5ca52)\n   Compiling iroh-io v0.6.2\n   Compiling ra_ap_vfs-notify v0.0.341\n   Compiling ruff_annotate_snippets v0.1.0 (https://github.com/astral-sh/ruff/?rev=db5aa0a5f1b92cb91d910bf0866a967554dd94f5#db5aa0a5)\n   Compiling lru v0.16.4\n   Compiling backon v1.6.0\n   Compiling fuzzy-matcher v0.3.7\n   Compiling version-ranges v0.1.3\n   Compiling rust-stemmers v1.2.0\n   Compiling tantivy-tokenizer-api v0.7.0\n   Compiling sketches-ddsketch v0.4.1\n   Compiling measure_time v0.9.0\n   Compiling positioned-io v0.3.5\n   Compiling xxhash-rust v0.8.19\n   Compiling lz4_flex v0.13.1\n   Compiling htmlescape v0.3.1\n   Compiling faster-hex v0.6.1\n   Compiling levenshtein_automata v0.2.1\n   Compiling datasketches v0.2.0\n   Compiling census v0.4.2\n   Compiling backend-frontend-go v0.2.0 (/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go)\n   Compiling unscanny v0.1.0\n   Compiling oneshot v0.1.13\n   Compiling capnp v0.25.6\nwarning: `tsz-emitter` (lib) generated 1 warning\n   Compiling tantivy v0.26.2\n",
+  "io_pressure": "some avg10=1.20 avg60=8.59 avg300=20.18 total=83887278659\nfull avg10=0.91 avg60=7.53 avg300=18.41 total=78814439498\n"
+}

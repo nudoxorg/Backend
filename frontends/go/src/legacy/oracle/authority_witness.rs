@@ -8,7 +8,8 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use super::update_path_digest;
+use super::{GoDependencyClosureFailure, GoOracle, GoOracleChildEnvironment,
+    dependency_witness::GoDependencyClosureWitness, update_path_digest};
 
 const GO_WORK_BYTES_LIMIT: usize = 1024 * 1024;
 const GO_AUTHORITY_MANIFEST_BYTES_LIMIT: usize = 1024 * 1024;
@@ -231,6 +232,7 @@ pub struct GoPackageAuthorityWitness {
     workspace_sum: GoManifestWitness,
     local_trees: Box<[GoLocalTreeWitness]>,
     local_only_reasons: Box<[GoLocalOnlyReason]>,
+    dependency_closure: Option<Box<GoDependencyClosureWitness>>,
     complete: bool,
 }
 
@@ -444,7 +446,36 @@ impl GoPackageAuthorityWitness {
             digest.update([0]);
             update_path_digest(&mut digest, reason.path());
         }
+        if let Some(closure) = &self.dependency_closure {
+            closure.update_identity(&mut digest);
+        }
         digest.finalize().into()
+    }
+
+    pub(super) fn capture_dependency_closure(
+        &mut self,
+        environment: &GoOracleChildEnvironment,
+        oracle: GoOracle,
+        cancelled: Option<&std::sync::atomic::AtomicBool>,
+    ) {
+        let roots = self.dependency_roots(environment);
+        self.dependency_closure = Some(Box::new(GoDependencyClosureWitness::capture(
+            &self.package_root, &self.workspace, environment, oracle, &roots, cancelled,
+        )));
+    }
+
+    fn dependency_roots(&self, environment: &GoOracleChildEnvironment) -> Vec<PathBuf> {
+        let mut roots = vec![self.package_root.clone(), environment.module_cache().to_path_buf(),
+            environment.goroot().to_path_buf()];
+        roots.extend(self.module_manifests.iter().filter_map(|manifest| {
+            manifest.path.as_ref().and_then(|path| path.parent()).map(Path::to_path_buf)
+        }));
+        roots.extend(self.local_trees.iter().map(|tree| tree.root.clone()));
+        roots.into_iter().filter_map(|root| root.canonicalize().ok()).collect()
+    }
+
+    pub(super) fn dependency_closure_failure(&self) -> Option<GoDependencyClosureFailure> {
+        self.dependency_closure.as_ref().and_then(|closure| closure.failure())
     }
 
     /// Returns the selected workspace file used for the `GOWORK` child value.
@@ -466,17 +497,19 @@ impl GoPackageAuthorityWitness {
     }
 
     /// Reports whether any local path or incomplete closure requires local
-    /// execution.
+    /// execution. Selected dependency files remain bound to this host's cache
+    /// paths; they do not authorize horizontal placement on another host.
     #[must_use]
     pub fn requires_local_execution(&self) -> bool {
-        !self.local_only_reasons.is_empty() || !self.complete
+        !self.local_only_reasons.is_empty() || !self.is_complete()
+            || self.dependency_closure.is_some()
     }
 
     /// Reports whether the complete set of authority inputs was bounded and
     /// captured. Incomplete witnesses are local-only and non-reusable.
     #[must_use]
-    pub const fn is_complete(&self) -> bool {
-        self.complete
+    pub fn is_complete(&self) -> bool {
+        self.complete && self.dependency_closure.as_ref().is_none_or(|closure| closure.is_complete())
     }
 
     /// Re-captures the filesystem closure and compares every witnessed input.
@@ -487,7 +520,24 @@ impl GoPackageAuthorityWitness {
         &self,
         package_root: impl AsRef<Path>,
     ) -> Result<bool, GoPackageAuthorityWitnessError> {
-        Ok(*self == Self::capture(package_root)?)
+        self.matches_current_cancellable(package_root, None)
+    }
+
+    /// Revalidates every selected dependency with the request's cancellation
+    /// token, including each bounded Go loader child and file read.
+    pub fn matches_current_cancellable(
+        &self,
+        package_root: impl AsRef<Path>,
+        cancelled: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<bool, GoPackageAuthorityWitnessError> {
+        let mut current = Self::capture(package_root)?;
+        if let Some(closure) = &self.dependency_closure {
+            let roots = current.dependency_roots(closure.environment());
+            current.dependency_closure = Some(Box::new(
+                closure.recapture(&current.package_root, &current.workspace, &roots, cancelled),
+            ));
+        }
+        Ok(*self == current)
     }
 }
 
@@ -1559,6 +1609,7 @@ fn capture_go_package_authority_witness(
         workspace_sum,
         local_trees: local_trees.into_boxed_slice(),
         local_only_reasons: reasons.into_boxed_slice(),
+        dependency_closure: None,
         complete,
     })
 }

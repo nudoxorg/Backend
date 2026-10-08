@@ -27,6 +27,15 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 mod authority_witness;
+mod dependency_witness;
+fn check_go_cancellation(cancelled: Option<&std::sync::atomic::AtomicBool>) -> Result<(), OracleError> {
+    if cancelled.is_some_and(|token| token.load(std::sync::atomic::Ordering::Acquire)) {
+        Err(OracleError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+pub use self::dependency_witness::GoDependencyClosureFailure;
 pub use self::authority_witness::{
     GoFilesystemTargetKind, GoLocalOnlyReason, GoPackageAuthorityWitness,
     GoPackageAuthorityWitnessError, GoWorkFileWitness, GoWorkWitness, GoWorkWitnessError,
@@ -841,6 +850,9 @@ pub enum OracleError {
     /// A selected module/workspace/local-target witness changed before spawn.
     #[error("Go package authority witness changed before oracle execution")]
     PackageAuthorityWitnessChanged,
+    /// Offline Go package selection did not admit a complete dependency graph.
+    #[error("Go dependency closure is unavailable ({failure:?}); {}", failure.recovery())]
+    DependencyClosureUnavailable { failure: GoDependencyClosureFailure },
     /// The configured oracle tool is unavailable.
     #[error("Go oracle tooling unavailable ({tool}): {source}")]
     ToolingUnavailable {
@@ -870,6 +882,9 @@ pub enum OracleError {
         phase: &'static str,
         milliseconds: u64,
     },
+    /// Caller cancellation interrupted dependency admission and reaped its child.
+    #[error("Go dependency admission was cancelled")]
+    Cancelled,
     /// A schema cell was not the version this adapter understands.
     #[error("Go oracle schema is stale: found {found}, expected {expected}")]
     Staleness { found: u32, expected: u32 },
@@ -891,7 +906,7 @@ pub enum OracleError {
 }
 
 /// Configurable subprocess adapter for the vendored Go oracle.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct GoOracle {
     /// Maximum bytes retained and accepted from each child stream.
     pub output_limit: usize,
@@ -1451,21 +1466,25 @@ impl GoOracle {
     /// The child runs in its own process group; oversized output, deadlines,
     /// and pipe faults all reap the child and fold into typed rejections.
     fn execute(&self, command: &mut std::process::Command) -> Result<Vec<u8>, OracleError> {
-        self.execute_with_origin(command, false)
+        self.execute_with_origin(command, false, None)
     }
 
     fn execute_configured(
         &self,
         command: &mut std::process::Command,
     ) -> Result<Vec<u8>, OracleError> {
-        self.execute_with_origin(command, true)
+        self.execute_with_origin(command, true, None)
     }
 
     fn execute_with_origin(
         &self,
         command: &mut std::process::Command,
         configured: bool,
+        cancelled: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<Vec<u8>, OracleError> {
+        if cancelled.is_some_and(|token| token.load(std::sync::atomic::Ordering::Acquire)) {
+            return Err(OracleError::Cancelled);
+        }
         command
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
@@ -1515,6 +1534,12 @@ impl GoOracle {
         let mut stdout_done = false;
         let mut stderr_done = false;
         loop {
+            if cancelled.is_some_and(|token| token.load(std::sync::atomic::Ordering::Acquire)) {
+                terminate_child(&mut child);
+                drop(out_thread);
+                drop(err_thread);
+                return Err(OracleError::Cancelled);
+            }
             if let Ok((stream, observed)) = limit_rx.try_recv() {
                 terminate_child(&mut child);
                 // A descendant may maliciously retain one of the inherited
@@ -1622,13 +1647,18 @@ impl ConfiguredGoOracle {
     }
 
     fn cached_helper_binary(&self) -> Result<(Option<PathBuf>, bool), OracleError> {
+        self.cached_helper_binary_cancellable(None)
+    }
+
+    fn cached_helper_binary_cancellable(&self, cancelled: Option<&std::sync::atomic::AtomicBool>) -> Result<(Option<PathBuf>, bool), OracleError> {
+        check_go_cancellation(cancelled)?;
         let GoOracleConfiguration::GoToolchain(executable) = &self.configuration else {
             return Ok((None, false));
         };
         let Some(environment) = &self.child_environment else {
             return Ok((None, false));
         };
-        self.prepare_cached_helper(executable.as_ref(), environment)
+        self.prepare_cached_helper(executable.as_ref(), environment, cancelled)
             .map(|(path, revalidated_after_build)| (Some(path), revalidated_after_build))
     }
 
@@ -1636,6 +1666,7 @@ impl ConfiguredGoOracle {
         &self,
         executable: &Path,
         environment: &GoOracleChildEnvironment,
+        cancelled: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<(PathBuf, bool), OracleError> {
         use fs4::fs_std::FileExt;
         use std::time::Instant;
@@ -1656,6 +1687,7 @@ impl ConfiguredGoOracle {
             })?;
         let started = Instant::now();
         loop {
+            check_go_cancellation(cancelled)?;
             let acquired = match FileExt::try_lock_exclusive(&lock_file) {
                 Ok(acquired) => acquired,
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => false,
@@ -1755,7 +1787,8 @@ impl ConfiguredGoOracle {
             .arg(".")
             .current_dir(source.path());
         environment.apply_to(&mut build, &GoWorkWitness::Disabled, true);
-        self.oracle.execute_configured(&mut build)?;
+        self.oracle.execute_with_origin(&mut build, true, cancelled)?;
+        check_go_cancellation(cancelled)?;
         // Reject toolchain drift caused by the helper build before publishing
         // a manifest that would bind its output to the old identity.
         environment.revalidate_toolchain()?;
@@ -1813,6 +1846,7 @@ impl ConfiguredGoOracle {
             .map_err(|error| OracleError::GoOracleHelperCache {
                 detail: format!("sync staged helper generation: {error}"),
             })?;
+        check_go_cancellation(cancelled)?;
         let _staging_path = staging.keep();
         cache_root
             .rename(&staging_name, &key, false)
@@ -1852,7 +1886,21 @@ impl ConfiguredGoOracle {
         &self,
         package_root: impl AsRef<Path>,
     ) -> Result<GoPackageAuthorityWitness, GoPackageAuthorityWitnessError> {
-        GoPackageAuthorityWitness::capture(package_root)
+        self.package_authority_witness_cancellable(package_root, None)
+    }
+
+    /// Captures fresh Go-selected dependency files on the requesting worker,
+    /// with caller cancellation reaping the bounded listing child.
+    pub fn package_authority_witness_cancellable(
+        &self,
+        package_root: impl AsRef<Path>,
+        cancelled: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<GoPackageAuthorityWitness, GoPackageAuthorityWitnessError> {
+        let mut witness = GoPackageAuthorityWitness::capture(package_root)?;
+        if let Some(environment) = &self.child_environment {
+            witness.capture_dependency_closure(environment, self.oracle, cancelled);
+        }
+        Ok(witness)
     }
 
     /// Returns path-independent invocation mode and helper-source identity.
@@ -2049,6 +2097,20 @@ impl ConfiguredGoOracle {
         package_root: &Path,
         witness: &GoPackageAuthorityWitness,
     ) -> Result<Vec<u8>, OracleError> {
+        self.authority_image_for_package_with_authority_witness_cancellable(source, package_root, witness, None)
+    }
+
+    /// Produces and rechecks the selected image under the same request lease;
+    /// loader children, helper builds, cache waits, and output rechecks observe
+    /// cancellation before the image can be returned.
+    pub fn authority_image_for_package_with_authority_witness_cancellable(
+        &self,
+        source: &Path,
+        package_root: &Path,
+        witness: &GoPackageAuthorityWitness,
+        cancelled: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<Vec<u8>, OracleError> {
+        check_go_cancellation(cancelled)?;
         let environment = self
             .child_environment
             .as_ref()
@@ -2059,11 +2121,16 @@ impl ConfiguredGoOracle {
             return Err(OracleError::UnsupportedCgoOracleBinary);
         }
 
-        if !witness.matches_current(package_root)? {
+        environment.revalidate_toolchain()?;
+        if let Some(failure) = witness.dependency_closure_failure() {
+            return Err(OracleError::DependencyClosureUnavailable { failure });
+        }
+        let current = witness.matches_current_cancellable(package_root, cancelled)?;
+        check_go_cancellation(cancelled)?;
+        if !current {
             return Err(OracleError::PackageAuthorityWitnessChanged);
         }
-        environment.revalidate_toolchain()?;
-        let (helper_binary, revalidated_after_build) = self.cached_helper_binary()?;
+        let (helper_binary, revalidated_after_build) = self.cached_helper_binary_cancellable(cancelled)?;
         if !revalidated_after_build {
             environment.revalidate_toolchain()?;
         }
@@ -2078,11 +2145,19 @@ impl ConfiguredGoOracle {
             witness.go_work_witness(),
             matches!(&self.configuration, GoOracleConfiguration::GoToolchain(_)),
         );
-        if !witness.matches_current(package_root)? {
+        let current = witness.matches_current_cancellable(package_root, cancelled)?;
+        check_go_cancellation(cancelled)?;
+        if !current {
             return Err(OracleError::PackageAuthorityWitnessChanged);
         }
-        let image = self.oracle.execute_configured(command.command_mut())?;
+        let image = self.oracle.execute_with_origin(command.command_mut(), true, cancelled)?;
+        let current = witness.matches_current_cancellable(package_root, cancelled)?;
+        check_go_cancellation(cancelled)?;
+        if !current {
+            return Err(OracleError::PackageAuthorityWitnessChanged);
+        }
         environment.revalidate_toolchain()?;
+        check_go_cancellation(cancelled)?;
         Ok(image)
     }
 
@@ -2116,6 +2191,7 @@ impl ConfiguredGoOracle {
     }
 }
 
+#[cfg(test)]
 fn cache_entry_is_valid(
     cache_root: &DirectoryCapability,
     entry_name: &str,
@@ -2348,6 +2424,7 @@ fn hash_regular_file_handle(
     Ok(total)
 }
 
+#[cfg(test)]
 fn hash_regular_file(path: &Path) -> std::io::Result<[u8; 32]> {
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::new(

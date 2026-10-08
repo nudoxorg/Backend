@@ -2526,6 +2526,7 @@ impl LocalCompilerClient {
         let capabilities = Arc::new(RwLock::new(LocalCompilerCapabilities::from_configuration(
             &configuration,
         )));
+        let go_authority = configuration.package_authority.go.clone();
         let capability_signal = Arc::new(CapabilitySignal::new());
         let (command_tx, command_rx) = sync_channel(COMMAND_QUEUE_CAPACITY);
         let (probe_tx, probe_rx) = channel();
@@ -2566,6 +2567,7 @@ impl LocalCompilerClient {
                         capabilities,
                         capability_signal,
                         input_witnesses,
+                        go_authority,
                     }),
                     client_id: 1,
                     last_image: Mutex::new(None),
@@ -2857,6 +2859,7 @@ impl LocalCompilerClient {
             .map_err(PackageSemanticRuntimeError::Runtime)?;
         self.wait_for_toolchain(facts, &lease.cancelled)
             .map_err(PackageSemanticRuntimeError::Runtime)?;
+        let go_authority_witness = self.capture_go_authority_witness(&request, &lease.cancelled)?;
         let (response, returned) = sync_channel(1);
         let sender = self.shared.command.as_ref().ok_or_else(|| {
             PackageSemanticRuntimeError::Runtime(
@@ -2865,6 +2868,7 @@ impl LocalCompilerClient {
         })?;
         match sender.try_send(RuntimeCommand::CompilePackageSources {
             request,
+            go_authority_witness,
             response,
             cancelled: Arc::clone(&lease.cancelled),
         }) {
@@ -2924,6 +2928,7 @@ impl LocalCompilerClient {
                 .map_err(PackageSemanticRuntimeError::Runtime)?;
         self.wait_for_toolchain(facts, &lease.cancelled)
             .map_err(PackageSemanticRuntimeError::Runtime)?;
+        let go_authority_witness = self.capture_go_authority_witness(&request, &lease.cancelled)?;
         let (response, returned) = sync_channel(1);
         let sender = self.shared.command.as_ref().ok_or_else(|| {
             PackageSemanticRuntimeError::Runtime(
@@ -2932,6 +2937,7 @@ impl LocalCompilerClient {
         })?;
         match sender.try_send(RuntimeCommand::CompilePackageSourcesStaged {
             request,
+            go_authority_witness,
             response,
             cancelled: Arc::clone(&lease.cancelled),
         }) {
@@ -2955,6 +2961,33 @@ impl LocalCompilerClient {
             )
         })?;
         lease.complete(result)
+    }
+
+    // Dependency listing belongs to the requesting index worker, so a slow Go
+    // child cannot block the compiler owner's status, cancellation, or peers.
+    fn capture_go_authority_witness(
+        &self,
+        request: &OwnedPackageSourceSet,
+        cancelled: &AtomicBool,
+    ) -> Result<Option<GoPackageAuthorityWitness>, PackageSemanticRuntimeError> {
+        let facts = request.facts();
+        if facts.language != Language::Go { return Ok(None); }
+        let Some(oracle) = &self.shared.go_authority else { return Ok(None); };
+        if cancelled.load(Ordering::Acquire) {
+            return Err(PackageSemanticRuntimeError::Runtime(
+                facts.terminal(CompilerRuntimeCause::RequestCancelled),
+            ));
+        }
+        let witness = oracle.package_authority_witness_cancellable(&request.package_root, Some(cancelled))
+            .map_err(|error| PackageSemanticRuntimeError::Package(
+                PackageSemanticError::GoAuthorityWitness(error),
+            ))?;
+        if cancelled.load(Ordering::Acquire) {
+            return Err(PackageSemanticRuntimeError::Runtime(
+                facts.terminal(CompilerRuntimeCause::RequestCancelled),
+            ));
+        }
+        Ok(Some(witness))
     }
 
     /// Reopens and verifies one exact immutable semantic generation in the compiler owner.
@@ -3081,6 +3114,7 @@ struct RuntimeShared {
     capabilities: Arc<RwLock<LocalCompilerCapabilities>>,
     capability_signal: Arc<CapabilitySignal>,
     input_witnesses: Arc<CompilerInputWitnessStore>,
+    go_authority: Option<ConfiguredGoOracle>,
 }
 
 struct CapabilitySignal {
@@ -3297,11 +3331,13 @@ enum RuntimeCommand {
     },
     CompilePackageSources {
         request: OwnedPackageSourceSet,
+        go_authority_witness: Option<GoPackageAuthorityWitness>,
         response: SyncSender<Result<PublishedSemanticPackage, PackageSemanticRuntimeError>>,
         cancelled: Arc<AtomicBool>,
     },
     CompilePackageSourcesStaged {
         request: OwnedPackageSourceSet,
+        go_authority_witness: Option<GoPackageAuthorityWitness>,
         response: SyncSender<Result<StagedSemanticPackage, PackageSemanticRuntimeError>>,
         cancelled: Arc<AtomicBool>,
     },
@@ -3894,10 +3930,12 @@ fn dispatch_runtime_command(
         }
         RuntimeCommand::CompilePackageSources {
             request,
+            go_authority_witness,
             response,
             cancelled,
         } => queue_package_sources(
             request,
+            go_authority_witness,
             PackageCompileResponse::Published(response),
             cancelled,
             lane_queue,
@@ -3911,10 +3949,12 @@ fn dispatch_runtime_command(
         ),
         RuntimeCommand::CompilePackageSourcesStaged {
             request,
+            go_authority_witness,
             response,
             cancelled,
         } => queue_package_sources(
             request,
+            go_authority_witness,
             PackageCompileResponse::Staged(response),
             cancelled,
             lane_queue,
@@ -3997,6 +4037,7 @@ fn dispatch_runtime_command(
 #[allow(clippy::too_many_arguments)]
 fn queue_package_sources(
     request: OwnedPackageSourceSet,
+    go_authority_witness: Option<GoPackageAuthorityWitness>,
     response: PackageCompileResponse,
     cancelled: Arc<AtomicBool>,
     lane_queue: &mut BoundedLaneQueue<LaneJob>,
@@ -4010,20 +4051,6 @@ fn queue_package_sources(
 ) {
     let facts = request.facts();
     let capability = capabilities.for_profile(facts.profile);
-    let go_authority_witness =
-        if facts.language == Language::Go && capability.local_authority_fingerprint().is_some() {
-            match GoPackageAuthorityWitness::capture(&request.package_root) {
-                Ok(witness) => Some(witness),
-                Err(error) => {
-                    response.send_error(PackageSemanticRuntimeError::Package(
-                        PackageSemanticError::GoAuthorityWitness(error),
-                    ));
-                    return;
-                }
-            }
-        } else {
-            None
-        };
     let package_authority_fingerprint = go_authority_witness.as_ref().and_then(|witness| {
         capability
             .local_authority_fingerprint()
@@ -5316,6 +5343,7 @@ mod request_lease_tests {
             ))),
             capability_signal: Arc::new(CapabilitySignal::new()),
             input_witnesses: Arc::new(CompilerInputWitnessStore::new(root.join("witnesses"))),
+            go_authority: None,
         }
     }
 

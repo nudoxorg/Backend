@@ -59,12 +59,15 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 LocalHostVariable::NudoxGenericRoot,
             ),
         ] {
-            let candidates = self.package_root_candidates(home, ecosystem);
-            let selected = self.directory(
-                variable,
-                LocalHostPathRole::PackageRoot(ecosystem),
-                candidates,
-            );
+            let selected = if ecosystem == PackageEcosystem::Golang {
+                self.go_module_cache_directory(home, true)
+            } else {
+                self.directory(
+                    variable,
+                    LocalHostPathRole::PackageRoot(ecosystem),
+                    self.package_root_candidates(home, ecosystem),
+                )
+            };
             match selected {
                 Ok(Some(path)) => roots.push(LocalRuntimePackageRoot::new(ecosystem, path)?),
                 Ok(None) => {}

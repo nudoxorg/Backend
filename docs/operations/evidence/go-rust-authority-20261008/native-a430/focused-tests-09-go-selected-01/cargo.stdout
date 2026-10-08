@@ -1,0 +1,9 @@
+
+running 1 test
+test real_selected_loader_refreshes_missing_dependencies_without_owner_restart has been running for over 60 seconds
+{"consumer_signature_result_type":"int","declaration_count":2,"elapsed_seconds":34.901925478,"exact_owner_foreign_call_count":1,"inferred_dependency_result_type":"int","inferred_variable":"Selected","known_call_span":[86,91],"phase":"same-owner-after-setup","reference_count":4,"selected_owner":"example.com/consumer::Value","selected_target":"example.com/dependency::Value"}
+{"consumer_signature_result_type":"int","declaration_count":2,"elapsed_seconds":32.298027426,"exact_owner_foreign_call_count":1,"inferred_dependency_result_type":"int","inferred_variable":"Selected","known_call_span":[86,91],"phase":"cold-owner-offline","reference_count":4,"selected_owner":"example.com/consumer::Value","selected_target":"example.com/dependency::Value"}
+test real_selected_loader_refreshes_missing_dependencies_without_owner_restart ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 114.85s
+

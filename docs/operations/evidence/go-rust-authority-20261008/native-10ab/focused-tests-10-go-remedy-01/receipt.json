@@ -1,0 +1,130 @@
+{
+  "release_graph_used": false,
+  "executables": [
+    {
+      "path": "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/.local/go-public-check-role/.nudox-cargo/slot-0/debug/deps/backend_frontend_go-11b1b3305bba076c",
+      "sha256": "ebd5117f719d2323c5866cb0848ccda6e9d33ce267d5753e8d77d77108d62a3e",
+      "bytes": 143770688
+    }
+  ],
+  "managed_leases_empty": true,
+  "stdout_sha256": "9d5a654391d152316adbef25efab5a65aef5f1eefb266830eec3bb5105c4fe0c",
+  "stderr_sha256": "ac48ed942cfdd304009d9036970af4c84ccd6abe8ef868725e711b2381748e56",
+  "exit": 0,
+  "timed_out": false,
+  "elapsed_seconds": 5.7247517589712515,
+  "source": {
+    "commit": "10abbe5bc20524817a297716763940f754307830",
+    "tree": "3792e98a4605d5b68856f061ffec877d30534238",
+    "cargo_lock_sha256": "5d0b0b75a5acb9fd95db98d160ede1e3c780069cdc9989561491fe2cb5ba3da0",
+    "clean": true
+  },
+  "stamps_unchanged": true,
+  "children_kernel_retired": true,
+  "owned_adopted_waits": [],
+  "observed_child_identities": [
+    {
+      "pid": 2807062,
+      "start_ticks": "79336681",
+      "state": "S",
+      "pgid": 2807062
+    },
+    {
+      "pid": 2807255,
+      "start_ticks": "79336727",
+      "state": "S",
+      "pgid": 2807062
+    },
+    {
+      "pid": 2807256,
+      "start_ticks": "79336727",
+      "state": "S",
+      "pgid": 2807062
+    },
+    {
+      "pid": 2807288,
+      "start_ticks": "79336779",
+      "state": "S",
+      "pgid": 2807062
+    },
+    {
+      "pid": 2807339,
+      "start_ticks": "79336826",
+      "state": "R",
+      "pgid": 2807062
+    },
+    {
+      "pid": 2807379,
+      "start_ticks": "79336878",
+      "state": "S",
+      "pgid": 2807062
+    },
+    {
+      "pid": 2807361,
+      "start_ticks": "79336854",
+      "state": "S",
+      "pgid": 2807062
+    },
+    {
+      "pid": 2807409,
+      "start_ticks": "79336926",
+      "state": "S",
+      "pgid": 2807062
+    },
+    {
+      "pid": 2807685,
+      "start_ticks": "79336978",
+      "state": "S",
+      "pgid": 2807062
+    },
+    {
+      "pid": 2807718,
+      "start_ticks": "79337029",
+      "state": "S",
+      "pgid": 2807062
+    },
+    {
+      "pid": 2807907,
+      "start_ticks": "79337081",
+      "state": "S",
+      "pgid": 2807062
+    },
+    {
+      "pid": 2807971,
+      "start_ticks": "79337127",
+      "state": "S",
+      "pgid": 2807062
+    },
+    {
+      "pid": 2808163,
+      "start_ticks": "79337179",
+      "state": "S",
+      "pgid": 2807062
+    },
+    {
+      "pid": 2807979,
+      "start_ticks": "79337138",
+      "state": "S",
+      "pgid": 2807062
+    },
+    {
+      "pid": 2807984,
+      "start_ticks": "79337140",
+      "state": "S",
+      "pgid": 2807062
+    },
+    {
+      "pid": 2807985,
+      "start_ticks": "79337140",
+      "state": "S",
+      "pgid": 2807062
+    }
+  ],
+  "survivors": [],
+  "pressure_after": {
+    "io": "some avg10=0.57 avg60=0.26 avg300=2.87 total=84076573076\nfull avg10=0.22 avg60=0.14 avg300=2.57 total=78990352465\n",
+    "cpu": "some avg10=3.10 avg60=1.01 avg300=0.51 total=7607013285\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+    "memory": "some avg10=0.00 avg60=0.00 avg300=0.06 total=429962994\nfull avg10=0.00 avg60=0.00 avg300=0.06 total=410681077\n"
+  },
+  "completed_utc": "2026-10-08T08:47:28.819494+00:00"
+}

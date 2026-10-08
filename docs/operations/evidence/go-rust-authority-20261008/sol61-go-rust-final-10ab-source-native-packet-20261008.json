@@ -1,0 +1,324 @@
+{
+  "schema": "nudox.go-rust-source-native-review-packet.v1",
+  "base": {
+    "commit": "8809eb34a5c44ee83145c143b9d444124542adc8",
+    "tree": "aa8ddaad4213ac5e84368fa96cdc59a1963221c0"
+  },
+  "tip": {
+    "commit": "10abbe5bc20524817a297716763940f754307830",
+    "tree": "3792e98a4605d5b68856f061ffec877d30534238",
+    "cargo_lock_sha256": "5d0b0b75a5acb9fd95db98d160ede1e3c780069cdc9989561491fe2cb5ba3da0",
+    "clean": true
+  },
+  "last_semantic_production_change": "d836fa946e0b159c7738c63308e4369b80089cb5",
+  "last_diagnostic_production_change": "10abbe5bc20524817a297716763940f754307830",
+  "atomic_cherry_pick_order": [
+    {
+      "commit": "bc80d1bcbfdff4fb4acba1d0caf6d5bc9abbab3a",
+      "subject": "fix(go): preserve ordinary module cache before dependency setup",
+      "changed_paths": [
+        "crates/engine/src/application/host.rs",
+        "crates/engine/src/application/host/authority.rs",
+        "crates/engine/src/application/host/paths.rs"
+      ]
+    },
+    {
+      "commit": "deb894f58b2aaca01c4e8e7fa7b83d27a70b1344",
+      "subject": "fix(go): witness selected offline dependencies on each request",
+      "changed_paths": [
+        "crates/engine/src/application/compiler.rs",
+        "crates/engine/src/application/runtime.rs",
+        "crates/engine/src/driver/types/authority.rs",
+        "crates/library/interface/compiler.rs",
+        "crates/library/interface/compiler_go.rs",
+        "crates/library/interface/mod.rs",
+        "crates/library/surface.rs",
+        "crates/library/surface/package_compiler_failure.rs",
+        "frontends/go/src/legacy/oracle.rs",
+        "frontends/go/src/legacy/oracle/authority_witness.rs",
+        "frontends/go/src/legacy/oracle/dependency_witness.rs"
+      ]
+    },
+    {
+      "commit": "d836fa946e0b159c7738c63308e4369b80089cb5",
+      "subject": "fix(go): close dependency admission and cancellation gaps",
+      "changed_paths": [
+        "crates/engine/src/application/compiler.rs",
+        "crates/engine/src/application/package_authority.rs",
+        "crates/library/interface/compiler_go.rs",
+        "crates/library/surface.rs",
+        "crates/present/compiler_fault_tests.rs",
+        "frontends/go/src/legacy/oracle.rs",
+        "frontends/go/src/legacy/oracle/authority_witness.rs",
+        "frontends/go/src/legacy/oracle/dependency_witness.rs",
+        "frontends/go/tests/selected_dependency_loader.rs"
+      ]
+    },
+    {
+      "commit": "6f6e0e0e1fe24661f648d8fb5286746c90515b5d",
+      "subject": "test(go): pin public dependency refusal names and guidance",
+      "changed_paths": [
+        "crates/library/interface/compiler_go.rs"
+      ]
+    },
+    {
+      "commit": "6e9ff38935d561d577fe13d8701b5132be3ca033",
+      "subject": "test(go): observe the actual helper child before cancellation",
+      "changed_paths": [
+        "frontends/go/tests/selected_dependency_loader.rs"
+      ]
+    },
+    {
+      "commit": "d2958312c6b0f6a24d361301901e5c98be15b1cb",
+      "subject": "test(go): scope cache assertion helpers to unit tests",
+      "changed_paths": [
+        "frontends/go/src/legacy/oracle.rs"
+      ]
+    },
+    {
+      "commit": "aa0467dcaf5ef5f9eb2549aecc9738dec1c15a1f",
+      "subject": "test(rust): add real Serde cold native authority probe",
+      "changed_paths": [
+        "frontends/rust/examples/serde_workspace_authority.rs"
+      ]
+    },
+    {
+      "commit": "2110a5daf2abf523e0d3c092da0d24320fa12719",
+      "subject": "test(rust): bind real caller and reject recursive unknown types",
+      "changed_paths": [
+        "frontends/rust/examples/serde_workspace_authority.rs"
+      ]
+    },
+    {
+      "commit": "04a4c338bbdcbb39c0879fcce3b3148ea6d25e40",
+      "subject": "test(rust): import exact caller name trait for native probe",
+      "changed_paths": [
+        "frontends/rust/examples/serde_workspace_authority.rs"
+      ]
+    },
+    {
+      "commit": "a857db8424b2d51e16e64fd84604d747ecb39054",
+      "subject": "test(go): prove exact foreign call types across cold reopen",
+      "changed_paths": [
+        "frontends/go/tests/selected_dependency_loader.rs"
+      ]
+    },
+    {
+      "commit": "a43002073e617308e98cabec35d5d9ada9c375b6",
+      "subject": "test(go): require dependency-derived inferred result type",
+      "changed_paths": [
+        "frontends/go/tests/selected_dependency_loader.rs"
+      ]
+    },
+    {
+      "commit": "10abbe5bc20524817a297716763940f754307830",
+      "subject": "fix(go): match closure refusal guidance to its cause",
+      "changed_paths": [
+        "frontends/go/src/legacy/oracle.rs",
+        "frontends/go/src/legacy/oracle/dependency_witness.rs"
+      ]
+    }
+  ],
+  "patches": [
+    {
+      "purpose": "full8809_to10ab",
+      "path": "/private/tmp/sol61-go-rust-final-10ab-20261008.patch",
+      "sha256": "bae6739354c02518acb41eceac32e0d243db12f9267c9bdb1838d0ef4827749b",
+      "bytes": 102218
+    },
+    {
+      "purpose": "test_only04a4_toa430",
+      "path": "/private/tmp/sol61-go-rust-selected-test-successor-a430-20261008.patch",
+      "sha256": "33e0604b4c16a3d2c6f008834cdc13712ea2a284a97f56fb8437a0257f2097f8",
+      "bytes": 7486
+    },
+    {
+      "purpose": "diagnostic_onlya430_to10ab",
+      "path": "/private/tmp/sol61-go-remedy-10ab-20261008.patch",
+      "sha256": "71b7415f27ce07c0722e6245722883172c1d4c968a5fb24c7fe0f0c35be277ad",
+      "bytes": 4811
+    },
+    {
+      "purpose": "source_only_replay8c18_to5182",
+      "path": "/private/tmp/sol61-go-rust-replayed-on-8c18-20261008.patch",
+      "sha256": "ad965c4bc6af1d117eb3e7c54fa2cab105442b43f4f9fadd2f2244d5105a30a6",
+      "bytes": 102218
+    }
+  ],
+  "native_evidence": {
+    "a430_chain": {
+      "seal_path": "/Users/mileswirht/Downloads/sol61-go-rust-native-evidence-a430-20261008/native-evidence-seal-a430.json",
+      "seal_sha256": "f923c9b063a354cf0f9751b6136b3e366d663828c8734518a8b9b4f43620d22b",
+      "archive": "/Users/mileswirht/Downloads/sol61-go-rust-native-evidence-a430-20261008.tar.gz",
+      "archive_sha256": "ad38ef680c132a79fd013e95ba0c510e43057051ee2d4bb7a3c7b8e8803182ad",
+      "unpacked": "/Users/mileswirht/Downloads/sol61-go-rust-native-evidence-a430-20261008"
+    },
+    "strong_go": {
+      "source": {
+        "commit": "a43002073e617308e98cabec35d5d9ada9c375b6",
+        "tree": "645e2d6fa93164857d926efabc5a8ca67f1a2766",
+        "cargo_lock_sha256": "5d0b0b75a5acb9fd95db98d160ede1e3c780069cdc9989561491fe2cb5ba3da0",
+        "clean": true
+      },
+      "receipt_sha256": "0de60825c217d78258df7ce991597d76880abe4129c619f172f68c4d5b0006b7",
+      "executables": [
+        {
+          "path": "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/.local/go-public-check-role/.nudox-cargo/slot-0/debug/deps/selected_dependency_loader-408d37c71e380223",
+          "sha256": "e67e2b518a115771a3e00bd28074a3b4616a99e3118a5e5d382cdd2bea28da35",
+          "bytes": 142727488
+        }
+      ],
+      "whole_seconds": 123.94524330296554,
+      "test_seconds": 114.85,
+      "compile_seconds": 4.94,
+      "pass": 1,
+      "fail": 0,
+      "ignored": 0,
+      "phases": [
+        {
+          "consumer_signature_result_type": "int",
+          "declaration_count": 2,
+          "elapsed_seconds": 34.901925478,
+          "exact_owner_foreign_call_count": 1,
+          "inferred_dependency_result_type": "int",
+          "inferred_variable": "Selected",
+          "known_call_span": [
+            86,
+            91
+          ],
+          "phase": "same-owner-after-setup",
+          "reference_count": 4,
+          "selected_owner": "example.com/consumer::Value",
+          "selected_target": "example.com/dependency::Value"
+        },
+        {
+          "consumer_signature_result_type": "int",
+          "declaration_count": 2,
+          "elapsed_seconds": 32.298027426,
+          "exact_owner_foreign_call_count": 1,
+          "inferred_dependency_result_type": "int",
+          "inferred_variable": "Selected",
+          "known_call_span": [
+            86,
+            91
+          ],
+          "phase": "cold-owner-offline",
+          "reference_count": 4,
+          "selected_owner": "example.com/consumer::Value",
+          "selected_target": "example.com/dependency::Value"
+        }
+      ],
+      "controls": [
+        "same configured owner missing dependency -> ordinary local setup -> selected complete authority",
+        "exact consumer-owned Foreign Call/Func binding to dependency::Value at bytes86..91",
+        "unannotated Selected compiler-derived Basic int",
+        "fresh configured owner offline identical nonempty facts",
+        "observed genuine helper build cancellation -> no cancelled cache admission -> retry",
+        "same-length selected dependency drift refusal"
+      ],
+      "release_graph_used": false
+    },
+    "diagnostic_go": {
+      "source": {
+        "commit": "10abbe5bc20524817a297716763940f754307830",
+        "tree": "3792e98a4605d5b68856f061ffec877d30534238",
+        "cargo_lock_sha256": "5d0b0b75a5acb9fd95db98d160ede1e3c780069cdc9989561491fe2cb5ba3da0",
+        "clean": true
+      },
+      "receipt_path": "/Users/mileswirht/Downloads/sol61-go-remedy-native-10ab-20261008/focused-tests-10-go-remedy-01/receipt.json",
+      "receipt_sha256": "7d9a6f118b49690cfbd296f0f25cba148fb2364667b415bbc5268e4f57032154",
+      "launch_path": "/Users/mileswirht/Downloads/sol61-go-remedy-native-10ab-20261008/focused-tests-10-go-remedy-01/launch.json",
+      "launch_sha256": "99a335200e30c2b48c9fdb1b322de5caa127302fc697850abef32f8dfdbdb6da",
+      "stdout_path": "/Users/mileswirht/Downloads/sol61-go-remedy-native-10ab-20261008/focused-tests-10-go-remedy-01/cargo.stdout",
+      "stdout_sha256": "9d5a654391d152316adbef25efab5a65aef5f1eefb266830eec3bb5105c4fe0c",
+      "stderr_path": "/Users/mileswirht/Downloads/sol61-go-remedy-native-10ab-20261008/focused-tests-10-go-remedy-01/cargo.stderr",
+      "stderr_sha256": "ac48ed942cfdd304009d9036970af4c84ccd6abe8ef868725e711b2381748e56",
+      "executables": [
+        {
+          "path": "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/.local/go-public-check-role/.nudox-cargo/slot-0/debug/deps/backend_frontend_go-11b1b3305bba076c",
+          "sha256": "ebd5117f719d2323c5866cb0848ccda6e9d33ce267d5753e8d77d77108d62a3e",
+          "bytes": 143770688
+        }
+      ],
+      "whole_seconds": 5.7247517589712515,
+      "compile_seconds": 4.72,
+      "pass": 8,
+      "fail": 0,
+      "ignored": 0,
+      "scope": "seven existing file witness tests plus literal cause-specific recovery table",
+      "archive": "/Users/mileswirht/Downloads/sol61-go-remedy-native-10ab-20261008.tar.gz",
+      "archive_sha256": "83b122ff9fe7689dce008b03683ea35cf0e863285e166eefe1ab773e7ceac134",
+      "release_graph_used": false
+    },
+    "retired_release_batch": {
+      "source_bindings": "Rust two semantic tests2110; real Serde online+cold and library22 at04a4; native evidence remains bound to these exact historical images/source/5d0b lock",
+      "seal_path": "/Users/mileswirht/Downloads/sol61-go-rust-native-evidence-a430-20261008/native-evidence-seal-04a4.json",
+      "seal_sha256": "2687be32db8dc5e07875b11889e9ce7114422f98a5bc0aec4fcb0af8ca8e4e86",
+      "results": {
+        "rust_session": "1/0/0",
+        "rust_types": "1/0/0",
+        "serde_online_seconds": 3.997626744,
+        "serde_cold_offline_seconds": 2.507424836,
+        "serde_known_trait_bounds": 33,
+        "serde_exact_typed_method_calls": 1,
+        "serde_recursive_unknown_types_rejected": true,
+        "serde_exact_enclosing_caller_asserted": true,
+        "serde_source_unchanged_and_project_lockfile_absent_before_after": true,
+        "library_go_substring": "22/0/0; includes cargo_* cases; closed7Go literal+codec tests included"
+      },
+      "failures_preserved": {
+        "serde2110": "compile101 missing ast::HasName; body never ran; fixed import04a4",
+        "present04a4": "bounded1204.717943531s timeout143 compiling/linking; body never ran",
+        "engine04a4": "unrun: exact test profile prerequisites not warm; parent current-trio priority"
+      },
+      "graph_return_path": "/Users/mileswirht/Downloads/sol61-go-rust-native-evidence-a430-20261008/native-graph-return-04a4.json",
+      "graph_return_sha256": "fbaf7e3fe5cedf77856e2615598dbb4529337131d738c8c85193550993d9f1a0",
+      "reservation_remains": false
+    },
+    "all_completed_native_children_kernel_retired": true,
+    "managed_leases_empty": true
+  },
+  "canonical_source_replay": {
+    "receipt": "/private/tmp/sol61-go-rust-replay-8c18-20261008.json",
+    "receipt_sha256": "3d0e1ed91d7c346c1c7c231912daad8b23defcce332b20c361accc2afee8b12b",
+    "worktree": "/Users/mileswirht/Downloads/nudox-active-20261005/sol61-go-rust-replay-8c18-20261008",
+    "base": "8c18a3d29b641a10a697c160d7e1fb1d35661ae6",
+    "base_tree": "c1a4d5f2062fa0ed11ebddf25fd7b2bdc13f9121",
+    "head": "518262c0de4c33a7788f481a3af65d29865f568b",
+    "tree": "ba33606a3db84f287ebc40ec78e34668fdcd285f",
+    "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+    "lock_unchanged": true,
+    "source_only": true,
+    "native_revalidation_on_replayed_source": false,
+    "all12_atomic_commits_applied_without_conflict": true,
+    "tracked_clean": true,
+    "unrelated_entries_identical": 17680,
+    "unrelated_mode_type_oid_manifest_sha256": "51ccf34d1b901870c7af9891ce25fef4fc9cb082698b34cc8968f3470dfae8b8",
+    "only_reviewed18_paths_changed": true,
+    "canonical_changes_in_shared_files_preserved": [
+      "crates/engine/src/application/host/paths.rs",
+      "crates/present/compiler_fault_tests.rs"
+    ]
+  },
+  "wire_composition": {
+    "seven_go_wire_kinds_unchanged_by10ab": true,
+    "optional_live_go_failure_source_composes_withDTO25": true,
+    "persisted_snapshot_event_versions_unchanged": true,
+    "horizontal_go_delegates_authorized": false,
+    "cgo_enabled": false
+  },
+  "public_installed_cli_mcp": {
+    "acceptance": "OPEN",
+    "baseline": "installedGNU8809, not current8c18",
+    "caddy": "status/add/retry endpoint timeouts; normal go mod download succeeds; zero admitted native IDs",
+    "serde": "first status30.033s timeout; no native query started; project lockfile absent before/after",
+    "cause": "unresolved competing host IO/startup investigation; not asserted language semantic failure or deadlock",
+    "current8c18": "matched trio build active; no sealed package/public outcome yet"
+  },
+  "separate_work_avoidance_followup": {
+    "bounds_report": "/private/tmp/sol61-go-bound-classification-20261008.json",
+    "bounds_report_sha256": "9df4dd9cea1535b95675c36f8870f25f6d22c293b4aac49a6c39260de280a71b",
+    "actual_recapture_count_measured": false,
+    "reuse_or_budget_change_applied": false
+  }
+}

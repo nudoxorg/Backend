@@ -1,0 +1,13 @@
+
+running 8 tests
+test legacy::oracle::dependency_witness::tests::closure_refusal_recovery_is_specific_to_the_failure ... ok
+test legacy::oracle::dependency_witness::tests::dependency_directory_is_refused_as_a_source_file ... ok
+test legacy::oracle::dependency_witness::tests::cancelled_dependency_read_does_not_admit_content ... ok
+test legacy::oracle::dependency_witness::tests::oversized_dependency_never_becomes_a_complete_witness ... ok
+test legacy::oracle::dependency_witness::tests::dependency_symlink_cannot_escape_the_admitted_root ... ok
+test legacy::oracle::dependency_witness::tests::missing_dependency_and_later_setup_have_different_witnesses ... ok
+test legacy::oracle::dependency_witness::tests::dependency_path_cannot_escape_the_admitted_root ... ok
+test legacy::oracle::dependency_witness::tests::same_length_dependency_change_invalidates_content_witness ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.00s
+
