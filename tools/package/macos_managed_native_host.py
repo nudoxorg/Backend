@@ -442,7 +442,7 @@ def validate(proof, source, target, runner, receipt_path, expected_plan_sha256):
         final=raw_toolchain.get('executables_after',{}).get(name,{})
         require(raw_toolchain.get(name+'_path')==tools[name]['path']
                 and initial.get('path')==tools[name]['path'] and initial.get('sha256')==tools[name]['sha256']
-                and initial.get('version')==tools[name]['version']
+                and initial.get('version')==(tools['rustc_vv'].strip() if name=='rustc' else tools[name]['version'])
                 and isinstance(initial.get('resolved_path'),str) and Path(initial['resolved_path']).is_absolute()
                 and final=={key:initial[key] for key in ('path','resolved_path','sha256')},
                 'native-host raw wrapper selected executable identity differs')
@@ -456,7 +456,7 @@ def validate(proof, source, target, runner, receipt_path, expected_plan_sha256):
     require(wrapper == proof.get('managed_wrapper_provenance'), 'native-host managed wrapper evidence differs')
     cache_inputs=[entry for entry in before['files'] if entry.get('path')=='.config/scripts/cargo-shared-cache.sh']
     require(len(cache_inputs)==1 and wrapper['wrapper_sha256']=={'runtime':runner['sha256'],'source':cache_inputs[0]['sha256'],'rustc':assets['runner.tool.RUSTC_WRAPPER']}
-            and all(wrapper['toolchain'][name]==tools[name]['version'] for name in ('cargo','rustc','rustdoc')),
+            and all(wrapper['toolchain'][name]==(tools['rustc_vv'].strip() if name=='rustc' else tools[name]['version']) for name in ('cargo','rustc','rustdoc')),
             'native-host managed wrapper/tool/source pins differ')
     environment=json.loads(_read_ref(receipt_path, refs['environment'],1024**2))
     static_raw=_read_ref(receipt_path,refs['environment_script'],128*1024)

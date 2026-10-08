@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -38,6 +39,8 @@ class ManagedNativeTests(unittest.TestCase):
         for name in ('cargo','rustc','rustdoc'):
             raw_wrapper['toolchain'][name+'_path']=tools[name]['path']
         raw_wrapper['toolchain']['executables_before']={name:{**tools[name],'resolved_path':tools[name]['path']} for name in ('cargo','rustc','rustdoc')}
+        raw_wrapper['toolchain']['executables_before']['rustc']['version']=tools['rustc_vv'].strip()
+        raw_wrapper['toolchain']['rustc']=tools['rustc_vv'].strip()
         raw_wrapper['toolchain']['executables_after']={name:{key:value for key,value in tool.items() if key!='version'} for name,tool in raw_wrapper['toolchain']['executables_before'].items()}
         refs={'runner_script':native._raw_reference(evidence,'runner.sh',runner_raw)}
         pin=lambda path:{'path':path,'sha256':'d'*64}
@@ -91,6 +94,17 @@ class ManagedNativeTests(unittest.TestCase):
             source,runner,_,receipt,artifacts=self.fixture(Path(d))
             _,images=bundle.validate_app_build(receipt,artifacts,source,'aarch64-apple-darwin',runner['sha256'],json.loads(receipt.read_text())['cargo_provenance']['operator_plan_sha256'])
             self.assertEqual(set(images),set(native.PACKAGES))
+
+    def test_relocation_collection_rejects_a_different_external_managed_plan(self):
+        spec=importlib.util.spec_from_file_location('native_test_collector',Path(__file__).with_name('collect-macos-macho-relocation.py'))
+        collector=importlib.util.module_from_spec(spec);sys.modules[spec.name]=collector;spec.loader.exec_module(collector)
+        with tempfile.TemporaryDirectory() as d:
+            source,runner,_,receipt,artifacts=self.fixture(Path(d))
+            args=SimpleNamespace(artifact_dir=artifacts,expected_runner_sha256=runner['sha256'],
+                                 expected_managed_plan_sha256='0'*64)
+            with self.assertRaisesRegex((ValueError,collector.bundle.PackageError),'selected pins'):
+                collector.source_origin_records(args,{'target':{'triple':'aarch64-apple-darwin','architecture':'arm64'}},
+                                                source,{'application':receipt})
 
     def test_rejects_host_kind_schema_target_mode_and_recipe_relabel(self):
         for key,value in [('target','x86_64-apple-darwin'),('kind','direct-cargo'),('schema',3),('target_mode','explicit-target'),('command',['build','--target','aarch64-apple-darwin'])]:
@@ -228,6 +242,22 @@ class ManagedNativeTests(unittest.TestCase):
                 if change=='after':raw['toolchain']['executables_after']['cargo']['resolved_path']='/other/cargo'
                 data[2]['raw_evidence']['wrapper']=native._reference(evidence,'wrapper.json',raw)
                 with self.assertRaisesRegex(ValueError,'raw wrapper selected executable'):self.validate(data)
+
+    def test_raw_wrapper_requires_the_exact_complete_rustc_verbose_version(self):
+        with tempfile.TemporaryDirectory() as d:
+            data=self.fixture(Path(d));evidence=Path(d)/'evidence'
+            self.validate(data)
+            original=json.loads((evidence/'wrapper.json').read_text())
+            for version in ['rustc 1.97.1','rustc 1.97.1\nhost: x86_64-apple-darwin',
+                            original['toolchain']['executables_before']['rustc']['version']+'\nLLVM version: changed']:
+                with self.subTest(version=version):
+                    raw=copy.deepcopy(original);raw['toolchain']['executables_before']['rustc']['version']=version
+                    data[2]['raw_evidence']['wrapper']=native._reference(evidence,'wrapper.json',raw)
+                    with self.assertRaisesRegex(ValueError,'raw wrapper selected executable'):self.validate(data)
+            raw=copy.deepcopy(original);raw['toolchain']['rustc']='rustc 1.97.1'
+            data[2]['raw_evidence']['wrapper']=native._reference(evidence,'wrapper.json',raw)
+            data[2]['managed_wrapper_provenance']=builder.cargo_provenance(evidence,{p.name for p in evidence.glob('*.json')}-{'wrapper.json'},Path(data[2]['workspace_root']),data[0],None,Path(data[2]['workspace_root'])/'.local/target')
+            with self.assertRaisesRegex(ValueError,'managed wrapper/tool/source'):self.validate(data)
 
     def test_producer_refuses_wrong_runner_cargo_or_slot_mismatch_before_launch(self):
         for change in ['cargo','slots']:
@@ -393,6 +423,8 @@ class ManagedNativeTests(unittest.TestCase):
                 'features':{'features':[],'all_features':False,'no_default_features':False,'targets':[]},'run_id':'producer-fixture','outputs':[]}
             for name in ('cargo','rustc','rustdoc'):record['toolchain'][name+'_path']=str(tools[name])
             record['toolchain']['executables_before']={name:{'path':str(path),'resolved_path':str(path.resolve()),'sha256':builder.sha256(path),'version':name+' 1.97.1'} for name,path in tools.items()}
+            record['toolchain']['executables_before']['rustc']['version']='rustc 1.97.1\nhost: aarch64-apple-darwin'
+            record['toolchain']['rustc']=record['toolchain']['executables_before']['rustc']['version']
             record['toolchain']['executables_after']={name:{key:value for key,value in tool.items() if key!='version'} for name,tool in record['toolchain']['executables_before'].items()}
             (provenance/'new.json').write_bytes(native.canonical(record))
             if change=='source':(source/'Cargo.lock').write_bytes(b'mutated')

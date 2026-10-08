@@ -1,0 +1,98 @@
+{
+  "schema": 1,
+  "kind": "ordinary-python-packaging-controls",
+  "canonical_base": "4262d05e52e69f023ae2ca45c706ba16790ade58",
+  "tested_source_commit": "76a25a5e04a1734b85adc5b182d411b7d4cef640",
+  "tested_source_tree": "1b9dbf9f76962a97038c8477e2965250a4307fd4",
+  "integration_postimages": [
+    {
+      "path": "tools/package/collect-macos-macho-relocation.py",
+      "sha256": "3bd832808b56117c1b7c5e45cf037185c39bd5deadce8e59f3dd9e030b474c04"
+    },
+    {
+      "path": "tools/package/macos_managed_native_host.py",
+      "sha256": "03f984dcd3ddeda1511f6a28664eef5db95b79b47472f3991480f829945c3342"
+    },
+    {
+      "path": "tools/package/test_macos_managed_native_host.py",
+      "sha256": "153a31f8da37094f1501400539ac87f3882c7ab30c24c851c24f78f0a71765e6"
+    }
+  ],
+  "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+  "test_log": {
+    "path": "/private/tmp/current-mac-native-host-rustcvv-review-20261008/final43-76a25.log",
+    "sha256": "93ede13a934c12c09567ced6911413587cde88a830a284c0447280ce7c1967f0",
+    "passed": 43,
+    "failed": 0,
+    "elapsed_seconds": 107.774,
+    "names": [
+      "test_accepts_release_four_through_existing_common_app_validator",
+      "test_actual_source_blob_and_symlink_bytes_match_git_then_mutation_refuses",
+      "test_actual_source_walk_stops_at_finite_entry_and_byte_bounds",
+      "test_actual_wrapper_graph_must_be_inside_selected_role_and_slot_bounds",
+      "test_coherent_replacement_plan_is_rejected_by_external_package_pin",
+      "test_effective_configs_are_pinned_and_no_include_or_symlink_is_followed",
+      "test_every_source_rooted_dependency_artifact_must_be_newly_emitted",
+      "test_git_configuration_cannot_hide_untracked_package_build_script",
+      "test_graph_and_target_symlink_ancestors_refuse_before_cargo",
+      "test_inspection_capture_refuses_before_retaining_oversize_output",
+      "test_managed_raw_stream_has_a_finite_bound_and_waits_owned_child",
+      "test_metadata_capture_bounds_each_stream_and_waits_its_owned_child",
+      "test_physical_graph_evidence_cannot_name_a_foreign_resolved_directory",
+      "test_producer_accepts_entire_metadata_json_with_separate_retained_warning",
+      "test_producer_failure_keeps_raw_evidence_without_success_receipt_and_releases_locks",
+      "test_producer_refuses_wrong_runner_cargo_or_slot_mismatch_before_launch",
+      "test_producer_rejects_ambient_git_identity_overrides_before_inspection",
+      "test_producer_rejects_invalid_metadata_json_or_error_status_before_build",
+      "test_producer_rejects_unreviewed_config_before_cargo_and_changed_config_after",
+      "test_producer_retains_new_raw_recipe_and_common_validator_accepts_it",
+      "test_raw_wrapper_requires_the_exact_complete_rustc_verbose_version",
+      "test_rejects_changed_record_digest_or_raw_execution",
+      "test_rejects_changed_source_tool_or_effective_environment",
+      "test_rejects_debug_test_missing_duplicate_wrong_source_or_oversize_artifacts",
+      "test_rejects_host_kind_schema_target_mode_and_recipe_relabel",
+      "test_rejects_inconsistent_or_duplicate_source_inventory",
+      "test_rejects_missing_raw_proof_and_unwaited_or_unsuccessful_child",
+      "test_rejects_retained_plan_with_different_pins_or_jobs",
+      "test_rejects_symlinked_evidence_root_before_open",
+      "test_rejects_wrapper_script_detached_from_actual_source_inventory",
+      "test_release_driver_forwards_plan_only_to_new_build_recipe",
+      "test_release_preflight_rejects_unpinned_or_linked_managed_plan",
+      "test_relocation_collection_rejects_a_different_external_managed_plan",
+      "test_runner_dispatch_is_closed_and_exact_selected_cargo",
+      "test_same_version_wrong_raw_wrapper_cargo_is_rejected",
+      "test_sign_binds_external_receipt_and_exact_four_image_map",
+      "test_sign_rechecks_selected_plan_before_any_codesign",
+      "test_sign_refuses_changed_executable_modes_before_any_codesign",
+      "test_sign_rehashes_all_four_packaged_images_before_any_codesign",
+      "test_slot_namespace_is_explicit_four_or_six_and_environment_must_match",
+      "test_source_inspection_accepts_cargo_multiline_inline_table_without_a_new_parser",
+      "test_undecoded_cargo_manifest_still_refuses_hidden_untracked_build_script_before_cargo",
+      "test_uninitialized_gitlink_records_object_without_following_a_dangling_link"
+    ]
+  },
+  "independent_root_controls": {
+    "passed": 2,
+    "failed": 0,
+    "elapsed_seconds": 0.06,
+    "names": [
+      "test_raw_wrapper_requires_the_exact_complete_rustc_verbose_version",
+      "test_relocation_collection_rejects_a_different_external_managed_plan"
+    ]
+  },
+  "actual_application_receipt": {
+    "source_commit": "db8fa883bce0ca1d63c89cd1fe2731cb24fd78ae",
+    "sha256": "f65de092d278cb6237a245da195106e7520b6ee8aa0f852999f7e38fcc4a350e",
+    "cargo_exit": 0,
+    "source_rooted_artifacts": 65,
+    "fresh_false": 65,
+    "corrected_observer_replay": true,
+    "cargo_repeated": false
+  },
+  "limits": [
+    "43 controls use ordinary Python fixtures, not a native application walkthrough.",
+    "Actual four-image release build belongs to db8, not current canonical.",
+    "Original failed observer output and earlier sparse-checkout test import failures remain retained.",
+    "Signing, relocated SDK runtime, installation and current live GUI acceptance remain separate open gates."
+  ]
+}
