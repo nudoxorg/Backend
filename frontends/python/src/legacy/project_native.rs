@@ -1,7 +1,7 @@
 //! Exact typed answers and definitions from one committed Pyrefly 1.2 State.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -26,10 +26,10 @@ use ruff_python_ast::visitor::{Visitor, walk_expr, walk_stmt};
 use ruff_text_size::Ranged as SyntaxRanged;
 
 use super::project::{
-    CandidateWitness, DefinitionTarget, DirectoryWitness, PythonProjectControl,
-    PythonProjectCoverageGap, PythonProjectCoverageGapKind, PythonProjectDiagnostic,
-    PythonProjectSource, PythonTypeProjectionFault, SourceDirectoryWitness, checkpoint,
-    project_error,
+    CandidateWitness, CapturedProjectLayout, DefinitionTarget, DirectoryWitness,
+    PythonProjectControl, PythonProjectCoverageGap, PythonProjectCoverageGapKind,
+    PythonProjectDiagnostic, PythonProjectSource, PythonTypeProjectionFault,
+    SourceDirectoryWitness, checkpoint, project_error,
 };
 use super::{
     CheckerError, CheckerReport, ImportResolution, Inference, InferenceSite, InferredType,
@@ -48,7 +48,7 @@ pub(super) struct NativeProjectResult {
 }
 
 pub(super) fn analyze(
-    mirror: &Path,
+    layout: &CapturedProjectLayout,
     original_root: &Path,
     package: &str,
     sources: &[PythonProjectSource<'_>],
@@ -57,6 +57,7 @@ pub(super) fn analyze(
     control: PythonProjectControl<'_>,
 ) -> Result<NativeProjectResult, CheckerError> {
     checkpoint(control)?;
+    let mirror = layout.source_root();
     let source_manifest = sources
         .iter()
         .map(|source| {
@@ -83,7 +84,7 @@ pub(super) fn analyze(
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| project_error("", "invalid selected native Python version"))?;
     let (finder, configuration_fingerprint) = captured_finder(
-        mirror,
+        layout,
         original_root,
         sources,
         NativeVersion::new(3, minor, 0),
@@ -105,10 +106,10 @@ pub(super) fn analyze(
     for handle in &handles {
         let config = finder.python_file(handle.module_kind(), handle.path());
         for root in config.search_path().chain(config.site_package_path()) {
-            let relative = root
-                .strip_prefix(mirror)
-                .map_err(|_| CheckerError::UncapturedDependency { path: root.clone() })?;
-            roots.insert(original_root.join(relative));
+            let original = layout
+                .original_search_root(root, original_root)
+                .ok_or_else(|| CheckerError::UncapturedDependency { path: root.clone() })?;
+            roots.insert(original);
         }
     }
     let frontier = SourceDirectoryWitness::capture_frontier(
@@ -157,12 +158,11 @@ pub(super) fn analyze(
         let config = finder.python_file(handle.module_kind(), handle.path());
         for import in &collector.imports {
             for root in config.search_path().chain(config.site_package_path()) {
-                let relative_root = root
-                    .strip_prefix(mirror)
-                    .map_err(|_| CheckerError::UncapturedDependency { path: root.clone() })?;
-                let original_search_root = original_root.join(relative_root);
+                layout
+                    .original_search_root(root, original_root)
+                    .ok_or_else(|| CheckerError::UncapturedDependency { path: root.clone() })?;
                 for module in &import.candidates {
-                    let mut prefix = original_search_root.clone();
+                    let mut prefix = root.clone();
                     for component in module.as_str().split('.').filter(|part| !part.is_empty()) {
                         prefix.push(component);
                         let mut paths = vec![
@@ -177,8 +177,21 @@ pub(super) fn analyze(
                                 .iter()
                                 .map(|suffix| (prefix.with_extension(suffix), false)),
                         );
-                        for (path, requires_source_capture) in paths {
+                        for (captured_path, requires_source_capture) in paths {
                             checkpoint(control)?;
+                            let Some(path) = layout.original_source(&captured_path, original_root)
+                            else {
+                                // Only the genuinely named package exists at an owned
+                                // synthetic import root. Never probe its original siblings.
+                                if !captured_path.starts_with(layout.capture_root())
+                                    || captured_path.exists()
+                                {
+                                    return Err(CheckerError::UncapturedDependency {
+                                        path: captured_path,
+                                    });
+                                }
+                                continue;
+                            };
                             let probe = match candidates.entry(path.clone()) {
                                 std::collections::btree_map::Entry::Occupied(entry) => {
                                     entry.into_mut()
@@ -217,7 +230,7 @@ pub(super) fn analyze(
     for directory in &frontier {
         directory.validate_current(control)?;
     }
-    let mirror_tree = DirectoryWitness::capture_tree(mirror, control)?;
+    let mirror_tree = DirectoryWitness::capture_tree(layout.capture_root(), control)?;
     let state = State::new(finder, ThreadCount::NumThreads(std::num::NonZeroUsize::MIN));
     let mut transaction = state.new_committable_transaction(Require::Everything, None);
     let cancellation = transaction.as_mut().get_cancellation_handle();
@@ -876,32 +889,15 @@ impl<'syntax> Visitor<'syntax> for ImportCollector {
 /// roots are admitted. All filesystem module searches remain in the finite
 /// private tree; standard/third-party bundled stubs are immutable producer data.
 fn captured_finder(
-    mirror: &Path,
+    layout: &CapturedProjectLayout,
     original_root: &Path,
     sources: &[PythonProjectSource<'_>],
     version: NativeVersion,
     control: PythonProjectControl<'_>,
 ) -> Result<(ConfigFinder, [u8; 32]), CheckerError> {
-    fn rebase(path: &mut PathBuf, mirror: &Path, original: &Path) -> Result<(), CheckerError> {
-        if !path.is_absolute()
-            || path
-                .components()
-                .any(|part| matches!(part, Component::ParentDir | Component::CurDir))
-        {
-            return Err(CheckerError::UncapturedDependency { path: path.clone() });
-        }
-        if path.starts_with(mirror) {
-            return Ok(());
-        }
-        if let Ok(relative) = path.strip_prefix(original) {
-            *path = mirror.join(relative);
-            return Ok(());
-        }
-        Err(CheckerError::UncapturedDependency { path: path.clone() })
-    }
     fn configure(
         mut config: ConfigFile,
-        mirror: &Path,
+        layout: &CapturedProjectLayout,
         original: &Path,
         version: NativeVersion,
     ) -> Result<ArcId<ConfigFile>, CheckerError> {
@@ -921,15 +917,17 @@ fn captured_finder(
             .search_path_from_args
             .iter_mut()
             .chain(&mut config.search_path_from_file)
-            .chain(config.import_root.iter_mut())
         {
-            rebase(path, mirror, original)?;
+            layout.rebase(path, original)?;
+        }
+        if let Some(path) = &mut config.import_root {
+            layout.rebase_import_root(path, original)?;
         }
         // Explicit site paths may only refer to captured mirror members. An
         // empty explicit list prevents native typings/ interpreter discovery.
         if let Some(paths) = &mut config.python_environment.site_package_path {
             for path in paths {
-                rebase(path, mirror, original)?;
+                layout.rebase(path, original)?;
             }
         } else {
             config.python_environment.site_package_path = Some(Vec::new());
@@ -974,6 +972,7 @@ fn captured_finder(
         }
         Ok(ArcId::new(config))
     }
+    let mirror = layout.source_root();
     let mut directories = BTreeSet::from([mirror.to_path_buf()]);
     for source in sources {
         let path = mirror.join(source.relative_path);
@@ -985,7 +984,7 @@ fn captured_finder(
     }
     let fallback = configure(
         ConfigFile::init_at_root(mirror, &ProjectLayout::new(mirror), false),
-        mirror,
+        layout,
         original_root,
         version,
     )?;
@@ -1021,14 +1020,14 @@ fn captured_finder(
             };
             loaded.insert(
                 path,
-                (priority, configure(config, mirror, original_root, version)?),
+                (priority, configure(config, layout, original_root, version)?),
             );
         }
     }
     let mut effective = BTreeMap::new();
     let mut scope_identity = blake3::Hasher::new();
     scope_identity.update(b"compiler.python.effective-config-scope.v1\0");
-    scope_identity.update(b"root-isolated;native-priority;candidate-presence+absence;checked-unannotated;checked-returns;no-interpreter;no-fallback;no-ignore;no-index;classdef+ctor;depth=64;work=262144\0");
+    scope_identity.update(b"root-isolated;named-package-import-root.v1;native-priority;candidate-presence+absence;checked-unannotated;checked-returns;no-interpreter;no-fallback;no-ignore;no-index;classdef+ctor;depth=64;work=262144\0");
     for directory in directories {
         let mut candidates = Vec::new();
         for (depth, ancestor) in directory
@@ -1068,7 +1067,7 @@ fn captured_finder(
         }
         effective.insert(directory, config);
     }
-    let before_root = mirror.to_path_buf();
+    let before_root = layout.capture_root().to_path_buf();
     let before_fallback = fallback.clone();
     let load_fallback = fallback.clone();
     Ok((

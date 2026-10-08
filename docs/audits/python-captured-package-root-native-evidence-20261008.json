@@ -1,0 +1,374 @@
+{
+  "base": "3bb94c2d81e71eeae26f06c809095fe245d36de3",
+  "head": "b0c2c01ed965d1005bca085fea2cdd8a2b0a2a60",
+  "tree": "9035bd9a746d6668b560d4a60a1def73a6fd7e15",
+  "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+  "native_predecessor": "9ea1db5ecdeb4213037f809ca200a6bd6fdb9e47",
+  "native_canonical_replay": "UNRUN",
+  "changed_paths": [
+    "frontends/python/src/legacy/checker.rs",
+    "frontends/python/src/legacy/project.rs",
+    "frontends/python/src/legacy/project_native.rs",
+    "frontends/python/tests/python_project.rs"
+  ],
+  "changed_blobs_exact_native_predecessor": true,
+  "unchanged_git_entries": 17941,
+  "total_git_entries": 17945,
+  "archive_sha256": "6791b6cfcc59c1e128976e35915bb38efd968b77bff2f924c8df925213f34350",
+  "gates": [
+    {
+      "gate": 0,
+      "receipt_sha256": "fd0ea0a8d83fe193cd2568c0d95aaf51fa6575c8937e529059c2df8de3a8883f",
+      "exit": 101,
+      "summaries": [
+        {
+          "failed": 1,
+          "ignored": 0,
+          "passed": 0
+        }
+      ],
+      "elapsed_seconds": 176.06675360398367,
+      "source_before_keys": [
+        "commit",
+        "lock_sha256",
+        "status",
+        "tree"
+      ],
+      "source_after_keys": [
+        "commit",
+        "lock_sha256",
+        "status",
+        "tree"
+      ],
+      "source_before": {
+        "commit": "59111bf25cb84438ef8158c58bafab2d617efa53",
+        "lock_sha256": "afb3a7518cd1f19b29bee48ec1b3be3f3d888c1ad61dde6e7f8cd4e3976fd731",
+        "status": "",
+        "tree": "9c2c5b19b8f69a21d2a586cb9c5eb082e5423b1f"
+      },
+      "source_after": {
+        "commit": "59111bf25cb84438ef8158c58bafab2d617efa53",
+        "lock_sha256": "afb3a7518cd1f19b29bee48ec1b3be3f3d888c1ad61dde6e7f8cd4e3976fd731",
+        "status": "",
+        "tree": "9c2c5b19b8f69a21d2a586cb9c5eb082e5423b1f"
+      },
+      "artifacts": [
+        {
+          "reason": "compiler-artifact",
+          "package_id": "path+file:///root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python#backend-frontend-python@0.2.0",
+          "manifest_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python/Cargo.toml",
+          "target": {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "python_project",
+            "src_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python/tests/python_project.rs",
+            "edition": "2024",
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 1,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "filenames": [
+            "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/python_project-88f70567e23ef9bc"
+          ],
+          "executable": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/python_project-88f70567e23ef9bc",
+          "fresh": false
+        }
+      ],
+      "process_group": {
+        "pgid": 4154509,
+        "pid": 4154509,
+        "start_ticks": "81088247",
+        "state": "R"
+      },
+      "kernel_wait_verified": true
+    },
+    {
+      "gate": 1,
+      "receipt_sha256": "4c67c42f2578526e52dbc1055f575fffa10d56e5b4aa9786aecff87e069a1dec",
+      "exit": 0,
+      "summaries": [
+        {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 2
+        }
+      ],
+      "elapsed_seconds": 14.234327080077492,
+      "source_before_keys": [
+        "commit",
+        "lock_sha256",
+        "status",
+        "tree"
+      ],
+      "source_after_keys": [
+        "commit",
+        "lock_sha256",
+        "status",
+        "tree"
+      ],
+      "source_before": {
+        "commit": "9ea1db5ecdeb4213037f809ca200a6bd6fdb9e47",
+        "lock_sha256": "afb3a7518cd1f19b29bee48ec1b3be3f3d888c1ad61dde6e7f8cd4e3976fd731",
+        "status": "",
+        "tree": "8d22672fc5ff38467a9185279be72b5b9c11e3f5"
+      },
+      "source_after": {
+        "commit": "9ea1db5ecdeb4213037f809ca200a6bd6fdb9e47",
+        "lock_sha256": "afb3a7518cd1f19b29bee48ec1b3be3f3d888c1ad61dde6e7f8cd4e3976fd731",
+        "status": "",
+        "tree": "8d22672fc5ff38467a9185279be72b5b9c11e3f5"
+      },
+      "artifacts": [
+        {
+          "reason": "compiler-artifact",
+          "package_id": "path+file:///root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python#backend-frontend-python@0.2.0",
+          "manifest_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python/Cargo.toml",
+          "target": {
+            "kind": [
+              "lib"
+            ],
+            "crate_types": [
+              "lib"
+            ],
+            "name": "backend_frontend_python",
+            "src_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python/lib.rs",
+            "edition": "2024",
+            "doc": true,
+            "doctest": true,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 1,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "filenames": [
+            "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_frontend_python-8e656a3fd86a2d9d"
+          ],
+          "executable": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_frontend_python-8e656a3fd86a2d9d",
+          "fresh": false
+        }
+      ],
+      "process_group": {
+        "pgid": 4167284,
+        "pid": 4167284,
+        "start_ticks": "81107541",
+        "state": "R"
+      },
+      "kernel_wait_verified": true
+    },
+    {
+      "gate": 2,
+      "receipt_sha256": "ab202878739002db3b29c0fa3a2df599afda8266246d7eea5a35b2a3cbe2ad8d",
+      "exit": 0,
+      "summaries": [
+        {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        }
+      ],
+      "elapsed_seconds": 11.968508098972961,
+      "source_before_keys": [
+        "commit",
+        "lock_sha256",
+        "status",
+        "tree"
+      ],
+      "source_after_keys": [
+        "commit",
+        "lock_sha256",
+        "status",
+        "tree"
+      ],
+      "source_before": {
+        "commit": "9ea1db5ecdeb4213037f809ca200a6bd6fdb9e47",
+        "lock_sha256": "afb3a7518cd1f19b29bee48ec1b3be3f3d888c1ad61dde6e7f8cd4e3976fd731",
+        "status": "",
+        "tree": "8d22672fc5ff38467a9185279be72b5b9c11e3f5"
+      },
+      "source_after": {
+        "commit": "9ea1db5ecdeb4213037f809ca200a6bd6fdb9e47",
+        "lock_sha256": "afb3a7518cd1f19b29bee48ec1b3be3f3d888c1ad61dde6e7f8cd4e3976fd731",
+        "status": "",
+        "tree": "8d22672fc5ff38467a9185279be72b5b9c11e3f5"
+      },
+      "artifacts": [
+        {
+          "reason": "compiler-artifact",
+          "package_id": "path+file:///root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python#backend-frontend-python@0.2.0",
+          "manifest_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python/Cargo.toml",
+          "target": {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "python_project",
+            "src_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python/tests/python_project.rs",
+            "edition": "2024",
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 1,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "filenames": [
+            "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/python_project-88f70567e23ef9bc"
+          ],
+          "executable": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/python_project-88f70567e23ef9bc",
+          "fresh": false
+        }
+      ],
+      "process_group": {
+        "pgid": 4167876,
+        "pid": 4167876,
+        "start_ticks": "81109313",
+        "state": "R"
+      },
+      "kernel_wait_verified": true
+    },
+    {
+      "gate": 3,
+      "receipt_sha256": "a419ae9423c846a4a15ea27b5e2668f88d45aadb3d3039594264a7f2f55e3cb4",
+      "exit": 0,
+      "summaries": [
+        {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        }
+      ],
+      "elapsed_seconds": 70.63676689495333,
+      "source_before_keys": [
+        "commit",
+        "lock_sha256",
+        "status",
+        "tree"
+      ],
+      "source_after_keys": [
+        "commit",
+        "lock_sha256",
+        "status",
+        "tree"
+      ],
+      "source_before": {
+        "commit": "9ea1db5ecdeb4213037f809ca200a6bd6fdb9e47",
+        "lock_sha256": "afb3a7518cd1f19b29bee48ec1b3be3f3d888c1ad61dde6e7f8cd4e3976fd731",
+        "status": "",
+        "tree": "8d22672fc5ff38467a9185279be72b5b9c11e3f5"
+      },
+      "source_after": {
+        "commit": "9ea1db5ecdeb4213037f809ca200a6bd6fdb9e47",
+        "lock_sha256": "afb3a7518cd1f19b29bee48ec1b3be3f3d888c1ad61dde6e7f8cd4e3976fd731",
+        "status": "",
+        "tree": "8d22672fc5ff38467a9185279be72b5b9c11e3f5"
+      },
+      "artifacts": [
+        {
+          "reason": "compiler-artifact",
+          "package_id": "path+file:///root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python#backend-frontend-python@0.2.0",
+          "manifest_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python/Cargo.toml",
+          "target": {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "python_project",
+            "src_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python/tests/python_project.rs",
+            "edition": "2024",
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 1,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "filenames": [
+            "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/python_project-88f70567e23ef9bc"
+          ],
+          "executable": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/python_project-88f70567e23ef9bc",
+          "fresh": true
+        }
+      ],
+      "process_group": {
+        "pgid": 4168573,
+        "pid": 4168573,
+        "start_ticks": "81110820",
+        "state": "R"
+      },
+      "kernel_wait_verified": true
+    }
+  ],
+  "authentic_fixture": {
+    "pin": "879b133b5f98dd91419948f363d2d6d58793c3a0",
+    "tree": "c10eddbce31ed3529a78429a5c6ac1bde6f58c44",
+    "root_package_leaf": "mealie",
+    "source_count": 464,
+    "source_bytes": 1564950,
+    "all464_source_bytes_hashes_verified_by_root": true
+  },
+  "full_source_observations": [
+    {
+      "group": "red",
+      "source": {
+        "commit": "59111bf25cb84438ef8158c58bafab2d617efa53",
+        "lock_sha256": "afb3a7518cd1f19b29bee48ec1b3be3f3d888c1ad61dde6e7f8cd4e3976fd731",
+        "status": "",
+        "tree": "9c2c5b19b8f69a21d2a586cb9c5eb082e5423b1f"
+      },
+      "tracked_blobs": 17955,
+      "observed_bytes": 465304158,
+      "all_observed_input_metadata_unchanged": true,
+      "four_touched_actual_source_hashes_equal_frozen_git": true,
+      "before_sha256": "3ac16bb16380180d464c3a5a062e133f26b2985d8b8d102c4d6fc7f58e5560b3",
+      "after_sha256": "d4ace9868dca88d6ba31920a704c310c077de38ecc4fd2d5fa55c471498a6a72"
+    },
+    {
+      "group": "green",
+      "source": {
+        "commit": "9ea1db5ecdeb4213037f809ca200a6bd6fdb9e47",
+        "lock_sha256": "afb3a7518cd1f19b29bee48ec1b3be3f3d888c1ad61dde6e7f8cd4e3976fd731",
+        "status": "",
+        "tree": "8d22672fc5ff38467a9185279be72b5b9c11e3f5"
+      },
+      "tracked_blobs": 17955,
+      "observed_bytes": 465312826,
+      "all_observed_input_metadata_unchanged": true,
+      "four_touched_actual_source_hashes_equal_frozen_git": true,
+      "before_sha256": "573eb37132c48bb40f608af01ac5bb3d06078eb107c1a7206bf4c2acdc481553",
+      "after_sha256": "a7722aab83af0204a9b94557b2bb671ca69d179cfc457781ee6bd0a4b8da3495"
+    }
+  ],
+  "loan_return_sha256": "f12f08946f71da6bfc8d52b33317e950a23c964206e2e1d5440ce35e156a357c",
+  "binary_sha_scope": "Cargo reports fresh:false for gates0/1/2 and fresh:true gate3 at the same source/path as gate2. This archive does not retain executable bytes or their SHA; do not promote to installed-binary proof."
+}

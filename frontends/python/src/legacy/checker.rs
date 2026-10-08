@@ -74,7 +74,7 @@ const REVEAL_HEADER: &[u8] = b"from typing import reveal_type\n";
 /// The `reveal_type(` call spelling prefix.
 const REVEAL_CALL: &[u8] = b"reveal_type(";
 /// Versioned identity of package-scoped Pyrefly env and working-directory policy.
-pub const PYTHON_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1: &str = "pyrefly-native-project-state-30b5ca52.classdef-declaration+constructor-callee.exact-source-coordinate.no-import-call-fallback.mirror-only.v7";
+pub const PYTHON_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1: &str = "pyrefly-native-project-state-30b5ca52.classdef-declaration+constructor-callee.exact-source-coordinate.no-import-call-fallback.named-package-mirror-only.v8";
 
 /// Exact upstream revision of the compiled native Python State authority.
 pub const PYTHON_NATIVE_PROJECT_SOURCE_REVISION: &str = "30b5ca5250db9f2d9264d5e889662cf1224a75b7";
@@ -590,7 +590,7 @@ impl Pyrefly {
         digest.update(b"compiler.python.package-authority.v1\0");
         digest.update(PYTHON_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1.as_bytes());
         digest.update(&[0]);
-        digest.update(b"native=1.2.0-dev.1;mirror=captured-frontier;config=bounded-captured;filesystem-deps=mirror-only;bundled=producer-immutable;interpreter-query=disabled;site-discovery=disabled;readset=no-cross-call-reuse;session=fresh;families=classdef-declaration+constructor-callee\0");
+        digest.update(b"native=1.2.0-dev.1;mirror=captured-frontier+named-package-root;config=bounded-captured;filesystem-deps=mirror-only;bundled=producer-immutable;interpreter-query=disabled;site-discovery=disabled;readset=no-cross-call-reuse;session=fresh;families=classdef-declaration+constructor-callee\0");
         digest.update(PYTHON_NATIVE_PROJECT_SOURCE_REVISION.as_bytes());
         digest.update(
             blake3::hash(include_bytes!(

@@ -838,3 +838,261 @@ fn native_empty_package_initializers_are_not_named_declaration_targets()
     std::fs::remove_dir_all(root)?;
     Ok(())
 }
+
+#[test]
+fn selected_package_root_preserves_real_module_leaf_and_native_call_coordinates()
+-> Result<(), Box<dyn std::error::Error>> {
+    let parent =
+        std::env::temp_dir().join(format!("nudox-python-package-root-{}", std::process::id()));
+    let root = parent.join("mealie");
+    std::fs::create_dir_all(root.join("core/security"))?;
+    // An ambient sibling is deliberately present, but is never mirrored or
+    // admitted by the selected package's finite source frontier.
+    std::fs::write(parent.join("outside.py"), "def outside(): return 99\n")?;
+    let sources = [
+        PythonProjectSource {
+            relative_path: "__init__.py",
+            source: "__version__ = \"develop\"\n",
+        },
+        PythonProjectSource {
+            relative_path: "core/__init__.py",
+            source: "",
+        },
+        PythonProjectSource {
+            relative_path: "core/config.py",
+            source: "def get_app_settings() -> int:\n    return 42\n",
+        },
+        PythonProjectSource {
+            relative_path: "core/security/__init__.py",
+            source: "",
+        },
+        PythonProjectSource {
+            relative_path: "core/security/hasher.py",
+            source: "from mealie.core.config import get_app_settings\nfrom ..config import get_app_settings as relative\nfrom outside import outside\n\ndef get_hasher():\n    return get_app_settings() + relative()\n\ndef uncaptured():\n    return outside()\n",
+        },
+    ];
+    for source in &sources {
+        std::fs::write(root.join(source.relative_path), source.source)?;
+    }
+    let cancelled = AtomicBool::new(false);
+    let checker = NativePythonProjectAuthority::admit()?;
+    let report = checker.analyze_project(
+        &root,
+        "mealie",
+        &sources,
+        PythonVersion::Python314,
+        publication_control(&cancelled),
+    )?;
+    let caller = report
+        .module("core/security/hasher.py")
+        .ok_or("caller report")?;
+    let call_source = sources[4].source;
+    for spelling in ["get_app_settings() +", "relative()"] {
+        let position = call_source.find(spelling).ok_or("call source")?;
+        let symbol = caller
+            .symbols
+            .iter()
+            .find(|symbol| symbol.span.start as usize == position)
+            .ok_or("native call occurrence")?;
+        let SymbolOutcome::Definition { target, .. } = &symbol.outcome else {
+            return Err("selected package cross-file call unresolved".into());
+        };
+        assert_eq!(target.relative_path.as_ref(), "core/config.py");
+        assert_eq!(
+            target.qualified_name.as_ref(),
+            "mealie.core.config.get_app_settings"
+        );
+        let coordinate =
+            backend_semantic::ir::PythonSourceCoordinate::decode(&target.source_coordinate)
+                .ok_or("native coordinate")?;
+        assert_eq!(coordinate.0.path, "core/config.py");
+        assert_eq!(
+            coordinate.0.source,
+            *backend_semantic::ir::SourceIdentity::from_bytes(sources[2].source.as_bytes())
+                .ok_or("source identity")?
+                .identity
+        );
+    }
+    let position = call_source.rfind("outside()").ok_or("ambient call")?;
+    assert!(
+        caller
+            .symbols
+            .iter()
+            .any(|symbol| symbol.span.start as usize == position
+                && matches!(symbol.outcome, SymbolOutcome::Unresolved))
+    );
+    report
+        .witness()
+        .validate_current(publication_control(&cancelled))?;
+    // Explicit parent search paths remain refused, even though the native
+    // heuristic uses a separate, finite owned parent for this named package.
+    std::fs::write(root.join("pyrefly.toml"), "search-path = [\"..\"]\n")?;
+    assert!(matches!(
+        checker.analyze_project(
+            &root,
+            "mealie",
+            &sources,
+            PythonVersion::Python314,
+            publication_control(&cancelled)
+        ),
+        Err(CheckerError::UncapturedDependency { .. })
+    ));
+    std::fs::remove_dir_all(parent)?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires the complete pinned Mealie879b Python package; native authority only"]
+fn pinned_mealie_selected_package_preserves_all464_sources_and_known_call()
+-> Result<(), Box<dyn std::error::Error>> {
+    use backend_frontend_python::legacy::checker::is_ignored_python_source_directory;
+    let root = std::path::PathBuf::from(
+        std::env::var_os("NUDOX_TEST_PINNED_MEALIE_PACKAGE")
+            .ok_or("explicit pinned package fixture is required")?,
+    );
+    assert!(root.is_absolute());
+    assert_eq!(
+        root.file_name().and_then(|leaf| leaf.to_str()),
+        Some("mealie")
+    );
+    let mut pending = vec![root.clone()];
+    let mut owned = Vec::new();
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if kind.is_dir() && !is_ignored_python_source_directory(&entry.file_name()) {
+                pending.push(entry.path());
+            } else if entry
+                .path()
+                .extension()
+                .is_some_and(|ext| ext == "py" || ext == "pyi")
+            {
+                assert!(
+                    kind.is_file() && !kind.is_symlink(),
+                    "fixture source must be regular"
+                );
+                assert!(
+                    entry.metadata()?.len() <= 1024 * 1024,
+                    "bounded authentic fixture source"
+                );
+                let path = entry
+                    .path()
+                    .strip_prefix(&root)?
+                    .to_str()
+                    .ok_or("source path UTF-8")?
+                    .to_owned();
+                owned.push((path, std::fs::read_to_string(entry.path())?));
+            }
+        }
+    }
+    owned.sort_by(|left, right| left.0.cmp(&right.0));
+    assert_eq!(owned.len(), 464, "all pinned package sources retained");
+    assert_eq!(
+        owned.iter().map(|(_, source)| source.len()).sum::<usize>(),
+        1_564_950
+    );
+    assert_eq!(
+        owned
+            .iter()
+            .find(|(path, _)| path == "__init__.py")
+            .ok_or("root initializer")?
+            .1,
+        "__version__ = \"develop\"\n"
+    );
+    let sources = owned
+        .iter()
+        .map(|(path, source)| PythonProjectSource {
+            relative_path: path,
+            source,
+        })
+        .collect::<Vec<_>>();
+    let target_source = owned
+        .iter()
+        .find(|(path, _)| path == "core/config.py")
+        .ok_or("target source")?
+        .1
+        .as_str();
+    let caller_source = owned
+        .iter()
+        .find(|(path, _)| path == "core/security/hasher.py")
+        .ok_or("caller source")?
+        .1
+        .as_str();
+    assert_eq!(&caller_source[1062..1078], "get_app_settings");
+    assert_eq!(
+        1 + caller_source[..1062]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count(),
+        40
+    );
+    let target_name = target_source
+        .find("def get_app_settings")
+        .ok_or("target declaration")?
+        + 4;
+    assert_eq!(
+        1 + target_source[..target_name]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count(),
+        42
+    );
+    let manifest = sources
+        .iter()
+        .map(|source| {
+            Ok((
+                source.relative_path.to_owned(),
+                *backend_semantic::ir::SourceIdentity::from_bytes(source.source.as_bytes())
+                    .ok_or("source extent")?
+                    .identity,
+            ))
+        })
+        .collect::<Result<Vec<_>, &'static str>>()?;
+    let program =
+        backend_semantic::ir::python_program_identity(&manifest).ok_or("program identity")?;
+    let cancelled = AtomicBool::new(false);
+    let checker = NativePythonProjectAuthority::admit()?.with_timeout(Duration::from_secs(90));
+    for _ in 0..2 {
+        let control = PythonProjectControl {
+            cancelled: &cancelled,
+            deadline: Instant::now() + Duration::from_secs(90),
+        };
+        let report = checker.analyze_project(
+            &root,
+            "mealie",
+            &sources,
+            PythonVersion::Python314,
+            control,
+        )?;
+        for source in &sources {
+            assert!(report.module(source.relative_path).is_some());
+        }
+        let caller = report
+            .module("core/security/hasher.py")
+            .ok_or("caller report")?;
+        let symbol = caller
+            .symbols
+            .iter()
+            .find(|symbol| symbol.span.start == 1062 && symbol.span.end == 1078)
+            .ok_or("exact native known call")?;
+        let SymbolOutcome::Definition { target, .. } = &symbol.outcome else {
+            return Err("pinned native call unresolved".into());
+        };
+        assert_eq!(target.relative_path.as_ref(), "core/config.py");
+        assert_eq!(target.name_span.start as usize, target_name);
+        let coordinate =
+            backend_semantic::ir::PythonSourceCoordinate::decode(&target.source_coordinate)
+                .ok_or("target native coordinate")?;
+        assert_eq!(coordinate.0.path, "core/config.py");
+        assert_eq!(coordinate.0.program, program);
+        assert_eq!(
+            coordinate.0.source,
+            *backend_semantic::ir::SourceIdentity::from_bytes(target_source.as_bytes())
+                .ok_or("target source identity")?
+                .identity
+        );
+        report.witness().validate_current(control)?;
+    }
+    Ok(())
+}

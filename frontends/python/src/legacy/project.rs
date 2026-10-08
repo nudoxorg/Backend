@@ -86,7 +86,7 @@ fn native_producer_capture() -> Result<(NativePythonProducerIdentity, FileWitnes
         ))
         .as_bytes(),
     );
-    identity.update(b"root-isolated;fresh-state;classdef-declaration+constructor-callee;captured-candidates;depth64;work262144\0");
+    identity.update(b"root-isolated;named-single-package-import-root.v1;fresh-state;classdef-declaration+constructor-callee;captured-candidates;depth64;work262144\0");
     identity.update(digest.as_bytes());
     identity.update(&size.to_be_bytes());
     host.validate_current()?;
@@ -229,6 +229,138 @@ impl PythonProjectReport {
     #[must_use]
     pub fn witness(&self) -> &std::sync::Arc<PythonProjectWitness> {
         &self.witness
+    }
+}
+
+/// Finite private source layout for either a repository or one selected package.
+/// The optional import root contains only the captured, genuinely named package;
+/// it never denotes the original package's ambient parent directory.
+#[derive(Debug)]
+pub(super) struct CapturedProjectLayout {
+    source_root: PathBuf,
+    package_import_root: Option<PathBuf>,
+}
+
+impl CapturedProjectLayout {
+    fn new(
+        workspace: &Path,
+        original: &Path,
+        sources: &[PythonProjectSource<'_>],
+    ) -> Result<Self, CheckerError> {
+        if !sources
+            .iter()
+            .any(|source| matches!(source.relative_path, "__init__.py" | "__init__.pyi"))
+        {
+            return Ok(Self {
+                source_root: workspace.join("project"),
+                package_import_root: None,
+            });
+        }
+        let leaf = original
+            .file_name()
+            .ok_or_else(|| project_error("", "selected Python package has no module leaf"))?;
+        let spelling = leaf
+            .to_str()
+            .ok_or_else(|| project_error("", "selected Python package leaf is not UTF-8"))?;
+        // Reuse native filesystem module-path admission, including its Unicode
+        // identifier policy; it does not exclude keywords. No manifest-name or
+        // import-spelling guess supplies the package leaf.
+        let relative = Path::new(leaf).join("__init__.py");
+        let base = PathBuf::new();
+        if pyrefly_python::module_name::ModuleName::from_path(
+            &relative,
+            std::iter::once(&base),
+            &[],
+        )
+        .is_none_or(|module| module.as_str() != spelling)
+        {
+            return Err(project_error(
+                "",
+                "selected Python package leaf is not an admitted module name",
+            ));
+        }
+        let import_root = workspace.join("imports");
+        Ok(Self {
+            source_root: import_root.join(leaf),
+            package_import_root: Some(import_root),
+        })
+    }
+
+    pub(super) fn source_root(&self) -> &Path {
+        &self.source_root
+    }
+
+    pub(super) fn capture_root(&self) -> &Path {
+        self.package_import_root
+            .as_deref()
+            .unwrap_or(&self.source_root)
+    }
+
+    pub(super) fn rebase(&self, path: &mut PathBuf, original: &Path) -> Result<(), CheckerError> {
+        if !path.is_absolute()
+            || path
+                .components()
+                .any(|part| matches!(part, Component::ParentDir | Component::CurDir))
+        {
+            return Err(CheckerError::UncapturedDependency { path: path.clone() });
+        }
+        if path.starts_with(&self.source_root) {
+            return Ok(());
+        }
+        if let Ok(relative) = path.strip_prefix(original) {
+            *path = self.source_root.join(relative);
+            return Ok(());
+        }
+        Err(CheckerError::UncapturedDependency { path: path.clone() })
+    }
+
+    /// Only Pyrefly's heuristic import root may name the finite synthetic parent.
+    /// Explicit search/site paths still follow the original project-only law.
+    pub(super) fn rebase_import_root(
+        &self,
+        path: &mut PathBuf,
+        original: &Path,
+    ) -> Result<(), CheckerError> {
+        if self.package_import_root.as_deref() == Some(path.as_path()) {
+            Ok(())
+        } else {
+            self.rebase(path, original)
+        }
+    }
+
+    /// Maps only a captured source member or its directory to the original.
+    /// Siblings at the synthetic import root have no original filesystem path.
+    pub(super) fn original_source(&self, path: &Path, original: &Path) -> Option<PathBuf> {
+        path.strip_prefix(&self.source_root)
+            .ok()
+            .map(|relative| original.join(relative))
+    }
+
+    /// The synthetic import root inspects the selected package frontier only.
+    pub(super) fn original_search_root(&self, path: &Path, original: &Path) -> Option<PathBuf> {
+        if self.package_import_root.as_deref() == Some(path) {
+            Some(original.to_path_buf())
+        } else {
+            self.original_source(path, original)
+        }
+    }
+
+    fn fingerprint(&self, identity: &mut blake3::Hasher) {
+        match &self.package_import_root {
+            Some(_) => {
+                identity.update(b"named-single-package-import-root.v1\0");
+                hash_field(
+                    identity,
+                    self.source_root
+                        .file_name()
+                        .expect("admitted package leaf")
+                        .as_encoded_bytes(),
+                );
+            }
+            None => {
+                identity.update(b"repository-source-root.v1\0");
+            }
+        }
     }
 }
 
@@ -650,7 +782,8 @@ impl NativePythonProjectAuthority {
             });
         }
         let workspace = Workspace::create()?;
-        let mirror = workspace.path.join("project");
+        let layout = CapturedProjectLayout::new(&workspace.path, package_root, sources)?;
+        let mirror = layout.source_root();
         std::fs::create_dir_all(&mirror).map_err(workspace_error)?;
         let mut paths = BTreeSet::new();
         let mut directories = BTreeSet::from([PathBuf::new()]);
@@ -793,7 +926,7 @@ impl NativePythonProjectAuthority {
         }
         let native = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             super::project_native::analyze(
-                &mirror,
+                &layout,
                 package_root,
                 package_name,
                 sources,
@@ -807,6 +940,7 @@ impl NativePythonProjectAuthority {
         identity.update(b"compiler.python.captured-project.v1\0");
         identity.update(&self.producer.as_bytes());
         identity.update(&native.configuration_fingerprint);
+        layout.fingerprint(&mut identity);
         hash_field(&mut identity, package_name.as_bytes());
         hash_field(&mut identity, super::profile_tag(profile).as_bytes());
         let mut selected = sources.iter().collect::<Vec<_>>();
@@ -886,4 +1020,85 @@ pub(super) fn checkpoint(control: PythonProjectControl<'_>) -> Result<(), Checke
 fn hash_field(identity: &mut blake3::Hasher, bytes: &[u8]) {
     identity.update(&(bytes.len() as u64).to_be_bytes());
     identity.update(bytes);
+}
+
+#[cfg(test)]
+mod capture_layout_tests {
+    use super::*;
+
+    #[test]
+    fn named_package_capture_maps_only_its_finite_source_anchor() {
+        let workspace = std::env::temp_dir().join("owned-python-layout-control");
+        let original = std::env::temp_dir().join("original-python-layout-control/mealie");
+        let sources = [PythonProjectSource {
+            relative_path: "__init__.py",
+            source: "",
+        }];
+        let layout = CapturedProjectLayout::new(&workspace, &original, &sources).unwrap();
+        assert_eq!(layout.source_root(), workspace.join("imports/mealie"));
+        let import_root = workspace.join("imports");
+        assert_eq!(
+            layout.original_search_root(&import_root, &original),
+            Some(original.clone())
+        );
+        assert_eq!(
+            layout.original_source(&import_root.join("mealie/core/config.py"), &original),
+            Some(original.join("core/config.py"))
+        );
+        assert_eq!(
+            layout.original_source(&import_root.join("sibling.py"), &original),
+            None
+        );
+        assert_eq!(
+            layout.original_search_root(original.parent().unwrap(), &original),
+            None
+        );
+        let mut heuristic = import_root.clone();
+        layout
+            .rebase_import_root(&mut heuristic, &original)
+            .unwrap();
+        let mut explicit = import_root;
+        assert!(matches!(
+            layout.rebase(&mut explicit, &original),
+            Err(CheckerError::UncapturedDependency { .. })
+        ));
+        let mut ambient = original.parent().unwrap().to_path_buf();
+        assert!(matches!(
+            layout.rebase_import_root(&mut ambient, &original),
+            Err(CheckerError::UncapturedDependency { .. })
+        ));
+    }
+
+    #[test]
+    fn repository_capture_keeps_original_root_law_and_stub_package_leaf() {
+        let workspace = std::env::temp_dir().join("owned-python-repository-control");
+        let original = std::env::temp_dir().join("original-python-repository-control/mealie");
+        let sources = [PythonProjectSource {
+            relative_path: "module.py",
+            source: "",
+        }];
+        let flat = CapturedProjectLayout::new(&workspace, &original, &sources).unwrap();
+        assert_eq!(flat.source_root(), workspace.join("project"));
+        assert_eq!(flat.capture_root(), flat.source_root());
+        let stubs = [PythonProjectSource {
+            relative_path: "__init__.pyi",
+            source: "",
+        }];
+        let named = CapturedProjectLayout::new(&workspace, &original, &stubs).unwrap();
+        assert_eq!(named.source_root(), workspace.join("imports/mealie"));
+        for spelling in ["not-a-module", "123", "has space", "dotted.name"] {
+            let invalid = std::env::temp_dir().join(spelling);
+            assert!(CapturedProjectLayout::new(&workspace, &invalid, &stubs).is_err());
+        }
+        // The pinned native filesystem law accepts keywords and Unicode names.
+        // Keep that law rather than imposing a second Python grammar here.
+        for spelling in ["class", "δοκιμή"] {
+            let original = std::env::temp_dir().join(spelling);
+            let named = CapturedProjectLayout::new(&workspace, &original, &stubs).unwrap();
+            assert_eq!(
+                named.source_root(),
+                workspace.join("imports").join(spelling)
+            );
+        }
+    }
 }
