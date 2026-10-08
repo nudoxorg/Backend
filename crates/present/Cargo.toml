@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 backend-client = { path = "../client" }
 backend-library = { path = "../library" }
+backend-page-output = { path = "../page-output" }
 serde.workspace = true
 serde_json.workspace = true
 

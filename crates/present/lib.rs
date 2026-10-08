@@ -11,13 +11,16 @@
 //! — a `backend-present` function cannot reach a socket because the crate
 //! cannot name one.
 //!
-//! It sits at DAG order 10, in the `core` layer, above `backend-library` and
+//! It sits at DAG order 11, in the `core` layer, above `backend-library` and
 //! `backend-client`. It names exactly one client type — [`backend_client::ClientError`]
 //! — because the lowering of a transport failure into a [`Fault`] is shared. If
 //! each surface mapped transport failures itself, the two surfaces would
 //! disagree about what a dropped endpoint is called the first time someone
 //! edited one of them; here they cannot. It does *not* name a session, a
 //! socket, or a path: [`Engine`] is the abstract seam a surface implements.
+//! Pure query-page models and byte projections live in `backend-page-output`,
+//! which depends only on the library and serialization. The service shares that
+//! leaf recipe without importing this crate's client error or surface drivers.
 //!
 //! A desktop surface that wants the same model adds
 //! `backend-present = { path = "../../crates/present" }` to its manifest and
@@ -56,19 +59,22 @@ mod budget;
 mod call;
 #[cfg(test)]
 mod compiler_fault_tests;
-#[cfg(test)]
-mod readiness_tests;
 mod coverage;
 mod drive;
 mod dto;
+mod envelope;
 mod fault;
 mod glyph;
 mod grammar;
 mod identity;
 mod language;
 mod outline;
+mod packing;
+mod packed_search;
 mod page;
 mod product;
+#[cfg(test)]
+mod readiness_tests;
 mod record;
 mod render;
 mod sections;
@@ -86,6 +92,7 @@ pub use browse::{
     display_version, read_tree, role_label, why_line,
 };
 pub use budget::{
+    AnswerProjection,
     BudgetExceeded, DEFAULT_RESPONSE_BUDGET_BYTES, Detail, ESTIMATED_BYTES_PER_TOKEN,
     EncodedPayload, MAX_PREVIEW_TEXT_BYTES, MAX_RESPONSE_BUDGET_BYTES, PayloadBudget, bounded_text,
     encode_answer, encode_serializable, encode_value, estimate_tokens, oversized_fault,
@@ -105,6 +112,10 @@ pub use dto::{
     RelationGroupDto, SelectedSymbolIdDto, ShelfDto, ShelfEntryDto, SignatureTokenDto, SourceDto,
     StatusDto, answer_value, fault_value,
 };
+pub use envelope::{
+    JSONRPC_PREVIEW_MARKER, JsonRpcFraming, ResponseEnvelopeContext, admit_jsonrpc_response,
+    attach_jsonrpc_wire_budget, jsonrpc_response_bytes, serialized_json_bytes,
+};
 pub use fault::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand};
 pub use glyph::{KindGlyph, LanguageGlyph, RelationDirection, RelationLabel, relation_label};
 pub use grammar::{
@@ -117,6 +128,10 @@ pub use identity::{
 };
 pub use language::Language;
 pub use outline::{OutlineEntry, OutlineTree, row_resolver};
+pub use packed_search::{packed_search_answer, packed_record_commitment, packing_detail, measure_packed_search, packed_search_tool_result};
+pub use packing::{
+    PackedPageFailure, PackedPageWorker, PackedPrefixPage, packed_projected_row_commitment,
+};
 pub use page::{
     Member, MemberGroup, Page, Prose, Relation, RelationGroup, Source, SourceLine, SourceSite,
     Truncation,

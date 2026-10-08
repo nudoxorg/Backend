@@ -1,8 +1,8 @@
 {
-  "target_packages": 30,
-  "core_packages": 11,
+  "target_packages": 31,
+  "core_packages": 12,
   "layer_counts": {
-    "core": 11,
+    "core": 12,
     "frontend": 7,
     "extension": 4,
     "application": 8
@@ -101,6 +101,15 @@
       "order": 8
     },
     {
+      "name": "backend-page-output",
+      "manifest_path": "crates/page-output/Cargo.toml",
+      "dependencies": [
+        "backend-library"
+      ],
+      "layer": "core",
+      "order": 9
+    },
+    {
       "name": "backend-client",
       "manifest_path": "crates/client/Cargo.toml",
       "dependencies": [
@@ -108,17 +117,18 @@
         "backend-replication"
       ],
       "layer": "core",
-      "order": 9
+      "order": 10
     },
     {
       "name": "backend-present",
       "manifest_path": "crates/present/Cargo.toml",
       "dependencies": [
         "backend-client",
-        "backend-library"
+        "backend-library",
+        "backend-page-output"
       ],
       "layer": "core",
-      "order": 10
+      "order": 11
     },
     {
       "name": "backend-frontend-clang",
@@ -128,7 +138,7 @@
         "backend-semantic"
       ],
       "layer": "frontend",
-      "order": 11
+      "order": 12
     },
     {
       "name": "backend-frontend-csharp",
@@ -138,7 +148,7 @@
         "backend-semantic"
       ],
       "layer": "frontend",
-      "order": 12
+      "order": 13
     },
     {
       "name": "backend-frontend-go",
@@ -148,7 +158,7 @@
         "backend-semantic"
       ],
       "layer": "frontend",
-      "order": 13
+      "order": 14
     },
     {
       "name": "backend-frontend-java",
@@ -157,7 +167,7 @@
         "backend-compile"
       ],
       "layer": "frontend",
-      "order": 14
+      "order": 15
     },
     {
       "name": "backend-frontend-python",
@@ -167,7 +177,7 @@
         "backend-semantic"
       ],
       "layer": "frontend",
-      "order": 15
+      "order": 16
     },
     {
       "name": "backend-frontend-rust",
@@ -177,7 +187,7 @@
         "backend-semantic"
       ],
       "layer": "frontend",
-      "order": 16
+      "order": 17
     },
     {
       "name": "backend-frontend-typescript",
@@ -187,7 +197,7 @@
         "backend-semantic"
       ],
       "layer": "frontend",
-      "order": 17
+      "order": 18
     },
     {
       "name": "backend-extension-tantivy",
@@ -197,7 +207,7 @@
         "backend-version"
       ],
       "layer": "extension",
-      "order": 18
+      "order": 19
     },
     {
       "name": "backend-extension-trustfall",
@@ -209,7 +219,7 @@
         "backend-version"
       ],
       "layer": "extension",
-      "order": 19
+      "order": 20
     },
     {
       "name": "backend-extension-qdrant",
@@ -221,7 +231,7 @@
         "backend-version"
       ],
       "layer": "extension",
-      "order": 20
+      "order": 21
     },
     {
       "name": "backend-extension-turso",
@@ -230,7 +240,7 @@
         "backend-library"
       ],
       "layer": "extension",
-      "order": 21
+      "order": 22
     },
     {
       "name": "backend-engine",
@@ -257,7 +267,7 @@
         "backend-version"
       ],
       "layer": "application",
-      "order": 22
+      "order": 23
     },
     {
       "name": "backend-local-service",
@@ -277,20 +287,21 @@
         "backend-frontend-rust",
         "backend-frontend-typescript",
         "backend-library",
+        "backend-page-output",
         "backend-runtime",
         "backend-semantic",
         "backend-store",
         "backend-version"
       ],
       "layer": "application",
-      "order": 23
+      "order": 24
     },
     {
       "name": "backend-facet",
       "manifest_path": "apps/facet/Cargo.toml",
       "dependencies": [],
       "layer": "application",
-      "order": 24
+      "order": 25
     },
     {
       "name": "backend-desktop",
@@ -305,7 +316,7 @@
         "backend-runtime"
       ],
       "layer": "application",
-      "order": 25
+      "order": 26
     },
     {
       "name": "backend-cli",
@@ -318,7 +329,7 @@
         "backend-runtime"
       ],
       "layer": "application",
-      "order": 26
+      "order": 27
     },
     {
       "name": "backend-mcp",
@@ -332,7 +343,7 @@
         "backend-runtime"
       ],
       "layer": "application",
-      "order": 27
+      "order": 28
     },
     {
       "name": "backend-worker",
@@ -341,7 +352,7 @@
         "backend-engine"
       ],
       "layer": "application",
-      "order": 28
+      "order": 29
     },
     {
       "name": "backend-locald",
@@ -350,7 +361,7 @@
         "backend-local-service"
       ],
       "layer": "application",
-      "order": 29
+      "order": 30
     }
   ],
   "topological_order": [
@@ -363,6 +374,7 @@
     "backend-execution",
     "backend-compile",
     "backend-library",
+    "backend-page-output",
     "backend-client",
     "backend-present",
     "backend-frontend-clang",

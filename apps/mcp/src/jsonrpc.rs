@@ -28,9 +28,10 @@ use backend_library::{
 };
 use backend_present::{
     Answer, BudgetExceeded, ContinuationCursor, CursorTarget, DEFAULT_RESPONSE_BUDGET_BYTES,
-    Detail, ESTIMATED_BYTES_PER_TOKEN, Engine, Fault, Invocation, Probe, Request, answer_paged,
-    bounded_text, encode_answer, encode_serializable, estimate_tokens, fault_value, lower,
-    markdown, oversized_fault, record_list,
+    Detail, Engine, Fault, Invocation, JsonRpcFraming, Probe, Request, admit_jsonrpc_response,
+    answer_paged, attach_jsonrpc_wire_budget, bounded_text, encode_answer, encode_serializable,
+    fault_value, jsonrpc_response_bytes, lower, markdown, oversized_fault, record_list,
+    serialized_json_bytes,
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{
@@ -39,8 +40,6 @@ use serde::{
 };
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
-#[cfg(unix)]
-use std::io::Read;
 use std::io::{self, BufRead, Write};
 
 mod codec;
@@ -77,6 +76,18 @@ pub(super) trait Product: Engine {
 
     /// Admits a self-describing continuation against the current owner.
     fn decode_continuation(&mut self, token: &str) -> Result<PageContinuation, ClientError>;
+
+    /// Reads an explicit packed Search page when the product supports it.
+    /// Fixtures may keep the legacy count-only route by returning None.
+    fn packed_search(
+        &mut self,
+        text: &str,
+        limit: u16,
+        packing: backend_library::PackedQueryRequest,
+    ) -> Result<Option<ReplyDto>, ClientError> {
+        let _ = (text, limit, packing);
+        Ok(None)
+    }
 
     /// Reads one bounded graph-neighborhood page.
     fn graph_page(
@@ -182,6 +193,15 @@ impl Product for SessionProduct {
         self.0.decode_page_continuation(token)
     }
 
+    fn packed_search(
+        &mut self,
+        text: &str,
+        limit: u16,
+        packing: backend_library::PackedQueryRequest,
+    ) -> Result<Option<ReplyDto>, ClientError> {
+        self.0.search_packed(text, limit, packing).map(Some)
+    }
+
     fn graph_page(
         &mut self,
         coordinate: String,
@@ -225,7 +245,13 @@ impl reconnect::Endpoint for SessionEndpoint {
             .map(SessionProduct::into_session)
             .map(|mut session| session.take_continuation_state())
             .or_else(|| self.pending_continuation_state.take());
-        let endpoint = match backend_runtime::ensure_locald(&self.paths) {
+        let endpoint = match backend_runtime::ensure_locald_with_progress(&self.paths, |progress| {
+            eprintln!(
+                "Starting local owner: {} ({:.1}s)",
+                progress.phase,
+                progress.elapsed.as_secs_f64()
+            );
+        }) {
             Ok(endpoint) => endpoint,
             Err(error) => {
                 self.pending_continuation_state = state;
@@ -295,7 +321,6 @@ const fn is_disconnect_kind(kind: io::ErrorKind) -> bool {
 pub(super) fn serve_stdio(
     paths: &backend_runtime::WorkspacePaths,
     project: String,
-    cursor_secret: [u8; 32],
     reader: &mut impl BufRead,
     writer: &mut impl Write,
 ) -> io::Result<()> {
@@ -304,8 +329,7 @@ pub(super) fn serve_stdio(
         .ok()
         .map(backend_runtime::normalize_surface_path)
         .map(|path| path.to_string_lossy().into_owned());
-    let mut server =
-        Server::with_invocation_context(product, project, working_directory, cursor_secret);
+    let mut server = Server::for_workspace(product, project, working_directory, paths);
     loop {
         let Some(line) = read_line(reader)? else {
             return Ok(());
@@ -322,7 +346,26 @@ pub(super) struct Server<P> {
     working_directory: Option<String>,
     handshake: HandshakeState,
     protocol: &'static str,
-    cursor_secret: [u8; 32],
+    cursor_authority: CursorAuthority,
+    call_id: Value,
+    call_framing: JsonRpcFraming,
+}
+
+/// Automatic servers carry no signing key until a real cursor operation admits
+/// the workspace credential. Fixed keys are explicit fixture/embedding inputs.
+#[derive(Clone, Eq, PartialEq)]
+enum CursorAuthority {
+    DeferredWorkspace(backend_runtime::WorkspacePaths),
+    SelectedKey([u8; 32]),
+}
+
+impl std::fmt::Debug for CursorAuthority {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::DeferredWorkspace(_) => "DeferredWorkspace",
+            Self::SelectedKey(_) => "SelectedKey([REDACTED])",
+        })
+    }
 }
 
 /// MCP's initialization handshake is a protocol state, not a boolean.
@@ -338,15 +381,46 @@ enum HandshakeState {
 }
 
 impl<P: Product> Server<P> {
+    /// Automatic transports defer credential admission until a cursor is used.
+    pub(super) fn for_workspace(
+        product: P,
+        project: String,
+        working_directory: Option<String>,
+        paths: &backend_runtime::WorkspacePaths,
+    ) -> Self {
+        Self::with_cursor_authority(
+            product,
+            project,
+            working_directory,
+            CursorAuthority::DeferredWorkspace(paths.clone()),
+        )
+    }
+
+    #[cfg(test)]
     pub(super) fn with_authority(product: P, project: String, cursor_secret: [u8; 32]) -> Self {
         Self::with_invocation_context(product, project, None, cursor_secret)
     }
 
+    #[cfg(test)]
     pub(super) fn with_invocation_context(
         product: P,
         project: String,
         working_directory: Option<String>,
         cursor_secret: [u8; 32],
+    ) -> Self {
+        Self::with_cursor_authority(
+            product,
+            project,
+            working_directory,
+            CursorAuthority::SelectedKey(cursor_secret),
+        )
+    }
+
+    fn with_cursor_authority(
+        product: P,
+        project: String,
+        working_directory: Option<String>,
+        cursor_authority: CursorAuthority,
     ) -> Self {
         Self {
             product,
@@ -354,12 +428,21 @@ impl<P: Product> Server<P> {
             working_directory,
             handshake: HandshakeState::AwaitInitialize,
             protocol: STABLE_PROTOCOL,
-            cursor_secret,
+            cursor_authority,
+            call_id: Value::Null,
+            call_framing: JsonRpcFraming::StdioLine,
         }
     }
 
     pub(super) fn handle(&mut self, input: &[u8]) -> Option<Value> {
+        self.call_framing = JsonRpcFraming::StdioLine;
         self.handle_inner(input).map(bound_rpc_reply)
+    }
+
+    pub(super) fn handle_http(&mut self, input: &[u8]) -> Option<Value> {
+        self.call_framing = JsonRpcFraming::HttpBody;
+        self.handle_inner(input)
+            .map(|value| bound_rpc_reply_with_framing(value, JsonRpcFraming::HttpBody))
     }
 
     fn handle_inner(&mut self, input: &[u8]) -> Option<Value> {
@@ -428,6 +511,7 @@ impl<P: Product> Server<P> {
                 None,
             ));
         }
+        self.call_id = response_id.clone();
         Some(
             match self.route(method, &params).and_then(bound_route_value) {
                 Ok(result) => success(response_id, result),
@@ -637,6 +721,11 @@ impl<P: Product> Server<P> {
             | ToolRoute::IndexCancel
             | ToolRoute::RefusedIndexAwait => None,
         };
+        if let Some(grammar) = grammar.filter(|grammar| grammar.name() == "search") {
+            if let Some(result) = self.try_packed_search(grammar, arguments, detail, &context)? {
+                return Ok(result);
+            }
+        }
         let index_search_tool = grammar.is_some_and(|grammar| grammar.name() == "index-search");
         let index_search_cursor = if index_search_tool {
             self.index_search_cursor(arguments, &context)?
@@ -689,6 +778,128 @@ impl<P: Product> Server<P> {
             Err(fault) => Err(RpcError::from_fault(&fault)),
         }
     }
+    fn try_packed_search(
+        &mut self,
+        grammar: backend_present::CommandGrammar,
+        arguments: &Map<String, Value>,
+        detail: Detail,
+        context: &[u8],
+    ) -> Result<Option<Value>, RpcError> {
+        use backend_library::{
+            PackedCallContext, PackedQueryRequest, PagePackingDetail, PagePackingPolicy,
+            PagePackingProfile, PagePackingScope, QueryLimit,
+        };
+        let mut command_arguments = arguments.clone();
+        command_arguments.remove("detail");
+        command_arguments.remove("cursor");
+        let planned = validate_registry_arguments(grammar, &command_arguments)
+            .and_then(|()| Invocation::from_json(grammar, &command_arguments))
+            .and_then(|invocation| lower(&invocation, &self.project))
+            .map_err(|fault| RpcError::from_fault(&fault))?;
+        let Request::Search { text, limit } = planned else {
+            return Err(packed_protocol_error("packed route did not lower to Search"));
+        };
+        let predecessor = match arguments.get("cursor") {
+            None => None,
+            Some(value) => {
+                let token = value
+                    .as_str()
+                    .filter(|token| !token.is_empty())
+                    .ok_or_else(|| RpcError::invalid("cursor must be a non-empty opaque string"))?;
+                let owner = self.verify_cursor_token(token, context)?.ok_or_else(|| {
+                    RpcError::invalid(
+                        "cursor is unknown, expired, or belongs to another workspace authority",
+                    )
+                })?;
+                if !owner.starts_with("pp1-") {
+                    return Ok(None);
+                }
+                Some(owner)
+            }
+        };
+        let rows =
+            QueryLimit::new(limit).ok_or_else(|| RpcError::invalid("invalid query limit"))?;
+        let detail_policy = match detail {
+            Detail::Summary => PagePackingDetail::Summary,
+            Detail::Standard => PagePackingDetail::Standard,
+            Detail::Full => PagePackingDetail::Full,
+        };
+        let scope = match self.call_framing {
+            JsonRpcFraming::StdioLine => PagePackingScope::StdioJsonRpcLine,
+            JsonRpcFraming::HttpBody => PagePackingScope::HttpJsonRpcBody,
+        };
+        let policy = PagePackingPolicy::new(
+            rows,
+            DEFAULT_RESPONSE_BUDGET_BYTES as u32,
+            detail_policy,
+            PagePackingProfile::McpToolV1,
+            scope,
+        )
+        .map_err(|error| RpcError::invalid(error.to_string()))?;
+        let expiry = unix_seconds().saturating_add(900);
+        let call = PackedCallContext::Mcp {
+            id: self.call_id.clone(),
+            expiry,
+        };
+        let request = PackedQueryRequest::new(policy, call, predecessor)
+            .map_err(|error| RpcError::invalid(error.to_string()))?;
+        let Some(reply) = self
+            .product
+            .packed_search(&text, limit, request.clone())
+            .map_err(|error| {
+                RpcError::from_fault(&Fault::from_client_error(
+                    &error,
+                    backend_present::Operand::Text(text.to_owned()),
+                ))
+            })?
+        else {
+            return Ok(None);
+        };
+        let receipt = reply.packed_query().cloned().ok_or_else(|| {
+            packed_protocol_error("packed search reply omitted its producer receipt")
+        })?;
+        let status = reply.semantic_search_status().ok_or_else(|| {
+            packed_protocol_error("packed search reply omitted its semantic lane status")
+        })?;
+        let backend_library::CommandReply::Search(snapshot) = reply.reply else {
+            return Err(packed_protocol_error("packed search reply changed shape"));
+        };
+        let next = receipt
+            .more()
+            .then(|| self.sign_cursor_token_at(expiry, receipt.token(), context))
+            .transpose()?;
+        let answer = backend_present::packed_search_answer(
+            &text,
+            &snapshot.root.rows(),
+            snapshot.root.coverage(),
+            status,
+            receipt.more(),
+        );
+        let actual = backend_present::measure_packed_search(
+            &answer,
+            detail,
+            next.as_deref(),
+            request.call(),
+            scope,
+            request.policy().bytes() as usize,
+        );
+        if actual != receipt.bytes() as usize {
+            return Err(packed_protocol_error(
+                "packed search egress differs from the owner's admitted response bytes",
+            ));
+        }
+        backend_present::packed_search_tool_result(
+            &answer,
+            detail,
+            next.as_deref(),
+            request.call(),
+            scope,
+            request.policy().bytes() as usize,
+        )
+        .map(Some)
+        .map_err(|error| RpcError::from_fault(&oversized_fault(error)))
+    }
+
     fn query_tool(
         &mut self,
         arguments: &Map<String, Value>,
@@ -918,6 +1129,38 @@ impl<P: Product> Server<P> {
         }))
     }
 
+    fn admitted_cursor_key(&mut self) -> Result<[u8; 32], RpcError> {
+        let paths = match &self.cursor_authority {
+            CursorAuthority::SelectedKey(key) => return Ok(*key),
+            CursorAuthority::DeferredWorkspace(paths) => paths,
+        };
+        let secret = match backend_engine::read_authority_secret(paths.authority_secret()) {
+            Ok(secret) => secret,
+            Err(backend_engine::AuthoritySecretError::Io(io::ErrorKind::NotFound)) => {
+                // This boundary is an owner-backed mint/verify, not metadata
+                // initialization. Never select a process-only fallback here.
+                backend_runtime::ensure_locald_with_progress(paths, |progress| {
+                    eprintln!(
+                        "Starting local owner: {} ({:.1}s)",
+                        progress.phase,
+                        progress.elapsed.as_secs_f64()
+                    );
+                })
+                .map_err(|error| RpcError::tool(error.to_string()))?;
+                backend_engine::read_authority_secret(paths.authority_secret()).map_err(
+                    |error| RpcError::tool(format!("cannot admit MCP cursor authority: {error}")),
+                )?
+            }
+            Err(error) => {
+                return Err(RpcError::tool(format!(
+                    "cannot admit MCP cursor authority: {error}"
+                )));
+            }
+        };
+        self.cursor_authority = CursorAuthority::SelectedKey(secret);
+        Ok(secret)
+    }
+
     fn continuation(
         &mut self,
         arguments: &Map<String, Value>,
@@ -930,8 +1173,10 @@ impl<P: Product> Server<P> {
             .as_str()
             .filter(|token| !token.is_empty())
             .ok_or_else(|| RpcError::invalid("cursor must be a non-empty opaque string"))?;
-        let owner_token = self.verify_cursor_token(token, context).ok_or_else(|| {
-            RpcError::invalid("cursor is unknown, expired, or belongs to another workspace authority")
+        let owner_token = self.verify_cursor_token(token, context)?.ok_or_else(|| {
+            RpcError::invalid(
+                "cursor is unknown, expired, or belongs to another workspace authority",
+            )
         })?;
         self.product
             .decode_continuation(&owner_token)
@@ -945,7 +1190,7 @@ impl<P: Product> Server<P> {
             })
     }
     fn index_search_cursor(
-        &self,
+        &mut self,
         arguments: &Map<String, Value>,
         context: &[u8],
     ) -> Result<Option<IndexSearchCursor>, RpcError> {
@@ -960,11 +1205,11 @@ impl<P: Product> Server<P> {
     }
 
     fn verified_index_search_cursor(
-        &self,
+        &mut self,
         token: &str,
         context: &[u8],
     ) -> Result<IndexSearchCursor, RpcError> {
-        let owner_token = self.verify_cursor_token(token, context).ok_or_else(|| {
+        let owner_token = self.verify_cursor_token(token, context)?.ok_or_else(|| {
             RpcError::invalid(
                 "cursor is unknown, expired, or belongs to another workspace authority",
             )
@@ -1001,44 +1246,62 @@ impl<P: Product> Server<P> {
                 })?,
             ContinuationCursor::IndexSearch(cursor) => cursor.as_str().to_owned(),
         };
-        Ok(self.sign_cursor_token(&owner_token, context))
+        self.sign_cursor_token(&owner_token, context)
     }
 
-    fn sign_cursor_token(&self, owner_token: &str, context: &[u8]) -> String {
+    fn sign_cursor_token(&mut self, owner_token: &str, context: &[u8]) -> Result<String, RpcError> {
         self.sign_cursor_token_at(unix_seconds().saturating_add(900), owner_token, context)
     }
 
-    fn sign_cursor_token_at(&self, expiry: u64, owner_token: &str, context: &[u8]) -> String {
+    pub(super) fn sign_cursor_token_at(
+        &mut self,
+        expiry: u64,
+        owner_token: &str,
+        context: &[u8],
+    ) -> Result<String, RpcError> {
+        let key = self.admitted_cursor_key()?;
         let encoded_owner = URL_SAFE_NO_PAD.encode(owner_token.as_bytes());
         let body = format!("{expiry}-{encoded_owner}");
-        let mac = self.cursor_mac(&body, context);
-        format!("mcp1-{body}-{}", hex_bytes(&mac.as_bytes()[..16]))
+        let mac = Self::cursor_mac(&key, &body, context);
+        Ok(format!("mcp1-{body}-{}", hex_bytes(&mac.as_bytes()[..16])))
     }
 
-    fn verify_cursor_token(&self, token: &str, context: &[u8]) -> Option<String> {
-        let body = token.strip_prefix("mcp1-")?;
-        let (body, encoded_mac) = body.rsplit_once('-')?;
-        let (expiry, encoded_owner) = body.split_once('-')?;
-        let expiry = expiry.parse::<u64>().ok()?;
-        // Treat the expiry second as closed: a token is valid strictly before
-        // its deadline. This avoids a one-second replay window at the exact
-        // boundary and makes rotation/expiry tests deterministic.
+    pub(super) fn verify_cursor_token(
+        &mut self,
+        token: &str,
+        context: &[u8],
+    ) -> Result<Option<String>, RpcError> {
+        let Some(body) = token.strip_prefix("mcp1-") else {
+            return Ok(None);
+        };
+        let Some((body, encoded_mac)) = body.rsplit_once('-') else {
+            return Ok(None);
+        };
+        let Some((expiry, encoded_owner)) = body.split_once('-') else {
+            return Ok(None);
+        };
+        let Ok(expiry) = expiry.parse::<u64>() else {
+            return Ok(None);
+        };
+        // The expiry second is closed. A malformed or expired token grants
+        // nothing and does not need to initialize an owner merely to reject it.
         if expiry <= unix_seconds() {
-            return None;
+            return Ok(None);
         }
-        let expected = self.cursor_mac(body, context);
+        let key = self.admitted_cursor_key()?;
+        let expected = Self::cursor_mac(&key, body, context);
         if encoded_mac != hex_bytes(&expected.as_bytes()[..16]) {
-            return None;
+            return Ok(None);
         }
-        decode_cursor_owner(encoded_owner)
+        Ok(decode_cursor_owner(encoded_owner))
     }
 
-    fn cursor_mac(&self, body: &str, context: &[u8]) -> blake3::Hash {
+    fn cursor_mac(key: &[u8; 32], body: &str, context: &[u8]) -> blake3::Hash {
         let mut payload = Vec::with_capacity(body.len() + context.len() + 1);
         payload.extend_from_slice(body.as_bytes());
         payload.push(0);
         payload.extend_from_slice(context);
-        blake3::keyed_hash(&self.cursor_secret, &payload)
+        blake3::keyed_hash(key, &payload)
     }
 
     fn rendered(
@@ -1105,6 +1368,13 @@ impl<P: Product> Server<P> {
     }
 }
 
+fn packed_protocol_error(detail: &str) -> RpcError {
+    RpcError::from_fault(&Fault::from_client_error(
+        &ClientError::Protocol(detail.to_owned()),
+        backend_present::Operand::Argument("response".to_owned()),
+    ))
+}
+
 const INSTRUCTIONS: &str = "This server attaches to the current index without changing it. Index or \
 reindex a repository explicitly with backend.index and its absolute path, then call \
 backend.packages. An empty shelf means no project has been indexed yet, and a lane that is not \
@@ -1121,50 +1391,6 @@ structural rows do not prove native semantic coverage.";
 /// Returns the readable head of one stable identity.
 fn abbreviate(bytes: &[u8; 32]) -> String {
     encode_id(bytes).chars().take(12).collect()
-}
-
-pub(super) fn read_authority_secret(path: &std::path::Path) -> Result<[u8; 32], String> {
-    backend_engine::read_authority_secret(path).map_err(|error| {
-        format!(
-            "cannot admit MCP authority secret {}: {error}",
-            path.display()
-        )
-    })
-}
-
-pub(super) fn cursor_secret(paths: &backend_runtime::WorkspacePaths) -> Result<[u8; 32], String> {
-    match backend_engine::read_authority_secret(paths.authority_secret()) {
-        Ok(secret) => Ok(secret),
-        Err(backend_engine::AuthoritySecretError::Io(io::ErrorKind::NotFound)) => {
-            // Preserve the normal durable key for a new workspace. If private
-            // state cannot be initialized, a process-only random key is still
-            // sufficient to authenticate this MCP process's cursors while an
-            // unavailable owner is being reported through JSON-RPC. Such
-            // cursors naturally expire when this process exits.
-            match paths.initialize() {
-                Ok(()) => read_authority_secret(paths.authority_secret()),
-                Err(_) => process_cursor_secret(),
-            }
-        }
-        Err(error) => Err(format!(
-            "cannot admit MCP authority secret {}: {error}",
-            paths.authority_secret().display()
-        )),
-    }
-}
-
-fn process_cursor_secret() -> Result<[u8; 32], String> {
-    let mut secret = [0_u8; 32];
-    #[cfg(unix)]
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut source| source.read_exact(&mut secret))
-        .map_err(|error| format!("cannot create process MCP cursor authority: {error}"))?;
-    #[cfg(windows)]
-    backend_platform::win32::random::fill(&mut secret)
-        .map_err(|error| format!("cannot create process MCP cursor authority: {error}"))?;
-    #[cfg(not(any(unix, windows)))]
-    return Err("MCP cursor authority is unsupported on this platform".to_owned());
-    Ok(secret)
 }
 
 fn unix_seconds() -> u64 {
@@ -1249,17 +1475,15 @@ fn refused(fault: &Fault) -> Value {
 /// Context-sized ceiling for one complete JSON-RPC line, including its ID,
 /// text block, typed projection, metadata, and trailing newline.
 const MCP_RESULT_BUDGET_BYTES: usize = DEFAULT_RESPONSE_BUDGET_BYTES;
-const PREVIEW_MARKER: &str = "\n\n… readable preview shortened to fit this response; structuredContent contains the complete page and any nextCursor.";
+const PREVIEW_MARKER: &str = backend_present::JSONRPC_PREVIEW_MARKER;
 
 fn serialized_bytes(value: &Value) -> usize {
-    serde_json::to_vec(value).map_or(MCP_RESULT_BUDGET_BYTES.saturating_add(1), |bytes| {
-        bytes.len()
-    })
+    serialized_json_bytes(value)
 }
 
 /// JSON-RPC stdio writes exactly one trailing newline after each response.
 fn framed_serialized_bytes(value: &Value) -> usize {
-    serialized_bytes(value).saturating_add(1)
+    jsonrpc_response_bytes(value, JsonRpcFraming::StdioLine)
 }
 
 fn bound_route_value(value: Value) -> Result<Value, RpcError> {
@@ -1274,23 +1498,18 @@ fn bound_route_value(value: Value) -> Result<Value, RpcError> {
 }
 
 fn bound_rpc_reply(value: Value) -> Value {
-    let value = attach_wire_budget(value);
-    let value = if framed_serialized_bytes(&value) > MCP_RESULT_BUDGET_BYTES {
-        fit_tool_preview(value)
-    } else {
-        value
-    };
-    let bytes = framed_serialized_bytes(&value);
-    if bytes <= MCP_RESULT_BUDGET_BYTES {
-        return value;
-    }
+    bound_rpc_reply_with_framing(value, JsonRpcFraming::StdioLine)
+}
+
+fn bound_rpc_reply_with_framing(value: Value, framing: JsonRpcFraming) -> Value {
     let id = value.get("id").cloned().unwrap_or(Value::Null);
-    let fault = oversized_fault(BudgetExceeded {
-        bytes,
-        budget: MCP_RESULT_BUDGET_BYTES,
-    });
+    let error = match admit_jsonrpc_response(value, framing) {
+        Ok(value) => return value,
+        Err(error) => error,
+    };
+    let fault = oversized_fault(error);
     let fallback = error_reply(
-        id.clone(),
+        id,
         -32000,
         "MCP response exceeds the bounded context budget",
         Some(json!({
@@ -1299,12 +1518,11 @@ fn bound_rpc_reply(value: Value) -> Value {
             "structuredContent": fault_value(&fault),
         })),
     );
-    if framed_serialized_bytes(&fallback) <= MCP_RESULT_BUDGET_BYTES {
+    if jsonrpc_response_bytes(&fallback, framing) <= MCP_RESULT_BUDGET_BYTES {
         fallback
     } else {
         error_reply(
-            // A request ID is normally a scalar, but preserve the hard cap
-            // even if a caller supplied a very large valid JSON string.
+            // Keep the cap even for an admitted but oversized scalar ID.
             Value::Null,
             -32000,
             "MCP response exceeds the bounded context budget",
@@ -1313,88 +1531,9 @@ fn bound_rpc_reply(value: Value) -> Value {
     }
 }
 
-/// Reclaims only duplicate human-readable text when a large request ID makes
-/// the caller-specific JSON-RPC envelope exceed the budget. Structured rows,
-/// terminal state, and owner cursors stay byte-for-byte intact.
-fn fit_tool_preview(mut value: Value) -> Value {
-    let Some(current_text) = value
-        .get("result")
-        .and_then(|result| result.get("content"))
-        .and_then(Value::as_array)
-        .and_then(|content| content.first())
-        .and_then(|entry| entry.get("text"))
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-    else {
-        return value;
-    };
-    let prefix = current_text
-        .strip_suffix(PREVIEW_MARKER)
-        .unwrap_or(&current_text)
-        .to_owned();
-    value["result"]["content"][0]["text"] = Value::String(PREVIEW_MARKER.to_owned());
-    let mut best = attach_wire_budget(value.clone());
-    if framed_serialized_bytes(&best) > MCP_RESULT_BUDGET_BYTES {
-        return best;
-    }
-    let mut lower = 0;
-    let mut upper = prefix.len();
-    while lower < upper {
-        let midpoint = lower + (upper - lower).div_ceil(2);
-        let mut end = midpoint;
-        while !prefix.is_char_boundary(end) {
-            end -= 1;
-        }
-        let mut candidate = value.clone();
-        candidate["result"]["content"][0]["text"] =
-            Value::String(format!("{}{PREVIEW_MARKER}", &prefix[..end]));
-        candidate = attach_wire_budget(candidate);
-        if framed_serialized_bytes(&candidate) <= MCP_RESULT_BUDGET_BYTES {
-            lower = midpoint;
-            best = candidate;
-        } else {
-            upper = midpoint - 1;
-        }
-    }
-    best
-}
-
-/// Adds exact transport accounting to MCP tool results while preserving the
-/// shared structured projection's own payload budget. The reported value is
-/// fixed-point measured because its decimal size is part of the frame itself.
-fn attach_wire_budget(mut value: Value) -> Value {
-    let is_tool_result = value
-        .get("result")
-        .and_then(Value::as_object)
-        .is_some_and(|result| {
-            result.contains_key("content") && result.contains_key("structuredContent")
-        });
-    if !is_tool_result {
-        return value;
-    }
-    {
-        let result = value["result"].as_object_mut().expect("tool result object");
-        if !result.get("_meta").is_some_and(Value::is_object) {
-            result.insert("_meta".to_owned(), json!({}));
-        }
-        result["_meta"]["backend/wireBudget"] = json!({
-            "bytes": 0,
-            "estimatedTokens": 0,
-            "bytesPerToken": ESTIMATED_BYTES_PER_TOKEN,
-            "limitBytes": MCP_RESULT_BUDGET_BYTES,
-            "scope": "complete_jsonrpc_line"
-        });
-    }
-    for _ in 0..8 {
-        let bytes = framed_serialized_bytes(&value);
-        value["result"]["_meta"]["backend/wireBudget"]["bytes"] = json!(bytes);
-        value["result"]["_meta"]["backend/wireBudget"]["estimatedTokens"] =
-            json!(estimate_tokens(bytes));
-        if framed_serialized_bytes(&value) == bytes {
-            break;
-        }
-    }
-    value
+#[cfg(feature = "token-budget")]
+fn attach_wire_budget(value: Value) -> Value {
+    attach_jsonrpc_wire_budget(value, JsonRpcFraming::StdioLine)
 }
 
 /// Serialize the exact bounded response envelope used by `tools/call`.
@@ -1541,7 +1680,7 @@ fn answer_for(engine: &mut dyn Engine, request: &Request) -> Result<Answer, RpcE
 }
 
 #[derive(Debug)]
-struct RpcError {
+pub(super) struct RpcError {
     code: i64,
     message: &'static str,
     kind: &'static str,
@@ -1599,7 +1738,8 @@ impl RpcError {
                 backend_present::Operand::Argument("cursor".to_owned()),
             )),
             detail: Some(
-                "the continuation belongs to an older immutable revision; restart the query".to_owned(),
+                "the continuation belongs to an older immutable revision; restart the query"
+                    .to_owned(),
             ),
             structured: None,
         }
@@ -1631,7 +1771,9 @@ impl RpcError {
                 | FaultSlug::RequestMismatch
                 | FaultSlug::Freshness
                 | FaultSlug::IncoherentView => false,
-                FaultSlug::NotFound
+                FaultSlug::ItemExceedsWireCredit
+                | FaultSlug::EnvelopeExceedsWireCredit
+                | FaultSlug::NotFound
                 | FaultSlug::WrongBasis
                 | FaultSlug::InvalidQuery
                 | FaultSlug::CompilerRefused
@@ -1895,3 +2037,168 @@ struct IndexSearchPageProjection<'a> {
 #[cfg(test)]
 #[path = "jsonrpc/tests.rs"]
 mod tests;
+
+#[cfg(all(test, unix))]
+#[allow(clippy::expect_used)]
+mod deferred_cursor_authority_tests {
+    use super::*;
+    use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    fn paths() -> backend_runtime::WorkspacePaths {
+        let root = std::path::PathBuf::from(format!(
+            "/tmp/nm-cursor-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&root)
+            .expect("private fixture");
+        backend_runtime::WorkspacePaths::discover(
+            Some(root.clone()),
+            Some(root.join("state")),
+            Some(root.join("endpoint")),
+        )
+        .expect("paths")
+    }
+    fn automatic(paths: &backend_runtime::WorkspacePaths) -> Server<ReconnectingProduct> {
+        Server::for_workspace(
+            disconnected_reconnecting_product(paths),
+            paths.project().to_string_lossy().into_owned(),
+            None,
+            paths,
+        )
+    }
+
+    #[test]
+    fn cursor_authority_debug_redacts_selected_key_and_workspace() {
+        assert_eq!(
+            format!("{:?}", CursorAuthority::SelectedKey([42; 32])),
+            "SelectedKey([REDACTED])"
+        );
+        let paths = paths();
+        assert_eq!(
+            format!("{:?}", CursorAuthority::DeferredWorkspace(paths.clone())),
+            "DeferredWorkspace"
+        );
+        std::fs::remove_dir_all(paths.project()).expect("remove fixture");
+    }
+
+    #[test]
+    fn metadata_does_not_create_state_and_first_workspace_key_survives_server_restart() {
+        let paths = paths();
+        let mut first = automatic(&paths);
+        assert!(first.handle(br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}"#).expect("initialize").get("result").is_some());
+        assert!(
+            first
+                .handle(br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+                .is_none()
+        );
+        assert!(
+            first
+                .handle(br#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#)
+                .expect("tools list")["result"]["tools"]
+                .is_array()
+        );
+        assert!(!paths.data().exists());
+        assert!(!paths.authority_secret().exists());
+        // Unit key-selection control: actual owner-page/restart acceptance is a
+        // separate native process gate. Model its durable initialization here.
+        paths
+            .initialize()
+            .expect("first owner creates private authority");
+        let cursor = IndexSearchCursor::new("owner-issued-page-2".to_owned()).expect("owner token");
+        let token = first
+            .issue_cursor(
+                ContinuationCursor::IndexSearch(cursor),
+                b"same query context",
+            )
+            .expect("first mint selects durable key");
+        assert!(matches!(
+            first.cursor_authority,
+            CursorAuthority::SelectedKey(_)
+        ));
+        let mut restarted = automatic(&paths);
+        assert_eq!(
+            restarted
+                .verified_index_search_cursor(&token, b"same query context")
+                .expect("restart verifies same durable authority")
+                .as_str(),
+            "owner-issued-page-2"
+        );
+        assert_eq!(restarted.cursor_authority, first.cursor_authority);
+        // Direct callers (including byte-packed routes) share the same
+        // fallible admission boundary; they cannot use an unselected key.
+        let mut direct = automatic(&paths);
+        let direct_token = direct
+            .sign_cursor_token_at(
+                unix_seconds().saturating_add(60),
+                "direct-owner-page",
+                b"direct context",
+            )
+            .expect("direct sign admits durable authority");
+        let mut direct_restart = automatic(&paths);
+        assert_eq!(
+            direct_restart
+                .verify_cursor_token(&direct_token, b"direct context")
+                .expect("direct verify admits durable authority")
+                .as_deref(),
+            Some("direct-owner-page")
+        );
+        assert_eq!(direct.cursor_authority, first.cursor_authority);
+        assert_eq!(direct_restart.cursor_authority, first.cursor_authority);
+        std::fs::remove_dir_all(paths.project()).expect("remove fixture");
+    }
+
+    #[test]
+    fn authenticated_credential_errors_never_select_a_key_or_start_an_owner() {
+        let paths = paths();
+        paths
+            .initialize_data_directory()
+            .expect("private directory");
+        std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(paths.authority_secret())
+            .expect("invalid private credential");
+        let mut server = automatic(&paths);
+        let cursor = IndexSearchCursor::new("owner-page".to_owned()).expect("cursor");
+        assert!(
+            server
+                .issue_cursor(ContinuationCursor::IndexSearch(cursor), b"context")
+                .is_err()
+        );
+        assert!(
+            server
+                .sign_cursor_token_at(
+                    unix_seconds().saturating_add(60),
+                    "direct-owner-page",
+                    b"context"
+                )
+                .is_err()
+        );
+        assert!(
+            server
+                .verify_cursor_token(
+                    &format!(
+                        "mcp1-{}-b3duZXItcGFnZQ-00000000000000000000000000000000",
+                        unix_seconds().saturating_add(60)
+                    ),
+                    b"context"
+                )
+                .is_err()
+        );
+        assert!(matches!(
+            server.cursor_authority,
+            CursorAuthority::DeferredWorkspace(_)
+        ));
+        assert!(
+            !paths.endpoint().exists(),
+            "invalid authenticated credential cannot start a replacement owner"
+        );
+        std::fs::remove_dir_all(paths.project()).expect("remove fixture");
+    }
+}

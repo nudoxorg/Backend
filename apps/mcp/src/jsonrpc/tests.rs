@@ -10,6 +10,7 @@
 
 use super::tools::QUERY_TOOL;
 use super::*;
+use backend_present::{ESTIMATED_BYTES_PER_TOKEN, estimate_tokens};
 use backend_library::{
     Basis, COMMANDS, CommandReply, CompileExecutionIntent, Coverage, DeclarationKind, Document,
     Fragment, Freshness, Frontier, IndexCancelReceipt, IndexCancelStatus, IndexJobObservation,
@@ -56,6 +57,8 @@ struct Fake {
     surface_error: Option<ClientError>,
     /// Typed failure at graph-page, prompt-revision, or continuation-encoding admission.
     adapter_error: Option<ClientError>,
+    /// Typed failure from the actual packed-search adapter boundary.
+    packed_error: Option<ClientError>,
     /// Exact boundary reached by an adapter-error route.
     adapter_boundary: Option<&'static str>,
     /// Exercise the opaque owner cursor family behind `backend.surface`.
@@ -377,6 +380,18 @@ impl Engine for Fake {
 }
 
 impl Product for Fake {
+    fn packed_search(
+        &mut self,
+        _text: &str,
+        _limit: u16,
+        _packing: backend_library::PackedQueryRequest,
+    ) -> Result<Option<ReplyDto>, ClientError> {
+        match self.packed_error.take() {
+            Some(error) => Err(error),
+            None => Ok(None),
+        }
+    }
+
     fn encode_continuation(
         &mut self,
         continuation: backend_library::PageContinuation,
@@ -1045,6 +1060,57 @@ fn tool_failure<'a>(response: &'a Value, slug: &str) -> &'a Value {
     assert_eq!(structured["slug"], slug, "{response}");
     assert_context_bounded(response);
     structured
+}
+
+#[test]
+fn packed_credit_refusals_are_typed_tool_errors_without_rows_or_cursor() {
+    use backend_library::PackedQueryFailure;
+    for (failure, slug, query) in [
+        (
+            PackedQueryFailure::ItemExceedsWireCredit {
+                ordinal: 7,
+                required_bytes: 49_153,
+                credit_bytes: 49_152,
+            },
+            "item-exceeds-wire-credit",
+            "self".to_owned(),
+        ),
+        (
+            PackedQueryFailure::EnvelopeExceedsWireCredit {
+                required_bytes: 49_153,
+                credit_bytes: 49_152,
+            },
+            "envelope-exceeds-wire-credit",
+            "\0".repeat(backend_library::MAX_COMMAND_TEXT),
+        ),
+    ] {
+        let mut server = ready(Fake {
+            packed_error: Some(ClientError::CommandFailed(
+                backend_library::CommandFailure::PagePacking(failure.clone()),
+            )),
+            ..Fake::default()
+        });
+        let response = request(
+            &mut server,
+            "tools/call",
+            &json!({"name": "backend.search", "arguments": {"query": query, "limit": 200, "detail": "full"}}),
+        );
+        let structured = tool_failure(&response, slug);
+        assert!(
+            server.product.packed_error.is_none(),
+            "packed boundary consumed the refusal"
+        );
+        assert_eq!(server.product.probe_calls, 0, "no legacy Search fallback");
+        assert_eq!(structured["cause"], "oversized");
+        assert_eq!(structured["operand"], "response");
+        assert_eq!(
+            structured["page_packing_failure"],
+            serde_json::to_value(&failure).expect("typed failure")
+        );
+        assert!(structured.get("records").is_none());
+        assert!(structured.get("next_cursor").is_none());
+        assert!(response["result"].get("nextCursor").is_none());
+    }
 }
 fn compiler_error_routes() -> Vec<(&'static str, Value, &'static str)> {
     let command = SurfaceCommand::IndexStart {
@@ -2939,47 +3005,83 @@ fn bounded_response_serialization_preserves_the_calling_request_id() {
 
 #[test]
 fn continuation_authority_binds_context_and_owner_payload() {
-    let server = Server::with_authority(Fake::default(), PROJECT.to_owned(), [7; 32]);
-    let token = server.sign_cursor_token("pc1-owner-issued", b"query-a");
+    let mut server = Server::with_authority(Fake::default(), PROJECT.to_owned(), [7; 32]);
+    let token = server
+        .sign_cursor_token("pc1-owner-issued", b"query-a")
+        .expect("explicit fixture cursor authority");
     assert_eq!(
-        server.verify_cursor_token(&token, b"query-a").as_deref(),
+        server
+            .verify_cursor_token(&token, b"query-a")
+            .expect("explicit fixture cursor authority")
+            .as_deref(),
         Some("pc1-owner-issued")
     );
     // Verification is deliberately replayable: retrying a read page is safe,
     // while the MAC still prevents moving that page to another authority
     // context. This is the property a reconnecting MCP client needs.
     assert_eq!(
-        server.verify_cursor_token(&token, b"query-a").as_deref(),
+        server
+            .verify_cursor_token(&token, b"query-a")
+            .expect("explicit fixture cursor authority")
+            .as_deref(),
         Some("pc1-owner-issued")
     );
-    assert!(server.verify_cursor_token(&token, b"query-b").is_none());
+    assert!(
+        server
+            .verify_cursor_token(&token, b"query-b")
+            .expect("explicit fixture cursor authority")
+            .is_none()
+    );
     let mut tampered = token.clone();
     let final_byte = tampered.pop().expect("MAC byte");
     tampered.push(if final_byte == '0' { '1' } else { '0' });
-    assert!(server.verify_cursor_token(&tampered, b"query-a").is_none());
-    let other_workspace = Server::with_authority(Fake::default(), "/other".to_owned(), [8; 32]);
+    assert!(
+        server
+            .verify_cursor_token(&tampered, b"query-a")
+            .expect("explicit fixture cursor authority")
+            .is_none()
+    );
+    let mut other_workspace = Server::with_authority(Fake::default(), "/other".to_owned(), [8; 32]);
     assert!(
         other_workspace
             .verify_cursor_token(&token, b"query-a")
+            .expect("explicit fixture cursor authority")
             .is_none()
     );
     // Restarting with the persisted authority accepts the token; rotation
     // invalidates every old token immediately, including one with identical
     // workspace and query context.
-    let restarted = Server::with_authority(Fake::default(), PROJECT.to_owned(), [7; 32]);
+    let mut restarted = Server::with_authority(Fake::default(), PROJECT.to_owned(), [7; 32]);
     assert_eq!(
-        restarted.verify_cursor_token(&token, b"query-a").as_deref(),
+        restarted
+            .verify_cursor_token(&token, b"query-a")
+            .expect("explicit fixture cursor authority")
+            .as_deref(),
         Some("pc1-owner-issued")
     );
-    let rotated = Server::with_authority(Fake::default(), PROJECT.to_owned(), [9; 32]);
-    assert!(rotated.verify_cursor_token(&token, b"query-a").is_none());
-    let expired =
-        server.sign_cursor_token_at(unix_seconds().saturating_sub(1), "pc1-old", b"query-a");
-    assert!(server.verify_cursor_token(&expired, b"query-a").is_none());
-    let expires_now = server.sign_cursor_token_at(unix_seconds(), "pc1-now", b"query-a");
+    let mut rotated = Server::with_authority(Fake::default(), PROJECT.to_owned(), [9; 32]);
+    assert!(
+        rotated
+            .verify_cursor_token(&token, b"query-a")
+            .expect("explicit fixture cursor authority")
+            .is_none()
+    );
+    let expired = server
+        .sign_cursor_token_at(unix_seconds().saturating_sub(1), "pc1-old", b"query-a")
+        .expect("explicit fixture cursor authority");
+    assert!(
+        server
+            .verify_cursor_token(&expired, b"query-a")
+            .expect("explicit fixture cursor authority")
+            .is_none()
+    );
+    let expires_now = server
+        .sign_cursor_token_at(unix_seconds(), "pc1-now", b"query-a")
+        .expect("explicit fixture cursor authority");
     assert!(
         server
             .verify_cursor_token(&expires_now, b"query-a")
+            .expect("explicit fixture cursor authority")
             .is_none()
     );
 }
@@ -3409,7 +3511,7 @@ fn index_search_cursor_round_trips_between_servers_with_the_same_workspace_autho
             ..Fake::default()
         });
         match mismatch {
-            "authority" => other.cursor_secret = [8; 32],
+            "authority" => other.cursor_authority = CursorAuthority::SelectedKey([8; 32]),
             "project" => other.project = "/other-project".to_owned(),
             _ => unreachable!(),
         }
@@ -3496,7 +3598,7 @@ fn index_search_tool_cursor_rejects_context_changes_and_raw_owner_tokens() {
             "limit" => arguments["limit"] = json!(2),
             "detail" => arguments["detail"] = json!("full"),
             "project" => server.project = "/other-project".to_owned(),
-            "authority" => server.cursor_secret = [8; 32],
+            "authority" => server.cursor_authority = CursorAuthority::SelectedKey([8; 32]),
             "tamper" => {
                 let token = arguments["cursor"].as_str().expect("cursor token");
                 let mut changed = token.to_owned();
@@ -3512,11 +3614,15 @@ fn index_search_tool_cursor_rejects_context_changes_and_raw_owner_tokens() {
                     context_arguments.as_object().expect("tool arguments"),
                     Detail::Summary,
                 );
-                arguments["cursor"] = json!(server.sign_cursor_token_at(
-                    unix_seconds().saturating_sub(1),
-                    "maven-owner-v4",
-                    &context
-                ));
+                arguments["cursor"] = json!(
+                    server
+                        .sign_cursor_token_at(
+                            unix_seconds().saturating_sub(1),
+                            "maven-owner-v4",
+                            &context
+                        )
+                        .expect("explicit fixture cursor authority")
+                );
             }
             "raw" => arguments["cursor"] = json!("maven-owner-v4"),
             _ => unreachable!(),
@@ -3665,7 +3771,7 @@ fn surface_index_search_cursor_binds_query_limit_project_and_detail() {
             "limit" => command["limit"] = json!(2),
             "detail" => detail = "full",
             "project" => server.project = "/other-project".to_owned(),
-            "authority" => server.cursor_secret = [8; 32],
+            "authority" => server.cursor_authority = CursorAuthority::SelectedKey([8; 32]),
             "tamper" => {
                 let token = command["cursor"].as_str().expect("cursor token");
                 let mut changed = token.to_owned();
@@ -3680,11 +3786,15 @@ fn surface_index_search_cursor_binds_query_limit_project_and_detail() {
                     .expect("surface arguments");
                 let context =
                     continuation_context(PROJECT, SURFACE_TOOL, context_arguments, Detail::Summary);
-                command["cursor"] = json!(server.sign_cursor_token_at(
-                    unix_seconds().saturating_sub(1),
-                    "maven-owner-v4",
-                    &context
-                ));
+                command["cursor"] = json!(
+                    server
+                        .sign_cursor_token_at(
+                            unix_seconds().saturating_sub(1),
+                            "maven-owner-v4",
+                            &context
+                        )
+                        .expect("explicit fixture cursor authority")
+                );
             }
             "raw" => command["cursor"] = json!("maven-owner-v4"),
             _ => unreachable!(),

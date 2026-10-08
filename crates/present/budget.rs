@@ -8,106 +8,20 @@
 use serde::Serialize;
 #[cfg(test)]
 use serde_json::Value;
-use std::io::{self, Write};
 
 use crate::Answer;
 use crate::dto::{
     CapabilitiesDto, CoverageDto, FaultDto, IdentityDto, OutlineDto, OutlineNodeDto, PageDto,
-    ProductDto, ProductIndexSearchPageDto, ProductRecordDto, RecordDto, RecordListDto, ShelfDto,
-    ShelfEntryDto, StatusDto,
+    ProductDto, ProductIndexSearchPageDto, ProductRecordDto, ShelfDto, ShelfEntryDto, StatusDto,
 };
 use crate::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand};
 
-/// Bytes-per-token ratio used for a stable, provider-independent estimate.
-///
-/// This is deliberately an estimate, not a tokenizer claim.  Measuring bytes
-/// first keeps budgets reproducible across model providers and versions.
-pub const ESTIMATED_BYTES_PER_TOKEN: usize = 4;
-
-/// Default structured response budget for a context-sized answer.
-pub const DEFAULT_RESPONSE_BUDGET_BYTES: usize = 48 * 1024;
-
-/// Hard response budget for the largest complete typed payload admitted.
-pub const MAX_RESPONSE_BUDGET_BYTES: usize = 256 * 1024;
-
-/// Byte ceiling for human-readable duplicate text carried beside a typed
-/// projection. The typed value remains the complete machine-readable answer;
-/// this preview is deliberately kept small so the two together stay within a
-/// context-sized MCP result.
-pub const MAX_PREVIEW_TEXT_BYTES: usize = 16 * 1024;
-
-/// How much detail a caller requests from a presentation answer.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum Detail {
-    /// Keep identity, status, coverage, and short row summaries.
-    #[default]
-    Summary,
-    /// Keep the normal typed DTO, subject to the byte budget.
-    Standard,
-    /// Keep every available field, subject to the byte budget.
-    Full,
-}
-
-impl Detail {
-    /// Parses the stable wire spelling.
-    #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "summary" | "minimal" => Some(Self::Summary),
-            "standard" | "default" => Some(Self::Standard),
-            "full" | "detail" => Some(Self::Full),
-            _ => None,
-        }
-    }
-
-    /// Returns the stable wire spelling.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Summary => "summary",
-            Self::Standard => "standard",
-            Self::Full => "full",
-        }
-    }
-}
-
-/// Deterministic size measurements emitted by adapters and fixtures.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PayloadBudget {
-    /// UTF-8 JSON bytes, excluding framing newline bytes.
-    pub bytes: usize,
-    /// Provider-independent estimated tokens.
-    pub estimated_tokens: usize,
-}
-
-/// A complete, bounded JSON payload produced by the typed encoder.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct EncodedPayload {
-    /// UTF-8 JSON bytes, excluding framing newline bytes.
-    pub bytes: Box<[u8]>,
-    /// Measured payload budget, including the budget object itself.
-    pub budget: PayloadBudget,
-}
-
-/// A typed admission failure for a response that cannot fit the requested
-/// context budget without changing its DTO meaning.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BudgetExceeded {
-    /// Encoded JSON bytes observed.
-    pub bytes: usize,
-    /// Maximum bytes admitted for this response.
-    pub budget: usize,
-}
-
-impl std::fmt::Display for BudgetExceeded {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "response is {} bytes, above the {} byte budget; lower limit or request detail=summary",
-            self.bytes, self.budget
-        )
-    }
-}
+pub use backend_page_output::budget::{
+    BudgetExceeded, DEFAULT_RESPONSE_BUDGET_BYTES, Detail, ESTIMATED_BYTES_PER_TOKEN,
+    EncodedPayload, MAX_PREVIEW_TEXT_BYTES, MAX_RESPONSE_BUDGET_BYTES, PayloadBudget,
+    encode_serializable, encode_value, estimate_tokens,
+};
+use backend_page_output::budget::{PayloadProjection, encode_typed};
 
 /// Converts a refused complete payload into the shared typed oversize fault.
 ///
@@ -121,12 +35,6 @@ pub fn oversized_fault(error: BudgetExceeded) -> Fault {
         Cause::new(CauseSlug::Oversized, error.to_string()),
         Affordance::None,
     )
-}
-
-/// Estimates tokens from bytes using the fixed repository ratio.
-#[must_use]
-pub const fn estimate_tokens(bytes: usize) -> usize {
-    bytes.saturating_add(ESTIMATED_BYTES_PER_TOKEN - 1) / ESTIMATED_BYTES_PER_TOKEN
 }
 
 /// Bounds a human-readable preview without splitting a UTF-8 code point.
@@ -159,9 +67,112 @@ pub fn encode_answer(
     next_cursor: Option<&str>,
     budget: usize,
 ) -> Result<EncodedPayload, BudgetExceeded> {
+    project_answer(answer, detail, next_cursor, EncodeSink { budget })
+}
+
+/// Streaming canonical typed projection. Producers can count its complete
+/// enclosing response without allocating an oversized JSON body.
+pub struct AnswerProjection<'a> {
+    /// Current complete typed answer.
+    pub answer: &'a Answer,
+    /// Original detail policy.
+    pub detail: Detail,
+    /// Actual or proved equal-width continuation text.
+    pub next_cursor: Option<&'a str>,
+}
+
+impl Serialize for AnswerProjection<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        project_answer(
+            self.answer,
+            self.detail,
+            self.next_cursor,
+            SerializeSink(serializer),
+        )
+    }
+}
+
+trait ProjectionSink {
+    type Output;
+    fn records(
+        self,
+        list: &crate::RecordList,
+        detail: Detail,
+        cursor: Option<&str>,
+    ) -> Self::Output;
+    fn emit<T: Serialize>(
+        self,
+        answer: &'static str,
+        detail: Detail,
+        cursor: Option<&str>,
+        body: T,
+    ) -> Self::Output;
+}
+struct EncodeSink {
+    budget: usize,
+}
+impl ProjectionSink for EncodeSink {
+    type Output = Result<EncodedPayload, BudgetExceeded>;
+    fn records(
+        self,
+        list: &crate::RecordList,
+        detail: Detail,
+        cursor: Option<&str>,
+    ) -> Self::Output {
+        backend_page_output::encode_records(list, detail, cursor, self.budget)
+    }
+    fn emit<T: Serialize>(
+        self,
+        answer: &'static str,
+        detail: Detail,
+        cursor: Option<&str>,
+        body: T,
+    ) -> Self::Output {
+        encode_typed(answer, detail, cursor, body, self.budget)
+    }
+}
+struct SerializeSink<S>(S);
+impl<S: serde::Serializer> ProjectionSink for SerializeSink<S> {
+    type Output = Result<S::Ok, S::Error>;
+    fn records(
+        self,
+        list: &crate::RecordList,
+        detail: Detail,
+        cursor: Option<&str>,
+    ) -> Self::Output {
+        backend_page_output::RecordsProjection {
+            list,
+            detail,
+            next_cursor: cursor,
+        }
+        .serialize(self.0)
+    }
+    fn emit<T: Serialize>(
+        self,
+        answer: &'static str,
+        detail: Detail,
+        cursor: Option<&str>,
+        body: T,
+    ) -> Self::Output {
+        PayloadProjection {
+            body,
+            answer,
+            detail,
+            next_cursor: cursor,
+        }
+        .serialize(self.0)
+    }
+}
+
+fn project_answer<S: ProjectionSink>(
+    answer: &Answer,
+    detail: Detail,
+    next_cursor: Option<&str>,
+    sink: S,
+) -> S::Output {
     if matches!(detail, Detail::Summary) {
         return match answer {
-            Answer::Page(page) => encode_typed(
+            Answer::Page(page) => sink.emit(
                 answer.kind(),
                 detail,
                 next_cursor,
@@ -170,38 +181,8 @@ pub fn encode_answer(
                     kind: page.kind().map(|kind| kind.name().to_owned()),
                     language: page.language().name().to_owned(),
                 },
-                budget,
             ),
-            Answer::Records(list) => {
-                let records = list
-                    .records()
-                    .iter()
-                    .map(|record| {
-                        let record = RecordDto::new(record);
-                        SummaryRecordDto {
-                            identity: record.identity,
-                            kind: record.kind,
-                            language: record.language,
-                            state: record.state,
-                            summary: record.summary,
-                            score: record.score,
-                        }
-                    })
-                    .collect();
-                encode_typed(
-                    answer.kind(),
-                    detail,
-                    next_cursor,
-                    SummaryRecordsDto {
-                        query: list.query(),
-                        coverage: CoverageDto::all(list.coverage()),
-                        readiness: list.coverage().readiness(),
-                        records,
-                        more: list.has_more(),
-                    },
-                    budget,
-                )
-            }
+            Answer::Records(list) => sink.records(list, detail, next_cursor),
             Answer::Shelf(shelf) => {
                 let projects = shelf
                     .entries()
@@ -217,7 +198,7 @@ pub fn encode_answer(
                         }
                     })
                     .collect();
-                encode_typed(
+                sink.emit(
                     answer.kind(),
                     detail,
                     next_cursor,
@@ -225,12 +206,11 @@ pub fn encode_answer(
                         revision: shelf.revision().to_string(),
                         projects,
                     },
-                    budget,
                 )
             }
             Answer::Outline(outline) => {
                 let outline = OutlineDto::new(outline);
-                encode_typed(
+                sink.emit(
                     answer.kind(),
                     detail,
                     next_cursor,
@@ -241,12 +221,11 @@ pub fn encode_answer(
                         declarations: outline.declarations,
                         unnamed: outline.unnamed,
                     },
-                    budget,
                 )
             }
             Answer::Status(status) => {
                 let status = StatusDto::new(status);
-                encode_typed(
+                sink.emit(
                     answer.kind(),
                     detail,
                     next_cursor,
@@ -261,12 +240,11 @@ pub fn encode_answer(
                         coverage: status.coverage,
                         capabilities: status.capabilities,
                     },
-                    budget,
                 )
             }
             Answer::Product(product) => {
                 let product = ProductDto::new(product);
-                encode_typed(
+                sink.emit(
                     answer.kind(),
                     detail,
                     next_cursor,
@@ -283,225 +261,23 @@ pub fn encode_answer(
                         semantic_data: product.semantic_data,
                         package_discovery: product.package_discovery,
                     },
-                    budget,
                 )
             }
         };
     }
     match answer {
-        Answer::Page(page) => encode_typed(
-            answer.kind(),
-            detail,
-            next_cursor,
-            PageDto::new(page),
-            budget,
-        ),
-        Answer::Records(list) => encode_typed(
-            answer.kind(),
-            detail,
-            next_cursor,
-            RecordListDto::new(list),
-            budget,
-        ),
-        Answer::Shelf(shelf) => encode_typed(
-            answer.kind(),
-            detail,
-            next_cursor,
-            ShelfDto::new(shelf),
-            budget,
-        ),
-        Answer::Outline(outline) => encode_typed(
-            answer.kind(),
-            detail,
-            next_cursor,
-            OutlineDto::new(outline),
-            budget,
-        ),
-        Answer::Status(status) => encode_typed(
-            answer.kind(),
-            detail,
-            next_cursor,
-            StatusDto::new(status),
-            budget,
-        ),
-        Answer::Product(product) => encode_typed(
-            answer.kind(),
-            detail,
-            next_cursor,
-            ProductDto::new(product),
-            budget,
-        ),
-    }
-}
-
-fn encode_typed<'a, T: Serialize>(
-    answer: &'static str,
-    detail: Detail,
-    next_cursor: Option<&'a str>,
-    body: T,
-    budget: usize,
-) -> Result<EncodedPayload, BudgetExceeded> {
-    // Keep every adapter behind the same protocol ceiling, even if a caller
-    // accidentally supplies an unbounded or oversized local budget.
-    let budget = budget.min(MAX_RESPONSE_BUDGET_BYTES);
-    let mut envelope = BudgetEnvelope {
-        body,
-        answer,
-        detail: detail.name(),
-        next_cursor,
-        budget: BudgetMetadata::default(),
-    };
-    let mut measured = count_json(&envelope);
-    for _ in 0..4 {
-        envelope.budget = BudgetMetadata::from_bytes(measured);
-        let next = count_json(&envelope);
-        if next == measured {
-            break;
+        Answer::Page(page) => sink.emit(answer.kind(), detail, next_cursor, PageDto::new(page)),
+        Answer::Records(list) => sink.records(list, detail, next_cursor),
+        Answer::Shelf(shelf) => sink.emit(answer.kind(), detail, next_cursor, ShelfDto::new(shelf)),
+        Answer::Outline(outline) => {
+            sink.emit(answer.kind(), detail, next_cursor, OutlineDto::new(outline))
         }
-        measured = next;
-    }
-    envelope.budget = BudgetMetadata::from_bytes(measured);
-    measured = count_json(&envelope);
-    if measured > budget {
-        return Err(BudgetExceeded {
-            bytes: measured,
-            budget,
-        });
-    }
-    let mut writer = HardCapWriter::new(budget);
-    serde_json::to_writer(&mut writer, &envelope).map_err(|_| BudgetExceeded {
-        bytes: measured,
-        budget,
-    })?;
-    if writer.bytes.len() != measured {
-        return Err(BudgetExceeded {
-            bytes: writer.bytes.len(),
-            budget,
-        });
-    }
-    Ok(EncodedPayload {
-        bytes: writer.bytes.into_boxed_slice(),
-        budget: PayloadBudget {
-            bytes: measured,
-            estimated_tokens: estimate_tokens(measured),
-        },
-    })
-}
-
-/// Encodes another typed, map-shaped presentation body with the same bounded
-/// envelope used by CLI/MCP answers.
-pub fn encode_serializable<'a, T: Serialize>(
-    answer: &'static str,
-    detail: Detail,
-    next_cursor: Option<&'a str>,
-    body: T,
-    budget: usize,
-) -> Result<EncodedPayload, BudgetExceeded> {
-    encode_typed(answer, detail, next_cursor, body, budget)
-}
-
-/// Serializes a typed JSON value under the same hard cap as answer envelopes.
-///
-/// Faults, protocol metadata, and other route-level values do not have an
-/// [`Answer`] variant, but they still cross the same context boundary. This
-/// helper lets those callers measure before allocating and refuse atomically.
-pub fn encode_value<T: Serialize>(
-    value: &T,
-    budget: usize,
-) -> Result<EncodedPayload, BudgetExceeded> {
-    let budget = budget.min(MAX_RESPONSE_BUDGET_BYTES);
-    let measured = count_json(value);
-    if measured > budget {
-        return Err(BudgetExceeded {
-            bytes: measured,
-            budget,
-        });
-    }
-    let mut writer = HardCapWriter::new(budget);
-    serde_json::to_writer(&mut writer, value).map_err(|_| BudgetExceeded {
-        bytes: measured,
-        budget,
-    })?;
-    if writer.bytes.len() != measured {
-        return Err(BudgetExceeded {
-            bytes: writer.bytes.len(),
-            budget,
-        });
-    }
-    Ok(EncodedPayload {
-        bytes: writer.bytes.into_boxed_slice(),
-        budget: PayloadBudget {
-            bytes: measured,
-            estimated_tokens: estimate_tokens(measured),
-        },
-    })
-}
-
-#[derive(Serialize)]
-struct BudgetEnvelope<'a, T> {
-    #[serde(flatten)]
-    body: T,
-    answer: &'static str,
-    detail: &'static str,
-    #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
-    next_cursor: Option<&'a str>,
-    budget: BudgetMetadata,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
-struct BudgetMetadata {
-    bytes: usize,
-    #[serde(rename = "estimatedTokens")]
-    estimated_tokens: usize,
-    #[serde(rename = "bytesPerToken")]
-    bytes_per_token: usize,
-}
-
-impl BudgetMetadata {
-    const fn from_bytes(bytes: usize) -> Self {
-        Self {
-            bytes,
-            estimated_tokens: estimate_tokens(bytes),
-            bytes_per_token: ESTIMATED_BYTES_PER_TOKEN,
+        Answer::Status(status) => {
+            sink.emit(answer.kind(), detail, next_cursor, StatusDto::new(status))
         }
-    }
-}
-
-fn count_json<T: Serialize>(value: &T) -> usize {
-    let mut writer = CountingWriter::default();
-    serde_json::to_writer(&mut writer, value)
-        .map(|()| writer.bytes)
-        .unwrap_or(usize::MAX)
-}
-
-struct HardCapWriter {
-    bytes: Vec<u8>,
-    cap: usize,
-}
-
-impl HardCapWriter {
-    fn new(cap: usize) -> Self {
-        Self {
-            bytes: Vec::with_capacity(cap.min(64 * 1024)),
-            cap,
+        Answer::Product(product) => {
+            sink.emit(answer.kind(), detail, next_cursor, ProductDto::new(product))
         }
-    }
-}
-
-impl Write for HardCapWriter {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if self.bytes.len().saturating_add(bytes.len()) > self.cap {
-            return Err(io::Error::new(
-                io::ErrorKind::WriteZero,
-                "serialized response exceeds the hard cap",
-            ));
-        }
-        self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
     }
 }
 
@@ -511,30 +287,6 @@ struct SummaryPageDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     kind: Option<String>,
     language: String,
-}
-
-#[derive(Serialize)]
-struct SummaryRecordDto {
-    identity: IdentityDto,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    kind: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    language: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    state: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    summary: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    score: Option<u32>,
-}
-
-#[derive(Serialize)]
-struct SummaryRecordsDto<'a> {
-    query: &'a str,
-    coverage: Vec<CoverageDto>,
-    readiness: &'a str,
-    records: Vec<SummaryRecordDto>,
-    more: bool,
 }
 
 #[derive(Serialize)]
@@ -599,22 +351,6 @@ struct SummaryProductDto {
     semantic_data: Option<crate::product::ProductSemanticData>,
     #[serde(skip_serializing_if = "Option::is_none")]
     package_discovery: Option<crate::product::PackageDiscoveryProjection>,
-}
-
-#[derive(Default)]
-struct CountingWriter {
-    bytes: usize,
-}
-
-impl Write for CountingWriter {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.bytes = self.bytes.saturating_add(bytes.len());
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -756,24 +492,43 @@ mod tests {
             worst.bytes.as_ref(),
             include_bytes!("fixtures/worst-200-full-records-selected-id.json")
         );
-        let current: serde_json::Value = serde_json::from_slice(&worst.bytes).expect("actual native JSON");
-        assert_eq!(serde_json::to_vec(&current).expect("Value serializer").len(), worst.bytes.len(),
-            "stream and Value encoders measure the same complete JSON");
-        let historical: serde_json::Value = serde_json::from_slice(
-            include_bytes!("fixtures/worst-200-full-records.json"))
-            .expect("retained prior golden bytes");
+        let current: serde_json::Value =
+            serde_json::from_slice(&worst.bytes).expect("actual native JSON");
+        assert_eq!(
+            serde_json::to_vec(&current)
+                .expect("Value serializer")
+                .len(),
+            worst.bytes.len(),
+            "stream and Value encoders measure the same complete JSON"
+        );
+        let historical: serde_json::Value =
+            serde_json::from_slice(include_bytes!("fixtures/worst-200-full-records.json"))
+                .expect("retained prior golden bytes");
         let mut without_selected_ids = current;
-        for (index, record) in without_selected_ids["records"].as_array_mut().expect("records").iter_mut().enumerate() {
-            let selected = record["identity"].as_object_mut().expect("identity")
-                .remove("semantic_data").expect("exact selected symbol identity");
-            assert_eq!(selected, serde_json::json!({
-                "kind": "selected-symbol-id",
-                "value": backend_library::symbol_key(&format!("typed-budget-{index}")).to_bytes(),
-            }));
+        for (index, record) in without_selected_ids["records"]
+            .as_array_mut()
+            .expect("records")
+            .iter_mut()
+            .enumerate()
+        {
+            let selected = record["identity"]
+                .as_object_mut()
+                .expect("identity")
+                .remove("semantic_data")
+                .expect("exact selected symbol identity");
+            assert_eq!(
+                selected,
+                serde_json::json!({
+                    "kind": "selected-symbol-id",
+                    "value": backend_library::symbol_key(&format!("typed-budget-{index}")).to_bytes(),
+                })
+            );
         }
         without_selected_ids["budget"] = historical["budget"].clone();
-        assert_eq!(without_selected_ids, historical,
-            "only exact selected IDs and derived budget metadata changed");
+        assert_eq!(
+            without_selected_ids, historical,
+            "only exact selected IDs and derived budget metadata changed"
+        );
         let refused = encode_answer(&worst_answer, Detail::Full, None, 48 * 1024)
             .expect_err("an oversized complete page is refused before allocation");
         assert_eq!(refused.budget, 48 * 1024);
@@ -873,14 +628,6 @@ mod tests {
         );
         assert!(refused.bytes > MAX_RESPONSE_BUDGET_BYTES);
         assert_eq!(refused.budget, MAX_RESPONSE_BUDGET_BYTES);
-    }
-
-    #[test]
-    fn hard_cap_writer_never_returns_a_truncated_success() {
-        let mut writer = HardCapWriter::new(4);
-        assert!(writer.write_all(b"abc").is_ok());
-        assert!(writer.write_all(b"de").is_err());
-        assert_eq!(writer.bytes, b"abc");
     }
 
     #[test]

@@ -366,7 +366,7 @@ pub(super) fn prepare_socket_path(path: &Path) -> Result<(), ListenerError> {
     if !is_endpoint_file(&metadata) {
         return Err(ListenerError::EndpointOccupied);
     }
-    match backend_engine::LocalStream::connect(path) {
+    match backend_platform::local::connect_timeout(path, std::time::Duration::from_secs(5)) {
         Ok(_) => Err(ListenerError::AlreadyRunning),
         Err(error)
             if matches!(

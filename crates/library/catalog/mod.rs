@@ -9,7 +9,7 @@ mod command;
 mod projection;
 mod subscription;
 
-pub use projection::QueryPageRecipe;
+pub use projection::{QueryPageRecipe, RankedSearchProjection};
 
 use crate::arrangement::{ProjectionArrangement, WorkCounters};
 use crate::{

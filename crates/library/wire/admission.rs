@@ -28,6 +28,8 @@ pub enum RequestAdmissionError {
     TextTooLarge,
     /// A daemon-owned surface command violated one of its structural bounds.
     InvalidSurface,
+    /// Query packing conflicts with a legacy cursor or original row credit.
+    InvalidPacking,
 }
 
 impl fmt::Display for RequestAdmissionError {
@@ -35,6 +37,7 @@ impl fmt::Display for RequestAdmissionError {
         match self {
             Self::EmptyText => formatter.write_str("query text cannot be empty"),
             Self::TextTooLarge => write!(formatter, "query text exceeds {MAX_COMMAND_TEXT} bytes"),
+            Self::InvalidPacking => formatter.write_str("query packing failed admission"),
             Self::InvalidSurface => formatter.write_str("surface command failed admission"),
         }
     }
@@ -88,7 +91,14 @@ impl std::error::Error for ReplyAdmissionError {}
 pub fn admit_request(request: &CommandDto) -> Result<(), RequestAdmissionError> {
     let text = match &request.command {
         Command::Name(query) => Some(query.text()),
-        Command::Search(query) => Some(query.text()),
+        Command::Search(query) => {
+            if let Some(packing) = query.packing() {
+                if query.cursor().is_some() || packing.policy().rows() != query.limit() {
+                    return Err(RequestAdmissionError::InvalidPacking);
+                }
+            }
+            Some(query.text())
+        }
         Command::Resolve { text } => Some(text.as_str()),
         Command::Surface(command) => {
             command
@@ -143,6 +153,47 @@ pub fn admit_reply_with_capability(
         });
     }
     admit_reply_shape(&request.command, &reply.reply)?;
+    if let CommandReply::Failed(crate::CommandFailure::PagePacking(failure)) = &reply.reply {
+        failure.admit().map_err(ReplyAdmissionError::Protocol)?;
+        let credit = match failure {
+            crate::PackedQueryFailure::ItemExceedsWireCredit { credit_bytes, .. }
+            | crate::PackedQueryFailure::EnvelopeExceedsWireCredit { credit_bytes, .. } => *credit_bytes,
+        };
+        if !matches!(&request.command, Command::Search(query)
+            if query.packing().is_some_and(|packing| packing.policy().bytes() == credit)) {
+            return Err(ReplyAdmissionError::Protocol("packed query failure changed its request credit or family".to_owned()));
+        }
+    }
+
+    match (&request.command, &reply.reply, reply.packed_query()) {
+        (Command::Search(query), CommandReply::Search(snapshot), Some(receipt)) => {
+            let Some(packing) = query.packing() else {
+                return Err(ReplyAdmissionError::Protocol(
+                    "unexpected packed search receipt".to_owned(),
+                ));
+            };
+            if snapshot.next.is_some()
+                || u64::from(receipt.rows()) != snapshot.root.row_count()
+                || receipt.rows() > query.limit().get()
+                || receipt.bytes() > packing.policy().bytes()
+            {
+                return Err(ReplyAdmissionError::Protocol(
+                    "packed search receipt does not match the certified rows".to_owned(),
+                ));
+            }
+        }
+        (Command::Search(query), CommandReply::Search(_), None) if query.packing().is_some() => {
+            return Err(ReplyAdmissionError::Protocol(
+                "packed search omitted its producer receipt".to_owned(),
+            ));
+        }
+        (_, _, Some(_)) => {
+            return Err(ReplyAdmissionError::Protocol(
+                "packed receipt attached to another command/reply family".to_owned(),
+            ));
+        }
+        _ => {}
+    }
     let expected_basis = command_basis(&request.command);
     match &reply.reply {
         CommandReply::Packages(snapshot)
@@ -465,7 +516,10 @@ pub fn reply_memory_bound(reply: &ReplyDto) -> usize {
             add_bound(&mut bound, 512usize.saturating_add(message.len()));
         }
         CommandReply::Failed(crate::CommandFailure::PartiallyPublished(partial)) => {
-            add_bound(&mut bound, 512usize.saturating_add(partial.encoded_size_bound()));
+            add_bound(
+                &mut bound,
+                512usize.saturating_add(partial.encoded_size_bound()),
+            );
         }
         CommandReply::Failed(failure) => {
             add_bound(
@@ -633,15 +687,24 @@ fn add_claim_bound(bound: &mut usize, claim: &WireClaim) {
 
 fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), ReplyAdmissionError> {
     let valid = match (command, reply) {
-        (Command::Add { package, .. }, CommandReply::Failed(crate::CommandFailure::PartiallyPublished(partial))) => {
-            partial.admit().map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
+        (
+            Command::Add { package, .. },
+            CommandReply::Failed(crate::CommandFailure::PartiallyPublished(partial)),
+        ) => {
+            partial
+                .admit()
+                .map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
             if crate::package_key(partial.package.as_str()) != *package {
-                return Err(ReplyAdmissionError::Protocol("partial add reply does not match the requested package".to_owned()));
+                return Err(ReplyAdmissionError::Protocol(
+                    "partial add reply does not match the requested package".to_owned(),
+                ));
             }
             true
         }
         (_, CommandReply::Failed(crate::CommandFailure::PartiallyPublished(_))) => {
-            return Err(ReplyAdmissionError::Protocol("partial add publication does not match this command".to_owned()));
+            return Err(ReplyAdmissionError::Protocol(
+                "partial add publication does not match this command".to_owned(),
+            ));
         }
         (_, CommandReply::Error(_) | CommandReply::Failed(_))
         | (Command::Packages, CommandReply::Packages(_))
@@ -771,7 +834,10 @@ fn admit_index_ticket_reply(
         (SurfaceCommand::IndexAwait { ticket }, SurfaceReply::IndexTerminal(terminal)) => {
             (ticket, &terminal.ticket)
         }
-        (SurfaceCommand::IndexProgress { ticket, .. }, SurfaceReply::IndexProgress(observation)) => {
+        (
+            SurfaceCommand::IndexProgress { ticket, .. },
+            SurfaceReply::IndexProgress(observation),
+        ) => {
             let observed = match observation {
                 IndexJobObservation::Pending(page) => &page.ticket,
                 IndexJobObservation::Terminal(terminal) => &terminal.ticket,

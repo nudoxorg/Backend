@@ -1567,6 +1567,7 @@ pub(crate) fn compose_owner(
         .map_err(ProcessError::Profile)?;
     let relation_registry =
         product_relation_registry().map_err(|error| ProcessError::Profile(error.to_string()))?;
+    backend_runtime::report_startup_phase(backend_runtime::StartupPhase::OpeningOwner);
     let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
         &config.workspace,
         BuiltinModel,
@@ -1576,6 +1577,7 @@ pub(crate) fn compose_owner(
         relation_registry,
     )
     .map_err(|error| embedded_host::owner_open_refusal(&config.workspace, error))?;
+    backend_runtime::report_startup_phase(backend_runtime::StartupPhase::SelectingCompilers);
     let compiler_root = config.workspace.join("compiler");
     backend_platform::durable::ensure_private_directory(&compiler_root)
         .map_err(|error| ProcessError::Profile(format!("open private compiler state: {error}")))?;
@@ -1653,6 +1655,7 @@ pub(crate) fn compose_owner(
     {
         eprintln!("journey startup phase: SemanticAuthority::open begin");
     }
+    backend_runtime::report_startup_phase(backend_runtime::StartupPhase::RecoveringSemanticState);
     let mut semantic_authority = SemanticAuthority::open(&config.workspace)
         .map_err(|error| ProcessError::Profile(error.to_string()))?;
     #[cfg(feature = "cluster-process-journey-hooks")]
@@ -1755,6 +1758,7 @@ pub(crate) fn compose_owner(
             .publish_view(view, cursor, &admission, None)
             .map_err(|error| ProcessError::Profile(error.to_string()))?;
     }
+    backend_runtime::report_startup_phase(backend_runtime::StartupPhase::PublishingView);
     // The workspace journal is authoritative. A crash can occur after a
     // workspace commit and between several bounded view-row publications;
     // repair that derived suffix before the listener becomes visible.
@@ -1946,6 +1950,7 @@ pub(crate) fn compose_owner(
         semantic_authority,
         owner_cluster,
         pending_stored_acks,
+        worker_secret,
     )
     .map_err(|error| ProcessError::Profile(format!("start command read lane: {error}")))?;
     let commands = Arc::new(Mutex::new(commands));
@@ -2382,10 +2387,11 @@ pub fn run(config: ProcessConfig) -> ExitCode {
     match compose_owner(&config) {
         Ok(owner) => crate::process::run_process(owner, config),
         Err(error) => {
-            crate::process::report_process_failure(&error);
             if matches!(error, ProcessError::OwnerContended { .. }) {
+                crate::process::report_owner_contention(&error);
                 ExitCode::from(backend_runtime::OWNER_CONTENDED_EXIT_CODE)
             } else {
+                crate::process::report_process_failure(&error);
                 ExitCode::from(70)
             }
         }

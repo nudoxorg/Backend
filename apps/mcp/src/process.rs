@@ -94,14 +94,12 @@ fn serve_json_rpc_stdio(
     let project = backend_runtime::normalize_surface_path(paths.project())
         .to_string_lossy()
         .into_owned();
-    let cursor_secret = crate::jsonrpc::cursor_secret(paths)?;
     // The connection is deliberately deferred until an owner-backed request.
     // MCP initialize and tools/list are local protocol operations, so an
     // unavailable owner must still receive a correlated tool error instead of
     // preventing the process from reading any request at all. Indexing remains
     // an explicit operation exposed as `backend.index`.
-    crate::jsonrpc::serve_stdio(paths, project, cursor_secret, reader, writer)
-        .map_err(|error| error.to_string())
+    crate::jsonrpc::serve_stdio(paths, project, reader, writer).map_err(|error| error.to_string())
 }
 
 fn framed_main(session: &backend_runtime::WorkspacePaths) -> ExitCode {
@@ -393,17 +391,34 @@ mod tests {
     }
 
     #[test]
-    fn stdio_returns_correlated_mcp_error_when_owner_startup_fails() {
+    fn stdio_returns_correlated_mcp_error_when_selected_owner_executable_is_missing() {
+        const ROLE: &str = "BACKEND_MCP_MISSING_OWNER_TEST_CHILD";
+        if std::env::var_os(ROLE).is_none() {
+            let fixture = Fixture::new("missing-owner");
+            let missing = fixture.root.join("absent-locald");
+            let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+                .args([
+                    "--exact",
+                    "process::tests::stdio_returns_correlated_mcp_error_when_selected_owner_executable_is_missing",
+                    "--nocapture",
+                ])
+                .env(ROLE, "child")
+                .env(backend_runtime::LOCALD_BIN_ENV, &missing)
+                .output()
+                .expect("kernel-wait isolated missing-owner fixture");
+            assert!(
+                output.status.success(),
+                "isolated startup refusal failed: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
         let fixture = Fixture::new("outage");
         fs::create_dir_all(&fixture.data).expect("fixture state");
-        // Keep the authority secret readable, but leave the state directory's
-        // parent shared with other users, so it fails the private-parent
-        // admission that prevented the reported process from starting. That
-        // failure now occurs only after initialize, initialized, and a
-        // complete status request have reached the normal JSON-RPC processor.
-        // The root stays shared: mode `0755` on Unix, set explicitly because a
-        // strict umask would otherwise make it private and hide the refusal,
-        // and an inherited (unprotected) DACL on Windows.
+        // Private-parent admission remains required when the owner initializes
+        // its workspace. Metadata requests defer that work, and executable
+        // selection fails first in this isolated missing-companion fixture.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
@@ -412,6 +427,19 @@ mod tests {
         }
         restrict_to_owner(&fixture.data);
         plant_authority_secret(&fixture.data);
+        let refusal = if cfg!(unix) {
+            "private state parent"
+        } else {
+            "protected DACL"
+        };
+        assert!(
+            fixture
+                .paths()
+                .initialize()
+                .expect_err("shared parent cannot initialize owner state")
+                .to_string()
+                .contains(refusal)
+        );
 
         let [initialize, initialized] = handshake("outage-fixture");
         let status = json!({
@@ -428,21 +456,21 @@ mod tests {
         assert_eq!(replies[1]["id"], 2);
         assert_eq!(replies[1]["result"]["isError"], true);
         assert_eq!(replies[1]["result"]["structuredContent"]["answer"], "fault");
-        // The two platforms name the same refusal in their own terms.
-        let refusal = if cfg!(unix) {
-            "private state parent"
-        } else {
-            "protected DACL"
-        };
+        let missing = std::env::var_os(backend_runtime::LOCALD_BIN_ENV)
+            .expect("isolated child selects its missing executable");
+        let refusal = format!(
+            "backend-locald companion executable was not found at {}",
+            Path::new(&missing).display()
+        );
         assert!(
-            replies[1].to_string().contains(refusal),
+            replies[1].to_string().contains(&refusal),
             "the owner-startup refusal must reach the caller: {}",
             replies[1]
         );
     }
 
     #[test]
-    fn stdio_initializes_a_new_workspace_before_any_owner_request() {
+    fn stdio_metadata_does_not_initialize_a_new_workspace() {
         let fixture = Fixture::new("fresh");
         restrict_to_owner(&fixture.root);
 
@@ -454,6 +482,11 @@ mod tests {
         assert_eq!(replies[0]["id"], 1);
         assert_eq!(replies[1]["id"], 2);
         assert!(replies[1]["result"]["tools"].is_array());
-        assert!(fixture.data.join("authority.secret").is_file());
+        assert!(
+            !fixture.data.exists(),
+            "metadata must not create durable state"
+        );
+        assert!(!fixture.data.join("authority.secret").exists());
+        assert!(!fixture.root.join("owner.sock").exists());
     }
 }

@@ -296,6 +296,15 @@ impl Cursor {
         ))
     }
 
+    /// Reads only the fixed-width root claim after checking cursor syntax.
+    /// These untrusted bytes never construct or admit a typed root identity.
+    pub(crate) fn control_root_claim(bytes: &[u8]) -> Result<[u8; 32], String> {
+        Self::control_sequence(bytes)?;
+        bytes[132..164]
+            .try_into()
+            .map_err(|_| "invalid subscription cursor root claim".to_owned())
+    }
+
     /// Encodes this cursor for a bounded query continuation.
     ///
     /// The envelope carries the same authenticated identity fields as the

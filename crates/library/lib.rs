@@ -39,6 +39,8 @@ pub mod interface;
 pub mod native_test_paths;
 mod package_graph;
 mod package_graph_page;
+mod page_packing;
+mod packed_query;
 mod progress;
 mod python_project;
 pub use python_project::{
@@ -133,7 +135,7 @@ pub use cargo_source::{
     MAX_CARGO_PACKAGE_SOURCE_INVENTORY_SCAN_ENTRIES, MAX_CARGO_PACKAGE_SOURCE_PATH_BYTES,
     MAX_CARGO_SOURCE_COORDINATE_BYTES, MAX_CARGO_SOURCE_DETAIL_BYTES,
 };
-pub use catalog::{Library, QueryPageRecipe, RankedSearchSnapshot};
+pub use catalog::{Library, QueryPageRecipe, RankedSearchProjection, RankedSearchSnapshot};
 pub use command::ReferenceFact;
 pub use command::{
     Command, CommandFailure, CommandId, CommandReply, CompileExecutionIntent, DocumentQuery,
@@ -174,6 +176,13 @@ pub use package_graph_page::{
     PackageGraphControl, PackageGraphCursor, PackageGraphDirection, PackageGraphKnowledge,
     PackageGraphPage, PackageGraphPageError, PackageGraphPageRequest, PackageGraphPageTerminal,
 };
+pub use page_packing::{
+    MAX_PACKED_WIRE_BYTES, PACKED_CHECKPOINT_SCHEMA, PACKED_CHECKPOINT_TOKEN_BYTES,
+    PackedPageCheckpoint, PackedPageContext, PackedPageStop, PackedPrefixCommitment,
+    PackedProjectedRowHasher, PagePackingDetail, PagePackingError, PagePackingPolicy,
+    PagePackingProfile, PagePackingScope,
+};
+pub use packed_query::{PackedCallContext, PackedQueryFailure, PackedQueryReceipt, PackedQueryRequest};
 pub use progress::{
     FaultRows, IngestProgress, LanguageRows, MAX_PROGRESS_FAULTS, MAX_PROGRESS_LANGUAGES,
     ProgressError, SourceUnavailableReason,

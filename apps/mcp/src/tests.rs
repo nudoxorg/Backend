@@ -428,6 +428,7 @@ fn unix_transport_consumes_producer_certified_success_without_expected_cache() {
     });
     let intent = backend_library::Intent::request_package(package).id();
     let (mut server, client) = endpoint::pair();
+    let (release_peer, retain_peer) = std::sync::mpsc::channel();
     let server_thread = std::thread::spawn(move || {
         let body = read_frame(&mut server).expect("request body");
         let request: CommandDto = serde_json::from_slice(&body).expect("certified request");
@@ -444,6 +445,7 @@ fn unix_transport_consumes_producer_certified_success_without_expected_cache() {
             &serde_json::to_vec(&reply).expect("reply body"),
         )
         .expect("reply frame");
+        let _ = retain_peer.recv();
     });
     let mut transport = UnixCommandTransport::from_stream(client);
     let request = CommandDto::new(
@@ -454,13 +456,16 @@ fn unix_transport_consumes_producer_certified_success_without_expected_cache() {
         },
     )
     .with_certificate(request_certificate);
-    let reply = transport
-        .request_with_certificate(request, None)
-        .expect("certified success");
-    assert_eq!(reply.reply, CommandReply::Added(intent));
+    let result = transport.request_with_certificate(request, None);
+    let _ = release_peer.send(());
     server_thread.join().expect("server");
+    assert_eq!(
+        result.expect("certified success").reply,
+        CommandReply::Added(intent)
+    );
 
     let (mut server, client) = endpoint::pair();
+    let (release_peer, retain_peer) = std::sync::mpsc::channel();
     let server_thread = std::thread::spawn(move || {
         let body = read_frame(&mut server).expect("request body");
         let request: CommandDto = serde_json::from_slice(&body).expect("certified request");
@@ -482,6 +487,7 @@ fn unix_transport_consumes_producer_certified_success_without_expected_cache() {
             &serde_json::to_vec(&value).expect("forged reply body"),
         )
         .expect("reply frame");
+        let _ = retain_peer.recv();
     });
     let mut transport = UnixCommandTransport::from_stream(client);
     let request = CommandDto::new(
@@ -496,8 +502,13 @@ fn unix_transport_consumes_producer_certified_success_without_expected_cache() {
         id: encode_id(package_key("pkg").as_bytes()),
         value: "pkg".to_owned(),
     }));
-    assert!(transport.request(request).is_err());
+    let result = transport.request(request);
+    let _ = release_peer.send(());
     server_thread.join().expect("server");
+    assert!(
+        matches!(result, Err(ClientError::Protocol(_))),
+        "forged identity: {result:?}"
+    );
 }
 
 #[cfg(any(unix, windows))]
@@ -505,6 +516,7 @@ fn unix_transport_consumes_producer_certified_success_without_expected_cache() {
 fn unix_transport_rejects_digest_only_identity_success() {
     let package = package_key("pkg");
     let (mut server, client) = endpoint::pair();
+    let (release_peer, retain_peer) = std::sync::mpsc::channel();
     let server_thread = std::thread::spawn(move || {
         let body = read_frame(&mut server).expect("request body");
         let request: CommandDto = serde_json::from_slice(&body).expect("request");
@@ -515,6 +527,7 @@ fn unix_transport_rejects_digest_only_identity_success() {
             &serde_json::to_vec(&reply).expect("digest-only reply body"),
         )
         .expect("reply frame");
+        let _ = retain_peer.recv();
     });
     let request = CommandDto::new(
         19,
@@ -529,8 +542,13 @@ fn unix_transport_rejects_digest_only_identity_success() {
         value: "pkg".to_owned(),
     }));
     let mut transport = UnixCommandTransport::from_stream(client);
-    assert!(transport.request(request).is_err());
+    let result = transport.request(request);
+    let _ = release_peer.send(());
     server_thread.join().expect("server");
+    assert!(
+        matches!(result, Err(ClientError::Protocol(_))),
+        "digest-only identity: {result:?}"
+    );
 }
 
 #[cfg(any(unix, windows))]

@@ -9,6 +9,7 @@ pub(crate) enum CommandFailureWire {
     NotFound(EmptyWire),
     WrongBasis(WrongBasisWire),
     InvalidQuery(TextWire),
+    PagePacking(crate::PackedQueryFailure),
     CompilerRefused(CompilerRefusedWire),
     PartiallyPublished(crate::IndexJobPartialPublication),
     CursorMismatch(EmptyWire),
@@ -33,6 +34,7 @@ pub(crate) struct CompilerRefusedWire {
 
 pub(crate) fn command_failure_to_wire(failure: &CommandFailure) -> CommandFailureWire {
     match failure {
+        CommandFailure::PagePacking(failure) => CommandFailureWire::PagePacking(failure.clone()),
         CommandFailure::NotFound => CommandFailureWire::NotFound(EmptyWire {}),
         CommandFailure::WrongBasis { expected, observed } => {
             CommandFailureWire::WrongBasis(WrongBasisWire {
@@ -43,7 +45,9 @@ pub(crate) fn command_failure_to_wire(failure: &CommandFailure) -> CommandFailur
         CommandFailure::InvalidQuery(message) => CommandFailureWire::InvalidQuery(TextWire {
             text: message.clone(),
         }),
-        CommandFailure::PartiallyPublished(partial) => CommandFailureWire::PartiallyPublished(partial.clone()),
+        CommandFailure::PartiallyPublished(partial) => {
+            CommandFailureWire::PartiallyPublished(partial.clone())
+        }
         CommandFailure::CompilerRefused { detail, failure } => {
             CommandFailureWire::CompilerRefused(CompilerRefusedWire {
                 detail: TextWire {
@@ -67,6 +71,10 @@ pub(crate) fn command_failure_from_wire(
     failure: CommandFailureWire,
 ) -> Result<CommandFailure, String> {
     Ok(match failure {
+        CommandFailureWire::PagePacking(failure) => {
+            failure.admit()?;
+            CommandFailure::PagePacking(failure)
+        }
         CommandFailureWire::NotFound(_) => CommandFailure::NotFound,
         CommandFailureWire::WrongBasis(value) => CommandFailure::WrongBasis {
             expected: ViewRevision::from_bytes(

@@ -371,7 +371,7 @@ mod tests {
     #[test]
     fn live_command_version_refusal_precedes_unknown_nested_contracts() {
         let expected = crate::CommandDto::new(41, crate::Command::Health);
-        for version in [23, crate::DTO_VERSION + 1] {
+        for version in [23, 24, crate::DTO_VERSION + 1] {
             // Version is last: checking only an initial prefix cannot pass.
             let bytes = format!(
                 r#"{{"request_id":41,"command":{{"kind":"surface","data":{{"future_partial_contract":true}}}},"certificate":{{"future_python_contract":true}},"version":{version}}}"#

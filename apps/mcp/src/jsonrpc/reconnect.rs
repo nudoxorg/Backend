@@ -256,6 +256,17 @@ impl<E: Endpoint> Product for Reconnecting<E> {
         })
     }
 
+    fn packed_search(
+        &mut self,
+        text: &str,
+        limit: u16,
+        packing: backend_library::PackedQueryRequest,
+    ) -> Result<Option<ReplyDto>, ClientError> {
+        self.attempt(Repeatable::Yes, |product| {
+            product.packed_search(text, limit, packing.clone())
+        })
+    }
+
     fn graph_page(
         &mut self,
         coordinate: String,

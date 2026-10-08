@@ -53,6 +53,8 @@ pub(crate) struct ReplyEnvelope {
     pub(crate) health_cursor: Option<CursorWire>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) semantic_search: Option<SemanticSearchStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) packed_query: Option<crate::PackedQueryReceipt>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -228,6 +230,11 @@ impl Serialize for ReplyDto {
                 "semantic search status attached to a non-search reply",
             ));
         }
+        if self.packed_query().is_some() && !matches!(&self.reply, CommandReply::Search(_)) {
+            return Err(serde::ser::Error::custom(
+                "packed receipt attached to a non-search reply",
+            ));
+        }
         let reply = reply_to_wire(&self.reply).map_err(serde::ser::Error::custom)?;
         ReplyEnvelope {
             version: DTO_VERSION,
@@ -239,6 +246,7 @@ impl Serialize for ReplyDto {
                 .flatten()
                 .map(cursor_to_wire),
             semantic_search: self.semantic_search_status(),
+            packed_query: self.packed_query().cloned(),
         }
         .serialize(serializer)
     }
@@ -252,6 +260,11 @@ impl<'de> Deserialize<'de> for ReplyDto {
         let certificate = envelope.certificate.as_ref().unwrap_or(&empty_certificate);
         let reply =
             reply_from_wire(envelope.reply, certificate, None).map_err(serde::de::Error::custom)?;
+        if envelope.packed_query.is_some() && !matches!(&reply, CommandReply::Search(_)) {
+            return Err(serde::de::Error::custom(
+                "packed receipt attached to a non-search reply",
+            ));
+        }
         if envelope.semantic_search.is_some() && !matches!(&reply, CommandReply::Search(_)) {
             return Err(serde::de::Error::custom(
                 "semantic search status attached to a non-search reply",
@@ -299,6 +312,9 @@ impl<'de> Deserialize<'de> for ReplyDto {
         }
         if let Some(status) = envelope.semantic_search {
             dto = dto.with_semantic_search_status(status);
+        }
+        if let Some(receipt) = envelope.packed_query {
+            dto = dto.with_packed_query(receipt);
         }
         Ok(dto)
     }

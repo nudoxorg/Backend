@@ -154,6 +154,7 @@ pub struct ReplyDto {
     health_cursor: Option<Cursor>,
     /// Result of the optional semantic lane for a Search reply.
     semantic_search: Option<SemanticSearchStatus>,
+    packed_query: Option<crate::PackedQueryReceipt>,
 }
 
 impl ReplyDto {
@@ -166,6 +167,7 @@ impl ReplyDto {
             certificate: None,
             health_cursor: None,
             semantic_search: None,
+            packed_query: None,
         }
     }
 
@@ -181,6 +183,7 @@ impl ReplyDto {
             certificate: None,
             health_cursor: Some(cursor),
             semantic_search: None,
+            packed_query: None,
         }
     }
 
@@ -216,6 +219,19 @@ impl ReplyDto {
         self
     }
 
+    /// Opaque authenticated packed-search receipt beside the certified rows.
+    #[must_use]
+    pub const fn packed_query(&self) -> Option<&crate::PackedQueryReceipt> {
+        self.packed_query.as_ref()
+    }
+
+    /// Attaches one producer-issued receipt to a Search reply.
+    #[must_use]
+    pub fn with_packed_query(mut self, receipt: crate::PackedQueryReceipt) -> Self {
+        self.packed_query = Some(receipt);
+        self
+    }
+
     /// Attaches the exact owner cursor to a health reply assembled by a
     /// compatibility caller.
     #[must_use]
@@ -233,6 +249,7 @@ impl ReplyDto {
             certificate: None,
             health_cursor: None,
             semantic_search: None,
+            packed_query: None,
         }
     }
 
@@ -281,6 +298,9 @@ impl ReplyDto {
         ensure_version(envelope.version, "reply")?;
         let certificate = required_certificate(envelope.certificate.as_ref())?;
         let reply = reply_from_wire(envelope.reply, certificate, capability)?;
+        if envelope.packed_query.is_some() && !matches!(&reply, CommandReply::Search(_)) {
+            return Err("packed receipt attached to a non-search reply".to_owned());
+        }
         if envelope.semantic_search.is_some() && !matches!(&reply, CommandReply::Search(_)) {
             return Err("semantic search status attached to a non-search reply".to_owned());
         }
@@ -310,6 +330,7 @@ impl ReplyDto {
             certificate: envelope.certificate,
             health_cursor,
             semantic_search: envelope.semantic_search,
+            packed_query: envelope.packed_query,
         })
     }
 
@@ -331,6 +352,9 @@ impl ReplyDto {
         ensure_version(envelope.version, "reply")?;
         let certificate = required_certificate(envelope.certificate.as_ref())?;
         let reply = reply_from_wire_with_verifier(envelope.reply, certificate, verifier)?;
+        if envelope.packed_query.is_some() && !matches!(&reply, CommandReply::Search(_)) {
+            return Err("packed receipt attached to a non-search reply".to_owned());
+        }
         if envelope.semantic_search.is_some() && !matches!(&reply, CommandReply::Search(_)) {
             return Err("semantic search status attached to a non-search reply".to_owned());
         }
@@ -360,6 +384,7 @@ impl ReplyDto {
             certificate: envelope.certificate,
             health_cursor,
             semantic_search: envelope.semantic_search,
+            packed_query: envelope.packed_query,
         })
     }
 
@@ -674,6 +699,76 @@ struct QueryWire {
     basis: String,
     cursor: Option<CursorWire>,
     read_manifest: Option<ReadManifestWire>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    packing: Option<PackedQueryWire>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackedQueryWire {
+    bytes: u32,
+    detail: u8,
+    profile: u8,
+    scope: u8,
+    call: PackedCallWire,
+    predecessor: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum PackedCallWire {
+    CliJson,
+    Mcp { id: serde_json::Value, expiry: u64 },
+}
+
+fn packing_to_wire(request: &crate::PackedQueryRequest) -> PackedQueryWire {
+    let policy = request.policy();
+    PackedQueryWire {
+        bytes: policy.bytes(),
+        detail: policy.detail() as u8,
+        profile: policy.profile() as u8,
+        scope: policy.scope() as u8,
+        predecessor: request.predecessor().map(str::to_owned),
+        call: match request.call() {
+            crate::PackedCallContext::CliJson => PackedCallWire::CliJson,
+            crate::PackedCallContext::Mcp { id, expiry } => PackedCallWire::Mcp {
+                id: id.clone(),
+                expiry: *expiry,
+            },
+        },
+    }
+}
+
+fn packing_from_wire(
+    value: PackedQueryWire,
+    rows: QueryLimit,
+) -> Result<crate::PackedQueryRequest, String> {
+    use crate::{PagePackingDetail as D, PagePackingProfile as P, PagePackingScope as S};
+    let detail = match value.detail {
+        0 => D::Summary,
+        1 => D::Standard,
+        2 => D::Full,
+        _ => return Err("invalid packed detail".to_owned()),
+    };
+    let profile = match value.profile {
+        0 => P::CliJsonV1,
+        1 => P::McpToolV1,
+        _ => return Err("invalid packed profile".to_owned()),
+    };
+    let scope = match value.scope {
+        0 => S::CliJsonBody,
+        1 => S::StdioJsonRpcLine,
+        2 => S::HttpJsonRpcBody,
+        _ => return Err("invalid packed scope".to_owned()),
+    };
+    let policy = crate::PagePackingPolicy::new(rows, value.bytes, detail, profile, scope)
+        .map_err(|error| error.to_string())?;
+    let call = match value.call {
+        PackedCallWire::CliJson => crate::PackedCallContext::CliJson,
+        PackedCallWire::Mcp { id, expiry } => crate::PackedCallContext::Mcp { id, expiry },
+    };
+    crate::PackedQueryRequest::new(policy, call, value.predecessor)
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1022,12 +1117,20 @@ fn query_to_wire(query: &Query) -> QueryWire {
         basis: encode_id(query.basis().as_bytes()),
         cursor: query.cursor().map(cursor_to_wire),
         read_manifest: query.read_manifest().map(read_manifest_to_wire),
+        packing: query.packing().map(packing_to_wire),
     }
 }
 
 fn query_from_wire(value: QueryWire, certificate: &WireCertificate) -> Result<Query, String> {
     let limit = QueryLimit::new(value.limit).ok_or_else(|| "invalid query limit".to_owned())?;
+    if value.cursor.is_some() && value.packing.is_some() {
+        return Err("packed Search cannot carry a legacy cursor".to_owned());
+    }
     Ok(Query {
+        packing: value
+            .packing
+            .map(|packing| packing_from_wire(packing, limit))
+            .transpose()?,
         text: value.text,
         limit,
         basis: revision_from_wire(certificate, &value.basis)?,

@@ -6940,8 +6940,8 @@ mod tests {
         );
         assert_eq!(
             crate::DTO_VERSION,
-            24,
-            "partial publication uses the joined closed wire-24 cohort"
+            25,
+            "partial publication uses the joined closed wire-25 cohort"
         );
         let command = crate::CommandDto::new(
             61,
@@ -6955,17 +6955,17 @@ mod tests {
         );
         let encoded_reply = serde_json::to_vec(&reply).expect("partial reply envelope");
         let decoded_reply =
-            crate::decode_reply_body(&encoded_reply).expect("wire-24 partial reply");
+            crate::decode_reply_body(&encoded_reply).expect("wire-25 partial reply");
         crate::admit_reply(&command, &decoded_reply).expect("admit exact partial status route");
         assert_eq!(decoded_reply, reply);
         let mut old_peer: serde_json::Value =
             serde_json::from_slice(&encoded_reply).expect("encoded reply fields");
-        for old_version in [22, 23] {
+        for old_version in [22, 23, 24] {
             old_peer["version"] = serde_json::json!(old_version);
             let old_bytes = serde_json::to_vec(&old_peer).expect("old peer version header");
             let error = crate::decode_reply_body(&old_bytes).expect_err("old partial peer refused");
             assert!(error.contains(&format!("reply DTO version {old_version}")));
-            assert!(error.contains("this build supports 24"));
+            assert!(error.contains("this build supports 25"));
             assert!(error.contains("same build"));
         }
         let mut missing = status.clone();

@@ -982,6 +982,49 @@ fn a_fault_chooses_the_exit_code_a_script_can_branch_on() {
 }
 
 #[test]
+fn packed_credit_refusals_keep_typed_json_and_refused_exit_without_a_page() {
+    use backend_library::PackedQueryFailure;
+    let (options, _) = options::split(&words("--json")).expect("JSON options");
+    for (failure, slug) in [
+        (
+            PackedQueryFailure::ItemExceedsWireCredit {
+                ordinal: 7,
+                required_bytes: 49_153,
+                credit_bytes: 49_152,
+            },
+            "item-exceeds-wire-credit",
+        ),
+        (
+            PackedQueryFailure::EnvelopeExceedsWireCredit {
+                required_bytes: 129,
+                credit_bytes: 128,
+            },
+            "envelope-exceeds-wire-credit",
+        ),
+    ] {
+        let fault = Fault::from_client_error(
+            &ClientError::CommandFailed(backend_library::CommandFailure::PagePacking(
+                failure.clone(),
+            )),
+            backend_present::Operand::Text("\0".repeat(backend_library::MAX_COMMAND_TEXT)),
+        );
+        assert_eq!(render::exit_code(&fault), ExitCode::from(2));
+        let value: serde_json::Value =
+            serde_json::from_str(&render::fault(&fault, &options)).expect("complete fault JSON");
+        assert_eq!(value["slug"], slug);
+        assert_eq!(value["cause"], "oversized");
+        assert_eq!(value["operand"], "response");
+        assert_eq!(
+            value["page_packing_failure"],
+            serde_json::to_value(&failure).expect("typed failure")
+        );
+        assert!(value.get("records").is_none());
+        assert!(value.get("next_cursor").is_none());
+        assert!(value.get("nextCursor").is_none());
+    }
+}
+
+#[test]
 fn an_admitted_dependency_refusal_keeps_json_evidence_and_a_nonzero_exit() {
     let package =
         backend_library::PackageReference::parse("pkg:npm/react@19.1.0").expect("package");

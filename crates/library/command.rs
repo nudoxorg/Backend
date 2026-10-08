@@ -441,6 +441,8 @@ pub struct Query {
     /// basis. When present, the resulting view recipe is bound to its exact
     /// canonical manifest bytes.
     pub(crate) read_manifest: Option<ReadManifest>,
+    /// Explicit byte-packing contract, independent of legacy count cursors.
+    pub(crate) packing: Option<crate::PackedQueryRequest>,
 }
 
 impl Query {
@@ -454,6 +456,7 @@ impl Query {
             basis,
             cursor: None,
             read_manifest: None,
+            packing: None,
         }
     }
 
@@ -499,6 +502,23 @@ impl Query {
     pub fn with_read_manifest(mut self, manifest: ReadManifest) -> Self {
         self.read_manifest = Some(manifest);
         self
+    }
+    /// Returns the explicit packed-search contract, when selected.
+    #[must_use]
+    pub const fn packing(&self) -> Option<&crate::PackedQueryRequest> {
+        self.packing.as_ref()
+    }
+
+    /// Selects bounded byte packing under the original row credit.
+    pub fn with_packing(
+        mut self,
+        packing: crate::PackedQueryRequest,
+    ) -> Result<Self, crate::PagePackingError> {
+        if self.cursor.is_some() || packing.policy().rows() != self.limit {
+            return Err(crate::PagePackingError::Context);
+        }
+        self.packing = Some(packing);
+        Ok(self)
     }
 }
 
@@ -1193,6 +1213,8 @@ pub enum CommandFailure {
     },
     /// The query failed bounded semantic validation.
     InvalidQuery(String),
+    /// Explicit packed-query output-credit refusal.
+    PagePacking(crate::PackedQueryFailure),
     /// Useful profiles committed, with all unavailable profiles explicitly retained.
     PartiallyPublished(crate::IndexJobPartialPublication),
     /// Adding a package reached an exact compact-fragment compiler refusal.
@@ -1236,7 +1258,9 @@ impl core::fmt::Display for CommandFailure {
                 formatter.write_str("query basis does not match the view revision")
             }
             Self::InvalidQuery(message) => write!(formatter, "invalid query: {message}"),
-            Self::PartiallyPublished(partial) => write!(formatter,
+            Self::PagePacking(failure) => write!(formatter, "{failure}"),
+            Self::PartiallyPublished(partial) => write!(
+                formatter,
                 "partially published {}: {} profiles remain unavailable at workspace sequence {}",
                 partial.package.as_str(), partial.refused_profiles.len(), partial.receipt.workspace_sequence()),
             Self::CompilerRefused { detail, failure } => {

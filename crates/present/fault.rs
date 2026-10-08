@@ -31,6 +31,10 @@ use core::fmt;
 /// The closed failure classes a surface can render.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum FaultSlug {
+    /// One actual projected item cannot fit its complete wire response.
+    ItemExceedsWireCredit,
+    /// The response envelope itself cannot fit its original wire credit.
+    EnvelopeExceedsWireCredit,
     /// The requested package, symbol, or document does not exist.
     NotFound,
     /// The request was pinned to a revision the owner has moved past.
@@ -76,6 +80,8 @@ impl FaultSlug {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::ItemExceedsWireCredit => "item-exceeds-wire-credit",
+            Self::EnvelopeExceedsWireCredit => "envelope-exceeds-wire-credit",
             Self::NotFound => "not-found",
             Self::WrongBasis => "wrong-basis",
             Self::InvalidQuery => "invalid-query",
@@ -307,7 +313,10 @@ impl Affordance {
             Self::WaitForReadiness => {
                 Some("backend health  (wait for ~lanes to read ready)".to_owned())
             }
-            Self::PollIndex { ticket, after_sequence } => Some(format!(
+            Self::PollIndex {
+                ticket,
+                after_sequence,
+            } => Some(format!(
                 "backend index_progress {} --after-sequence {after_sequence}",
                 crate::shell::quote_argument(&crate::product::index_ticket_json(ticket)),
             )),
@@ -336,7 +345,10 @@ impl Affordance {
                 "name": "backend.status",
                 "arguments": {}
             })),
-            Self::PollIndex { ticket, after_sequence } => Some(serde_json::json!({
+            Self::PollIndex {
+                ticket,
+                after_sequence,
+            } => Some(serde_json::json!({
                 "name": "backend.index_progress",
                 "arguments": { "ticket": ticket, "after_sequence": after_sequence }
             })),
@@ -368,6 +380,7 @@ pub struct Fault {
     affordance: Affordance,
     compiler_failure: Option<PackageCompilerFailure>,
     partial_publication: Option<backend_library::IndexJobPartialPublication>,
+    page_packing: Option<backend_library::PackedQueryFailure>,
 }
 
 impl Fault {
@@ -386,6 +399,7 @@ impl Fault {
             affordance,
             compiler_failure: None,
             partial_publication: None,
+            page_packing: None,
         }
     }
 
@@ -425,6 +439,12 @@ impl Fault {
         &self,
     ) -> Option<&backend_library::IndexJobPartialPublication> {
         self.partial_publication.as_ref()
+    }
+
+    /// Exact output-credit refusal with actual complete response measurements.
+    #[must_use]
+    pub const fn page_packing_failure(&self) -> Option<&backend_library::PackedQueryFailure> {
+        self.page_packing.as_ref()
     }
 
     pub(crate) fn partial_publication(
@@ -527,7 +547,10 @@ impl Fault {
     #[must_use]
     pub fn lane(lane: Lane, reason: Reason) -> Self {
         let affordance = match reason {
-            Reason::NoIndex => Affordance::UseCommand { name: "packages", args: Box::new([]) },
+            Reason::NoIndex => Affordance::UseCommand {
+                name: "packages",
+                args: Box::new([]),
+            },
             Reason::Incomplete => Affordance::WaitForReadiness,
             Reason::Unconfigured => Affordance::None,
             Reason::Offline | Reason::Cancelled => Affordance::Retry,
@@ -619,6 +642,26 @@ impl Fault {
     #[must_use]
     pub fn from_command_failure(failure: &CommandFailure, operand: Operand) -> Self {
         let (slug, cause, sentence, affordance) = match failure {
+            CommandFailure::PagePacking(failure) => {
+                let slug = match failure {
+                    backend_library::PackedQueryFailure::ItemExceedsWireCredit { .. } => {
+                        FaultSlug::ItemExceedsWireCredit
+                    }
+                    backend_library::PackedQueryFailure::EnvelopeExceedsWireCredit { .. } => {
+                        FaultSlug::EnvelopeExceedsWireCredit
+                    }
+                };
+                let mut fault = Self::new(
+                    slug,
+                    // Credit applies to the response. Echoing the complete query
+                    // could itself prevent this exact typed refusal from fitting.
+                    Operand::Argument("response".to_owned()),
+                    Cause::new(CauseSlug::Oversized, failure.to_string()),
+                    Affordance::None,
+                );
+                fault.page_packing = Some(failure.clone());
+                return fault;
+            }
             CommandFailure::NotFound => (
                 FaultSlug::NotFound,
                 CauseSlug::Absent,

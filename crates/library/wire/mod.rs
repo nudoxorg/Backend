@@ -67,11 +67,10 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current transport DTO version. Version 24 composes the exact partial
-/// publication terminal and TypeScript authority failures with evidenced
-/// Python source metadata, incomplete dependency declarations, and typed
-/// local declarations in search/explore replies. Separate
-/// version-23 producer cohorts do not share this closed operation/forge/profile/
-/// compiler grammar. Live clients and services must use version 24 together;
-/// the explicitly maintained journal grammar is a separate persisted domain.
-pub const DTO_VERSION: u16 = 24;
+/// Current transport DTO version. Version 25 admits the closed Go authority
+/// failure marker and optional authenticated byte-packed query requests,
+/// receipts and typed credit failures. Older live producers and
+/// consumers must use a matched CLI, MCP and local-service build; version
+/// checks precede closed nested payload decoding. The separately maintained
+/// persisted journal grammar retains prior snapshot and event envelopes.
+pub const DTO_VERSION: u16 = 25;

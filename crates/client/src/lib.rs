@@ -875,6 +875,24 @@ impl Session {
         )
     }
 
+    /// Reads one explicit byte-packed search page at the current owner root.
+    /// The opaque pp1 predecessor is authenticated and reopened by the owner;
+    /// it is never decoded as a count-only PageContinuation.
+    pub fn search_packed(
+        &mut self,
+        text: &str,
+        limit: u16,
+        packing: backend_library::PackedQueryRequest,
+    ) -> Result<ReplyDto, ClientError> {
+        let revision = self.revision()?;
+        let limit = QueryLimit::new(limit)
+            .ok_or_else(|| ClientError::Protocol("query limit is outside its bound".to_owned()))?;
+        let query = Query::new(text, revision.root, limit)
+            .with_packing(packing)
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        self.send_success(Command::Search(query), Some(revision.certificate))
+    }
+
     /// Reads or resumes one bounded search page at the current revision.
     ///
     /// The continuation is accepted only when the daemon's producer
@@ -1146,7 +1164,11 @@ impl Session {
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
         if self.prepared_query.is_some() {
-            return self.resume_prepared_graph(SymbolAddress::selected(symbol), limit, continuation);
+            return self.resume_prepared_graph(
+                SymbolAddress::selected(symbol),
+                limit,
+                continuation,
+            );
         }
         let revision = self.revision()?;
         let certificate = selected_symbol_certificate(revision.certificate, symbol);
@@ -1933,7 +1955,9 @@ fn read_body(reader: &mut impl Read) -> Result<Vec<u8>, ClientError> {
 /// Returns an error when request text or encoded memory exceeds its contract.
 pub fn admit_request(request: &CommandDto) -> Result<(), ClientError> {
     backend_library::admit_request(request).map_err(|error| match error {
-        RequestAdmissionError::EmptyText | RequestAdmissionError::InvalidSurface => {
+        RequestAdmissionError::EmptyText
+        | RequestAdmissionError::InvalidSurface
+        | RequestAdmissionError::InvalidPacking => {
             ClientError::Protocol(error.to_string())
         }
         RequestAdmissionError::TextTooLarge => {

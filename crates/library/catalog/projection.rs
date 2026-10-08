@@ -58,13 +58,35 @@ impl QueryPageRecipe {
     /// Binds a search request to its selected source root.
     #[must_use]
     pub fn search(root: ViewStateRoot, query: &Query) -> Self {
-        Self::new(
-            QueryPageKind::Search,
-            query.text(),
-            query.limit(),
-            root,
-            query.read_manifest(),
-        )
+        if let Some(packing) = query.packing() {
+            let mut recipe = b"catalog-packed-search-page-v1\0".to_vec();
+            recipe.extend_from_slice(&query_page_preimage(
+                QueryPageKind::Search,
+                query.text(),
+                query.limit(),
+            ));
+            recipe.extend_from_slice(&packing.policy().canonical_bytes());
+            let manifest = manifest_preimage(query.read_manifest());
+            let preimage = crate::canonical::view_identity_preimage(&[
+                b"query",
+                &recipe,
+                root.as_bytes(),
+                &manifest,
+            ])
+            .into_boxed_slice();
+            Self {
+                identity: ViewRecipeId::from_value(&preimage),
+                preimage,
+            }
+        } else {
+            Self::new(
+                QueryPageKind::Search,
+                query.text(),
+                query.limit(),
+                root,
+                query.read_manifest(),
+            )
+        }
     }
 
     /// Binds a plain graph page to its exact source root and original address.
@@ -140,7 +162,75 @@ fn projection_recipe_with_manifest(
     view_identity_bytes(&[b"query", recipe, root.as_bytes(), manifest])
 }
 
+/// One admitted bounded rank prefix over the selected immutable relation.
+/// Rows are resolved lazily; this type cannot select IDs from another view.
+pub struct RankedSearchProjection<'a> {
+    library: &'a Library,
+    ids: &'a [RowId],
+    recipe: ViewRecipeId,
+    credit: usize,
+}
+
+impl RankedSearchProjection<'_> {
+    /// Resolves one exact absolute rank from the admitted source prefix.
+    #[must_use]
+    pub fn row_at(&self, ordinal: usize) -> Option<Row> {
+        let mut row = self.library.view.row(*self.ids.get(ordinal)?)?;
+        row.score = Some(u32::MAX.checked_sub(u32::try_from(ordinal).ok()?)?);
+        Some(row)
+    }
+
+    /// Builds the exact emitted range without manufacturing a legacy cursor.
+    pub fn snapshot(&self, start: usize, count: usize) -> Result<ViewSnapshot, LibraryError> {
+        let end = start
+            .checked_add(count)
+            .ok_or(LibraryError::CursorMismatch)?;
+        if count > self.credit || end > self.ids.len() {
+            return Err(LibraryError::CursorMismatch);
+        }
+        let rows = (start..end)
+            .map(|at| self.row_at(at).ok_or(LibraryError::CursorMismatch))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.library.work.record_seek();
+        self.library.work.record_output(rows.len());
+        self.library
+            .snapshot_with_recipe(self.recipe, rows, None, None)
+    }
+}
+
 impl Library {
+    /// Admits the existing bounded ranked search prefix for exact packed ranges.
+    /// Provider order is retained and no smaller semantic row credit is used.
+    pub fn admit_ranked_search<'a>(
+        &'a self,
+        query: &Query,
+        ids: &'a [RowId],
+    ) -> Result<RankedSearchProjection<'a>, LibraryError> {
+        self.check_basis(query.basis())?;
+        if query.text().trim().is_empty() || query.cursor().is_some() {
+            return Err(LibraryError::InvalidQuery(
+                "invalid packed search request".to_owned(),
+            ));
+        }
+        let mut unique = BTreeSet::new();
+        if ids.len() > usize::try_from(self.view.row_count()).unwrap_or(usize::MAX)
+            || u32::try_from(ids.len()).is_err()
+            || ids
+                .iter()
+                .any(|id| !unique.insert(*id) || self.view.row(*id).is_none())
+        {
+            return Err(LibraryError::InvalidQuery(
+                "ranked search identities are not a subset of the selected view".to_owned(),
+            ));
+        }
+        Ok(RankedSearchProjection {
+            library: self,
+            ids,
+            recipe: QueryPageRecipe::search(self.revision_root(), query).identity(),
+            credit: usize::from(query.limit().get()),
+        })
+    }
+
     /// Reads one root/query-bound package page.
     ///
     /// # Errors

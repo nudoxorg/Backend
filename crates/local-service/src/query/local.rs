@@ -1268,13 +1268,22 @@ impl QueryCoordinator {
         &self,
         request: &backend_engine::Query,
     ) -> Result<LocalAnswer, QueryError> {
+        let offset = request.cursor().map_or(Ok(0), |cursor| {
+            usize::try_from(cursor.query_offset()).map_err(|_| QueryError::InvalidCursor)
+        })?;
+        self.search_local_prefix(request, offset)
+    }
+
+    /// Extends only the lexical rank prefix; the original semantic credit is fixed.
+    pub(crate) fn search_local_prefix(
+        &self,
+        request: &backend_engine::Query,
+        offset: usize,
+    ) -> Result<LocalAnswer, QueryError> {
         if request.basis() != self.corpus.view.root() {
             return Err(QueryError::StaleViewBinding);
         }
         let page_rows = usize::from(request.limit().get());
-        let offset = request.cursor().map_or(Ok(0), |cursor| {
-            usize::try_from(cursor.query_offset()).map_err(|_| QueryError::InvalidCursor)
-        })?;
         let selected_rows =
             usize::try_from(self.corpus.view.row_count()).map_err(|_| QueryError::InvalidView)?;
         let mut query = LocalQuery::prefix(request.text(), page_rows)?;

@@ -1514,10 +1514,12 @@ pub fn run_with_owner<O: OwnerService + 'static>(
     owner: O,
     config: ProcessConfig,
 ) -> Result<RunReport, ProcessError> {
+    backend_runtime::report_startup_phase(backend_runtime::StartupPhase::BindingListener);
     let service =
         LocaldService::new(owner, config.listener.limits).map_err(ProcessError::Protocol)?;
     let mut listener =
         UnixListenerService::bind(service, config.listener).map_err(ProcessError::Listener)?;
+    backend_runtime::report_startup_phase(backend_runtime::StartupPhase::Listening);
     listener.run().map_err(ProcessError::Listener)
 }
 
@@ -1533,11 +1535,8 @@ pub fn run_process<O: OwnerService + 'static>(owner: O, config: ProcessConfig) -
             report_process_failure(&error);
             ExitCode::from(EX_USAGE)
         }
-        Err(
-            error @ (ProcessError::OwnerContended { .. }
-            | ProcessError::Listener(ListenerError::AlreadyRunning)),
-        ) => {
-            report_process_failure(&error);
+        Err(error @ ProcessError::OwnerContended { .. }) => {
+            report_owner_contention(&error);
             ExitCode::from(backend_runtime::OWNER_CONTENDED_EXIT_CODE)
         }
         Err(error @ ProcessError::Profile(_)) => {
@@ -1556,6 +1555,14 @@ pub fn run_process<O: OwnerService + 'static>(owner: O, config: ProcessConfig) -
 /// can select it explicitly with `--profile builtin` or [`PROFILE_ENV`].
 #[must_use]
 pub fn main_entry() -> ExitCode {
+    let inherited = match backend_runtime::adopt_startup_admission() {
+        Ok(inherited) => inherited,
+        Err(error) => {
+            report_process_failure(&error);
+            return ExitCode::from(EX_SOFTWARE);
+        }
+    };
+    backend_runtime::report_startup_phase(backend_runtime::StartupPhase::PreparingWorkspace);
     match ProcessConfig::parse(std::env::args().skip(1)) {
         Err(ProcessError::Help) => {
             print_help();
@@ -1568,7 +1575,22 @@ pub fn main_entry() -> ExitCode {
         Ok(config) => match config.profile.as_str() {
             "builtin" | "builtin-echo" => {
                 let default_authority = config.workspace.join("authority.secret");
-                if config.authority_secret.as_ref() == Some(&default_authority) {
+                if inherited {
+                    let Some(authority) = config.authority_secret.as_ref() else {
+                        report_process_failure(
+                            &"automatic startup requires its selected authority credential",
+                        );
+                        return ExitCode::from(EX_USAGE);
+                    };
+                    if let Err(error) = backend_runtime::initialize_spawned_workspace(
+                        &config.workspace,
+                        config.endpoint.as_path(),
+                        authority,
+                    ) {
+                        report_process_failure(&error);
+                        return ExitCode::from(EX_USAGE);
+                    }
+                } else if config.authority_secret.as_ref() == Some(&default_authority) {
                     let paths = WorkspacePaths::discover(
                         None,
                         Some(config.workspace.clone()),
@@ -1596,6 +1618,13 @@ pub fn main_entry() -> ExitCode {
 pub(crate) fn report_process_failure(error: &dyn fmt::Display) {
     if let Ok(Some(reporter)) = backend_runtime::StartupFailureReporter::from_environment() {
         let _ = reporter.report(error);
+    }
+    eprintln!("locald: {error}");
+}
+
+pub(crate) fn report_owner_contention(error: &dyn fmt::Display) {
+    if let Ok(Some(reporter)) = backend_runtime::StartupFailureReporter::from_environment() {
+        let _ = reporter.report_owner_contention(error);
     }
     eprintln!("locald: {error}");
 }

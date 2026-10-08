@@ -52,7 +52,11 @@ pub fn main_entry() -> ExitCode {
     match run_words(&words, &options) {
         Ok((output, outcome)) => {
             let written = emit(&output);
-            if written == ExitCode::SUCCESS { outcome } else { written }
+            if written == ExitCode::SUCCESS {
+                outcome
+            } else {
+                written
+            }
         }
         Err(fault) => report(&fault, &options),
     }
@@ -96,7 +100,15 @@ fn run_words(words: &[String], options: &Options) -> Result<(String, ExitCode), 
     let endpoint_result = if options.passive() {
         backend_runtime::connect_existing_locald(&workspace)
     } else {
-        backend_runtime::ensure_locald(&workspace)
+        backend_runtime::ensure_locald_with_progress(&workspace, |progress| {
+            if !options.is_machine() && options::stderr_is_terminal() {
+                eprintln!(
+                    "Starting local owner: {} ({:.1}s)",
+                    progress.phase,
+                    progress.elapsed.as_secs_f64()
+                );
+            }
+        })
     };
     let endpoint = endpoint_result.map_err(|error| {
         let message = if options.passive() {
@@ -131,12 +143,94 @@ fn run_words(words: &[String], options: &Options) -> Result<(String, ExitCode), 
             Operand::Path(endpoint.to_string_lossy().into_owned()),
         )
     })?;
+    if options.format() == crate::options::Format::Json {
+        let packed = match &request {
+            Request::Search { text, limit } => Some((text.as_str(), *limit, None)),
+            Request::ResumeQuery { query, cursor } if cursor.starts_with("pp1-") => {
+                match query.as_ref() {
+                    Request::Search { text, limit } => {
+                        Some((text.as_str(), *limit, Some(cursor.clone())))
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        if let Some((text, limit, predecessor)) = packed {
+            return packed_search_output(&mut session, text, limit, predecessor, options);
+        }
+    }
     let answer = run::execute(&mut session, &request)?;
     if let Request::Index(path) = &request {
         watch_readiness(&mut session, path, options);
     }
     render_admitted_answer(&session, &answer, options)
         .map(|output| (output, render::answer_exit_code(&answer)))
+}
+
+fn packed_search_output(
+    session: &mut Session,
+    text: &str,
+    limit: u16,
+    predecessor: Option<String>,
+    options: &Options,
+) -> Result<(String, ExitCode), Fault> {
+    use backend_library::{
+        PackedCallContext, PackedQueryRequest, PagePackingDetail, PagePackingPolicy,
+        PagePackingProfile, PagePackingScope, QueryLimit,
+    };
+    let detail = match options.detail() {
+        backend_present::Detail::Summary => PagePackingDetail::Summary,
+        backend_present::Detail::Standard => PagePackingDetail::Standard,
+        backend_present::Detail::Full => PagePackingDetail::Full,
+    };
+    let rows =
+        QueryLimit::new(limit).ok_or_else(|| Fault::usage("limit", "invalid query limit"))?;
+    let policy = PagePackingPolicy::new(
+        rows,
+        backend_present::DEFAULT_RESPONSE_BUDGET_BYTES as u32,
+        detail,
+        PagePackingProfile::CliJsonV1,
+        PagePackingScope::CliJsonBody,
+    )
+    .map_err(|error| Fault::usage("limit", error.to_string()))?;
+    let request = PackedQueryRequest::new(policy, PackedCallContext::CliJson, predecessor)
+        .map_err(|error| Fault::usage("cursor", error.to_string()))?;
+    let reply = session
+        .search_packed(text, limit, request)
+        .map_err(|error| Fault::from_client_error(&error, Operand::Text(text.to_owned())))?;
+    let receipt = reply
+        .packed_query()
+        .cloned()
+        .ok_or_else(|| packed_response_fault("packed search omitted its producer receipt"))?;
+    let status = reply
+        .semantic_search_status()
+        .ok_or_else(|| packed_response_fault("packed search omitted its semantic lane status"))?;
+    let backend_library::CommandReply::Search(snapshot) = reply.reply else {
+        return Err(packed_response_fault("packed search reply changed shape"));
+    };
+    let answer = backend_present::packed_search_answer(
+        text,
+        &snapshot.root.rows(),
+        snapshot.root.coverage(),
+        status,
+        receipt.more(),
+    );
+    let cursor = receipt.more().then_some(receipt.token());
+    let output = render::try_answer_with_cursor(&answer, options, cursor)?;
+    if output.len() != receipt.bytes() as usize {
+        return Err(packed_response_fault(
+            "packed search egress differs from the owner's admitted response bytes",
+        ));
+    }
+    Ok((output, ExitCode::SUCCESS))
+}
+
+fn packed_response_fault(detail: &str) -> Fault {
+    Fault::from_client_error(
+        &backend_client::ClientError::Protocol(detail.to_owned()),
+        Operand::Argument("response".to_owned()),
+    )
 }
 
 pub(crate) fn render_admitted_answer(

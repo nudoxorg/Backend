@@ -210,7 +210,6 @@ type LiveSessions = HashMap<SessionId, Arc<Mutex<Server<ReconnectingProduct>>>>;
 struct Sessions {
     paths: backend_runtime::WorkspacePaths,
     project: String,
-    cursor_secret: [u8; 32],
     token: BearerToken,
     next_id: AtomicU64,
     live: Mutex<LiveSessions>,
@@ -261,16 +260,17 @@ impl Sessions {
                 "MCP session unavailable",
             );
         };
-        rpc_response(server.handle(body), Some(&session_id))
+        rpc_response(server.handle_http(body), Some(&session_id))
     }
 
     fn initialize(&self, body: &[u8]) -> Response {
-        let mut server = Server::with_authority(
+        let mut server = Server::for_workspace(
             disconnected_reconnecting_product(&self.paths),
             self.project.clone(),
-            self.cursor_secret,
+            None,
+            &self.paths,
         );
-        let reply = server.handle(body);
+        let reply = server.handle_http(body);
         let initialized = reply
             .as_ref()
             .and_then(|value| value.get("result"))
@@ -387,26 +387,17 @@ pub(super) fn main_entry(paths: &backend_runtime::WorkspacePaths, bind: Loopback
 
 fn run(paths: &backend_runtime::WorkspacePaths, bind: LoopbackBind) -> Result<(), String> {
     let project = canonical_project(paths.project());
-    let cursor_secret = crate::jsonrpc::cursor_secret(paths)?;
     let (token, token_source) = BearerToken::load(paths)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|error| error.to_string())?;
-    runtime.block_on(serve(
-        paths.clone(),
-        project,
-        cursor_secret,
-        token,
-        token_source,
-        bind,
-    ))
+    runtime.block_on(serve(paths.clone(), project, token, token_source, bind))
 }
 
 async fn serve(
     paths: backend_runtime::WorkspacePaths,
     project: String,
-    cursor_secret: [u8; 32],
     token: BearerToken,
     token_source: TokenSource,
     bind: LoopbackBind,
@@ -418,7 +409,6 @@ async fn serve(
     let state = Arc::new(Sessions {
         paths,
         project,
-        cursor_secret,
         token: token.clone(),
         next_id: AtomicU64::new(0),
         live: Mutex::new(HashMap::new()),
@@ -564,6 +554,178 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    fn cursor_authority_sessions(paths: &backend_runtime::WorkspacePaths) -> Sessions {
+        Sessions {
+            paths: paths.clone(),
+            project: canonical_project(paths.project()),
+            token: BearerToken::parse("test-http-bearer-credential".to_owned())
+                .expect("fixture bearer"),
+            next_id: AtomicU64::new(0),
+            live: Mutex::new(HashMap::new()),
+            request_capacity: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT)),
+        }
+    }
+
+    fn cursor_authority_initialized_session(
+        sessions: &Sessions,
+    ) -> Arc<Mutex<Server<ReconnectingProduct>>> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer test-http-bearer-credential"),
+        );
+        let response = sessions.dispatch(
+            &headers,
+            br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}"#,
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+        let session_id = SessionId::from_headers(response.headers()).expect("HTTP session header");
+        let bytes = futures_executor::block_on(axum::body::to_bytes(
+            response.into_body(),
+            crate::MAX_MCP_RESPONSE_FRAME,
+        ))
+        .expect("initialize response body");
+        let reply: Value = serde_json::from_slice(&bytes).expect("initialize JSON");
+        assert!(reply.get("result").is_some());
+        headers.insert(
+            SESSION_HEADER,
+            session_id.header_value().expect("session header"),
+        );
+        assert_eq!(
+            sessions
+                .dispatch(
+                    &headers,
+                    br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+                )
+                .status(),
+            StatusCode::ACCEPTED
+        );
+        let response = sessions.dispatch(
+            &headers,
+            br#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = futures_executor::block_on(axum::body::to_bytes(
+            response.into_body(),
+            crate::MAX_MCP_RESPONSE_FRAME,
+        ))
+        .expect("tools/list response body");
+        let reply: Value = serde_json::from_slice(&bytes).expect("tools/list JSON");
+        assert!(reply["result"]["tools"].is_array());
+        sessions
+            .live
+            .lock()
+            .expect("HTTP live sessions")
+            .get(&session_id)
+            .expect("initialized HTTP session")
+            .clone()
+    }
+
+    #[test]
+    fn http_cursor_authority_metadata_needs_no_owner_and_durable_key_survives_session_restart() {
+        let fixture = PrivateTokenFixture::new();
+        let paths = backend_runtime::WorkspacePaths::discover(
+            Some(fixture.0.clone()),
+            Some(fixture.0.join("state")),
+            Some(fixture.0.join("endpoint")),
+        )
+        .expect("workspace paths");
+        // HTTP's own bearer credential is independent of owner admission.
+        paths
+            .initialize_data_directory()
+            .expect("private HTTP data");
+        BearerToken::provision(&paths.data().join(TOKEN_FILE)).expect("HTTP bearer file");
+        let first = cursor_authority_initialized_session(&cursor_authority_sessions(&paths));
+        assert!(!paths.authority_secret().exists());
+        assert!(!paths.endpoint().exists());
+        assert_eq!(
+            std::fs::read_dir(paths.data()).expect("HTTP data").count(),
+            1
+        );
+
+        // Model durable owner initialization here; the real first-page/cold-
+        // process continuation is a separate acceptance gate.
+        paths.initialize().expect("durable owner credential");
+        let key = backend_engine::read_authority_secret(paths.authority_secret())
+            .expect("admitted workspace credential");
+        let expiry = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs()
+            .saturating_add(60);
+        let token = first
+            .lock()
+            .expect("first HTTP session")
+            .sign_cursor_token_at(expiry, "http-owner-page-2", b"http-context")
+            .expect("first HTTP cursor selects durable authority");
+        let mut explicit_key = Server::with_authority(
+            disconnected_reconnecting_product(&paths),
+            canonical_project(paths.project()),
+            key,
+        );
+        assert_eq!(
+            explicit_key
+                .verify_cursor_token(&token, b"http-context")
+                .expect("exact durable key verifies HTTP cursor")
+                .as_deref(),
+            Some("http-owner-page-2")
+        );
+        drop(first);
+        let restarted = cursor_authority_initialized_session(&cursor_authority_sessions(&paths));
+        assert_eq!(
+            restarted
+                .lock()
+                .expect("restarted HTTP session")
+                .verify_cursor_token(&token, b"http-context")
+                .expect("HTTP restart admits same durable key")
+                .as_deref(),
+            Some("http-owner-page-2")
+        );
+        assert!(!paths.endpoint().exists());
+    }
+
+    #[test]
+    fn http_cursor_authority_credential_errors_never_fallback_or_start_owner() {
+        let fixture = PrivateTokenFixture::new();
+        let paths = backend_runtime::WorkspacePaths::discover(
+            Some(fixture.0.clone()),
+            Some(fixture.0.join("state")),
+            Some(fixture.0.join("endpoint")),
+        )
+        .expect("workspace paths");
+        paths
+            .initialize_data_directory()
+            .expect("private HTTP data");
+        backend_platform::durable::write_private_atomic(paths.authority_secret(), b"invalid")
+            .expect("invalid authenticated credential");
+        let server = cursor_authority_initialized_session(&cursor_authority_sessions(&paths));
+        let expiry = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs()
+            .saturating_add(60);
+        let mut fixed = Server::with_authority(
+            disconnected_reconnecting_product(&paths),
+            canonical_project(paths.project()),
+            [7; 32],
+        );
+        let token = fixed
+            .sign_cursor_token_at(expiry, "http-owner-page-2", b"http-context")
+            .expect("explicit fixture token");
+        let mut server = server.lock().expect("HTTP session");
+        assert!(
+            server
+                .sign_cursor_token_at(expiry, "owner-page", b"context")
+                .is_err()
+        );
+        assert!(server.verify_cursor_token(&token, b"http-context").is_err());
+        assert_eq!(
+            std::fs::read(paths.authority_secret()).expect("unchanged credential"),
+            b"invalid"
+        );
+        assert!(!paths.endpoint().exists());
     }
 
     #[test]

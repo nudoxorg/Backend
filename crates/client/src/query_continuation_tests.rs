@@ -9,6 +9,43 @@ use backend_library::{
 };
 use std::sync::{Arc, Mutex};
 
+#[test]
+fn mixed_packed_and_legacy_cursor_request_is_a_protocol_refusal_before_encoding() {
+    use backend_library::{
+        PackedCallContext, PackedQueryRequest, PagePackingDetail, PagePackingPolicy,
+        PagePackingProfile, PagePackingScope,
+    };
+    let owner = Cursor::new();
+    let credit = QueryLimit::new(200).expect("original row credit");
+    let policy = PagePackingPolicy::new(
+        credit,
+        backend_library::MAX_PACKED_WIRE_BYTES,
+        PagePackingDetail::Full,
+        PagePackingProfile::McpToolV1,
+        PagePackingScope::StdioJsonRpcLine,
+    )
+    .expect("packing policy");
+    let packing = PackedQueryRequest::new(
+        policy,
+        PackedCallContext::Mcp {
+            id: serde_json::json!(17),
+            expiry: 100,
+        },
+        None,
+    )
+    .expect("bounded call");
+    let query = Query::new("self", owner.root(), credit)
+        .with_packing(packing)
+        .expect("same original row credit")
+        .with_cursor(owner);
+    let request = CommandDto::new(1, Command::Search(query));
+    let error = encode_request(&request).expect_err("mixed cursor cannot produce a wire body");
+    assert!(matches!(
+        error,
+        ClientError::Protocol(message) if message == "query packing failed admission"
+    ));
+}
+
 struct Verifier(u8);
 impl ProducerObservationVerifier for Verifier {
     type Error = &'static str;
@@ -1085,6 +1122,31 @@ fn plain_graph_portable_continuation_reopens_exact_page_in_fresh_owner() {
         let expected = issuing
             .graph_page(coordinate, 2, Some(next))
             .expect("warm second");
+        for names in [false, true] {
+            let intervening = if names {
+                issuing.names_page("neighbor", 1, None)
+            } else {
+                issuing.search_page("neighbor", 1, None)
+            }
+            .expect("intervening real typed collection page");
+            assert!(
+                page(&intervening).next.is_some(),
+                "actual More evicts old retention"
+            );
+            assert_eq!(issuing.continuations.len(), 1, "retention remains bounded");
+            assert!(!issuing.continuations.contains_key(&next.cursor()));
+            assert!(
+                issuing.decode_page_continuation(&legacy).is_err(),
+                "evicted pc1 has no authority"
+            );
+            let reopened = issuing
+                .decode_page_continuation(&token)
+                .expect("pc3 reopens after another More page");
+            let interleaved = issuing
+                .graph_page(coordinate, 2, Some(reopened))
+                .expect("same exact Graph page after Search/Name More");
+            assert_eq!(graph_page(&interleaved), graph_page(&expected));
+        }
         drop(issuing);
         // Reconstruct the producer itself with identical immutable view/scope.
         *owner.lock().expect("owner") = graph_fixture(selected_neighbors, 1, 7);

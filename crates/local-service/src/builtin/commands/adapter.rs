@@ -106,7 +106,9 @@ fn capture_terminalization_failed(
 ) -> backend_library::IndexJobOutcome {
     let primary = match &outcome {
         backend_library::IndexJobOutcome::Published => "semantic publication completed".to_owned(),
-        backend_library::IndexJobOutcome::PartiallyPublished(_) => "available profiles were partially published".to_owned(),
+        backend_library::IndexJobOutcome::PartiallyPublished(_) => {
+            "available profiles were partially published".to_owned()
+        }
         backend_library::IndexJobOutcome::Refused(detail)
         | backend_library::IndexJobOutcome::Failed(detail) => detail.as_str().to_owned(),
         backend_library::IndexJobOutcome::RefusedWithCompilerFailure { detail, .. } => {
@@ -149,7 +151,9 @@ fn legacy_add_compiler_failure(
     outcome: &backend_library::IndexJobOutcome,
 ) -> Option<backend_library::CommandFailure> {
     if let backend_library::IndexJobOutcome::PartiallyPublished(partial) = outcome {
-        return Some(backend_library::CommandFailure::PartiallyPublished(partial.clone()));
+        return Some(backend_library::CommandFailure::PartiallyPublished(
+            partial.clone(),
+        ));
     }
     let backend_library::IndexJobOutcome::RefusedWithCompilerFailure { detail, failure } = outcome
     else {
@@ -191,7 +195,10 @@ fn index_operation_failure(
             detail.clone(),
             None,
         ),
-        Some(backend_library::IndexJobOutcome::Published | backend_library::IndexJobOutcome::PartiallyPublished(_)) => (
+        Some(
+            backend_library::IndexJobOutcome::Published
+            | backend_library::IndexJobOutcome::PartiallyPublished(_),
+        ) => (
             backend_library::IndexOperationFailureReason::WorkerFailed,
             backend_library::ProductText::from_static(
                 "semantic publication was reported while a captured profile remains Pending",
@@ -265,7 +272,8 @@ fn index_attempt_retirement_reason(
 ) -> Option<backend_extension_turso::CandidateAttemptRetirementReason> {
     use backend_extension_turso::CandidateAttemptRetirementReason as R;
     match outcome {
-        backend_library::IndexJobOutcome::Published | backend_library::IndexJobOutcome::PartiallyPublished(_) => None,
+        backend_library::IndexJobOutcome::Published
+        | backend_library::IndexJobOutcome::PartiallyPublished(_) => None,
         backend_library::IndexJobOutcome::Refused(_)
         | backend_library::IndexJobOutcome::RefusedWithCompilerFailure { .. } => Some(R::Refused),
         backend_library::IndexJobOutcome::Cancelled => Some(R::Cancelled),
@@ -312,6 +320,9 @@ pub(in crate::builtin) struct CommandAdapter {
         std::collections::VecDeque<(SearchWaiter, Result<(), backend_engine::CommandFailure>)>,
     remote_semantic: super::super::query::RemoteSemantic,
     pending_semantic_search: Option<backend_library::SemanticSearchStatus>,
+    pending_packed_receipt: Option<backend_library::PackedQueryReceipt>,
+    packed_search_pending: Option<super::super::query::PendingPackedSearch>,
+    packed_search_secret: [u8; 32],
     published: Option<super::super::view_publish::PublishedRoots>,
     manifests: super::super::local_manifest::LocalManifestResidence,
     project_roots: super::super::project_root_residence::ProjectRootResidence,
@@ -669,6 +680,7 @@ impl CommandAdapter {
         pending_stored_acks: Option<
             Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>,
         >,
+        packed_search_secret: [u8; 32],
     ) -> Result<Self, BuiltinModelError> {
         let browse_lane = BrowseLane::start().map_err(BuiltinModelError)?;
         let journal_path = product_state
@@ -697,6 +709,9 @@ impl CommandAdapter {
             search_replies: std::collections::VecDeque::new(),
             remote_semantic,
             pending_semantic_search: None,
+            pending_packed_receipt: None,
+            packed_search_pending: None,
+            packed_search_secret,
             published,
             manifests: super::super::local_manifest::LocalManifestResidence::default(),
             project_roots: super::super::project_root_residence::ProjectRootResidence::default(),
@@ -2631,9 +2646,8 @@ impl CommandAdapter {
                                                 {
                                                     Ok(()) => {
                                                         self.indexing = Some(indexing);
-                                                        return self.finish_deferred_poll(
-                                                            daemon, ready,
-                                                        );
+                                                        return self
+                                                            .finish_deferred_poll(daemon, ready);
                                                     }
                                                     Err(error) => {
                                                         terminal = Some(backend_library::IndexJobOutcome::Failed(bounded_index_detail(error)));
@@ -2715,8 +2729,11 @@ impl CommandAdapter {
                 return self.finish_deferred_poll(daemon, ready);
             }
             if let Some(mut outcome) = terminal {
-                if !matches!(outcome, backend_library::IndexJobOutcome::Published | backend_library::IndexJobOutcome::PartiallyPublished(_))
-                    && !indexing.captures.is_empty()
+                if !matches!(
+                    outcome,
+                    backend_library::IndexJobOutcome::Published
+                        | backend_library::IndexJobOutcome::PartiallyPublished(_)
+                ) && !indexing.captures.is_empty()
                 {
                     let compiler_failure = match &outcome {
                         backend_library::IndexJobOutcome::RefusedWithCompilerFailure {
@@ -3418,21 +3435,38 @@ impl CommandAdapter {
         let certificate = request.certificate().cloned();
         let is_search = matches!(&request.command, Command::Search(_));
         self.pending_semantic_search = None;
+        self.pending_packed_receipt = None;
         let admitted = self.dispatch(daemon, request.command, certificate, request_id)?;
         let status = if is_search {
             self.pending_semantic_search.take()
         } else {
             None
         };
-        Self::encode(daemon, request_id, admitted, status)
+        Self::encode_packed(
+            daemon,
+            request_id,
+            admitted,
+            status,
+            self.pending_packed_receipt.take(),
+        )
     }
 
     /// One admitted reply as the wire's reply DTO.
     fn encode(
         daemon: &ProductDaemon,
         request_id: u64,
+        admitted: AdmittedReply,
+        search_status: Option<backend_library::SemanticSearchStatus>,
+    ) -> Result<Vec<u8>, BuiltinModelError> {
+        Self::encode_packed(daemon, request_id, admitted, search_status, None)
+    }
+
+    fn encode_packed(
+        daemon: &ProductDaemon,
+        request_id: u64,
         (reply, certificate): AdmittedReply,
         search_status: Option<backend_library::SemanticSearchStatus>,
+        packed_receipt: Option<backend_library::PackedQueryReceipt>,
     ) -> Result<Vec<u8>, BuiltinModelError> {
         let mut reply = match reply {
             CommandReply::Health(root) => backend_engine::ReplyDto::health(
@@ -3447,6 +3481,9 @@ impl CommandAdapter {
         }
         if let Some(certificate) = certificate {
             reply = reply.with_certificate(certificate);
+        }
+        if let Some(receipt) = packed_receipt {
+            reply = reply.with_packed_query(receipt);
         }
         backend_engine::encode_reply_dto(&reply).map_err(BuiltinModelError)
     }
@@ -3879,7 +3916,10 @@ impl CommandAdapter {
                 FinishAddError::Failed(error) => error,
             })?;
         if let Some(partial) = partial {
-            return Ok((CommandReply::Failed(backend_library::CommandFailure::PartiallyPublished(partial)), None));
+            return Ok((
+                CommandReply::Failed(backend_library::CommandFailure::PartiallyPublished(partial)),
+                None,
+            ));
         }
         if !profile_refusals.is_empty() {
             let detail = "language profiles reached independent terminal outcomes; unavailable profiles were refused; inspect package-profile for the retained outcomes".to_owned();
@@ -4130,6 +4170,7 @@ impl CommandAdapter {
         )
         .map_err(|error| BuiltinModelError(format!("publish product source view: {error}")))?;
         self.published = Some(outcome.roots);
+        self.packed_search_pending = None;
         project_view_deltas(&mut self.sql_projection, daemon, &outcome.deltas)?;
         self.semantic_authority.mark_projections_current()
     }
@@ -4146,6 +4187,10 @@ impl CommandAdapter {
             let failure = Self::search_wrong_basis(daemon, &waiter.query);
             return self
                 .search_reply(daemon, waiter, Err(failure))
+                .map(Executed::Reply);
+        }
+        if let Err(failure) = super::super::query::preflight_packed_search(&waiter.query, view.coverage()) {
+            return self.search_reply(daemon, waiter, Err(backend_engine::CommandFailure::PagePacking(failure)))
                 .map(Executed::Reply);
         }
         if self.search_lane.active() {
@@ -4194,38 +4239,80 @@ impl CommandAdapter {
         prepared: Result<(), backend_engine::CommandFailure>,
     ) -> Result<Vec<u8>, BuiltinModelError> {
         let command = Command::Search(waiter.query.clone());
-        let result = prepared.and_then(|()| {
-            let workspace = daemon.engine().daemon().owner().snapshot().root();
-            let library = daemon.engine().daemon().library();
-            let coordinator = self
-                .search_snapshots
-                .selected_for(workspace, library.view())
-                .ok_or_else(|| Self::search_wrong_basis(daemon, &waiter.query))?;
-            let coverage = super::super::admitted_coverage().map_err(|error| {
-                backend_engine::CommandFailure::IncoherentView(error.to_string())
-            })?;
+        let result = prepared.and_then(|()| self.selected_search(daemon, &waiter.query));
+        let (reply, status, receipt) = match result {
+            Ok((reply, status, receipt)) => (reply, Some(status), receipt),
+            Err(error) => (CommandReply::Failed(error), None, None),
+        };
+        let admitted = Self::certify(daemon, &command, reply, waiter.certificate)?;
+        Self::encode_packed(daemon, waiter.request_id, admitted, status, receipt)
+    }
+
+    fn selected_search(
+        &mut self,
+        daemon: &ProductDaemon,
+        query: &backend_engine::Query,
+    ) -> Result<
+        (
+            CommandReply,
+            backend_library::SemanticSearchStatus,
+            Option<backend_library::PackedQueryReceipt>,
+        ),
+        backend_engine::CommandFailure,
+    > {
+        let workspace = daemon.engine().daemon().owner().snapshot().root();
+        let library = daemon.engine().daemon().library();
+        let coordinator = self
+            .search_snapshots
+            .selected_for(workspace, library.view())
+            .ok_or_else(|| Self::search_wrong_basis(daemon, query))?;
+        let coverage = super::super::admitted_coverage()
+            .map_err(|error| backend_engine::CommandFailure::IncoherentView(error.to_string()))?;
+        if query.packing().is_some() {
+            let retained = self.packed_search_pending.take();
+            let result = super::super::query::search_packed(
+                coordinator,
+                library,
+                &mut self.remote_semantic,
+                coverage,
+                query,
+                &self.packed_search_secret,
+                retained,
+            )
+            .map_err(Self::search_failure)?;
+            self.packed_search_pending = result.pending;
+            Ok((
+                CommandReply::Search(result.snapshot),
+                result.status,
+                Some(result.receipt),
+            ))
+        } else {
             super::super::query::search_page(
                 coordinator,
                 library,
                 &mut self.remote_semantic,
                 coverage,
-                &waiter.query,
+                query,
             )
-            .map_err(|error| match error {
-                super::super::query::SearchPageError::Projection(error) => error.into(),
-                super::super::query::SearchPageError::Local(error) => {
-                    backend_engine::CommandFailure::InvalidQuery(format!(
-                        "local_search_refused: {error}"
-                    ))
-                }
-            })
-        });
-        let (reply, status) = match result {
-            Ok((page, status)) => (CommandReply::Search(page), Some(status)),
-            Err(error) => (CommandReply::Failed(error), None),
-        };
-        let admitted = Self::certify(daemon, &command, reply, waiter.certificate)?;
-        Self::encode(daemon, waiter.request_id, admitted, status)
+            .map(|(page, status)| (CommandReply::Search(page), status, None))
+            .map_err(Self::search_failure)
+        }
+    }
+
+    fn search_failure(
+        error: super::super::query::SearchPageError,
+    ) -> backend_engine::CommandFailure {
+        match error {
+            super::super::query::SearchPageError::Projection(error) => error.into(),
+            super::super::query::SearchPageError::Packed(failure) => {
+                backend_engine::CommandFailure::PagePacking(failure)
+            }
+            super::super::query::SearchPageError::Local(error) => {
+                backend_engine::CommandFailure::InvalidQuery(format!(
+                    "local_search_refused: {error}"
+                ))
+            }
+        }
     }
 
     fn search_wrong_basis(
@@ -4290,6 +4377,47 @@ impl CommandAdapter {
         certificate: Option<WireCertificate>,
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let command = Command::Search(query.clone());
+        if query.packing().is_some() {
+            if query.basis() != daemon.engine().daemon().library().view().root() {
+                return Self::certify(daemon, &command, CommandReply::Failed(Self::search_wrong_basis(daemon, query)), certificate);
+            }
+            if let Err(failure) = super::super::query::preflight_packed_search(query, daemon.engine().daemon().library().view().coverage()) {
+                return Self::certify(daemon, &command, CommandReply::Failed(backend_engine::CommandFailure::PagePacking(failure)), certificate);
+            }
+            let prepared = super::graph::capture_search(
+                daemon,
+                &self.compiler,
+                &mut self.search_snapshots,
+                &mut self.generations,
+                &mut self.image_rows,
+            )
+            .and_then(|selection| {
+                self.search_snapshots
+                    .select(
+                        selection.workspace,
+                        selection.view,
+                        selection.capability,
+                        selection.coverage,
+                        selection.corpus,
+                    )
+                    .map(|_| ())
+                    .map_err(|error| BuiltinModelError(error.to_string()))
+            });
+            let reply = match prepared {
+                Ok(()) => match self.selected_search(daemon, query) {
+                    Ok((reply, status, receipt)) => {
+                        self.pending_semantic_search = Some(status);
+                        self.pending_packed_receipt = receipt;
+                        reply
+                    }
+                    Err(failure) => CommandReply::Failed(failure),
+                },
+                Err(error) => CommandReply::Failed(backend_engine::CommandFailure::IncoherentView(
+                    error.to_string(),
+                )),
+            };
+            return Self::certify(daemon, &command, reply, certificate);
+        }
         let (reply, status) = execute_search(
             daemon,
             &self.compiler,
@@ -5284,7 +5412,7 @@ mod tests {
         LocalCompilerScratch, LocalCompilerTimeout, LocalRuntimePackageAuthority,
         LocalRuntimeToolchain,
     };
-    use backend_library::CompileExecutionIntent;
+    use backend_library::{CommandReply, CompileExecutionIntent};
     use backend_semantic::vocabulary::NativeTool;
     use std::collections::BTreeMap;
     use std::fs;
@@ -5594,7 +5722,19 @@ mod tests {
             Self::open(TempTree::new(), true)
         }
 
-        fn reopen(mut self) -> Self {
+        fn new_native() -> Self {
+            Self::open_using(TempTree::new(), true, true)
+        }
+
+        fn reopen(self) -> Self {
+            self.reopen_using(false)
+        }
+
+        fn reopen_native(self) -> Self {
+            self.reopen_using(true)
+        }
+
+        fn reopen_using(mut self, native: bool) -> Self {
             if let Some(mut adapter) = self.adapter.take() {
                 adapter.close();
                 drop(adapter);
@@ -5604,10 +5744,14 @@ mod tests {
                 drop(daemon);
             }
             let root = TempTree(std::mem::take(&mut self.root.0));
-            Self::open(root, false)
+            Self::open_using(root, false, native)
         }
 
         fn open(root: TempTree, seed: bool) -> Self {
+            Self::open_using(root, seed, false)
+        }
+
+        fn open_using(root: TempTree, seed: bool, native: bool) -> Self {
             let workspace = root.0.join("workspace");
             fs::create_dir_all(&workspace).expect("workspace directory");
             // Commands admit a local directory under its physical identity.
@@ -5649,17 +5793,57 @@ mod tests {
             // Library::new() is intentionally unbound and cannot authorize a
             // reset transition to the product view.
             let snapshot = daemon.engine().daemon().owner().snapshot();
-            let (baseline, cursor) = crate::builtin::initial_view_for_workspace(&snapshot)
-                .expect("checked current product baseline");
-            let admission = crate::builtin::BuiltinViewAdmission {
-                workspace_root: snapshot.root(),
-                source_root: baseline.basis().root,
+            let recovered = if native {
+                let journal = crate::builtin::view_journal::ViewJournal::open(
+                    workspace.join("view.journal"),
+                )
+                .expect("open actual native fixture view journal");
+                let capability = crate::builtin::builtin_view_capability_for_workspace(&snapshot)
+                    .expect("current workspace coverage authority");
+                let recovered = journal
+                    .load_for_workspace(snapshot.root(), &capability)
+                    .expect("strict native view journal recovery");
+                assert!(
+                    seed || recovered.is_some(),
+                    "cold native fixture requires the exact persisted generation"
+                );
+                daemon
+                    .engine_mut()
+                    .daemon_mut()
+                    .set_view_persistence(Box::new(journal));
+                recovered
+            } else {
+                None
             };
-            daemon
-                .engine_mut()
-                .daemon_mut()
-                .publish_view(baseline, cursor, &admission, None)
-                .expect("publish checked product baseline");
+            if let Some(recovered) = recovered {
+                let admission = crate::builtin::BuiltinViewAdmission {
+                    workspace_root: snapshot.root(),
+                    source_root: recovered.view.basis().root,
+                };
+                daemon
+                    .engine_mut()
+                    .daemon_mut()
+                    .restore_view(
+                        recovered.view,
+                        recovered.cursor,
+                        &admission,
+                        recovered.events,
+                        recovered.base_sequence,
+                    )
+                    .expect("restore exact durable native view and cursor lineage");
+            } else {
+                let (baseline, cursor) = crate::builtin::initial_view_for_workspace(&snapshot)
+                    .expect("checked current product baseline");
+                let admission = crate::builtin::BuiltinViewAdmission {
+                    workspace_root: snapshot.root(),
+                    source_root: baseline.basis().root,
+                };
+                daemon
+                    .engine_mut()
+                    .daemon_mut()
+                    .publish_view(baseline, cursor, &admission, None)
+                    .expect("publish checked product baseline");
+            }
 
             let compiler_root = workspace.join("compiler-fixture");
             let paths = LocalCompilerRuntimePaths::new(
@@ -5685,8 +5869,12 @@ mod tests {
                 .expect("bounded compiler scratch"),
             )
             .expect("canonical compiler runtime configuration");
-            let compiler = LocalCompilerClient::start(compiler_configuration)
-                .expect("start unavailable-toolchain compiler owner");
+            let compiler = if native {
+                mixed_native_compiler(&root.0)
+            } else {
+                LocalCompilerClient::start(compiler_configuration)
+                    .expect("start unavailable-toolchain compiler owner")
+            };
 
             let mut authority =
                 super::super::super::semantic_authority::SemanticAuthority::open(&workspace)
@@ -5747,6 +5935,7 @@ mod tests {
                 authority,
                 None,
                 None,
+                ECHO_AUTHORITY_SECRET,
             )
             .expect("build command adapter");
 
@@ -5813,7 +6002,9 @@ mod tests {
         .enumerate()
         {
             let admitted = match command {
-                Command::GraphPage { symbol, page } => adapter.graph_page(daemon, symbol, page, None),
+                Command::GraphPage { symbol, page } => {
+                    adapter.graph_page(daemon, symbol, page, None)
+                }
                 _ => adapter.standard(daemon, &command, None),
             }
             .expect("actual read dispatch");
@@ -5832,7 +6023,10 @@ mod tests {
                 CommandReply::Failed(backend_library::CommandFailure::NotFound)
             );
         }
-        let stale = backend_library::view_state_root(&[("fixture".to_owned(), "foreign-outline-view".to_owned())]);
+        let stale = backend_library::view_state_root(&[(
+            "fixture".to_owned(),
+            "foreign-outline-view".to_owned(),
+        )]);
         let command = Command::Outline(backend_library::OutlineQuery::new(package, stale));
         assert!(matches!(
             adapter
@@ -6123,13 +6317,16 @@ mod tests {
     }
 
     fn install_mixed_native_compiler(fixture: &mut AdapterFixture) {
-        let compiler = backend_engine::application::LocalCompilerHost::new(
-            MixedNativeEnvironment(fixture.root.0.join("compiler-native")),
+        fixture.adapter.as_mut().expect("adapter").compiler = mixed_native_compiler(&fixture.root.0);
+    }
+
+    fn mixed_native_compiler(root: &Path) -> LocalCompilerClient {
+        backend_engine::application::LocalCompilerHost::new(
+            MixedNativeEnvironment(root.join("compiler-native")),
             backend_engine::application::LocalHostDiscovery::ExplicitOnly,
         )
         .open()
-        .expect("compiled native Python producer and explicitly absent TypeScript SDK");
-        fixture.adapter.as_mut().expect("adapter").compiler = compiler;
+        .expect("compiled native Python producer and explicitly absent TypeScript SDK")
     }
 
     fn run_mixed_native_operation(
@@ -8934,5 +9131,419 @@ mod tests {
             .expect("retire held scan");
         assert!(adapter.poll_deferred(daemon).is_empty());
         assert!(adapter.indexing.is_none());
+    }
+
+    fn actual_search_reply(
+        fixture: &mut AdapterFixture,
+        id: u64,
+        query: backend_library::Query,
+        certificate: Option<WireCertificate>,
+    ) -> backend_library::ReplyDto {
+        let (adapter, daemon) = fixture.parts();
+        let certificate = certificate.unwrap_or_else(|| {
+            WireCertificate::new().with_claim(WireClaim::RootCommitment {
+                schema: backend_library::WireSchema::ViewRelation,
+                id: backend_library::encode_id(query.basis().as_bytes()),
+            })
+        });
+        let request = backend_library::CommandDto::new(id, Command::Search(query))
+            .with_certificate(certificate);
+        let bytes = serde_json::to_vec(&request).expect("actual command serializer");
+        let bytes = match adapter
+            .execute_or_defer(daemon, &bytes, id + 10000)
+            .expect("actual deferred adapter dispatch")
+        {
+            Executed::Reply(bytes) => bytes,
+            Executed::Deferred => finish_search_lane(adapter, daemon)
+                .into_iter()
+                .find(|(ticket, _)| *ticket == id + 10000)
+                .expect("correlated search reply")
+                .1
+                .expect("encoded deferred search"),
+        };
+        let envelope: serde_json::Value = serde_json::from_slice(&bytes).expect("reply envelope");
+        let reply = if envelope
+            .get("certificate")
+            .is_none_or(serde_json::Value::is_null)
+        {
+            backend_library::decode_reply_body(&bytes).expect("strict certificate-free refusal")
+        } else {
+            backend_library::ReplyDto::decode_with_certificate(
+                &bytes,
+                daemon.engine().daemon().library().view().capability(),
+            )
+            .expect("strict producer proof decode")
+        };
+        backend_library::admit_reply(&request, &reply).expect("actual paired admission");
+        reply
+    }
+
+    fn actual_search_coordinates(reply: &backend_library::ReplyDto) -> Vec<String> {
+        let CommandReply::Search(page) = &reply.reply else {
+            panic!("search page: {:?}", reply.reply)
+        };
+        backend_page_output::record_list_from_rows(
+            "packedneedle",
+            &page.root.rows(),
+            page.root.coverage(),
+            false,
+        )
+        .records()
+        .iter()
+        .map(|r| r.identity().coordinate().as_str().to_owned())
+        .collect()
+    }
+
+    fn actual_packed_query(
+        fixture: &AdapterFixture,
+        detail: backend_library::PagePackingDetail,
+        rows: u16,
+        id: serde_json::Value,
+        predecessor: Option<String>,
+    ) -> backend_library::Query {
+        use backend_library::{
+            PackedCallContext, PackedQueryRequest, PagePackingPolicy, PagePackingProfile,
+            PagePackingScope, QueryLimit,
+        };
+        let limit = QueryLimit::new(rows).expect("original row credit");
+        let policy = PagePackingPolicy::new(
+            limit,
+            backend_library::MAX_PACKED_WIRE_BYTES,
+            detail,
+            PagePackingProfile::McpToolV1,
+            PagePackingScope::StdioJsonRpcLine,
+        )
+        .expect("stable policy");
+        let packing = PackedQueryRequest::new(
+            policy,
+            PackedCallContext::Mcp {
+                id,
+                expiry: 10_000_000_000,
+            },
+            predecessor,
+        )
+        .expect("bounded dynamic context");
+        let root = fixture
+            .daemon
+            .as_ref()
+            .expect("daemon")
+            .engine()
+            .daemon()
+            .library()
+            .revision_root();
+        backend_library::Query::new("packedneedle", root, limit)
+            .with_packing(packing)
+            .expect("original query policy")
+    }
+
+    #[test]
+    fn packed_native_search_replays_exact_pages_through_adapter_wire_and_cold_reopen() {
+        use backend_library::{PagePackingDetail, Query, QueryLimit};
+        let mut fixture = AdapterFixture::new_native();
+        let (_, label) = fixture.add_target();
+        fs::write(
+            Path::new(&label).join("pyproject.toml"),
+            "[project]\nname=\"packed_fixture\"\nversion=\"1.0.0\"\n",
+        )
+        .expect("manifest");
+        let mut source = String::new();
+        for at in 0..200 {
+            source.push_str(&format!(
+                "def packedneedle_{at:03}({}):\n    \"\"\"{}\"\"\"\n    return 7\n\n",
+                (0..36)
+                    .map(|p| format!("argument_{p:03}_{}=None", "x".repeat(12)))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                "é Unicode quote \\\" source detail ".repeat(8)
+            ));
+        }
+        fs::write(Path::new(&label).join("large.py"), source).expect("native Python source");
+        let status = run_mixed_native_operation(&mut fixture, &label, 0xd1);
+        assert!(
+            matches!(
+                status.state,
+                backend_library::IndexOperationState::Published(_)
+            ),
+            "complete native fixture: {:?}",
+            status.state
+        );
+        let root = fixture
+            .daemon
+            .as_ref()
+            .expect("daemon")
+            .engine()
+            .daemon()
+            .library()
+            .revision_root();
+        let original = Query::new("packedneedle", root, QueryLimit::new(200).expect("credit"));
+        let mut query = original.clone();
+        let mut certificate = None;
+        let mut expected = Vec::new();
+        for id in 1..=10 {
+            let reply = actual_search_reply(&mut fixture, id, query, certificate);
+            expected.extend(actual_search_coordinates(&reply));
+            let CommandReply::Search(page) = &reply.reply else {
+                unreachable!()
+            };
+            let Some(next) = page.next else {
+                break;
+            };
+            query = original.clone().with_cursor(next);
+            certificate = reply.certificate().cloned();
+        }
+        assert_eq!(expected.len(), 200, "all native function rows");
+        let query = actual_packed_query(
+            &fixture,
+            PagePackingDetail::Full,
+            200,
+            serde_json::json!("first-é-\\\""),
+            None,
+        );
+        let first = actual_search_reply(&mut fixture, 50, query.clone(), None);
+        let receipt = first.packed_query().expect("authenticated packing receipt");
+        assert!(receipt.more());
+        assert!(receipt.rows() > 0 && receipt.rows() < 200);
+        assert!(receipt.bytes() <= 48 * 1024);
+        eprintln!("packed_native_first_rows={} first_wire_bytes={} original_rows={}", receipt.rows(), receipt.bytes(), expected.len());
+        let token = receipt.token().to_owned();
+        let mut observed = actual_search_coordinates(&first);
+        let next_query = actual_packed_query(
+            &fixture,
+            PagePackingDetail::Full,
+            200,
+            serde_json::json!("second-dynamic-id"),
+            Some(token.clone()),
+        );
+        let second = actual_search_reply(&mut fixture, 51, next_query.clone(), None);
+        let second_rows = actual_search_coordinates(&second);
+        let unrelated = Query::new("project", root, QueryLimit::default());
+        let _ = actual_search_reply(&mut fixture, 52, unrelated, None);
+        let after_intervening = actual_search_reply(&mut fixture, 53, next_query.clone(), None);
+        assert_eq!(actual_search_coordinates(&after_intervening), second_rows);
+        assert_eq!(after_intervening.packed_query(), second.packed_query());
+        let before_reopen = fixture.daemon.as_ref().expect("daemon").engine().daemon().library().view().clone();
+        // Reopen the same durable native artifact authority before selecting
+        // the view. The default refusal fixture uses a different empty
+        // artifact root and truthfully publishes a different structural view.
+        fixture = fixture.reopen_native();
+        let after_reopen = fixture.daemon.as_ref().expect("daemon").engine().daemon().library().view();
+        if before_reopen.root() != after_reopen.root() {
+            let changed = super::super::super::changed_rows(&before_reopen, after_reopen);
+            eprintln!("packed_native_cold_before={:?} after={:?} changed_rows={} first_changes={:?}",
+                before_reopen.descriptor(), after_reopen.descriptor(), changed.len(),
+                changed.iter().take(2).collect::<Vec<_>>());
+            eprintln!("packed_native_cold_roots={:?}", fixture.adapter.as_ref().expect("adapter").published);
+        }
+        assert_eq!(fixture.daemon.as_ref().expect("daemon").engine().daemon().library().revision_root(), root,
+            "cold native source and selected view remain exactly unchanged");
+        let cold = actual_search_reply(&mut fixture, 54, next_query, None);
+        assert_eq!(actual_search_coordinates(&cold), second_rows);
+        assert_eq!(
+            cold.packed_query(),
+            second.packed_query(),
+            "same exact source and dynamic context"
+        );
+        observed.extend(second_rows);
+        let cold_rows = actual_search_coordinates(&cold).len();
+        let mut current = cold;
+        for page in 0..30 {
+            let receipt = current.packed_query().expect("page receipt");
+            if !receipt.more() {
+                break;
+            }
+            let query = actual_packed_query(
+                &fixture,
+                PagePackingDetail::Full,
+                200,
+                serde_json::json!(format!("continued-{page}")),
+                Some(receipt.token().to_owned()),
+            );
+            current = actual_search_reply(&mut fixture, 100 + page, query, None);
+            observed.extend(actual_search_coordinates(&current));
+        }
+        assert!(!current.packed_query().expect("terminal receipt").more());
+        assert_eq!(observed, expected, "no skipped or duplicate source row");
+        for (detail, rows, predecessor) in [
+            (PagePackingDetail::Summary, 200, token.clone()),
+            (PagePackingDetail::Full, 199, token.clone()),
+            (PagePackingDetail::Full, 200, {
+                let mut bad = token.clone().into_bytes();
+                bad[12] = if bad[12] == b'a' { b'b' } else { b'a' };
+                String::from_utf8(bad).expect("ASCII token")
+            }),
+        ] {
+            let query = actual_packed_query(
+                &fixture,
+                detail,
+                rows,
+                serde_json::json!(1),
+                Some(predecessor),
+            );
+            let refused = actual_search_reply(&mut fixture, 500, query, None);
+            assert!(matches!(
+                refused.reply,
+                CommandReply::Failed(backend_library::CommandFailure::CursorMismatch)
+            ));
+            assert!(refused.packed_query().is_none());
+        }
+        for credit in [128, 2000] {
+            let query = actual_packed_query(
+                &fixture,
+                PagePackingDetail::Full,
+                200,
+                serde_json::json!("typed-credit-refusal"),
+                None,
+            );
+            let packing = query.packing().expect("packing");
+            let policy = backend_library::PagePackingPolicy::new(
+                query.limit(),
+                credit,
+                PagePackingDetail::Full,
+                backend_library::PagePackingProfile::McpToolV1,
+                backend_library::PagePackingScope::StdioJsonRpcLine,
+            )
+            .expect("original lower credit");
+            let packing =
+                backend_library::PackedQueryRequest::new(policy, packing.call().clone(), None)
+                    .expect("same bounded call");
+            let query = query.with_packing(packing).expect("same row ceiling");
+            let refused = actual_search_reply(&mut fixture, 600 + u64::from(credit), query, None);
+            assert!(
+                refused.packed_query().is_none(),
+                "no continuation or manufactured empty success"
+            );
+            let CommandReply::Failed(backend_library::CommandFailure::PagePacking(failure)) =
+                refused.reply
+            else {
+                panic!("typed original-credit refusal")
+            };
+            match (credit, failure) {
+                (
+                    128,
+                    backend_library::PackedQueryFailure::EnvelopeExceedsWireCredit {
+                        required_bytes,
+                        credit_bytes,
+                    },
+                )
+                | (
+                    2000,
+                    backend_library::PackedQueryFailure::ItemExceedsWireCredit {
+                        ordinal: 0,
+                        required_bytes,
+                        credit_bytes,
+                    },
+                ) => {
+                    assert_eq!(credit_bytes, credit);
+                    assert!(required_bytes > u64::from(credit));
+                }
+                (_, failure) => panic!("wrong credit refusal {failure:?}"),
+            }
+        }
+        let mut other_workspace = AdapterFixture::new();
+        let query = actual_packed_query(
+            &other_workspace,
+            PagePackingDetail::Full,
+            200,
+            serde_json::json!("other-workspace"),
+            Some(token),
+        );
+        let refused = actual_search_reply(&mut other_workspace, 900, query, None);
+        assert!(matches!(
+            refused.reply,
+            CommandReply::Failed(backend_library::CommandFailure::CursorMismatch)
+        ));
+        eprintln!(
+            "packed_native_fixture_rows={} first_rows={} first_wire_bytes={} cold_page2_rows={}",
+            expected.len(),
+            first.packed_query().expect("receipt").rows(),
+            first.packed_query().expect("receipt").bytes(),
+            cold_rows
+        );
+    }
+
+    #[test]
+    fn packed_preflight_refuses_before_adapter_capture_or_search_preparation() {
+        for deferred in [false, true] {
+            let mut fixture = AdapterFixture::new();
+            let query = actual_packed_query(
+                &fixture,
+                backend_library::PagePackingDetail::Full,
+                200,
+                serde_json::json!("\0".repeat(8193)),
+                None,
+            );
+            let (adapter, daemon) = fixture.parts();
+            let minimum = backend_page_output::minimum_packed_search_bytes(
+                query.text(),
+                daemon.engine().daemon().library().view().coverage(),
+                query.packing().expect("packing"),
+            );
+            assert!(minimum > backend_library::MAX_PACKED_WIRE_BYTES as usize);
+            let builds = adapter.search_snapshots.projection_builds();
+            let opens = adapter.search_snapshots.projection_opens();
+            let (entered, _release) = adapter.search_lane.hold_next();
+            let reply = if deferred {
+                let request = backend_library::CommandDto::new(123, Command::Search(query.clone()))
+                    .with_certificate(WireCertificate::new().with_claim(
+                        WireClaim::RootCommitment {
+                            schema: backend_library::WireSchema::ViewRelation,
+                            id: backend_library::encode_id(query.basis().as_bytes()),
+                        },
+                    ));
+                let body =
+                    backend_library::encode_command_body(&request).expect("admitted strict wire");
+                let Executed::Reply(bytes) = adapter
+                    .execute_or_defer(daemon, &body, 9123)
+                    .expect("immediate refusal")
+                else {
+                    panic!("unfit envelope cannot start preparation");
+                };
+                let reply =
+                    backend_library::decode_reply_body(&bytes).expect("strict typed failure");
+                backend_library::admit_reply(&request, &reply).expect("original credit and family");
+                assert!(reply.packed_query().is_none());
+                reply.reply
+            } else {
+                adapter
+                    .search(daemon, &query, None)
+                    .expect("direct adapter refusal")
+                    .0
+            };
+            assert!(
+                matches!(reply, backend_library::CommandReply::Failed(backend_library::CommandFailure::PagePacking(backend_library::PackedQueryFailure::EnvelopeExceedsWireCredit { required_bytes, credit_bytes })) if required_bytes == minimum as u64 && credit_bytes == backend_library::MAX_PACKED_WIRE_BYTES)
+            );
+            assert!(!adapter.search_lane.active());
+            assert!(
+                matches!(
+                    entered.try_recv(),
+                    Err(std::sync::mpsc::TryRecvError::Empty)
+                ),
+                "no preparation/capture worker was entered"
+            );
+            assert_eq!(
+                adapter.search_snapshots.projection_builds(),
+                builds,
+                "no corpus build"
+            );
+            assert_eq!(
+                adapter.search_snapshots.projection_opens(),
+                opens,
+                "no corpus open"
+            );
+            assert!(
+                adapter
+                    .search_snapshots
+                    .selected_for(
+                        daemon.engine().daemon().owner().snapshot().root(),
+                        daemon.engine().daemon().library().view()
+                    )
+                    .is_none(),
+                "no search corpus captured or selected"
+            );
+            assert!(
+                adapter.packed_search_pending.is_none(),
+                "no source row was retained"
+            );
+        }
     }
 }

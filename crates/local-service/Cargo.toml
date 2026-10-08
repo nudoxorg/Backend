@@ -33,6 +33,7 @@ backend-frontend-rust = { path = "../../frontends/rust" }
 backend-frontend-typescript = { path = "../../frontends/typescript" }
 backend-library = { path = "../library" }
 backend-platform = { path = "../platform" }
+backend-page-output = { path = "../page-output" }
 backend-replication = { path = "../replication" }
 backend-runtime = { path = "../runtime" }
 backend-semantic = { path = "../semantic" }

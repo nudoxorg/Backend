@@ -9,24 +9,177 @@ use std::fs::File;
 use std::io::{self, Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+#[cfg(any(windows, test))]
 use std::sync::atomic::{AtomicU64, Ordering};
+
+#[cfg(unix)]
+pub(crate) mod admission;
+#[cfg(unix)]
+static OWNER_ADMISSION: std::sync::OnceLock<admission::StartupOwner> = std::sync::OnceLock::new();
+
+/// Startup work observed before an endpoint accepts connections. No phase is readiness.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum StartupPhase {
+    /// Selecting the private ephemeral admission directory.
+    PreparingLaunch,
+    /// Another detached owner holds startup admission.
+    WaitingAdmission,
+    /// Finding the installed companion executable.
+    SelectingExecutable,
+    /// Creating the detached process.
+    Spawning,
+    /// Admitting private workspace directories and the authority credential.
+    PreparingWorkspace,
+    /// Acquiring durable ownership and recovering the store.
+    OpeningOwner,
+    /// Capturing installed compiler tools and opening their host.
+    SelectingCompilers,
+    /// Recovering and reconciling semantic authority.
+    RecoveringSemanticState,
+    /// Recovering and publishing the derived view.
+    PublishingView,
+    /// Binding the endpoint after composition succeeds.
+    BindingListener,
+    /// Listener bound; a client must still connect to establish readiness.
+    Listening,
+}
+impl StartupPhase {
+    #[cfg(unix)]
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::PreparingLaunch => "preparing-launch",
+            Self::WaitingAdmission => "waiting-admission",
+            Self::SelectingExecutable => "selecting-executable",
+            Self::Spawning => "spawning",
+            Self::PreparingWorkspace => "preparing-workspace",
+            Self::OpeningOwner => "opening-owner",
+            Self::SelectingCompilers => "selecting-compilers",
+            Self::RecoveringSemanticState => "recovering-semantic-state",
+            Self::PublishingView => "publishing-view",
+            Self::BindingListener => "binding-listener",
+            Self::Listening => "listening",
+        }
+    }
+    #[cfg(unix)]
+    pub(crate) fn from_code(code: &str) -> Option<Self> {
+        [
+            Self::PreparingLaunch,
+            Self::WaitingAdmission,
+            Self::SelectingExecutable,
+            Self::Spawning,
+            Self::PreparingWorkspace,
+            Self::OpeningOwner,
+            Self::SelectingCompilers,
+            Self::RecoveringSemanticState,
+            Self::PublishingView,
+            Self::BindingListener,
+            Self::Listening,
+        ]
+        .into_iter()
+        .find(|phase| phase.code() == code)
+    }
+}
+impl fmt::Display for StartupPhase {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::PreparingLaunch => "preparing launch",
+            Self::WaitingAdmission => "waiting for workspace startup",
+            Self::SelectingExecutable => "finding the local owner",
+            Self::Spawning => "starting the local owner",
+            Self::PreparingWorkspace => "preparing the private workspace",
+            Self::OpeningOwner => "opening the workspace store",
+            Self::SelectingCompilers => "selecting language tools",
+            Self::RecoveringSemanticState => "recovering semantic state",
+            Self::PublishingView => "publishing the workspace view",
+            Self::BindingListener => "binding the local endpoint",
+            Self::Listening => "checking the local endpoint",
+        })
+    }
+}
+
+/// Path-free startup observation measured with the caller's monotonic clock.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StartupProgress {
+    /// Work currently reported by the launcher or its admitted owner.
+    pub phase: StartupPhase,
+    /// Time since this caller began ensuring the endpoint.
+    pub elapsed: std::time::Duration,
+    /// Local generation counter; phases only advance within one attempt.
+    pub attempt: u64,
+}
+
+/// Adopts automatic Unix startup admission before composition or child spawning.
+/// Direct/manual owners have no admission to adopt.
+///
+/// # Errors
+/// Rejects an explicitly configured unsafe or mismatched inherited channel.
+pub fn adopt_startup_admission() -> io::Result<bool> {
+    #[cfg(unix)]
+    {
+        if let Some(owner) = admission::StartupOwner::from_environment()? {
+            OWNER_ADMISSION
+                .set(owner)
+                .map_err(|_| io::Error::other("startup admission already adopted"))?;
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+pub(crate) fn admits_startup_paths(workspace: &Path, endpoint: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        OWNER_ADMISSION
+            .get()
+            .is_some_and(|owner| owner.admits_paths(workspace, endpoint))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (workspace, endpoint);
+        false
+    }
+}
+
+/// Publishes advisory progress for an automatically launched owner. Failures
+/// cannot alter durable ownership, composition or readiness.
+pub fn report_startup_phase(phase: StartupPhase) {
+    #[cfg(unix)]
+    if let Some(owner) = OWNER_ADMISSION.get() {
+        let _ = owner.phase(phase);
+    }
+    #[cfg(not(unix))]
+    let _ = phase;
+}
 
 /// Private failure-receipt path installed only on an automatically spawned owner.
 pub const STARTUP_DIAGNOSTIC_ENV: &str = "BACKEND_LOCALD_STARTUP_DIAGNOSTIC_FILE";
 const MAGIC: &str = "nudox.local-startup-failure.v1\n";
 const TERMINAL_PREFIX: &str = "terminal:";
+const CONTENDED_PREFIX: &str = "owner-contended:";
 const TERMINAL_FOOTER: &str = "\n--nudox.local-startup-failure.complete--\n";
 const MAX_CAUSE_BYTES: usize = 8192;
 const MAX_CAUSE_DIGITS: usize = 4;
+#[cfg(any(windows, test))]
 static ATTEMPT: AtomicU64 = AtomicU64::new(0);
 
 /// The original owner refusal, bounded at its producer and checked on reading.
 #[derive(Debug)]
-pub struct StartupDiagnostic(String);
+pub struct StartupDiagnostic {
+    cause: String,
+    owner_contended: bool,
+}
+impl StartupDiagnostic {
+    /// The producer explicitly reported durable-owner admission contention.
+    /// This is a refusal classification, never proof that an owner is live.
+    #[must_use]
+    pub const fn owner_contended(&self) -> bool {
+        self.owner_contended
+    }
+}
 
 impl fmt::Display for StartupDiagnostic {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
+        formatter.write_str(&self.cause)
     }
 }
 
@@ -35,9 +188,11 @@ pub(crate) struct StartupAttempt {
     directory: backend_platform::DirectoryCapability,
     name: String,
     file: File,
+    cleanup_on_drop: bool,
 }
 
 impl StartupAttempt {
+    #[cfg(any(windows, test))]
     pub(crate) fn prepare(workspace: &Path) -> io::Result<Self> {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -59,19 +214,106 @@ impl StartupAttempt {
                 )
             })?
             .to_owned();
+        Self::create(workspace, name)
+    }
+
+    /// One receipt name per workspace. A new admitted generation can remove
+    /// only a known bounded stale receipt, never an unrelated private file.
+    pub(crate) fn prepare_reserved(workspace: &Path, name: String) -> io::Result<Self> {
+        let directory = backend_platform::DirectoryCapability::open(workspace)?;
+        directory.validate_private()?;
+        match directory.open_private_file_read_write(&name, false) {
+            Ok(mut old) => {
+                old.try_lock().map_err(io::Error::other)?;
+                terminal_cause(&read_record(&mut old)?)?;
+                let original = backend_platform::FileIdentity::of_file(&old)?;
+                let named = directory.open_private_file_read_write(&name, false)?;
+                if backend_platform::FileIdentity::of_file(&named)? != original {
+                    return Err(io::Error::other("stale startup receipt inode changed"));
+                }
+                remove_ephemeral(&directory, workspace, &name)?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error),
+        }
+        Self::create(workspace, name)
+    }
+
+    fn create(workspace: &Path, name: String) -> io::Result<Self> {
         let directory = backend_platform::DirectoryCapability::open(workspace)?;
         directory.validate_private()?;
         let file = directory.create_file_exclusive(&name)?;
         let mut attempt = Self {
+            path: workspace.join(&name),
+            directory,
+            name,
+            file,
+            cleanup_on_drop: true,
+        };
+        attempt.file.write_all(MAGIC.as_bytes())?;
+        Ok(attempt)
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn adopt_configured() -> io::Result<Option<Self>> {
+        let Some(path) = std::env::var_os(STARTUP_DIAGNOSTIC_ENV).map(PathBuf::from) else {
+            return Ok(None);
+        };
+        let parent = path
+            .parent()
+            .ok_or_else(|| io::Error::other("startup receipt has no parent"))?;
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| io::Error::other("invalid startup receipt name"))?
+            .to_owned();
+        let directory = backend_platform::DirectoryCapability::open(parent)?;
+        directory.validate_private()?;
+        let mut file = directory.open_private_file_read_write(&name, false)?;
+        if read_locked(&mut file)? != MAGIC.as_bytes() {
+            return Err(io::Error::other("startup receipt is not pending"));
+        }
+        Ok(Some(Self {
             path,
             directory,
             name,
             file,
-        };
-        attempt.file.write_all(MAGIC.as_bytes())?;
-        attempt.file.sync_all()?;
-        attempt.directory.sync_all()?;
-        Ok(attempt)
+            cleanup_on_drop: true,
+        }))
+    }
+
+    /// A detached child may report after the launcher deadline. Leave the
+    /// single reserved record for its listener-success cleanup or the next
+    /// kernel-admitted generation; this flag makes no liveness claim.
+    #[cfg(unix)]
+    pub(crate) fn preserve_for_detached_owner(&mut self) {
+        self.cleanup_on_drop = false;
+    }
+
+    pub(crate) fn remove_if_original(&self) {
+        if self.file.try_lock().is_err() {
+            return;
+        }
+        let cleanup = (|| {
+            let original = backend_platform::FileIdentity::of_file(&self.file)?;
+            let named = self
+                .directory
+                .open_private_file_read_write(&self.name, false)?;
+            if backend_platform::FileIdentity::of_file(&named)? != original {
+                return Ok(());
+            }
+            // Private parent namespace, with the same full-identity check used
+            // by launcher cleanup. The canonical admission inode is untouched.
+            remove_ephemeral(
+                &self.directory,
+                self.path
+                    .parent()
+                    .ok_or_else(|| io::Error::other("startup receipt parent missing"))?,
+                &self.name,
+            )
+        })();
+        let _ = self.file.unlock();
+        let _ = cleanup;
     }
 
     pub(crate) fn configure(&self, command: &mut Command) {
@@ -92,33 +334,36 @@ impl StartupAttempt {
         terminal_cause(&bytes)
             .ok()?
             .filter(|cause| !cause.is_empty())
-            .map(StartupDiagnostic)
+            .map(|cause| StartupDiagnostic {
+                cause,
+                owner_contended: bytes.starts_with(format!("{MAGIC}{CONTENDED_PREFIX}").as_bytes()),
+            })
+    }
+}
+
+// Ephemeral receipts have no recovery/durability authority. Keep their removal
+// out of the durable directory API, which deliberately fsyncs every unlink.
+fn remove_ephemeral(
+    directory: &backend_platform::DirectoryCapability,
+    parent: &Path,
+    name: &str,
+) -> io::Result<()> {
+    directory.verify_path(parent)?;
+    #[cfg(unix)]
+    {
+        std::fs::remove_file(parent.join(name))
+    }
+    #[cfg(not(unix))]
+    {
+        directory.remove_file(name)
     }
 }
 
 impl Drop for StartupAttempt {
     fn drop(&mut self) {
-        if self.file.lock().is_err() {
-            return;
+        if self.cleanup_on_drop {
+            self.remove_if_original();
         }
-
-        let cleanup = (|| {
-            let original = backend_platform::FileIdentity::of_file(&self.file)?;
-            let named = self
-                .directory
-                .open_private_file_read_write(&self.name, false)?;
-            if backend_platform::FileIdentity::of_file(&named)? != original {
-                return Ok(());
-            }
-
-            // The parent capability was admitted as a private owner-only directory.
-            // Removal is still name-based: Unix has no unlink-by-open-file operation,
-            // so this identity check and unlink rely on that private-parent namespace
-            // boundary and do not claim atomic protection from a same-user rename.
-            self.directory.remove_file(&self.name)
-        })();
-        let _ = self.file.unlock();
-        let _ = cleanup;
     }
 }
 
@@ -159,12 +404,25 @@ impl StartupFailureReporter {
     /// or the terminal receipt cannot be written. The caller still reports
     /// its original failure.
     pub fn report(self, error: &dyn fmt::Display) -> io::Result<()> {
+        self.report_kind(error, false)
+    }
+
+    /// Reports an actual durable-owner lock refusal separately from listener
+    /// contention or a generic startup failure. It does not assert liveness.
+    ///
+    /// # Errors
+    /// Returns the original private-channel I/O or framing failure.
+    pub fn report_owner_contention(self, error: &dyn fmt::Display) -> io::Result<()> {
+        self.report_kind(error, true)
+    }
+
+    fn report_kind(self, error: &dyn fmt::Display, owner_contended: bool) -> io::Result<()> {
         let mut cause = BoundedCause {
             text: String::new(),
             full: false,
         };
         write!(&mut cause, "{error}").map_err(io::Error::other)?;
-        let payload = terminal_payload(&cause.text);
+        let payload = terminal_payload_kind(&cause.text, owner_contended);
 
         let mut file = self.file;
         file.lock()?;
@@ -233,15 +491,20 @@ fn read_record(file: &mut File) -> io::Result<Vec<u8>> {
 
 fn maximum_record_bytes() -> usize {
     MAGIC.len()
-        + TERMINAL_PREFIX.len()
+        + CONTENDED_PREFIX.len()
         + MAX_CAUSE_DIGITS
         + 1
         + MAX_CAUSE_BYTES
         + TERMINAL_FOOTER.len()
 }
 
-fn terminal_payload(cause: &str) -> Vec<u8> {
-    let mut payload = format!("{TERMINAL_PREFIX}{}\n", cause.len()).into_bytes();
+fn terminal_payload_kind(cause: &str, owner_contended: bool) -> Vec<u8> {
+    let prefix = if owner_contended {
+        CONTENDED_PREFIX
+    } else {
+        TERMINAL_PREFIX
+    };
+    let mut payload = format!("{prefix}{}\n", cause.len()).into_bytes();
     payload.extend_from_slice(cause.as_bytes());
     payload.extend_from_slice(TERMINAL_FOOTER.as_bytes());
     payload
@@ -263,7 +526,10 @@ fn terminal_cause(record: &[u8]) -> io::Result<Option<String>> {
         .position(|byte| *byte == b'\n')
         .ok_or_else(invalid)?;
     let header = std::str::from_utf8(&terminal[..header_end]).map_err(|_| invalid())?;
-    let declared_len = header.strip_prefix(TERMINAL_PREFIX).ok_or_else(invalid)?;
+    let declared_len = header
+        .strip_prefix(TERMINAL_PREFIX)
+        .or_else(|| header.strip_prefix(CONTENDED_PREFIX))
+        .ok_or_else(invalid)?;
     if declared_len.is_empty()
         || declared_len.len() > MAX_CAUSE_DIGITS
         || !declared_len.bytes().all(|byte| byte.is_ascii_digit())
@@ -321,6 +587,63 @@ mod tests {
         let root = super::super::tests::test_directory("startup-failure");
         super::super::tests::create_private_fixture(&root);
         root
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reserved_receipt_is_bounded_across_canceled_attempts_and_preserves_unknown_files() {
+        let root = workspace();
+        let name = "workspace.failure".to_owned();
+        for _ in 0..3 {
+            let attempt =
+                StartupAttempt::prepare_reserved(&root, name.clone()).expect("reserved receipt");
+            // Close the abandoned original file without deleting its name,
+            // modeling a terminated launcher whose Drop never executes.
+            let mut attempt = attempt;
+            let original = std::mem::replace(
+                &mut attempt.file,
+                File::open("/dev/null").expect("dummy descriptor"),
+            );
+            drop(original);
+            drop(attempt);
+            assert!(root.join(&name).exists());
+        }
+        assert_eq!(
+            std::fs::read_dir(&root).expect("receipt directory").count(),
+            1
+        );
+        std::fs::write(root.join(&name), b"unrelated private bytes").expect("unknown receipt");
+        assert!(StartupAttempt::prepare_reserved(&root, name.clone()).is_err());
+        assert_eq!(
+            std::fs::read(root.join(name)).expect("unchanged unknown file"),
+            b"unrelated private bytes"
+        );
+        std::fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn durable_owner_contention_is_typed_and_generic_listener_failures_are_not() {
+        let root = workspace();
+        let attempt = StartupAttempt::prepare(&root).expect("attempt");
+        StartupFailureReporter::open(attempt.path.clone())
+            .expect("reporter")
+            .report_owner_contention(&"durable owner admission refused")
+            .expect("typed refusal");
+        assert!(attempt.failure().expect("typed receipt").owner_contended());
+        drop(attempt);
+        let attempt = StartupAttempt::prepare(&root).expect("listener attempt");
+        StartupFailureReporter::open(attempt.path.clone())
+            .expect("reporter")
+            .report(&"listener already running")
+            .expect("listener failure");
+        assert!(
+            !attempt
+                .failure()
+                .expect("generic receipt")
+                .owner_contended()
+        );
+        drop(attempt);
+        std::fs::remove_dir_all(root).expect("remove fixture");
     }
 
     #[test]

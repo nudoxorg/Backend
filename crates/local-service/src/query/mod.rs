@@ -7,9 +7,12 @@
 
 mod embedding_cache;
 mod local;
+mod packed;
 mod projection_state;
 mod remote;
 mod semantic;
+
+pub(crate) use packed::{PendingPackedSearch, preflight_packed_search, search_packed};
 
 pub use local::{
     CoverageBasis, Freshness, Lane, LaneReport, LeftOut, LexicalFailureCause, LexicalPhase,
@@ -30,6 +33,7 @@ pub use semantic::{CompositionPolicy, SemanticAcceleration, SemanticError};
 pub(crate) enum SearchPageError {
     Local(QueryError),
     Projection(backend_library::LibraryError),
+    Packed(backend_library::PackedQueryFailure),
 }
 
 impl std::fmt::Display for SearchPageError {
@@ -37,6 +41,7 @@ impl std::fmt::Display for SearchPageError {
         match self {
             Self::Local(error) => error.fmt(formatter),
             Self::Projection(error) => error.fmt(formatter),
+            Self::Packed(error) => error.fmt(formatter),
         }
     }
 }

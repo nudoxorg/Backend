@@ -1523,6 +1523,7 @@ dependencies = [
  "backend-frontend-rust",
  "backend-frontend-typescript",
  "backend-library",
+ "backend-page-output",
  "backend-platform",
  "backend-replication",
  "backend-runtime",
@@ -1613,6 +1614,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "backend-page-output"
+version = "0.2.0"
+dependencies = [
+ "backend-library",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "backend-platform"
 version = "0.2.0"
 dependencies = [
@@ -1631,6 +1641,7 @@ dependencies = [
  "backend-advisory",
  "backend-client",
  "backend-library",
+ "backend-page-output",
  "backend-semantic",
  "backend-version",
  "serde",

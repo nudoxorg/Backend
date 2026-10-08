@@ -578,6 +578,18 @@ fn compact_view_event_is_delta_sized_and_replays_against_the_retained_root() {
     assert_eq!(decoded_cursor, cursor);
     assert_eq!(decoded.target_root(), target.root());
     assert_eq!(decoded.target_view(), &target);
+    let grammar = crate::JournalViewGrammarV3::from_checked_container(3).expect("checked journal");
+    for version in [21, 22, 23, 24, 25] {
+        let mut persisted: serde_json::Value =
+            serde_json::from_slice(&encoded).expect("event JSON");
+        persisted["version"] = serde_json::json!(version);
+        let bytes = serde_json::to_vec(&persisted).expect("persisted event");
+        let (reopened_cursor, reopened) = grammar
+            .decode_event(&bytes, Cursor::for_view_root(&base), &base)
+            .expect("unchanged persisted event grammar");
+        assert_eq!(reopened_cursor, cursor);
+        assert_eq!(reopened.target_view(), &target);
+    }
 }
 
 #[test]
@@ -2643,3 +2655,53 @@ fn graph_query_page_wire_admission_enforces_credit_and_exact_progress() {
 
 #[path = "index_ticket_reply_tests.rs"]
 mod index_ticket_reply;
+
+#[test]
+fn dto25_keeps_persisted_snapshot_history_and_closed_live_version_admission() {
+    assert_eq!(DTO_VERSION, 25);
+    let source_root = view_state_root(&[]);
+    // The shared certificate producer commits to these exact identity preimages.
+    let basis = Basis::new(source_root, object_version(b"source"));
+    let root = ViewRoot::empty_checked(
+        view_key(b"view"),
+        basis,
+        Frontier::new(basis.branch, basis.log, basis.schema, source_root, 0),
+        capability(basis.object),
+    )
+    .expect("checked root");
+    let expected = ViewDto::new(
+        41,
+        ViewSnapshot {
+            root: root.clone(),
+            freshness: Freshness::Current,
+            next: None,
+            graph_relations: None,
+            rich_graph: None,
+        },
+    )
+    .with_certificate(certificate(&root));
+    let grammar = crate::JournalViewGrammarV3::from_checked_container(3).expect("checked journal");
+    for version in [21, 22, 23, 24, 25] {
+        let mut value = serde_json::to_value(&expected).expect("snapshot JSON");
+        value["version"] = serde_json::json!(version);
+        let bytes = serde_json::to_vec(&value).expect("persisted snapshot");
+        assert_eq!(
+            grammar
+                .decode_snapshot(&bytes, capability(basis.object))
+                .expect("unchanged persisted snapshot grammar"),
+            expected
+        );
+        if version != DTO_VERSION {
+            let error = ViewDto::decode_with_certificate(&bytes, Some(capability(basis.object)))
+                .expect_err("old persisted envelopes do not become live authority");
+            assert!(error.contains(&format!("view DTO version {version}")));
+            assert!(error.contains("same build"));
+            assert!(error.contains("rebuild your CLI/MCP client"));
+            assert!(error.contains("restart the outdated service"));
+        }
+    }
+    for version in [20, 26, u16::MAX] {
+        assert!(grammar.check_envelope_version(version).is_err());
+    }
+    assert!(crate::JournalViewGrammarV3::from_checked_container(4).is_err());
+}

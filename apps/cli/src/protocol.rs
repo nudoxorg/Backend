@@ -204,7 +204,9 @@ pub(crate) fn preflight_reply_memory(reply: &ReplyDto) -> Result<(), ClientError
 
 pub(crate) fn admit_request(request: &CommandDto) -> Result<(), ClientError> {
     backend_library::admit_request(request).map_err(|error| match error {
-        RequestAdmissionError::EmptyText | RequestAdmissionError::InvalidSurface => {
+        RequestAdmissionError::EmptyText
+        | RequestAdmissionError::InvalidSurface
+        | RequestAdmissionError::InvalidPacking => {
             ClientError::Protocol(error.to_string())
         }
         RequestAdmissionError::TextTooLarge => {

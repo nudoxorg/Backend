@@ -34,7 +34,10 @@ pub use backend_discovery::DiscoveryPolicy;
 pub mod server;
 
 mod startup;
-pub use startup::{STARTUP_DIAGNOSTIC_ENV, StartupDiagnostic, StartupFailureReporter};
+pub use startup::{
+    STARTUP_DIAGNOSTIC_ENV, StartupDiagnostic, StartupFailureReporter, StartupPhase,
+    StartupProgress, adopt_startup_admission, report_startup_phase,
+};
 
 use std::ffi::OsString;
 use std::fmt;
@@ -83,6 +86,7 @@ pub const OWNER_CONTENDED_EXIT_CODE: u8 = 75;
 /// Ordinary failure exits get a short final endpoint check. A typed owner-lease
 /// contention exit retains the original cold-start budget instead: its winner
 /// may still be replaying a healthy workspace before binding the listener.
+#[cfg(any(windows, test))]
 const EXITED_START_GRACE: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const PASSIVE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -247,7 +251,8 @@ impl WorkspacePaths {
         if let Some(application_root) = self.private_application_root.as_ref() {
             initialize_default_state(application_root, &self.data).map_err(|source| {
                 RuntimeError::DefaultStateInitialization {
-                    path: application_root.path().join(APPLICATION_DIRECTORY), source,
+                    path: application_root.path().join(APPLICATION_DIRECTORY),
+                    source,
                 }
             })?;
         } else {
@@ -366,7 +371,7 @@ impl LiveEndpoint {
 #[cfg(any(unix, windows))]
 #[must_use]
 pub fn try_attach(paths: &WorkspacePaths) -> Option<LiveEndpoint> {
-    backend_platform::local::LocalStream::connect(paths.endpoint())
+    backend_platform::local::connect_timeout(paths.endpoint(), PASSIVE_CONNECT_TIMEOUT)
         .ok()
         .map(|_probe| LiveEndpoint {
             endpoint: paths.endpoint().to_path_buf(),
@@ -417,7 +422,7 @@ pub fn try_attach(_paths: &WorkspacePaths) -> Option<LiveEndpoint> {
 /// connection — the kernel states that mean no process is listening. A
 /// non-socket, a permission failure, or any other error is left alone so a
 /// misconfigured path fails loudly at bind instead of being deleted here.
-#[cfg(any(unix, windows))]
+#[cfg(any(windows, all(unix, test)))]
 fn unlink_dead_endpoint(endpoint: &Path) -> bool {
     use std::io::ErrorKind;
 
@@ -427,7 +432,7 @@ fn unlink_dead_endpoint(endpoint: &Path) -> bool {
     if !is_endpoint_file(&metadata) {
         return false;
     }
-    match backend_platform::local::LocalStream::connect(endpoint) {
+    match backend_platform::local::connect_timeout(endpoint, PASSIVE_CONNECT_TIMEOUT) {
         Ok(_live) => false,
         Err(error)
             if matches!(
@@ -441,7 +446,7 @@ fn unlink_dead_endpoint(endpoint: &Path) -> bool {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, test))]
 fn is_endpoint_file(metadata: &fs::Metadata) -> bool {
     use std::os::unix::fs::FileTypeExt;
     metadata.file_type().is_socket()
@@ -464,12 +469,265 @@ fn is_endpoint_file(metadata: &fs::Metadata) -> bool {
 /// # Errors
 /// Returns an error when setup, executable discovery, process startup, or the
 /// bounded readiness wait fails.
+/// Ensures an endpoint, optionally observing bounded path-free startup phases.
+/// Observations never grant owner authority or semantic readiness.
+///
+/// # Errors
+/// Returns the original setup/startup cause or a phase-specific deadline.
+#[cfg(any(unix, windows))]
+pub fn ensure_locald_with_progress(
+    paths: &WorkspacePaths,
+    observe: impl FnMut(StartupProgress),
+) -> Result<PathBuf, RuntimeError> {
+    #[cfg(windows)]
+    {
+        let mut observe = observe;
+        observe(StartupProgress {
+            phase: StartupPhase::PreparingWorkspace,
+            elapsed: Duration::ZERO,
+            attempt: 0,
+        });
+        ensure_locald_windows(paths)
+    }
+    #[cfg(unix)]
+    {
+        ensure_locald_unix(
+            paths,
+            observe,
+            Instant::now(),
+            LIVE_START_TIMEOUT,
+            locald_executable,
+        )
+    }
+}
+
+#[cfg(unix)]
+fn ensure_locald_unix(
+    paths: &WorkspacePaths,
+    mut observe: impl FnMut(StartupProgress),
+    started: Instant,
+    budget: Duration,
+    mut select_executable: impl FnMut() -> Result<PathBuf, RuntimeError>,
+) -> Result<PathBuf, RuntimeError> {
+    let deadline = started + budget;
+    let mut phase = StartupPhase::PreparingLaunch;
+    let mut generation = None;
+    let mut attempt = 0;
+    observe(StartupProgress {
+        phase,
+        elapsed: started.elapsed(),
+        attempt,
+    });
+    if Instant::now() >= deadline {
+        return Err(RuntimeError::StartupTimeout {
+            phase,
+            elapsed: started.elapsed(),
+            spawned: false,
+        });
+    }
+    if backend_platform::local::connect_timeout(
+        paths.endpoint(),
+        budget.min(Duration::from_millis(100)),
+    )
+    .is_ok()
+    {
+        return Ok(paths.endpoint().to_owned());
+    }
+    let mut admission = startup::admission::Admission::open(paths.data(), paths.endpoint())
+        .map_err(RuntimeError::Io)?;
+    let mut child = None;
+    let mut failure: Option<startup::StartupAttempt> = None;
+    let mut retired_child = false;
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            if !retired_child && let Some(failure) = failure.as_mut() {
+                // Timeout is not child retirement. A detached child may still
+                // reopen this reserved record to publish its original cause.
+                failure.preserve_for_detached_owner();
+            }
+            return Err(RuntimeError::StartupTimeout {
+                phase,
+                elapsed: started.elapsed(),
+                spawned: child.is_some(),
+            });
+        }
+        if backend_platform::local::connect_timeout(
+            paths.endpoint(),
+            (deadline - now).min(Duration::from_millis(100)),
+        )
+        .is_ok()
+        {
+            return Ok(paths.endpoint().to_path_buf());
+        }
+        if child.is_none() && admission.try_lead().map_err(RuntimeError::Io)? {
+            phase = StartupPhase::SelectingExecutable;
+            observe(StartupProgress {
+                phase,
+                elapsed: started.elapsed(),
+                attempt,
+            });
+            let executable = select_executable()?;
+            if Instant::now() >= deadline {
+                continue;
+            }
+            let startup = startup::StartupAttempt::prepare_reserved(
+                admission.directory(),
+                admission.failure_name(),
+            )
+            .map_err(RuntimeError::Io)?;
+            if Instant::now() >= deadline {
+                continue;
+            }
+            phase = StartupPhase::Spawning;
+            let _ = admission.publish(phase);
+            observe(StartupProgress {
+                phase,
+                elapsed: started.elapsed(),
+                attempt,
+            });
+            let mut command = Command::new(&executable);
+            command
+                .current_dir(paths.project())
+                .arg("--endpoint")
+                .arg(paths.endpoint())
+                .arg("--workspace")
+                .arg(paths.data())
+                .arg("--authority-secret-file")
+                .arg(normalize_identity(paths.authority_secret()))
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            startup.configure(&mut command);
+            admission
+                .configure(&mut command)
+                .map_err(RuntimeError::Io)?;
+            detach(&mut command);
+            // Phase publication, observers and process configuration all consume
+            // this same budget. Never launch a child after they exhaust it.
+            if Instant::now() >= deadline {
+                continue;
+            }
+            child = Some(
+                command
+                    .spawn()
+                    .map_err(|source| RuntimeError::Spawn { executable, source })?,
+            );
+            failure = Some(startup);
+        }
+        if let Some((selected, reported)) = admission.progress() {
+            if generation.as_ref() != Some(&selected) {
+                let restarted = generation.is_some();
+                let next_phase = if restarted {
+                    reported
+                } else {
+                    phase.max(reported)
+                };
+                if restarted {
+                    attempt += 1;
+                }
+                generation = Some(selected);
+                if restarted || next_phase != phase {
+                    phase = next_phase;
+                    observe(StartupProgress {
+                        phase,
+                        elapsed: started.elapsed(),
+                        attempt,
+                    });
+                }
+            } else if reported > phase {
+                phase = reported;
+                observe(StartupProgress {
+                    phase,
+                    elapsed: started.elapsed(),
+                    attempt,
+                });
+            }
+        } else if child.is_none() && generation.is_none() && phase != StartupPhase::WaitingAdmission
+        {
+            phase = StartupPhase::WaitingAdmission;
+            observe(StartupProgress {
+                phase,
+                elapsed: started.elapsed(),
+                attempt,
+            });
+        }
+        if !retired_child
+            && let Some(child) = child.as_mut()
+            && let Some(status) = child.try_wait().map_err(RuntimeError::Io)?
+        {
+            retired_child = true;
+            let diagnostic = failure.as_ref().and_then(startup::StartupAttempt::failure);
+            // Only a typed producer refusal retains the bounded attach
+            // window. Neither code75 nor this refusal proves a live owner.
+            if !diagnostic
+                .as_ref()
+                .is_some_and(StartupDiagnostic::owner_contended)
+            {
+                return Err(RuntimeError::DaemonExited {
+                    code: status.code(),
+                    diagnostic,
+                });
+            }
+        }
+        thread::sleep(POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())));
+    }
+}
+
+/// Ensures a shared detached owner using the standard bounded startup budget.
+///
+/// # Errors
+/// Returns an original startup cause or a phase-specific timeout.
 #[cfg(any(unix, windows))]
 pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
+    ensure_locald_with_progress(paths, |_| {})
+}
+
+/// Reconstructs the launcher's selected directory policy in its detached child.
+/// Private-directory and credential admission remain mandatory and durable.
+///
+/// # Errors
+/// Returns the original directory/credential admission failure.
+pub fn initialize_spawned_workspace(
+    data: &Path,
+    endpoint: &Path,
+    authority: &Path,
+) -> Result<(), RuntimeError> {
+    if !startup::admits_startup_paths(data, endpoint) {
+        return Err(RuntimeError::InvalidPath(
+            "automatic startup paths differ from admitted workspace/endpoint",
+        ));
+    }
+    let project = std::env::current_dir().map_err(RuntimeError::Io)?;
+    let discovered =
+        WorkspacePaths::discover(Some(project.clone()), None, Some(endpoint.to_owned()))?;
+    let mut paths = if discovered.data() == data {
+        discovered
+    } else {
+        WorkspacePaths::discover(
+            Some(project),
+            Some(data.to_owned()),
+            Some(endpoint.to_owned()),
+        )?
+    };
+    paths.authority_secret = authority.to_owned();
+    paths.initialize()
+}
+
+#[cfg(windows)]
+fn ensure_locald_windows(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
+    let started = Instant::now();
+    let mut deadline = started + LIVE_START_TIMEOUT;
     if let Some(live) = try_attach(paths) {
         return Ok(live.into_endpoint());
     }
     paths.initialize()?;
+    if Instant::now() >= deadline {
+        return Err(RuntimeError::StartupTimeout {
+            phase: StartupPhase::PreparingWorkspace,
+            elapsed: started.elapsed(),
+            spawned: false,
+        });
+    }
     if let Some(parent) = paths.endpoint().parent() {
         fs::create_dir_all(parent).map_err(RuntimeError::Io)?;
     }
@@ -497,10 +755,16 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
         .stderr(Stdio::null());
     startup.configure(&mut command);
     detach(&mut command);
+    if Instant::now() >= deadline {
+        return Err(RuntimeError::StartupTimeout {
+            phase: StartupPhase::Spawning,
+            elapsed: started.elapsed(),
+            spawned: false,
+        });
+    }
     let mut child = command
         .spawn()
         .map_err(|source| RuntimeError::Spawn { executable, source })?;
-    let mut deadline = Instant::now() + LIVE_START_TIMEOUT;
     let mut child_exit = None;
     loop {
         if backend_platform::local::LocalStream::connect(paths.endpoint()).is_ok() {
@@ -513,7 +777,19 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
             // original cold-open budget for its actual lease winner; an
             // ordinary failed child cannot extend or restart that budget.
             child_exit = Some(status.code());
-            deadline = deadline_after_exit(deadline, Instant::now(), status.code());
+            let typed_contention = startup
+                .failure()
+                .as_ref()
+                .is_some_and(StartupDiagnostic::owner_contended);
+            deadline = deadline_after_exit(
+                deadline,
+                Instant::now(),
+                if typed_contention {
+                    Some(i32::from(OWNER_CONTENDED_EXIT_CODE))
+                } else {
+                    None
+                },
+            );
         }
         if Instant::now() >= deadline {
             return child_exit.map_or_else(
@@ -530,6 +806,7 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
     }
 }
 
+#[cfg(any(windows, test))]
 fn deadline_after_exit(original: Instant, now: Instant, code: Option<i32>) -> Instant {
     if code == Some(i32::from(OWNER_CONTENDED_EXIT_CODE)) {
         original
@@ -630,7 +907,10 @@ fn application_state_root() -> Result<ApplicationStateRoot, RuntimeError> {
                 "the user's home directory is unavailable",
             ))
         })?;
-        return Ok(ApplicationStateRoot::new(home, &["Library", "Application Support"]));
+        return Ok(ApplicationStateRoot::new(
+            home,
+            &["Library", "Application Support"],
+        ));
     }
 
     #[cfg(target_os = "windows")]
@@ -1086,6 +1366,15 @@ pub enum RuntimeError {
     },
     /// The daemon did not become ready before the bounded deadline.
     StartTimeout(PathBuf),
+    /// Startup exceeded its budget before a client could connect.
+    StartupTimeout {
+        /// Last bounded phase; never a readiness claim.
+        phase: StartupPhase,
+        /// Caller-monotonic elapsed time.
+        elapsed: Duration,
+        /// Whether this caller created a detached child.
+        spawned: bool,
+    },
     /// Automatic local composition is unavailable on this platform.
     Unsupported,
 }
@@ -1094,9 +1383,11 @@ impl fmt::Display for RuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(formatter, "local runtime I/O failed: {error}"),
-            Self::DefaultStateInitialization { path, source } => write!(formatter,
+            Self::DefaultStateInitialization { path, source } => write!(
+                formatter,
                 "initialize default state at {}: {source}; the user profile/data directories must be owned by this user and not writable by other users",
-                path.display()),
+                path.display()
+            ),
             Self::InvalidPath(message) => formatter.write_str(message),
             Self::WorkspaceProjectMismatch {
                 project,
@@ -1146,6 +1437,20 @@ impl fmt::Display for RuntimeError {
             Self::StartTimeout(path) => {
                 write!(formatter, "backend-locald did not open {}", path.display())
             }
+            Self::StartupTimeout {
+                phase,
+                elapsed,
+                spawned,
+            } => write!(
+                formatter,
+                "local owner startup timed out after {:.1}s; last reported phase: {phase} ({}); retry to observe current owner admission or start a new attempt; no owner liveness or semantic readiness was established",
+                elapsed.as_secs_f64(),
+                if *spawned {
+                    "detached owner launched"
+                } else {
+                    "no owner launched by this caller"
+                }
+            ),
             Self::Unsupported => {
                 formatter.write_str("automatic local runtime requires Unix or Windows")
             }
@@ -1167,6 +1472,7 @@ impl std::error::Error for RuntimeError {
             | Self::MissingExecutable(_)
             | Self::DaemonExited { .. }
             | Self::StartTimeout(_)
+            | Self::StartupTimeout { .. }
             | Self::Unsupported => None,
         }
     }
@@ -1210,6 +1516,239 @@ mod tests {
             ),
             original
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn expired_preflight_never_selects_or_spawns_a_child() {
+        let root = socket_test_directory("st-expiry");
+        let paths = WorkspacePaths::discover(
+            Some(root.clone()),
+            Some(root.join("data")),
+            Some(root.join("endpoint")),
+        )
+        .expect("paths");
+        let mut observed = Vec::new();
+        let error = ensure_locald_unix(
+            &paths,
+            |p| observed.push(p),
+            Instant::now() - Duration::from_secs(2),
+            Duration::from_secs(1),
+            || panic!("expired preflight must not select an executable"),
+        )
+        .expect_err("expired startup");
+        assert!(matches!(
+            error,
+            RuntimeError::StartupTimeout {
+                phase: StartupPhase::PreparingLaunch,
+                spawned: false,
+                ..
+            }
+        ));
+        assert_eq!(observed.len(), 1);
+        assert!(
+            !paths.data().exists(),
+            "preflight cannot initialize durable workspace state"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn startup_observer_cannot_launch_a_child_after_exhausting_the_budget() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = socket_test_directory("st-callback");
+        create_private_fixture(&root);
+        let executable = root.join("must-not-launch");
+        fs::write(&executable, "#!/bin/sh\ntouch spawned\n").expect("fake executable");
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700))
+            .expect("fixture executable");
+        let paths = WorkspacePaths::discover(
+            Some(root.clone()),
+            Some(root.join("data")),
+            Some(root.join("endpoint")),
+        )
+        .expect("paths");
+        let started = Instant::now();
+        let budget = Duration::from_secs(1);
+        let mut selected = false;
+        let mut spawning_observed = false;
+        let error = ensure_locald_unix(
+            &paths,
+            |progress| {
+                if progress.phase == StartupPhase::Spawning {
+                    spawning_observed = true;
+                    thread::sleep(
+                        (started + budget).saturating_duration_since(Instant::now())
+                            + Duration::from_millis(1),
+                    );
+                }
+            },
+            started,
+            budget,
+            || {
+                selected = true;
+                Ok(executable.clone())
+            },
+        )
+        .expect_err("observer exhausted the deadline");
+        assert!(
+            selected && spawning_observed,
+            "fixture reached final pre-spawn callback"
+        );
+        assert!(matches!(
+            error,
+            RuntimeError::StartupTimeout {
+                phase: StartupPhase::Spawning,
+                spawned: false,
+                ..
+            }
+        ));
+        assert!(!root.join("spawned").exists());
+        assert!(!paths.data().exists());
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn startup_singleflight_reports_phases_and_requires_an_actual_connection() {
+        use std::os::unix::fs::PermissionsExt as _;
+        const ROLE: &str = "BACKEND_RUNTIME_START_TEST_ROLE";
+        const ROOT: &str = "BACKEND_RUNTIME_START_TEST_ROOT";
+        let wait = |predicate: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(8);
+            while !predicate() {
+                assert!(
+                    Instant::now() < deadline,
+                    "startup fixture rendezvous expired"
+                );
+                thread::sleep(Duration::from_millis(5));
+            }
+        };
+        if std::env::var_os(ROLE).is_some() {
+            let root = PathBuf::from(std::env::var_os(ROOT).expect("owner fixture"));
+            assert!(adopt_startup_admission().expect("inherited gate"));
+            OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(root.join("one-composition"))
+                .expect("only one expensive composition");
+            fs::write(root.join("owner.pid"), std::process::id().to_string()).expect("owned PID");
+            for (number, phase) in [
+                StartupPhase::PreparingWorkspace,
+                StartupPhase::OpeningOwner,
+                StartupPhase::SelectingCompilers,
+                StartupPhase::RecoveringSemanticState,
+                StartupPhase::PublishingView,
+                StartupPhase::BindingListener,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                report_startup_phase(phase);
+                fs::write(root.join(format!("phase-{number}")), b"blocked")
+                    .expect("phase rendezvous");
+                wait(&|| root.join(format!("advance-{number}")).exists());
+            }
+            let _listener = std::os::unix::net::UnixListener::bind(root.join("endpoint"))
+                .expect("actual listener bind");
+            report_startup_phase(StartupPhase::Listening);
+            wait(&|| root.join("owner-exit").exists());
+            return;
+        }
+        let root = socket_test_directory("st-connect");
+        create_private_fixture(&root);
+        let quote = |p: &Path| format!("'{}'", p.to_string_lossy().replace('\'', "'\"'\"'"));
+        let executable = root.join("fake-locald");
+        fs::write(&executable, format!("#!/bin/sh\n{ROLE}=owner {ROOT}={} exec {} --exact tests::startup_singleflight_reports_phases_and_requires_an_actual_connection --nocapture\n", quote(&root), quote(&std::env::current_exe().expect("test executable")))).expect("fake owner launcher");
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700))
+            .expect("executable fixture");
+        let paths = WorkspacePaths::discover(
+            Some(root.clone()),
+            Some(root.join("data")),
+            Some(root.join("endpoint")),
+        )
+        .expect("paths");
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let selected = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let launch = || {
+            let (paths, executable, observed, selected) = (
+                paths.clone(),
+                executable.clone(),
+                observed.clone(),
+                selected.clone(),
+            );
+            thread::spawn(move || {
+                ensure_locald_unix(
+                    &paths,
+                    |phase| observed.lock().expect("observations").push(phase),
+                    Instant::now(),
+                    Duration::from_secs(8),
+                    || {
+                        selected.fetch_add(1, Ordering::SeqCst);
+                        Ok(executable.clone())
+                    },
+                )
+            })
+        };
+        let first = launch();
+        wait(&|| root.join("phase-0").exists());
+        let second = launch();
+        for (number, phase) in [
+            StartupPhase::PreparingWorkspace,
+            StartupPhase::OpeningOwner,
+            StartupPhase::SelectingCompilers,
+            StartupPhase::RecoveringSemanticState,
+            StartupPhase::PublishingView,
+            StartupPhase::BindingListener,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            wait(&|| root.join(format!("phase-{number}")).exists());
+            wait(&|| {
+                observed
+                    .lock()
+                    .expect("observations")
+                    .iter()
+                    .any(|p| p.phase == phase)
+            });
+            assert!(
+                !first.is_finished() && !second.is_finished(),
+                "phase is not readiness"
+            );
+            assert!(
+                !paths.data().exists(),
+                "launcher did not initialize durable state"
+            );
+            fs::write(root.join(format!("advance-{number}")), b"advance").expect("advance fixture");
+        }
+        assert_eq!(
+            first.join().expect("first caller").expect("first attaches"),
+            paths.endpoint()
+        );
+        assert_eq!(
+            second
+                .join()
+                .expect("second caller")
+                .expect("second attaches"),
+            paths.endpoint()
+        );
+        assert_eq!(
+            selected.load(Ordering::SeqCst),
+            1,
+            "one companion selection and composition"
+        );
+        let owner: i32 = fs::read_to_string(root.join("owner.pid"))
+            .expect("own PID")
+            .parse()
+            .expect("numeric PID");
+        fs::write(root.join("owner-exit"), b"exit").expect("retire owner");
+        rustix::process::waitpid(
+            rustix::process::Pid::from_raw(owner),
+            rustix::process::WaitOptions::empty(),
+        )
+        .expect("kernel wait detached owned child");
+        fs::remove_dir_all(root).expect("remove fixture");
     }
 
     /// Runs the actual owner launcher against an explicitly supplied private
@@ -1621,8 +2160,80 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn default_discover_initializes_empty_home_through_its_alias_identity() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        const ROLE: &str = "BACKEND_RUNTIME_DEFAULT_DISCOVER_CHILD";
+        if let Some(record) = std::env::var_os(ROLE) {
+            let paths =
+                WorkspacePaths::discover(None, None, None).expect("actual default discovery");
+            paths.initialize().expect("actual default initialization");
+            assert_eq!(paths.data(), normalize_identity(paths.data()));
+            assert_eq!(fs::metadata(paths.authority_secret()).unwrap().len(), 32);
+            assert!(
+                !paths.endpoint().exists(),
+                "initialization does not start an owner"
+            );
+            fs::write(
+                record,
+                format!(
+                    "{}\n{}\n{}\n",
+                    paths.data().display(),
+                    paths.endpoint().display(),
+                    paths.authority_secret().display()
+                ),
+            )
+            .expect("record discovered identity");
+            return;
+        }
+        let root = test_directory("default-discover-alias");
+        fs::create_dir(&root).expect("owned fixture root");
+        let home = root.join("home");
+        let project = root.join("project");
+        fs::create_dir(&home).unwrap();
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::create_dir(&project).unwrap();
+        assert_eq!(fs::read_dir(&home).unwrap().count(), 0, "actual empty HOME");
+        let before = fs::metadata(&home).unwrap().mode() & 0o777;
+        for (index, spelling) in [home.clone(), normalize_identity(&home)]
+            .into_iter()
+            .enumerate()
+        {
+            let output = root.join(format!("identity-{index}"));
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tests::default_discover_initializes_empty_home_through_its_alias_identity",
+                    "--nocapture",
+                ])
+                .env(ROLE, &output)
+                .env("HOME", &spelling)
+                .env_remove("XDG_STATE_HOME")
+                .env_remove("XDG_DATA_HOME")
+                .env_remove(PROJECT_ENV)
+                .env_remove(DATA_ENV)
+                .env_remove(ENDPOINT_ENV)
+                .env_remove(AUTHORITY_SECRET_ENV)
+                .current_dir(&project)
+                .status()
+                .expect("launch actual discover child");
+            assert!(
+                status.success(),
+                "default discovery child refused its own empty HOME"
+            );
+            assert_eq!(fs::metadata(&home).unwrap().mode() & 0o777, before);
+        }
+        assert_eq!(
+            fs::read(root.join("identity-0")).unwrap(),
+            fs::read(root.join("identity-1")).unwrap(),
+            "raw and canonical HOME aliases discover the same durable state"
+        );
+        fs::remove_dir_all(root).expect("remove owned discovery fixture");
+    }
+
+    #[test]
     fn default_project_state_is_stable_and_isolated_under_app_data() {
-        let root = test_directory("app-data-project-state");
+        let root = normalize_identity(&test_directory("app-data-project-state"));
         let state = root.join("state");
         let first = root.join("project-a");
         let second = root.join("project-b");
@@ -1640,8 +2251,11 @@ mod tests {
         fs::create_dir_all(&state).expect("create OS app-data parent");
         initialize_default_state(&ApplicationStateRoot::new(state.clone(), &[]), &first_state)
             .expect("initialize first project state");
-        initialize_default_state(&ApplicationStateRoot::new(state.clone(), &[]), &second_state)
-            .expect("initialize second project state");
+        initialize_default_state(
+            &ApplicationStateRoot::new(state.clone(), &[]),
+            &second_state,
+        )
+        .expect("initialize second project state");
         initialize_default_state(&ApplicationStateRoot::new(state.clone(), &[]), &first_state)
             .expect("cold reopen first project state");
         assert!(first_state.is_dir());
@@ -1665,9 +2279,9 @@ mod tests {
         ] {
             for existing in [false, true] {
                 for home_mode in [0o700, 0o755] {
-                    let root = test_directory(&format!(
+                    let root = normalize_identity(&test_directory(&format!(
                         "default-empty-home-{platform}-{existing}-{home_mode}"
-                    ));
+                    )));
                     fs::create_dir(&root).expect("fixture home");
                     fs::set_permissions(&root, fs::Permissions::from_mode(home_mode))
                         .expect("home mode");
