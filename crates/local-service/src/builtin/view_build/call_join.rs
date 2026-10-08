@@ -1488,6 +1488,7 @@ mod tsz_source_coordinate_tests {
         let root_identity = fixture_version(identity_byte).identity();
         let root_authority = EntityAuthorityFacts {
             parentage: ParentageAuthority::Root,
+            source: FactAvailability::Captured,
             visibility: FactAvailability::Captured,
             ..EntityAuthorityFacts::default()
         };
@@ -1505,10 +1506,11 @@ mod tsz_source_coordinate_tests {
             )
             .map_err(|error| error.to_string())?;
             let end = u32::try_from(
-                source
-                    .find("getHello(): string { return ''; }")
-                    .ok_or_else(|| "service fixture is missing its method end".to_owned())?
-                    + "getHello(): string { return ''; }".len(),
+                usize::try_from(start).map_err(|error| error.to_string())?
+                    + source[usize::try_from(start).map_err(|error| error.to_string())?..]
+                        .find('}')
+                        .ok_or_else(|| "service fixture is missing its method end".to_owned())?
+                    + 1,
             )
             .map_err(|error| error.to_string())?;
             SourceSpan::new(path_atom, start, end)
@@ -1542,6 +1544,7 @@ mod tsz_source_coordinate_tests {
         } else {
             let method_authority = EntityAuthorityFacts {
                 parentage: ParentageAuthority::Bound(root_identity),
+                source: FactAvailability::Captured,
                 visibility: FactAvailability::Captured,
                 ..EntityAuthorityFacts::default()
             };
@@ -2089,8 +2092,10 @@ mod python_native_call_tests {
                 .map_err(|error| format!("fixture package coordinate rejected: {error:?}"))?,
         )
         .map_err(|error| format!("fixture package profile rejected: {error:?}"))?;
-        let sources = modules
-            .iter()
+        let mut ordered_modules = modules.iter().collect::<Vec<_>>();
+        ordered_modules.sort_by_key(|(path, _)| *path);
+        let sources = ordered_modules
+            .into_iter()
             .map(|(path, source)| OwnedPackageSource::new(path, source))
             .collect::<Result<Vec<_>, _>>()?
             .into_boxed_slice();
