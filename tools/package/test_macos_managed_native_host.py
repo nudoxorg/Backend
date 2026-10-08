@@ -510,7 +510,7 @@ class ManagedNativeTests(unittest.TestCase):
         images=app/'Contents/MacOS';images.mkdir()
         executables={}
         for name in native.PACKAGES:
-            path=images/name;path.write_bytes(b'compiled '+name.encode())
+            path=images/name;path.write_bytes(b'compiled '+name.encode());path.chmod(0o755)
             executables[name]=native.digest(path.read_bytes())
         proof={'kind':native.KIND,'operator_plan_sha256':'f'*64}
         raw=native.canonical({'cargo_provenance':proof,'executables':executables})
@@ -562,5 +562,16 @@ class ManagedNativeTests(unittest.TestCase):
                 with patch.object(release,'preflight',return_value={'ready':True}),patch.object(release,'run') as run:
                     with self.assertRaisesRegex(ValueError,'external selected build receipt'):release.finalize(config)
                     run.assert_not_called()
+
+    def test_sign_refuses_changed_executable_modes_before_any_codesign(self):
+        for mode in (0o644,0o777):
+            for name in native.PACKAGES:
+                with self.subTest(mode=mode,image=name),tempfile.TemporaryDirectory() as d:
+                    config,output=self.sign_fixture(Path(d))
+                    release.selected_managed_build(config,output)
+                    (output/'package/Nudox.app/Contents/MacOS'/name).chmod(mode)
+                    with patch.object(release,'preflight',return_value={'ready':True}),patch.object(release,'run') as run:
+                        with self.assertRaisesRegex(ValueError,'must retain mode 0755'):release.finalize(config)
+                        run.assert_not_called()
 
 if __name__=='__main__':unittest.main()

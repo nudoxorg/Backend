@@ -7,6 +7,7 @@ import platform
 import plistlib
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tomllib
@@ -60,7 +61,12 @@ def selected_managed_build(config, output):
         raise ValueError('packaged application differs from the external selected build receipt')
     app=output/'package/Nudox.app'
     for name in managed.PACKAGES:
-        _,digest=admit_file_digest(app/'Contents/MacOS'/name,managed.MAX_IMAGE)
+        path=app/'Contents/MacOS'/name
+        if stat.S_IMODE(path.lstat().st_mode)!=0o755:
+            raise ValueError('packaged application executable must retain mode 0755: '+name)
+        _,digest=admit_file_digest(path,managed.MAX_IMAGE)
+        if stat.S_IMODE(path.lstat().st_mode)!=0o755:
+            raise ValueError('packaged application executable mode changed during admission: '+name)
         if digest!=executables[name]:
             raise ValueError('packaged application executable differs from the selected build receipt: '+name)
 
