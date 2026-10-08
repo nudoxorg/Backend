@@ -2526,3 +2526,31 @@ mod cargo_alias_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod source_origin_tests {
+    use super::SearchOrigin;
+    use backend_library::{SourceAvailability, SourceLocation};
+
+    #[test]
+    fn source_declaration_ranking_retains_unhydrated_and_stale_declaration_evidence() {
+        for source in [
+            SourceAvailability::Captured(
+                SourceLocation::new("core/config.py", 42).expect("source"),
+            ),
+            SourceAvailability::NotHydrated,
+            SourceAvailability::stale_file("core/config.py").expect("stale captured path"),
+        ] {
+            assert_eq!(
+                SearchOrigin::from_source(&source),
+                SearchOrigin::SourceDeclaration
+            );
+        }
+        for source in [
+            SourceAvailability::NotCaptured,
+            SourceAvailability::Unconfigured,
+        ] {
+            assert_eq!(SearchOrigin::from_source(&source), SearchOrigin::Unsourced);
+        }
+    }
+}
