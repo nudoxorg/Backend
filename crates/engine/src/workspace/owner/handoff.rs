@@ -61,19 +61,82 @@ impl PreparedWorkspaceCandidate {
     }
 }
 
-/// One exact selected result returned with its exclusively owned writer.
-/// Creating this value never changes the serving owner's admitted head.
 #[derive(Debug)]
-pub struct CommittedWorkspaceCandidate {
+struct CommittedWorkspaceCandidate {
     claim: WorkspaceCandidateClaim,
     status: PublicationStatus,
 }
 
-impl CommittedWorkspaceCandidate {
+/// The selected result and its sole writer are inseparable. Only publication
+/// or same-writer reconciliation can mint this capability; a foreign owner
+/// must return it intact so the correct owner can still install the head.
+pub struct PublishedWorkspaceWriter<M: WorkspaceModel> {
+    writer: WorkspaceWriter<M>,
+    committed: CommittedWorkspaceCandidate,
+}
+
+impl<M: WorkspaceModel> std::fmt::Debug for PublishedWorkspaceWriter<M> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PublishedWorkspaceWriter")
+            .field("writer", &self.writer)
+            .field("committed", &self.committed)
+            .finish()
+    }
+}
+
+impl<M: WorkspaceModel> PublishedWorkspaceWriter<M> {
     /// Returns the existing post-selection acknowledgement status.
     #[must_use]
     pub const fn status(&self) -> PublicationStatus {
-        self.status
+        self.committed.status
+    }
+}
+
+/// Publication preserves every linear capability on refusal. A preflight
+/// rejection returns the original candidate and grant for correct routing;
+/// an attempted publication returns the sole writer for exact settlement.
+pub enum WorkspacePublicationFailure<M: WorkspaceModel> {
+    /// No publication was attempted; none of the supplied capabilities was consumed.
+    Rejected {
+        /// The unique writer supplied to the rejected call.
+        writer: WorkspaceWriter<M>,
+        /// The original privately durable candidate.
+        candidate: PreparedWorkspaceCandidate,
+        /// The original single-use grant.
+        grant: PublishGrant,
+        /// The admission refusal.
+        error: WorkspaceError,
+    },
+    /// Publication was attempted and must be reconciled or proved unselected.
+    Unsettled {
+        /// The unique writer retained across the attempted publication.
+        writer: WorkspaceWriter<M>,
+        /// The real error, possibly a typed pending publication.
+        error: WorkspaceError,
+    },
+}
+
+impl<M: WorkspaceModel> std::fmt::Debug for WorkspacePublicationFailure<M> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rejected {
+                writer,
+                candidate,
+                grant,
+                error,
+            } => f
+                .debug_struct("Rejected")
+                .field("writer", writer)
+                .field("candidate", candidate)
+                .field("grant", grant)
+                .field("error", error)
+                .finish(),
+            Self::Unsettled { writer, error } => f
+                .debug_struct("Unsettled")
+                .field("writer", writer)
+                .field("error", error)
+                .finish(),
+        }
     }
 }
 
@@ -93,22 +156,37 @@ pub struct RetiredWorkspaceHead {
     _catalog: CatalogState,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WriterState {
+    Ready,
+    Prepared(WorkspaceCandidateClaim),
+    Publishing(WorkspaceCandidateClaim),
+    Settling(WorkspaceCandidateClaim),
+}
+
+impl WriterState {
+    fn claim(self) -> Option<WorkspaceCandidateClaim> {
+        match self {
+            Self::Ready => None,
+            Self::Prepared(claim) | Self::Publishing(claim) | Self::Settling(claim) => Some(claim),
+        }
+    }
+}
+
 /// The unique writer owns the actual kernel lease and diagnostic journal for
 /// its entire lifetime. Its private owner is inaccessible to callers; no
 /// competing write or GC can execute through the serving owner while reserved.
 pub struct WorkspaceWriter<M: WorkspaceModel> {
     owner: WorkspaceOwner<M>,
     binding: Binding,
-    prepared: Option<WorkspaceCandidateClaim>,
-    granted: bool,
+    state: WriterState,
 }
 
 impl<M: WorkspaceModel> std::fmt::Debug for WorkspaceWriter<M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WorkspaceWriter")
             .field("binding", &self.binding)
-            .field("prepared", &self.prepared)
-            .field("granted", &self.granted)
+            .field("state", &self.state)
             .finish()
     }
 }
@@ -158,8 +236,7 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
                 next_gc_pin: Arc::clone(&self.next_gc_pin),
             },
             binding,
-            prepared: None,
-            granted: false,
+            state: WriterState::Ready,
         })
     }
 
@@ -185,6 +262,9 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
         {
             return Err(WorkspaceError::HeadConflict);
         }
+        // This Acquire load is the cancellation/publication arbitration
+        // point. A cancellation stored after this load loses even if the
+        // grant is not yet stored in `reservation` or sent to the worker.
         if cancellation.load(Ordering::Acquire) {
             return Err(WorkspaceError::PublicationCancelled);
         }
@@ -197,13 +277,14 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
     /// durability and recovery occurred on the unique writer beforehand.
     ///
     /// # Errors
-    /// Refuses a stale/foreign writer or result. On refusal the writer is
-    /// returned to the caller, so the live lease is never discarded.
+    /// Refuses a stale/foreign publication. On refusal the inseparable writer
+    /// and selected result are returned, so neither authority is discarded.
     pub fn install_candidate(
         &mut self,
-        mut writer: WorkspaceWriter<M>,
-        committed: CommittedWorkspaceCandidate,
-    ) -> Result<RetiredWorkspaceHead, (WorkspaceWriter<M>, WorkspaceError)> {
+        mut published: PublishedWorkspaceWriter<M>,
+    ) -> Result<RetiredWorkspaceHead, (PublishedWorkspaceWriter<M>, WorkspaceError)> {
+        let writer = &published.writer;
+        let committed = &published.committed;
         let valid = self.handoff.is_some_and(|reservation| {
             reservation.binding == writer.binding && reservation.granted == Some(committed.claim)
         }) && writer.binding == committed.claim.binding
@@ -213,14 +294,15 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
             && writer.owner.head.request_identity() == committed.claim.request
             && writer.owner.head.sequence() == committed.claim.sequence;
         if !valid {
-            return Err((writer, WorkspaceError::HeadConflict));
+            return Err((published, WorkspaceError::HeadConflict));
         }
-        let authority = match writer.owner.writer.take() {
+        let authority = match published.writer.owner.writer.take() {
             Some(authority) => authority,
-            None => return Err((writer, WorkspaceError::WriterReserved)),
+            None => return Err((published, WorkspaceError::WriterReserved)),
         };
-        let prior_head = std::mem::replace(&mut self.head, writer.owner.head.clone());
-        let prior_catalog = std::mem::replace(&mut self.catalog, writer.owner.catalog.clone());
+        let prior_head = std::mem::replace(&mut self.head, published.writer.owner.head.clone());
+        let prior_catalog =
+            std::mem::replace(&mut self.catalog, published.writer.owner.catalog.clone());
         self.writer = Some(authority);
         self.handoff = None;
         Ok(RetiredWorkspaceHead {
@@ -243,7 +325,7 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
             reservation.binding == writer.binding && reservation.granted.is_none()
         }) && self.writer.is_none()
             && self.head == writer.owner.head
-            && !writer.granted;
+            && matches!(writer.state, WriterState::Ready | WriterState::Prepared(_));
         if !valid {
             return Err((writer, WorkspaceError::HeadConflict));
         }
@@ -263,7 +345,7 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
         }) && self.writer.is_none()
             && writer.binding == unselected.claim.binding
             && self.head == writer.owner.head
-            && writer.granted;
+            && writer.state == WriterState::Settling(unselected.claim);
         if !valid {
             return Err((writer, WorkspaceError::HeadConflict));
         }
@@ -281,7 +363,7 @@ impl<M: WorkspaceModel> WorkspaceWriter<M> {
         &mut self,
         intent: M::Intent,
     ) -> Result<PreparedWorkspaceCandidate, WorkspaceError> {
-        if self.prepared.is_some() || self.granted {
+        if self.state != WriterState::Ready {
             return Err(WorkspaceError::WriterReserved);
         }
         let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -305,7 +387,7 @@ impl<M: WorkspaceModel> WorkspaceWriter<M> {
                     .ok_or(WorkspaceError::Bounds)?
             },
         };
-        self.prepared = Some(claim);
+        self.state = WriterState::Prepared(claim);
         Ok(PreparedWorkspaceCandidate {
             claim,
             durable: prepared,
@@ -317,23 +399,27 @@ impl<M: WorkspaceModel> WorkspaceWriter<M> {
     /// On error or unwind, reconcile on this same lease before classifying the
     /// result; a physically selected root can never become Cancelled.
     pub fn publish(
-        &mut self,
+        mut self,
         candidate: PreparedWorkspaceCandidate,
         grant: PublishGrant,
-    ) -> Result<CommittedWorkspaceCandidate, WorkspaceError> {
-        if self.granted
-            || self.prepared != Some(candidate.claim)
+    ) -> Result<PublishedWorkspaceWriter<M>, WorkspacePublicationFailure<M>> {
+        if self.state != WriterState::Prepared(candidate.claim)
             || grant.claim != candidate.claim
             || candidate.claim.binding != self.binding
         {
-            return Err(WorkspaceError::HeadConflict);
+            return Err(WorkspacePublicationFailure::Rejected {
+                writer: self,
+                candidate,
+                grant,
+                error: WorkspaceError::HeadConflict,
+            });
         }
-        self.granted = true;
+        self.state = WriterState::Publishing(candidate.claim);
         let claim = candidate.claim;
         let attempted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.owner.publish(candidate.durable)
         }));
-        match attempted {
+        let settled = match attempted {
             Ok(Ok(published)) => Ok(CommittedWorkspaceCandidate {
                 claim,
                 status: published.status(),
@@ -343,17 +429,30 @@ impl<M: WorkspaceModel> WorkspaceWriter<M> {
                 claim,
                 WorkspaceError::Model("workspace publication worker panicked".to_owned()),
             ),
+        };
+        match settled {
+            Ok(committed) => Ok(PublishedWorkspaceWriter {
+                writer: self,
+                committed,
+            }),
+            Err(error) => Err(WorkspacePublicationFailure::Unsettled {
+                writer: self,
+                error,
+            }),
         }
     }
 
-    /// Proves on the same exclusive lease that a failed granted attempt did
-    /// not select a root. If the durable head changed, this refuses: callers
-    /// must reconcile/install it instead of clearing the reservation.
-    pub fn prove_unselected(&self) -> Result<UnselectedWorkspaceCandidate, WorkspaceError> {
-        if !self.granted {
-            return Err(WorkspaceError::HeadConflict);
-        }
-        let claim = self.prepared.ok_or(WorkspaceError::HeadConflict)?;
+    /// Seals the writer and proves on the same exclusive lease that a prepared
+    /// attempt did not select a root, including a grant received before
+    /// publish. If the durable head changed, this refuses: callers must
+    /// reconcile/install it instead of clearing the reservation.
+    pub fn prove_unselected(&mut self) -> Result<UnselectedWorkspaceCandidate, WorkspaceError> {
+        let claim = self.state.claim().ok_or(WorkspaceError::HeadConflict)?;
+        // The grant may have been received (and then lost to a caught worker
+        // error) before `publish` was entered. The unchanged physical base is
+        // sufficient for settlement, but this writer must first be sealed so
+        // no retained grant can publish after the proof is issued.
+        self.state = WriterState::Settling(claim);
         self.owner.writer()?.lease.assert_current()?;
         let selected = self.owner.store.head().map_err(WorkspaceError::store)?;
         let matches = match selected {
@@ -378,7 +477,9 @@ impl<M: WorkspaceModel> WorkspaceWriter<M> {
         &self,
         candidate: &PreparedWorkspaceCandidate,
     ) -> Result<super::WorkspaceSnapshot, WorkspaceError> {
-        if self.prepared != Some(candidate.claim) || candidate.claim.binding != self.binding {
+        if self.state != WriterState::Prepared(candidate.claim)
+            || candidate.claim.binding != self.binding
+        {
             return Err(WorkspaceError::HeadConflict);
         }
         let head = WorkspaceHead::from_shared_transition(
@@ -392,45 +493,108 @@ impl<M: WorkspaceModel> WorkspaceWriter<M> {
         Ok(head.snapshot().with_store(Arc::clone(&self.owner.store)))
     }
 
+    /// Retries acknowledgement/recovery after a granted publication returned
+    /// `PublicationPending`. This never consumes another grant or republishes
+    /// the candidate. The caller retains this exact writer while retrying and
+    /// must not report Failed/Cancelled unless `prove_unselected` succeeds.
+    pub fn reconcile_publication(
+        mut self,
+    ) -> Result<PublishedWorkspaceWriter<M>, (WorkspaceWriter<M>, WorkspaceError)> {
+        let claim = match self.state {
+            WriterState::Publishing(claim) | WriterState::Settling(claim) => claim,
+            WriterState::Ready | WriterState::Prepared(_) => {
+                return Err((self, WorkspaceError::HeadConflict));
+            }
+        };
+        match self.reconcile(
+            claim,
+            Self::retry_pending(claim, "publication requires reconciliation"),
+        ) {
+            Ok(committed) => Ok(PublishedWorkspaceWriter {
+                writer: self,
+                committed,
+            }),
+            Err(error) => Err((self, error)),
+        }
+    }
+
+    fn retry_pending(
+        claim: WorkspaceCandidateClaim,
+        error: impl std::fmt::Display,
+    ) -> WorkspaceError {
+        WorkspaceError::PublicationPending {
+            target: claim.target,
+            sequence: claim.sequence,
+            status: PublicationStatus::unobserved_acknowledgements(),
+            detail: format!(
+                "granted workspace publication must be reconciled before terminal classification: {error}"
+            ),
+        }
+    }
+
     fn reconcile(
         &mut self,
         claim: WorkspaceCandidateClaim,
         prior_error: WorkspaceError,
     ) -> Result<CommittedWorkspaceCandidate, WorkspaceError> {
-        self.owner.writer()?.lease.assert_current()?;
+        let status = match &prior_error {
+            WorkspaceError::PublicationPending { status, .. } => {
+                status.with_unobserved_acknowledgements()
+            }
+            _ => PublicationStatus::unobserved_acknowledgements(),
+        };
+        self.owner
+            .writer()
+            .map_err(|error| Self::retry_pending(claim, error))?
+            .lease
+            .assert_current()
+            .map_err(|error| Self::retry_pending(claim, error))?;
         let head = super::recover_store_head(
             &self.owner.store,
             self.owner.model.as_ref(),
             &self.owner.head,
             self.binding.epoch,
             &self.owner.faults,
-        )?;
+        )
+        .map_err(|error| Self::retry_pending(claim, error))?;
         if head.root() != claim.target
             || head.request_identity() != claim.request
             || head.sequence() != claim.sequence
         {
-            return Err(prior_error);
+            // Only an exact unchanged physical base can preserve an ordinary
+            // pre-selection failure. Any other selected head is unresolved,
+            // never permission to classify the granted attempt as Failed.
+            return if head.expectation() == self.binding.base
+                && *head.closure().membership_id().as_bytes() == self.binding.closure
+            {
+                Err(prior_error)
+            } else {
+                Err(Self::retry_pending(claim, prior_error))
+            };
         }
         let catalog = if let Some(descriptor) = head.catalog_descriptor() {
             let manifest = self
                 .owner
                 .store
                 .open_closure(head.closure().membership_id())
-                .map_err(WorkspaceError::store)?;
+                .map_err(|error| {
+                    Self::retry_pending(
+                        claim,
+                        format!("reopen selected catalog closure: {error:?}"),
+                    )
+                })?;
             state_from_durable_manifest(
                 &self.owner.store,
                 &manifest,
                 descriptor,
                 head.manifest().coverage(),
-            )?
+            )
+            .map_err(|error| Self::retry_pending(claim, error))?
         } else {
             CatalogState::empty(head.manifest().coverage())
         };
         self.owner.head = head;
         self.owner.catalog = catalog;
-        Ok(CommittedWorkspaceCandidate {
-            claim,
-            status: PublicationStatus::default().with_notification_pending(),
-        })
+        Ok(CommittedWorkspaceCandidate { claim, status })
     }
 }

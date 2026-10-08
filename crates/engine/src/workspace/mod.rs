@@ -27,9 +27,10 @@ pub use lazy::{
 };
 pub use model::WorkspaceModel;
 pub use owner::{
-    CommittedWorkspaceCandidate, OwnerLease, OwnerLeaseIdentity, PreparedWorkspaceCandidate,
-    PublishGrant, RetiredWorkspaceHead, UnselectedWorkspaceCandidate, WorkspaceCandidateClaim,
-    WorkspaceError, WorkspaceGcPin, WorkspaceOwner, WorkspaceWriter,
+    OwnerLease, OwnerLeaseIdentity, PreparedWorkspaceCandidate, PublishGrant,
+    PublishedWorkspaceWriter, RetiredWorkspaceHead, UnselectedWorkspaceCandidate,
+    WorkspaceCandidateClaim, WorkspaceError, WorkspaceGcPin, WorkspaceOwner,
+    WorkspacePublicationFailure, WorkspaceWriter,
 };
 pub use publication::{
     Durable, DurablePublication, Prepared, PreparedPublication, PublicationStatus, Published,

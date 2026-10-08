@@ -52,8 +52,9 @@ mod recovery;
 mod transaction;
 pub(crate) use super::recovery::{open_diagnostic_journal, recover_store_head};
 pub use handoff::{
-    CommittedWorkspaceCandidate, PreparedWorkspaceCandidate, PublishGrant, RetiredWorkspaceHead,
-    UnselectedWorkspaceCandidate, WorkspaceCandidateClaim, WorkspaceWriter,
+    PreparedWorkspaceCandidate, PublishGrant, PublishedWorkspaceWriter, RetiredWorkspaceHead,
+    UnselectedWorkspaceCandidate, WorkspaceCandidateClaim, WorkspacePublicationFailure,
+    WorkspaceWriter,
 };
 pub use lease::{OwnerLease, OwnerLeaseIdentity};
 pub(crate) use recovery::{store_head_matches, sync_directory, write_diagnostic};

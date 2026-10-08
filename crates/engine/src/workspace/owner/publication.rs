@@ -154,6 +154,15 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
         )?;
         data.store_published = store_published;
 
+        self.faults
+            .trip(Boundary::OwnerAcknowledgement)
+            .map_err(|error| WorkspaceError::PublicationPending {
+                target: data.transition.target(),
+                sequence,
+                status: status.with_unobserved_acknowledgements(),
+                detail: format!("selected workspace awaiting engine acknowledgement: {error}"),
+            })?;
+
         data.post_selection = self.acknowledge_selection(
             &data.transition,
             &persisted,

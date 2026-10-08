@@ -323,16 +323,21 @@ where
     }
 
     /// Installs the durable workspace result before any successful reply.
-    /// Its derived view remains explicitly stale until a checked view installs.
+    /// A changed root leaves its derived view stale until a checked view
+    /// installs. Replaying the same selected root preserves the current binding.
     pub fn install_workspace_candidate(
         &mut self,
-        writer: crate::WorkspaceWriter<M>,
-        committed: crate::CommittedWorkspaceCandidate,
-    ) -> Result<crate::RetiredWorkspaceHead, (crate::WorkspaceWriter<M>, crate::WorkspaceError)>
-    {
-        let retired = self.owner.install_candidate(writer, committed)?;
-        self.view_binding =
-            ViewBinding::stale(self.owner.head().root(), self.library.view().basis().root);
+        published: crate::PublishedWorkspaceWriter<M>,
+    ) -> Result<
+        crate::RetiredWorkspaceHead,
+        (crate::PublishedWorkspaceWriter<M>, crate::WorkspaceError),
+    > {
+        let previous_root = self.owner.head().root();
+        let retired = self.owner.install_candidate(published)?;
+        if self.owner.head().root() != previous_root {
+            self.view_binding =
+                ViewBinding::stale(self.owner.head().root(), self.library.view().basis().root);
+        }
         Ok(retired)
     }
 
