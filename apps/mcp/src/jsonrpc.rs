@@ -14,7 +14,8 @@
 //!
 //! * the text block is `markdown::answer`, and `structuredContent` uses the
 //!   same typed projection the CLI's `--format json` emits;
-//! * `isError` is true exactly when the answer is a [`Fault`], and the fault is
+//! * `isError` is true when the shared answer carries a [`Fault`], including
+//!   a product refusal that retains its exact typed operation receipt. The fault is
 //!   rendered in the shared three-line grammar with its affordance as the exact
 //!   next tool call an agent can paste back.
 
@@ -581,7 +582,11 @@ impl<P: Product> Server<P> {
         // The MCP schema requires an explicit path even though the shared CLI
         // grammar permits its project default. Admit it before any owner call.
         if name == "backend.index" {
-            string(arguments, "path")?;
+            if !arguments.get("path").and_then(Value::as_str).is_some_and(|path| !path.trim().is_empty()) {
+                return Err(RpcError::from_fault(&Fault::usage(
+                    "path", "backend.index requires arguments.path: pass the repository's absolute path; use backend.index_start for a resumable operation",
+                )));
+            }
         }
         let detail = response_detail(name, arguments)?;
         if matches!(route, ToolRoute::Surface) {
@@ -850,7 +855,7 @@ impl<P: Product> Server<P> {
         Ok(tool_result(
             &bounded_text(&markdown::product(&view)),
             structured,
-            false,
+            view.fault().is_some(),
         ))
     }
 
@@ -1041,7 +1046,7 @@ impl<P: Product> Server<P> {
         let structured: Value = serde_json::from_slice(&payload.bytes)
             .map_err(|error| RpcError::tool(format!("typed projection decode failed: {error}")))?;
         let text = bounded_text(&markdown::answer(answer));
-        Ok(tool_result(&text, structured, false))
+        Ok(tool_result(&text, structured, answer.fault().is_some()))
     }
 
     fn graph_page_result(
@@ -1700,11 +1705,8 @@ fn response_detail(tool: &str, arguments: &Map<String, Value>) -> Result<Detail,
 }
 
 fn index_job_ticket(arguments: &Map<String, Value>) -> Result<IndexJobTicket, RpcError> {
-    let encoded = arguments
-        .get("ticket")
-        .cloned()
-        .ok_or_else(|| RpcError::invalid("ticket must be the exact owner-issued ticket object"))?;
-    serde_json::from_value(encoded).map_err(|error| RpcError::invalid(format!("ticket: {error}")))
+    backend_present::decode_index_job_ticket(arguments.get("ticket").unwrap_or(&Value::Null))
+        .map_err(|fault| RpcError::from_fault(&fault))
 }
 
 fn surface_error_operand(command: &SurfaceCommand) -> backend_present::Operand {

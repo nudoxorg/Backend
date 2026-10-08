@@ -1372,7 +1372,7 @@ fn owner_index_job_tools_advertise_exact_tickets_and_immediate_progress() {
     let progress = tool_named(tools, INDEX_PROGRESS_TOOL);
     assert_eq!(progress["inputSchema"]["required"], json!(["ticket"]));
     assert_eq!(
-        progress["inputSchema"]["properties"]["ticket"]["properties"]["owner_epoch"]["minItems"],
+        progress["inputSchema"]["properties"]["ticket"]["oneOf"][0]["properties"]["owner_epoch"]["minItems"],
         16
     );
     assert_eq!(
@@ -1507,7 +1507,7 @@ fn index_progress_returns_bounded_events_and_the_exact_next_sequence() {
     let text = text_of(&result);
     assert!(text.contains("older progress events aged out"), "{text}");
     assert!(text.contains("rust profile started"), "{text}");
-    assert!(text.contains("after_sequence 3"), "{text}");
+    assert!(text.contains("\"after_sequence\":3"), "{text}");
     assert!(text.contains(&ticket_value(&ticket).to_string()), "{text}");
     assert_context_bounded(&result);
     assert!(matches!(
@@ -1557,7 +1557,7 @@ fn index_progress_maximum_owner_page_fits_the_combined_mcp_result_budget() {
     assert_context_bounded(&result);
     let text = text_of(&result);
     assert!(text.contains("more events available"), "{text}");
-    assert!(text.contains("after_sequence 16"), "{text}");
+    assert!(text.contains("\"after_sequence\":16"), "{text}");
 }
 
 #[test]
@@ -1597,7 +1597,7 @@ fn index_progress_distinguishes_prior_owner_tickets_and_terminal_refusals() {
         INDEX_PROGRESS_TOOL,
         &json!({ "ticket": ticket_value(&ticket), "after_sequence": 3 }),
     );
-    assert_eq!(result["isError"], false);
+    assert_eq!(result["isError"], true);
     let wire = serde_json::to_value(&terminal).expect("terminal observation");
     assert_eq!(result["structuredContent"]["surface"]["data"], wire["data"]);
     assert_eq!(
@@ -1607,6 +1607,50 @@ fn index_progress_distinguishes_prior_owner_tickets_and_terminal_refusals() {
     let text = text_of(&result);
     assert!(text.contains("outcome refused"), "{text}");
     assert!(text.contains("compiler input was refused"), "{text}");
+}
+
+#[test]
+fn dependency_refusal_marks_tool_failure_and_keeps_the_exact_requested_package() {
+    let mut server = ready(Fake {
+        surface_reply: Some(SurfaceReply::Dependencies(backend_library::DependencyFacts::Unavailable(
+            backend_library::ProductText::from_static("package is not recorded")))),
+        ..Fake::default()
+    });
+    let result = call(&mut server, "backend.dependencies", &json!({"package": "pkg:npm/react@19.1.0"}));
+    assert_eq!(result["isError"], true);
+    assert_eq!(result["structuredContent"]["answer"], "product");
+    assert_eq!(result["structuredContent"]["fault"]["operand"], "pkg:npm/react@19.1.0");
+    assert_eq!(result["structuredContent"]["fault"]["call"]["arguments"]["package"], "pkg:npm/react@19.1.0");
+    assert!(text_of(&result).contains("package is not recorded"));
+}
+
+#[test]
+fn copied_ticket_string_uses_the_object_decoder_and_preserves_the_owner_ticket() {
+    let ticket = index_job_ticket();
+    let mut server = ready(Fake {
+        surface_reply: Some(SurfaceReply::IndexProgress(IndexJobObservation::Unknown {
+            ticket: ticket.clone(), current_owner_epoch: [8; 16],
+        })), ..Fake::default()
+    });
+    for value in [ticket_value(&ticket), json!(ticket_value(&ticket).to_string())] {
+        let result = call(&mut server, INDEX_PROGRESS_TOOL, &json!({"ticket": value}));
+        assert_eq!(result["isError"], false);
+        assert_eq!(result["structuredContent"]["surface"]["index_job"]["value"]["detail"]["ticket"], ticket_value(&ticket));
+    }
+    let bad = request(&mut server, "tools/call", &json!({"name": INDEX_PROGRESS_TOOL, "arguments": {"ticket": "7"}}));
+    assert_eq!(bad["error"]["code"], -32602);
+    assert_eq!(bad["error"]["data"]["structuredContent"]["operand"], "ticket");
+    assert_eq!(server.product.surface_commands.len(), 2, "malformed tickets do not reach the owner");
+}
+
+#[test]
+fn missing_index_path_returns_actionable_structured_usage_before_owner_work() {
+    let mut server = ready(Fake::default());
+    let response = request(&mut server, "tools/call", &json!({"name": "backend.index", "arguments": {}}));
+    assert_eq!(response["error"]["code"], -32602);
+    assert_eq!(response["error"]["data"]["structuredContent"]["operand"], "path");
+    assert!(response["error"]["data"]["detail"].as_str().expect("guidance").contains("absolute path"));
+    assert_eq!(server.product.probe_calls, 0);
 }
 
 #[test]

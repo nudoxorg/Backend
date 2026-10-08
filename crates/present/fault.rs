@@ -259,6 +259,13 @@ pub enum Affordance {
     },
     /// Wait for the current index to reach readiness.
     WaitForReadiness,
+    /// Observe one actual owner job without mistaking accepted work for failure.
+    PollIndex {
+        /// Exact issued job identity.
+        ticket: backend_library::IndexJobTicket,
+        /// Last observed event sequence.
+        after_sequence: u64,
+    },
     /// Nothing the reader can do changes the outcome.
     None,
 }
@@ -300,6 +307,10 @@ impl Affordance {
             Self::WaitForReadiness => {
                 Some("backend health  (wait for ~lanes to read ready)".to_owned())
             }
+            Self::PollIndex { ticket, after_sequence } => Some(format!(
+                "backend index_progress {} --after-sequence {after_sequence}",
+                quote(&crate::product::index_ticket_json(ticket)),
+            )),
             Self::None => None,
         }
     }
@@ -325,6 +336,10 @@ impl Affordance {
                 "name": "backend.status",
                 "arguments": {}
             })),
+            Self::PollIndex { ticket, after_sequence } => Some(serde_json::json!({
+                "name": "backend.index_progress",
+                "arguments": { "ticket": ticket, "after_sequence": after_sequence }
+            })),
         }
     }
 }
@@ -333,6 +348,7 @@ fn tool_arguments(name: &str, args: &[String]) -> serde_json::Value {
     let field = match name {
         "search" | "index-search" | "resolve" => "query",
         "outline" | "packages" | "add" | "remove" => "path",
+        "package" => "package",
         _ => "coordinate",
     };
     args.first().map_or_else(
@@ -502,7 +518,8 @@ impl Fault {
     #[must_use]
     pub fn lane(lane: Lane, reason: Reason) -> Self {
         let affordance = match reason {
-            Reason::NoIndex | Reason::Incomplete => Affordance::WaitForReadiness,
+            Reason::NoIndex => Affordance::UseCommand { name: "packages", args: Box::new([]) },
+            Reason::Incomplete => Affordance::WaitForReadiness,
             Reason::Unconfigured => Affordance::None,
             Reason::Offline | Reason::Cancelled => Affordance::Retry,
         };

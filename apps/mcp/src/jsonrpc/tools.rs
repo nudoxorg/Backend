@@ -220,6 +220,9 @@ pub(super) fn validate_registry_arguments(
 }
 
 fn validate_scalar(spec: ArgumentSpec, value: &Value) -> Result<(), Fault> {
+    if spec.kind() == ArgumentKind::IndexJobTicket {
+        return backend_present::decode_index_job_ticket(value).map(|_| ());
+    }
     let type_matches = match spec.kind().json_type() {
         "string" => value.is_string(),
         "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
@@ -436,7 +439,7 @@ fn index_job_output_schema() -> Value {
 }
 
 fn ticket_schema() -> Value {
-    json!({
+    let object = json!({
         "type": "object",
         "properties": {
             "id": { "type": "integer", "minimum": 1 },
@@ -458,6 +461,14 @@ fn ticket_schema() -> Value {
         },
         "required": ["id", "owner_epoch", "package"],
         "additionalProperties": false
+    });
+    json!({
+        "description": "Exact ticket returned by backend.index_start. Pass its object or copy its JSON string; preserve id, owner_epoch and package.",
+        "oneOf": [object, {
+            "type": "string", "minLength": 1,
+            "maxLength": backend_library::MAX_COMMAND_TEXT,
+            "description": "JSON encoding of the exact ticket object; the UTF-8 byte bound is checked before decoding."
+        }]
     })
 }
 
@@ -476,6 +487,7 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
         let mut argument = property(*spec);
         if grammar.tool() == "backend.index" && spec.name() == "path" {
             argument["minLength"] = json!(1);
+            argument["description"] = json!("Required repository path. Pass the repository's absolute path; MCP never defaults this operand to its working directory.");
         }
         properties.insert(spec.json_name().to_owned(), argument);
         if spec.is_required() || (grammar.tool() == "backend.index" && spec.name() == "path") {
@@ -541,6 +553,9 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
 
 /// Projects one operand into its JSON Schema property.
 fn property(spec: ArgumentSpec) -> Value {
+    if spec.kind() == ArgumentKind::IndexJobTicket {
+        return ticket_schema();
+    }
     let choices = spec.kind().enumeration();
     let mut scalar = json!({ "type": spec.kind().json_type() });
     if !choices.is_empty() {
@@ -588,7 +603,7 @@ fn answer_schema() -> Value {
             "answer": {
                 "type": "string",
                 "enum": ["page", "records", "shelf", "outline", "status", "product", "fault"],
-                "description": "Which presentation answer this is; `fault` accompanies isError."
+                "description": "Which presentation answer this is; faults may be attached to a product answer while its exact operation receipt remains available."
             }
         },
         "required": ["answer"],

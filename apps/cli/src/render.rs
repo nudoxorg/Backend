@@ -117,6 +117,12 @@ pub fn exit_code(fault: &Fault) -> ExitCode {
     })
 }
 
+/// Classifies admitted product failures without discarding their typed payload.
+#[must_use]
+pub fn answer_exit_code(answer: &Answer) -> ExitCode {
+    answer.fault().map_or(ExitCode::SUCCESS, exit_code)
+}
+
 fn encode(value: &serde_json::Value) -> String {
     let mut out = serde_json::to_string_pretty(value)
         .unwrap_or_else(|_| "{\"kind\":\"fault\",\"slug\":\"protocol\"}".to_owned());

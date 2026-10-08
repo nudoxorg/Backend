@@ -32,7 +32,7 @@ use crate::fault::{Affordance, Fault, Operand};
 use crate::identity::{Coordinate, Identity, KeyTag};
 use crate::outline::OutlineTree;
 use crate::page::Page;
-use crate::product::{ProductRecord, ProductView, product_view};
+use crate::product::{ProductRecord, ProductView};
 use crate::record::RecordList;
 use crate::shelf::Shelf;
 use crate::status::Status;
@@ -210,6 +210,16 @@ pub enum Answer {
 }
 
 impl Answer {
+    /// Returns the shared failure carried by an otherwise admitted answer.
+    /// The full answer remains available, including exact owner receipts.
+    #[must_use]
+    pub fn fault(&self) -> Option<&Fault> {
+        match self {
+            Self::Product(product) => product.fault(),
+            _ => None,
+        }
+    }
+
     /// Returns the stable lowercase tag naming which answer this is.
     #[must_use]
     pub const fn kind(&self) -> &'static str {
@@ -511,7 +521,7 @@ fn surface(engine: &mut dyn Engine, command: &SurfaceCommand) -> Result<Answer, 
     let reply = engine
         .surface(command.clone())
         .map_err(|error| Fault::from_client_error(&error, Operand::Whole))?;
-    Ok(Answer::Product(Box::new(product_view(&reply))))
+    Ok(Answer::Product(Box::new(crate::product_view_for_command(command, &reply))))
 }
 
 fn snapshot(engine: &mut dyn Engine, probe: Probe<'_>, what: &str) -> Result<ViewSnapshot, Fault> {

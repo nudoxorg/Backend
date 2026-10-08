@@ -248,6 +248,7 @@ fn compiler_index_receipt_uses_shared_human_sentence_and_keeps_exact_machine_fac
         )),
     ] {
         let dto = ProductDto::new(&product_view(&reply));
+        assert_eq!(dto.fault.as_ref().expect("terminal refusal is a product fault").compiler_failure.as_ref(), Some(&failure));
         let tags = dto.records[0].tags.join(" ");
         assert!(tags.contains(compiler_fault(&failure).cause().sentence()));
         assert!(!tags.contains("RAW LEGACY"));
@@ -377,6 +378,7 @@ fn partial_publication_keeps_useful_languages_all_refusals_and_exact_machine_bas
     let dto = ProductDto::new(&product_view(
         &backend_library::SurfaceReply::IndexTerminal(terminal),
     ));
+    assert!(dto.fault.as_ref().expect("partial is not full success").partial_publication.is_some());
     assert!(dto.records[0].tags.join(" ").contains(sentence));
     assert!(
         dto.records[0]

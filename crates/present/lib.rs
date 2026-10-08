@@ -56,6 +56,8 @@ mod budget;
 mod call;
 #[cfg(test)]
 mod compiler_fault_tests;
+#[cfg(test)]
+mod readiness_tests;
 mod coverage;
 mod drive;
 mod dto;
@@ -88,7 +90,7 @@ pub use budget::{
     encode_answer, encode_serializable, encode_value, estimate_tokens, oversized_fault,
 };
 pub use call::{
-    DEFAULT_LIMIT, Invocation, Request, SURFACE_VERB, lower, lower_surface_json, row_for,
+    DEFAULT_LIMIT, Invocation, Request, SURFACE_VERB, decode_index_job_ticket, lower, lower_surface_json, row_for,
 };
 pub use coverage::{
     CoverageLine, LaneCoverage, LaneShards, LaneState, RowCount as CoverageRows, lane_name,
@@ -121,7 +123,7 @@ pub use page::{
 pub use product::{
     CursorProjection, CursorTarget, IndexJobProjection, IndexSearchPageInfo, ProductRecord,
     ProductSemanticData, ProductSemanticHistoryProofSummary, ProductSemanticHistoryStatus,
-    ProductView, product_view,
+    ProductView, product_view, product_view_for_command,
 };
 pub use record::{Record, RecordList, RecordState, Score};
 pub use render::{Colour, Style, Theme, Width, display_width, markdown, text};

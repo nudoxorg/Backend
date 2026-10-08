@@ -261,7 +261,7 @@ pub fn shelf(shelf: &Shelf) -> String {
     let mut lines = Lines::new();
     if shelf.is_empty() {
         lines.push("no project is on the shelf at this revision");
-        lines.push("→ `{\"name\":\"backend.index\",\"arguments\":{}}`");
+        lines.push("Call `backend.index` with `arguments.path` set to the repository's absolute path; the path is required.");
         return lines.finish();
     }
     for entry in shelf.entries() {
@@ -369,7 +369,10 @@ pub fn product(view: &ProductView) -> String {
     lines.push(format!("# {}", view.heading()));
     if let Some(reason) = view.fault() {
         lines.push(fault(reason));
-        return lines.finish();
+        if view.records().is_empty() {
+            index_job_footer(view, &mut lines);
+            return lines.finish();
+        }
     }
     if let Some(note) = view.note() {
         lines.push(note);
@@ -408,6 +411,13 @@ fn index_job_footer(view: &ProductView, lines: &mut Lines) {
     let Some(job) = view.index_job() else {
         return;
     };
+    if let Some(next) = job.poll_affordance().and_then(|step| step.tool_call()) {
+        if matches!(job, IndexJobProjection::Cancellation(_)) && let Some(ticket) = job.ticket_json() {
+            lines.push(format!("cancellation was requested; cancellation ticket: `{ticket}`"));
+        }
+        lines.push(format!("Operation in flight; poll with `{next}`"));
+        return;
+    }
     let guidance = match job {
         IndexJobProjection::Started(backend_library::IndexStartResult::Started { .. }) => {
             "poll `backend.index_progress` with the exact ticket shown above (after_sequence 0)"

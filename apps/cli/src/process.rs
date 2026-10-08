@@ -50,7 +50,10 @@ pub fn main_entry() -> ExitCode {
         };
     }
     match run_words(&words, &options) {
-        Ok(output) => emit(&output),
+        Ok((output, outcome)) => {
+            let written = emit(&output);
+            if written == ExitCode::SUCCESS { outcome } else { written }
+        }
         Err(fault) => report(&fault, &options),
     }
 }
@@ -86,7 +89,7 @@ fn early_exit(args: &[String]) -> Option<ExitCode> {
     None
 }
 
-fn run_words(words: &[String], options: &Options) -> Result<String, Fault> {
+fn run_words(words: &[String], options: &Options) -> Result<(String, ExitCode), Fault> {
     let workspace = workspace(options)?;
     let project = workspace.project().to_string_lossy().into_owned();
     let request = plan(words, options, &project)?;
@@ -133,6 +136,7 @@ fn run_words(words: &[String], options: &Options) -> Result<String, Fault> {
         watch_readiness(&mut session, path, options);
     }
     render_admitted_answer(&session, &answer, options)
+        .map(|output| (output, render::answer_exit_code(&answer)))
 }
 
 pub(crate) fn render_admitted_answer(

@@ -982,6 +982,22 @@ fn a_fault_chooses_the_exit_code_a_script_can_branch_on() {
 }
 
 #[test]
+fn an_admitted_dependency_refusal_keeps_json_evidence_and_a_nonzero_exit() {
+    let package = backend_library::PackageReference::parse("pkg:npm/react@19.1.0").expect("package");
+    let view = backend_present::product_view_for_command(
+        &backend_library::SurfaceCommand::Dependencies { package: package.clone() },
+        &backend_library::SurfaceReply::Dependencies(backend_library::DependencyFacts::Unavailable(
+            backend_library::ProductText::from_static("package is not recorded"))),
+    );
+    let answer = Answer::Product(Box::new(view));
+    assert_eq!(render::answer_exit_code(&answer), ExitCode::from(render::EXIT_REFUSED));
+    let encoded: serde_json::Value = serde_json::from_str(&render::json(&answer)).expect("complete JSON");
+    assert_eq!(encoded["answer"], "product");
+    assert_eq!(encoded["fault"]["operand"], package.as_str());
+    assert_eq!(encoded["fault"]["call"]["arguments"]["package"], package.as_str());
+}
+
+#[test]
 fn a_rendered_fault_carries_the_operand_and_the_next_command() {
     let fault = Fault::from_command_failure(
         &backend_library::CommandFailure::NotFound,
