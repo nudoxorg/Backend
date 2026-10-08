@@ -6,7 +6,8 @@ use backend_library::{
     DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
     PackageDependencyRecord, PackageDependencyTarget, PackageGraphSourceAuthority,
     PackageReference, ProductText, PythonDependencyDeclaration, PythonMetadataEvidence,
-    PythonMetadataFact, PythonProjectMetadata, RegistryEcosystem,
+    PythonMetadataFact, PythonProjectMetadata, RegistryEcosystem, admit_dependency_rows,
+    collapse_dependency_rows,
 };
 use std::collections::BTreeMap;
 
@@ -866,7 +867,16 @@ pub fn python_dependency_facts(
             },
         ));
     }
-    DependencyFacts::Known(rows.into_boxed_slice())
+    // Different extra groups retain separate declarations in metadata, but
+    // can project to the same complete graph fact. Canonicalize at this
+    // boundary so repeated declarations cannot poison the entire graph.
+    // Distinct requirements, scopes and evidence remain distinct edges.
+    match admit_dependency_rows(collapse_dependency_rows(rows)) {
+        Ok(rows) => DependencyFacts::Known(rows),
+        Err(_) => DependencyFacts::Unavailable(ProductText::from_static(
+            "Python dependency graph unavailable: projected declarations failed graph admission",
+        )),
+    }
 }
 
 /// Content identity of every source document consumed by the shared extraction.
@@ -971,7 +981,40 @@ mod tests {
             DependencyFacts::Known(rows) => rows,
             _ => return Err("all HTTPie requirements are valid PEP 508 declarations"),
         };
-        assert_eq!(rows.len(), declarations.len());
+        // Five requirements occur in both HTTPie's dev and test extras. The
+        // metadata preserves both groups; their identical graph edges occur once.
+        assert_eq!(declarations.len(), 32);
+        for (group, count) in [("dev", 16), ("test", 5)] {
+            assert_eq!(
+                declarations
+                    .iter()
+                    .filter(|row| row.group.as_deref() == Some(group))
+                    .count(),
+                count
+            );
+        }
+        assert_eq!(rows.len(), 27);
+        assert_eq!(
+            rows.iter().filter(|row| row.scope == DependencyScope::Optional).count(),
+            16
+        );
+        assert!(
+            rows.iter()
+                .filter(|row| row.scope == DependencyScope::Optional)
+                .all(|row| row.optional)
+        );
+        assert_eq!(
+            admit_dependency_rows(rows.to_vec()).expect("canonical rows"),
+            rows
+        );
+        backend_library::CheckedPackageGraphFacts::new(vec![(
+            backend_library::PackageGraphSourceKey::new(
+                source,
+                PackageGraphSourceAuthority::Local([7; 32]),
+            ),
+            DependencyFacts::Known(rows.clone()),
+        )])
+        .expect("actual HTTPie facts must admit into the package graph");
         assert_eq!(
             rows.iter()
                 .filter(|row| row.scope == DependencyScope::Runtime)
@@ -984,6 +1027,64 @@ mod tests {
             .ok_or("missing exact HTTPie declaration")?;
         assert_eq!(requests.target.name.as_str(), "requests");
         Ok(())
+    }
+
+    #[test]
+    fn repeated_python_groups_preserve_metadata_and_distinct_graph_edges() {
+        let metadata = extract(&[(
+            "setup.cfg",
+            b"[metadata]\nname=grouped\nversion=1\n[options]\ninstall_requires=requests>=2\nsetup_requires=requests>=2\n[options.extras_require]\ndev=\n requests>=2\n requests>=3\ntest=\n requests>=2\n requests>=3\n",
+        )])
+        .expect("static packaging")
+        .expect("package metadata");
+        let declarations = metadata.dependencies.recorded().expect("all groups");
+        assert_eq!(declarations.len(), 6);
+        for group in ["dev", "test"] {
+            assert_eq!(
+                declarations
+                    .iter()
+                    .filter(|row| row.group.as_deref() == Some(group))
+                    .count(),
+                2
+            );
+        }
+        let source = PackageReference::parse("pkg:pypi/grouped@1").expect("source");
+        let facts = python_dependency_facts(
+            &metadata,
+            &source,
+            PackageGraphSourceAuthority::Local([9; 32]),
+            DependencyAuthority::LocalManifest,
+            [9; 32],
+        );
+        let DependencyFacts::Known(rows) = &facts else {
+            panic!("complete graph facts");
+        };
+        assert_eq!(rows.len(), 4);
+        for (scope, count) in [
+            (DependencyScope::Runtime, 1),
+            (DependencyScope::Build, 1),
+            (DependencyScope::Optional, 2),
+        ] {
+            assert_eq!(rows.iter().filter(|row| row.scope == scope).count(), count);
+        }
+        for requirement in ["requests>=2", "requests>=3"] {
+            assert!(
+                rows.iter()
+                    .any(|row| row.target.requirement.as_str() == requirement)
+            );
+        }
+        backend_library::CheckedPackageGraphFacts::new(vec![(
+            backend_library::PackageGraphSourceKey::new(
+                source,
+                PackageGraphSourceAuthority::Local([9; 32]),
+            ),
+            facts,
+        )])
+        .expect("deduplicated graph admits without weakening identity checks");
+        assert_eq!(
+            metadata.dependencies.recorded().expect("retained metadata").len(),
+            6
+        );
     }
 
     #[test]
