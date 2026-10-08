@@ -1,0 +1,95 @@
+{
+  "source_commit": "5f2a97eb4c74c175e190ff9637373c6bcf9ae39e",
+  "source_tree": "08d334bdf7ae6bd87c4943b58f010d4554dcbb12",
+  "manifest_sha256": "163296ef6000159943cd43b8cfd48f08989c8132f06426481805266efe5444c8",
+  "public_app_source": "suitenumerique/docs@6e5dee38e927fac86855d17dfb614fbb64b172b3",
+  "retained_authentic_state_replay": true,
+  "fresh_empty_home_acceptance": false,
+  "search": {
+    "pid": 94014,
+    "exit": 0,
+    "elapsed_seconds": 47.103012959007174,
+    "argv": [
+      "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/native-mac-07-current-5f2/images/backend-cli",
+      "--json",
+      "--detail",
+      "full",
+      "--limit",
+      "50",
+      "search",
+      "generate_s3_authorization_headers"
+    ],
+    "kernel_wait": true,
+    "health_successes_while_search_pending": 36,
+    "max_control_seconds": 1.8368273340165615
+  },
+  "controls_count": 37,
+  "pending_controls_count": 36,
+  "all_controls_exit0": true,
+  "health_count": 31,
+  "pending_health_count": 30,
+  "status_count": 3,
+  "versions_count": 3,
+  "max_control_seconds": 1.8368273340165615,
+  "samples": {
+    "cold-owner-0.sample.txt": {
+      "started_utc": "2026-10-08T00:34:46.822000+00:00",
+      "since_search_seconds": 0.074789,
+      "worker_sample_ticks": 0,
+      "worker_prepare_commit": false,
+      "worker_corpus_capture": false,
+      "main_prepare_commit": false,
+      "main_semantic_query_corpus": false,
+      "main_sample_ticks": 8,
+      "sha256": "63d6ae310f33251b28ae134b656098131e7816ef49dba8195858710316481006"
+    },
+    "cold-owner-20.sample.txt": {
+      "started_utc": "2026-10-08T00:35:16.580000+00:00",
+      "since_search_seconds": 29.832789,
+      "worker_sample_ticks": 652,
+      "worker_prepare_commit": false,
+      "worker_corpus_capture": false,
+      "main_prepare_commit": false,
+      "main_semantic_query_corpus": false,
+      "main_sample_ticks": 652,
+      "sha256": "e86621f940fbbede470ebc096868a9c5429bce38752aef910089277be9173674"
+    },
+    "cold-owner-5.sample.txt": {
+      "started_utc": "2026-10-08T00:34:54.370000+00:00",
+      "since_search_seconds": 7.622789,
+      "worker_sample_ticks": 633,
+      "worker_prepare_commit": true,
+      "worker_corpus_capture": false,
+      "main_prepare_commit": false,
+      "main_semantic_query_corpus": false,
+      "main_sample_ticks": 633,
+      "sha256": "2e3d158edc77c1f1c80ed3ebe607f712b00fc2a8890a00b26d7b4ac94b07746b"
+    }
+  },
+  "capture_measurement": "No isolated capture duration instrumentation. First sample containing worker native commit bounds capture plus CLI preflight/IPC/population; main thread has no native commit or semantic_query_corpus stack in these samples. Do not claim instant startup/preparation.",
+  "all_mcp_calls_success": true,
+  "mcp_calls_count": 9,
+  "ordinary_cli_resolve_source_graph_exit0": true,
+  "duplicate_abandonment": {
+    "pid": 94148,
+    "exit": -15,
+    "kernel_wait": true,
+    "keeper_still_pending": true,
+    "transport_abandoned": true
+  },
+  "owner_retirement": {
+    "owner_pid": 92828,
+    "retirement": "actual idle exit without operator signal",
+    "kernel_wait": 0,
+    "started": "2026-10-08T00:34:15.512503+00:00",
+    "ended": "2026-10-08T00:35:54.158286+00:00",
+    "configured_owner_idle_timeout_ms": 15000,
+    "ordinary_default_owner_idle_timeout_ms": 600000
+  },
+  "source_unchanged": {
+    "all_original_tracked_bytes_unchanged": true,
+    "git_status": ""
+  },
+  "source_production_equivalent_canonical": "9fb56fad68fa0cc94bba046f988623dab44358f8",
+  "source_equivalence_scope": "Root confirmed production equivalence; only docs/evidence differ"
+}

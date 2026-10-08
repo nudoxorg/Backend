@@ -1,0 +1,34 @@
+{
+  "jsonrpc": "2.0",
+  "id": 9,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "# references to /Users/rmccrar6/nudox-functional-corpus-20261006/sol61-real-applications-199b-20261007/docs/project::src/backend/core/api/utils.py:70::generate_s3_authorization_headers\nno row at this revision\n"
+      }
+    ],
+    "structuredContent": {
+      "heading": "references to /Users/rmccrar6/nudox-functional-corpus-20261006/sol61-real-applications-199b-20261007/docs/project::src/backend/core/api/utils.py:70::generate_s3_authorization_headers",
+      "records": [],
+      "answer": "product",
+      "detail": "summary",
+      "budget": {
+        "bytes": 309,
+        "estimatedTokens": 78,
+        "bytesPerToken": 4
+      }
+    },
+    "isError": false,
+    "_meta": {
+      "backend/wireBudget": {
+        "bytes": 767,
+        "estimatedTokens": 192,
+        "bytesPerToken": 4,
+        "limitBytes": 49152,
+        "scope": "complete_jsonrpc_line"
+      }
+    }
+  },
+  "_acceptance_wire_bytes": 767
+}

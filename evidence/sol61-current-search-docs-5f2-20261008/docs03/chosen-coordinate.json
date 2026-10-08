@@ -1,0 +1,10 @@
+{
+  "probe": {
+    "name": "generate_s3_authorization_headers",
+    "path": "src/backend/core/api/utils.py",
+    "line": 70
+  },
+  "exact_source_match_count": 1,
+  "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-real-applications-199b-20261007/docs/project::src/backend/core/api/utils.py:70::generate_s3_authorization_headers",
+  "authoritative_selected_occurrence": true
+}

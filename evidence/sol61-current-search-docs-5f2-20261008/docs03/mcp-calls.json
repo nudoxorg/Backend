@@ -1,0 +1,119 @@
+[
+  {
+    "label": "backend.status",
+    "name": "backend.status",
+    "arguments": {},
+    "elapsed_seconds": 0.4210475420113653,
+    "response_bytes": 1855,
+    "actual_wire_bytes": 1184,
+    "approx_wire_tokens": 296,
+    "rpc_error": null,
+    "isError": false
+  },
+  {
+    "label": "backend.search",
+    "name": "backend.search",
+    "arguments": {
+      "query": "generate_s3_authorization_headers"
+    },
+    "elapsed_seconds": 0.0158029159065336,
+    "response_bytes": 3928,
+    "actual_wire_bytes": 2541,
+    "approx_wire_tokens": 636,
+    "rpc_error": null,
+    "isError": false
+  },
+  {
+    "label": "backend.resolve",
+    "name": "backend.resolve",
+    "arguments": {
+      "query": "generate_s3_authorization_headers"
+    },
+    "elapsed_seconds": 0.011253667064011097,
+    "response_bytes": 3885,
+    "actual_wire_bytes": 2498,
+    "approx_wire_tokens": 625,
+    "rpc_error": null,
+    "isError": false
+  },
+  {
+    "label": "backend.document",
+    "name": "backend.document",
+    "arguments": {
+      "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-real-applications-199b-20261007/docs/project::src/backend/core/api/utils.py:70::generate_s3_authorization_headers"
+    },
+    "elapsed_seconds": 0.9488269580760971,
+    "response_bytes": 12399,
+    "actual_wire_bytes": 8771,
+    "approx_wire_tokens": 2193,
+    "rpc_error": null,
+    "isError": false
+  },
+  {
+    "label": "backend.source",
+    "name": "backend.source",
+    "arguments": {
+      "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-real-applications-199b-20261007/docs/project::src/backend/core/api/utils.py:70::generate_s3_authorization_headers"
+    },
+    "elapsed_seconds": 0.011265957960858941,
+    "response_bytes": 10491,
+    "actual_wire_bytes": 7837,
+    "approx_wire_tokens": 1960,
+    "rpc_error": null,
+    "isError": false
+  },
+  {
+    "label": "backend.read",
+    "name": "backend.read",
+    "arguments": {
+      "coordinate": [
+        "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-real-applications-199b-20261007/docs/project::src/backend/core/api/utils.py:70::generate_s3_authorization_headers"
+      ]
+    },
+    "elapsed_seconds": 1.1466307499213144,
+    "response_bytes": 3459,
+    "actual_wire_bytes": 3106,
+    "approx_wire_tokens": 777,
+    "rpc_error": null,
+    "isError": false
+  },
+  {
+    "label": "backend.references",
+    "name": "backend.references",
+    "arguments": {
+      "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-real-applications-199b-20261007/docs/project::src/backend/core/api/utils.py:70::generate_s3_authorization_headers"
+    },
+    "elapsed_seconds": 0.3466616249643266,
+    "response_bytes": 1030,
+    "actual_wire_bytes": 767,
+    "approx_wire_tokens": 192,
+    "rpc_error": null,
+    "isError": false
+  },
+  {
+    "label": "backend.graph",
+    "name": "backend.graph",
+    "arguments": {
+      "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-real-applications-199b-20261007/docs/project::src/backend/core/api/utils.py:70::generate_s3_authorization_headers"
+    },
+    "elapsed_seconds": 0.32719245890621096,
+    "response_bytes": 5931,
+    "actual_wire_bytes": 3675,
+    "approx_wire_tokens": 919,
+    "rpc_error": null,
+    "isError": false
+  },
+  {
+    "label": "backend.semantic_versions",
+    "name": "backend.semantic_versions",
+    "arguments": {
+      "package": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/project"
+    },
+    "elapsed_seconds": 0.010040041990578175,
+    "response_bytes": 783,
+    "actual_wire_bytes": 485,
+    "approx_wire_tokens": 122,
+    "rpc_error": null,
+    "isError": false
+  }
+]

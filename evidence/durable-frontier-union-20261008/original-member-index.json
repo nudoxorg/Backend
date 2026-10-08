@@ -1,0 +1,90 @@
+{
+  "baseline-valid-red/cargo.log": {
+    "bytes": 11029,
+    "sha256": "6f1915306adb4864ab0c45ccaba34effc09f6020bf3e0a965a976baa08b54bf8"
+  },
+  "baseline-valid-red/launch.json": {
+    "bytes": 26800,
+    "sha256": "9afb6c48b44b9e91bdcdf1ad55d32aaed4ff03b7f5f89cd0af6f41ca077ddda0"
+  },
+  "baseline-valid-red/receipt.json": {
+    "bytes": 28312,
+    "sha256": "3a84cbcdc05c9b170e345f34e2fc5c5abefe2e758d18f3501018ebdfca428ebd"
+  },
+  "build-01/launch.json": {
+    "bytes": 2412,
+    "sha256": "0134cb99fa78d9ace73a2082c51efbf2b65c704cc133e0eb53482856845cde60"
+  },
+  "build-01/receipt.json": {
+    "bytes": 9370,
+    "sha256": "220498ef17345c6c1a281b36414b73af9e5d8743c4c46b6127cd20d9c1fd5390"
+  },
+  "build-01/source-inputs.json": {
+    "bytes": 385543,
+    "sha256": "8e7afeb3f00252421bef822768af71b1296525471ee19e8922485396300c7479"
+  },
+  "build-01/stderr.log": {
+    "bytes": 17855,
+    "sha256": "2a70ba27513eba3023a5b07d62007336462d597d61bf38ebbdeeb27a505a4d06"
+  },
+  "build-01/stdout.log": {
+    "bytes": 96818,
+    "sha256": "e30aa2003acb20025a2082306d170e46dac696923b64da43626da60ca801b9bc"
+  },
+  "full-01/launch.json": {
+    "bytes": 2455,
+    "sha256": "c18fa4dc6806aa9819db05bd3fae67ad3e84ba3765728489a7879a1796fbd7dd"
+  },
+  "full-01/receipt.json": {
+    "bytes": 3571,
+    "sha256": "1a132418c34ea847d349f571f6b975ddcaddb5d58f0acab8fbb768df7437dd37"
+  },
+  "full-01/source-inputs.json": {
+    "bytes": 385543,
+    "sha256": "8e7afeb3f00252421bef822768af71b1296525471ee19e8922485396300c7479"
+  },
+  "full-01/stderr.log": {
+    "bytes": 1518,
+    "sha256": "6b100468b30dff4e4a6f0d46b673802b9d97152c1bb94e9411a1b85b10449d2a"
+  },
+  "full-01/stdout.log": {
+    "bytes": 26330,
+    "sha256": "7f9accba99b54024974625dcd9da1b6b08d794da253fcb7800e3299ace088966"
+  },
+  "scope-and-verdict.json": {
+    "bytes": 2571,
+    "sha256": "38492aaa3556506b595346fe625a496a103e5280e3bf5b2d6ee6563dbbad34c7"
+  },
+  "sol61-store-sourcebound-debug-graph-return-20261008.json": {
+    "bytes": 1600,
+    "sha256": "86c2c9ac5acc84bde43b9b837b794ae843ae032c5e405f86e8a48481bdace967"
+  },
+  "stale-fixed-invalid-source/cargo.log": {
+    "bytes": 37785,
+    "sha256": "0c46ca2960ccc06b1b5ddc859dc5968ff9d7b207360fd4d20d659842a9fe6ef8"
+  },
+  "stale-fixed-invalid-source/launch.json": {
+    "bytes": 27759,
+    "sha256": "53a58ef15f3e1ca1148eccf0ce0fb09f02921cfa54cc70c7b033ed6157cef445"
+  },
+  "stale-fixed-invalid-source/receipt.json": {
+    "bytes": 29272,
+    "sha256": "f4ff237109f1c89737fd3ae71e6ed089b8aede32359ac6a85ede53eaa18e7366"
+  },
+  "store-fixed-a1e-sourcebound-build-fleet-20261008-v1.json": {
+    "bytes": 33777,
+    "sha256": "c0cfd8ca5e51de25bc3ceba7408940451649d4e9b27b171611bd2762160a4466"
+  },
+  "store-fixed-a1e-sourcebound-full-fleet-20261008-v1.json": {
+    "bytes": 29446,
+    "sha256": "5c9e2886bad1cec16f1a0fd1a04b291c1d239c53f46dcc198ecfb5d4f99f4ca8"
+  },
+  "store-fixed-a1e-sourcebound-mac-plan-20261008.json": {
+    "bytes": 5819,
+    "sha256": "4891cd95d900dc442f3bcae5e3d20df81628b5a7a0dad25cc2e7b3379a66380a"
+  },
+  "store-fixed-a1e-sourcebound-supervisor.py": {
+    "bytes": 10846,
+    "sha256": "9f47cbf07aba5de4668ff44f156b9b9ed59d48b2a224759703fa5cef6bb35622"
+  }
+}

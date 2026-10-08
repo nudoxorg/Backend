@@ -1,0 +1,42 @@
+{
+  "jsonrpc": "2.0",
+  "id": 8,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "# read\ndef generate_s3_authorization_headers(key):\n    \"\"\"\n    Generate authorization headers for an s3 object.\n    These headers can be used as an alternative to signed urls with many benefits:\n    - the urls of our files never expire and can be stored in our documents' content\n    - we don't leak authorized urls that could be shared (file access can only be done\n      with cookies)\n    - access control is truly realtime\n    - the object storage service does not need to be exposed on internet\n    \"\"\"\n    url = get_unsigned_s3_client().generate_presigned_url(\n        \"get_object\",\n        ExpiresIn=0,\n        Params={\"Bucket\": default_storage.bucket_name, \"Key\": key},\n    )\n    request = botocore.awsrequest.AWSRequest(method=\"get\", url=url)\n\n    s3_client = get_s3_client()\n    # pylint: disable=protected-access\n    credentials = s3_client._request_signer._credentials  # noqa: SLF001\n    frozen_credentials = credentials.get_frozen_credentials()\n    region = s3_client.meta.region_name\n    auth = botocore.auth.S3SigV4Auth(frozen_credentials, \"s3\", region)\n    auth.add_auth(request)\n\n    return request  \u00b7  key 0e4702eb\n`/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-real-applications-199b-20261007/docs/project::src/backend/core/api/utils.py:70::generate_s3_authorization_headers`\n1 row(s)\n"
+      }
+    ],
+    "structuredContent": {
+      "heading": "read",
+      "records": [
+        {
+          "title": "def generate_s3_authorization_headers(key):\n    \"\"\"\n    Generate authorization headers for an s3 object.\n    These headers can be used as an alternative to signed urls with many benefits:\n    - the urls of our files never expire and can be stored in our documents' content\n    - we don't leak authorized urls that could be shared (file access can only be done\n      with cookies)\n    - access control is truly realtime\n    - the object storage service does not need to be exposed on internet\n    \"\"\"\n    url = get_unsigned_s3_client().generate_presigned_url(\n        \"get_object\",\n        ExpiresIn=0,\n        Params={\"Bucket\": default_storage.bucket_name, \"Key\": key},\n    )\n    request = botocore.awsrequest.AWSRequest(method=\"get\", url=url)\n\n    s3_client = get_s3_client()\n    # pylint: disable=protected-access\n    credentials = s3_client._request_signer._credentials  # noqa: SLF001\n    frozen_credentials = credentials.get_frozen_credentials()\n    region = s3_client.meta.region_name\n    auth = botocore.auth.S3SigV4Auth(frozen_credentials, \"s3\", region)\n    auth.add_auth(request)\n\n    return request",
+          "operand": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-real-applications-199b-20261007/docs/project::src/backend/core/api/utils.py:70::generate_s3_authorization_headers",
+          "tags": [
+            "key 0e4702eb"
+          ]
+        }
+      ],
+      "answer": "product",
+      "detail": "summary",
+      "budget": {
+        "bytes": 1499,
+        "estimatedTokens": 375,
+        "bytesPerToken": 4
+      }
+    },
+    "isError": false,
+    "_meta": {
+      "backend/wireBudget": {
+        "bytes": 3106,
+        "estimatedTokens": 777,
+        "bytesPerToken": 4,
+        "limitBytes": 49152,
+        "scope": "complete_jsonrpc_line"
+      }
+    }
+  },
+  "_acceptance_wire_bytes": 3106
+}

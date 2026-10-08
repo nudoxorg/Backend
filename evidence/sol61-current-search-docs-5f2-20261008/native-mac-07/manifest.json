@@ -1,0 +1,117 @@
+{
+  "source_commit": "5f2a97eb4c74c175e190ff9637373c6bcf9ae39e",
+  "source_tree": "08d334bdf7ae6bd87c4943b58f010d4554dcbb12",
+  "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268",
+  "artifacts": {
+    "backend-mcp": {
+      "sha256": "29f86571fbbfd1faeaca22f5198545366b08c644e55bee4eb25c78780c611364",
+      "bytes": 160732144,
+      "exact_cargo_event": {
+        "reason": "compiler-artifact",
+        "package_id": "path+file:///Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/apps/mcp#backend-mcp@0.2.0",
+        "manifest_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/apps/mcp/Cargo.toml",
+        "target": {
+          "kind": [
+            "bin"
+          ],
+          "crate_types": [
+            "bin"
+          ],
+          "name": "backend-mcp",
+          "src_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/apps/mcp/src/main.rs",
+          "edition": "2024",
+          "doc": true,
+          "doctest": false,
+          "test": true
+        },
+        "profile": {
+          "opt_level": "0",
+          "debuginfo": 1,
+          "debug_assertions": true,
+          "overflow_checks": true,
+          "test": false
+        },
+        "features": [
+          "default"
+        ],
+        "filenames": [
+          "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/target/debug/backend-mcp"
+        ],
+        "executable": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/target/debug/backend-mcp",
+        "fresh": false
+      }
+    },
+    "backend-cli": {
+      "sha256": "d91521d9a06596a893681626e883d285f2e3dae0f5dbc55439f96eeb50b638c5",
+      "bytes": 219714608,
+      "exact_cargo_event": {
+        "reason": "compiler-artifact",
+        "package_id": "path+file:///Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/apps/cli#backend-cli@0.2.0",
+        "manifest_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/apps/cli/Cargo.toml",
+        "target": {
+          "kind": [
+            "bin"
+          ],
+          "crate_types": [
+            "bin"
+          ],
+          "name": "backend-cli",
+          "src_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/apps/cli/src/main.rs",
+          "edition": "2024",
+          "doc": true,
+          "doctest": false,
+          "test": true
+        },
+        "profile": {
+          "opt_level": "0",
+          "debuginfo": 1,
+          "debug_assertions": true,
+          "overflow_checks": true,
+          "test": false
+        },
+        "features": [],
+        "filenames": [
+          "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/target/debug/backend-cli"
+        ],
+        "executable": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/target/debug/backend-cli",
+        "fresh": false
+      }
+    },
+    "backend-locald": {
+      "sha256": "12b9519ca675c3dfdae2f9e8bf30b422ad90c252f5126a86ca89a735a1e06af8",
+      "bytes": 685762976,
+      "exact_cargo_event": {
+        "reason": "compiler-artifact",
+        "package_id": "path+file:///Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/apps/locald#backend-locald@0.2.0",
+        "manifest_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/apps/locald/Cargo.toml",
+        "target": {
+          "kind": [
+            "bin"
+          ],
+          "crate_types": [
+            "bin"
+          ],
+          "name": "backend-locald",
+          "src_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/apps/locald/src/main.rs",
+          "edition": "2024",
+          "doc": true,
+          "doctest": false,
+          "test": true
+        },
+        "profile": {
+          "opt_level": "0",
+          "debuginfo": 1,
+          "debug_assertions": true,
+          "overflow_checks": true,
+          "test": false
+        },
+        "features": [],
+        "filenames": [
+          "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/target/debug/backend-locald"
+        ],
+        "executable": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/target/debug/backend-locald",
+        "fresh": false
+      }
+    }
+  }
+}

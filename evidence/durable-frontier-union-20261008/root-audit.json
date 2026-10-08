@@ -1,0 +1,26 @@
+{
+  "reviewer": "root",
+  "verified_raw_members": 22,
+  "stored_members_decompress_and_hash_verified": 22,
+  "native_source": {
+    "commit": "a1e604aaee5a4f16391d4375a4b9f64b2604c7be",
+    "tree": "b4beccfb463460eab18b9b33d539ca30b593af2e",
+    "clean": true,
+    "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+  },
+  "integration_head": "340491d450b02f91e80a0f2685eadcac5e629bab",
+  "complete_store_crate_bytes_match_native_source": true,
+  "actual_rustc_cwd": "/Users/rmccrar6/codex-worktrees/sol61-store-remove-sized-fixed-mac-20261008",
+  "cargo_artifact_fresh": false,
+  "executed_image_sha256": "94ca33a3032c1eacb1de219fce22a5d6849fba2c09c38fa1d332adb8ab9968a3",
+  "actual_named_passes": 275,
+  "failed": 0,
+  "ignored": 0,
+  "strict_work_bound_unchanged": "commitments <= 64 * physical_nodes",
+  "physical_nodes": 446,
+  "baseline_commitments": 198481,
+  "fixed_commitments": 2231,
+  "baseline_hashed_payload_bytes": 1906926126,
+  "fixed_hashed_payload_bytes": 21331373,
+  "scope": "Single synthetic debug fixture plus full store suite. No release or public removal acceptance claim. Root verified retained proof and all store input bytes, not another native executable rehash."
+}
