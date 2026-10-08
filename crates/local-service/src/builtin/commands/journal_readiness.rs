@@ -7,7 +7,8 @@
 
 use super::index_operation::{IndexOperationJournal, JournalError};
 use backend_library::{Cursor, IndexOperationKey};
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use notify::event::{AccessKind, AccessMode};
+use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
@@ -149,7 +150,11 @@ impl JournalReadiness {
             match event {
                 Ok(event)
                     if event.need_rescan()
-                        || (!event.kind.is_access()
+                        // A WAL modification may arrive before its SQL commit
+                        // is visible. Writer close is another finite wake;
+                        // ordinary reads and their close events stay quiet.
+                        || ((!event.kind.is_access()
+                            || matches!(event.kind, EventKind::Access(AccessKind::Close(AccessMode::Write))))
                             && event.paths.iter().any(|p| relevant(p, &watched))) =>
                 {
                     callback.invalidate();
@@ -534,6 +539,73 @@ mod tests {
         );
         assert!(!cold.prepared_hint());
         cold.close();
+    }
+
+    #[test]
+    fn long_lived_foreign_writer_wakes_every_committed_transition() {
+        let scratch = tempfile::tempdir().expect("journal scratch");
+        let path = scratch.path().join("workspace/operations.turso");
+        let mut foreign = IndexOperationJournal::open(&path).expect("long-lived writer");
+        let mut lane = JournalReadiness::start(path, [3; 16]).expect("native watch reader");
+        wait_for(
+            &mut lane,
+            foreign.pending_snapshot().expect("initial snapshot"),
+        );
+        foreign
+            .accept(
+                key(),
+                PackageReference::parse("/workspace/docs").expect("package"),
+                CompileExecutionIntent::Interactive,
+            )
+            .expect("foreign acceptance");
+        wait_for(
+            &mut lane,
+            foreign.pending_snapshot().expect("accepted snapshot"),
+        );
+        foreign
+            .prepare(key(), None, [5; 32], 9)
+            .expect("foreign preparation");
+        wait_for(
+            &mut lane,
+            foreign.pending_snapshot().expect("prepared snapshot"),
+        );
+        let root = backend_library::view_state_root(&[]);
+        let view = backend_library::ViewRoot::new_incomplete(
+            backend_library::view_key(b"long-lived-journal-writer"),
+            backend_library::Basis::new(root, backend_library::object_version(b"source")),
+            Cursor::at(root, 0).frontier(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("checked view");
+        let receipt = backend_library::IndexOperationPublicationReceipt::from_published_view(
+            None,
+            [2; 32],
+            [5; 32],
+            9,
+            &view,
+            Cursor::for_view_root(&view),
+        )
+        .expect("checked no-op receipt");
+        foreign
+            .published(key(), receipt)
+            .expect("foreign publication");
+        wait_for(
+            &mut lane,
+            foreign.pending_snapshot().expect("terminal snapshot"),
+        );
+        // This last journal access proves the connection remains open across
+        // every observed transition; a writer close cannot supply its wake.
+        assert!(matches!(
+            foreign.entry(key()).expect("still-open writer"),
+            Some(super::super::index_operation::JournalEntry::Retained(
+                super::super::index_operation::StoredOperation {
+                    state: super::super::index_operation::StoredOperationState::Published { .. },
+                    ..
+                }
+            ))
+        ));
+        lane.close();
     }
 
     #[test]
