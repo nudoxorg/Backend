@@ -133,7 +133,9 @@ fn run_deferred_rust_public_indexing(fixture: &FailureFixture) -> Result<(), Box
             .into_owned(),
     )
     .map_err(|error| io::Error::other(error.to_string()))?;
-    let rust_profile = LanguageProfile::Rust(RustEdition::Rust2021);
+    // Health advertises the canonical product profile; the package keeps its
+    // independently parsed Rust 2021 edition throughout actual indexing.
+    let rust_health_profile = LanguageProfile::Rust(RustEdition::Rust2024);
     let mut selected_generation = None;
     for cold in [false, true] {
         let selection =
@@ -153,7 +155,7 @@ fn run_deferred_rust_public_indexing(fixture: &FailureFixture) -> Result<(), Box
                 .filter(|row| {
                     matches!(
                         row.family(), CapabilityFamily::LanguageOracle { profile, .. }
-                            if profile == rust_profile
+                            if profile == rust_health_profile
                     )
                 })
                 .collect::<Vec<_>>();
