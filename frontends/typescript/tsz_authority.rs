@@ -1047,16 +1047,19 @@ mod tests {
 
     #[test]
     fn compiler_api_options_preserve_explicit_checker_overrides() {
-        let checker = checker_options_from_compiler_api_json(
-            r#"{"compilerOptions":{"target":"ES2022","module":"NodeNext","moduleResolution":"NodeNext","strict":true,"noImplicitAny":false,"strictNullChecks":true,"noUncheckedIndexedAccess":true,"skipLibCheck":true,"lib":["ES2022"]}}"#,
-        )
-        .expect("compiler-API options should resolve through the typed TSZ config model");
+        let source = r#"{"compilerOptions":{"target":"ES2022","module":"NodeNext","moduleResolution":"NodeNext","strict":true,"noImplicitAny":false,"strictNullChecks":true,"noUncheckedIndexedAccess":true,"skipLibCheck":true,"lib":["ES2022"]}}"#;
+        let checker = checker_options_from_compiler_api_json(source)
+            .expect("compiler-API options should resolve through the typed TSZ config model");
 
         assert!(checker.strict);
         assert!(!checker.no_implicit_any);
         assert!(checker.strict_null_checks);
         assert!(checker.no_unchecked_indexed_access);
-        assert!(checker.skip_lib_check);
+        // TSZ keeps this program-level flag outside CheckerOptions.
+        let config = tsz::config::parse_tsconfig(source).expect("valid compiler options");
+        let resolved = tsz::config::resolve_compiler_options(config.compiler_options.as_ref())
+            .expect("resolved program options");
+        assert!(resolved.skip_lib_check);
         assert!(checker.module_explicitly_set);
     }
 
@@ -1105,7 +1108,8 @@ mod tests {
                     .file_locals
                     .get("value")
                     .expect("the exported declaration is bound");
-                checker.format_type(checker.get_type_of_symbol(symbol))
+                let ty = checker.get_type_of_symbol(symbol);
+                checker.format_type(ty)
             })
             .expect("the shared full-program checker lends the file");
         assert_eq!(observed, "number");
