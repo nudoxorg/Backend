@@ -1699,7 +1699,7 @@ mod capture_scratch_tests {
     use super::*;
 
     #[test]
-    fn local_tree_and_selected_file_share_one_hash_with_independent_budgets() {
+    fn local_tree_and_selected_file_keep_independent_budgets_and_guard_reuse() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap();
         let path = root.join("value.go");
@@ -1729,8 +1729,9 @@ mod capture_scratch_tests {
         assert!(tree.witness.entries.iter().any(|entry| matches!(entry.kind,
             GoLocalTreeEntryKind::File { bytes, digest: Some(actual) }
                 if bytes == content.len() as u64 && actual == digest)));
-        assert_eq!(scratch.hash_files, 1);
-        assert_eq!(scratch.hash_bytes, content.len() as u64);
+        let hashes = if cfg!(unix) { 1 } else { 2 };
+        assert_eq!(scratch.hash_files, hashes);
+        assert_eq!(scratch.hash_bytes, content.len() as u64 * hashes as u64);
         assert_eq!(selected_bytes, content.len() as u64);
     }
 

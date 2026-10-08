@@ -48,6 +48,8 @@ pub(super) struct CaptureScratch {
     pub(super) cancel_after_bytes: Option<(u64, std::sync::Arc<AtomicBool>)>,
     #[cfg(test)]
     after_chunk: Option<Box<dyn FnMut()>>,
+    #[cfg(test)]
+    force_no_change_witness: bool,
 }
 
 pub(super) fn is_cancelled(cancelled: Option<&AtomicBool>) -> bool {
@@ -122,12 +124,17 @@ impl CaptureScratch {
             return CapturedFile::Limit;
         }
 
-        // This stamp is only a same-construction guard. No stamp survives this
-        // scratch's lifetime, so every later full capture hashes fresh contents.
+        // Reuse requires an OS change witness in addition to identity/len/mtime.
+        // Platforms without one always stream fresh bytes, even within this
+        // construction. Every later full capture also gets a new scratch.
+        #[cfg(test)]
+        let reuse_allowed = cfg!(unix) && !self.force_no_change_witness;
+        #[cfg(not(test))]
+        let reuse_allowed = cfg!(unix);
         let content = if let Some(cached) = self
             .files
             .get(&resolved)
-            .filter(|cached| cached.stamp == before)
+            .filter(|cached| reuse_allowed && cached.stamp == before)
         {
             cached.digest
         } else {
@@ -180,13 +187,15 @@ impl CaptureScratch {
         {
             return CapturedFile::Unavailable;
         }
-        self.files.insert(
-            resolved,
-            CachedDigest {
-                stamp: before,
-                digest: content,
-            },
-        );
+        if reuse_allowed {
+            self.files.insert(
+                resolved,
+                CachedDigest {
+                    stamp: before,
+                    digest: content,
+                },
+            );
+        }
         *total = total.saturating_add(bytes);
         CapturedFile::File {
             bytes,
@@ -219,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn same_capture_hashes_content_once_but_charges_each_consumer() {
+    fn same_capture_requires_a_change_witness_and_charges_each_consumer() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
         let path = root.join("selected.go");
@@ -234,8 +243,9 @@ mod tests {
             matches!(local, CapturedFile::File { digest, .. } if digest == <[u8;32]>::from(Sha256::digest(&bytes)))
         );
         assert_eq!(local, selected);
-        assert_eq!(scratch.hash_files, 1);
-        assert_eq!(scratch.hash_bytes, bytes.len() as u64);
+        let hashes = if cfg!(unix) { 1 } else { 2 };
+        assert_eq!(scratch.hash_files, hashes);
+        assert_eq!(scratch.hash_bytes, bytes.len() as u64 * hashes as u64);
         assert_eq!(local_total, bytes.len() as u64);
         assert_eq!(selected_total, bytes.len() as u64);
     }
@@ -263,6 +273,64 @@ mod tests {
         assert_eq!(second.hash_files, 1);
         assert_eq!(first.hash_bytes, 28);
         assert_eq!(second.hash_bytes, 28);
+    }
+
+    #[test]
+    fn same_scratch_hashes_same_length_drift_with_restored_mtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let path = root.join("selected.go");
+        std::fs::write(&path, b"package dep\nconst Value = 1\n").unwrap();
+        let before_stamp = file_stamp(&std::fs::File::open(&path).unwrap()).unwrap();
+        let mut scratch = CaptureScratch::default();
+        let before = capture(&mut scratch, &path, &root, &mut 0, None);
+        std::fs::write(&path, b"package dep\nconst Value = 2\n").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(before_stamp.modified)
+            .unwrap();
+        let after_stamp = file_stamp(&std::fs::File::open(&path).unwrap()).unwrap();
+        assert_eq!(before_stamp.identity, after_stamp.identity);
+        assert_eq!(before_stamp.bytes, after_stamp.bytes);
+        assert_eq!(before_stamp.modified, after_stamp.modified);
+        #[cfg(unix)]
+        assert_ne!(before_stamp.changed, after_stamp.changed);
+        let after = capture(&mut scratch, &path, &root, &mut 0, None);
+        assert_ne!(before, after);
+        assert!(matches!(after, CapturedFile::File { digest, .. }
+            if digest == <[u8; 32]>::from(Sha256::digest(b"package dep\nconst Value = 2\n"))));
+        assert_eq!(scratch.hash_files, 2);
+        assert_eq!(scratch.hash_bytes, 56);
+    }
+
+    #[test]
+    fn no_change_witness_path_rehashes_even_an_unchanged_cached_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let path = root.join("selected.go");
+        std::fs::write(&path, b"package dep\nconst Value = 1\n").unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let mut scratch = CaptureScratch::default();
+        let before = capture(&mut scratch, &path, &root, &mut 0, None);
+        scratch.force_no_change_witness = true;
+        assert_eq!(before, capture(&mut scratch, &path, &root, &mut 0, None));
+        assert_eq!(scratch.hash_files, 2);
+        assert_eq!(scratch.hash_bytes, 56);
+        std::fs::write(&path, b"package dep\nconst Value = 2\n").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        let after = capture(&mut scratch, &path, &root, &mut 0, None);
+        assert_ne!(before, after);
+        assert!(matches!(after, CapturedFile::File { digest, .. }
+            if digest == <[u8; 32]>::from(Sha256::digest(b"package dep\nconst Value = 2\n"))));
+        assert_eq!(scratch.hash_files, 3);
+        assert_eq!(scratch.hash_bytes, 84);
     }
 
     #[test]
