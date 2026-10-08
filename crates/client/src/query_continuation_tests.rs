@@ -217,10 +217,27 @@ impl CommandTransport for Transport {
                 proof = proof.with_claim_once(claim);
             }
             for row in root.rows() {
-                if let RowId::Symbol(symbol) = row.id {
+                // The fixture acts as the producer here. Carry every typed
+                // key referenced by the selected rows, including packages
+                // and structural parents outside this bounded page.
+                let (schema, id) = match row.id {
+                    RowId::Package(package) => (WireSchema::Package, package.to_bytes()),
+                    RowId::Symbol(symbol) => (WireSchema::Symbol, symbol.to_bytes()),
+                };
+                proof = proof.with_claim_once(WireClaim::KeyCommitment {
+                    schema,
+                    id: encode_id(&id),
+                });
+                if let Some(package) = row.package {
+                    proof = proof.with_claim_once(WireClaim::KeyCommitment {
+                        schema: WireSchema::Package,
+                        id: encode_id(package.as_bytes()),
+                    });
+                }
+                if let Some(parent) = row.parent {
                     proof = proof.with_claim_once(WireClaim::KeyCommitment {
                         schema: WireSchema::Symbol,
-                        id: encode_id(symbol.as_bytes()),
+                        id: encode_id(parent.as_bytes()),
                     });
                 }
             }
