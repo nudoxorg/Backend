@@ -430,6 +430,18 @@ fn deferred_default_rust_admits_a_real_workspace_and_local_recipe_then_reopens_o
         let mut selected_call = 0;
         for ordinal in 0..staged.artifacts().len() {
             selected_call += staged.with_semantic_reader(ordinal, |reader, _| {
+                eprintln!(
+                    "rust-native cold={cold} artifact={ordinal} entities={:?}",
+                    reader
+                        .canonical_entities()
+                        .map(|entity| {
+                            (
+                                entity.id,
+                                entity.name.named_atom().and_then(|name| reader.atom(name)),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                );
                 let Some(drive) = reader.canonical_entities().find_map(|entity| {
                     let name = entity.name.named_atom()?;
                     (reader.atom(name) == Some(b"drive")).then_some(entity.id)
@@ -442,6 +454,9 @@ fn deferred_default_rust_admits_a_real_workspace_and_local_recipe_then_reopens_o
                     let link = reader
                         .link(occurrence.link)
                         .ok_or_else(|| std::io::Error::other("missing call link"))?;
+                    eprintln!(
+                        "rust-native cold={cold} artifact={ordinal} drive={drive:?} link={link:?} occurrence={occurrence:?}"
+                    );
                     if link.from != drive
                         || link.kind != LinkKind::MethodCall
                         || occurrence.confidence != Confidence::Compiler
@@ -460,6 +475,11 @@ fn deferred_default_rust_admits_a_real_workspace_and_local_recipe_then_reopens_o
                     let Some(span) = occurrence.source else {
                         continue;
                     };
+                    eprintln!(
+                        "rust-native cold={cold} artifact={ordinal} foreign={:?}:{:?} path={:?} display={:?} span={}..{} expected={expected_start}..{}",
+                        reader.atom(ecosystem), reader.atom(package), reader.atom(foreign.path),
+                        reader.atom(foreign.display), span.start(), span.end(), expected_start + 8
+                    );
                     if reader.atom(ecosystem) == Some(b"cargo")
                         && reader.atom(package) == Some(b"src/service")
                         && reader.atom(foreign.path) == Some(b"set_note")
