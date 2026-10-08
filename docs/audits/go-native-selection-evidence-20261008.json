@@ -1,0 +1,50 @@
+{
+  "schema": "nudox.root-Go753-native-audit.v1",
+  "base": "96d82a14eea7dbe2167c0c962b5887b6fab67c4b",
+  "production_commit": "209fed723fe2b6326b4c00c64279b6752835c2c5",
+  "production_tree": "3cc16bba45437c205ad0d5aade556471c90d773f",
+  "native_commit": "753a79517fc5d936b57b33464fe81df31b7796b2",
+  "native_tree": "b846cec89189499a02330dde6e6902785dd79e5f",
+  "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+  "exact_postfiles": [
+    "crates/engine/src/driver/lower/go.rs",
+    "frontends/go/src/legacy/oracle.rs",
+    "frontends/go/src/legacy/oracle/image.go",
+    "frontends/go/src/legacy/oracle/main.go",
+    "frontends/go/src/legacy/oracle/selection.go",
+    "frontends/go/src/legacy/oracle/selection_test.go",
+    "frontends/go/tests/fixtures/rest-server-listener/listener_unix.go",
+    "frontends/go/tests/fixtures/rest-server-listener/listener_windows.go",
+    "frontends/go/tests/fixtures/rest-server-listener/origin.json",
+    "frontends/go/tests/selected_dependency_loader.rs"
+  ],
+  "unrelated_canonical_entries_preserved": 17944,
+  "source_inputs_verified": 99,
+  "source_input_bytes_verified": 1340654,
+  "parent_passes": [
+    "TestCompilerSelectionTargetsTagsAndInactiveImage",
+    "TestCompilerCgoSelectionBothPolicies",
+    "TestActualRestServerPairUsesCompilerFilenameSelection",
+    "TestCompilerSelectionContradictionsRefuse",
+    "TestNativeSelectionRetainsTheClosedParentPolicy",
+    "TestAuthoritySourceSelectionMustHaveOneOwner",
+    "TestExternalTestSourceRetainsCompilerPackageOwner",
+    "TestIgnoredMalformedBodyDoesNotPoisonActiveCompilerPackage"
+  ],
+  "subcase_passes": [
+    "TestCompilerSelectionTargetsTagsAndInactiveImage/darwin-arm64",
+    "TestCompilerSelectionTargetsTagsAndInactiveImage/darwin-amd64",
+    "TestCompilerSelectionTargetsTagsAndInactiveImage/windows-amd64-feature",
+    "TestCompilerSelectionTargetsTagsAndInactiveImage/windows-arm64-feature"
+  ],
+  "failures": 0,
+  "skips": 0,
+  "image_sha256": "581a5fe147ddea39f12d547d3a5a7b365f9a10d8e5bd98b0ec9025303aabfea7",
+  "compile_receipt_sha256": "9f51825b0e26173cb388ef3f73595524422be9b289612bd05546973da7eb7120",
+  "test_receipt_sha256": "783086dbeeba7caf2102cb680ea7111e5ab13f6f9fb072ed63fb9f65684e10ef",
+  "actual_compiler_linker_observed": true,
+  "before_after_source_tools_image_consistent": true,
+  "kernel_wait_group_absence_and_permit_release": true,
+  "raw_archive_sha256": "ea6504f28d74172bf73028c46917cf8acb2def8f9a46f565a76bef58e90d42e7",
+  "scope": "Actual Go compiler helper controls; Rust-side frontend/lowering and installed whole-project replay remain UNRUN."
+}
