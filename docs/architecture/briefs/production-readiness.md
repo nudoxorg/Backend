@@ -1,6 +1,6 @@
 # Production readiness: what still needs attention
 
-### Go compiler selection integrated — 2026-10-08, 16:06 UTC
+### Go compiler selection integrated — 2026-10-08, 15:56 UTC
 
 Go's native platform/external-test selection repair is now in the reviewed source checkpoint on canonical96d. Root checked all ten final files and all99 helper input hashes/Git objects, raw compiler/linker observations and actual **eight parent passes/four platform subcases**, with zero failures or skips. [The audit](../../audits/go-native-selection-checkpoint-20261008.md) retains the earlier six-pass/two-failure run and explains the narrow ownership and test-fixture repairs.
 
