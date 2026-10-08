@@ -262,8 +262,9 @@ impl CapturedProjectLayout {
         let spelling = leaf
             .to_str()
             .ok_or_else(|| project_error("", "selected Python package leaf is not UTF-8"))?;
-        // Reuse the actual native module-path admission, including Unicode and
-        // keyword rules. No manifest-name or import-spelling guess supplies it.
+        // Reuse native filesystem module-path admission, including its Unicode
+        // identifier policy; it does not exclude keywords. No manifest-name or
+        // import-spelling guess supplies the package leaf.
         let relative = Path::new(leaf).join("__init__.py");
         let base = PathBuf::new();
         if pyrefly_python::module_name::ModuleName::from_path(
@@ -1085,7 +1086,19 @@ mod capture_layout_tests {
         }];
         let named = CapturedProjectLayout::new(&workspace, &original, &stubs).unwrap();
         assert_eq!(named.source_root(), workspace.join("imports/mealie"));
-        let invalid = std::env::temp_dir().join("not-a-module");
-        assert!(CapturedProjectLayout::new(&workspace, &invalid, &stubs).is_err());
+        for spelling in ["not-a-module", "123", "has space", "dotted.name"] {
+            let invalid = std::env::temp_dir().join(spelling);
+            assert!(CapturedProjectLayout::new(&workspace, &invalid, &stubs).is_err());
+        }
+        // The pinned native filesystem law accepts keywords and Unicode names.
+        // Keep that law rather than imposing a second Python grammar here.
+        for spelling in ["class", "δοκιμή"] {
+            let original = std::env::temp_dir().join(spelling);
+            let named = CapturedProjectLayout::new(&workspace, &original, &stubs).unwrap();
+            assert_eq!(
+                named.source_root(),
+                workspace.join("imports").join(spelling)
+            );
+        }
     }
 }
