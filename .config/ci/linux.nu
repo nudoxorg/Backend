@@ -177,7 +177,11 @@ def main [
     # disk (2026-10-05, build 54). Panics still name their file and line
     # (Rust embeds that apart from debug info); only RUST_BACKTRACE frames
     # lose line numbers. It also shortens every link.
-    let test_env = {BACKEND_PROCESS_ARTIFACT_POLICY: "private-debug", CARGO_PROFILE_DEV_DEBUG: "0", CARGO_PROFILE_TEST_DEBUG: "0"}
+    # jemalloc's -O0 configure probes reject fortify's optimization warning
+    # under -Werror. Remove those flags only for this development test build;
+    # packaged/release derivations retain their declared hardening.
+    let test_hardening = ($env.NIX_HARDENING_ENABLE? | default "" | split row " " | where {|flag| $flag not-in ["fortify" "fortify3"] } | str join " ")
+    let test_env = {BACKEND_PROCESS_ARTIFACT_POLICY: "private-debug", CARGO_PROFILE_DEV_DEBUG: "0", CARGO_PROFILE_TEST_DEBUG: "0", CARGO_BUILD_JOBS: "8", NIX_HARDENING_ENABLE: $test_hardening}
     | merge (
         if ($cargo_home | path exists) { {NUDOX_CARGO_HOME: $cargo_home} } else { {} }
     )

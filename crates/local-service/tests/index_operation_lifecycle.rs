@@ -1188,7 +1188,9 @@ fn wait_for_published(
                 thread::sleep(Duration::from_millis(50));
                 observation = read_status_with_keyed_reconnect(session, operation_key, deadline)?;
             }
-            IndexOperationState::Failed { .. } | IndexOperationState::Unresolved { .. } => {
+            IndexOperationState::Failed { .. }
+            | IndexOperationState::PartiallyPublished { .. }
+            | IndexOperationState::Unresolved { .. } => {
                 return Err(PhaseError::message(
                     "poll durable operation status while awaiting publication",
                     format!(
@@ -1228,7 +1230,9 @@ fn wait_for_failed(
                 thread::sleep(Duration::from_millis(50));
                 observation = read_status_with_keyed_reconnect(session, operation_key, deadline)?;
             }
-            IndexOperationState::Published(_) | IndexOperationState::Unresolved { .. } => {
+            IndexOperationState::Published(_)
+            | IndexOperationState::PartiallyPublished { .. }
+            | IndexOperationState::Unresolved { .. } => {
                 return Err(PhaseError::message(
                     "await actual failed Cargo dependency refresh",
                     format!(

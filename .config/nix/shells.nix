@@ -219,6 +219,7 @@ let
     ];
     packages = [
       toolchains.cross
+      pkgs.python3
       pkgs.nushell
     ]
     ++ crossCompilers
@@ -256,9 +257,9 @@ let
       pkgs.zlib
     ];
     shellHook = ''
-      export CARGO_TARGET_DIR="$PWD/.local/target"
-      export ZIG_GLOBAL_CACHE_DIR="$PWD/.local/zig-cache"
-      export ZIG_LOCAL_CACHE_DIR="$PWD/.local/zig-cache"
+      export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-$PWD/.local/target}"
+      export ZIG_GLOBAL_CACHE_DIR="''${ZIG_GLOBAL_CACHE_DIR:-$PWD/.local/zig-cache}"
+      export ZIG_LOCAL_CACHE_DIR="''${ZIG_LOCAL_CACHE_DIR:-$PWD/.local/zig-cache}"
     '';
   };
   cross = pkgs.mkShell crossAttrs;
