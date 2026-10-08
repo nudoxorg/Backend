@@ -199,6 +199,116 @@ fn owned_bulk_builder_never_clones_payload_values() -> Result<(), Box<dyn std::e
     Ok(())
 }
 
+#[test]
+fn sorted_owned_relation_state_preserves_roots_coverage_and_deltas()
+-> Result<(), Box<dyn std::error::Error>> {
+    let coverage = complete(1)?;
+    for size in [0_u64, 1, 257, 8_192] {
+        let entries: Vec<_> = (0..size).map(|key| (key, key.rotate_left(7))).collect();
+        let ordinary = RelationState::<RelationFixture>::from_entries(
+            entries.iter().rev().copied(),
+            coverage,
+        )?;
+        let owned = RelationState::<RelationFixture>::from_sorted_entries(entries, coverage)?;
+        assert_eq!(owned, ordinary);
+        assert_eq!(owned.coverage(), coverage);
+        assert_eq!(owned.root_handle().summary().len, size as usize);
+        assert_eq!(
+            owned.range(3..257).collect::<Vec<_>>(),
+            ordinary.range(3..257).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            owned
+                .node_closure()
+                .map(|node| node.canonical_bytes().to_vec())
+                .collect::<Vec<_>>(),
+            ordinary
+                .node_closure()
+                .map(|node| node.canonical_bytes().to_vec())
+                .collect::<Vec<_>>()
+        );
+        let changes = vec![MapChange {
+            key: size,
+            before: None,
+            after: Some(17),
+        }];
+        let (ordinary_update, ordinary_work) =
+            prepare_delta_with_state(&ordinary, changes.clone())?;
+        let (owned_update, owned_work) = prepare_delta_with_state(&owned, changes)?;
+        assert_eq!(owned_update.delta().id(), ordinary_update.delta().id());
+        assert_eq!(owned_work, ordinary_work);
+        assert_eq!(
+            owned_update.commit(&owned)?,
+            ordinary_update.commit(&ordinary)?
+        );
+    }
+
+    let incomplete = CoverageWitness::Partial(UntrustedCoverageScope::from_scope_root(
+        ScopeRoot::from_u64(1),
+    ));
+    let state = RelationState::<RelationFixture>::from_sorted_entries(vec![(1, 2)], incomplete)?;
+    assert_eq!(state.coverage(), incomplete);
+    assert_eq!(
+        prepare_delta(
+            &state,
+            vec![MapChange {
+                key: 1,
+                before: Some(2),
+                after: Some(3),
+            }],
+        ),
+        Err(DeltaError::IncompleteBase)
+    );
+    Ok(())
+}
+
+#[test]
+fn sorted_owned_relation_state_rejects_unordered_duplicate_and_oversized_entries()
+-> Result<(), Box<dyn std::error::Error>> {
+    let coverage = complete(1)?;
+    for entries in [vec![(2, 20), (1, 10)], vec![(1, 10), (1, 20)]] {
+        assert!(matches!(
+            RelationState::<RelationFixture>::from_sorted_entries(entries, coverage),
+            Err(TreeError::UnsortedOrDuplicate)
+        ));
+    }
+    let entries = vec![(1, vec![0; CutPolicy::MAX_ENCODED_BYTES])];
+    assert!(RelationState::<VariableRelation>::from_entries(entries.clone(), coverage).is_err());
+    assert!(RelationState::<VariableRelation>::from_sorted_entries(entries, coverage).is_err());
+    Ok(())
+}
+
+#[test]
+fn sorted_owned_relation_state_moves_payloads_instead_of_cloning_them()
+-> Result<(), Box<dyn std::error::Error>> {
+    let clones = std::sync::Arc::new(AtomicUsize::new(0));
+    let entries = || {
+        (0..2_048)
+            .map(|key| {
+                (
+                    key,
+                    CountedValue {
+                        bytes: vec![key as u8; 256],
+                        clones: std::sync::Arc::clone(&clones),
+                    },
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let ordinary = RelationState::<CountedValueRelation>::from_entries(entries(), complete(1)?)?;
+    assert!(clones.load(AtomicOrdering::Relaxed) >= 2_048);
+    clones.store(0, AtomicOrdering::Relaxed);
+    let owned =
+        RelationState::<CountedValueRelation>::from_sorted_entries(entries(), complete(1)?)?;
+    assert_eq!(clones.load(AtomicOrdering::Relaxed), 0);
+    assert_eq!(owned.root(), ordinary.root());
+    assert_eq!(
+        owned.iter().collect::<Vec<_>>(),
+        ordinary.iter().collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
 #[derive(Debug, Eq, PartialEq)]
 struct VariableRelation;
 

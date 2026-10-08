@@ -1710,24 +1710,16 @@ fn collect_selected_documents(
     let mut selected = Vec::new();
     let mut candidate_ids = BTreeSet::new();
     let mut selected_rows = BTreeMap::new();
-    let mut cursor = backend_engine::ViewPageCursor::first(view);
-    loop {
-        let page = view
-            .page(cursor, backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
-            .map_err(|_| QueryError::InvalidView)?;
-        for row in page.rows() {
-            if selected_rows
-                .insert(
-                    row.id.stable_key(),
-                    (row.id, SearchOrigin::from_source(&row.source)),
-                )
-                .is_some()
-            {
-                return Err(QueryError::IdentityCollision);
-            }
+    for row in view.row_refs() {
+        if selected_rows
+            .insert(
+                row.id.stable_key(),
+                (row.id, SearchOrigin::from_source(&row.source)),
+            )
+            .is_some()
+        {
+            return Err(QueryError::IdentityCollision);
         }
-        let Some(next) = page.next() else { break };
-        cursor = next;
     }
     // A producer can mint a synthetic child fact that carries its own
     // owning function's name for identity purposes only: a function's

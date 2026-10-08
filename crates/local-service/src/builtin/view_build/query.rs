@@ -410,7 +410,7 @@ fn open_query_publications<'a>(
                 BuiltinModelError(format!("reopen semantic query image: {error}"))
             })?;
             let path = compiled_source_path(&view)?;
-            let digest = *blake3::hash(bytes.as_ref()).as_bytes();
+            let digest = bytes.content_digest();
             let mut identities = BTreeSet::new();
             let session = DocumentationSession::new(&view);
             for entity in session.canonical_entities() {

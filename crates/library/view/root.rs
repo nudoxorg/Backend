@@ -152,7 +152,11 @@ impl ViewRoot {
     /// compatibility slice.
     #[must_use]
     pub fn row_count(&self) -> u64 {
-        self.relation.root_handle().summary().len.saturating_sub(1) as u64
+        self.relation
+            .materialize()
+            .canonical_node()
+            .row_count()
+            .saturating_sub(1)
     }
 
     /// Reads one bounded page directly from the retained canonical tree.
@@ -1040,6 +1044,29 @@ mod tests {
         assert!(root.rows_cache.get().is_none());
         assert!(root.first_package_label(package, "missing").is_none());
         assert!(root.last_package_label(sibling, label).is_none());
+    }
+
+    #[test]
+    fn row_count_borrows_authenticated_count_without_copying_tree_summary() {
+        for count in [0, 1, 513] {
+            let root = root_with_rows(count);
+            let summary = root.relation.root_handle().summary();
+            let previous_count = summary.len.saturating_sub(1) as u64;
+            assert_eq!(previous_count, count as u64);
+            assert_eq!(summary.row_count, summary.len as u64);
+            assert_eq!(root.row_refs().count(), count);
+            let allocations = allocation_counter::measure(|| {
+                assert_eq!(std::hint::black_box(&root).row_count(), previous_count);
+            });
+            assert_eq!(allocations, allocation_counter::AllocationInfo::default());
+            // The former path is the positive allocation control. Its owned
+            // descendant-count vector is not needed to answer a row count.
+            let summary_copy = allocation_counter::measure(|| {
+                std::hint::black_box(std::hint::black_box(&root).relation.root_handle().summary());
+            });
+            assert!(summary_copy.bytes_total >= std::mem::size_of::<usize>() as u64);
+            assert!(!root.compatibility_rows_are_materialized());
+        }
     }
 
     #[test]

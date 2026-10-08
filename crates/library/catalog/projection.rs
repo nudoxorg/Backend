@@ -562,7 +562,7 @@ impl Library {
         if ranked_ids.len() > usize::try_from(self.view.row_count()).unwrap_or(usize::MAX)
             || ranked_ids
                 .iter()
-                .any(|id| !unique.insert(*id) || self.view.row(*id).is_none())
+                .any(|id| !unique.insert(*id) || self.view.row_ref(*id).is_none())
         {
             return Err(LibraryError::InvalidQuery(
                 "ranked search identities are not a subset of the selected view".to_owned(),
