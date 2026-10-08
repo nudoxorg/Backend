@@ -106,19 +106,26 @@ class SdkOnlyContracts(unittest.TestCase):
 
     def test_runtime_probe_selects_absolute_node_and_module_without_overrides(self):
         seen = []
-        def run(argv, **kwargs):
-            seen.append((argv,kwargs))
-            self.assertEqual(set(kwargs['env']), {'PATH','HOME','TMPDIR'})
+        def run(argv, cwd, environment):
+            seen.append((argv,environment))
+            self.assertEqual(set(environment), {'PATH','HOME','TMPDIR'})
             self.assertEqual(argv[0], str(self.payload/'typescript/node/bin/node'))
             output = b'v24.18.0\n' if argv[1:] == ['--version'] else b'5.9.3'
             return subprocess.CompletedProcess(argv,0,output,b'')
-        with patch.object(bundle.subprocess,'run',side_effect=run):
+        with patch.object(bundle,'bounded_sdk_probe',side_effect=run):
             result=bundle.verify_sdk_runtime(self.payload,self.receipt)
         self.assertEqual(result['typescript']['version'],'5.9.3')
         self.assertEqual(seen[1][0][-1], str(self.payload/'typescript/node_modules/typescript'))
-        with patch.object(bundle.subprocess,'run',return_value=subprocess.CompletedProcess([],0,b'wrong',b'')):
+        with patch.object(bundle,'bounded_sdk_probe',return_value=subprocess.CompletedProcess([],0,b'wrong',b'')):
             with self.assertRaisesRegex(bundle.PackageError,'version probe'):
                 bundle.verify_sdk_runtime(self.payload,self.receipt)
+
+    def test_version_probe_enforces_output_and_time_before_collection_can_grow(self):
+        environment={'PATH':'/usr/bin:/bin','HOME':str(self.root),'TMPDIR':str(self.root)}
+        with self.assertRaisesRegex(bundle.PackageError,'output bound'):
+            bundle.bounded_sdk_probe([sys.executable,'-c','import os,time;os.write(1,b"x"*8192);time.sleep(10)'],str(self.root),environment,maximum=64)
+        with self.assertRaisesRegex(bundle.PackageError,'deadline'):
+            bundle.bounded_sdk_probe([sys.executable,'-c','import time;time.sleep(10)'],str(self.root),environment,timeout=0.1)
 
     def test_sdk_launcher_propagates_literal_arguments_without_injected_tool_paths(self):
         macos=self.root/'Nudox.app/Contents/MacOS';macos.mkdir(parents=True)
@@ -187,6 +194,16 @@ class SdkOnlyContracts(unittest.TestCase):
         self.assertIn('Contents/Resources/Build Evidence/compiler-helpers-receipt.json',manifest['files'])
         self.assertEqual(manifest['files']['Contents/MacOS/backend-cli']['sha256'],bundle.sha256(contents/'MacOS/backend-cli'))
         self.assertNotIn('NUDOX_', (contents/'MacOS/Nudox').read_text())
+        deferred=self.root/'deferred-output'
+        argv[argv.index(str(output))]=str(deferred);argv.append('--defer-sdk-runtime-probes')
+        with patch.object(sys,'argv',argv), patch.object(bundle,'macos_tools'), patch.object(bundle.platform,'machine',return_value='arm64'), \
+             patch.object(bundle,'validate_source',return_value=self.source), patch.object(bundle,'validate_app_build',return_value=(app,{n:artifacts/n for n in bundle.EXECUTABLES})), \
+             patch.object(bundle,'run',side_effect=run), patch.object(bundle,'inspect_macho_tree',side_effect=inspect), \
+             patch.object(bundle,'inspect_signature',return_value='unsigned'), patch.object(bundle,'verify_sdk_runtime') as probes:
+            self.assertEqual(bundle.main(),0);probes.assert_not_called()
+        pending=json.loads((deferred/'Nudox.app/Contents/Resources/build-manifest.json').read_text())['compiler_helpers']
+        self.assertIsNone(pending['runtime_probes'])
+        self.assertEqual(pending['runtime_probe_status'],'pending post-sign native probes')
 
     def test_staging_copies_complete_package_and_preserves_explicit_source(self):
         node=self.payload/'typescript/node/bin/node';license=self.payload/'typescript/node/LICENSE';package=self.payload/'typescript/node_modules/typescript'

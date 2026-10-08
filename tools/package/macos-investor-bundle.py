@@ -18,10 +18,12 @@ import platform
 import plistlib
 import posixpath
 import re
+import selectors
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -912,6 +914,41 @@ def write_sdk_bundle_receipt(
     return receipt, path
 
 
+def bounded_sdk_probe(command: list[str], cwd: str, environment: dict[str, str], *, timeout: float = 30, maximum: int = 4096) -> subprocess.CompletedProcess:
+    """Bound both pipe collection and the lifetime of this owned version probe."""
+    child = subprocess.Popen(command, cwd=cwd, env=environment, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    deadline = time.monotonic() + timeout
+    collected = {"stdout": bytearray(), "stderr": bytearray()}
+    with selectors.DefaultSelector() as selector:
+        selector.register(child.stdout, selectors.EVENT_READ, "stdout")
+        selector.register(child.stderr, selectors.EVENT_READ, "stderr")
+        try:
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    fail("SDK version probe exceeded its deadline")
+                for key, _ in selector.select(remaining):
+                    buffer = collected[key.data]
+                    block = os.read(key.fd, maximum + 1 - len(buffer))
+                    buffer.extend(block)
+                    if len(buffer) > maximum:
+                        fail("SDK version probe exceeded its output bound")
+                    if not block:
+                        selector.unregister(key.fileobj)
+            try:
+                result = child.wait(timeout=max(0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                fail("SDK version probe exceeded its deadline")
+        finally:
+            if child.poll() is None:
+                child.kill()
+            child.wait()
+            child.stdout.close()
+            child.stderr.close()
+    return subprocess.CompletedProcess(command, result, bytes(collected["stdout"]), bytes(collected["stderr"]))
+
+
 def verify_sdk_runtime(helper_resources: Path, receipt: dict[str, Any]) -> dict[str, Any]:
     """Execute only the relocated Node and genuine Compiler API, with a private HOME."""
     node = helper_resources / "typescript/node/bin/node"
@@ -923,8 +960,7 @@ def verify_sdk_runtime(helper_resources: Path, receipt: dict[str, Any]) -> dict[
             ("node", ["--version"], receipt["tools"]["node"]["version"]),
             ("typescript", ["-e", "process.stdout.write(require(process.argv[1]).version)", str(package)], receipt["tools"]["typescript"]["version"]),
         ]:
-            completed = subprocess.run([str(node), *arguments], cwd=temporary, env=environment,
-                                       capture_output=True, timeout=30, check=False)
+            completed = bounded_sdk_probe([str(node), *arguments], temporary, environment)
             if completed.returncode or len(completed.stdout) > 4096 or len(completed.stderr) > 4096 or completed.stdout.decode().strip() != expected:
                 fail(f"relocated {name} version probe did not match the admitted SDK identity")
             results[name] = {"exit": completed.returncode, "version": completed.stdout.decode().strip(),
@@ -1512,6 +1548,7 @@ def main() -> int:
     parser.add_argument("--artifact-dir", required=True, type=Path, help="directory containing the three admitted application binaries")
     parser.add_argument("--build-receipt", required=True, type=Path, help="Root-produced application build receipt JSON")
     parser.add_argument("--sdk-only", action="store_true", help="bundle only genuine Node/TypeScript; no legacy language-helper claims or overrides")
+    parser.add_argument("--defer-sdk-runtime-probes", action="store_true", help="SDK release driver will probe after inner Developer ID signing, before the outer app seal")
     parser.add_argument("--dotnet-root", type=Path, help="real macOS .NET runtime installation root")
     parser.add_argument("--dotnet-receipt", type=Path, help="content-bound .NET runtime origin receipt")
     parser.add_argument("--dotnet-pin", type=Path, help="reviewed source/version/tree pin for the .NET distribution")
@@ -1527,6 +1564,8 @@ def main() -> int:
     args = parser.parse_args()
 
     legacy_inputs = [args.dotnet_root, args.dotnet_receipt, args.dotnet_pin, args.dotnet_source_archive, args.roslyn_dir, args.roslyn_receipt]
+    if args.defer_sdk_runtime_probes and not args.sdk_only:
+        fail("deferred SDK probes require SDK-only assembly")
     if args.sdk_only and any(value is not None for value in legacy_inputs):
         fail("SDK-only assembly must not include unrelated legacy helper inputs")
     if not args.sdk_only and any(value is None for value in [args.dotnet_root, args.dotnet_receipt, args.dotnet_pin, args.roslyn_dir, args.roslyn_receipt]):
@@ -1740,7 +1779,8 @@ def main() -> int:
                 helper_resources, provenance, source, args.target, helpers_receipt, args.helpers_receipt
             )
             helper_files = helpers_receipt["files"]
-            sdk_runtime_probes = verify_sdk_runtime(helper_resources, helpers_receipt)
+            if not args.defer_sdk_runtime_probes:
+                sdk_runtime_probes = verify_sdk_runtime(helper_resources, helpers_receipt)
         bundle_signature = inspect_signature(staging)
 
         manifest = {
@@ -1810,6 +1850,8 @@ def main() -> int:
             helpers["assembly_mode"] = "typescript-sdk-only"
             helpers["source_receipt_sha256"] = sha256(args.helpers_receipt)
             helpers["runtime_probes"] = sdk_runtime_probes
+            helpers["runtime_probe_status"] = ("pending post-sign native probes" if args.defer_sdk_runtime_probes
+                                                else "passed relocated Node and Compiler API probes")
             helpers["external_language_prerequisites"].update({
                 "python": "native in-process Python authority; no Pyrefly executable bundled",
                 "go": "ordinary external Go toolchain and dependency cache; no legacy oracle bundled",
