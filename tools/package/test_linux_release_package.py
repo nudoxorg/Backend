@@ -89,6 +89,27 @@ class RootArtifactReceiptTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "exactly the three"):
                 package.admit_receipt(build)
 
+    def test_root_receipt_rejects_float_and_boolean_integer_aliases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path, receipt, build = self.fixture(Path(directory).resolve())
+            receipt["artifacts"]["backend-cli"]["bytes"] = 1234.0
+            self.seal(path, receipt, build)
+            with self.assertRaisesRegex(ValueError, "invalid artifact byte count"):
+                package.admit_receipt(build)
+            receipt["artifacts"]["backend-cli"]["bytes"] = 1234
+            for value in (False, 0.0):
+                with self.subTest(exit=value):
+                    receipt["exit"] = value
+                    self.seal(path, receipt, build)
+                    with self.assertRaisesRegex(ValueError, "exact successful integer exit"):
+                        package.admit_receipt(build)
+            receipt["exit"] = 0
+            build["executables"]["backend-cli"]["bytes"] = 1
+            receipt["artifacts"]["backend-cli"]["bytes"] = True
+            self.seal(path, receipt, build)
+            with self.assertRaisesRegex(ValueError, "invalid artifact byte count"):
+                package.admit_receipt(build)
+
     def test_initial_sparse_artifact_record_refuses_before_payload_hash_or_stage(self):
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as directory:

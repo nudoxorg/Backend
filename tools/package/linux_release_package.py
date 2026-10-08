@@ -244,11 +244,15 @@ def admit_receipt(build: dict) -> dict:
         fail("root build receipt must attest exactly the three product artifacts")
     for name in BINARIES:
         artifact = artifacts[name]
-        if not isinstance(artifact, dict) or any(artifact.get(key) != public["executables"][name][key] for key in ("sha256", "bytes")):
+        if not isinstance(artifact, dict) or not isinstance(artifact.get("bytes"), int) or isinstance(artifact["bytes"], bool):
+            fail(f"root build receipt has an invalid artifact byte count: {name}")
+        if any(artifact.get(key) != public["executables"][name][key] for key in ("sha256", "bytes")):
             fail(f"root build receipt artifact differs from the build manifest: {name}")
     build_source = build["source"]
     receipt_source = receipt.get("source", {})
-    if receipt.get("exit") != 0 or receipt_source.get("clean_before") is not True or receipt_source.get("clean_after") is not True or receipt.get("toolchain", {}).get("unchanged") is not True or build_source.get("clean") is not True:
+    if not isinstance(receipt.get("exit"), int) or isinstance(receipt["exit"], bool) or receipt["exit"] != 0:
+        fail("root build receipt has no exact successful integer exit status")
+    if receipt_source.get("clean_before") is not True or receipt_source.get("clean_after") is not True or receipt.get("toolchain", {}).get("unchanged") is not True or build_source.get("clean") is not True:
         fail("root build receipt does not attest a successful unchanged-source build")
     if any(receipt_source.get(key) != build_source.get(key) for key in ("commit", "tree")):
         fail("root build receipt commit/tree differs from build manifest")
