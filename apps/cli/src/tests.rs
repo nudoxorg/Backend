@@ -1284,7 +1284,7 @@ fn cli_exports_plain_graph_continuation_without_leaking_the_wire_proof() {
     let token = payload["nextCursor"]
         .as_str()
         .expect("portable graph cursor");
-    assert!(token.starts_with("pc3."));
+    assert!(token.starts_with("pc3-"));
     assert!(payload.get("certificate").is_none());
     assert!(payload.get("query_proof").is_none());
     let owner =
@@ -1294,7 +1294,9 @@ fn cli_exports_plain_graph_continuation_without_leaking_the_wire_proof() {
     let next = cold
         .decode_page_continuation(token)
         .expect("strict cold graph token");
-    let reply = cold.continue_page(next).expect("exact second graph page");
+    let reply = cold
+        .graph_page("pkg::Parent", 2, Some(next))
+        .expect("exact second graph page");
     let CommandReply::ProjectionPage(next) = reply.reply else {
         panic!("graph page");
     };
