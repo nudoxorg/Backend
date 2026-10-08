@@ -1575,3 +1575,6 @@ fn the_words_place_the_declaration_they_name_in_the_package_they_name_first() {
         "one word: the row it names (the package itself) first"
     );
 }
+
+#[path = "source_ranking_tests.rs"]
+mod source_ranking_tests;

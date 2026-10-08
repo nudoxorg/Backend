@@ -190,9 +190,6 @@ fn compose(
         }
     }
     for local in &answer.rows {
-        if ranked.len() == answer.query.limit() {
-            break;
-        }
         let Some(entity) = answer.entity_for_row(local.row.id) else {
             continue;
         };
@@ -203,6 +200,11 @@ fn compose(
             });
         }
     }
+    // Provider scores order rows within each provenance tier. Include the
+    // complete retained lexical prefix before this stable sort so an inferred
+    // type or external endpoint cannot evict a sourced declaration first.
+    // No row is removed from the corpus or from later lexical pages.
+    ranked.sort_by_cached_key(|ranked| std::cmp::Reverse(answer.search_origin(ranked.row.id)));
     ranked.truncate(answer.query.limit());
     Composition {
         rows: ranked,

@@ -119,6 +119,8 @@ pub(crate) struct Placement {
     package: Option<String>,
     /// A declaration of somewhere else that this package links to.
     external: bool,
+    /// The selected canonical row retains an actual source declaration site.
+    sourced: bool,
     /// How much the row's kind is the thing its name names ([`kind_weight`]).
     kind: u8,
 }
@@ -143,19 +145,22 @@ impl Placement {
             name: name.to_owned(),
             package: Some(package.to_owned()),
             external,
+            sourced: false,
             kind: kind_weight(kind),
         }
     }
 
     /// The key a match is ordered by (higher first): a declaration before a
     /// link to one elsewhere; a row whose whole name is one of the words (as
-    /// typed, then in any case); a row whose package another word names; a
-    /// kind that is the named thing before one that only mentions it.
-    pub(crate) fn key(&self, words: &[String]) -> (bool, u8, bool, u8) {
+    /// typed, then in any case); a row whose package another word names; an
+    /// actual source declaration before an inferred helper type; a kind that
+    /// is the named thing before one that only mentions it.
+    pub(crate) fn key(&self, words: &[String]) -> (bool, u8, bool, bool, u8) {
         placement_key(
             &self.name,
             self.package.as_deref(),
             self.external,
+            self.sourced,
             self.kind,
             words,
         )
@@ -166,9 +171,10 @@ fn placement_key(
     name: &str,
     package: Option<&str>,
     external: bool,
+    sourced: bool,
     kind: u8,
     words: &[String],
-) -> (bool, u8, bool, u8) {
+) -> (bool, u8, bool, bool, u8) {
     let named = words
         .iter()
         .position(|word| word == name)
@@ -188,6 +194,7 @@ fn placement_key(
         !external,
         named.map_or(0, |(strength, _)| strength),
         package_named,
+        sourced,
         kind,
     )
 }
@@ -410,12 +417,34 @@ pub(crate) struct Corpus {
     pub(crate) semantic_evidence: SemanticQueryCorpus,
 }
 
+/// Search placement uses the selected canonical source evidence, never a
+/// rendered signature such as `unknown(unannotated)` or an external's label.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) enum SearchOrigin {
+    ExternalTarget,
+    Unsourced,
+    SourceDeclaration,
+}
+
+impl SearchOrigin {
+    fn from_source(source: &backend_library::SourceAvailability) -> Self {
+        match source {
+            backend_library::SourceAvailability::Captured(_)
+            | backend_library::SourceAvailability::NotHydrated
+            | backend_library::SourceAvailability::StaleFile { .. } => Self::SourceDeclaration,
+            backend_library::SourceAvailability::NotCaptured
+            | backend_library::SourceAvailability::Unconfigured => Self::Unsourced,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct SelectedEntity {
     entity: EntityId,
     row: RowId,
     candidate: backend_extension_qdrant::CandidateId,
     fact_index: usize,
+    origin: SearchOrigin,
 }
 
 struct SelectedCorpus {
@@ -462,7 +491,11 @@ impl SelectedCorpus {
 }
 
 impl Corpus {
-    fn placement_key(&self, entity: EntityId, words: &[String]) -> Option<(bool, u8, bool, u8)> {
+    fn placement_key(
+        &self,
+        entity: EntityId,
+        words: &[String],
+    ) -> Option<(bool, u8, bool, bool, u8)> {
         let selected = self.selected.entity(entity)?;
         let presentation = self.semantic_evidence.facts()[selected.fact_index].presentation();
         let package = presentation
@@ -478,7 +511,8 @@ impl Corpus {
         Some(placement_key(
             name,
             package,
-            presentation.kind == "external",
+            selected.origin == SearchOrigin::ExternalTarget,
+            selected.origin == SearchOrigin::SourceDeclaration,
             kind_weight(&presentation.kind),
             words,
         ))
@@ -671,6 +705,15 @@ impl LocalAnswer {
             .selected
             .row(row, self.corpus.workspace)
             .map(|selected| selected.entity)
+    }
+
+    pub(super) fn search_origin(&self, row: RowId) -> Option<SearchOrigin> {
+        let selected = &self.corpus.selected;
+        selected
+            .document_order
+            .binary_search_by_key(&row, |index| selected.entities[*index].row)
+            .ok()
+            .map(|at| selected.entities[selected.document_order[at]].origin)
     }
 
     pub(super) fn selected_row_count(&self) -> usize {
@@ -1673,7 +1716,13 @@ fn collect_selected_documents(
             .page(cursor, backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
             .map_err(|_| QueryError::InvalidView)?;
         for row in page.rows() {
-            if selected_rows.insert(row.id.stable_key(), row.id).is_some() {
+            if selected_rows
+                .insert(
+                    row.id.stable_key(),
+                    (row.id, SearchOrigin::from_source(&row.source)),
+                )
+                .is_some()
+            {
                 return Err(QueryError::IdentityCollision);
             }
         }
@@ -1710,7 +1759,7 @@ fn collect_selected_documents(
     let mut left_out = LeftOut::default();
     for (fact_index, fact) in semantic_evidence.facts().iter().enumerate() {
         let presentation = fact.presentation();
-        let Some(row) = selected_rows.remove(&presentation.id) else {
+        let Some((row, source)) = selected_rows.remove(&presentation.id) else {
             left_out.evidence_without_row += 1;
             continue;
         };
@@ -1725,6 +1774,14 @@ fn collect_selected_documents(
                 row,
                 candidate,
                 fact_index,
+                origin: if matches!(
+                    fact.evidence(),
+                    SemanticQueryEvidence::CompilerExternalTarget(_)
+                ) {
+                    SearchOrigin::ExternalTarget
+                } else {
+                    source
+                },
             });
             let is_synthetic_result_slot = presentation.kind == "variable"
                 && presentation
@@ -2467,5 +2524,33 @@ mod cargo_alias_tests {
             !qualified_clause_matches(&candidate_id(4), &clause, &selected, &corpus),
             "a different package cannot borrow the alias"
         );
+    }
+}
+
+#[cfg(test)]
+mod source_origin_tests {
+    use super::SearchOrigin;
+    use backend_library::{SourceAvailability, SourceLocation};
+
+    #[test]
+    fn source_declaration_ranking_retains_unhydrated_and_stale_declaration_evidence() {
+        for source in [
+            SourceAvailability::Captured(
+                SourceLocation::new("core/config.py", 42).expect("source"),
+            ),
+            SourceAvailability::NotHydrated,
+            SourceAvailability::stale_file("core/config.py").expect("stale captured path"),
+        ] {
+            assert_eq!(
+                SearchOrigin::from_source(&source),
+                SearchOrigin::SourceDeclaration
+            );
+        }
+        for source in [
+            SourceAvailability::NotCaptured,
+            SourceAvailability::Unconfigured,
+        ] {
+            assert_eq!(SearchOrigin::from_source(&source), SearchOrigin::Unsourced);
+        }
     }
 }

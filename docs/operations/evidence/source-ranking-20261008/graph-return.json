@@ -1,0 +1,308 @@
+{
+  "active_target_compiler_processes_at_return": [],
+  "authorization": "Root-directed final return of the exclusive joined24 graph after the ranking validation gates completed.",
+  "fresh_capacity_guard_and_managed_permit_required_before_any_future_gate": true,
+  "graph_source_unchanged": true,
+  "lock_protocol": {
+    "locks_held": [
+      {
+        "device": 16777230,
+        "inode": 18061340,
+        "path": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/clippy-source-graph-lifetime.lock",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "device": 16777230,
+        "inode": 18426210,
+        "path": "/Users/rmccrar6/codex-worktrees/sol61-joined24-352-mac-native-20261007/.local/joined24-source.lock",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "device": 16777230,
+        "inode": 19973638,
+        "path": "/Users/rmccrar6/codex-worktrees/luna-index-projection-fastpath-7382-20261008/.local/joined24-source.lock",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "device": 16777230,
+        "inode": 20100651,
+        "path": "/Users/rmccrar6/codex-worktrees/luna-current-virtual-manifest-7382-20261008/.local/joined24-source.lock",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "device": 16777230,
+        "inode": 20173673,
+        "path": "/Users/rmccrar6/codex-worktrees/sol61-search-ranking-native-13940-20261008/.local/joined24-source.lock",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "device": 16777230,
+        "inode": 18426211,
+        "path": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007/.joined24-role.lock",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "device": 16777230,
+        "inode": 18061349,
+        "path": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/target/clippy-current-canonical-20261007/debug/.cargo-lock",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "device": 16777230,
+        "inode": 18177331,
+        "path": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/target/clippy-current-canonical-20261007/debug/.cargo-artifact-lock",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ],
+    "method": "nonblocking exclusive flock while restoring owner stamp and issuing return receipt"
+  },
+  "managed_graph_leases_before_after": [
+    [],
+    []
+  ],
+  "managed_host_permit_registry_entries_at_return": [
+    "slot-2.lock",
+    "slot-3.lock",
+    "worktree-2532251470-73.lock",
+    "worktree-3149094299-73.lock"
+  ],
+  "native_launch_occurred_during_return": false,
+  "preserved_failed_attempts": [
+    {
+      "path": "/private/tmp/sol61-search-ranking-native-13940-gate0-attempt01/fleet.json",
+      "result": "V5 denied before launch due ILO aggregate job cap",
+      "sha256": "6f3aaa27e29d3a95ca23ce44f97f441c108c7e19ddff18a2b986d1dba64318ca"
+    },
+    {
+      "path": "/private/tmp/sol61-search-ranking-native-13940-gate0-attempt03/native/completion.json",
+      "result": "E0599 missing SemanticCoreReader import; zero tests",
+      "sha256": "2d4566dfdf112449660c0e6067fbd83e5aa30cd190fcfcdfa22a5138a8a941db"
+    },
+    {
+      "path": "/private/tmp/sol61-search-ranking-native-0a64-gate0-attempt02/native/completion.json",
+      "result": "3 passed/1 failed; fixture path order rejected before compiler",
+      "sha256": "0212718de0dc8923346762fd0203e4814e23b63eef5bf7b9f916a2c96b9eb8db"
+    }
+  ],
+  "previous_owner": {
+    "archive_path": "/private/tmp/sol61-search-ranking-native-234a-owner-archive-before-final-return-20261008.json",
+    "archive_sha256": "141ef4a5b6d812c1b6a5162ebd0c891ef10b45aac2416901661d5ccc4d728e6c",
+    "stamp": {
+      "graph": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007",
+      "lifetime": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/clippy-source-graph-lifetime.lock",
+      "permit": "/Users/rmccrar6/.cache/nudox/cargo-1.97/locks/slot-0.lock",
+      "recorded_at_utc": "2026-10-08T11:16:59.445301+00:00",
+      "source": {
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+        "clean": true,
+        "commit": "234abddf8b1cd82f0517a268c78c291cafae5b59",
+        "tree": "fcc9a7ce64c434684cfb49f16afae6bc250a8ee1"
+      },
+      "source_worktree": "/Users/rmccrar6/codex-worktrees/sol61-search-ranking-native-13940-20261008"
+    },
+    "stamp_sha256": "141ef4a5b6d812c1b6a5162ebd0c891ef10b45aac2416901661d5ccc4d728e6c"
+  },
+  "prior_loan_and_rebind_receipts": [
+    {
+      "path": "/private/tmp/luna-current-virtual-manifest-return-and-ranking-loan-20261008.json",
+      "sha256": "50e399287fe396fa9c0ae2e89450a9bf13bbb77b866da2eb6ec0ab13bdc4400b"
+    },
+    {
+      "path": "/private/tmp/sol61-search-ranking-native-0a64-rebind-receipt-20261008.json",
+      "sha256": "c4f82cca3e75a8125de5abc7e7a90cef90ed408fa890431b52bd17a6c1a5e7fd"
+    },
+    {
+      "path": "/private/tmp/sol61-search-ranking-native-234a-rebind-receipt-20261008.json",
+      "sha256": "31cbb0cbe10c591571bfb337979a594dbb806e749c3e00acf177dd4d2611d913"
+    }
+  ],
+  "ranking_validation": {
+    "all_four_gates_passed": true,
+    "binary": {
+      "format": "Mach-O arm64",
+      "path": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007/debug/deps/backend_local_service-fb339fe309d09189",
+      "sha256": "5e172dea3291f8af021fda90dd8ceb7630613ddc96fe8145db23ad4e6c1ec2e3"
+    },
+    "collector_pins": {
+      "backing": {
+        "path": "/private/tmp/backend-census-slot-accounting-882/.config/scripts/fleet-capacity-census.py",
+        "sha256": "34d8e705421777be1a4e95a8a754a78b4984e02127cb9e74899c58ad5818d736"
+      },
+      "policy": "Root-approved5ea perCargoPIDjobs4, eachCargo+unprovenresidualslots16/5/8/8; legacyPGIDfields telemetry only.",
+      "sampler": {
+        "path": "/private/tmp/backend-census-slot-accounting-882/.config/scripts/build-census.py",
+        "sha256": "8c421f98d973bd0ec2d97aeed5ee252270102ae7a2c67cbf8b82ef18c9517ce2"
+      },
+      "wrapper": {
+        "path": "/private/tmp/nudox-compiler-capacity-census-20261005-v5.py",
+        "sha256": "8941ec3000591df64a05e564efd7362e8a74aa931acccfe89e283d016722568d"
+      }
+    },
+    "expected_tests": 7,
+    "gate_receipts": [
+      {
+        "admission": {
+          "age_at_validation_seconds": 3.979,
+          "destination_available_memory_bytes": 63851823104,
+          "destination_groups": 1,
+          "destination_memory_only_for_remote": true,
+          "destination_root_disk_available_bytes": 1145013071872,
+          "fleet_groups": 7,
+          "memory_guard_scope": "destination",
+          "sampled_at_utc": "2026-10-08T11:10:43.458246+00:00"
+        },
+        "all_pins_unchanged": true,
+        "binary_sha256": "5e172dea3291f8af021fda90dd8ceb7630613ddc96fe8145db23ad4e6c1ec2e3",
+        "cargo_cache_fresh": false,
+        "completion_path": "/private/tmp/sol61-search-ranking-native-234a-gate0-attempt01/native/completion.json",
+        "completion_sha256": "0d30aa74413db2514d46f4125a775f479695d66720f9b11fbe9d8332f9e3ec35",
+        "expected_passed": 4,
+        "fleet_sha256": "5550a4a61aa0ba4876fe2a1616751c54eaf1f9dafcf7e03e214df91117e68fbb",
+        "fresh_v5_admission": true,
+        "gate": 0,
+        "launch_sha256": "9ddf30a6290cecdf4cd90d58be37e69fe0a10c99c2e296278298aa852928a83c",
+        "leases_empty": true,
+        "orchestration_sha256": "e8c6c0d096b6549a42c92ee45797bc13645b5380f02b16cd44f04d1fc2647914",
+        "permit_retired": true,
+        "result": "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1144 filtered out; finished in 3.97s",
+        "retirement": "owned-child-kernel-wait"
+      },
+      {
+        "admission": {
+          "age_at_validation_seconds": 4.421,
+          "destination_available_memory_bytes": 61807149056,
+          "destination_groups": 1,
+          "destination_memory_only_for_remote": true,
+          "destination_root_disk_available_bytes": 1144112721920,
+          "fleet_groups": 8,
+          "memory_guard_scope": "destination",
+          "sampled_at_utc": "2026-10-08T11:15:36.011987+00:00"
+        },
+        "all_pins_unchanged": true,
+        "binary_sha256": "5e172dea3291f8af021fda90dd8ceb7630613ddc96fe8145db23ad4e6c1ec2e3",
+        "cargo_cache_fresh": true,
+        "completion_path": "/private/tmp/sol61-search-ranking-native-234a-gate1-attempt01/native/completion.json",
+        "completion_sha256": "3ca8cf8d12532eccc6811699d041ec2f2415c7fb0e14fa1cd237a245a247402d",
+        "expected_passed": 1,
+        "fleet_sha256": "7443b54b045711b78b04188ba7b0bbc5f81412cb727b95a3b79727bc5a8b40a5",
+        "fresh_v5_admission": true,
+        "gate": 1,
+        "launch_sha256": "316c352a6aa32495579178ac2b783ac3aa0184dd52323737d318fb04ef8bf9ef",
+        "leases_empty": true,
+        "orchestration_sha256": "c738bf8bcc6417d59f743c10c7bd52554d9668a9cb84cab9a97336a0b8ef7d82",
+        "permit_retired": true,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1147 filtered out; finished in 0.00s",
+        "retirement": "owned-child-kernel-wait"
+      },
+      {
+        "admission": {
+          "age_at_validation_seconds": 3.978,
+          "destination_available_memory_bytes": 60575301632,
+          "destination_groups": 2,
+          "destination_memory_only_for_remote": true,
+          "destination_root_disk_available_bytes": 1144128139264,
+          "fleet_groups": 8,
+          "memory_guard_scope": "destination",
+          "sampled_at_utc": "2026-10-08T11:16:11.587412+00:00"
+        },
+        "all_pins_unchanged": true,
+        "binary_sha256": "5e172dea3291f8af021fda90dd8ceb7630613ddc96fe8145db23ad4e6c1ec2e3",
+        "cargo_cache_fresh": true,
+        "completion_path": "/private/tmp/sol61-search-ranking-native-234a-gate2-attempt01/native/completion.json",
+        "completion_sha256": "26cca8b0ed23ebc05befefcc076a945e751b1ec333da51f1d046a7166e049f6b",
+        "expected_passed": 1,
+        "fleet_sha256": "d990022132f395141646092929f44bbbd7733ad73fe6b9fd6eec3461db93ab50",
+        "fresh_v5_admission": true,
+        "gate": 2,
+        "launch_sha256": "dd86d5f14532100abc7695ddcfadd47a8a9dcaea8d7ff7dae04caa1499aa58b7",
+        "leases_empty": true,
+        "orchestration_sha256": "4171904d79882f1b27892b9706c78dd4206332b8b34a57636e55c7094f16f59e",
+        "permit_retired": true,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1147 filtered out; finished in 0.01s",
+        "retirement": "owned-child-kernel-wait"
+      },
+      {
+        "admission": {
+          "age_at_validation_seconds": 4.115,
+          "destination_available_memory_bytes": 59774287872,
+          "destination_groups": 3,
+          "destination_memory_only_for_remote": true,
+          "destination_root_disk_available_bytes": 1144238194688,
+          "fleet_groups": 10,
+          "memory_guard_scope": "destination",
+          "sampled_at_utc": "2026-10-08T11:16:55.329663+00:00"
+        },
+        "all_pins_unchanged": true,
+        "binary_sha256": "5e172dea3291f8af021fda90dd8ceb7630613ddc96fe8145db23ad4e6c1ec2e3",
+        "cargo_cache_fresh": true,
+        "completion_path": "/private/tmp/sol61-search-ranking-native-234a-gate3-attempt01/native/completion.json",
+        "completion_sha256": "259c8ceef6fc880e99db058d324b946587a8ffff2a5eb7f627775b2f9157ddbc",
+        "expected_passed": 1,
+        "fleet_sha256": "47fb6d6ff0d754f1ceda361a0aae33f15d10ed8984e65793845358234960c771",
+        "fresh_v5_admission": true,
+        "gate": 3,
+        "launch_sha256": "50ad7017c27f91ed154ef0ff2942b7ef2e6650381a25e3fe737ca6cef14ff1cb",
+        "leases_empty": true,
+        "orchestration_sha256": "d7fe576889c5f266a9e65c608531822e46a1c75aa1b8fae9166f71e595da49b9",
+        "permit_retired": true,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1147 filtered out; finished in 0.04s",
+        "retirement": "owned-child-kernel-wait"
+      }
+    ],
+    "note": "Each gate has its own fresh V5 admission and managed permit; gate0 cargo_fresh=false means Cargo recompiled the source, not a stale admission. Gates1-3 reused the validated binary.",
+    "passed_tests": 7,
+    "plan_path": "/private/tmp/sol61-search-ranking-native-234a-plan04.json",
+    "plan_sha256": "ce9568399cbbb190bbf51654843c449ca8a28d2361390e67cfbfaf0cd4334c7b",
+    "proof_path": "/private/tmp/sol61-search-source-ranking-native-proof.json",
+    "proof_sha256": "c161970149bc6bd51b3094ad015947492e33f663ecf6c45c3b927f687fd667a3",
+    "source": {
+      "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+      "clean": true,
+      "commit": "234abddf8b1cd82f0517a268c78c291cafae5b59",
+      "tree": "fcc9a7ce64c434684cfb49f16afae6bc250a8ee1"
+    },
+    "source_worktree": "/Users/rmccrar6/codex-worktrees/sol61-search-ranking-native-13940-20261008",
+    "supervisor_result_mapping_complete": true
+  },
+  "recorded_at_utc": "2026-10-08T11:20:32.397703+00:00",
+  "return_owner": {
+    "stamp": {
+      "graph": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007",
+      "lifetime": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/clippy-source-graph-lifetime.lock",
+      "permit": null,
+      "recorded_at_utc": "2026-10-08T11:20:32.397278+00:00",
+      "source": {
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+        "clean": true,
+        "commit": "7382f9f8a31990f3b0fe2e2b44093717699ad934",
+        "tree": "155f1b793645fff3bccbadae11e3a144d08db2f2"
+      },
+      "source_worktree": "/Users/rmccrar6/codex-worktrees/luna-index-projection-fastpath-7382-20261008"
+    },
+    "stamp_sha256": "9140b57ce39167aaad2999f31ab95127e7030322206485d8940fd662a1509c6b"
+  },
+  "returned_to": {
+    "initial_owner_archive_path": "/private/tmp/luna-index-projection-owner-archive-before-virtual-manifest-20261008.json",
+    "initial_owner_archive_sha256": "7ed5ebaba287632c03dd9b90a0bd8b7d3291daafef35a27e5b493af17b3c8220",
+    "source": {
+      "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+      "clean": true,
+      "commit": "7382f9f8a31990f3b0fe2e2b44093717699ad934",
+      "tree": "155f1b793645fff3bccbadae11e3a144d08db2f2"
+    },
+    "source_worktree": "/Users/rmccrar6/codex-worktrees/luna-index-projection-fastpath-7382-20261008"
+  },
+  "schema": "nudox.luna.joined24.graph-return.v1",
+  "source_graph": {
+    "build_role": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007",
+    "identity": {
+      "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268",
+      "clean": true,
+      "commit": "fbf27ce7d0dfa9e2e39463a61531bdf2b39645cc",
+      "tree": "320f2758f1c8ac8b25979a7f479564ac8d90f075"
+    },
+    "lifetime_lock": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/clippy-source-graph-lifetime.lock",
+    "path": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007",
+    "target": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/target/clippy-current-canonical-20261007"
+  }
+}
