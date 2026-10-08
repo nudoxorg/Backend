@@ -23,6 +23,24 @@ def fast-flake-checks []: nothing -> list<string> {
 }
 
 def main []: nothing -> nothing {
+    # Fast checks keep only compile outputs, independently of the much larger
+    # Linux runtime cache. Cache loss always falls back to a clean build.
+    let cache = ($env.CI_FAST_CACHE_ROOT? | default "")
+    if ($cache | is-not-empty) {
+        mkdir $cache
+        let limit = ($env.CI_FAST_CACHE_GIB? | default "24" | into int)
+        let used = (^du -s --block-size=1G $cache | split row "\t" | first | into int)
+        if $used > $limit {
+            rm --recursive --force $cache
+            mkdir $cache
+            print $"fast cache: reclaimed ($used) GiB; limit ($limit) GiB"
+        }
+        $env.CARGO_TARGET_DIR = ($cache | path join "targets")
+        $env.ZIG_GLOBAL_CACHE_DIR = ($cache | path join "zig")
+        $env.ZIG_LOCAL_CACHE_DIR = ($cache | path join "zig")
+        ^python3 ($env.FILE_PWD | path join "restore-mtimes.py") ($cache | path join "source-mtimes.json")
+        if $env.LAST_EXIT_CODE != 0 { error make {msg: "source mtime restoration failed"} }
+    }
     let system = (^nix eval --raw --impure --expr "builtins.currentSystem" | str trim)
     let installables = fast-flake-checks | each {|check| $"path:.#checks.($system).($check)" }
     let checks = ci-step "fast" "structural flake checks" {||
@@ -38,9 +56,11 @@ def main []: nothing -> nothing {
     ) | uniq
     let compiles = ci-step "fast" $"cargo check ($targets | str join ', ')" {||
         with-env {NUDOX_CROSS_CHECK_TARGETS: ($targets | str join " ")} {
-            run-bounded 30min "nu" "--no-config-file" ($env.FILE_PWD | path join "cross-check.nu") "--compile-only"
+            run-bounded 30min "nu" "--no-config-file" ($env.FILE_PWD | path join "cross-check.nu") "--compile-only" ...(if ($cache | is-not-empty) { ["--keep-artifacts"] } else { [] })
         }
     }
-    reclaim-build-output
+    if ($cache | is-not-empty) {
+        print $"CI-CACHE fast: (^du -sh $cache | str trim)"
+    } else { reclaim-build-output }
     finish-lane "fast" [$checks $compiles]
 }

@@ -32,14 +32,25 @@ def main [
         error make {msg: $"($target) is not one of: ($configured | str join ', ')"}
     }
     let target_root = $env.CARGO_TARGET_DIR? | default ".local/target"
-    let results = $targets | each {|triple|
-        print $"cross: cargo check --locked --workspace --all-targets --target ($triple) --jobs 4"
+    let concurrency = ($env.CI_COMPILE_CONCURRENCY? | default "1" | into int)
+    let jobs = ($env.CI_COMPILE_JOBS? | default "4" | into int)
+    if $concurrency < 1 or $concurrency > 3 or $jobs < 1 {
+        error make {msg: "invalid compile concurrency or job count"}
+    }
+    let results = $targets | par-each --threads $concurrency {|triple|
+        # Each target has its own host build-script graph as well as its
+        # foreign outputs; parallel Cargo invocations must not share those.
+        let target_dir = $target_root | path join $triple
+        let started = date now
+        print $"cross: cargo check --locked --workspace --all-targets --target ($triple) --jobs ($jobs)"
         # Stream Cargo's own progress and diagnostics straight through. The
         # verdict comes out of the try itself: an env change such as
         # LAST_EXIT_CODE made inside the block does not survive it, so
         # reading it afterwards reported every clean target as failed.
         let status = (try {
-            run-external "cargo" "check" "--locked" "--workspace" "--all-targets" "--target" $triple "--jobs" "4"
+            with-env {CARGO_TARGET_DIR: $target_dir} {
+                run-external "cargo" "check" "--locked" "--workspace" "--all-targets" "--target" $triple "--jobs" ($jobs | into string)
+            }
             0
         } catch {
             1
@@ -47,9 +58,10 @@ def main [
         # A foreign target tree can reach tens of gigabytes; the shared CI disk
         # runs close to full, so reclaim it between targets unless asked not to.
         if not $keep_artifacts {
-            let tree = $target_root | path join $triple
-            if ($tree | path exists) { rm --recursive --force $tree }
+            if ($target_dir | path exists) { rm --recursive --force $target_dir }
         }
+        let seconds = ((date now) - $started) / 1sec | math round
+        print $"CI-TIMING lane=fast target=($triple) seconds=($seconds) exit=($status)"
         {target: $triple, status: (if $status == 0 { "passed" } else { "failed" })}
     }
     print ($results | table --expand)
