@@ -66,6 +66,11 @@ def main []: nothing -> nothing {
             }
         }
         $env.CARGO_TARGET_DIR = ($cache | path join "targets")
+        # Registry archives and Git checkouts are reusable inputs too. Keep
+        # them inside the same bounded cache to avoid every task fetching the
+        # full workspace dependency graph again.
+        $env.CARGO_HOME = ($cache | path join "cargo-home")
+        mkdir $env.CARGO_HOME
         $env.ZIG_GLOBAL_CACHE_DIR = ($cache | path join "zig")
         $env.ZIG_LOCAL_CACHE_DIR = ($cache | path join "zig")
         ^python3 ($env.FILE_PWD | path join "restore-mtimes.py") ($cache | path join "source-mtimes.json")
