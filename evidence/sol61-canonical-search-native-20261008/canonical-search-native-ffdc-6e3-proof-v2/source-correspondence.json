@@ -1,0 +1,168 @@
+{
+  "production_source_commit": "ffdc7c54b0f69c34a83080ac74b844498ffecb70",
+  "production_tree": "678ccff565436f1843fcb339c64b31487e046088",
+  "cfg_test_successor_commits": [
+    "eb855e6a1a472df42af01fadbcceaed64b400cf7",
+    "6e3dd18344f24e8c0099aa9a8047c0f2ab26ea89"
+  ],
+  "production_delta_in_successors": false,
+  "gates": {
+    "canonical-eb855-ack-01": {
+      "source_before": {
+        "commit": "eb855e6a1a472df42af01fadbcceaed64b400cf7",
+        "tree": "96eb5ae74dc988dcb3981d2a637890c016b0b08a",
+        "clean": true,
+        "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "source_after": {
+        "commit": "eb855e6a1a472df42af01fadbcceaed64b400cf7",
+        "tree": "96eb5ae74dc988dcb3981d2a637890c016b0b08a",
+        "clean": true,
+        "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "exit": 101,
+      "test_results": [
+        "test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 105 filtered out; finished in 2.76s"
+      ],
+      "retirement": "owned-child-kernel-wait",
+      "test_executables": {
+        "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_client-377f5b4396a95f0f": {
+          "sha256": "61ecd1a8df2a357636b096901cdcfaf3f133945046270e5fd343bce4e4809a45",
+          "bytes": 194177264
+        },
+        "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_replication-0c58b5780f310912": {
+          "sha256": "c303008eb6cbe16d31fb8d7b06a544eba10f26b176fc017d57bc2017b3fffb62",
+          "bytes": 32421432
+        },
+        "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_local_service-f546d251e4601c63": {
+          "sha256": "b72201a2e43c70821d7bcad6b990856dda194bb37d94387e61696dd1b3a2b678",
+          "bytes": 713713448
+        }
+      }
+    },
+    "canonical-ffdc-listener-01": {
+      "source_before": {
+        "commit": "ffdc7c54b0f69c34a83080ac74b844498ffecb70",
+        "tree": "678ccff565436f1843fcb339c64b31487e046088",
+        "clean": true,
+        "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "source_after": {
+        "commit": "ffdc7c54b0f69c34a83080ac74b844498ffecb70",
+        "tree": "678ccff565436f1843fcb339c64b31487e046088",
+        "clean": true,
+        "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "exit": 0,
+      "test_results": [
+        "test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 1070 filtered out; finished in 2.86s"
+      ],
+      "retirement": "owned-child-kernel-wait",
+      "test_executables": {
+        "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_local_service-f546d251e4601c63": {
+          "sha256": "02b166789e2525dbbf4366cd71b051a2145308f59037aff72fd8e196f1efd73c",
+          "bytes": 713713816
+        }
+      }
+    },
+    "canonical-ffdc-preparation-01": {
+      "source_before": {
+        "commit": "ffdc7c54b0f69c34a83080ac74b844498ffecb70",
+        "tree": "678ccff565436f1843fcb339c64b31487e046088",
+        "clean": true,
+        "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "source_after": {
+        "commit": "ffdc7c54b0f69c34a83080ac74b844498ffecb70",
+        "tree": "678ccff565436f1843fcb339c64b31487e046088",
+        "clean": true,
+        "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "exit": 0,
+      "test_results": [
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 95 filtered out; finished in 2.52s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1085 filtered out; finished in 8.31s"
+      ],
+      "retirement": "owned-child-kernel-wait",
+      "test_executables": {
+        "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_extension_tantivy-305e0a9b766db988": {
+          "sha256": "66b3a15f4cd27482982997ad77a23d9d457c6e2d7e6ed4d10eedf85c7445cd84",
+          "bytes": 34177240
+        },
+        "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_local_service-f546d251e4601c63": {
+          "sha256": "02b166789e2525dbbf4366cd71b051a2145308f59037aff72fd8e196f1efd73c",
+          "bytes": 713713816
+        }
+      }
+    },
+    "canonical-6e3-ack-01": {
+      "source_before": {
+        "commit": "6e3dd18344f24e8c0099aa9a8047c0f2ab26ea89",
+        "tree": "63a763630e40664033eb84a2fdae60b53e5f0a6e",
+        "clean": true,
+        "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "source_after": {
+        "commit": "6e3dd18344f24e8c0099aa9a8047c0f2ab26ea89",
+        "tree": "63a763630e40664033eb84a2fdae60b53e5f0a6e",
+        "clean": true,
+        "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "exit": 0,
+      "test_results": [
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 105 filtered out; finished in 2.99s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1088 filtered out; finished in 0.01s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 204 filtered out; finished in 0.00s"
+      ],
+      "retirement": "owned-child-kernel-wait",
+      "test_executables": {
+        "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_client-377f5b4396a95f0f": {
+          "sha256": "ae91ff936d42b14f33481df9f850bbaf10c4b983252ae5cc8a549707c86191c3",
+          "bytes": 194178528
+        },
+        "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_replication-0c58b5780f310912": {
+          "sha256": "c303008eb6cbe16d31fb8d7b06a544eba10f26b176fc017d57bc2017b3fffb62",
+          "bytes": 32421432
+        },
+        "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_local_service-f546d251e4601c63": {
+          "sha256": "ca416d7ca54f3b6338f2667e5951cc86b5cee43b4cbcdb446da72ff7a62e7a0c",
+          "bytes": 713713064
+        }
+      }
+    },
+    "canonical-ffdc-ack-01": {
+      "source_before": {
+        "commit": "ffdc7c54b0f69c34a83080ac74b844498ffecb70",
+        "tree": "678ccff565436f1843fcb339c64b31487e046088",
+        "clean": true,
+        "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "source_after": {
+        "commit": "ffdc7c54b0f69c34a83080ac74b844498ffecb70",
+        "tree": "678ccff565436f1843fcb339c64b31487e046088",
+        "clean": true,
+        "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+      },
+      "exit": 101,
+      "test_results": [
+        "test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 105 filtered out; finished in 2.72s"
+      ],
+      "retirement": "owned-child-kernel-wait",
+      "test_executables": {
+        "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_local_service-f546d251e4601c63": {
+          "sha256": "02b166789e2525dbbf4366cd71b051a2145308f59037aff72fd8e196f1efd73c",
+          "bytes": 713713816
+        },
+        "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_replication-0c58b5780f310912": {
+          "sha256": "c303008eb6cbe16d31fb8d7b06a544eba10f26b176fc017d57bc2017b3fffb62",
+          "bytes": 32421432
+        },
+        "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_client-377f5b4396a95f0f": {
+          "sha256": "f9a0773ec449d4ba0e9f8123e40f2a112589a138d0b808b8ae91e729488a5e89",
+          "bytes": 194177280
+        }
+      }
+    }
+  },
+  "prior_failures_retained": true
+}
