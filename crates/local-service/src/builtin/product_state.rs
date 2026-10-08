@@ -13,8 +13,8 @@ use super::forge_gateway::{
 };
 use crate::discovery::{DISCOVERY_FRESHNESS_MILLIS, DiscoveryStore};
 use backend_engine::{
-    ForgeFact, ForgeSearchRecord, ProductTreeNodeId as TreeNodeId, RowId, SurfaceCommand,
-    SurfaceReply, ViewRoot,
+    ForgeFact, ForgeSearchCatalogRevision, ForgeSearchRecord, ProductTreeNodeId as TreeNodeId,
+    RowId, SurfaceCommand, SurfaceReply, ViewRoot,
 };
 use backend_library::{
     AdvisoryPackageDto, CommandMutation, DeclarationRecord, DependencyFacts, DependentSources,
@@ -211,6 +211,33 @@ impl ProductState {
         selected_catalog_snapshot: [u8; 32],
         forge_records: &[ForgeSearchRecord],
     ) -> Result<SurfaceReply, String> {
+        self.execute_with_discovery_and_forge_catalog_snapshot(
+            command,
+            view,
+            catalog,
+            catalog_index,
+            dependency_graph,
+            workspace,
+            discovery,
+            selected_catalog_snapshot,
+            forge_records,
+            None,
+        )
+    }
+
+    pub(super) fn execute_with_discovery_and_forge_catalog_snapshot(
+        &mut self,
+        command: SurfaceCommand,
+        view: &ViewRoot,
+        catalog: &[RegistryPackageRecord],
+        catalog_index: &CatalogLookupIndex,
+        dependency_graph: &IndexedCheckedPackageGraph,
+        workspace: Option<&Path>,
+        discovery: Option<&DiscoveryStore>,
+        selected_catalog_snapshot: [u8; 32],
+        forge_records: &[ForgeSearchRecord],
+        forge_catalog_revision: Option<ForgeSearchCatalogRevision>,
+    ) -> Result<SurfaceReply, String> {
         command.admit().map_err(|error| error.to_string())?;
         match command_spec(command.id()).mutation {
             CommandMutation::Read => {
@@ -224,6 +251,7 @@ impl ProductState {
                     discovery,
                     selected_catalog_snapshot,
                     forge_records,
+                    forge_catalog_revision,
                 )?;
                 if changed {
                     return Err("read command attempted to mutate product state".to_owned());
@@ -248,6 +276,7 @@ impl ProductState {
                     discovery,
                     selected_catalog_snapshot,
                     forge_records,
+                    forge_catalog_revision,
                 )?;
                 reply.admit(reply.id()).map_err(|error| error.to_string())?;
                 if changed {
@@ -270,6 +299,7 @@ impl ProductState {
         discovery: Option<&DiscoveryStore>,
         selected_catalog_snapshot: [u8; 32],
         forge_records: &[ForgeSearchRecord],
+        forge_catalog_revision: Option<ForgeSearchCatalogRevision>,
     ) -> Result<(SurfaceReply, bool), String> {
         let (reply, changed) = match command {
             SurfaceCommand::Advisory {
@@ -320,49 +350,62 @@ impl ProductState {
                 limit,
                 cursor,
             } => {
-                let mut forge_documents = Vec::new();
-                let mut forge_source_pin_documents = Vec::new();
-                for record in forge_records {
-                    forge_documents.extend(ForgeSearchDocument::from_search_record(record)?);
-                    forge_source_pin_documents
-                        .extend(ForgeSourcePinSearchDocument::from_search_record(record)?);
-                }
-                if discovery.is_some()
-                    || !forge_documents.is_empty()
-                    || !forge_source_pin_documents.is_empty()
-                    || self.discovery_search.is_some()
-                {
-                    if self.discovery_search.is_none() {
-                        self.discovery_search = Some(match discovery {
-                            Some(store) => {
-                                DiscoverySearchIndex::open_with_forge_and_source_pins_at(
-                                    store.search_projection_path(),
+                let reused_projection =
+                    match (self.discovery_search.as_ref(), forge_catalog_revision) {
+                        (Some(index), Some(revision)) => index
+                            .revalidate_unchanged_forge_catalog_snapshot(discovery, revision)?,
+                        _ => false,
+                    };
+                if !reused_projection {
+                    let mut forge_documents = Vec::new();
+                    let mut forge_source_pin_documents = Vec::new();
+                    for record in forge_records {
+                        forge_documents.extend(ForgeSearchDocument::from_search_record(record)?);
+                        forge_source_pin_documents
+                            .extend(ForgeSourcePinSearchDocument::from_search_record(record)?);
+                    }
+                    if discovery.is_some()
+                        || !forge_documents.is_empty()
+                        || !forge_source_pin_documents.is_empty()
+                        || self.discovery_search.is_some()
+                    {
+                        if self.discovery_search.is_none() {
+                            self.discovery_search = Some(match discovery {
+                                Some(store) => {
+                                    DiscoverySearchIndex::open_with_forge_and_source_pins_at(
+                                        store.search_projection_path(),
+                                        store,
+                                        &forge_documents,
+                                        &forge_source_pin_documents,
+                                    )?
+                                }
+                                None => DiscoverySearchIndex::open_forge_only_with_source_pins_at(
+                                    self.search_projection_path()?,
+                                    &forge_documents,
+                                    &forge_source_pin_documents,
+                                )?,
+                            });
+                        } else {
+                            let discovery_search =
+                                self.discovery_search.as_mut().ok_or_else(|| {
+                                    "discovery search index was not initialized".to_owned()
+                                })?;
+                            match discovery {
+                                Some(store) => discovery_search.sync_with_forge_and_source_pins(
                                     store,
                                     &forge_documents,
                                     &forge_source_pin_documents,
-                                )?
+                                )?,
+                                None => discovery_search.sync_forge_only_and_source_pins(
+                                    &forge_documents,
+                                    &forge_source_pin_documents,
+                                )?,
                             }
-                            None => DiscoverySearchIndex::open_forge_only_with_source_pins_at(
-                                self.search_projection_path()?,
-                                &forge_documents,
-                                &forge_source_pin_documents,
-                            )?,
-                        });
-                    }
-                    let discovery_search = self
-                        .discovery_search
-                        .as_mut()
-                        .ok_or_else(|| "discovery search index was not initialized".to_owned())?;
-                    match discovery {
-                        Some(store) => discovery_search.sync_with_forge_and_source_pins(
-                            store,
-                            &forge_documents,
-                            &forge_source_pin_documents,
-                        )?,
-                        None => discovery_search.sync_forge_only_and_source_pins(
-                            &forge_documents,
-                            &forge_source_pin_documents,
-                        )?,
+                        }
+                        self.discovery_search
+                            .as_mut()
+                            .ok_or_else(|| "discovery search index was not initialized".to_owned())?
+                            .bind_forge_catalog_revision(forge_catalog_revision);
                     }
                 }
                 self.local_declaration_search.sync(view)?;

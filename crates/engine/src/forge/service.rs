@@ -290,20 +290,36 @@ impl ForgeAcquisitionService {
     /// coordinates in stable identity order. The indexer can rebuild from
     /// these rows without rehydrating or rereading archive objects.
     pub fn search_records(&self) -> Result<Vec<ForgeSearchRecord>, ForgeAcquisitionError> {
+        self.search_catalog_snapshot()
+            .map(|snapshot| snapshot.records)
+    }
+
+    /// Returns the selected search records together with the exact validated
+    /// forge journal tail they represent. The service refreshes under its
+    /// publication fence before capturing either value, so a publication from
+    /// another process advances the revision before callers can reuse a
+    /// projection.
+    pub fn search_catalog_snapshot(
+        &self,
+    ) -> Result<ForgeSearchCatalogSnapshot, ForgeAcquisitionError> {
         self.with_journal_fence(|catalog| {
-            Ok(catalog
-                .values()
-                .filter_map(|event| match event {
-                    ForgeJournalEvent::Published(record) => Some(ForgeSearchRecord {
-                        coordinate: record.coordinate.clone(),
-                        resolution: record.resolution.clone(),
-                        archive: record.archive,
-                        metadata: record.metadata.clone(),
-                        manifests: record.manifests.clone().into_boxed_slice(),
-                    }),
-                    ForgeJournalEvent::Tombstone { .. } => None,
-                })
-                .collect())
+            let (next_sequence, chain) = self.journal.tail_identity().map_err(journal_io_error)?;
+            Ok(ForgeSearchCatalogSnapshot {
+                revision: ForgeSearchCatalogRevision::from_tail_identity(next_sequence, chain),
+                records: catalog
+                    .values()
+                    .filter_map(|event| match event {
+                        ForgeJournalEvent::Published(record) => Some(ForgeSearchRecord {
+                            coordinate: record.coordinate.clone(),
+                            resolution: record.resolution.clone(),
+                            archive: record.archive,
+                            metadata: record.metadata.clone(),
+                            manifests: record.manifests.clone().into_boxed_slice(),
+                        }),
+                        ForgeJournalEvent::Tombstone { .. } => None,
+                    })
+                    .collect(),
+            })
         })
         .map_err(forge_fence_error)?
         .ok_or_else(forge_fence_busy)

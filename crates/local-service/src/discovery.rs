@@ -166,6 +166,7 @@ struct DiscoverySearchChange {
 /// Durable append-only owner for package discovery claims.
 pub(crate) struct DiscoveryStore {
     path: PathBuf,
+    search_owner_identity: Arc<()>,
     sources: BTreeMap<DiscoverySourceIdentity, SourceProgress>,
     journal: File,
     _lease: File,
@@ -1559,6 +1560,7 @@ impl DiscoveryStore {
             .open(&path)?;
         let mut store = Self {
             path,
+            search_owner_identity: Arc::new(()),
             sources: BTreeMap::new(),
             journal,
             _lease: lease,
@@ -1587,6 +1589,13 @@ impl DiscoveryStore {
     /// restart does not silently create a new ephemeral index each time.
     pub(crate) fn search_projection_path(&self) -> PathBuf {
         self.path.with_file_name("catalog-search-v1")
+    }
+
+    /// Process-local identity for this live journal owner. Search projections
+    /// retain a clone so an address-reused or reopened store cannot satisfy an
+    /// in-memory unchanged check by coincidence.
+    pub(crate) fn search_owner_identity(&self) -> &Arc<()> {
+        &self.search_owner_identity
     }
 
     /// Atomically records facts and their cursor transition as one durable

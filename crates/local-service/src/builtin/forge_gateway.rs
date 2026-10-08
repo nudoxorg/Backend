@@ -4,7 +4,8 @@ use crate::process::ForgeConfig;
 use backend_engine::forge::GitCommandTransport;
 use backend_engine::{
     ForgeAcquisitionOutcome, ForgeAcquisitionService, ForgeCoordinate, ForgeProvider,
-    ForgeRejectReason, ForgeSearchRecord, ForgeTransport, ForgeTransportError, HttpForgeTransport,
+    ForgeRejectReason, ForgeSearchCatalogSnapshot, ForgeSearchRecord, ForgeTransport,
+    ForgeTransportError, HttpForgeTransport,
 };
 use backend_library::ForgePackageRecord;
 use std::fmt;
@@ -98,6 +99,14 @@ impl ForgeGateway {
         self.service
             .search_records()
             .map_err(|error| format!("read forge search catalog: {error}"))
+    }
+
+    /// Returns the search records together with the exact journal-tail
+    /// identity that selected them, without creating a transport.
+    pub(super) fn search_catalog_snapshot(&self) -> Result<ForgeSearchCatalogSnapshot, String> {
+        self.service
+            .search_catalog_snapshot()
+            .map_err(|error| format!("read forge search catalog snapshot: {error}"))
     }
 
     fn acquire_with<T: ForgeTransport>(

@@ -6,12 +6,12 @@ use backend_engine::registry::{
 };
 use backend_engine::{
     CommittedViewDelta, DependencyFacts, ForgeAcquisitionResult, ForgeCoordinate, ForgeFact,
-    ForgePackageManifest, ForgeSearchRecord, ProductPackageCoordinate, RowChange, RowId, ViewDelta,
-    ViewRoot, ViewStateRoot,
+    ForgePackageManifest, ForgeSearchCatalogRevision, ForgeSearchRecord, ProductPackageCoordinate,
+    RowChange, RowId, ViewDelta, ViewRoot, ViewStateRoot,
 };
 use backend_extension_tantivy::DurableCacheBudget;
-use backend_platform::OwnedWorkspaceDirectory;
 use backend_library::{Fragment, Row};
+use backend_platform::OwnedWorkspaceDirectory;
 use serde::{Deserialize, Serialize};
 use std::cell::OnceCell;
 use std::cmp::Reverse;
@@ -1812,6 +1812,8 @@ pub(crate) struct DiscoverySearchIndex {
     forge_fingerprint: [u8; 32],
     forge_release_fingerprint: [u8; 32],
     source_pin_fingerprint: [u8; 32],
+    store_owner_identity: Option<Arc<()>>,
+    forge_catalog_revision: Option<ForgeSearchCatalogRevision>,
     forge_documents: BTreeMap<String, ForgeSearchDocument>,
     source_pin_documents: BTreeMap<String, ForgeSourcePinSearchDocument>,
     durable_cache_root: Option<PathBuf>,
@@ -1981,6 +1983,8 @@ impl DiscoverySearchIndex {
             forge_fingerprint: [0; 32],
             forge_release_fingerprint: [0; 32],
             source_pin_fingerprint: [0; 32],
+            store_owner_identity: store.map(|store| Arc::clone(store.search_owner_identity())),
+            forge_catalog_revision: None,
             forge_documents: BTreeMap::new(),
             source_pin_documents: BTreeMap::new(),
             _durable_root_lease: None,
@@ -2356,6 +2360,82 @@ impl DiscoverySearchIndex {
 
     pub(crate) const fn snapshot_root(&self) -> [u8; 32] {
         self.snapshot_root
+    }
+
+    /// Reports whether this already-admitted durable projection still names
+    /// the exact live registry owner revision and forge journal tail supplied
+    /// by the caller. The retained shared lease pins the admitted root for
+    /// this process; a cold open or any changed source identity still takes
+    /// the full byte-verification path in `open_durable`.
+    pub(crate) fn matches_forge_catalog_snapshot(
+        &self,
+        store: Option<&DiscoveryStore>,
+        forge_revision: ForgeSearchCatalogRevision,
+    ) -> bool {
+        let store_matches = match (&self.store_owner_identity, store) {
+            (None, None) => self.store_revision == 0,
+            (Some(expected), Some(store)) => {
+                Arc::ptr_eq(expected, store.search_owner_identity())
+                    && self.store_revision == store.search_revision()
+            }
+            _ => false,
+        };
+        self.durable_cache_root.is_some()
+            && self._durable_root_lease.is_some()
+            && self.forge_catalog_revision == Some(forge_revision)
+            && store_matches
+            && !self.inner.is_dirty()
+            && !self.lineages.inner.is_dirty()
+            && !self.source_pins.is_dirty()
+    }
+
+    /// Reuses the current in-memory Tantivy readers only after checking the
+    /// exact owner identities and revalidating every byte in the pinned
+    /// durable root. This skips source-document reconstruction while keeping
+    /// the durable cache's per-request corruption check intact.
+    pub(crate) fn revalidate_unchanged_forge_catalog_snapshot(
+        &self,
+        store: Option<&DiscoveryStore>,
+        forge_revision: ForgeSearchCatalogRevision,
+    ) -> Result<bool, String> {
+        if !self.matches_forge_catalog_snapshot(store, forge_revision) {
+            return Ok(false);
+        }
+        let Some(cache_root) = self.durable_cache_root.as_deref() else {
+            return Ok(false);
+        };
+        let cache_directory = OwnedWorkspaceDirectory::open(cache_root.to_path_buf())
+            .map_err(|error| format!("open private discovery search cache: {error}"))?;
+        cache_directory
+            .verify_path()
+            .map_err(|error| format!("verify discovery search cache: {error}"))?;
+        let cache_root = cache_directory.path();
+        let _cache_lock = SearchProjectionCacheLock::acquire(cache_root)?;
+        let version_directory = cache_directory
+            .child(SEARCH_PROJECTION_DIRECTORY)
+            .map_err(|error| format!("open private discovery search root: {error}"))?;
+        let version_root = version_directory.path();
+        version_directory
+            .verify_path()
+            .map_err(|error| format!("verify discovery search root: {error}"))?;
+        remove_search_projection_stages(&version_root)?;
+        let selected = version_root.join(hex(&self.snapshot_root));
+        match verify_search_projection(&selected, self.snapshot_root, self.durable_cache_budget) {
+            Ok(true) => {
+                touch_search_projection(&selected)?;
+                prune_search_projections(&version_root, &selected, self.durable_cache_budget)?;
+                Ok(true)
+            }
+            Ok(false) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(crate) fn bind_forge_catalog_revision(
+        &mut self,
+        revision: Option<ForgeSearchCatalogRevision>,
+    ) {
+        self.forge_catalog_revision = revision;
     }
 
     fn refresh_revision(&mut self) {
@@ -6224,6 +6304,8 @@ mod tests {
             forge_fingerprint: [0; 32],
             forge_release_fingerprint: [0; 32],
             source_pin_fingerprint: [0; 32],
+            store_owner_identity: None,
+            forge_catalog_revision: None,
             forge_documents: BTreeMap::new(),
             source_pin_documents: BTreeMap::new(),
             durable_cache_root: None,
@@ -7644,6 +7726,8 @@ mod tests {
             forge_fingerprint: [0; 32],
             forge_release_fingerprint: [0; 32],
             source_pin_fingerprint: [0; 32],
+            store_owner_identity: None,
+            forge_catalog_revision: None,
             forge_documents: BTreeMap::new(),
             source_pin_documents: BTreeMap::new(),
             durable_cache_root: None,
