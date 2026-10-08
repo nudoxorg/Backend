@@ -311,7 +311,8 @@ def validate(proof, source, target, runner, receipt_path):
                 and event.get('manifest_path') == workspace+'/'+package+'/Cargo.toml'
                 and profile.get('opt_level') == '3' and profile.get('debuginfo') == 0
                 and profile.get('debug_assertions') is False
-                and profile.get('overflow_checks') is False and profile.get('test') is False,
+                and profile.get('overflow_checks') is False and profile.get('test') is False
+                and event.get('fresh') is False,
                 'native-host artifact is not the exact optimized package/bin')
         path=Path(event['executable'])
         require(path == Path(workspace)/'.local/target/release'/name,

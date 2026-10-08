@@ -99,13 +99,14 @@ class ManagedNativeTests(unittest.TestCase):
                 with self.assertRaises(ValueError):self.validate(data)
 
     def test_rejects_debug_test_missing_duplicate_wrong_source_or_oversize_artifacts(self):
-        for change in ['debug','test','missing','duplicate','source','size']:
+        for change in ['debug','test','missing','duplicate','source','size','stale-rebound']:
             with self.subTest(change=change),tempfile.TemporaryDirectory() as d:
                 data=self.fixture(Path(d));proof=data[2];event=proof['cargo_artifacts'][native.PACKAGES[0]]
                 if change=='debug':event['profile']['opt_level']='0'
                 if change=='test':event['profile']['test']=True
                 if change=='source':event['target']['src_path']='/other/main.rs'
                 if change=='size':proof['outputs'][0]['size_bytes']=native.MAX_IMAGE+1
+                if change=='stale-rebound':event['fresh']=True
                 events=list(proof['cargo_artifacts'].values())
                 if change=='missing':events.pop()
                 if change=='duplicate':events.append(events[0])
@@ -244,7 +245,7 @@ class ManagedNativeTests(unittest.TestCase):
                 events.append({'reason':'compiler-artifact','manifest_path':str(source/native.PACKAGE_ROOTS[name]/'Cargo.toml'),
                     'target':{'name':name,'kind':['bin'],'src_path':str(source/native.PACKAGE_ROOTS[name]/'src/main.rs')},
                     'profile':{'opt_level':'3','debuginfo':0,'debug_assertions':False,'overflow_checks':False,'test':False},
-                    'fresh':name=='backend-cli','executable':str(path)})
+                    'fresh':change=='stale-rebound' and name=='backend-cli','executable':str(path)})
             if change=='missing':events.pop()
             raw=b''.join(native.canonical(event) for event in events);log_path.write_bytes(raw)
             provenance=source/'.local/target/.nudox-provenance';provenance.mkdir()
@@ -275,12 +276,12 @@ class ManagedNativeTests(unittest.TestCase):
             receipt_path=args.output_dir/'application-build-receipt.json';receipt=json.loads(receipt_path.read_text())
             _,images=bundle.validate_app_build(receipt_path,args.output_dir/'artifacts',receipt['source'],args.target,args.expected_runner_sha256)
             self.assertEqual(set(images),set(native.PACKAGES))
-            self.assertTrue(receipt['cargo_provenance']['cargo_artifacts']['backend-cli']['fresh'])
+            self.assertFalse(receipt['cargo_provenance']['cargo_artifacts']['backend-cli']['fresh'])
             for lock in locks:
                 with lock.open('r+') as handle:fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
 
     def test_producer_failure_keeps_raw_evidence_without_success_receipt_and_releases_locks(self):
-        for change in ['exit','source','tool','missing','lock']:
+        for change in ['exit','source','tool','missing','lock','stale-rebound']:
             with self.subTest(change=change),tempfile.TemporaryDirectory() as d:
                 args,locks,observed,fake_stream=self.producer_fixture(Path(d),change);api=dict(vars(builder));api['_stream_direct_cargo']=fake_stream
                 with self.assertRaises((ValueError,builder.BuildError)):native.build(args,api)
