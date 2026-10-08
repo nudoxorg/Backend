@@ -1583,7 +1583,6 @@ mod tests {
             kind: ItemKind::Module,
             visibility: Visibility::Private,
             authority,
-            anonymous_callable_anchor: None,
             parent: None,
             semantic_type: None,
             members: &[],
