@@ -96,15 +96,39 @@ def load_json(path: Path, label: str) -> dict:
     return parse_json_bytes(read_regular_bytes(path, 16 * 1024 * 1024, label), label)
 
 
-def copy_admitted_file(source: Path, target: Path, expected_digest: str) -> None:
+def admit_file_digest(source: Path, maximum_bytes: int) -> tuple[int, str]:
+    descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as incoming:
+        before = os.fstat(incoming.fileno())
+        if not stat.S_ISREG(before.st_mode) or before.st_size > maximum_bytes:
+            fail("admitted file exceeds its regular-file byte bound")
+        digest = hashlib.sha256()
+        total = 0
+        while total <= before.st_size:
+            chunk = incoming.read(min(1024 * 1024, before.st_size - total + 1))
+            if not chunk:
+                break
+            total += len(chunk)
+            digest.update(chunk)
+        after = os.fstat(incoming.fileno())
+        current = source.lstat()
+        identity = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+        if total != before.st_size or identity(before) != identity(after) or identity(current) != identity(after):
+            fail("admitted file changed during bounded hashing")
+        return total, digest.hexdigest()
+
+
+def copy_admitted_file(source: Path, target: Path, expected_digest: str, expected_bytes: int, maximum_bytes: int) -> None:
     """Copy from one regular FD and bind pre-relocation private-stage bytes to admission."""
     created = False
     try:
         descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(descriptor, "rb") as incoming:
             before = os.fstat(incoming.fileno())
-            if not stat.S_ISREG(before.st_mode):
-                fail("admitted copy source is not a regular file")
+            if not isinstance(expected_bytes, int) or isinstance(expected_bytes, bool) or expected_bytes < 0 or expected_bytes > maximum_bytes:
+                fail("admitted copy has an invalid original length or byte bound")
+            if not stat.S_ISREG(before.st_mode) or before.st_size != expected_bytes or before.st_size > maximum_bytes:
+                fail("admitted copy source differs from the original admitted length or byte bound")
             digest = hashlib.sha256()
             with target.open("xb") as outgoing:
                 created = True
@@ -247,7 +271,7 @@ def public_build_manifest(build: dict) -> dict:
 
 
 
-def admit_typescript_sdk(directory: Path, receipt_path: Path, source: dict) -> tuple[dict, dict[str, Path], str]:
+def admit_typescript_sdk(directory: Path, receipt_path: Path, source: dict) -> tuple[dict, dict[str, Path], str, dict[str, int]]:
     """Admit a complete source-bound SDK payload before ELF relocation; no project setup runs."""
     directory = directory.resolve(strict=True)
     receipt_bytes = read_regular_bytes(receipt_path, 16 * 1024 * 1024, "TypeScript SDK receipt")
@@ -268,6 +292,7 @@ def admit_typescript_sdk(directory: Path, receipt_path: Path, source: dict) -> t
             fail("TypeScript SDK receipt has an unsafe file path")
         expected_directories.update(parent.as_posix() for parent in path.parents if parent.parts)
     observed: dict[str, Path] = {}
+    admitted_sizes: dict[str, int] = {}
     total = 0
     pending = [directory]
     while pending:
@@ -280,12 +305,16 @@ def admit_typescript_sdk(directory: Path, receipt_path: Path, source: dict) -> t
                     fail("TypeScript SDK contains an unreceipted directory")
                 pending.append(path)
                 continue
-            total += path.stat().st_size
+            estimated_length = path.stat().st_size
+            total += estimated_length
             if relative not in records or total > 512 * 1024 * 1024 or len(observed) >= 512:
                 fail("TypeScript SDK payload exceeds or differs from its bounded receipt")
-            if records[relative] != sha256(path):
+            admitted_length, digest = admit_file_digest(path, 512 * 1024 * 1024 - (total - estimated_length))
+            total += admitted_length - estimated_length
+            if records[relative] != digest:
                 fail(f"TypeScript SDK payload differs from its receipt: {relative}")
             observed[relative] = path
+            admitted_sizes[relative] = admitted_length
     if set(observed) != set(records):
         fail("TypeScript SDK payload has missing or unreceipted files")
     required = {"node/bin/node", "node/LICENSE", "node_modules/typescript/package.json",
@@ -301,7 +330,7 @@ def admit_typescript_sdk(directory: Path, receipt_path: Path, source: dict) -> t
         fail("TypeScript Compiler API package differs from its SDK identity")
     if tools["node"].get("sha256") != records["node/bin/node"] or not os.access(observed["node/bin/node"], os.X_OK):
         fail("TypeScript SDK Node is not the receipted executable")
-    return receipt, observed, hashlib.sha256(receipt_bytes).hexdigest()
+    return receipt, observed, hashlib.sha256(receipt_bytes).hexdigest(), admitted_sizes
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -324,7 +353,7 @@ def main() -> int:
     release_tag = args.release_tag or f"checkpoint-{dt.datetime.now(dt.timezone.utc):%Y%m%d}-{revision[:10]}-linux-x64"
     if not TAG_RE.fullmatch(release_tag) or not release_tag.endswith("-" + revision[:10] + "-linux-x64"):
         fail("release tag must be checkpoint-YYYYMMDD-<source-10>-linux-x64 for the receipted source")
-    sdk_receipt, sdk_sources, sdk_receipt_digest = admit_typescript_sdk(args.typescript_sdk_directory, args.typescript_sdk_receipt, build["source"])
+    sdk_receipt, sdk_sources, sdk_receipt_digest, sdk_sizes = admit_typescript_sdk(args.typescript_sdk_directory, args.typescript_sdk_receipt, build["source"])
     patchelf = require_tool(args.patchelf, "patchelf")
     readelf = require_tool(args.readelf, "readelf")
     ldd = require_tool(args.ldd, "ldd")
@@ -338,6 +367,7 @@ def main() -> int:
 
     sources: dict[str, Path] = {}
     admitted_digests: dict[str, str] = {}
+    admitted_lengths: dict[str, int] = {}
     artifact_records = build.get("executables")
     if not isinstance(artifact_records, dict):
         fail("build manifest omits executable records")
@@ -346,10 +376,15 @@ def main() -> int:
         if not isinstance(record, dict):
             fail(f"build manifest omits {name}")
         source_binary = Path(record.get("path", ""))
-        if not source_binary.is_absolute() or source_binary.is_symlink() or not source_binary.is_file() or sha256(source_binary) != record.get("sha256"):
+        expected_bytes = record.get("bytes")
+        if not isinstance(expected_bytes, int) or isinstance(expected_bytes, bool) or expected_bytes <= 0 or not source_binary.is_absolute() or source_binary.is_symlink():
+            fail(f"{name} has an invalid admitted build length or source path")
+        actual_bytes, actual_digest = admit_file_digest(source_binary, expected_bytes)
+        if actual_bytes != expected_bytes or actual_digest != record.get("sha256"):
             fail(f"{name} differs from the successful build receipt")
         sources[name] = source_binary.resolve(strict=True)
         admitted_digests[name] = record["sha256"]
+        admitted_lengths[name] = record["bytes"]
 
     sdk_root = root / "share/nudox/typescript"
     for relative, sdk_source in sdk_sources.items():
@@ -357,10 +392,11 @@ def main() -> int:
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         if relative == "node/bin/node":
             continue  # Copied once by the shared ELF relocation pass below.
-        copy_admitted_file(sdk_source, target, sdk_receipt["files"][relative])
+        copy_admitted_file(sdk_source, target, sdk_receipt["files"][relative], sdk_sizes[relative], 512 * 1024 * 1024)
         target.chmod(0o755 if relative == "node/bin/node" else 0o644)
     sources["typescript-node"] = sdk_sources["node/bin/node"]
     admitted_digests["typescript-node"] = sdk_receipt["files"]["node/bin/node"]
+    admitted_lengths["typescript-node"] = sdk_sizes["node/bin/node"]
 
     glibc_family = set(GLIBC_SONAMES)
     libraries: dict[str, dict] = {}
@@ -369,7 +405,7 @@ def main() -> int:
         packaged_relative = "share/nudox/typescript/node/bin/node" if name == "typescript-node" else f"bin/{name}"
         packaged = root / packaged_relative
         runtime_search = "$ORIGIN/../../../../../lib" if name == "typescript-node" else "$ORIGIN/../lib"
-        copy_admitted_file(source_binary, packaged, admitted_digests[name])
+        copy_admitted_file(source_binary, packaged, admitted_digests[name], admitted_lengths[name], admitted_lengths[name])
         original = elf_info(readelf, packaged)
         if not original["interpreter"]:
             fail(f"{name} has no ELF interpreter")
@@ -385,11 +421,11 @@ def main() -> int:
             if not dependency.is_absolute() or not dependency.is_file():
                 fail(f"could not resolve non-glibc dependency {soname}: {raw_path}")
             dependency = dependency.resolve(strict=True)
-            digest = sha256(dependency)
+            library_bytes, digest = admit_file_digest(dependency, 96 * 1024 * 1024)
             previous = libraries.get(soname)
             if previous and previous["source_sha256"] != digest:
                 fail(f"different dependencies use the same ELF soname {soname}")
-            libraries.setdefault(soname, {"source_path": dependency, "source_sha256": digest})
+            libraries.setdefault(soname, {"source_path": dependency, "source_sha256": digest, "source_bytes": library_bytes})
         run([str(patchelf), "--set-interpreter", INTERPRETER, "--set-rpath", runtime_search, str(packaged)])
         patched = elf_info(readelf, packaged)
         if patched["interpreter"] != INTERPRETER or patched["needed"] != original["needed"]:
@@ -400,7 +436,7 @@ def main() -> int:
 
     for soname, record in libraries.items():
         packaged = root / "lib" / soname
-        copy_admitted_file(record["source_path"], packaged, record["source_sha256"])
+        copy_admitted_file(record["source_path"], packaged, record["source_sha256"], record["source_bytes"], 96 * 1024 * 1024)
         packaged.chmod(0o755)
         run([str(patchelf), "--set-rpath", "$ORIGIN", str(packaged)])
         if run([str(patchelf), "--print-rpath", str(packaged)]) != "$ORIGIN":

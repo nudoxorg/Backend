@@ -77,7 +77,7 @@ class SDKReceiptAdmissionTests(unittest.TestCase):
             root = Path(directory) / "payload"
             root.mkdir()
             receipt_path, receipt, source = self.fixture(root)
-            admitted, files, digest = package.admit_typescript_sdk(root, receipt_path, source)
+            admitted, files, digest, sizes = package.admit_typescript_sdk(root, receipt_path, source)
             self.assertEqual(digest, package.sha256(receipt_path))
             self.assertEqual(admitted, receipt)
             self.assertEqual(set(files), set(receipt["files"]))
@@ -113,6 +113,19 @@ class SDKReceiptAdmissionTests(unittest.TestCase):
 
 
 class CopiedAdmissionTests(unittest.TestCase):
+    def test_oversized_sparse_replacement_refuses_before_creating_stage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source"
+            target = Path(directory) / "stage"
+            original = b"original admitted bytes"
+            source.write_bytes(original)
+            digest = hashlib.sha256(original).hexdigest()
+            with source.open("r+b") as file:
+                file.truncate(8 * 1024 * 1024 * 1024)
+            with self.assertRaisesRegex(ValueError, "original admitted length"):
+                package.copy_admitted_file(source, target, digest, len(original), 512 * 1024 * 1024)
+            self.assertFalse(target.exists())
+
     def test_sdk_builder_refuses_output_alias_back_into_the_source_package(self):
         import build_typescript_sdk as builder
         from unittest.mock import patch
@@ -140,13 +153,13 @@ class CopiedAdmissionTests(unittest.TestCase):
             root = Path(directory) / "payload"
             root.mkdir()
             receipt_path, receipt, source = SDKReceiptAdmissionTests().fixture(root)
-            _, paths, admitted_receipt_digest = package.admit_typescript_sdk(root, receipt_path, source)
+            _, paths, admitted_receipt_digest, sizes = package.admit_typescript_sdk(root, receipt_path, source)
             for relative in ("node_modules/typescript/lib/typescript.js", "node/bin/node"):
                 member = paths[relative]
-                member.write_bytes(b"changed after admission; metadata version remains the same")
+                member.write_bytes(b"x" * sizes[relative])
                 target = root.parent / ("staged-" + member.name)
                 with self.assertRaisesRegex(ValueError, "original admitted digest"):
-                    package.copy_admitted_file(member, target, receipt["files"][relative])
+                    package.copy_admitted_file(member, target, receipt["files"][relative], sizes[relative], 512 * 1024 * 1024)
                 self.assertFalse(target.exists())
             receipt_path.write_bytes(b"changed receipt after parsed admission")
             self.assertNotEqual(admitted_receipt_digest, package.sha256(receipt_path))
@@ -158,12 +171,12 @@ class CopiedAdmissionTests(unittest.TestCase):
             original = b"exact admitted artifact bytes; no ELF execution"
             source.write_bytes(original)
             digest = hashlib.sha256(original).hexdigest()
-            package.copy_admitted_file(source, target, digest)
+            package.copy_admitted_file(source, target, digest, len(original), len(original))
             self.assertEqual(target.read_bytes(), original)
             target.unlink()
-            source.write_bytes(b"replacement after successful build record admission")
+            source.write_bytes(b"x" * len(original))
             with self.assertRaisesRegex(ValueError, "original admitted digest"):
-                package.copy_admitted_file(source, target, digest)
+                package.copy_admitted_file(source, target, digest, len(original), len(original))
             self.assertFalse(target.exists())
 
     def test_docs_descendant_keeps_exact_build_policy_but_policy_descendant_refuses(self):
