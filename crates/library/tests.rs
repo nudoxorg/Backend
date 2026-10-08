@@ -2,6 +2,8 @@
 
 use super::*;
 
+mod arrangement_owned_run;
+
 fn source() -> (ViewStateRoot, SemanticObject) {
     (view_state_root(&[]), object_version(b"source"))
 }

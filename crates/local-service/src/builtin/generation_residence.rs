@@ -76,7 +76,7 @@ pub(crate) trait SelectedSemanticImageLoader: Send + Sync {
 /// after eviction and are outside the cache's eviction control.
 pub(crate) struct SemanticGenerationResidence {
     budget: ResidenceBudget,
-    images: HashMap<GenerationKey, ResidentGeneration>,
+    images: Arc<HashMap<GenerationKey, ResidentGeneration>>,
     access_epoch: u64,
     resident_bytes: usize,
     resident_images: usize,
@@ -114,6 +114,7 @@ struct ResidentImageWeight {
     images: usize,
 }
 
+#[derive(Clone)]
 struct ResidentGeneration {
     images: Arc<[SemanticImageSnapshot]>,
     weight: ResidentImageWeight,
@@ -162,7 +163,7 @@ impl SemanticGenerationResidence {
             .min(MAX_RESIDENT_GENERATION_IMAGES);
         Self {
             budget,
-            images: HashMap::new(),
+            images: Arc::new(HashMap::new()),
             access_epoch: 0,
             resident_bytes: 0,
             resident_images: 0,
@@ -178,13 +179,24 @@ impl SemanticGenerationResidence {
         self.selected_loader = Some(loader);
     }
 
-    /// A preparation worker shares only the typed loader capability. Its
-    /// bounded cache remains exclusive, so publication never borrows a worker's
-    /// mutable residence and captured image reads do not hold the control loop.
+    /// Captures the already admitted immutable image owners in constant time.
+    /// The same bounds charge every retained entry in each residence. The
+    /// first mutation on either side copies up to 4096 entries of map metadata
+    /// and image Arcs; recency and eviction then stay independent without
+    /// copying image bytes or their cached proofs.
     pub(crate) fn for_preparation(&self) -> Self {
-        let mut residence = Self::with_budget(self.budget);
-        residence.selected_loader = self.selected_loader.clone();
-        residence
+        Self {
+            budget: self.budget,
+            images: Arc::clone(&self.images),
+            access_epoch: self.access_epoch,
+            resident_bytes: self.resident_bytes,
+            resident_images: self.resident_images,
+            high_water_bytes: self.resident_bytes,
+            uncached_oversized_generations: 0,
+            owner_calls: 0,
+            hits: 0,
+            selected_loader: self.selected_loader.clone(),
+        }
     }
 
     pub(crate) fn has_selected_loader(&self) -> bool {
@@ -265,7 +277,7 @@ impl SemanticGenerationResidence {
 
     fn touch(&mut self, key: GenerationKey) {
         let epoch = self.next_access_epoch();
-        if let Some(entry) = self.images.get_mut(&key) {
+        if let Some(entry) = Arc::make_mut(&mut self.images).get_mut(&key) {
             entry.last_access = epoch;
         }
     }
@@ -281,7 +293,7 @@ impl SemanticGenerationResidence {
                 .collect::<Vec<_>>();
             by_age.sort_unstable();
             for (rank, (_, key)) in by_age.into_iter().enumerate() {
-                if let Some(entry) = self.images.get_mut(&key) {
+                if let Some(entry) = Arc::make_mut(&mut self.images).get_mut(&key) {
                     entry.last_access = u64::try_from(rank + 1).unwrap_or(u64::MAX);
                 }
             }
@@ -333,7 +345,7 @@ impl SemanticGenerationResidence {
             let Some(oldest) = oldest else {
                 return ResidentAdmission::WeightOverflow;
             };
-            if let Some(evicted) = self.images.remove(&oldest) {
+            if let Some(evicted) = Arc::make_mut(&mut self.images).remove(&oldest) {
                 self.resident_bytes -= evicted.weight.bytes;
                 self.resident_images -= evicted.weight.images;
             }
@@ -342,7 +354,7 @@ impl SemanticGenerationResidence {
         self.resident_images += weight.images;
         self.high_water_bytes = self.high_water_bytes.max(self.resident_bytes);
         let last_access = self.next_access_epoch();
-        self.images.insert(
+        Arc::make_mut(&mut self.images).insert(
             key,
             ResidentGeneration {
                 images,
@@ -1223,6 +1235,184 @@ mod tests {
         assert_eq!(residence.hits(), 1);
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(second[0].as_ref(), b"alpha");
+    }
+
+    #[test]
+    fn preparation_capture_keeps_bounded_images_and_independent_eviction() {
+        let mut budget = super::ResidenceBudget::default();
+        budget.max_generations = 1;
+        budget.max_bytes = 12;
+        budget.max_generation_bytes = 12;
+        budget.max_images = 1;
+        budget.max_generation_images = 1;
+        let mut owner = SemanticGenerationResidence::with_budget(budget);
+        let alpha = GenerationKey::from_parts([1; 32], [2; 32]);
+        let beta = GenerationKey::from_parts([3; 32], [4; 32]);
+        let original = owner
+            .recall(alpha, || Ok::<_, &str>(images(b"alpha")))
+            .expect("owner activation");
+        let mut preparation = owner.for_preparation();
+        assert!(Arc::ptr_eq(&owner.images, &preparation.images));
+        assert_eq!(preparation.resident_bytes, owner.resident_bytes);
+        assert_eq!(preparation.resident_images, owner.resident_images);
+        assert_eq!(preparation.high_water_bytes, preparation.resident_bytes);
+        assert_eq!(preparation.owner_calls(), 0);
+
+        owner
+            .recall(beta, || Ok::<_, &str>(images(b"beta")))
+            .expect("owner advances and evicts alpha");
+        assert!(!Arc::ptr_eq(&owner.images, &preparation.images));
+        assert!(!owner.images.contains_key(&alpha));
+        let captured = preparation
+            .recall(alpha, || {
+                Err::<Box<[SemanticImageSnapshot]>, _>("must not activate")
+            })
+            .expect("captured generation retains its immutable owner");
+        assert!(Arc::ptr_eq(&original, &captured));
+        assert_eq!(preparation.owner_calls(), 0);
+
+        let failed = preparation.recall(beta, || {
+            Err::<Box<[SemanticImageSnapshot]>, _>("unavailable replacement")
+        });
+        assert_eq!(
+            failed.expect_err("failure stays typed"),
+            "unavailable replacement"
+        );
+        assert!(preparation.images.contains_key(&alpha));
+        assert!(!preparation.images.contains_key(&beta));
+        preparation
+            .recall(beta, || Ok::<_, &str>(images(b"replacement")))
+            .expect("preparation can independently evict");
+        assert!(!preparation.images.contains_key(&alpha));
+        assert_eq!(preparation.images.len(), 1);
+        assert_eq!(preparation.resident_bytes, b"replacement".len());
+        assert_eq!(preparation.resident_images, 1);
+        assert!(preparation.high_water_bytes <= budget.max_bytes);
+        let retained = owner
+            .recall(beta, || {
+                Err::<Box<[SemanticImageSnapshot]>, _>("must not activate")
+            })
+            .expect("worker eviction did not change the owner");
+        assert_eq!(retained[0].as_ref(), b"beta");
+        assert_eq!(owner.resident_bytes, b"beta".len());
+    }
+
+    #[test]
+    fn preparation_reuses_real_selected_publication_bytes_and_structural_proofs() {
+        if !run_with_explicit_clang_fixture() {
+            return;
+        }
+        let fixture = super::open_generation_fixture().expect("real compiler fixture");
+        let staged = fixture
+            .stage_selected_generation(false)
+            .expect("stage native images");
+        let workspace = fixture.root.join("preparation-workspace");
+        let profile = super::super::profile_descriptor(super::super::BuiltinProfile::Product)
+            .expect("product profile");
+        let dispatcher = super::super::builtin_dispatcher(Some([0x79; 32]), profile, 1)
+            .expect("product dispatcher");
+        let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
+            &workspace,
+            super::super::BuiltinModel,
+            super::super::genesis().expect("checked genesis"),
+            dispatcher,
+            backend_engine::DaemonConfig::default(),
+            super::super::product_relation_registry().expect("product relation registry"),
+        )
+        .expect("open product workspace");
+        let mut authority = super::super::semantic_authority::SemanticAuthority::open(&workspace)
+            .expect("open real CAS authority");
+        let claim = admit_staged_candidate(&mut authority, fixture.key(), &staged, 2);
+        let intent = marker_intent(
+            fixture.key(),
+            claim,
+            &[
+                ("src/alpha.c", "int alpha(void) { return 1; }\n"),
+                ("src/beta.c", "int beta(void) { return 2; }\n"),
+            ],
+            &[],
+        );
+        authority
+            .commit_product_selection_changes(
+                vec![(fixture.key().clone(), claim)],
+                Vec::new(),
+                || super::super::commands::commit_builtin_intent(&mut daemon, 1, &intent),
+            )
+            .expect("commit the exact selected generation");
+        let mut owner = SemanticGenerationResidence::default();
+        authority.install_image_loader(&mut owner);
+        backend_semantic::ir::reset_semantic_image_validations();
+        let activated = super::super::activate_semantic_publication(
+            fixture.client().expect("compiler client"),
+            fixture.key(),
+            claim,
+            &mut owner,
+            &mut super::super::view_build::ImageRowResidence::default(),
+        )
+        .expect("first activation admits real selected CAS bytes and product identity");
+        assert_eq!(activated.images().len(), 2);
+        assert_eq!(owner.owner_calls(), 1);
+        assert_eq!(backend_semantic::ir::semantic_image_validations(), 2);
+
+        // The worker receives the exact proof owners, not independently copied
+        // snapshots. Even with a fresh row residence, structural validation is
+        // already complete and the selected CAS loader must not run again.
+        let mut preparation = owner.for_preparation();
+        backend_semantic::ir::reset_semantic_image_validations();
+        let prepared = super::super::activate_semantic_publication(
+            fixture.client().expect("compiler client"),
+            fixture.key(),
+            claim,
+            &mut preparation,
+            &mut super::super::view_build::ImageRowResidence::default(),
+        )
+        .expect("prepare admitted publication");
+        assert!(Arc::ptr_eq(activated.image_set(), prepared.image_set()));
+        assert_eq!(preparation.owner_calls(), 0);
+        assert_eq!(preparation.hits(), 1);
+        assert_eq!(backend_semantic::ir::semantic_image_validations(), 0);
+        for image in prepared.images() {
+            assert_eq!(
+                image.content_digest(),
+                *blake3::hash(image.as_ref()).as_bytes()
+            );
+        }
+
+        // Package, coordinate and profile changes are not authorized by these
+        // cached images. A failed selected-key lookup remains a miss on retry;
+        // it cannot poison the original key or become empty successful coverage.
+        let foreign_package = ProductSemanticPublicationKey::new(
+            backend_engine::PackageReference::parse("pkg:generic/other@1.0.0".to_owned())
+                .expect("foreign product package"),
+            fixture.key().coordinate().clone(),
+            fixture.key().profile(),
+        )
+        .expect("foreign package key");
+        let foreign_coordinate = ProductSemanticPublicationKey::new(
+            fixture.key().package().clone(),
+            backend_library::interface::PackageUrl::try_from("pkg:generic/sample@2.0.0".to_owned())
+                .expect("foreign compiler coordinate"),
+            fixture.key().profile(),
+        )
+        .expect("foreign coordinate key");
+        for _ in 0..2 {
+            for foreign in [&fixture.cxx_key, &foreign_package, &foreign_coordinate] {
+                assert!(preparation.load_selected(foreign, claim).is_err());
+            }
+            assert!(
+                preparation
+                    .load_selected(fixture.key(), fixture.replacement)
+                    .is_err()
+            );
+        }
+        assert_eq!(preparation.owner_calls(), 8);
+        assert_eq!(preparation.images.len(), 1);
+        let again = preparation
+            .load_selected(fixture.key(), claim)
+            .expect("failed foreign claims did not change admitted selection");
+        assert!(Arc::ptr_eq(activated.image_set(), &again));
+        assert_eq!(owner.owner_calls(), 1);
+        assert_eq!(owner.hits(), 0);
     }
 
     #[test]

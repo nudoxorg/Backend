@@ -237,6 +237,266 @@ fn rows_and_evidence_that_do_not_pair_are_left_out_and_said_not_fatal() {
 }
 
 #[test]
+fn borrowed_selection_preserves_large_documents_and_source_origins_across_pages() {
+    const SYMBOLS: usize = 300;
+    let (workspace, base) = selected_view();
+    let package = backend_engine::package_key("pkg");
+    let mut rows = vec![Row::new(RowId::Package(package), base.basis(), "pkg")];
+    for at in 0..SYMBOLS {
+        let label = format!("borrowed_{at:03}");
+        let mut row = Row::in_package(
+            RowId::Symbol(backend_engine::symbol_key(&label)),
+            base.basis(),
+            package,
+            &label,
+        )
+        .with_kind(backend_engine::DeclarationKind::Function)
+        .with_signature(format!("fn {label}()"))
+        .with_document(vec![Fragment::Text(format!(
+            "documentation for {label}: {}",
+            "large naïve payload ".repeat(400)
+        ))]);
+        row.source = match at % 5 {
+            0 => backend_library::SourceAvailability::Captured(
+                backend_library::SourceLocation::new(
+                    "src/app.rs",
+                    u32::try_from(at + 1).expect("bounded declaration line"),
+                )
+                .expect("captured declaration site"),
+            ),
+            1 => backend_library::SourceAvailability::NotHydrated,
+            2 => backend_library::SourceAvailability::stale_file("src/app.rs")
+                .expect("stale declaration site"),
+            3 => backend_library::SourceAvailability::NotCaptured,
+            _ => backend_library::SourceAvailability::Unconfigured,
+        };
+        rows.push(row);
+    }
+    let view = backend_engine::ViewRoot::new_checked(
+        base.recipe(),
+        base.basis(),
+        base.frontier(),
+        rows,
+        vec![ViewCoverage::Complete],
+        base.capability().expect("capability"),
+    )
+    .expect("large-document selected view");
+    // The existing public snapshot reader is the independent identity/payload
+    // oracle. Its first-page lookahead must not lose or duplicate a boundary row.
+    let first = view
+        .page(backend_engine::ViewPageCursor::first(&view), 256)
+        .expect("first snapshot page");
+    let second = view
+        .page(first.next().expect("more than one page"), 256)
+        .expect("second snapshot page");
+    assert_eq!((first.rows().len(), second.rows().len()), (256, 45));
+    assert!(second.next().is_none());
+    let snapshot = first
+        .rows()
+        .iter()
+        .chain(second.rows())
+        .map(|row| (row.id, row))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(snapshot.len(), SYMBOLS + 1);
+    assert!(
+        snapshot
+            .values()
+            .filter(|row| row.signature.is_some())
+            .all(|row| { matches!(&row.document[0], Fragment::Text(text) if text.len() > 8_000) })
+    );
+
+    let missing = RowId::Symbol(backend_engine::symbol_key("borrowed_017"));
+    let stray = RowId::Symbol(backend_engine::symbol_key("borrowed_stray"));
+    let profile = backend_semantic::vocabulary::LanguageProfile::Rust(
+        backend_semantic::vocabulary::RustEdition::Rust2021,
+    );
+    let facts = snapshot
+        .values()
+        .map(|row| {
+            let id = if row.id == missing { stray } else { row.id };
+            let evidence = if row.id == RowId::Package(package) {
+                backend_extension_trustfall::SemanticQueryEvidence::Package(
+                    backend_extension_trustfall::PackageScopeEvidence::new(package),
+                )
+            } else {
+                backend_extension_trustfall::SemanticQueryEvidence::StructuralFallback(
+                    backend_extension_trustfall::StructuralFallbackEvidence::new(
+                        package, profile, [7; 32], [8; 32],
+                    ),
+                )
+            };
+            backend_extension_trustfall::SemanticQueryFact::new(
+                evidence,
+                backend_extension_trustfall::SemanticQueryPresentation {
+                    id: id.stable_key(),
+                    kind: if row.signature.is_some() {
+                        "function"
+                    } else {
+                        "project"
+                    }
+                    .to_owned(),
+                    coordinate: row.label.clone(),
+                    name: row.label.clone(),
+                    signature: row.signature.clone(),
+                    documentation: row.document.first().map_or_else(String::new, |fragment| {
+                        match fragment {
+                            Fragment::Text(text) => text.clone(),
+                            _ => panic!("fixture has text documentation"),
+                        }
+                    }),
+                    score: None,
+                    project: (row.id != RowId::Package(package))
+                        .then(|| RowId::Package(package).stable_key()),
+                    parent: None,
+                    related: Box::new([]),
+                },
+            )
+        })
+        .collect();
+    let evidence = backend_extension_trustfall::SemanticQueryCorpus::admit(workspace, facts)
+        .expect("admitted paired and unpaired facts");
+    let digest = evidence.evidence_digest();
+    let coordinator = QueryCoordinator::new(
+        workspace,
+        view.clone(),
+        view.capability().expect("capability"),
+        crate::builtin::admitted_coverage().expect("coverage"),
+        evidence,
+    )
+    .expect("large-document corpus");
+    assert_eq!(coordinator.semantic_document_count(), SYMBOLS);
+    let pages = coordinator
+        .semantic_document_pages(std::num::NonZeroUsize::new(256).expect("page size"))
+        .expect("document pages")
+        .collect::<Vec<_>>();
+    assert_eq!(pages.iter().map(Vec::len).collect::<Vec<_>>(), [256, 44]);
+    let mut document_ids = std::collections::BTreeSet::new();
+    let mut candidates = std::collections::BTreeSet::new();
+    for document in pages.iter().flatten() {
+        assert!(document_ids.insert(document.row));
+        let row = snapshot[&document.row];
+        let expected = match (row.id, row.document.first()) {
+            (RowId::Package(selected), Some(Fragment::Text(text))) => {
+                assert_eq!(selected, package);
+                assert_eq!(row.label, "pkg");
+                assert_eq!(text, "pkg");
+                assert!(row.signature.is_none());
+                "coordinate\npkg\ndocumentation\npkg\nkind\nproject\nname\npkg\n".to_owned()
+            }
+            (RowId::Symbol(_), Some(Fragment::Text(text))) => format!(
+                "coordinate\n{}\ndocumentation\n{text}\nkind\nfunction\nname\n{}\nsignature\n{}\n",
+                row.label,
+                row.label,
+                row.signature.as_deref().expect("signature")
+            ),
+            _ => panic!("fixture has documented package and function rows"),
+        };
+        assert_eq!(document.text, expected);
+        let entity = local::entity_id(workspace, document.row).expect("entity");
+        let candidate = local::candidate_id(entity, digest).expect("candidate");
+        assert_eq!(
+            coordinator.semantic_candidate(document.row),
+            Some(candidate)
+        );
+        assert!(candidates.insert(candidate));
+    }
+    let paired_ids = snapshot
+        .keys()
+        .copied()
+        .filter(|id| *id != missing)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(document_ids, paired_ids);
+    assert_eq!(coordinator.semantic_candidate(missing), None);
+    assert_eq!(coordinator.semantic_candidate(stray), None);
+    let answer = coordinator
+        .search_local(LocalQuery::prefix("borrowed", 200).expect("query"))
+        .expect("large-document local search");
+    assert_eq!(answer.total_matches, SYMBOLS - 1);
+    // Canonical source-origin placement is retained by the borrowed selection,
+    // including declaration sites whose source bytes are not currently hydrated.
+    for at in [0, 1, 2] {
+        let id = RowId::Symbol(backend_engine::symbol_key(&format!("borrowed_{at:03}")));
+        assert_eq!(
+            answer.search_origin(id),
+            Some(local::SearchOrigin::SourceDeclaration)
+        );
+    }
+    for at in [3, 4] {
+        let id = RowId::Symbol(backend_engine::symbol_key(&format!("borrowed_{at:03}")));
+        assert_eq!(
+            answer.search_origin(id),
+            Some(local::SearchOrigin::Unsourced)
+        );
+    }
+
+    assert_eq!(
+        answer.lanes[1].coverage,
+        CoverageBasis::PartialView {
+            selected_rows: SYMBOLS,
+            left_out: LeftOut {
+                rows_without_evidence: 1,
+                evidence_without_row: 1
+            },
+        }
+    );
+    for ranked in &answer.rows {
+        assert_eq!(&ranked.row, snapshot[&ranked.row.id]);
+    }
+    let library = backend_library::Library::from_view(
+        view.clone(),
+        backend_library::Cursor::for_view_root(&view),
+    )
+    .expect("large-document library");
+    let query = backend_engine::Query::new(
+        "borrowed",
+        view.root(),
+        backend_engine::QueryLimit::new(200).expect("search page size"),
+    );
+    let first = route_search_page(&coordinator, &library, &query).expect("first search page");
+    let second = route_search_page(
+        &coordinator,
+        &library,
+        &query.with_cursor(first.next.expect("search continuation")),
+    )
+    .expect("second search page");
+    assert!(second.next.is_none());
+    assert_eq!(
+        ranked_page_ids(&first),
+        answer
+            .rows
+            .iter()
+            .map(|ranked| ranked.row.id)
+            .collect::<Vec<_>>()
+    );
+    let ranked_ids = [ranked_page_ids(&first), ranked_page_ids(&second)].concat();
+    assert_eq!(ranked_ids.len(), SYMBOLS - 1);
+    let expected_matches = paired_ids
+        .into_iter()
+        .filter(|id| *id != RowId::Package(package))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        ranked_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>(),
+        expected_matches
+    );
+    for (rank, id) in ranked_ids.iter().enumerate() {
+        let row = first
+            .root
+            .row_ref(*id)
+            .or_else(|| second.root.row_ref(*id))
+            .expect("ranked row");
+        assert_eq!(row.document, snapshot[id].document);
+        assert_eq!(
+            row.score,
+            Some(u32::MAX - u32::try_from(rank).expect("bounded rank"))
+        );
+    }
+    assert!(!view.compatibility_rows_are_materialized());
+}
+
+#[test]
 fn query_tokenization_matches_document_unicode_whitespace() {
     let query = LocalQuery::prefix("alpha\u{00a0}exact", 2).expect("query");
     assert_eq!(query.lexical().terms, ["alpha", "exact"]);

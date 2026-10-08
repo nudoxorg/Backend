@@ -166,6 +166,30 @@ impl<R: Relation> RelationState<R> {
         })
     }
 
+    /// Builds a state by consuming a strictly ordered run of logical entries.
+    ///
+    /// The version kernel checks ordering and canonical node limits before
+    /// retaining the entries in immutable leaf slabs. No intermediate ordered
+    /// map or payload clone is needed. The supplied coverage witness is kept
+    /// unchanged; sorted input cannot authorize an incomplete source scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeError::UnsortedOrDuplicate`] for malformed ordering or a
+    /// canonical construction error when the relation cannot be admitted.
+    pub fn from_sorted_entries(
+        entries: Vec<(R::Key, R::Value)>,
+        coverage: CoverageWitness,
+    ) -> Result<Self, TreeError> {
+        let tree = PersistentTree::from_sorted_items_owned(entries)?;
+        let root = tree.root().commitment();
+        Ok(Self {
+            tree,
+            root,
+            coverage,
+        })
+    }
+
     /// Returns the exact canonical relation root.
     #[must_use]
     pub const fn root(&self) -> StateRoot<R> {

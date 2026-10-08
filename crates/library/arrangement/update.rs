@@ -164,9 +164,6 @@ impl ProjectionArrangement {
             }
         }
 
-        documents.sort_unstable();
-        packages.sort_unstable();
-        names.sort_unstable();
         name_postings.sort_unstable();
         name_postings.dedup();
         search_postings.sort_unstable();
@@ -197,22 +194,24 @@ impl ProjectionArrangement {
                 coverage,
                 frontier.clone(),
             )?),
-            name_postings: Some(unit_tree::<NamePostingRelation>(
+            name_postings: Some(sorted_unit_tree::<NamePostingRelation>(
                 name_postings,
                 coverage,
                 frontier.clone(),
             )?),
-            search_postings: Some(unit_tree::<SearchPostingRelation>(
+            search_postings: Some(sorted_unit_tree::<SearchPostingRelation>(
                 search_postings,
                 coverage,
                 frontier.clone(),
             )?),
-            package_symbols: Some(unit_tree::<PackageSymbolsRelation>(
+            package_symbols: Some(sorted_unit_tree::<PackageSymbolsRelation>(
                 package_symbols,
                 coverage,
                 frontier.clone(),
             )?),
-            children: Some(unit_tree::<ChildrenRelation>(children, coverage, frontier)?),
+            children: Some(sorted_unit_tree::<ChildrenRelation>(
+                children, coverage, frontier,
+            )?),
         })
     }
 
@@ -372,8 +371,22 @@ where
     R: Relation<Value = ()>,
 {
     keys.sort_unstable();
+    sorted_unit_tree::<R>(keys, coverage, frontier)
+}
+
+/// Consumes an already sorted run. The checked constructor still rejects
+/// duplicate or unordered keys; only set-family callers deduplicate their
+/// runs, before reaching this boundary.
+fn sorted_unit_tree<R>(
+    keys: Vec<R::Key>,
+    coverage: CoverageWitness,
+    frontier: backend_flow::Frontier,
+) -> Result<MaterializedIndex<R>, ArrangementError>
+where
+    R: Relation<Value = ()>,
+{
     let items = keys.into_iter().map(|key| (key, ())).collect::<Vec<_>>();
-    MaterializedIndex::from_entries(items, coverage, frontier)
+    MaterializedIndex::from_sorted_entries(items, coverage, frontier)
         .map_err(|_| ArrangementError(TreeError::InvalidRoot))
 }
 
@@ -614,4 +627,66 @@ fn is_synthetic_result_slot(row: &Row, row_at: impl Fn(RowId) -> Option<Row>) ->
                         Some(DeclarationKind::Function | DeclarationKind::Method)
                     )
             })
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+    use backend_flow::{Epoch, Frontier, Time};
+    use backend_version::{ClosedRelationScope, ScopeRoot};
+
+    #[test]
+    fn unit_runs_preserve_canonical_roots_and_strict_duplicate_admission() {
+        let coverage = CoverageWitness::closed_relation(ClosedRelationScope::from_scope_root(
+            ScopeRoot::from_u64(0x0075_6e69_7472_756e),
+        ));
+        let frontier = Frontier::new(Time::new(Epoch(3), 0));
+        for count in [0, 1, 301] {
+            let mut keys = (0..count)
+                .map(|index| NameKey {
+                    normalized: format!("café_{index:04}"),
+                    id: RowId::Symbol(crate::symbol_key(&format!("unit-run-{index}"))),
+                })
+                .collect::<Vec<_>>();
+            let ordinary = MaterializedIndex::<NameIndexRelation>::from_entries(
+                keys.iter().rev().cloned().map(|key| (key, ())),
+                coverage,
+                frontier.clone(),
+            )
+            .expect("ordinary arbitrary-order admission");
+            let sorted =
+                sorted_unit_tree::<NameIndexRelation>(keys.clone(), coverage, frontier.clone())
+                    .expect("strict sorted run");
+            keys.reverse();
+            let unsorted = unit_tree::<NameIndexRelation>(keys, coverage, frontier.clone())
+                .expect("sorted by wrapper");
+            for candidate in [sorted, unsorted] {
+                assert_eq!(candidate.root(), ordinary.root());
+                assert_eq!(candidate.coverage(), ordinary.coverage());
+                assert_eq!(candidate.frontier(), ordinary.frontier());
+                assert_eq!(candidate.len(), count);
+                assert_eq!(
+                    candidate.iter().collect::<Vec<_>>(),
+                    ordinary.iter().collect::<Vec<_>>()
+                );
+            }
+        }
+
+        let key = |text: &str| NameKey {
+            normalized: text.to_owned(),
+            id: RowId::Symbol(crate::symbol_key(text)),
+        };
+        let duplicate = vec![key("same"), key("same")];
+        assert!(
+            unit_tree::<NameIndexRelation>(duplicate.clone(), coverage, frontier.clone(),).is_err()
+        );
+        assert!(
+            sorted_unit_tree::<NameIndexRelation>(duplicate, coverage, frontier.clone(),).is_err()
+        );
+        assert!(
+            sorted_unit_tree::<NameIndexRelation>(vec![key("z"), key("a")], coverage, frontier,)
+                .is_err()
+        );
+    }
 }

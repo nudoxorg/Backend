@@ -1,0 +1,153 @@
+{
+  "schema": "nudox.root.exact-source-native-audit.v1",
+  "utc": "2026-10-08T20:22:07.208427+00:00",
+  "root_base": "4871423f1731a9a11e4ebec114220baeb5adadf4",
+  "selected_test_source": {
+    "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+    "clean": true,
+    "commit": "d6dffd9d8e18108d0dbf94a01fe395975b06d4b9",
+    "tree": "371ef5f272e7ad17e3b4b5465ffe5fafdd71dd27"
+  },
+  "source_entries_rehashed": 17946,
+  "regular_bytes_rehashed": 465289564,
+  "native_rows": [
+    {
+      "name": "gate00-library-unit-runs-01",
+      "receipt_sha256": "dd493f699e04e7b55b86a062168b2d36967fb11bab26c9877ab6937664221e08",
+      "accepted": true,
+      "passed": 1,
+      "exit": 0,
+      "test_names": [
+        "arrangement::update::tests::unit_runs_preserve_canonical_roots_and_strict_duplicate_admission"
+      ]
+    },
+    {
+      "name": "gate01-library-owned-run-01",
+      "receipt_sha256": "b27b1e534fb6920bbfed101ab85de770c9c4d83b6e322922a6110fcbd22cd2b1",
+      "accepted": true,
+      "passed": 1,
+      "exit": 0,
+      "test_names": [
+        "tests::arrangement_owned_run::owned_arrangement_keeps_large_view_membership_paging_and_delta_results"
+      ]
+    },
+    {
+      "name": "gate02-library-count-01",
+      "receipt_sha256": "d834bfa076cc6bb37457a62a60ac2e62a0b8f6838c9a3e155293b9857dcff0fd",
+      "accepted": true,
+      "passed": 1,
+      "exit": 0,
+      "test_names": [
+        "view::root::tests::row_count_borrows_authenticated_count_without_copying_tree_summary"
+      ]
+    },
+    {
+      "name": "gate03-service-borrowed-hydration-01",
+      "receipt_sha256": "045c9d216b1c6e20115d724b36b3a3ae4084f55c438f3e7c44d1a8d48d101d7a",
+      "accepted": false,
+      "passed": 0,
+      "exit": 101,
+      "test_names": []
+    },
+    {
+      "name": "gate03-service-borrowed-hydration-02",
+      "receipt_sha256": "77af79fbc489ae397b96c29323f6f4e54661a439efdebf7effd5ad55a555513a",
+      "accepted": false,
+      "passed": 0,
+      "exit": 0,
+      "test_names": []
+    },
+    {
+      "name": "gate03-service-borrowed-hydration-03",
+      "receipt_sha256": "07d4ca161f972c29426c0cec3a540389346f1fbca06c7efee44bbc8e323a8748",
+      "accepted": true,
+      "passed": 1,
+      "exit": 0,
+      "test_names": [
+        "builtin::query::tests::borrowed_selection_preserves_large_documents_and_source_origins_across_pages"
+      ]
+    },
+    {
+      "name": "gate04-source-rank-01",
+      "receipt_sha256": "062b1703aa4e9754fcab66f8f7b64e8ee0b5af91f945e798e3a84bbfb687ae16",
+      "accepted": true,
+      "passed": 2,
+      "exit": 0,
+      "test_names": [
+        "builtin::query::tests::source_ranking_tests::source_declaration_ranking_keeps_python_typescript_go_and_rust_types_and_aliases",
+        "builtin::query::tests::source_ranking_tests::source_declaration_ranking_survives_semantic_scores_for_inferred_types_and_external_targets"
+      ]
+    },
+    {
+      "name": "gate05-source-origin-01",
+      "receipt_sha256": "1e37fa89026e21f6e8e00fa1e000736d82f92e18f81e93677886241cef6af4b0",
+      "accepted": true,
+      "passed": 1,
+      "exit": 0,
+      "test_names": [
+        "builtin::query::local::source_origin_tests::source_declaration_ranking_retains_unhydrated_and_stale_declaration_evidence"
+      ]
+    },
+    {
+      "name": "gate06-generation-residence-01",
+      "receipt_sha256": "6343e46cbfd24389684fa2f615f28bef3784ffcf158f1f4cba2a6023c1358c02",
+      "accepted": true,
+      "passed": 12,
+      "exit": 0,
+      "test_names": [
+        "builtin::generation_residence::tests::a_deleted_artifact_directory_still_serves_the_admitted_generation",
+        "builtin::generation_residence::tests::a_different_binding_misses",
+        "builtin::generation_residence::tests::a_different_manifest_misses",
+        "builtin::generation_residence::tests::a_failed_activation_is_not_remembered",
+        "builtin::generation_residence::tests::a_second_load_shares_the_image_bytes_and_skips_the_owner",
+        "builtin::generation_residence::tests::byte_budget_evicts_asymmetric_valid_generations_and_reopens_them",
+        "builtin::generation_residence::tests::evicting_one_generation_reloads_it_and_keeps_the_neighbor",
+        "builtin::generation_residence::tests::native_history_cas_holds_the_committed_marker_lease_across_two_generations",
+        "builtin::generation_residence::tests::over_limit_generation_is_not_retained",
+        "builtin::generation_residence::tests::preparation_capture_keeps_bounded_images_and_independent_eviction",
+        "builtin::generation_residence::tests::preparation_reuses_real_selected_publication_bytes_and_structural_proofs",
+        "builtin::generation_residence::tests::selected_loader_checks_entry_cap_before_copying_payloads"
+      ]
+    },
+    {
+      "name": "gate07-real-clang-body-01",
+      "receipt_sha256": "fba60dbba8965ac64f9cd80cdef0f75f3a186ca19b24b66c167e050fe74fc762",
+      "accepted": true,
+      "passed": 1,
+      "exit": 0,
+      "test_names": [
+        "builtin::generation_residence::tests::preparation_reuses_real_selected_publication_bytes_and_structural_proofs"
+      ]
+    }
+  ],
+  "native_passed": 20,
+  "native_failed": 0,
+  "native_ignored": 0,
+  "root_staged_exact_source_paths": [
+    "crates/flow/src/materialized.rs",
+    "crates/library/arrangement/update.rs",
+    "crates/library/catalog/projection.rs",
+    "crates/library/tests.rs",
+    "crates/library/tests/arrangement_owned_run.rs",
+    "crates/library/view/root.rs",
+    "crates/local-service/src/builtin/generation_residence.rs",
+    "crates/local-service/src/builtin/view_build/query.rs",
+    "crates/local-service/src/query/local.rs",
+    "crates/local-service/src/query/tests.rs",
+    "crates/version/src/delta/state.rs",
+    "crates/version/src/tests.rs"
+  ],
+  "all_other_canonical_entries_unchanged": true,
+  "canonical_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+  "native_lock_differs_from_canonical": true,
+  "root_binary_rehash": false,
+  "worker_binary_identity_recorded": true,
+  "return_receipt_sha256": "9998db4a4dcb91f6a1a450699004b9a78233c5423a592cd37e87ffccb354e031",
+  "source_manifest_sha256": "3867e7592995e258299c94d4484efd1a3cc7b7f65b76e48793699f5ec99c4590",
+  "raw_archive_sha256": "7d33e1a989f121fefb4a921ce753377d784c1ed7fc2fe32077634d728ebb0fc6",
+  "limitations": [
+    "Native tests ran d6d/de7319 source; latest canonical/f10d replay not rebuilt",
+    "One Clang test in 12-test module returns early without env; separate direct genuine Clang invocation passed",
+    "No installed CLI/MCP/GUI, responsiveness, latency or comparative allocation acceptance"
+  ]
+}

@@ -99,6 +99,23 @@ impl<R: Relation> MaterializedIndex<R> {
         Ok(Self::from_state(state, frontier))
     }
 
+    /// Builds an index by consuming strictly ordered logical entries and
+    /// binding their checked canonical root to the supplied frontier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FlowError::InvalidRoot`] for duplicate or unordered keys, or
+    /// when canonical node limits reject the relation.
+    pub fn from_sorted_entries(
+        entries: Vec<(R::Key, R::Value)>,
+        coverage: CoverageWitness,
+        frontier: Frontier,
+    ) -> Result<Self, FlowError> {
+        let state = RelationState::from_sorted_entries(entries, coverage)
+            .map_err(|_| FlowError::InvalidRoot)?;
+        Ok(Self::from_state(state, frontier))
+    }
+
     /// Wraps an already checked relation state with its execution frontier.
     #[must_use]
     pub fn from_state(state: RelationState<R>, frontier: Frontier) -> Self {
@@ -411,6 +428,68 @@ mod tests {
 
     fn frontier(epoch: u64) -> Frontier {
         Frontier::new(Time::new(Epoch(epoch), 0))
+    }
+
+    #[test]
+    fn sorted_owned_index_preserves_frontier_membership_and_path_copy_updates() {
+        let coverage = complete_coverage();
+        let ordinary = MaterializedIndex::<TestRelation>::from_entries(
+            (0..1_025).rev().map(|key| (key, key * 2)),
+            coverage,
+            frontier(3),
+        )
+        .expect("ordinary index");
+        let owned = MaterializedIndex::<TestRelation>::from_sorted_entries(
+            (0..1_025).map(|key| (key, key * 2)).collect(),
+            coverage,
+            frontier(3),
+        )
+        .expect("sorted owned index");
+        assert_eq!(owned.root(), ordinary.root());
+        assert_eq!(owned.coverage(), coverage);
+        assert_eq!(owned.fence().root(), ordinary.fence().root());
+        assert_eq!(owned.fence().frontier(), ordinary.fence().frontier());
+        assert_eq!(owned.len(), 1_025);
+        assert_eq!(owned.lease().root(), ordinary.lease().root());
+        assert_eq!(
+            owned.range(3..259).collect::<Vec<_>>(),
+            ordinary.range(3..259).collect::<Vec<_>>()
+        );
+        let changes = vec![MapChange {
+            key: 500,
+            before: Some(1_000),
+            after: Some(1_001),
+        }];
+        let (ordinary_update, ordinary_work) = ordinary
+            .prepare(changes.clone(), frontier(4))
+            .expect("ordinary update");
+        let (owned_update, owned_work) = owned.prepare(changes, frontier(4)).expect("owned update");
+        assert_eq!(owned_update.delta().id(), ordinary_update.delta().id());
+        assert_eq!(owned_work, ordinary_work);
+        let (ordinary_next, _) = ordinary_update.commit(&ordinary).expect("ordinary commit");
+        let (owned_next, _) = owned_update.commit(&owned).expect("owned commit");
+        assert_eq!(owned_next.root(), ordinary_next.root());
+        assert_eq!(owned_next.fence().root(), ordinary_next.fence().root());
+        assert_eq!(
+            owned_next.fence().frontier(),
+            ordinary_next.fence().frontier()
+        );
+        assert_eq!(owned_next.get(&500), Some(&1_001));
+        assert_eq!(owned.get(&500), Some(&1_000));
+        assert!(matches!(
+            owned.advance(frontier(2)),
+            Err(FlowError::FrontierRegressed)
+        ));
+        for entries in [vec![(2, 20), (1, 10)], vec![(1, 10), (1, 20)]] {
+            assert!(matches!(
+                MaterializedIndex::<TestRelation>::from_sorted_entries(
+                    entries,
+                    coverage,
+                    frontier(3),
+                ),
+                Err(FlowError::InvalidRoot)
+            ));
+        }
     }
 
     #[test]
