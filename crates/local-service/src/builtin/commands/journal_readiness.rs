@@ -142,6 +142,10 @@ impl JournalReadiness {
         let callback = changed.clone();
         let watched = path.clone();
         let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+            #[cfg(test)]
+            if std::env::var_os("BACKEND_JOURNAL_WATCH_DIAGNOSTICS").is_some() {
+                eprintln!("journal watch: {event:?}");
+            }
             match event {
                 Ok(event)
                     if event.need_rescan()
@@ -432,6 +436,7 @@ mod tests {
         IndexOperationKey::from_bytes([7; 32]).expect("nonzero operation key")
     }
 
+    #[track_caller]
     fn wait_for(lane: &mut JournalReadiness, wanted: Pending) {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -445,7 +450,13 @@ mod tests {
                 .as_ref()
                 .expect("open lane")
                 .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                .expect("native change notification must lead to a snapshot");
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "native change notification must lead to a snapshot: {error}; wanted={wanted:?}, selected={:?}, sequence={:?}",
+                        lane.selected,
+                        lane.changed.sequence(),
+                    )
+                });
             lane.admit(receipt);
         }
     }
