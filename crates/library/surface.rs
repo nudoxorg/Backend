@@ -6884,8 +6884,8 @@ mod tests {
         );
         assert_eq!(
             crate::DTO_VERSION,
-            23,
-            "partial publication uses the closed wire-23 cohort"
+            24,
+            "partial publication uses the joined closed wire-24 cohort"
         );
         let command = crate::CommandDto::new(
             61,
