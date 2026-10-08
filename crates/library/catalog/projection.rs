@@ -30,11 +30,12 @@ pub(crate) fn query_page_preimage(kind: QueryPageKind, text: &str, limit: QueryL
     bytes
 }
 
-/// Canonical witness for a names or search page's continuation contract.
+/// Canonical witness for a bounded catalog page's continuation contract.
 ///
-/// Producers, certificate builders, and consumers use this same encoding of
-/// query family, text, page credit, source root, and optional read manifest.
-/// Its private fields keep the identity paired with its exact preimage.
+/// Producers, certificate builders, and consumers use the same canonical
+/// encoding. Names/search bind text, credit and optional read manifest; graph
+/// retains its address/root recipe and validates credit against the predecessor.
+/// Private fields keep the identity paired with its exact preimage.
 #[derive(Debug)]
 pub struct QueryPageRecipe {
     identity: ViewRecipeId,
@@ -64,6 +65,21 @@ impl QueryPageRecipe {
             root,
             query.read_manifest(),
         )
+    }
+
+    /// Binds a plain graph page to its exact source root and original address.
+    ///
+    /// This retains the existing graph-page recipe. The exact page credit is
+    /// carried by the continued command and checked against its predecessor.
+    #[must_use]
+    pub fn graph(root: ViewStateRoot, address: crate::SymbolAddress) -> Self {
+        let mut recipe = b"graph-page".to_vec();
+        recipe.extend_from_slice(&address.claimed_bytes());
+        let preimage =
+            crate::canonical::view_identity_preimage(&[b"query", &recipe, root.as_bytes(), &[0]])
+                .into_boxed_slice();
+        let identity = ViewRecipeId::from_value(&preimage);
+        Self { identity, preimage }
     }
 
     fn new(
