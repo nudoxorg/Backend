@@ -233,11 +233,31 @@ struct JournalMeta {
 pub(super) struct IndexOperationJournal {
     _database: turso::Database,
     _database_directory: backend_platform::DirectoryCapability,
-    _database_file: File,
+    database_file: File,
     connection: turso::Connection,
     readiness: Option<super::journal_readiness::Changed>,
+    last_hint: Option<PostCommitHint>,
+    #[cfg(test)]
+    hint_time: Option<std::time::SystemTime>,
     #[cfg(test)]
     read_queries: std::cell::Cell<usize>,
+}
+
+/// Notification evidence is separate from the SQL transaction's result.
+/// A failed hint never changes or rolls back an already committed operation.
+#[derive(Debug)]
+pub(super) enum PostCommitHint {
+    Native {
+        local: Option<super::journal_readiness::WakeDelivery>,
+    },
+    LocalOnly {
+        error: std::io::Error,
+        local: super::journal_readiness::WakeDelivery,
+    },
+    Unavailable {
+        error: std::io::Error,
+        local: Option<super::journal_readiness::WakeDelivery>,
+    },
 }
 
 impl IndexOperationJournal {
@@ -293,9 +313,12 @@ impl IndexOperationJournal {
         Ok(Self {
             _database: database,
             _database_directory: database_directory,
-            _database_file: database_file,
+            database_file,
             connection,
             readiness: None,
+            last_hint: None,
+            #[cfg(test)]
+            hint_time: None,
             #[cfg(test)]
             read_queries: std::cell::Cell::new(0),
         })
@@ -305,10 +328,56 @@ impl IndexOperationJournal {
         self.readiness = Some(changed);
     }
 
-    fn changed(&self) {
-        if let Some(changed) = &self.readiness {
-            changed.invalidate();
-        }
+    fn changed(&mut self) {
+        // Called only after successful SQL commit. A metadata event through
+        // the verified held file cannot precede that commit's visibility and
+        // does not alter database bytes or supply durable writer authority.
+        let time = std::time::SystemTime::now();
+        #[cfg(test)]
+        let time = self.hint_time.unwrap_or(time);
+        let native = self.database_file.set_modified(time);
+        let local = self.readiness.as_ref().map(|changed| {
+            if native.is_err() {
+                changed.native_hint_failed();
+            }
+            changed.invalidate()
+        });
+        self.last_hint = Some(match (native, local) {
+            (Ok(()), local) => PostCommitHint::Native { local },
+            (
+                Err(error),
+                Some(
+                    local @ (super::journal_readiness::WakeDelivery::Queued
+                    | super::journal_readiness::WakeDelivery::Coalesced),
+                ),
+            ) => {
+                eprintln!(
+                    "index operation committed; native wake failed, local wake {local:?} and coverage degraded: {error}"
+                );
+                PostCommitHint::LocalOnly { error, local }
+            }
+            (Err(error), local) => {
+                eprintln!(
+                    "index operation committed without an available wake; explicit status or mutation retry is required: {error}"
+                );
+                PostCommitHint::Unavailable { error, local }
+            }
+        });
+    }
+
+    #[cfg(test)]
+    pub(super) fn fix_hint_time_for_test(&mut self, time: std::time::SystemTime) {
+        self.hint_time = Some(time);
+    }
+
+    #[cfg(test)]
+    pub(super) fn replace_hint_file_for_test(&mut self, file: File) {
+        self.database_file = file;
+    }
+
+    #[cfg(test)]
+    pub(super) fn last_hint_for_test(&self) -> Option<&PostCommitHint> {
+        self.last_hint.as_ref()
     }
 
     #[cfg(test)]
@@ -481,8 +550,14 @@ impl IndexOperationJournal {
                 }
             }
         });
-        if result.is_ok() {
+        if matches!(result, Ok(Acceptance::New)) {
             self.changed();
+        } else if result.is_ok()
+            && let Some(changed) = &self.readiness
+        {
+            // An exact replay rolled back its read-only transaction. It may
+            // request a local refresh, but cannot claim a new committed hint.
+            changed.invalidate();
         }
         result
     }

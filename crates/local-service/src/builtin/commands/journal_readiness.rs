@@ -46,6 +46,15 @@ impl Eq for RetryToken {}
 enum Wake {
     Changed,
     Close,
+    #[cfg(test)]
+    Barrier(mpsc::SyncSender<()>),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum WakeDelivery {
+    Queued,
+    Coalesced,
+    Disconnected,
 }
 
 /// Only the small wake counter/channel cross threads. The journal connection,
@@ -58,14 +67,25 @@ pub(super) struct Changed {
 }
 
 impl Changed {
-    pub(super) fn invalidate(&self) {
+    pub(super) fn invalidate(&self) -> WakeDelivery {
         // Saturation is permanently unknown, never a wrapped reusable stamp.
         let _ = self
             .sequence
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |s| {
                 Some(s.saturating_add(1))
             });
-        let _ = self.wake.try_send(Wake::Changed);
+        match self.wake.try_send(Wake::Changed) {
+            Ok(()) => WakeDelivery::Queued,
+            Err(mpsc::TrySendError::Full(_)) => WakeDelivery::Coalesced,
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                self.watch_healthy.store(false, Ordering::Release);
+                WakeDelivery::Disconnected
+            }
+        }
+    }
+
+    pub(super) fn native_hint_failed(&self) {
+        self.watch_healthy.store(false, Ordering::Release);
     }
 
     fn sequence(&self) -> Option<u64> {
@@ -121,6 +141,8 @@ pub(super) struct JournalReadiness {
     selected: Readiness,
     reconciled: Option<Reconciliation>,
     explicit_retry: Arc<()>,
+    #[cfg(test)]
+    reader_queries: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl JournalReadiness {
@@ -150,9 +172,10 @@ impl JournalReadiness {
             match event {
                 Ok(event)
                     if event.need_rescan()
-                        // A WAL modification may arrive before its SQL commit
-                        // is visible. Writer close is another finite wake;
-                        // ordinary reads and their close events stay quiet.
+                        // A WAL event can precede SQL visibility. Each writer
+                        // emits a separate database metadata hint after commit;
+                        // write close is an additional finite wake. Read and
+                        // shared-memory noise remain excluded.
                         || ((!event.kind.is_access()
                             || matches!(event.kind, EventKind::Access(AccessKind::Close(AccessMode::Write))))
                             && event.paths.iter().any(|p| relevant(p, &watched))) =>
@@ -187,17 +210,32 @@ impl JournalReadiness {
             changed.watch_healthy.store(false, Ordering::Release);
         }
         let worker_changed = changed.clone();
+        #[cfg(test)]
+        let reader_queries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        #[cfg(test)]
+        let worker_queries = Arc::clone(&reader_queries);
         let worker = std::thread::Builder::new()
             .name("locald-index-journal".to_owned())
             .spawn(move || {
                 let mut journal = IndexOperationJournal::open(path.clone());
-                while let Ok(Wake::Changed) = wakes.recv() {
+                while let Ok(wake) = wakes.recv() {
+                    match wake {
+                        Wake::Close => break,
+                        #[cfg(test)]
+                        Wake::Barrier(ready) => {
+                            let _ = ready.send(());
+                            continue;
+                        }
+                        Wake::Changed => {}
+                    }
                     let sequence = worker_changed.sequence();
                     // Failed opens are retried on an explicit change, never a
                     // hot timer. A failure receipt cannot be read as empty.
                     if journal.is_err() {
                         journal = IndexOperationJournal::open(path.clone());
                     }
+                    #[cfg(test)]
+                    worker_queries.fetch_add(1, Ordering::Relaxed);
                     let pending = match &mut journal {
                         Ok(journal) => journal.pending_snapshot(),
                         Err(error) => Err(JournalError::Database(error.to_string())),
@@ -224,6 +262,8 @@ impl JournalReadiness {
             selected: Readiness::Unknown(Unknown::AwaitingChange),
             reconciled: None,
             explicit_retry: Arc::new(()),
+            #[cfg(test)]
+            reader_queries,
         };
         lane.changed.invalidate();
         Ok(lane)
@@ -377,6 +417,39 @@ impl JournalReadiness {
         self.watcher.take();
     }
 
+    #[cfg(test)]
+    fn reader_barrier(&mut self) -> usize {
+        let (ready, receipt) = mpsc::sync_channel(1);
+        let mut barrier = Wake::Barrier(ready);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match self.changed.wake.try_send(barrier) {
+                Ok(()) => break,
+                Err(mpsc::TrySendError::Full(returned)) => barrier = returned,
+                Err(mpsc::TrySendError::Disconnected(_)) => panic!("reader disconnected"),
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "reader barrier queued"
+            );
+            self.poll();
+            std::thread::yield_now();
+        }
+        loop {
+            self.poll();
+            match receipt.try_recv() {
+                Ok(()) => return self.reader_queries.load(Ordering::Relaxed),
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => panic!("reader barrier disconnected"),
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "reader barrier completed"
+            );
+            std::thread::yield_now();
+        }
+    }
+
     pub(super) fn close(&mut self) {
         self.watcher.take();
         // Release a possibly full completion slot before joining the worker.
@@ -439,6 +512,25 @@ mod tests {
 
     fn key() -> IndexOperationKey {
         IndexOperationKey::from_bytes([7; 32]).expect("nonzero operation key")
+    }
+
+    fn assert_native_hint(
+        writer: &IndexOperationJournal,
+        path: &Path,
+        time: std::time::SystemTime,
+    ) {
+        assert!(matches!(
+            writer.last_hint_for_test(),
+            Some(super::super::index_operation::PostCommitHint::Native { local: None })
+        ));
+        assert_eq!(
+            std::fs::metadata(path)
+                .expect("database metadata")
+                .modified()
+                .expect("mtime"),
+            time,
+            "each committed hint uses the same timestamp in this control"
+        );
     }
 
     #[track_caller]
@@ -546,7 +638,9 @@ mod tests {
         let scratch = tempfile::tempdir().expect("journal scratch");
         let path = scratch.path().join("workspace/operations.turso");
         let mut foreign = IndexOperationJournal::open(&path).expect("long-lived writer");
-        let mut lane = JournalReadiness::start(path, [3; 16]).expect("native watch reader");
+        let time = std::time::UNIX_EPOCH + Duration::from_secs(2);
+        foreign.fix_hint_time_for_test(time);
+        let mut lane = JournalReadiness::start(path.clone(), [3; 16]).expect("native watch reader");
         wait_for(
             &mut lane,
             foreign.pending_snapshot().expect("initial snapshot"),
@@ -558,6 +652,7 @@ mod tests {
                 CompileExecutionIntent::Interactive,
             )
             .expect("foreign acceptance");
+        assert_native_hint(&foreign, &path, time);
         wait_for(
             &mut lane,
             foreign.pending_snapshot().expect("accepted snapshot"),
@@ -565,6 +660,7 @@ mod tests {
         foreign
             .prepare(key(), None, [5; 32], 9)
             .expect("foreign preparation");
+        assert_native_hint(&foreign, &path, time);
         wait_for(
             &mut lane,
             foreign.pending_snapshot().expect("prepared snapshot"),
@@ -590,6 +686,7 @@ mod tests {
         foreign
             .published(key(), receipt)
             .expect("foreign publication");
+        assert_native_hint(&foreign, &path, time);
         wait_for(
             &mut lane,
             foreign.pending_snapshot().expect("terminal snapshot"),
@@ -606,6 +703,170 @@ mod tests {
             ))
         ));
         lane.close();
+    }
+
+    #[test]
+    fn coalesced_post_commit_hints_observe_final_state_and_quiet_reader_does_no_sql() {
+        let scratch = tempfile::tempdir().expect("journal scratch");
+        let path = scratch.path().join("workspace/operations.turso");
+        let mut foreign = IndexOperationJournal::open(&path).expect("long-lived writer");
+        let time = std::time::UNIX_EPOCH + Duration::from_secs(2);
+        foreign.fix_hint_time_for_test(time);
+        let mut lane = JournalReadiness::start(path.clone(), [4; 16]).expect("native reader");
+        wait_for(
+            &mut lane,
+            foreign.pending_snapshot().expect("initial snapshot"),
+        );
+        for number in 8..20 {
+            let operation = IndexOperationKey::from_bytes([number; 32]).expect("key");
+            foreign
+                .accept(
+                    operation,
+                    PackageReference::parse("/workspace/docs").expect("package"),
+                    CompileExecutionIntent::Interactive,
+                )
+                .expect("coalesced acceptance");
+            foreign
+                .prepare(operation, None, [5; 32], 9)
+                .expect("coalesced preparation");
+            foreign
+                .failed(
+                    operation,
+                    IndexOperationFailureReason::WorkerFailed,
+                    ProductText::from_static("coalesced terminal"),
+                )
+                .expect("coalesced failure");
+            assert_native_hint(&foreign, &path, time);
+        }
+        // Do not poll the owner between commits. The final Prepared key is
+        // distinct from every intermediate payload and the initial empty read.
+        foreign
+            .accept(
+                key(),
+                PackageReference::parse("/workspace/docs").expect("package"),
+                CompileExecutionIntent::Interactive,
+            )
+            .expect("final acceptance");
+        foreign
+            .prepare(key(), None, [5; 32], 9)
+            .expect("final preparation");
+        assert_native_hint(&foreign, &path, time);
+        wait_for(
+            &mut lane,
+            foreign.pending_snapshot().expect("final prepared snapshot"),
+        );
+        assert!(lane.prepared_hint());
+        foreign
+            .failed(
+                key(),
+                IndexOperationFailureReason::WorkerFailed,
+                ProductText::from_static("final terminal"),
+            )
+            .expect("final failure");
+        wait_for(
+            &mut lane,
+            foreign.pending_snapshot().expect("final empty snapshot"),
+        );
+        let reads = lane.reader_barrier();
+        for _ in 0..1000 {
+            lane.poll();
+        }
+        assert_eq!(
+            lane.reader_barrier(),
+            reads,
+            "quiet native reader does no SQL"
+        );
+        assert!(
+            lane.watcher.is_some(),
+            "native coverage stays registered during quiet control"
+        );
+        lane.close();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn failed_post_commit_hint_preserves_sql_success_and_degrades_attached_readiness() {
+        use super::super::index_operation::{JournalEntry, PostCommitHint, StoredOperationState};
+        let scratch = tempfile::tempdir().expect("journal scratch");
+        let path = scratch.path().join("workspace/operations.turso");
+        let mut writer = IndexOperationJournal::open(&path).expect("writer");
+        let mut lane = JournalReadiness::start(path.clone(), [5; 16]).expect("reader");
+        wait_for(
+            &mut lane,
+            writer.pending_snapshot().expect("initial snapshot"),
+        );
+        writer.attach_readiness(lane.changed());
+        // A valid owned O_PATH descriptor cannot perform metadata updates.
+        // This exercises the real futimens failure without unsafe descriptor
+        // fabrication or changing the SQL connection/database namespace.
+        let path_only = rustix::fs::open(
+            &path,
+            rustix::fs::OFlags::PATH | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .expect("owned path-only descriptor");
+        writer.replace_hint_file_for_test(std::fs::File::from(path_only));
+        assert_eq!(
+            writer
+                .accept(
+                    key(),
+                    PackageReference::parse("/workspace/docs").expect("package"),
+                    CompileExecutionIntent::Interactive,
+                )
+                .expect("committed acceptance despite failed hint"),
+            super::super::index_operation::Acceptance::New
+        );
+        match writer.last_hint_for_test() {
+            Some(PostCommitHint::LocalOnly { error, local }) => {
+                assert_eq!(error.raw_os_error(), Some(9));
+                assert!(matches!(
+                    local,
+                    WakeDelivery::Queued | WakeDelivery::Coalesced
+                ));
+            }
+            hint => panic!("missing retained local-only evidence: {hint:?}"),
+        }
+        wait_for(
+            &mut lane,
+            writer.pending_snapshot().expect("durable acceptance"),
+        );
+        assert!(matches!(lane.selected, Readiness::Degraded(_, _)));
+        writer
+            .prepare(key(), None, [5; 32], 9)
+            .expect("committed preparation despite failed hint");
+        wait_for(
+            &mut lane,
+            writer.pending_snapshot().expect("durable preparation"),
+        );
+        assert!(lane.prepared_hint());
+        assert!(matches!(lane.selected, Readiness::Degraded(_, _)));
+        lane.disconnect_reader();
+        writer
+            .failed(
+                key(),
+                IndexOperationFailureReason::WorkerFailed,
+                ProductText::from_static("committed with reader gone"),
+            )
+            .expect("terminal commit survives hint failure");
+        match writer.last_hint_for_test() {
+            Some(PostCommitHint::Unavailable {
+                error,
+                local: Some(WakeDelivery::Disconnected),
+            }) => {
+                assert_eq!(error.raw_os_error(), Some(9));
+            }
+            hint => panic!("missing retained unavailable evidence: {hint:?}"),
+        }
+        let mut cold = IndexOperationJournal::open(path).expect("cold durable reader");
+        assert!(matches!(
+            cold.entry(key()).expect("cold receipt"),
+            Some(JournalEntry::Retained(
+                super::super::index_operation::StoredOperation {
+                    state: StoredOperationState::Failed { .. },
+                    ..
+                }
+            ))
+        ));
     }
 
     #[test]
@@ -755,6 +1016,11 @@ mod tests {
             },
         );
         lane.close();
+        // Subsequent assertions inject receipts and a live notification
+        // channel directly; a genuinely disconnected reader now degrades.
+        let (wake, _wakes) = mpsc::sync_channel(1);
+        lane.changed.wake = wake;
+        lane.changed.watch_healthy.store(true, Ordering::Release);
         let sequence = lane.changed.sequence();
         let stamp = Stamp {
             owner_epoch: lane.epoch,
@@ -820,6 +1086,22 @@ mod tests {
             Readiness::Unknown(Unknown::EventSequenceExhausted)
         );
         lane.close();
+    }
+
+    #[test]
+    fn local_wake_reports_delivery_and_disconnection_degrades_coverage() {
+        let (wake, wakes) = mpsc::sync_channel(1);
+        let changed = Changed {
+            sequence: Arc::new(AtomicU64::new(0)),
+            watch_healthy: Arc::new(AtomicBool::new(true)),
+            wake,
+        };
+        assert_eq!(changed.invalidate(), WakeDelivery::Queued);
+        assert_eq!(changed.invalidate(), WakeDelivery::Coalesced);
+        assert!(changed.watch_healthy.load(Ordering::Acquire));
+        drop(wakes);
+        assert_eq!(changed.invalidate(), WakeDelivery::Disconnected);
+        assert!(!changed.watch_healthy.load(Ordering::Acquire));
     }
 
     #[test]
