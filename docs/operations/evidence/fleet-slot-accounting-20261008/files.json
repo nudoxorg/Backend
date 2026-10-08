@@ -1,0 +1,24 @@
+{
+  "files": [
+    {
+      "path": "fresh-fleet-preactivation.json",
+      "bytes": 33964,
+      "sha256": "8320953bc302f87c3d94cd4936b0e7e4a0ee5f8023f4acc766b25be88dbd29b2"
+    },
+    {
+      "path": "previous-v5-wrapper.py",
+      "bytes": 283,
+      "sha256": "22ab2b103dccec217ed7e9336078fef2e457c98441c34a815036cfd8a7dbe139"
+    },
+    {
+      "path": "root-activation.json",
+      "bytes": 908,
+      "sha256": "9fe5b9d6e4017d7e59e0359e0e2021a50e7dd981e9e6316643be1c73cdc52d47"
+    },
+    {
+      "path": "root-validation.json",
+      "bytes": 2261,
+      "sha256": "8d8ece3136803819980000bf2c5a519fd8bd82bdbbd635bdc24b165f1c9c620f"
+    }
+  ]
+}

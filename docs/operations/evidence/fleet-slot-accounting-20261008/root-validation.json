@@ -1,0 +1,74 @@
+{
+  "schema": "nudox.root.fleet-slot-accounting.validation.v1",
+  "source_original": "5ea92f232a2b114b3838f4a1c905d8c50ce3aae7",
+  "source_integration": "e420c5667a23bc7bc772d56b9907985254f317ff",
+  "base": "98c06dc4c690abdf4186bc7f9f2a784bc0ee96a2",
+  "source_files_exact": [
+    {
+      "path": ".config/scripts/build-census.py",
+      "git_blob": "dc667f03166061d255d28bc5d640d77ee7c98406",
+      "sha256": "8c421f98d973bd0ec2d97aeed5ee252270102ae7a2c67cbf8b82ef18c9517ce2"
+    },
+    {
+      "path": ".config/scripts/fleet-capacity-census.py",
+      "git_blob": "a9dbc9f4edba121272804a5e74ce234b6c7cc1e3",
+      "sha256": "34d8e705421777be1a4e95a8a754a78b4984e02127cb9e74899c58ad5818d736"
+    },
+    {
+      "path": ".config/scripts/test_fleet_capacity_census.py",
+      "git_blob": "3a297eba5d2f67a8ddc0a274ced594bb8c4beccb",
+      "sha256": "7f22f794cc87c0b52b171013392cb397976c401386a8bba30815d5cf22724b4a"
+    },
+    {
+      "path": "tests/test_build_census.py",
+      "git_blob": "771692bf260343b8d3dd3a025907f512ff85ea2f",
+      "sha256": "aa28e15eebcfaa0b00cf2b01e5660edbf3a15789f4d4c6ec1c28e2dc16439cc4"
+    },
+    {
+      "path": "tests/test_fleet_capacity_census.py",
+      "git_blob": "dae24f15b0fab3165daf94d70ca97862bf38aaa6",
+      "sha256": "360194b7c7e56db2effc171b4a24daf618bc9fef5ed99a86667c4d7896d31d24"
+    }
+  ],
+  "root_independent_commands": [
+    {
+      "argv": [
+        "python3",
+        "-m",
+        "unittest",
+        "tests.test_build_census",
+        "tests.test_fleet_capacity_census"
+      ],
+      "tests": 35,
+      "result": "OK",
+      "exit": 0
+    },
+    {
+      "argv": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        ".config/scripts",
+        "-p",
+        "test_*.py"
+      ],
+      "tests": 11,
+      "result": "OK",
+      "exit": 0
+    },
+    {
+      "argv": [
+        "python3",
+        ".config/scripts/test_fleet_capacity_census.py"
+      ],
+      "tests": 11,
+      "result": "OK",
+      "exit": 0
+    }
+  ],
+  "count_note": "57 test executions, not a claim of 57 distinct tests; the script suite also ran directly.",
+  "fresh_sample_valid_and_allowed": true,
+  "scope": "Python collector and accounting controls, not compiler/runtime product coverage."
+}
