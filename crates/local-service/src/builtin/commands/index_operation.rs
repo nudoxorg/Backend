@@ -164,6 +164,7 @@ pub(super) enum Acceptance {
 #[derive(Debug, Eq, PartialEq)]
 pub(super) enum JournalError {
     Database(String),
+    DatabaseBusy,
     Corrupt(String),
     KeyspaceFull,
     PendingLimit,
@@ -179,6 +180,7 @@ impl std::fmt::Display for JournalError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Database(error) => write!(formatter, "index-operation database: {error}"),
+            Self::DatabaseBusy => formatter.write_str("index-operation database is temporarily busy; retry after its writer releases the transaction"),
             Self::Corrupt(error) => {
                 write!(formatter, "index-operation database is corrupt: {error}")
             }
@@ -312,6 +314,11 @@ impl IndexOperationJournal {
     #[cfg(test)]
     pub(super) fn read_query_count(&self) -> usize {
         self.read_queries.get()
+    }
+
+    #[cfg(test)]
+    pub(super) fn connection_for_test(&self) -> turso::Connection {
+        self.connection.clone()
     }
 
     /// A bounded pending inventory and its counters from one WAL snapshot.
@@ -1722,7 +1729,10 @@ fn array32(bytes: Vec<u8>) -> Result<[u8; 32], JournalError> {
 }
 
 fn database_error(error: turso::Error) -> JournalError {
-    JournalError::Database(error.to_string())
+    match error {
+        turso::Error::Busy(_) | turso::Error::BusySnapshot(_) => JournalError::DatabaseBusy,
+        error => JournalError::Database(error.to_string()),
+    }
 }
 
 #[cfg(test)]

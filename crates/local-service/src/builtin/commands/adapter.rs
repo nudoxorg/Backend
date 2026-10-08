@@ -406,8 +406,13 @@ enum MutationAdmission {
     Unavailable(IndexOperationJournalError),
 }
 
+enum DeferredCommandOrigin {
+    Incoming,
+    Waiting,
+}
+
 enum FinishAddError {
-    PreparedBusy,
+    PublicationBusy,
     Failed(BuiltinModelError),
 }
 
@@ -693,6 +698,21 @@ impl CommandAdapter {
         body: &[u8],
         transport_ticket: u64,
     ) -> Result<Executed, BuiltinModelError> {
+        self.execute_or_defer_from(
+            daemon,
+            body,
+            transport_ticket,
+            DeferredCommandOrigin::Incoming,
+        )
+    }
+
+    fn execute_or_defer_from(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        body: &[u8],
+        transport_ticket: u64,
+        origin: DeferredCommandOrigin,
+    ) -> Result<Executed, BuiltinModelError> {
         let owner = daemon.engine().daemon().library().cursor();
         let request = backend_engine::decode_command_dto_for_owner(body, owner)
             .map_err(|error| BuiltinModelError(format!("decode command DTO: {error}")))?;
@@ -806,6 +826,8 @@ impl CommandAdapter {
         }
         let must_wait = if answers_while_indexing(&request.command) {
             false
+        } else if matches!(origin, DeferredCommandOrigin::Incoming) && !self.waiting.is_empty() {
+            true
         } else {
             match self.mutation_admission() {
                 MutationAdmission::Ready => false,
@@ -824,7 +846,10 @@ impl CommandAdapter {
                 ));
             }
             self.journal_readiness.refresh();
-            self.waiting.push_back((transport_ticket, body.to_vec()));
+            match origin {
+                DeferredCommandOrigin::Incoming => self.waiting.push_back((transport_ticket, body.to_vec())),
+                DeferredCommandOrigin::Waiting => self.waiting.push_front((transport_ticket, body.to_vec())),
+            }
             return Ok(Executed::Deferred);
         }
         if let Command::Surface(backend_library::SurfaceCommand::IndexStart {
@@ -2155,7 +2180,7 @@ impl CommandAdapter {
             Err(_) if indexing.cancelled.load(Ordering::Acquire) => {
                 Some(backend_library::IndexJobOutcome::Cancelled)
             }
-            Err(FinishAddError::PreparedBusy) => {
+            Err(FinishAddError::PublicationBusy) => {
                 indexing.work = IndexJobWork::Publishing {
                     prepared,
                     blocked_sequence: self.journal_readiness.retry_token(),
@@ -2657,9 +2682,7 @@ impl CommandAdapter {
         }
         while self.indexing.is_none() && !self.waiting.is_empty() {
             let retry = self.journal_readiness.retry_token();
-            if self.journal_readiness.prepared_hint()
-                || self.queued_writer_blocked.as_ref() == Some(&retry)
-            {
+            if self.queued_writer_blocked.as_ref() == Some(&retry) {
                 break;
             }
             // Notifications may arrive after a foreign commit. Only this
@@ -2674,7 +2697,8 @@ impl CommandAdapter {
                 break;
             };
             let abandoned = self.abandoned_replies.remove(&ticket);
-            match self.execute_or_defer(daemon, &body, ticket) {
+            match self.execute_or_defer_from(daemon, &body, ticket, DeferredCommandOrigin::Waiting)
+            {
                 Ok(Executed::Reply(reply)) if !abandoned => ready.push((ticket, Ok(reply))),
                 Ok(Executed::Deferred) if abandoned => self.abandon_active_reply(ticket),
                 Ok(Executed::Reply(_)) | Ok(Executed::Deferred) => {}
@@ -3117,7 +3141,10 @@ impl CommandAdapter {
                                 base_workspace_sequence,
                                 partial_plan.clone(),
                             );
-                        if matches!(preparation, Err(IndexOperationJournalError::PreparedBusy)) {
+                        if matches!(
+                            preparation,
+                            Err(IndexOperationJournalError::PreparedBusy | IndexOperationJournalError::DatabaseBusy)
+                        ) {
                             prepared_busy = true;
                         }
                         preparation.map_err(|error| {
@@ -3142,7 +3169,7 @@ impl CommandAdapter {
                 },
         );
         let committed = match committed {
-            Err(_) if prepared_busy => return Err(FinishAddError::PreparedBusy),
+            Err(_) if prepared_busy => return Err(FinishAddError::PublicationBusy),
             Err(error) => return Err(FinishAddError::Failed(error)),
             Ok(committed) => committed,
         };
@@ -6794,6 +6821,115 @@ mod tests {
     }
 
     #[test]
+    fn database_writer_contention_retains_candidate_until_explicit_retry() {
+        let mut fixture = AdapterFixture::new();
+        let (adapter, daemon) = fixture.parts();
+        install_transition_job(adapter);
+        let operation = backend_library::IndexOperationKey::from_bytes([111; 32]).expect("key");
+        let package = adapter
+            .indexing
+            .as_ref()
+            .expect("job")
+            .owner_ticket
+            .package()
+            .clone();
+        adapter
+            .index_operations
+            .accept(operation, package, CompileExecutionIntent::Interactive)
+            .expect("accept");
+        let path = adapter
+            .product_state
+            .workspace_path()
+            .expect("workspace")
+            .join("index-operations-v1.turso");
+        let foreign = super::IndexOperationJournal::open(path).expect("foreign journal");
+        adapter.journal_readiness.close();
+        let writer = foreign.connection_for_test();
+        let (locked, lock_ready) = std::sync::mpsc::sync_channel(1);
+        let (release, released) = std::sync::mpsc::sync_channel(1);
+        let holder = std::thread::spawn(move || {
+            futures_executor::block_on(async {
+                let transaction = writer
+                    .transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate)
+                    .await
+                    .expect("hold independent writer");
+                locked.send(()).expect("writer ready");
+                let _ = released.recv_timeout(std::time::Duration::from_secs(10));
+                transaction
+                    .rollback()
+                    .await
+                    .expect("release independent writer");
+            })
+        });
+        lock_ready
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("independent transaction acquired");
+        let mut indexing = adapter.indexing.take().expect("job");
+        indexing.operation_key = Some(operation);
+        let started = std::time::Instant::now();
+        let outcome = adapter.finish_prepared_index_selection(
+            daemon,
+            &mut indexing,
+            PreparedProductSelection {
+                intent: None,
+                selected: Vec::new(),
+                revision_fence: None,
+            },
+            &mut None,
+        );
+        // Keep the competing Immediate transaction until the bounded driver
+        // timeout has returned, rather than racing a short sleep against it.
+        release.send(()).expect("release writer");
+        holder.join().expect("writer retired");
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(200),
+            "exercise the bounded database busy timeout"
+        );
+        assert!(
+            outcome.is_none(),
+            "retryable SQL contention must retain the candidate"
+        );
+        assert!(matches!(indexing.work, IndexJobWork::Publishing { .. }));
+        assert!(matches!(
+            adapter
+                .index_operations
+                .entry(operation)
+                .expect("accepted row"),
+            Some(JournalEntry::Retained(StoredOperation {
+                state: StoredOperationState::Accepted,
+                ..
+            }))
+        ));
+        adapter.indexing = Some(indexing);
+        adapter.journal_readiness.close();
+        let reads = adapter.index_operations.read_query_count();
+        for _ in 0..1000 {
+            assert!(adapter.poll_deferred(daemon).is_empty());
+        }
+        assert_eq!(
+            adapter.index_operations.read_query_count(),
+            reads,
+            "database busy does not hot retry"
+        );
+        adapter.journal_readiness.refresh();
+        adapter.poll_deferred(daemon);
+        assert!(
+            adapter.indexing.is_none(),
+            "same retained candidate resumes after release and explicit retry"
+        );
+        assert!(matches!(
+            adapter
+                .index_operations
+                .entry(operation)
+                .expect("published row"),
+            Some(JournalEntry::Retained(StoredOperation {
+                state: StoredOperationState::Published { .. },
+                ..
+            }))
+        ));
+    }
+
+    #[test]
     fn retained_candidate_allows_foreign_prepared_recovery() {
         let mut fixture = AdapterFixture::new();
         let (adapter, daemon) = fixture.parts();
@@ -6904,7 +7040,7 @@ mod tests {
         foreign
             .accept(
                 operation,
-                backend_library::PackageReference::parse(label).expect("package"),
+                backend_library::PackageReference::parse(label.clone()).expect("package"),
                 CompileExecutionIntent::Interactive,
             )
             .expect("durable accept");
@@ -6936,9 +7072,86 @@ mod tests {
                 backend_library::ProductText::from_static("foreign retired"),
             )
             .expect("release durable slot");
+        assert!(
+            matches!(
+                adapter.execute_or_defer(daemon, &remove_body(2, package, &label), 703),
+                Ok(Executed::Deferred)
+            ),
+            "an incoming retry wakes the retained FIFO rather than bypassing it"
+        );
+        let ready = adapter.poll_deferred(daemon);
+        assert_eq!(
+            ready.iter().map(|(ticket, _)| *ticket).collect::<Vec<_>>(),
+            vec![701, 703],
+            "both replies retain incoming order"
+        );
+        assert!(ready[0].1.is_ok());
+        assert!(adapter.waiting.is_empty());
+        assert!(!project_is_admitted(daemon, package));
+    }
+
+    #[test]
+    fn queued_writer_explicit_retry_ignores_stale_prepared_hint_after_reader_loss() {
+        let mut fixture = AdapterFixture::new();
+        let package = fixture.package;
+        let label = fixture.label.clone();
+        let (adapter, daemon) = fixture.parts();
+        install_transition_job(adapter);
+        assert!(matches!(
+            adapter.execute_or_defer(daemon, &remove_body(1, package, &label), 702),
+            Ok(Executed::Deferred)
+        ));
+        adapter.indexing.take();
+        let path = adapter
+            .product_state
+            .workspace_path()
+            .expect("workspace")
+            .join("index-operations-v1.turso");
+        let mut foreign = super::IndexOperationJournal::open(path).expect("foreign journal");
+        let operation = backend_library::IndexOperationKey::from_bytes([108; 32]).expect("key");
+        foreign
+            .accept(
+                operation,
+                backend_library::PackageReference::parse(label).expect("package"),
+                CompileExecutionIntent::Interactive,
+            )
+            .expect("accept");
+        foreign
+            .prepare(operation, Some([109; 32]), [110; 32], 1)
+            .expect("prepare");
+        adapter.journal_readiness.exhaust_notifications();
+        adapter.journal_readiness.refresh();
+        adapter.journal_readiness.poll();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !adapter.journal_readiness.prepared_hint() && std::time::Instant::now() < deadline {
+            adapter.journal_readiness.poll();
+            std::thread::yield_now();
+        }
+        assert!(
+            adapter.journal_readiness.prepared_hint(),
+            "retain a positive degraded receipt"
+        );
+        adapter.journal_readiness.disconnect_reader();
+        assert!(adapter.poll_deferred(daemon).is_empty());
+        let reads = adapter.index_operations.read_query_count();
+        for _ in 0..1000 {
+            assert!(adapter.poll_deferred(daemon).is_empty());
+        }
+        assert_eq!(adapter.index_operations.read_query_count(), reads);
+        foreign
+            .failed(
+                operation,
+                backend_library::IndexOperationFailureReason::WorkerFailed,
+                backend_library::ProductText::from_static("foreign retired"),
+            )
+            .expect("release slot without a notification");
         adapter.journal_readiness.refresh();
         let ready = adapter.poll_deferred(daemon);
-        assert_eq!(ready.len(), 1, "explicit retry admits the retained remove");
+        assert_eq!(
+            ready.len(),
+            1,
+            "explicit retry crosses the stale positive hint"
+        );
         assert!(ready[0].1.is_ok());
         assert!(adapter.waiting.is_empty());
         assert!(!project_is_admitted(daemon, package));

@@ -290,6 +290,7 @@ impl JournalReadiness {
         pending.first
     }
 
+    #[cfg(test)]
     pub(super) fn prepared_hint(&self) -> bool {
         matches!(self.selected, Readiness::Observed(_, pending) | Readiness::Degraded(_, pending) if pending.prepared)
     }
@@ -306,6 +307,13 @@ impl JournalReadiness {
     #[cfg(test)]
     pub(super) fn exhaust_notifications(&self) {
         self.changed.sequence.store(u64::MAX, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(super) fn disconnect_reader(&mut self) {
+        let selected = self.selected;
+        self.close();
+        self.selected = selected;
     }
 
     pub(super) fn close(&mut self) {
