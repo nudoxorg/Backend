@@ -14,7 +14,7 @@ use backend_frontend_rust::legacy::{
     RustAnalysisControl, RustCargoMetadataPolicy, RustDefinition, RustFeatureControl,
     RustToolchain, RustWorkspace, SemanticKind, SourceByteLimit, SourceOrigin,
     ra_ap_hir::{AssocItem, ModuleDef, PathResolution},
-    ra_ap_syntax::AstNode,
+    ra_ap_syntax::{AstNode, ast},
 };
 use backend_semantic::vocabulary::RustEdition;
 
@@ -93,8 +93,11 @@ fn main() -> Result<()> {
             let mut typed_calls = Vec::new();
             for call in authority.method_calls() {
                 if call.target == Some(serialize_method)
-                    && call.inferred.as_ref().is_some_and(|inferred| !inferred.original.is_unknown())
+                    && call.inferred.as_ref().is_some_and(|inferred| !inferred.original.contains_unknown())
                     && authority.definition_origin(serialize_method, SemanticKind::Function) == SourceOrigin::Foreign(SemanticKind::Function)
+                    && call.syntax.syntax().ancestors().find_map(ast::Fn::cast)
+                        .and_then(|function| function.name())
+                        .is_some_and(|name| name.text() == "serialize_tagged_newtype")
                 {
                     let span = authority.span(call.syntax.syntax())?;
                     typed_calls.push((span.start, String::from_utf8_lossy(authority.source_at(span)?).into_owned()));
