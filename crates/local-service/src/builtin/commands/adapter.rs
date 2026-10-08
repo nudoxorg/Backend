@@ -5468,6 +5468,8 @@ mod tests {
 
     #[test]
     fn absent_catalog_reads_keep_typed_failure_through_the_real_adapter_and_wire() {
+        use backend_library::CommandReply;
+
         let mut fixture = AdapterFixture::new();
         let (adapter, daemon) = fixture.parts();
         let root = daemon.engine().daemon().library().revision_root();
