@@ -466,6 +466,153 @@ fn forge_owner_refreshes_cross_instance_publications_for_reference_and_search() 
     fs::remove_dir_all(root).expect("cleanup");
 }
 
+const READ_FENCE_WORKER_ROOT: &str = "BACKEND_FORGE_READ_FENCE_ROOT";
+
+fn wait_for_fence_marker(path: &Path) -> io::Result<Vec<u8>> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match fs::read(path) {
+            Ok(bytes) => return Ok(bytes),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "forge fence process did not publish its marker",
+            ));
+        }
+        thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn forge_read_fence_process_worker() {
+    let Some(root) = std::env::var_os(READ_FENCE_WORKER_ROOT) else {
+        return;
+    };
+    let root = PathBuf::from(root);
+    let barrier = root.join("fence-control");
+    let owner = ForgeAcquisitionService::open(
+        &root,
+        ForgeAcquisitionPolicy::Online,
+        ForgeAcquisitionLimits::default(),
+    )
+    .expect("worker owner");
+    let mut transport = Fixture {
+        calls: AtomicUsize::new(0),
+        archive: tar_one(
+            "crates/widget/Cargo.toml",
+            b"[package]\nname=\"widget\"\nversion=\"1.2.3\"\n",
+        ),
+    };
+    let stdin = std::io::stdin();
+    let mut stdin = stdin.lock();
+    let mut signal = [0_u8; 1];
+    stdin.read_exact(&mut signal).expect("gate probe signal");
+    let gate_available = owner
+        .journal_gate_available_for_test()
+        .expect("probe journal publication gate");
+    fs::write(
+        barrier.join("attempt-1.gate"),
+        if gate_available { "available" } else { "busy" },
+    )
+    .expect("write gate probe result");
+
+    stdin.read_exact(&mut signal).expect("publication signal");
+    let outcome = owner.acquire(&coordinate(), &mut transport);
+    let label = match &outcome {
+        ForgeAcquisitionOutcome::Hit(_) => "published",
+        ForgeAcquisitionOutcome::Unavailable => "unavailable",
+        ForgeAcquisitionOutcome::Offline => "offline",
+        ForgeAcquisitionOutcome::RetryAfter(_) => "retry-after",
+        ForgeAcquisitionOutcome::Rejected(_) => "rejected",
+        ForgeAcquisitionOutcome::Corrupt => "corrupt",
+    };
+    fs::write(
+        barrier.join("attempt-2.result"),
+        format!("{label}:{}", transport.calls.load(Ordering::Relaxed)),
+    )
+    .expect("write worker outcome");
+}
+
+#[test]
+fn forge_search_snapshot_keeps_publication_gate_until_capture_finishes() {
+    let root = std::env::temp_dir().join(format!(
+        "nudox-forge-read-fence-{}-{}",
+        std::process::id(),
+        now_millis()
+    ));
+    let _root_directory =
+        backend_platform::OwnedWorkspaceDirectory::open(&root).expect("create private forge root");
+    let barrier = root.join("fence-control");
+    fs::create_dir_all(&barrier).expect("control directory");
+    let owner = ForgeAcquisitionService::open(
+        &root,
+        ForgeAcquisitionPolicy::Online,
+        ForgeAcquisitionLimits::default(),
+    )
+    .expect("reader owner");
+    let before = owner
+        .search_catalog_snapshot()
+        .expect("initial empty snapshot");
+    assert!(before.records.is_empty());
+
+    let executable = std::env::current_exe().expect("test executable");
+    let mut worker = Command::new(executable)
+        .arg("--nocapture")
+        .arg("forge_read_fence_process_worker")
+        .env(READ_FENCE_WORKER_ROOT, &root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn foreign forge owner");
+    let mut worker_stdin = worker.stdin.take().expect("worker stdin");
+    let mut first_signal_sent = false;
+    let captured = owner.search_catalog_snapshot_with_capture_hook_for_test(|| {
+        worker_stdin.write_all(b"1")?;
+        worker_stdin.flush()?;
+        first_signal_sent = true;
+        let _ = wait_for_fence_marker(&barrier.join("attempt-1.gate"))?;
+        Ok(())
+    });
+    if first_signal_sent {
+        let _ = worker_stdin.write_all(b"2");
+    } else {
+        let _ = worker_stdin.write_all(b"12");
+    }
+    let _ = worker_stdin.flush();
+    let second_result = wait_for_fence_marker(&barrier.join("attempt-2.result"));
+    let worker_output = worker.wait_with_output().expect("wait for foreign owner");
+    assert!(
+        worker_output.status.success(),
+        "foreign owner failed: {}",
+        String::from_utf8_lossy(&worker_output.stderr)
+    );
+    assert_eq!(
+        fs::read(barrier.join("attempt-1.gate")).expect("gate probe result"),
+        b"busy",
+        "foreign owner must observe the interprocess gate held through snapshot capture"
+    );
+    assert_eq!(
+        second_result.expect("second owner result"),
+        b"published:2",
+        "the foreign owner should publish after the read fence is released"
+    );
+    let captured = captured.expect("capture under the publication gate");
+    assert_eq!(captured.revision, before.revision);
+    assert!(captured.records.is_empty());
+
+    let refreshed = owner
+        .search_catalog_snapshot()
+        .expect("observe foreign publication after capture");
+    assert_eq!(refreshed.records.len(), 1);
+    assert_ne!(refreshed.revision, before.revision);
+    drop(owner);
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
 #[test]
 fn concurrent_forge_journal_process_worker() {
     let Some(root) = std::env::var_os("BACKEND_FORGE_JOURNAL_WORKER_ROOT") else {

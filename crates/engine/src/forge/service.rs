@@ -181,22 +181,19 @@ impl ForgeAcquisitionService {
         let Some(mut endpoint_lease) = self.acquire_journal_lease()? else {
             return Ok(None);
         };
-        let refreshed = endpoint_lease.publish_if_current(FORGE_LEASE_TTL, |_endpoint_fence| {
+        endpoint_lease.publish_if_current(FORGE_LEASE_TTL, |_endpoint_fence| {
             let mut catalog = self
                 .catalog
                 .lock()
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "forge catalog lock"))?;
             self.refresh_catalog_suffix(&mut catalog)?;
-            Ok(())
-        })?;
-        if refreshed.is_none() {
-            return Ok(None);
-        }
-        let mut catalog = self
-            .catalog
-            .lock()
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "forge catalog lock"))?;
-        read(&mut catalog).map(Some)
+            read(&mut catalog)
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn journal_gate_available_for_test(&self) -> io::Result<bool> {
+        self.leases.gate_available_for_test(self.journal_work_key)
     }
 
     fn with_product_journal_fence<T>(
@@ -295,14 +292,21 @@ impl ForgeAcquisitionService {
     }
 
     /// Returns the selected search records together with the exact validated
-    /// forge journal tail they represent. The service refreshes under its
-    /// publication fence before capturing either value, so a publication from
-    /// another process advances the revision before callers can reuse a
-    /// projection.
+    /// forge journal tail they represent. The service refreshes and captures
+    /// both values under one publication fence, so another process cannot
+    /// publish between journal validation and snapshot capture.
     pub fn search_catalog_snapshot(
         &self,
     ) -> Result<ForgeSearchCatalogSnapshot, ForgeAcquisitionError> {
+        self.search_catalog_snapshot_with_capture_hook(|| Ok(()))
+    }
+
+    fn search_catalog_snapshot_with_capture_hook(
+        &self,
+        before_capture: impl FnOnce() -> io::Result<()>,
+    ) -> Result<ForgeSearchCatalogSnapshot, ForgeAcquisitionError> {
         self.with_journal_fence(|catalog| {
+            before_capture()?;
             let (next_sequence, chain) = self.journal.tail_identity().map_err(journal_io_error)?;
             Ok(ForgeSearchCatalogSnapshot {
                 revision: ForgeSearchCatalogRevision::from_tail_identity(next_sequence, chain),
@@ -323,6 +327,14 @@ impl ForgeAcquisitionService {
         })
         .map_err(forge_fence_error)?
         .ok_or_else(forge_fence_busy)
+    }
+
+    #[cfg(test)]
+    pub(super) fn search_catalog_snapshot_with_capture_hook_for_test(
+        &self,
+        before_capture: impl FnOnce() -> io::Result<()>,
+    ) -> Result<ForgeSearchCatalogSnapshot, ForgeAcquisitionError> {
+        self.search_catalog_snapshot_with_capture_hook(before_capture)
     }
 
     /// Acquires one exact source through a typed transport and the shared CAS.
