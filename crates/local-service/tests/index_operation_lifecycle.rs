@@ -235,7 +235,22 @@ fn run_deferred_rust_public_indexing(fixture: &FailureFixture) -> Result<(), Box
         }
         selected_generation = Some(source.generation);
         let marker = selected_symbol_by_name(&mut session, "deferred_public_marker")?;
+        let marker_package =
+            selected_package_by_symbol(&mut session, "deferred_public_marker", marker)?;
+        let marker = selected_symbol_by_name_and_kind(
+            &mut session,
+            "deferred_public_marker",
+            DeclarationKind::Function,
+            marker_package,
+        )?;
         let answer = selected_symbol_by_name(&mut session, "answer")?;
+        let answer_package = selected_package_by_symbol(&mut session, "answer", answer)?;
+        let answer = selected_symbol_by_name_and_kind(
+            &mut session,
+            "answer",
+            DeclarationKind::Function,
+            answer_package,
+        )?;
         let shapes = session.semantic_shapes(
             source.clone(),
             &[marker],

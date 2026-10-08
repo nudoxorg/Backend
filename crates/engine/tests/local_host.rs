@@ -288,8 +288,8 @@ fn deferred_default_rust_admits_a_real_workspace_and_local_recipe_then_reopens_o
         CorrelationId, GenerateTarget, PackageCompileRequest, PackageUrl,
     };
     use backend_semantic::ir::{
-        Confidence, ExternalTarget, ForeignTargetOrigin, LinkKind, LinkTarget, SemanticCoreReader,
-        SemanticReader,
+        Confidence, ExternalTarget, ForeignTargetOrigin, ItemKind, LinkKind, LinkTarget,
+        SemanticCoreReader, SemanticReader,
     };
     use backend_semantic::vocabulary::{RustEdition, Stage};
 
@@ -437,17 +437,28 @@ fn deferred_default_rust_admits_a_real_workspace_and_local_recipe_then_reopens_o
                         .map(|entity| {
                             (
                                 entity.id,
+                                entity.kind,
+                                entity.source,
                                 entity.name.named_atom().and_then(|name| reader.atom(name)),
                             )
                         })
                         .collect::<Vec<_>>()
                 );
-                let Some(drive) = reader.canonical_entities().find_map(|entity| {
-                    let name = entity.name.named_atom()?;
-                    (reader.atom(name) == Some(b"drive")).then_some(entity.id)
-                }) else {
+                let mut drives = reader.canonical_entities().filter(|entity| {
+                    entity.kind == ItemKind::Function
+                        && entity.name.named_atom().and_then(|name| reader.atom(name))
+                            == Some(b"drive")
+                });
+                let Some(drive) = drives.next() else {
                     return Ok::<_, std::io::Error>(0);
                 };
+                assert!(drives.next().is_none(), "the fixture has one drive function");
+                assert_eq!(
+                    drive.source.map(|span| (span.start(), span.end())),
+                    Some((13, 77)),
+                    "select the exact function declaration, never its named result carrier"
+                );
+                let drive = drive.id;
                 let expected_start = u32::try_from(caller.find("set_note").unwrap()).unwrap();
                 let mut count = 0;
                 for (_, occurrence) in reader.link_occurrences() {
