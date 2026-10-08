@@ -57,7 +57,7 @@ fn real_selected_loader_refreshes_missing_dependencies_without_owner_restart()
     let environment =
         GoOracleChildEnvironment::new(go.clone(), goroot, module_cache, build_cache.clone())?;
     let owner: ConfiguredGoOracle = GoOracle::default()
-        .with_configuration(GoOracleConfiguration::go_toolchain(go)?)
+        .with_configuration(GoOracleConfiguration::go_toolchain(go.clone())?)
         .with_child_environment(environment)?;
     let cancelled = AtomicBool::new(false);
     let missing = owner.package_authority_witness_cancellable(&project, Some(&cancelled))?;
@@ -117,7 +117,7 @@ fn real_selected_loader_refreshes_missing_dependencies_without_owner_restart()
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     let mut observed_build = false;
     while std::time::Instant::now() < deadline {
-        observed_build = std::fs::read_dir(&helper_cache).is_ok_and(|entries| {
+        let staged = std::fs::read_dir(&helper_cache).is_ok_and(|entries| {
             entries.filter_map(Result::ok).any(|entry| {
                 entry
                     .file_name()
@@ -125,6 +125,14 @@ fn real_selected_loader_refreshes_missing_dependencies_without_owner_restart()
                     .starts_with("go-oracle-build-")
             })
         });
+        #[cfg(target_os = "linux")]
+        {
+            observed_build = staged && actual_helper_build_child(&go, &helper_cache);
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            observed_build = staged;
+        }
         if observed_build || child.is_finished() {
             break;
         }
@@ -137,7 +145,7 @@ fn real_selected_loader_refreshes_missing_dependencies_without_owner_restart()
     ));
     assert!(
         observed_build,
-        "cancellation must interrupt an actual helper build"
+        "cancellation must interrupt helper preparation (and an observed real Go build child on Linux)"
     );
     assert!(
         std::fs::read_dir(&helper_cache)?
@@ -181,4 +189,44 @@ fn real_selected_loader_refreshes_missing_dependencies_without_owner_restart()
         Err(OracleError::Cancelled)
     ));
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn actual_helper_build_child(go: &std::path::Path, helper_cache: &std::path::Path) -> bool {
+    use std::os::unix::ffi::OsStrExt as _;
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return false;
+    };
+    entries.filter_map(Result::ok).any(|entry| {
+        let path = entry.path();
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .bytes()
+            .all(|byte| byte.is_ascii_digit())
+        {
+            return false;
+        }
+        let Ok(status) = std::fs::read_to_string(path.join("status")) else {
+            return false;
+        };
+        let parent = status.lines().find_map(|line| {
+            line.strip_prefix("PPid:")
+                .and_then(|value| value.trim().parse::<u32>().ok())
+        });
+        if parent != Some(std::process::id())
+            || path.join("exe").canonicalize().ok().as_deref() != Some(go)
+        {
+            return false;
+        }
+        let Ok(argv) = std::fs::read(path.join("cmdline")) else {
+            return false;
+        };
+        let arguments = argv.split(|byte| *byte == 0).collect::<Vec<_>>();
+        arguments.get(1).copied() == Some(b"build".as_slice())
+            && arguments.iter().any(|arg| *arg == b"-mod=vendor")
+            && arguments.iter().any(|arg| {
+                std::path::Path::new(std::ffi::OsStr::from_bytes(arg)).starts_with(helper_cache)
+            })
+    })
 }
