@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Native Mac release driver: preflight, receipted build/package, sign/notarize."""
 import argparse
+import hashlib
 import json
 import platform
 import plistlib
@@ -16,6 +17,20 @@ from release_contract import ASSET, sha256
 HERE = Path(__file__).resolve().parent
 MACHO = {b"\xfe\xed\xfa\xcf", b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca", b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca"}
 INPUTS = {"cargo_runner", "cargo_bundle", "icon", "dotnet_root", "dotnet_receipt", "dotnet_pin", "roslyn_dir", "roslyn_receipt", "helpers_dir", "helpers_receipt"}
+LEGACY_INPUTS = {"dotnet_root", "dotnet_receipt", "dotnet_pin", "roslyn_dir", "roslyn_receipt"}
+
+
+def sdk_only(config):
+    selected = config.get("sdk_only", False)
+    if type(selected) is not bool:
+        raise ValueError("sdk_only must be a boolean")
+    if selected and any(config.get(key) for key in LEGACY_INPUTS | {"dotnet_source_archive"}):
+        raise ValueError("SDK-only release must not include unrelated legacy helper inputs")
+    return selected
+
+
+def release_inputs(config):
+    return INPUTS - LEGACY_INPUTS if sdk_only(config) else INPUTS
 
 
 def run(command, **kwargs):
@@ -39,11 +54,16 @@ def preflight(config, stage="build"):
     floor = max(20, config.get("disk_floor_gib", 40))
     if stage == "sign":
         app = output / "package/Nudox.app"
-        total = sum(path.stat().st_size for path in app.rglob("*") if path.is_file() and not path.is_symlink())
+        import finalize_macos_typescript_sdk as sdk
+        try:
+            total = sdk.bundle.bundle_size(app)
+        except sdk.bundle.PackageError as error:
+            problems.append(str(error))
+            total = 0
         floor = max(2, 3 * total / 1024**3)
     if free < floor:
         problems.append(f"build volume has {free:.1f} GiB free; configured admission floor is {floor} GiB")
-    for key in sorted(INPUTS):
+    for key in sorted(release_inputs(config)):
         if not config.get(key) or not Path(config[key]).is_absolute() or not Path(config[key]).exists():
             problems.append(f"missing absolute release input: {key}")
     for key in ("expected_revision", "expected_tree", "expected_runner_sha256", "expected_icon_sha256", "minimum_os", "signing_identity", "notary_profile"):
@@ -52,6 +72,8 @@ def preflight(config, stage="build"):
     for tool in ("xcrun", "codesign", "security", "ditto", "otool", "spctl"):
         if shutil.which(tool) is None:
             problems.append(f"missing native distribution tool: {tool}")
+    if shutil.which("codesign") != "/usr/bin/codesign":
+        problems.append("codesign must resolve to the selected Apple /usr/bin/codesign")
     if not source.is_dir():
         problems.append("source checkout is missing")
     else:
@@ -89,8 +111,10 @@ def prepare(config):
     common = ["--source-root", str(source), "--expected-revision", config["expected_revision"], "--expected-tree", config["expected_tree"], "--expected-runner-sha256", config["expected_runner_sha256"]]
     run([sys.executable, str(HERE / "build-macos-investor-app.py"), *common, "--cargo-runner", config["cargo_runner"], "--output-dir", str(build)])
     arguments = [sys.executable, str(HERE / "macos-investor-bundle.py"), *common, "--artifact-dir", str(build / "artifacts"), "--build-receipt", str(build / "application-build-receipt.json"), "--output-dir", str(package), "--minimum-os", config["minimum_os"], "--expected-icon-sha256", config["expected_icon_sha256"]]
-    for key in INPUTS - {"cargo_runner"}:
+    for key in sorted(release_inputs(config) - {"cargo_runner"}):
         arguments.extend(["--" + key.replace("_", "-"), config[key]])
+    if sdk_only(config):
+        arguments.extend(["--sdk-only", "--defer-sdk-runtime-probes"])
     for key in ("dotnet_source_archive", "relocation_plan"):
         if config.get(key):
             arguments.extend(["--" + key.replace("_", "-"), config[key]])
@@ -111,9 +135,44 @@ def finalize(config):
     if candidate.exists():
         raise ValueError("completed/partial candidate already exists; inspect it before retrying")
     app = package / "Nudox.app"
-    evidence = json.loads((app / "Contents/Resources/build-manifest.json").read_text())
+    sdk = None
+    if sdk_only(config):
+        import finalize_macos_typescript_sdk as sdk
+        evidence = sdk.read_json(app / "Contents/Resources/build-manifest.json", "SDK assembly manifest")
+    else:
+        evidence = json.loads((app / "Contents/Resources/build-manifest.json").read_text())
     if evidence["source"]["git_revision"] != config["expected_revision"] or evidence["source"]["git_tree"] != config["expected_tree"]:
         raise ValueError("packaged source differs from selected release")
+    if sdk is not None:
+        expected_source = {"git_revision": config["expected_revision"], "git_tree": config["expected_tree"],
+                           "cargo_lock_sha256": sha256(source / "Cargo.lock"), "working_tree": "clean"}
+        if (evidence["source"] != expected_source
+                or evidence["target"] != {"triple": "aarch64-apple-darwin", "architecture": "arm64"}
+                or evidence["bundle"]["minimum_macos"] != config["minimum_os"]):
+            raise ValueError("SDK assembly source/target/minimum OS differs from selected release")
+        try:
+            selected_receipt = Path(config["helpers_receipt"]).resolve(strict=True)
+            if selected_receipt.is_relative_to(app.resolve(strict=True)):
+                raise ValueError("selected SDK source receipt must be external to the assembled app")
+            selected_bytes = sdk.read_regular_bytes(selected_receipt, 16 * 1024**2, "selected external SDK source receipt")
+            package_receipt_bytes = sdk.read_regular_bytes(package / "Nudox-macOS.receipt.json", 16 * 1024**2, "external package receipt")
+            package_receipt = json.loads(package_receipt_bytes)
+            if (not isinstance(package_receipt, dict) or package_receipt.get("schema") != 1
+                    or package_receipt.get("application_source") != expected_source):
+                raise ValueError("external package receipt differs from the selected clean source")
+            build_receipt_bytes = sdk.read_regular_bytes(output / "build/application-build-receipt.json", 16 * 1024**2, "external application build receipt")
+            build_receipt = json.loads(build_receipt_bytes)
+            if (not isinstance(build_receipt, dict) or build_receipt.get("source") != expected_source
+                    or hashlib.sha256(build_receipt_bytes).hexdigest() != evidence["application_build"].get("receipt_sha256")
+                    or build_receipt.get("executables") != evidence["application_build"].get("executables")):
+                raise ValueError("external application build receipt differs from packaged build provenance")
+            precursor = sdk.admit(app, evidence, output, hashlib.sha256(selected_bytes).hexdigest(), package_receipt.get("bundle_manifest_sha256"))
+            precursor["external_package_receipt_sha256"] = hashlib.sha256(package_receipt_bytes).hexdigest()
+            precursor["external_application_build_receipt_sha256"] = hashlib.sha256(build_receipt_bytes).hexdigest()
+        except sdk.bundle.PackageError as error:
+            raise ValueError(str(error)) from error
+    elif evidence.get("compiler_helpers", {}).get("assembly_mode") == "typescript-sdk-only":
+        raise ValueError("SDK-only assembly requires an explicit SDK-only release configuration")
     version = tomllib.loads((source / "Cargo.toml").read_text())["workspace"]["package"]["version"]
     if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) is None:
         raise ValueError("source workspace version must be stable semver")
@@ -127,15 +186,20 @@ def finalize(config):
         if magic not in MACHO:
             continue
         header = subprocess.check_output(["otool", "-hv", str(path)], text=True)
-        command = ["codesign", "--force", "--timestamp", "--options", "runtime", "--sign", config["signing_identity"]]
+        command = ["/usr/bin/codesign", "--force", "--timestamp", "--options", "runtime", "--sign", config["signing_identity"]]
         if "EXECUTE" in header:
             command += ["--entitlements", str(entitlements)]
         run(command + [str(path)])
     for nested in sorted(app.rglob("*"), key=lambda p: len(p.parts), reverse=True):
         if nested.is_dir() and not nested.is_symlink() and nested.suffix in {".framework", ".bundle", ".xpc", ".app"}:
-            run(["codesign", "--force", "--timestamp", "--options", "runtime", "--sign", config["signing_identity"], str(nested)])
-    run(["codesign", "--force", "--timestamp", "--options", "runtime", "--sign", config["signing_identity"], str(app)])
-    run(["codesign", "--verify", "--deep", "--strict", str(app)])
+            run(["/usr/bin/codesign", "--force", "--timestamp", "--options", "runtime", "--sign", config["signing_identity"], str(nested)])
+    if sdk is not None:
+        try:
+            sdk.refresh(app, evidence, precursor)
+        except sdk.bundle.PackageError as error:
+            raise ValueError(str(error)) from error
+    run(["/usr/bin/codesign", "--force", "--timestamp", "--options", "runtime", "--sign", config["signing_identity"], str(app)])
+    run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)])
     submission = output / "notarization.zip"
     run(["ditto", "-c", "-k", "--keepParent", str(app), str(submission)])
     result = run(["xcrun", "notarytool", "submit", str(submission), "--keychain-profile", config["notary_profile"], "--wait", "--output-format", "json"], stdout=subprocess.PIPE, text=True)
@@ -145,7 +209,7 @@ def finalize(config):
         raise ValueError("notarization was not accepted; inspect notarization.json")
     run(["xcrun", "stapler", "staple", str(app)])
     run(["xcrun", "stapler", "validate", str(app)])
-    run(["codesign", "--verify", "--deep", "--strict", str(app)])
+    run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)])
     run(["spctl", "--assess", "--type", "execute", str(app)])
     candidate.mkdir()
     archive = candidate / ASSET

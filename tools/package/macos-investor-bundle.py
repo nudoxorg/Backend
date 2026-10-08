@@ -18,13 +18,18 @@ import platform
 import plistlib
 import posixpath
 import re
+import selectors
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 from pathlib import Path
 from typing import Any
+
+from linux_release_package import admit_file_digest, parse_json_bytes, read_regular_bytes
 
 from macho_relocation import (
     RelocationInputError,
@@ -100,19 +105,56 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def file_inventory(root: Path) -> dict[str, dict[str, Any]]:
+def bundle_entries(root: Path, *, maximum_entries: int = 65536,
+                   maximum_bytes: int = 8 * 1024**3):
+    """Walk a finite bundle without following links or reading file payloads."""
+    if not stat.S_ISDIR(root.lstat().st_mode):
+        fail("bundle inventory root must be a real directory")
+    pending = [root]
+    entries = total = 0
+    while pending:
+        with os.scandir(pending.pop()) as children:
+            for child in children:
+                entries += 1
+                if entries > maximum_entries:
+                    fail("bundle inventory exceeds its finite entry bound")
+                path = Path(child.path)
+                metadata = path.lstat()
+                mode = metadata.st_mode
+                if stat.S_ISDIR(mode):
+                    pending.append(path)
+                elif stat.S_ISREG(mode):
+                    if metadata.st_size > min(512 * 1024**2, maximum_bytes - total):
+                        fail("bundle inventory exceeds its finite file/aggregate byte bound")
+                    total += metadata.st_size
+                elif not stat.S_ISLNK(mode):
+                    fail("bundle inventory contains a special file")
+                yield path, metadata
+
+
+def bundle_size(root: Path) -> int:
+    return sum(metadata.st_size for _, metadata in bundle_entries(root)
+               if stat.S_ISREG(metadata.st_mode))
+
+
+def file_inventory(root: Path, *, maximum_entries: int = 65536,
+                   maximum_bytes: int = 8 * 1024**3) -> dict[str, dict[str, Any]]:
     inventory: dict[str, dict[str, Any]] = {}
-    for path in sorted(root.rglob("*")):
+    total = 0
+    for path, metadata in bundle_entries(root, maximum_entries=maximum_entries,
+                                        maximum_bytes=maximum_bytes):
         relative = path.relative_to(root).as_posix()
-        if path.is_symlink():
+        mode = metadata.st_mode
+        if stat.S_ISLNK(mode):
             inventory[relative] = {"kind": "symlink", "target": os.readlink(path)}
-        elif path.is_file():
-            inventory[relative] = {
-                "kind": "file",
-                "sha256": sha256(path),
-                "size_bytes": path.stat().st_size,
-            }
-    return inventory
+        elif stat.S_ISREG(mode):
+            size, digest = admit_file_digest(path, min(512 * 1024**2, maximum_bytes - total))
+            if path.lstat().st_mode != mode or size != metadata.st_size:
+                fail("bundle file mode/size changed during inventory admission")
+            total += size
+            inventory[relative] = {"kind": "file", "sha256": digest,
+                                   "size_bytes": size, "mode": stat.S_IMODE(mode)}
+    return dict(sorted(inventory.items()))
 
 
 def load_json(path: Path, label: str) -> dict[str, Any]:
@@ -161,7 +203,7 @@ def relocation_inputs(
             fail("a relocation plan was supplied but no origin receipt attaches to it")
         return None, None
     if attached != set(receipt_paths):
-        fail("every app, Roslyn, helper, and runtime receipt must attach to one shared relocation plan")
+        fail("every selected origin receipt must attach to one shared relocation plan")
     if plan_path is None:
         fail("admitted origin receipts require --relocation-plan")
     try:
@@ -176,7 +218,7 @@ def relocation_inputs(
     plan_digest = hashlib.sha256(plan_bytes).hexdigest()
     expected_origin_ids = set(receipt_paths)
     if set(plan["origins"]) != expected_origin_ids:
-        fail("Mach-O relocation plan origins differ from the four admitted inputs")
+        fail("Mach-O relocation plan origins differ from the selected admitted inputs")
     if plan["source"] != {"git_revision": source["git_revision"], "git_tree": source["git_tree"]}:
         fail("Mach-O relocation plan does not bind the exact application source")
     if plan["target"]["triple"] != target or plan["target"]["architecture"] != MACOS_TARGETS[target]:
@@ -809,14 +851,220 @@ def validate_roslyn_build(
     return receipt, observed
 
 
+def sdk_file_modes(records: dict[str, str]) -> dict[str, int]:
+    return {relative: 0o755 if relative == "typescript/node/bin/node" else 0o644
+            for relative in records}
+
+
+def sdk_file_digests(helper_dir: Path, records: dict[str, str]) -> dict[str, str]:
+    """Refresh selected hashes only within remaining aggregate/package budgets."""
+    if not isinstance(records, dict) or not records or len(records) > 512:
+        fail("SDK helper receipt must contain a bounded complete file inventory")
+    total = package_bytes = 0
+    observed = {}
+    for relative in records:
+        if not isinstance(relative, str):
+            fail("SDK helper receipt has an unsafe file path")
+        path = Path(relative)
+        if ("\\" in relative or path.is_absolute()
+                or path.as_posix() != relative or any(part in {".", ".."} for part in path.parts)
+                or (relative not in {"typescript/node/bin/node", "typescript/node/LICENSE"}
+                    and not relative.startswith("typescript/node_modules/typescript/"))):
+            fail("SDK helper receipt has an unsafe file path")
+        selected = helper_dir / relative
+        expected_mode = sdk_file_modes({relative: ""})[relative]
+        if stat.S_IMODE(selected.lstat().st_mode) != expected_mode:
+            fail("SDK helper file differs from its exact 0755/0644 mode policy")
+        maximum = 512 * 1024**2 - total
+        package = relative.startswith("typescript/node_modules/typescript/")
+        if package:
+            maximum = min(maximum, 96 * 1024**2 - package_bytes)
+        if relative == "typescript/node/LICENSE":
+            maximum = min(maximum, 1024**2)
+        size, digest = admit_file_digest(selected, maximum)
+        if stat.S_IMODE(selected.lstat().st_mode) != expected_mode:
+            fail("SDK helper mode changed during bounded admission")
+        total += size
+        package_bytes += size if package else 0
+        observed[relative] = digest
+    return observed
+
+
+def validate_sdk_helper_payload(
+    receipt: dict[str, Any], helper_dir: Path, source: dict[str, str], target: str,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Admit the finite Node/Compiler API payload without inventing other helpers."""
+    if receipt.get("schema") != 1 or receipt.get("source") != source or receipt.get("target") != target:
+        fail("SDK helper receipt must bind the complete clean application source and target")
+    records = receipt.get("files")
+    if not isinstance(records, dict) or not records or len(records) > 512:
+        fail("SDK helper receipt must contain a bounded complete file inventory")
+    if receipt.get("file_modes") != sdk_file_modes(records):
+        fail("SDK helper receipt must bind exact 0755 Node and 0644 package/notice modes")
+    directories: set[str] = set()
+    for relative, digest in records.items():
+        if not isinstance(relative, str) or "\\" in relative:
+            fail("SDK helper receipt has an unsafe file path")
+        path = Path(relative)
+        if path.is_absolute() or path.as_posix() != relative or any(part in {".", ".."} for part in path.parts):
+            fail("SDK helper receipt has an unsafe file path")
+        if relative not in {"typescript/node/bin/node", "typescript/node/LICENSE"} and not relative.startswith("typescript/node_modules/typescript/"):
+            fail("SDK-only payload must contain only the selected Node and TypeScript package")
+        require_sha(digest, "SDK helper file")
+        directories.update(parent.as_posix() for parent in path.parents if parent.parts)
+    observed: dict[str, str] = {}
+    total = package_bytes = entries = 0
+    pending = [helper_dir]
+    while pending:
+        for path in pending.pop().iterdir():
+            entries += 1
+            if entries > 2048 or path.is_symlink() or not (path.is_dir() or path.is_file()):
+                fail("SDK helper payload exceeds its entry bound or contains a link/special file")
+            relative = path.relative_to(helper_dir).as_posix()
+            if path.is_dir():
+                if relative not in directories:
+                    fail("SDK helper payload contains an unreceipted directory")
+                pending.append(path)
+                continue
+            if relative not in records:
+                fail("SDK helper payload contains an unreceipted file")
+            expected_mode = receipt["file_modes"][relative]
+            if stat.S_IMODE(path.lstat().st_mode) != expected_mode:
+                fail("SDK helper file differs from its exact 0755/0644 mode policy")
+            maximum = 512 * 1024**2 - total
+            is_package = relative.startswith("typescript/node_modules/typescript/")
+            if is_package:
+                maximum = min(maximum, 96 * 1024**2 - package_bytes)
+            if relative == "typescript/node/LICENSE":
+                maximum = min(maximum, 1024**2)
+            try:
+                size, digest = admit_file_digest(path, maximum)
+            except (OSError, ValueError) as error:
+                fail(f"SDK helper file failed bounded identity admission: {error}")
+            total += size
+            if stat.S_IMODE(path.lstat().st_mode) != expected_mode:
+                fail("SDK helper mode changed during bounded admission")
+            if is_package:
+                package_bytes += size
+            observed[relative] = digest
+    if observed != records:
+        fail("SDK helper payload differs from its complete file/hash receipt")
+    required = {"typescript/node/bin/node", "typescript/node/LICENSE",
+                "typescript/node_modules/typescript/package.json", "typescript/node_modules/typescript/bin/tsc",
+                "typescript/node_modules/typescript/lib/typescript.js", "typescript/node_modules/typescript/LICENSE.txt",
+                "typescript/node_modules/typescript/ThirdPartyNoticeText.txt"}
+    if not required.issubset(observed):
+        fail("SDK helper payload omits its executable, Compiler API, or genuine notices")
+    tools = receipt.get("tools")
+    if not isinstance(tools, dict) or set(tools) != {"node", "typescript"} or any(not isinstance(v, dict) for v in tools.values()):
+        fail("SDK-only receipt must identify exactly Node and TypeScript")
+    for key in tools:
+        if not isinstance(tools[key].get("version"), str) or not tools[key]["version"].strip():
+            fail(f"SDK helper receipt has no {key} version")
+    node = helper_dir / "typescript/node/bin/node"
+    if tools["node"].get("sha256") != observed["typescript/node/bin/node"] or not os.access(node, os.X_OK):
+        fail("SDK Node differs from its executable tool identity")
+    try:
+        package = parse_json_bytes(read_regular_bytes(helper_dir / "typescript/node_modules/typescript/package.json",
+                                                     1024**2, "TypeScript package metadata"), "TypeScript package metadata")
+    except (OSError, ValueError) as error:
+        fail(f"SDK TypeScript metadata failed bounded identity admission: {error}")
+    if package.get("name") != "typescript" or package.get("version") != tools["typescript"]["version"]:
+        fail("SDK Compiler API package differs from its selected identity")
+    notices = {"node": "typescript/node/LICENSE", "typescript": "typescript/node_modules/typescript/LICENSE.txt",
+               "typescript_third_party": "typescript/node_modules/typescript/ThirdPartyNoticeText.txt"}
+    if receipt.get("notices") != notices:
+        fail("SDK helper receipt must identify the genuine Node and TypeScript notices")
+    if (helper_dir / notices["node"]).stat().st_size > 1024**2:
+        fail("SDK Node license exceeds its notice bound")
+    return receipt, observed
+
+
+def write_sdk_bundle_receipt(
+    helper_resources: Path, provenance: Path, source: dict[str, str], target: str,
+    original: dict[str, Any], original_receipt: Path,
+) -> tuple[dict[str, Any], Path]:
+    """Bind relocated bytes separately; retain the admitted original receipt unchanged."""
+    receipt = dict(original)
+    receipt["source"] = dict(source)
+    receipt["files"] = sdk_file_digests(helper_resources, original["files"])
+    receipt["file_modes"] = sdk_file_modes(receipt["files"])
+    receipt["tools"] = {name: dict(record) for name, record in original["tools"].items()}
+    receipt["tools"]["node"]["sha256"] = receipt["files"]["typescript/node/bin/node"]
+    receipt["source_receipt_sha256"] = sha256(original_receipt)
+    validate_sdk_helper_payload(receipt, helper_resources, source, target)
+    path = provenance / "compiler-helpers-receipt.json"
+    write_new_bytes(path, (json.dumps(receipt, indent=2, sort_keys=True) + "\n").encode(), label="relocated SDK helper receipt")
+    return receipt, path
+
+
+def bounded_sdk_probe(command: list[str], cwd: str, environment: dict[str, str], *, timeout: float = 30, maximum: int = 4096) -> subprocess.CompletedProcess:
+    """Bound both pipe collection and the lifetime of this owned version probe."""
+    child = subprocess.Popen(command, cwd=cwd, env=environment, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    deadline = time.monotonic() + timeout
+    collected = {"stdout": bytearray(), "stderr": bytearray()}
+    with selectors.DefaultSelector() as selector:
+        selector.register(child.stdout, selectors.EVENT_READ, "stdout")
+        selector.register(child.stderr, selectors.EVENT_READ, "stderr")
+        try:
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    fail("SDK version probe exceeded its deadline")
+                for key, _ in selector.select(remaining):
+                    buffer = collected[key.data]
+                    block = os.read(key.fd, maximum + 1 - len(buffer))
+                    buffer.extend(block)
+                    if len(buffer) > maximum:
+                        fail("SDK version probe exceeded its output bound")
+                    if not block:
+                        selector.unregister(key.fileobj)
+            try:
+                result = child.wait(timeout=max(0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                fail("SDK version probe exceeded its deadline")
+        finally:
+            if child.poll() is None:
+                child.kill()
+            child.wait()
+            child.stdout.close()
+            child.stderr.close()
+    return subprocess.CompletedProcess(command, result, bytes(collected["stdout"]), bytes(collected["stderr"]))
+
+
+def verify_sdk_runtime(helper_resources: Path, receipt: dict[str, Any]) -> dict[str, Any]:
+    """Execute only the relocated Node and genuine Compiler API, with a private HOME."""
+    node = helper_resources / "typescript/node/bin/node"
+    package = helper_resources / "typescript/node_modules/typescript"
+    results: dict[str, Any] = {}
+    with tempfile.TemporaryDirectory(prefix="nudox-sdk-probe-") as temporary:
+        environment = {"PATH": "/usr/bin:/bin", "HOME": temporary, "TMPDIR": temporary}
+        for name, arguments, expected in [
+            ("node", ["--version"], receipt["tools"]["node"]["version"]),
+            ("typescript", ["-e", "process.stdout.write(require(process.argv[1]).version)", str(package)], receipt["tools"]["typescript"]["version"]),
+        ]:
+            completed = bounded_sdk_probe([str(node), *arguments], temporary, environment)
+            if completed.returncode or len(completed.stdout) > 4096 or len(completed.stderr) > 4096 or completed.stdout.decode().strip() != expected:
+                fail(f"relocated {name} version probe did not match the admitted SDK identity")
+            results[name] = {"exit": completed.returncode, "version": completed.stdout.decode().strip(),
+                             "stdout_sha256": hashlib.sha256(completed.stdout).hexdigest(),
+                             "stderr_sha256": hashlib.sha256(completed.stderr).hexdigest()}
+    validate_sdk_helper_payload(receipt, helper_resources, receipt["source"], receipt["target"])
+    return results
+
+
 def validate_helper_payload(
     receipt_path: Path,
     helper_dir: Path,
     source_root: Path,
     source: dict[str, str],
     target: str,
+    *, sdk_only: bool = False,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     receipt, _ = origin_receipt(receipt_path, "helpers")
+    if sdk_only:
+        return validate_sdk_helper_payload(receipt, helper_dir, source, target)
     if receipt.get("schema") != 1 or receipt.get("source") != {
         "git_revision": source["git_revision"],
         "git_tree": source["git_tree"],
@@ -1233,7 +1481,7 @@ def process_contexts_for_relative(relative: str, process_root_relatives: set[str
 
 def inspect_signature(path: Path) -> str:
     completed = subprocess.run(
-        ["codesign", "--display", "--verbose=4", str(path)],
+        ["/usr/bin/codesign", "--display", "--verbose=4", str(path)],
         check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -1247,7 +1495,7 @@ def inspect_signature(path: Path) -> str:
     if not completed.returncode and not is_adhoc and not is_signed:
         fail(f"cannot classify code-signature state for {path}: {output.strip()}")
     verification = subprocess.run(
-        ["codesign", "--verify", "--strict", str(path)],
+        ["/usr/bin/codesign", "--verify", "--strict", str(path)],
         check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -1333,7 +1581,7 @@ def inspect_macho_tree(
     return records
 
 
-def write_application_launcher(macos: Path) -> None:
+def write_application_launcher(macos: Path, *, sdk_only: bool = False) -> None:
     """Preserve caller TypeScript settings for the shared Rust host resolver.
 
     The host admits TypeScript from the selected package. Inherited explicit
@@ -1352,12 +1600,15 @@ def write_application_launcher(macos: Path) -> None:
         '  esac\n'
         'done\n'
         'contents=$(CDPATH= cd "$(dirname "$self")/.." && pwd -P)\n'
-        'export NUDOX_DOTNET="${NUDOX_DOTNET-$contents/Resources/dotnet/dotnet}"\n'
-        'export NUDOX_ROSLYN_HELPER="${NUDOX_ROSLYN_HELPER-$contents/Resources/Helpers/csharp/oracle.dll}"\n'
-        'export NUDOX_GO_ORACLE="${NUDOX_GO_ORACLE-$contents/Resources/Helpers/go/oracle}"\n'
-        'export NUDOX_GO_ORACLE_BIN="${NUDOX_GO_ORACLE_BIN-$contents/Resources/Helpers/go/oracle}"\n'
-        'export NUDOX_PYREFLY="${NUDOX_PYREFLY-$contents/Resources/Helpers/python/pyrefly}"\n'
     )
+    if not sdk_only:
+        environment += (
+            'export NUDOX_DOTNET="${NUDOX_DOTNET-$contents/Resources/dotnet/dotnet}"\n'
+            'export NUDOX_ROSLYN_HELPER="${NUDOX_ROSLYN_HELPER-$contents/Resources/Helpers/csharp/oracle.dll}"\n'
+            'export NUDOX_GO_ORACLE="${NUDOX_GO_ORACLE-$contents/Resources/Helpers/go/oracle}"\n'
+            'export NUDOX_GO_ORACLE_BIN="${NUDOX_GO_ORACLE_BIN-$contents/Resources/Helpers/go/oracle}"\n'
+            'export NUDOX_PYREFLY="${NUDOX_PYREFLY-$contents/Resources/Helpers/python/pyrefly}"\n'
+        )
     # Package-manager links must initialize the same bundled helpers as Finder.
     for name, executable in {
         "Nudox": "backend-desktop", "nudox-cli": "backend-cli",
@@ -1380,12 +1631,14 @@ def main() -> int:
     parser.add_argument("--expected-runner-sha256", required=True, help="full operator-reviewed Cargo runner SHA-256 from the application build")
     parser.add_argument("--artifact-dir", required=True, type=Path, help="directory containing the three admitted application binaries")
     parser.add_argument("--build-receipt", required=True, type=Path, help="Root-produced application build receipt JSON")
-    parser.add_argument("--dotnet-root", required=True, type=Path, help="real macOS .NET runtime installation root")
-    parser.add_argument("--dotnet-receipt", required=True, type=Path, help="content-bound .NET runtime origin receipt")
-    parser.add_argument("--dotnet-pin", required=True, type=Path, help="reviewed source/version/tree pin for the .NET distribution")
+    parser.add_argument("--sdk-only", action="store_true", help="bundle only genuine Node/TypeScript; no legacy language-helper claims or overrides")
+    parser.add_argument("--defer-sdk-runtime-probes", action="store_true", help="SDK release driver will probe after inner Developer ID signing, before the outer app seal")
+    parser.add_argument("--dotnet-root", type=Path, help="real macOS .NET runtime installation root")
+    parser.add_argument("--dotnet-receipt", type=Path, help="content-bound .NET runtime origin receipt")
+    parser.add_argument("--dotnet-pin", type=Path, help="reviewed source/version/tree pin for the .NET distribution")
     parser.add_argument("--dotnet-source-archive", type=Path, help="exact source archive when the .NET pin uses verified-archive")
-    parser.add_argument("--roslyn-dir", required=True, type=Path, help="real framework-dependent oracle publish output directory")
-    parser.add_argument("--roslyn-receipt", required=True, type=Path, help="Root-produced locked Roslyn publish receipt JSON")
+    parser.add_argument("--roslyn-dir", type=Path, help="real framework-dependent oracle publish output directory")
+    parser.add_argument("--roslyn-receipt", type=Path, help="Root-produced locked Roslyn publish receipt JSON")
     parser.add_argument("--helpers-dir", required=True, type=Path, help="receipted real Go, Pyrefly, Node, and TypeScript helper payload")
     parser.add_argument("--helpers-receipt", required=True, type=Path, help="Root-produced compiler-helper receipt JSON")
     parser.add_argument("--relocation-plan", type=Path, help="collector-produced plan referenced by all four admitted origin receipts")
@@ -1394,6 +1647,13 @@ def main() -> int:
     parser.add_argument("--target", choices=MACOS_TARGETS, default="aarch64-apple-darwin")
     args = parser.parse_args()
 
+    legacy_inputs = [args.dotnet_root, args.dotnet_receipt, args.dotnet_pin, args.dotnet_source_archive, args.roslyn_dir, args.roslyn_receipt]
+    if args.defer_sdk_runtime_probes and not args.sdk_only:
+        fail("deferred SDK probes require SDK-only assembly")
+    if args.sdk_only and any(value is not None for value in legacy_inputs):
+        fail("SDK-only assembly must not include unrelated legacy helper inputs")
+    if not args.sdk_only and any(value is None for value in [args.dotnet_root, args.dotnet_receipt, args.dotnet_pin, args.roslyn_dir, args.roslyn_receipt]):
+        fail("full-helper assembly requires all .NET and Roslyn inputs")
     macos_tools()
     target_arch = MACOS_TARGETS[args.target]
     host_arch = platform.machine().lower()
@@ -1404,9 +1664,9 @@ def main() -> int:
 
     source_root = args.source_root.resolve(strict=True)
     artifact_dir = args.artifact_dir.resolve(strict=True)
-    roslyn_dir = args.roslyn_dir.resolve(strict=True)
+    roslyn_dir = args.roslyn_dir.resolve(strict=True) if args.roslyn_dir else None
     helpers_dir = args.helpers_dir.resolve(strict=True)
-    dotnet_root = args.dotnet_root.resolve(strict=True)
+    dotnet_root = args.dotnet_root.resolve(strict=True) if args.dotnet_root else None
     if args.output_dir.exists() or args.output_dir.is_symlink():
         fail(f"output directory already exists; refusing to reuse it: {args.output_dir}")
     output_dir = args.output_dir.absolute()
@@ -1423,40 +1683,39 @@ def main() -> int:
     app_receipt, binaries = validate_app_build(
         args.build_receipt.resolve(strict=True), artifact_dir, source, args.target, args.expected_runner_sha256
     )
-    roslyn_receipt, roslyn_files = validate_roslyn_build(
-        args.roslyn_receipt.resolve(strict=True), roslyn_dir, source_root, source, args.target
-    )
     helpers_receipt, helper_files = validate_helper_payload(
-        args.helpers_receipt.resolve(strict=True), helpers_dir, source_root, source, args.target
+        args.helpers_receipt.resolve(strict=True), helpers_dir, source_root, source, args.target, sdk_only=args.sdk_only
     )
-    dotnet_receipt_path = args.dotnet_receipt.resolve(strict=True)
-    dotnet_receipt, _ = origin_receipt(dotnet_receipt_path, "dotnet-runtime")
-    try:
-        dotnet_files = validate_dotnet_runtime_receipt(
-            dotnet_receipt,
-            dotnet_root,
-            args.target,
-            args.dotnet_pin.resolve(strict=True),
-            args.dotnet_source_archive.resolve(strict=True) if args.dotnet_source_archive else None,
+    if args.sdk_only and any(path.stat().st_size > 512 * 1024**2 for path in binaries.values()):
+        fail("SDK application executable exceeds the existing host 512 MiB admission bound")
+    roslyn_receipt = dotnet_receipt = None
+    roslyn_files = dotnet_files = {}
+    dotnet_receipt_path = None
+    if not args.sdk_only:
+        roslyn_receipt, roslyn_files = validate_roslyn_build(
+            args.roslyn_receipt.resolve(strict=True), roslyn_dir, source_root, source, args.target
         )
-    except RelocationInputError as error:
-        fail(str(error))
-    dotnet = dotnet_root / "dotnet"
-    if not dotnet.is_file() or not os.access(dotnet, os.X_OK):
-        fail(f"dotnet host is not executable: {dotnet}")
+        dotnet_receipt_path = args.dotnet_receipt.resolve(strict=True)
+        dotnet_receipt, _ = origin_receipt(dotnet_receipt_path, "dotnet-runtime")
+        try:
+            dotnet_files = validate_dotnet_runtime_receipt(
+                dotnet_receipt,
+                dotnet_root,
+                args.target,
+                args.dotnet_pin.resolve(strict=True),
+                args.dotnet_source_archive.resolve(strict=True) if args.dotnet_source_archive else None,
+            )
+        except RelocationInputError as error:
+            fail(str(error))
+        dotnet = dotnet_root / "dotnet"
+        if not dotnet.is_file() or not os.access(dotnet, os.X_OK):
+            fail(f"dotnet host is not executable: {dotnet}")
 
-    source_root_paths = {
-        "application": artifact_dir,
-        "roslyn": roslyn_dir,
-        "helpers": helpers_dir,
-        "dotnet-runtime": dotnet_root,
-    }
-    admitted_receipt_paths = {
-        "application": args.build_receipt.resolve(strict=True),
-        "roslyn": args.roslyn_receipt.resolve(strict=True),
-        "helpers": args.helpers_receipt.resolve(strict=True),
-        "dotnet-runtime": dotnet_receipt_path,
-    }
+    source_root_paths = {"application": artifact_dir, "helpers": helpers_dir}
+    admitted_receipt_paths = {"application": args.build_receipt.resolve(strict=True), "helpers": args.helpers_receipt.resolve(strict=True)}
+    if not args.sdk_only:
+        source_root_paths.update({"roslyn": roslyn_dir, "dotnet-runtime": dotnet_root})
+        admitted_receipt_paths.update({"roslyn": args.roslyn_receipt.resolve(strict=True), "dotnet-runtime": dotnet_receipt_path})
     plan, plan_digest = relocation_inputs(
         admitted_receipt_paths,
         args.relocation_plan.resolve(strict=True) if args.relocation_plan else None,
@@ -1521,33 +1780,35 @@ def main() -> int:
             shutil.copy2(source_binary, destination)
             destination.chmod(0o755)
 
-        write_application_launcher(macos)
+        write_application_launcher(macos, sdk_only=args.sdk_only)
 
         helper_resources = resources / "Helpers"
         shutil.copytree(helpers_dir, helper_resources, symlinks=False)
-        shutil.copytree(roslyn_dir, helper_resources / "csharp", symlinks=False)
-        shutil.copyfile(
-            source_root / "frontends/typescript/src/legacy/checker/main.cjs",
-            helper_resources / "typescript/checker-main.cjs",
-        )
-        typescript_dir = helper_resources / "typescript"
-        (typescript_dir / "report-program").write_text(
-            "#!/bin/sh\nset -eu\n"
-            'here=$(CDPATH= cd "$(dirname "$0")" && pwd)\n'
-            'node=${NUDOX_TYPESCRIPT_NODE-$here/node/bin/node}\n'
-            'exec "$node" "$here/checker-main.cjs" "$@"\n',
-            encoding="utf-8",
-        )
-        (typescript_dir / "report-program").chmod(0o755)
-        (typescript_dir / "tsc").write_text(
-            "#!/bin/sh\nset -eu\n"
-            'here=$(CDPATH= cd "$(dirname "$0")" && pwd)\n'
-            'node=${NUDOX_TYPESCRIPT_NODE-$here/node/bin/node}\n'
-            'exec "$node" "$here/node_modules/typescript/bin/tsc" "$@"\n',
-            encoding="utf-8",
-        )
-        (typescript_dir / "tsc").chmod(0o755)
-        runtime_notices = copy_runtime(dotnet_root, resources / "dotnet", dotnet_receipt)
+        runtime_notices = {}
+        if not args.sdk_only:
+            shutil.copytree(roslyn_dir, helper_resources / "csharp", symlinks=False)
+            shutil.copyfile(
+                source_root / "frontends/typescript/src/legacy/checker/main.cjs",
+                helper_resources / "typescript/checker-main.cjs",
+            )
+            typescript_dir = helper_resources / "typescript"
+            (typescript_dir / "report-program").write_text(
+                "#!/bin/sh\nset -eu\n"
+                'here=$(CDPATH= cd "$(dirname "$0")" && pwd)\n'
+                'node=${NUDOX_TYPESCRIPT_NODE-$here/node/bin/node}\n'
+                'exec "$node" "$here/checker-main.cjs" "$@"\n',
+                encoding="utf-8",
+            )
+            (typescript_dir / "report-program").chmod(0o755)
+            (typescript_dir / "tsc").write_text(
+                "#!/bin/sh\nset -eu\n"
+                'here=$(CDPATH= cd "$(dirname "$0")" && pwd)\n'
+                'node=${NUDOX_TYPESCRIPT_NODE-$here/node/bin/node}\n'
+                'exec "$node" "$here/node_modules/typescript/bin/tsc" "$@"\n',
+                encoding="utf-8",
+            )
+            (typescript_dir / "tsc").chmod(0o755)
+            runtime_notices = copy_runtime(dotnet_root, resources / "dotnet", dotnet_receipt)
         licenses = resources / "Font Licenses"
         licenses.mkdir()
         for name in FONT_LICENSES:
@@ -1559,23 +1820,21 @@ def main() -> int:
         provenance = resources / "Build Evidence"
         provenance.mkdir()
         shutil.copy2(args.build_receipt, provenance / "application-build-receipt.json")
-        shutil.copy2(args.roslyn_receipt, provenance / "roslyn-build-receipt.json")
-        shutil.copy2(args.helpers_receipt, provenance / "compiler-helpers-receipt.json")
-        shutil.copy2(dotnet_receipt_path, provenance / "dotnet-runtime-receipt.json")
+        if args.sdk_only:
+            shutil.copy2(args.helpers_receipt, provenance / "compiler-helpers-source-receipt.json")
+        else:
+            shutil.copy2(args.roslyn_receipt, provenance / "roslyn-build-receipt.json")
+            shutil.copy2(args.helpers_receipt, provenance / "compiler-helpers-receipt.json")
+            shutil.copy2(dotnet_receipt_path, provenance / "dotnet-runtime-receipt.json")
 
         info = run(["plutil", "-lint", str(staging / "Contents/Info.plist")])
         if "OK" not in info:
             fail("Info.plist did not pass plutil validation")
-        required_images = {
-            "Contents/MacOS/backend-desktop",
-            "Contents/MacOS/backend-mcp",
-            "Contents/MacOS/backend-locald",
-            "Contents/Resources/dotnet/dotnet",
-            *(
-                f"Contents/Resources/Helpers/{relative}"
-                for relative in HELPER_EXECUTABLES.values()
-            ),
-        }
+        required_images = {f"Contents/MacOS/{name}" for name in EXECUTABLES}
+        required_images.add("Contents/Resources/Helpers/typescript/node/bin/node")
+        if not args.sdk_only:
+            required_images.add("Contents/Resources/dotnet/dotnet")
+            required_images.update(f"Contents/Resources/Helpers/{relative}" for relative in HELPER_EXECUTABLES.values())
         relocation_record = {
             "plan_sha256": None,
             "images": [],
@@ -1597,6 +1856,15 @@ def main() -> int:
             plist["LSMinimumSystemVersion"],
             required_images,
         )
+        bundle_helper_receipt_path = args.helpers_receipt
+        sdk_runtime_probes = None
+        if args.sdk_only:
+            helpers_receipt, bundle_helper_receipt_path = write_sdk_bundle_receipt(
+                helper_resources, provenance, source, args.target, helpers_receipt, args.helpers_receipt
+            )
+            helper_files = helpers_receipt["files"]
+            if not args.defer_sdk_runtime_probes:
+                sdk_runtime_probes = verify_sdk_runtime(helper_resources, helpers_receipt)
         bundle_signature = inspect_signature(staging)
 
         manifest = {
@@ -1622,20 +1890,12 @@ def main() -> int:
                 "cargo_provenance": app_receipt["cargo_provenance"],
                 "executables": {name: sha256(path) for name, path in binaries.items()},
             },
-            "roslyn_build": {
-                "receipt_sha256": sha256(args.roslyn_receipt),
-                "runtime_identifier": roslyn_receipt["runtime_identifier"],
-                "framework_dependent": True,
-                "commands": roslyn_receipt["commands"],
-                "notices": roslyn_receipt["notices"],
-                "files": roslyn_files,
-            },
             "compiler_helpers": {
-                "receipt_sha256": sha256(args.helpers_receipt),
+                "receipt_sha256": sha256(bundle_helper_receipt_path),
                 "files": helper_files,
                 "tools": helpers_receipt["tools"],
                 "notices": helpers_receipt["notices"],
-                "typescript_driver_sha256": sha256(helper_resources / "typescript/checker-main.cjs"),
+                "typescript_driver_sha256": sha256(helper_resources / "typescript/checker-main.cjs") if not args.sdk_only else None,
                 "external_language_prerequisites": {
                     "rust": "paired rustc and cargo plus Cargo registry cache for offline package resolution",
                     "clang": "clang plus a compatible libclang selected through LIBCLANG_PATH",
@@ -1644,7 +1904,22 @@ def main() -> int:
                     "java": "a JDK containing java and javac",
                 },
             },
-            "dotnet_runtime": {
+            "macho_relocation": relocation_record,
+            "font_licenses": {name: sha256(licenses / name) for name in FONT_LICENSES},
+            "macho_images": macho_records,
+            "files": file_inventory(staging),
+            "distribution_status": f"app bundle {bundle_signature}; notarization not performed; native QA pending",
+        }
+        if not args.sdk_only:
+            manifest["roslyn_build"] = {
+                "receipt_sha256": sha256(args.roslyn_receipt),
+                "runtime_identifier": roslyn_receipt["runtime_identifier"],
+                "framework_dependent": True,
+                "commands": roslyn_receipt["commands"],
+                "notices": roslyn_receipt["notices"],
+                "files": roslyn_files,
+            }
+            manifest["dotnet_runtime"] = {
                 "receipt_sha256": sha256(dotnet_receipt_path),
                 "package": dotnet_receipt["package"],
                 "distribution": dotnet_receipt["distribution"],
@@ -1652,13 +1927,20 @@ def main() -> int:
                 "root_tree_sha256": dotnet_receipt["root_tree_sha256"],
                 "files": dotnet_files,
                 "notices": runtime_notices,
-            },
-            "macho_relocation": relocation_record,
-            "font_licenses": {name: sha256(licenses / name) for name in FONT_LICENSES},
-            "macho_images": macho_records,
-            "files": file_inventory(staging),
-            "distribution_status": f"app bundle {bundle_signature}; notarization not performed; native QA pending",
-        }
+            }
+        if args.sdk_only:
+            helpers = manifest["compiler_helpers"]
+            del helpers["typescript_driver_sha256"]
+            helpers["assembly_mode"] = "typescript-sdk-only"
+            helpers["source_receipt_sha256"] = sha256(args.helpers_receipt)
+            helpers["runtime_probes"] = sdk_runtime_probes
+            helpers["runtime_probe_status"] = ("pending post-sign native probes" if args.defer_sdk_runtime_probes
+                                                else "passed relocated Node and Compiler API probes")
+            helpers["external_language_prerequisites"].update({
+                "python": "native in-process Python authority; no Pyrefly executable bundled",
+                "go": "ordinary external Go toolchain and dependency cache; no legacy oracle bundled",
+                "csharp": "not bundled; requires separately selected external authority",
+            })
         manifest_path = resources / "build-manifest.json"
         manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
         write_new_bytes(manifest_path, manifest_bytes, label="bundle manifest")

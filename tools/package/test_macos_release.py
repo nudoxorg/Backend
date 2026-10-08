@@ -7,6 +7,24 @@ import macos_release as release
 
 
 class ReleasePreflightTests(unittest.TestCase):
+    def test_sign_preflight_stops_at_shared_finite_entry_bound(self):
+        import finalize_macos_typescript_sdk as sdk
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'source';source.mkdir()
+            app=root/'release/package/Nudox.app';app.mkdir(parents=True)
+            for number in range(5):(app/str(number)).write_bytes(b'')
+            config={'source_root':str(source),'output_dir':str(root/'release')}
+            original=sdk.bundle.bundle_entries
+            visited=[]
+            def capped(path):
+                for item in original(path,maximum_entries=3):
+                    visited.append(item[0]);yield item
+            with patch.object(sdk.bundle,'bundle_entries',side_effect=capped), patch.object(release.shutil,'which',return_value=None), patch.object(release.subprocess,'check_output',return_value=''), patch.object(release,'run') as run:
+                report=release.preflight(config,stage='sign')
+            self.assertFalse(report['ready']);self.assertEqual(len(visited),3)
+            self.assertTrue(any('finite entry bound' in item for item in report['blockers']))
+            run.assert_not_called()
+
     def test_missing_signing_and_capacity_stop_before_build_or_output_creation(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -29,6 +47,7 @@ class ReleasePreflightTests(unittest.TestCase):
                 self.assertFalse(report["ready"])
                 self.assertTrue(any("admission floor" in item for item in report["blockers"]))
                 self.assertTrue(any("Developer ID" in item for item in report["blockers"]))
+                self.assertTrue(any("selected Apple /usr/bin/codesign" in item for item in report["blockers"]))
                 with self.assertRaisesRegex(ValueError, "preflight failed"):
                     release.prepare(config)
                 run.assert_not_called()
