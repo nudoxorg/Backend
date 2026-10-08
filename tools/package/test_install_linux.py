@@ -73,6 +73,31 @@ class InstallerFilesystemTests(unittest.TestCase):
                         installer.verify_existing_install(root, {}, {"tag":"fixture"}, {})
                     verify.assert_not_called()
 
+    def test_hash_refuses_fifo_swap_after_path_admission_and_oversized_sparse_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            member = root / "member"
+            member.write_bytes(b"admitted regular file")
+            installer._verified_package_path(root, "member")
+            real_open = os.open
+
+            def swap_before_open(path, flags, *arguments, **keywords):
+                if Path(path) == member:
+                    member.rename(root / "original")
+                    os.mkfifo(member)
+                return real_open(path, flags, *arguments, **keywords)
+
+            with patch.object(installer.os, "open", side_effect=swap_before_open):
+                with self.assertRaisesRegex(installer.InstallError, "bounded regular file"):
+                    installer._file_sha256(member)
+            member.unlink()
+            with member.open("wb") as stream:
+                stream.truncate(8 * 1024 * 1024 * 1024)
+            with patch.object(installer.hashlib, "sha256") as hashing:
+                with self.assertRaisesRegex(installer.InstallError, "bounded regular file"):
+                    installer._file_sha256(member)
+                hashing.assert_not_called()
+
     def test_installed_sdk_refuses_runtime_package_bound_before_hashing_oversize_member(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

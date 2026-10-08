@@ -305,11 +305,30 @@ def safe_extract(archive: Path, destination: Path) -> None:
 
 
 def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    """Hash one bounded regular object without link following or FIFO waits on reuse."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_MEMBER_BYTES:
+                raise InstallError("installed file is not a bounded regular file")
+            digest = hashlib.sha256()
+            count = 0
+            while count <= before.st_size:
+                chunk = stream.read(min(1024 * 1024, before.st_size - count + 1))
+                if not chunk:
+                    break
+                count += len(chunk)
+                digest.update(chunk)
+            after = os.fstat(stream.fileno())
+            current = path.lstat()
+            identity = lambda metadata: (metadata.st_dev, metadata.st_ino, metadata.st_size,
+                                         metadata.st_mtime_ns, metadata.st_ctime_ns)
+            if count != before.st_size or identity(before) != identity(after) or identity(current) != identity(after):
+                raise InstallError("installed file changed during bounded hashing")
+            return digest.hexdigest()
+    except OSError as error:
+        raise InstallError(f"installed file could not be safely hashed: {error}") from error
 
 
 def _glibc_version() -> tuple[int, int] | None:
