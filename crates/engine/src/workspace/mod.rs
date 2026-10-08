@@ -26,7 +26,11 @@ pub use lazy::{
     WorkspaceRelationNodePage, WorkspaceRelationRejection,
 };
 pub use model::WorkspaceModel;
-pub use owner::{OwnerLease, WorkspaceError, WorkspaceGcPin, WorkspaceOwner};
+pub use owner::{
+    CommittedWorkspaceCandidate, OwnerLease, OwnerLeaseIdentity, PreparedWorkspaceCandidate,
+    PublishGrant, RetiredWorkspaceHead, UnselectedWorkspaceCandidate, WorkspaceCandidateClaim,
+    WorkspaceError, WorkspaceGcPin, WorkspaceOwner, WorkspaceWriter,
+};
 pub use publication::{
     Durable, DurablePublication, Prepared, PreparedPublication, PublicationStatus, Published,
     PublishedPublication,

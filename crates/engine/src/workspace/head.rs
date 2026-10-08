@@ -197,6 +197,27 @@ impl WorkspaceSnapshot {
         Ok(inspect(self.state.transition.persisted(), store))
     }
 
+    /// Inspects the immutable transition paired with this admitted snapshot.
+    /// This deliberately never reads the store's mutable latest HEAD: an old
+    /// serving snapshot remains valid while its unique writer selects a newer
+    /// root. It does not establish that this snapshot is currently selected.
+    /// Use `with_persisted_transition` when fresh selected-head admission is
+    /// required. Relation reads remain bound to this transition's checked CAS
+    /// roots, and GC remains reserved while a writer is transferred.
+    ///
+    /// # Errors
+    /// Refuses a snapshot without its paired durable CAS capability.
+    pub fn with_retained_transition<T>(
+        &self,
+        inspect: impl FnOnce(&PersistedTransition, &FileStore) -> T,
+    ) -> Result<T, WorkspaceError> {
+        let store = self
+            .store
+            .as_ref()
+            .ok_or(WorkspaceError::Corrupt("snapshot has no durable store"))?;
+        Ok(inspect(self.state.transition.persisted(), store))
+    }
+
     /// Returns the owner epoch that selected this snapshot.
     #[must_use]
     pub fn owner_epoch(&self) -> u64 {

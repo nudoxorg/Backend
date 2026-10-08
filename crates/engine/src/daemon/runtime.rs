@@ -305,6 +305,54 @@ where
         &self.owner
     }
 
+    /// Transfers the workspace writer while queries retain the admitted head.
+    /// This does not transfer dispatcher, library, cursor or transport state.
+    pub fn reserve_workspace_writer(
+        &mut self,
+    ) -> Result<crate::WorkspaceWriter<M>, crate::WorkspaceError> {
+        self.owner.reserve_writer()
+    }
+
+    /// Grants one private candidate against the still-admitted workspace base.
+    pub fn grant_workspace_candidate(
+        &mut self,
+        claim: crate::WorkspaceCandidateClaim,
+        cancellation: &std::sync::atomic::AtomicBool,
+    ) -> Result<crate::PublishGrant, crate::WorkspaceError> {
+        self.owner.grant_candidate(claim, cancellation)
+    }
+
+    /// Installs the durable workspace result before any successful reply.
+    /// Its derived view remains explicitly stale until a checked view installs.
+    pub fn install_workspace_candidate(
+        &mut self,
+        writer: crate::WorkspaceWriter<M>,
+        committed: crate::CommittedWorkspaceCandidate,
+    ) -> Result<crate::RetiredWorkspaceHead, (crate::WorkspaceWriter<M>, crate::WorkspaceError)>
+    {
+        let retired = self.owner.install_candidate(writer, committed)?;
+        self.view_binding =
+            ViewBinding::stale(self.owner.head().root(), self.library.view().basis().root);
+        Ok(retired)
+    }
+
+    /// Restores the sole writer after cancellation/error before grant.
+    pub fn return_unselected_workspace_writer(
+        &mut self,
+        writer: crate::WorkspaceWriter<M>,
+    ) -> Result<(), (crate::WorkspaceWriter<M>, crate::WorkspaceError)> {
+        self.owner.return_unselected_writer(writer)
+    }
+
+    /// Restores the sole writer after worker proof of a failed unselected grant.
+    pub fn return_failed_workspace_writer(
+        &mut self,
+        writer: crate::WorkspaceWriter<M>,
+        unselected: crate::UnselectedWorkspaceCandidate,
+    ) -> Result<(), (crate::WorkspaceWriter<M>, crate::WorkspaceError)> {
+        self.owner.return_failed_writer(writer, unselected)
+    }
+
     /// Runs one fair queued operation. `false` means all lanes are empty.
     pub fn serve_one(&mut self) -> bool {
         let Some((_lane, envelope)) = self.queues.try_pop() else {

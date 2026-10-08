@@ -260,6 +260,9 @@ where
         admission: &dyn ViewBindingAdmission,
         event: Option<backend_library::CursorEvent>,
     ) -> Result<(), DaemonError> {
+        if self.owner.writer_reserved() {
+            return Err(DaemonError::from(crate::WorkspaceError::WriterReserved));
+        }
         let workspace = self.owner.snapshot();
         admission
             .admit(&workspace, &view)
@@ -376,6 +379,9 @@ where
         events: Vec<backend_library::CursorEvent>,
         base_sequence: u64,
     ) -> Result<(), DaemonError> {
+        if self.owner.writer_reserved() {
+            return Err(DaemonError::from(crate::WorkspaceError::WriterReserved));
+        }
         let workspace = self.owner.snapshot();
         admission
             .admit(&workspace, &view)

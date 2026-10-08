@@ -201,17 +201,20 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
             CatalogState::empty(head.manifest().coverage())
         };
         let journal = open_diagnostic_journal(&journal_path, &directory, lease.epoch(), limits)?;
+        let identity = lease.identity();
         Ok(Self {
-            model,
+            model: Arc::new(model),
             directory,
-            lease,
+            lease: identity,
+            writer: Some(super::WriterAuthority { lease, journal }),
+            handoff: None,
+            next_handoff: 0,
             store,
-            journal,
             head,
             catalog,
             faults,
             gc_roots: Arc::new(Mutex::new(BTreeMap::new())),
-            next_gc_pin: AtomicU64::new(0),
+            next_gc_pin: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -233,9 +236,10 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
         self.head.snapshot().with_store(Arc::clone(&self.store))
     }
 
-    /// Returns the current owner lease.
+    /// Returns the admitted owner identity. The actual exclusive lease may
+    /// reside on a prepared-candidate worker; this value cannot publish.
     #[must_use]
-    pub const fn lease(&self) -> &OwnerLease {
+    pub const fn lease(&self) -> &super::OwnerLeaseIdentity {
         &self.lease
     }
 }

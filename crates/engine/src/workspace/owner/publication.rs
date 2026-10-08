@@ -19,7 +19,7 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
         &self,
         prepared: PreparedPublication,
     ) -> Result<DurablePublication, WorkspaceError> {
-        self.lease.assert_current()?;
+        self.writer()?.lease.assert_current()?;
         if self.head != prepared.data.base_head {
             return Err(WorkspaceError::HeadConflict);
         }
@@ -87,6 +87,7 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
             .trip(Boundary::JournalPrepared)
             .map_err(WorkspaceError::Injected)?;
         let prepared_receipt = self
+            .writer()?
             .journal
             .append_encoded(|output| encode_prepared(output, persisted))
             .map_err(WorkspaceError::Journal)?;
@@ -115,7 +116,7 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
         &mut self,
         durable: DurablePublication,
     ) -> Result<PublishedPublication, WorkspaceError> {
-        self.lease.assert_current()?;
+        self.writer()?.lease.assert_current()?;
         if self.head != durable.data.base_head {
             return Err(WorkspaceError::HeadConflict);
         }
@@ -194,7 +195,7 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
         }
         let mut status = PublicationStatus::default();
         let store_attempt = store_durable.publish_with_authority_before_head(
-            self.lease.publication_authority(),
+            self.writer()?.lease.publication_authority(),
             || {
                 self.faults
                     .trip(Boundary::HeadWrite)
@@ -278,9 +279,14 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
             status = status.with_journal_select_pending();
             None
         } else {
-            match self.journal.append_encoded(|output| {
-                encode_select(output, persisted.transaction(), sequence, prepared_receipt);
-            }) {
+            match self
+                .writer
+                .as_ref()
+                .expect("publication retains its exclusive writer")
+                .journal
+                .append_encoded(|output| {
+                    encode_select(output, persisted.transaction(), sequence, prepared_receipt);
+                }) {
                 Ok(receipt) => Some(receipt),
                 Err(_error) => {
                     status = status.with_journal_select_pending();
@@ -310,6 +316,9 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
         }
         let journal_published = self.faults.trip(Boundary::JournalPublished).is_ok()
             && self
+                .writer
+                .as_ref()
+                .expect("publication retains its exclusive writer")
                 .journal
                 .append_encoded(|output| {
                     encode_published(output, persisted.transaction(), sequence);

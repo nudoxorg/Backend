@@ -421,14 +421,16 @@ pub use worker::{
     WorkerEndpoint, WorkerError,
 };
 pub use workspace::{
-    DerivedOutputEntry, DerivedOutputPublication, Durable, DurablePublication, HeadExpectation,
-    OwnerLease, PersistedTransition, Prepared, PreparedPublication, PreparedTransition,
-    PublicationStatus, Published, PublishedPublication, RelationIdentity, RelationKeyPrefix,
-    TransactionId, TransactionSchema, TransactionVersion, TransitionWork, WorkspaceError,
+    CommittedWorkspaceCandidate, DerivedOutputEntry, DerivedOutputPublication, Durable,
+    DurablePublication, HeadExpectation, OwnerLease, OwnerLeaseIdentity, PersistedTransition,
+    Prepared, PreparedPublication, PreparedTransition, PreparedWorkspaceCandidate,
+    PublicationStatus, PublishGrant, Published, PublishedPublication, RelationIdentity,
+    RelationKeyPrefix, RetiredWorkspaceHead, TransactionId, TransactionSchema, TransactionVersion,
+    TransitionWork, UnselectedWorkspaceCandidate, WorkspaceCandidateClaim, WorkspaceError,
     WorkspaceGcPin, WorkspaceHead, WorkspaceModel, WorkspaceOwner, WorkspaceRecord,
     WorkspaceRelationChild, WorkspaceRelationError, WorkspaceRelationFault,
     WorkspaceRelationHandle, WorkspaceRelationNodeHandle, WorkspaceRelationNodePage,
-    WorkspaceRelationRejection, WorkspaceSnapshot,
+    WorkspaceRelationRejection, WorkspaceSnapshot, WorkspaceWriter,
 };
 
 /// Generic engine composition around one daemon owner.
