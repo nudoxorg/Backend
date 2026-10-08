@@ -2085,8 +2085,10 @@ mod python_native_call_tests {
                 profile: LanguageProfile::Python(PythonVersion::Python314),
                 stage: Stage::LowerIr,
             },
-            PackageUrl::try_from("pkg:pypi/docs@1.0.0".to_owned())?,
-        )?;
+            PackageUrl::try_from("pkg:pypi/docs@1.0.0".to_owned())
+                .map_err(|error| format!("fixture package coordinate rejected: {error:?}"))?,
+        )
+        .map_err(|error| format!("fixture package profile rejected: {error:?}"))?;
         let sources = modules
             .iter()
             .map(|(path, source)| OwnedPackageSource::new(path, source))
