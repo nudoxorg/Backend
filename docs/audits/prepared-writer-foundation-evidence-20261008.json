@@ -1,0 +1,192 @@
+{
+  "schema": "nudox.root.foundation-canonical-replay-audit.v1",
+  "base": "66914f2997eb4acc1839e6d16bd4f5f9c00968a5",
+  "candidate": "65475019c9e7441d387e93ed7a680e2f21c77b3f",
+  "candidate_tree": "a1d1a15b42de6668438dbdcd3123d02595b63289",
+  "exact_checkpoint_subject_paths": [
+    {
+      "path": "crates/engine/src/daemon/mod.rs",
+      "sha256": "1a41ee5bcf1a81466bcc1b1bce698bedd6ef883e094a86202880f0a840819df2",
+      "bytes": 5186,
+      "git_blob": "f2fb85ff50f09d7e1b6b9b14c63bcc0e59907ebb"
+    },
+    {
+      "path": "crates/engine/src/daemon/query.rs",
+      "sha256": "e5bb5bd15dd036d2a5d6c715ecc9e87cba004944d141aabc69c520ee3ce350e1",
+      "bytes": 18749,
+      "git_blob": "3911882ae6d49d9297cccc259d17248a973a2904"
+    },
+    {
+      "path": "crates/engine/src/daemon/read_head.rs",
+      "sha256": "43bdf8e3caa39e9f252722fa8c0a6233c797f95096b4777968a6842c74a7b92d",
+      "bytes": 20670,
+      "git_blob": "54ff1ba2c512a18d1102bbf39a9d17476a5f2666"
+    },
+    {
+      "path": "crates/engine/src/daemon/runtime.rs",
+      "sha256": "1136428d6bf90eae6056b99f11ab12051a8595a1da20970d1e6071395a4fa3bd",
+      "bytes": 22577,
+      "git_blob": "a5d226e73e255d8268eac3cad0ee8746265bcfc6"
+    },
+    {
+      "path": "crates/engine/src/fault.rs",
+      "sha256": "bac9299652f415339054bd8342f86f103c90e6dfe59cd092606156bae9dc6364",
+      "bytes": 4210,
+      "git_blob": "78815f927fdfd94dc8f82cb3d1f3ec5289c3495a"
+    },
+    {
+      "path": "crates/engine/src/lib.rs",
+      "sha256": "6a1f3804f4dd4be30cbce8e90668c24e1a606a04ce015fa1957362267123da53",
+      "bytes": 42610,
+      "git_blob": "e944e95467962682231c96fa3aebf309a8df4541"
+    },
+    {
+      "path": "crates/engine/src/workspace/head.rs",
+      "sha256": "7c6a14d2d3ac52842f935ebe47a46fc3838e24e5e97558402a19f68241e1991e",
+      "bytes": 19722,
+      "git_blob": "fc62accc835a37786ebea1eab573a00f45f2996d"
+    },
+    {
+      "path": "crates/engine/src/workspace/mod.rs",
+      "sha256": "fd317cae4001b3ec40ec1e38095d809d962d78d987619a478db0fc0fbe0ce2f1",
+      "bytes": 1738,
+      "git_blob": "3e04aabc0b7e093505630544f89e3024a0afce14"
+    },
+    {
+      "path": "crates/engine/src/workspace/owner/error.rs",
+      "sha256": "f66ef6c334798ce781c67e72368976d86a45acd56ce7112cd1f89b6bc2d69b78",
+      "bytes": 2624,
+      "git_blob": "bc757a23882dc033071b544b0f468c631e663263"
+    },
+    {
+      "path": "crates/engine/src/workspace/owner/gc.rs",
+      "sha256": "22723d7ce11f94c27fe081e8a74a3946fbfddfb48c543bdabfa9557507afe2e3",
+      "bytes": 7895,
+      "git_blob": "adb778c4a582cded333ca45a40704b5583dd7524"
+    },
+    {
+      "path": "crates/engine/src/workspace/owner/handoff.rs",
+      "sha256": "9c3920f2e63a96ed6b3cab5efc31f89e2f4f9046757a933e6d889d134e2dbbd6",
+      "bytes": 25416,
+      "git_blob": "f4eb854e022fbfe5971585a06ba223d110c35d6d"
+    },
+    {
+      "path": "crates/engine/src/workspace/owner/lease.rs",
+      "sha256": "bc621ecd35fb0dfbaf99f5006468cf3e1f29e579df7b9cb01660bc8fcfeb0fac",
+      "bytes": 13105,
+      "git_blob": "8f2cf690326d5dfb5d3c35fbd704d125aa3f1657"
+    },
+    {
+      "path": "crates/engine/src/workspace/owner/lifecycle.rs",
+      "sha256": "4b739bf061322a7493e15b1e1595df05ced36034408bbf6f468447bbb626eb0f",
+      "bytes": 16995,
+      "git_blob": "ff682df2fd96c33e83e70b64585b03bb7f123460"
+    },
+    {
+      "path": "crates/engine/src/workspace/owner/mod.rs",
+      "sha256": "40ae6ce1c94a1135d1efca8eb62e291b6889a47bd140fefde16e1a63a65737d7",
+      "bytes": 4978,
+      "git_blob": "de29213388141aae773d27d06778411f2e2f8ce7"
+    },
+    {
+      "path": "crates/engine/src/workspace/owner/publication.rs",
+      "sha256": "72eb124af483db56929886d2979ee1d0a928390de4246b31f6eaf481d1e5cce3",
+      "bytes": 13670,
+      "git_blob": "95e82900588d874874c3979a78dc3c2ccd28aed9"
+    },
+    {
+      "path": "crates/engine/src/workspace/owner/transaction.rs",
+      "sha256": "df55b270874d27976850c8c166ea2d3cc672126f87f7509e76f043a772c906d4",
+      "bytes": 13113,
+      "git_blob": "38eb51270c4ec921256d4caca9ca43603d5f4d47"
+    },
+    {
+      "path": "crates/engine/src/workspace/publication.rs",
+      "sha256": "abf26354f7a116456024fe240f6150687197786da0594001efd19c8aaafda3fd",
+      "bytes": 8074,
+      "git_blob": "1e1770b53d60f018d20770d4e78e88cee94ecccd"
+    },
+    {
+      "path": "crates/local-service/src/builtin.rs",
+      "sha256": "81ae4818a619f133fab10a8c2a72d9cee3f4cfeeb2c786d29916b155a9c06688",
+      "bytes": 111197,
+      "git_blob": "93002612be0bff18cfaf12f0da3f2283013c6733"
+    },
+    {
+      "path": "crates/local-service/src/builtin/commands/adapter.rs",
+      "sha256": "5e046d65f1386c0d056aded84b5cbe06c19ea7a72c09edfe0d8356de27253789",
+      "bytes": 383469,
+      "git_blob": "1fed79781997b7a7777a2f485616239d1e7ac05d"
+    },
+    {
+      "path": "crates/local-service/src/builtin/commands/diff.rs",
+      "sha256": "0818026cb6d9324ff2368d46a8ec6f21b62d54214df05e6f678ec1698955cde9",
+      "bytes": 107914,
+      "git_blob": "6b4030e8c5be1cb59f69ba22eb809db7fc427ad8"
+    },
+    {
+      "path": "crates/local-service/src/builtin/commands/index.rs",
+      "sha256": "9744c02125c96b24eb86303a43bbbe1ce83fc0665363cc38db45972fe5ab9dd7",
+      "bytes": 311781,
+      "git_blob": "fc3c40a21aa3e31d81acda3954ed78cd69834723"
+    },
+    {
+      "path": "crates/local-service/src/builtin/prepared_read_head_tests.rs",
+      "sha256": "611595133a835e3b009888dab46eedad4c4b9e1fda8a4aab6fd04124dbd5472a",
+      "bytes": 15718,
+      "git_blob": "59092c723ab2ccc54a37d1bd8a00e2c67938f6dd"
+    },
+    {
+      "path": "crates/local-service/src/builtin/prepared_writer_tests.rs",
+      "sha256": "0e341dfcaa96925540dbeb1c2e21f2e246b0d595b970690ce6a8a97cc9c8052c",
+      "bytes": 32022,
+      "git_blob": "e34fb5b232e0a29c22515a822df64f4e1c3b378a"
+    },
+    {
+      "path": "crates/local-service/src/builtin/profile_membership_tests.rs",
+      "sha256": "96aaa2e2e90307556e7258af0b0e8e353b44f2716629f001e7c9a6a1c8b9f148",
+      "bytes": 69120,
+      "git_blob": "435397c92f42bcfe9b3532d4eeaaada483fd0ec6"
+    },
+    {
+      "path": "crates/local-service/src/builtin/semantic_authority.rs",
+      "sha256": "b5a8651a5cf177af9576e07514035f5b6709c9f94175ac2f90306d1bb45b966b",
+      "bytes": 207285,
+      "git_blob": "d4561c6305c9944ff66aef08371c0ca32ab66b9b"
+    }
+  ],
+  "unchanged_other_git_entries": 17941,
+  "lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+  "preexisting_nix_configuration_unchanged": true,
+  "current_candidate_native_executed": false,
+  "predecessor_native_tests": [
+    {
+      "artifact_bytes": 1765142352,
+      "artifact_preservation_receipt": "native2043-executable-preservation-receipt.json",
+      "artifact_preservation_receipt_sha256": "57c870c225dba0ba89d23d26809c2b05346c86a3ba24019b0ab021ec2e4169bf",
+      "artifact_sha256": "aaeb51480f21883dea59ccabf4ecf9d3ca148f8d202282fb7ab1335e582313b5",
+      "failed": 0,
+      "passed": 13,
+      "return_receipt_sha256": "5f42389a9607bcef666749f38aa10594416a8609e66d977c97f3b1da09f9ccb7",
+      "scope": "13 prepared_writer_ controls",
+      "source": "2043b6f9a762cb387c0619c4f244c1a59fa15bf9"
+    },
+    {
+      "artifact_sha256": "6e6c7fd6a5f46dadb680fec245447ffae1a6ee4e532f32914af5e925ffd32470",
+      "failed": 0,
+      "passed": 6,
+      "raw_archive": "/private/tmp/sol61-prepared-read-head31f-native-20261008-retry03-rawproof.tar.gz",
+      "raw_archive_sha256": "e0db735e01eda68d7ecbeb1f542a394e0801a4ad87519a747d4a1e96662100e4",
+      "return_receipt_sha256": "379c8dd7664a82824d8eac24aaf8797120e1d0aff6bc27f3282f42d658866989",
+      "scope": "5 prepared_read_head_ +1 real multifile Rust image/source fence",
+      "source": "31f32c4629e2d4a81e55408d4eb8b3c3977136c0"
+    }
+  ],
+  "read_head_independent_audit_sha256": "58a4cfef7cfc1a3fcf6a2459cee3729a90b9f434dbd05eea3a3dd0d27f40c104",
+  "excluded": [
+    "4407 compiler worker route and successors",
+    "36043 captured view planner",
+    "journal publication writer WIP",
+    "packing/startup DTO25; this checkpoint retains canonical DTO24"
+  ]
+}
