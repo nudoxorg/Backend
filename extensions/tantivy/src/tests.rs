@@ -1476,7 +1476,8 @@ fn cold_posting_cover_counts_distinct_edges_across_case_and_field_duplicates() {
         .expect("cold-bind exact posting cover");
     assert_eq!(
         engine::test_support::binding_work(&reopened),
-        (1, 16)
+        (1, 13),
+        "membership checks visit the same distinct source edges as exact cover"
     );
     assert_eq!(
         engine::test_support::posting_cover_edges_scanned(&reopened),
@@ -1485,6 +1486,68 @@ fn cold_posting_cover_counts_distinct_edges_across_case_and_field_duplicates() {
     );
     drop(reopened);
     std::fs::remove_dir_all(directory).expect("remove test index directory");
+}
+
+#[test]
+fn cold_posting_edges_preserve_unicode_case_and_exact_field_names() {
+    let fields = vec![
+        ("name".into(), "Alpha alpha Alpha É É é".into()),
+        ("Name".into(), "alpha É".into()),
+        ("signature".into(), "ALPHA alpha É".into()),
+    ];
+    let state = state_for(vec![(document(23), fields)], [0x97; 32]);
+    let fields = state.iter().next().expect("one source row").1.to_vec();
+    let directory = std::env::temp_dir().join(format!(
+        "backend-tantivy-unicode-edges-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).expect("create projection directory");
+    drop(
+        TantivySource::build_in_dir(&state, Limits::default(), &directory)
+            .expect("build exact source projection"),
+    );
+    let reopened = TantivySource::open_in_dir(&state, Limits::default(), &directory)
+        .expect("admit distinct source edges");
+    // Raw: Alpha, alpha, ALPHA, É, é (5); ASCII folded: alpha, É, é (3).
+    // Qualified raw: name=4, Name=2, signature=3 (9); folded: 3+2+2 (7).
+    assert_eq!(engine::test_support::binding_work(&reopened), (1, 24));
+    assert_eq!(
+        engine::test_support::posting_cover_edges_scanned(&reopened),
+        24
+    );
+    assert_eq!(term_hits(&reopened, "É"), vec![document(23)]);
+    assert_eq!(term_hits(&reopened, "é"), vec![document(23)]);
+    drop(reopened);
+    std::fs::remove_dir_all(&directory).expect("remove exact projection");
+
+    // Swapping the case-sensitive field names preserves all unqualified
+    // tokens, rank payload, row count, and posting cardinalities. Membership
+    // admission must still reject the missing qualified source edge.
+    std::fs::create_dir(&directory).expect("create forged projection directory");
+    let swapped = fields
+        .iter()
+        .map(|(field, text)| {
+            let swapped = match field.as_str() {
+                "name" => "Name",
+                "Name" => "name",
+                field => field,
+            };
+            (swapped.to_owned(), text.clone())
+        })
+        .collect::<Vec<_>>();
+    engine::test_support::write_projection_mismatch_fixture(&state, &directory, &swapped, &fields)
+        .expect("write independently forged qualified postings with source-bound rank payload");
+    assert!(matches!(
+        TantivySource::open_in_dir(&state, Limits::default(), &directory),
+        Err(TantivySourceError::Corrupt(
+            "Tantivy term dictionary omits a source-bound token"
+        ))
+    ));
+    std::fs::remove_dir_all(directory).expect("remove forged projection");
 }
 
 #[test]

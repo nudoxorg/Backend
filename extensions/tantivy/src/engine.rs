@@ -5078,96 +5078,138 @@ impl PostingEdgeCounts {
     }
 }
 
+/// A row's source-authoritative posting edges. The borrowed terms come only
+/// from the exact admitted document state, and live for this admission alone.
+/// Ranking multiplicity remains in the canonical rank material; membership
+/// and live posting coverage count each (field, term, document) edge once.
+struct SourcePostingEdges<'a> {
+    terms: Vec<SourcePostingTerm<'a>>,
+}
+
+#[derive(Clone, Copy)]
+struct SourcePostingTerm<'a> {
+    field: &'a str,
+    term: &'a str,
+}
+
+#[derive(Clone, Copy)]
+enum PostingFamily {
+    Raw,
+    Folded,
+    FieldRaw,
+    FieldFolded,
+}
+
+impl PostingFamily {
+    fn compare(
+        self,
+        left: SourcePostingTerm<'_>,
+        right: SourcePostingTerm<'_>,
+    ) -> std::cmp::Ordering {
+        let field = match self {
+            Self::Raw | Self::Folded => std::cmp::Ordering::Equal,
+            Self::FieldRaw | Self::FieldFolded => left.field.cmp(right.field),
+        };
+        field.then_with(|| match self {
+            Self::Raw | Self::FieldRaw => left.term.cmp(right.term),
+            Self::Folded | Self::FieldFolded => compare_ascii_folded_terms(left.term, right.term),
+        })
+    }
+}
+
+impl<'a> SourcePostingEdges<'a> {
+    fn admit(
+        source_fields: &'a [(String, String)],
+        expected_postings: u32,
+    ) -> Result<Self, TantivySourceError> {
+        let expected_postings = usize::try_from(expected_postings).map_err(|_| Error::SizeLimit)?;
+        // Retained borrowed (field, term) pairs fit the existing per-token
+        // preflight. Tokenizer temporary storage keeps its existing source-text
+        // bound; it can exceed the final deduplicated token count. No folded or
+        // qualified strings are retained between membership lookups.
+        let required_bytes = expected_postings
+            .checked_mul(POSTING_COVER_SCRATCH_BYTES_PER_SOURCE_TOKEN)
+            .ok_or(Error::SizeLimit)?;
+        if required_bytes > MAX_POSTING_COVER_SCRATCH_BYTES {
+            return Err(TantivySourceError::PostingCoverBudgetExceeded {
+                budget_bytes: MAX_POSTING_COVER_SCRATCH_BYTES,
+                required_bytes,
+            });
+        }
+        let mut terms = Vec::new();
+        terms.try_reserve_exact(expected_postings).map_err(|_| {
+            TantivySourceError::PostingCoverBudgetExceeded {
+                budget_bytes: MAX_POSTING_COVER_SCRATCH_BYTES,
+                required_bytes,
+            }
+        })?;
+        let allocated_bytes = terms
+            .capacity()
+            .checked_mul(size_of::<SourcePostingTerm<'_>>())
+            .ok_or(Error::SizeLimit)?;
+        if allocated_bytes > MAX_POSTING_COVER_SCRATCH_BYTES {
+            return Err(TantivySourceError::PostingCoverBudgetExceeded {
+                budget_bytes: MAX_POSTING_COVER_SCRATCH_BYTES,
+                required_bytes: allocated_bytes,
+            });
+        }
+        for (field, text) in source_fields {
+            for token in searchable_tokens(text) {
+                // Refuse a mismatched witness before any vector growth beyond
+                // the preflighted row allocation.
+                if terms.len() == expected_postings {
+                    return Err(TantivySource::corrupt(
+                        "source token count changed during cold posting validation",
+                    ));
+                }
+                terms.push(SourcePostingTerm {
+                    field,
+                    term: token.searchable,
+                });
+            }
+        }
+        if terms.len() != expected_postings {
+            return Err(TantivySource::corrupt(
+                "source token count changed during cold posting validation",
+            ));
+        }
+        Ok(Self { terms })
+    }
+
+    /// Enumerate the very same distinct edges for positive membership checks
+    /// and the cardinality used to reject surplus live postings.
+    fn visit(
+        &mut self,
+        mut visit: impl FnMut(PostingFamily, SourcePostingTerm<'a>) -> Result<(), TantivySourceError>,
+    ) -> Result<PostingEdgeCounts, TantivySourceError> {
+        let mut counts = PostingEdgeCounts::default();
+        for (family, count) in [
+            (PostingFamily::Raw, &mut counts.raw),
+            (PostingFamily::Folded, &mut counts.folded),
+            (PostingFamily::FieldRaw, &mut counts.field_raw),
+            (PostingFamily::FieldFolded, &mut counts.field_folded),
+        ] {
+            self.terms
+                .sort_unstable_by(|left, right| family.compare(*left, *right));
+            let mut previous = None;
+            for term in &self.terms {
+                if previous.is_none_or(|prior| family.compare(prior, *term).is_ne()) {
+                    visit(family, *term)?;
+                    *count = count.checked_add(1).ok_or(Error::SizeLimit)?;
+                    previous = Some(*term);
+                }
+            }
+        }
+        Ok(counts)
+    }
+}
+
+#[cfg(test)]
 fn source_posting_edge_counts(
     source_fields: &[(String, String)],
     expected_postings: u32,
 ) -> Result<PostingEdgeCounts, TantivySourceError> {
-    let expected_postings = usize::try_from(expected_postings).map_err(|_| Error::SizeLimit)?;
-    let required_bytes = expected_postings
-        .checked_mul(POSTING_COVER_SCRATCH_BYTES_PER_SOURCE_TOKEN)
-        .ok_or(Error::SizeLimit)?;
-    if required_bytes > MAX_POSTING_COVER_SCRATCH_BYTES {
-        return Err(TantivySourceError::PostingCoverBudgetExceeded {
-            budget_bytes: MAX_POSTING_COVER_SCRATCH_BYTES,
-            required_bytes,
-        });
-    }
-
-    let mut all_terms = Vec::<&str>::new();
-    all_terms
-        .try_reserve_exact(expected_postings)
-        .map_err(|_| TantivySourceError::PostingCoverBudgetExceeded {
-            budget_bytes: MAX_POSTING_COVER_SCRATCH_BYTES,
-            required_bytes,
-        })?;
-    let allocated_bytes = all_terms
-        .capacity()
-        .checked_mul(size_of::<&str>())
-        .ok_or(Error::SizeLimit)?;
-    if allocated_bytes > MAX_POSTING_COVER_SCRATCH_BYTES {
-        return Err(TantivySourceError::PostingCoverBudgetExceeded {
-            budget_bytes: MAX_POSTING_COVER_SCRATCH_BYTES,
-            required_bytes: allocated_bytes,
-        });
-    }
-
-    let mut counts = PostingEdgeCounts::default();
-    for (_, text) in source_fields {
-        let mut tokens = searchable_tokens(text);
-        for token in &tokens {
-            all_terms.push(token.searchable);
-        }
-
-        // Field-qualified terms include the field name, so their expected edge
-        // cardinality is the sum of distinct terms within each authoritative field.
-        tokens.sort_unstable_by(|left, right| left.searchable.cmp(right.searchable));
-        let mut previous = None;
-        for token in &tokens {
-            if previous != Some(token.searchable) {
-                counts.field_raw = counts.field_raw.checked_add(1).ok_or(Error::SizeLimit)?;
-                previous = Some(token.searchable);
-            }
-        }
-
-        tokens.sort_unstable_by(|left, right| {
-            compare_ascii_folded_terms(left.searchable, right.searchable)
-        });
-        let mut previous: Option<&str> = None;
-        for token in &tokens {
-            if previous.is_none_or(|prior| {
-                compare_ascii_folded_terms(prior, token.searchable) != std::cmp::Ordering::Equal
-            }) {
-                counts.field_folded = counts.field_folded.checked_add(1).ok_or(Error::SizeLimit)?;
-                previous = Some(token.searchable);
-            }
-        }
-    }
-
-    if all_terms.len() != expected_postings {
-        return Err(TantivySource::corrupt(
-            "source token count changed during cold posting validation",
-        )
-        .into());
-    }
-    all_terms.sort_unstable();
-    let mut previous = None;
-    for term in &all_terms {
-        if previous != Some(*term) {
-            counts.raw = counts.raw.checked_add(1).ok_or(Error::SizeLimit)?;
-            previous = Some(*term);
-        }
-    }
-    all_terms.sort_unstable_by(|left, right| compare_ascii_folded_terms(left, right));
-    let mut previous: Option<&str> = None;
-    for term in &all_terms {
-        if previous.is_none_or(|prior| {
-            compare_ascii_folded_terms(prior, term) != std::cmp::Ordering::Equal
-        }) {
-            counts.folded = counts.folded.checked_add(1).ok_or(Error::SizeLimit)?;
-            previous = Some(term);
-        }
-    }
-    Ok(counts)
+    SourcePostingEdges::admit(source_fields, expected_postings)?.visit(|_, _| Ok(()))
 }
 
 fn compare_ascii_folded_terms(left: &str, right: &str) -> std::cmp::Ordering {
@@ -5287,6 +5329,23 @@ fn bind_document_addresses(
     let mut material = Vec::new();
     for (segment_ord, segment) in searcher.segment_readers().iter().enumerate() {
         let segment_id = segment.segment_id();
+        // Open the four immutable segment readers once, rather than reopen
+        // one for every source token membership check.
+        let posting_indexes = [
+            (fields.raw_token, segment.inverted_index(fields.raw_token)?),
+            (
+                fields.folded_token,
+                segment.inverted_index(fields.folded_token)?,
+            ),
+            (
+                fields.field_raw_token,
+                segment.inverted_index(fields.field_raw_token)?,
+            ),
+            (
+                fields.field_folded_token,
+                segment.inverted_index(fields.field_folded_token)?,
+            ),
+        ];
         let ordinals = segment.fast_fields().u64(ORDINAL_FIELD)?;
         let payload_lengths = segment.fast_fields().u64(RANK_MATERIAL_LENGTH_FIELD_NAME)?;
         let payloads = segment
@@ -5361,30 +5420,62 @@ fn bind_document_addresses(
                 )
                 .into());
             }
+            let [raw_index, folded_index, field_raw_index, field_folded_index] = &posting_indexes;
+            let mut require_edge = |family, source: SourcePostingTerm<'_>| {
+                let ((field, inverted_index), value) = match family {
+                    PostingFamily::Raw => (raw_index, std::borrow::Cow::Borrowed(source.term)),
+                    PostingFamily::Folded => (
+                        folded_index,
+                        std::borrow::Cow::Owned(source.term.to_ascii_lowercase()),
+                    ),
+                    PostingFamily::FieldRaw => (
+                        field_raw_index,
+                        std::borrow::Cow::Owned(field_token_value(source.field, source.term, false)),
+                    ),
+                    PostingFamily::FieldFolded => (
+                        field_folded_index,
+                        std::borrow::Cow::Owned(field_token_value(source.field, source.term, true)),
+                    ),
+                };
+                let term = Term::from_field_text(*field, &value);
+                let Some(mut postings) = inverted_index.read_postings(&term, IndexRecordOption::Basic)?
+                else {
+                    return Err(TantivySource::corrupt(
+                        "Tantivy term dictionary omits a source-bound token",
+                    ));
+                };
+                if postings.seek(doc) != doc {
+                    return Err(TantivySource::corrupt(
+                        "Tantivy postings omit a source-bound document token",
+                    ));
+                }
+                work.source_posting_checks = work
+                    .source_posting_checks
+                    .checked_add(1)
+                    .ok_or(Error::SizeLimit)?;
+                Ok(())
+            };
             if validate_exact_posting_cover {
-                expected_postings.add(source_posting_edge_counts(
-                    source_fields,
-                    entry.document.postings,
-                )?)?;
-            }
-            for (field, text) in source_fields {
-                for token in searchable_tokens(text) {
-                    require_document_posting(segment, fields.raw_token, token.searchable, doc)?;
-                    let folded = token.searchable.to_ascii_lowercase();
-                    require_document_posting(segment, fields.folded_token, &folded, doc)?;
-                    let qualified_raw = field_token_value(field, token.searchable, false);
-                    require_document_posting(segment, fields.field_raw_token, &qualified_raw, doc)?;
-                    let qualified_folded = field_token_value(field, token.searchable, true);
-                    require_document_posting(
-                        segment,
-                        fields.field_folded_token,
-                        &qualified_folded,
-                        doc,
-                    )?;
-                    work.source_posting_checks = work
-                        .source_posting_checks
-                        .checked_add(4)
-                        .ok_or(Error::SizeLimit)?;
+                let mut edges = SourcePostingEdges::admit(source_fields, entry.document.postings)?;
+                expected_postings.add(edges.visit(require_edge)?)?;
+            } else {
+                // Freshly built ephemeral projections retain their prior streaming
+                // envelope; the row scratch bound belongs to durable cold admission.
+                for (field, text) in source_fields {
+                    for token in searchable_tokens(text) {
+                        let source = SourcePostingTerm {
+                            field,
+                            term: token.searchable,
+                        };
+                        for family in [
+                            PostingFamily::Raw,
+                            PostingFamily::Folded,
+                            PostingFamily::FieldRaw,
+                            PostingFamily::FieldFolded,
+                        ] {
+                            require_edge(family, source)?;
+                        }
+                    }
                 }
             }
             entry.address = Some(address);
