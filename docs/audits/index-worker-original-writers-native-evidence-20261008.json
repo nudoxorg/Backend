@@ -1,0 +1,143 @@
+{
+  "schema": "nudox.root.index-worker-exact-source-audit.v1",
+  "utc": "2026-10-08T20:39:43.826757+00:00",
+  "canonical_base": "4958dfc14a1c2e0f35f119af5dcfac186be887a2",
+  "root_join": "c7e61eb92ceb873ae8d6ea4ca8afbe8140952a18",
+  "tested_source": {
+    "commit": "03163830b98c418666ace4de4dfc625e2acb1244",
+    "lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+    "status": "",
+    "tree": "0de23338ad0d67eae24a3b57ea5c1f4e666f7280"
+  },
+  "all_raw_files_rehashed": 56,
+  "git_entries_rehashed": 17962,
+  "git_blob_bytes_rehashed": 465520586,
+  "canonical_exact_tested_paths": [
+    "crates/engine/src/daemon/mod.rs",
+    "crates/engine/src/daemon/query.rs",
+    "crates/engine/src/daemon/read_head.rs",
+    "crates/engine/src/daemon/runtime.rs",
+    "crates/engine/src/fault.rs",
+    "crates/engine/src/lib.rs",
+    "crates/engine/src/workspace/head.rs",
+    "crates/engine/src/workspace/mod.rs",
+    "crates/engine/src/workspace/owner/error.rs",
+    "crates/engine/src/workspace/owner/gc.rs",
+    "crates/engine/src/workspace/owner/handoff.rs",
+    "crates/engine/src/workspace/owner/lease.rs",
+    "crates/engine/src/workspace/owner/lifecycle.rs",
+    "crates/engine/src/workspace/owner/mod.rs",
+    "crates/engine/src/workspace/owner/publication.rs",
+    "crates/engine/src/workspace/owner/transaction.rs",
+    "crates/engine/src/workspace/publication.rs",
+    "crates/local-service/src/builtin.rs",
+    "crates/local-service/src/builtin/commands/adapter.rs",
+    "crates/local-service/src/builtin/commands/adapter/tests/index_profile_worker.rs",
+    "crates/local-service/src/builtin/commands/diff.rs",
+    "crates/local-service/src/builtin/commands/index.rs",
+    "crates/local-service/src/builtin/commands/index_profile_worker.rs",
+    "crates/local-service/src/builtin/prepared_read_head_tests.rs",
+    "crates/local-service/src/builtin/prepared_writer_tests.rs",
+    "crates/local-service/src/builtin/profile_membership_tests.rs",
+    "crates/local-service/src/builtin/publication_transport_tests.rs",
+    "crates/local-service/src/builtin/semantic_authority.rs",
+    "crates/local-service/src/builtin/versioned_planes.rs",
+    "crates/local-service/src/listener.rs"
+  ],
+  "all_other_canonical_entries_unchanged": true,
+  "canonical_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+  "actual_native_passed": 30,
+  "actual_native_failed": 0,
+  "actual_native_ignored": 0,
+  "gates": [
+    {
+      "gate": 0,
+      "passed": 3,
+      "test_names": [
+        "builtin::semantic_authority::tests::detached_semantic_read_facet_never_enters_mutable_selection_fence",
+        "builtin::semantic_authority::tests::detached_semantic_writer_foreign_return_retains_both_owner_capabilities",
+        "builtin::semantic_authority::tests::detached_semantic_writer_returns_same_connection_after_caught_worker_unwind"
+      ],
+      "receipt_sha256": "02afc450a3e206714f6c7efd7a344c114cc03bbdf53d47c01de733ce5e05fa33"
+    },
+    {
+      "gate": 1,
+      "passed": 5,
+      "test_names": [
+        "builtin::commands::adapter::tests::index_profile_worker_tests::existing_index_worker_actual_compiler_refusal_returns_writers_before_terminal",
+        "builtin::commands::adapter::tests::index_profile_worker_tests::existing_index_worker_caught_admission_panic_returns_writers_for_next_real_commit",
+        "builtin::commands::adapter::tests::index_profile_worker_tests::existing_index_worker_listener_error_and_drop_cancel_and_join_before_retirement",
+        "builtin::commands::adapter::tests::index_profile_worker_tests::existing_index_worker_retirement_failure_does_not_skip_queued_attempts",
+        "builtin::commands::adapter::tests::index_profile_worker_tests::existing_index_worker_spawn_rejection_retains_writers_for_next_real_commit"
+      ],
+      "receipt_sha256": "e60933df66e2a6aeab244d7cc624c38ae9a39a3e7e13c1fefce251723aad6080"
+    },
+    {
+      "gate": 2,
+      "passed": 1,
+      "test_names": [
+        "listener::tests::listener_accepts_borrowed_owner_and_closes_it_on_drop"
+      ],
+      "receipt_sha256": "bc8fe5d1feda3f0c35f74dbedfb680dd5673868e269dad6fdf5621b501f6f0f7"
+    },
+    {
+      "gate": 3,
+      "passed": 3,
+      "test_names": [
+        "builtin::publication_transport_tests::prepared_product_view_noop_keeps_current_root_and_emits_no_event",
+        "builtin::publication_transport_tests::prepared_product_view_private_patch_and_reset_match_actual_publication",
+        "builtin::publication_transport_tests::prepared_product_view_stale_snapshot_refuses_new_owner_root_without_relabeling"
+      ],
+      "receipt_sha256": "ccc39131ae5317cd9401cbb688c2938a94295391e728ca1b39309e6ec03b6169"
+    },
+    {
+      "gate": 4,
+      "passed": 13,
+      "test_names": [
+        "builtin::profile::membership_tests::prepared_writer_tests::prepared_writer_cancellation_after_grant_cannot_discard_a_durable_publication",
+        "builtin::profile::membership_tests::prepared_writer_tests::prepared_writer_cancellation_before_grant_returns_the_same_live_writer",
+        "builtin::profile::membership_tests::prepared_writer_tests::prepared_writer_durable_publish_frame_before_head_recovers_selected_candidate",
+        "builtin::profile::membership_tests::prepared_writer_tests::prepared_writer_foreign_grant_and_publication_routes_preserve_all_authority",
+        "builtin::profile::membership_tests::prepared_writer_tests::prepared_writer_grant_then_worker_unwind_before_publish_returns_same_lease",
+        "builtin::profile::membership_tests::prepared_writer_tests::prepared_writer_keeps_old_product_reads_until_checked_install",
+        "builtin::profile::membership_tests::prepared_writer_tests::prepared_writer_model_unwind_keeps_the_exclusive_lease_recoverable",
+        "builtin::profile::membership_tests::prepared_writer_tests::prepared_writer_rejects_foreign_and_late_claims_before_grant",
+        "builtin::profile::membership_tests::prepared_writer_tests::prepared_writer_repeated_real_intent_preserves_current_view_binding",
+        "builtin::profile::membership_tests::prepared_writer_tests::prepared_writer_selected_head_before_ack_recovers_truthful_pending_status",
+        "builtin::profile::membership_tests::prepared_writer_tests::prepared_writer_selected_head_read_failure_stays_pending_and_retryable",
+        "builtin::profile::membership_tests::prepared_writer_tests::prepared_writer_selected_head_recovery_panic_stays_pending_and_retryable",
+        "builtin::profile::membership_tests::prepared_writer_tests::prepared_writer_unselected_proof_seals_against_later_retained_grant"
+      ],
+      "receipt_sha256": "58d377ad4025387c033ed99f77fa596a799541b5361b144ccfa242f60e23affa"
+    },
+    {
+      "gate": 5,
+      "passed": 5,
+      "test_names": [
+        "builtin::profile::membership_tests::prepared_read_head_tests::prepared_read_head_admission_unwind_returns_both_ungranted_writers",
+        "builtin::profile::membership_tests::prepared_read_head_tests::prepared_read_head_foreign_install_preserves_the_complete_selected_pair",
+        "builtin::profile::membership_tests::prepared_read_head_tests::prepared_read_head_selected_sink_error_stays_pending_until_same_writer_retry",
+        "builtin::profile::membership_tests::prepared_read_head_tests::prepared_read_head_selected_sink_panic_stays_pending_until_same_writer_retry",
+        "builtin::profile::membership_tests::prepared_read_head_tests::prepared_read_head_serves_old_coherent_queries_during_actual_view_persistence"
+      ],
+      "receipt_sha256": "c70c2b82c3296a535da698e77f30c85d5b0814b432b7055ecc2c717833773aa2"
+    }
+  ],
+  "return_receipt_sha256": "6fe0e10d10177478557ff763b2615ade6c9801afea9640501e73f87aec9b06f0",
+  "actual_test_image": {
+    "bytes": 1763339312,
+    "device": 66309,
+    "inode": 6862904,
+    "path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_local_service-8148a5e890956a95",
+    "sha256": "73a68aacf79c8446863573279c0a44b7c769ab5b12233da495b780ff3bf0ab92"
+  },
+  "root_remote_binary_rehash": false,
+  "limitations": [
+    "Native tests ran exact0316; current canonical source join has not been rebuilt",
+    "Actual image list captured during gate04, not preflight for earlier filters",
+    "Refusal test uses deliberately unavailable Python; successful compiler-through-worker admission remains a follow-up",
+    "Unwind controls run the dev unwind profile; release panic=abort does not establish recoverable panics",
+    "Orderly close joins worker but existing current/queued candidate-attempt retirement gap remains",
+    "No installed CLI/MCP/GUI, latency or real-project acceptance from these 30 tests"
+  ]
+}
