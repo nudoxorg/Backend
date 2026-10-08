@@ -1,0 +1,152 @@
+{
+  "schema": "nudox.explicit-retired-graph-loan.v1",
+  "utc": "2026-10-08T09:44:21.211772+00:00",
+  "authorization": "Root FULL930dbc production/test approval; focused backend-store existingDEBUG immutable read controls on genuinely retired graph only, jobs2/freshV5, no new target/profile or foreign source mutation",
+  "owner_source": {
+    "commit": "5f2a97eb4c74c175e190ff9637373c6bcf9ae39e",
+    "tree": "08d334bdf7ae6bd87c4943b58f010d4554dcbb12",
+    "clean": true,
+    "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+  },
+  "borrower_source": {
+    "commit": "930dbc9e734c6a38de3c998592f22347b33b4067",
+    "tree": "cde86b570206addd15f9a1fe3e476b46cb2610a9",
+    "clean": true,
+    "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e"
+  },
+  "borrower_worktree": "/Users/rmccrar6/codex-worktrees/sol61-fresh-cas-seal-20261008",
+  "prior_return": {
+    "path": "/Users/rmccrar6/sol61-startup-phases-20261008/debug-trio-02/receipt.json",
+    "sha256": "b1e8f63ad920f3df65ab371f73ef93e8f94e54d726a4b641de048b4720a441b9"
+  },
+  "lifetime_locks": [
+    "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-graph-lifetime.lock",
+    "/Users/rmccrar6/sol61-fresh-cas-seal-20261008/borrower-lifetime.lock",
+    "/Users/rmccrar6/sol61-fresh-cas-seal-20261008/source-lifetime.lock"
+  ],
+  "target": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/target",
+  "build_role": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role",
+  "tools": {
+    "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-managed-runner/cargo": "12db87ac9dc0241064fa14042b9c2e28734aa53867e920f2519f0d824038b552",
+    "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-managed-runner/rustc-cache.sh": "add011a45751151c5b13914888026da2f57a4752f56012a30e951480491afb7a",
+    "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/native-environment.sh": "dfcbb9a52f71e4697efd7b036ba7413794d4ff7195e7d7f1de8375ac4e5b763a"
+  },
+  "environment_file": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/native-environment.sh",
+  "environment_overlay": {
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_INCREMENTAL": "0",
+    "NUDOX_CARGO_BUILD_SLOTS": "4",
+    "NUDOX_CARGO_SLOT_WAIT_MS": "0",
+    "NUDOX_CARGO_WORKTREE_WAIT_MS": "0",
+    "CARGO_TARGET_DIR": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/target",
+    "CARGO_BUILD_BUILD_DIR": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role",
+    "SCCACHE_DIR": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/sccache"
+  },
+  "unset_environment": [
+    "SCCACHE_SERVER_UDS"
+  ],
+  "file_descriptor_limit": 8192,
+  "build_argv": [
+    "test",
+    "--locked",
+    "--offline",
+    "-j2",
+    "-p",
+    "backend-store",
+    "immutable_read_tests",
+    "--",
+    "--nocapture"
+  ],
+  "runtime_permit": "Build/test through exact pinned managed Cargo runner under all three lifetime flocks with fresh complete V5 immediately before each launch; no unadmitted direct native child",
+  "stamps": [
+    {
+      "path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/target/.nudox-worktree-root",
+      "original": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007\n",
+      "loan_value": "/Users/rmccrar6/codex-worktrees/sol61-fresh-cas-seal-20261008\n",
+      "loan_sha256": "e9c6a881c5a256ae43ba5aefe61b057311a3554c9e6b6e9f51fd36f5f107714b"
+    },
+    {
+      "path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/.nudox-worktree-root",
+      "original": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007\n",
+      "loan_value": "/Users/rmccrar6/codex-worktrees/sol61-fresh-cas-seal-20261008\n",
+      "loan_sha256": "e9c6a881c5a256ae43ba5aefe61b057311a3554c9e6b6e9f51fd36f5f107714b"
+    }
+  ],
+  "managed_leases_empty": true,
+  "required_protocol": "Fresh complete V5 immediately before each actual build/runtime; source/tool/input identity before/after; actual rustc and artifact evidence; hold all lifetime flocks until owned child/group kernel retirement and empty role leases; restore exact two original stamp bytes under locks; return receipt. No other graph borrower, source mutation, cold release profile, target copies/resets or foreign cleanup.",
+  "product_acceptance": false,
+  "source_transition": {
+    "from_source": {
+      "commit": "7e60fbb0ff6984b04c017d547bebc92bd3f7e657",
+      "tree": "e6ba1cc1ef66224ddccdb79dc5a38f0b3f56ff2d",
+      "clean": true,
+      "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e"
+    },
+    "original_loan_sha256": "007c6164cc4ad26d07eac2bb4f6d2810840998848bca9048a0090fccd22db456",
+    "bundle_sha256": "23fa3cf13319d2a0bc3b6a2b940c9f83855f015b79155d68b65a30002198cb5d",
+    "under_all_three_lifetime_locks": true,
+    "original_stamps_restored_before_transition": true,
+    "reason": "MCP fixture-only successor after authentic7e60 full122 cohort119PASS/3FAIL. Metadata proves no eager state, isolated subprocess pins genuine missing companion while private-parent initialization refusal remains, producer peers stay alive through exact admission and forged/digest-only require Protocol. Runtime blobs remain exactly d19f54PASS/0FAIL/1IGN. Preserve native08 failure/source and Darwin syscall oracle. No client transport/certificate logic change, no merge or GNU claim."
+  },
+  "gate_scope": "CAS930dbc focused backend-store immutable_read_tests; startup9bdc and its immutable matched images preserved and public runtime independent of this graph",
+  "command_amendment": {
+    "from_loan_sha256": "855e2664fdbdaa3e77f2b6ab366b4c13bc2c5ab4d56473d3c35e52344106a0d9",
+    "reason": "Root requests all MCP library tests, including stdio/HTTP/key redaction, on exact7e60; source/tools/jobs/profile unchanged."
+  },
+  "previous_borrower_return": {
+    "source": {
+      "commit": "9bdcd861c33d2e9152998db6b6583d8c9494096c",
+      "tree": "e8c66c153bc93ac8cdd3e6d8409975a28ff63e45",
+      "clean": true,
+      "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e"
+    },
+    "receipt": {
+      "path": "/Users/rmccrar6/sol61-startup-phases-20261008/debug-trio-02/receipt.json",
+      "sha256": "b1e8f63ad920f3df65ab371f73ef93e8f94e54d726a4b641de048b4720a441b9"
+    },
+    "all_five_handoff_locks_held": true,
+    "stamps_original": true,
+    "compiler_group_absent": true,
+    "sealed_startup_images": {
+      "backend-mcp": {
+        "path": "/Users/rmccrar6/sol61-startup-phases-20261008/debug-trio-02/images/backend-mcp",
+        "sha256": "7e357f8f805de93bc06f7b503166aa6bf0008db412522bfb46ff06eee6130c76",
+        "bytes": 165004944,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/target/debug/backend-mcp",
+        "otool_sha256": "10c2768473165963e7493edd6d95b85d3eeb9719bf97897f8b8516cd15da868f",
+        "non_system_libraries": {
+          "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib": {
+            "sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1",
+            "bytes": 92352
+          }
+        }
+      },
+      "backend-cli": {
+        "path": "/Users/rmccrar6/sol61-startup-phases-20261008/debug-trio-02/images/backend-cli",
+        "sha256": "b6c4f84a455ac3ec9388e02b912c47b72e080d32f51d705da1f5b104dc5dea52",
+        "bytes": 223994192,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/target/debug/backend-cli",
+        "otool_sha256": "9c283da515cbe9498a3962896cdbdfb0ddeb0cd585f607ee7826232c97cf3780",
+        "non_system_libraries": {
+          "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib": {
+            "sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1",
+            "bytes": 92352
+          }
+        }
+      },
+      "backend-locald": {
+        "path": "/Users/rmccrar6/sol61-startup-phases-20261008/debug-trio-02/images/backend-locald",
+        "sha256": "51ffb92c505618581d898a96aeddcf256dbb5f9e2dedbe02aa8d7f8439e4e07b",
+        "bytes": 692824544,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/target/debug/backend-locald",
+        "otool_sha256": "f2acb820a28c24baec7c195db6636fc0c0e3afa5c3fc7ab197efba804cdd738b",
+        "non_system_libraries": {
+          "/nix/store/wl602np9yz9kw3a9ydpn68nqd63g0xda-libiconv-115.100.1/lib/libiconv.2.dylib": {
+            "sha256": "c83dd3b5eaa21fedaecf7f1b947f22daec80c266e5e787e10bb81b3f486faab1",
+            "bytes": 92352
+          }
+        }
+      }
+    }
+  }
+}

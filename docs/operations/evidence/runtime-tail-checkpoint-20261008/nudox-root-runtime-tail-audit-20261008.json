@@ -1,0 +1,67 @@
+{
+  "schema": "nudox.root-focused-runtime-tail-audit.v1",
+  "source_head": "3d0a85ec66731249085d085d63eda088b14cb824",
+  "source_tree": "8dad71746a73bb913b547a71e9734734681b1288",
+  "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+  "exact_changed_source_paths": [
+    "crates/engine/src/application/compiler.rs",
+    "crates/store/src/durable/artifact_fs.rs",
+    "crates/store/src/durable/objects.rs",
+    "frontends/go/src/legacy/oracle.rs",
+    "frontends/go/src/legacy/oracle/authority_witness.rs",
+    "frontends/go/src/legacy/oracle/capture_digest.rs",
+    "frontends/go/src/legacy/oracle/dependency_witness.rs"
+  ],
+  "go": {
+    "runs": [
+      {
+        "phase": "scratch-primitive",
+        "passed": 8,
+        "elapsed_seconds": 5.9369394310051575
+      },
+      {
+        "phase": "scratch-consumer",
+        "passed": 3,
+        "elapsed_seconds": 2.3281283039832488
+      },
+      {
+        "phase": "scratch-existing",
+        "passed": 8,
+        "elapsed_seconds": 3.907558848033659
+      },
+      {
+        "phase": "scratch-selected",
+        "passed": 1,
+        "elapsed_seconds": 126.13142960600089
+      }
+    ],
+    "total_passed": 20,
+    "archive_members_verified": 48,
+    "actual_image_hashes_verified": [
+      "b8f1f4d51159c2f330e98779357dc5fb3798d76d4880e8bb63b2deb585433687",
+      "ba974d5d9729f216c8ccbe519ad85f3c13f77c7001a7a90bd36541bc9f52819b",
+      "e9cc24f5463605610f7af080aadd49d4feaa2d3e7cb3318f83b701da32938191",
+      "f8963151ed93c821550b1a779c50fff4c7bdf6a03db4b88deda90facd6f05a54"
+    ],
+    "actual_compiler_inputs_verified": 10,
+    "generated_inputs_hash_verified_not_git_tracked": [
+      "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/.local/go-public-check-role/.nudox-cargo/slot-0/debug/build/backend-frontend-go-b0e30d0ae04541a6/out/go_oracle_sources.rs"
+    ]
+  },
+  "cas": {
+    "passed": 4,
+    "archive_members_verified": 15,
+    "source_input_hashes_verified": 304,
+    "actual_test_image_verified": "99a8e1538aefb9ae131642d70d641bdb94dc1b0422f8d1d7eaa7c574038ce88c"
+  },
+  "typescript_diagnostics": {
+    "passed": 4,
+    "archive_members_verified": 5,
+    "tracked_source_tree_entries_verified": 17751,
+    "sealed_engine_image_not_copied_locally": true
+  },
+  "total_focused_passed": 28,
+  "public_runtime_acceptance_inferred": false,
+  "combined_entire_workspace_test_run": false,
+  "installed_binaries_updated": false
+}

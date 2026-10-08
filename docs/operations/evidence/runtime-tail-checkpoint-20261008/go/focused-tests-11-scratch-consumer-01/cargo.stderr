@@ -1,0 +1,5 @@
+warning: resolver for the non root package will be ignored, specify resolver at the workspace root:
+package:   /root/codex-worktrees/sol61-go-rust-public-tails-20261008/vendor/gpui_ce_components/Cargo.toml
+workspace: /root/codex-worktrees/sol61-go-rust-public-tails-20261008/Cargo.toml
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.06s
+     Running unittests lib.rs (.local/go-public-check-role/.nudox-cargo/slot-0/debug/deps/backend_frontend_go-11b1b3305bba076c)

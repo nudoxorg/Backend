@@ -1,0 +1,12 @@
+{
+  "borrower_lifetime_lock": "/Users/rmccrar6/sol61-fresh-cas-seal-20261008/borrower-lifetime.lock",
+  "bundle_sha256": "4496ef1e501b34612168e8bf438ea872b4f67b9cae5f4c14bd2fdafcef64bdd1",
+  "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+  "clean": true,
+  "commit": "930dbc9e734c6a38de3c998592f22347b33b4067",
+  "graph_accessed_or_mutated": false,
+  "read_only_git_object_donor": "/Users/rmccrar6/codex-worktrees/sol61-python-project-report-mismatch-20261008",
+  "source": "/Users/rmccrar6/codex-worktrees/sol61-fresh-cas-seal-20261008",
+  "source_lifetime_lock": "/Users/rmccrar6/sol61-fresh-cas-seal-20261008/source-lifetime.lock",
+  "tree": "cde86b570206addd15f9a1fe3e476b46cb2610a9"
+}

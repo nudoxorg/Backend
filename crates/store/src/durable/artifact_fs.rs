@@ -921,13 +921,20 @@ mod imp {
                 .write_object(&object)
                 .expect("publish sealed object");
             let path = fixture.store.object_path(object.id());
-            // The generic object writer is a legacy unsealed producer. Its
-            // first admitted read must durably tighten permissions once.
+            let before = std::fs::metadata(&path).expect("freshly published metadata");
+            assert_eq!(before.mode() & 0o7777, 0o400);
+            assert_eq!(before.nlink(), 1);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            // Exercise the first admission of the fresh writer's inode. A
+            // prewarming read would hide a redundant permission/write barrier.
             assert_eq!(
-                fixture.store.read_object(object.id()).expect("first seal"),
+                fixture.store.read_object(object.id()).expect("first admission"),
                 object
             );
-            let before = std::fs::metadata(&path).expect("published metadata");
+            assert_eq!(
+                identity(&before),
+                identity(&std::fs::metadata(&path).expect("after first admission"))
+            );
             let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
             let workers: Vec<_> = (0..4)
                 .map(|_| {
@@ -938,6 +945,12 @@ mod imp {
                         let store = FileStore::open(root, 1 << 20).expect("cold reopen");
                         let pin = store.pin_garbage_collection().expect("pin reopened store");
                         barrier.wait();
+                        assert!(
+                            !store
+                                .write_object_with_receipt(&expected)
+                                .expect("share existing immutable inode")
+                                .created()
+                        );
                         for _ in 0..20 {
                             assert_eq!(
                                 store.read_object(expected.id()).expect("owned admission"),
@@ -967,6 +980,10 @@ mod imp {
             std::fs::write(&path, envelope).expect("replace corrupt fixture");
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400))
                 .expect("seal corrupt fixture");
+            assert_eq!(
+                fixture.store.write_object(&object),
+                Err(StoreError::Corrupt)
+            );
             assert_eq!(
                 fixture.store.read_object(object.id()),
                 Err(StoreError::Corrupt)

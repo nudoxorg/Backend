@@ -167,6 +167,18 @@ impl LeaseStore {
         Self::try_lock_bounded(self.open_gate_file(key)?)
     }
 
+    /// Checks whether another process holds this key's interprocess gate.
+    /// Used by process-level tests to verify the gate's lifetime directly,
+    /// without changing the durable lease record under test.
+    #[cfg(test)]
+    pub(crate) fn gate_available_for_test(&self, key: WorkKey) -> io::Result<bool> {
+        let Some(gate) = self.try_gate(key)? else {
+            return Ok(false);
+        };
+        drop(gate);
+        Ok(true)
+    }
+
     /// Locks every distinct stripe in ascending order. This order is shared by
     /// all callers, so a two-key publication cannot deadlock against another
     /// publication which names the same stripes in reverse order.

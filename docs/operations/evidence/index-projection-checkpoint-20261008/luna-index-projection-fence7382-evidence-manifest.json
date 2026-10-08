@@ -1,0 +1,233 @@
+{
+  "artifact_caveat": "The unchanged Mac supervisor reports native_executables=[], nested_subprocess_test_results=[], and binary_result_mapping_complete=false. Separate supplemental crosswalk files bind each Cargo verbose Running line and test stdout to the exact test binary hash; for gate 2, the crosswalk explicitly binds the parent test (not the environment-dependent helper filter) and its assertions.",
+  "final_invariants": {
+    "all_owned_children_kernel_waited": true,
+    "all_selected_permits_retired": true,
+    "foreign_permit_entries_preserved": true,
+    "frozen_graph_clean_and_unchanged": true,
+    "managed_graph_leases_empty": true,
+    "no_live_compiler_process_for_target_or_role": true,
+    "source_clean_and_exact": true
+  },
+  "final_retirement_check": {
+    "path": "/private/tmp/luna-index-projection-final-retirement-check-7382.json",
+    "sha256": "e083c4060acc85c179b3bd96ce5c07f2c0e4e04fd49289a90995862fb52856fc"
+  },
+  "gates": [
+    {
+      "cargo_stderr_sha256": "0333f1ea8e35827169595b38d5cf41a9d34d2b413546aed9adfbc199b5380a5d",
+      "cargo_stdout_sha256": "90c9e3d7785e5f2e5e793a13d7fd70534cf898e283e9118f02f851146c0cbec4",
+      "compiler_observations_sha256": "114b1738da48d0edaed106fc8d2d3b1c34cb1298f1eeff3b1c1b338c3de68acb",
+      "completion_exit": 0,
+      "completion_retirement": "owned-child-kernel-wait",
+      "completion_sha256": "b7ec00e5c69fedae88c82f3622036d1127e88a46e15fc5027a0817f9c29cdc51",
+      "diagnostics_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "end_utc": "2026-10-08T09:57:56.088102+00:00",
+      "fleet_sha256": "6a0f239d1847bd2b16a3a02e45c804fceaf254c629078a11281df37659b07484",
+      "frozen_graph_unchanged": true,
+      "gate": 0,
+      "launch_sha256": "0bbdfbad436e87d0439dd5f41123e43c8731a1cca1765cb093872dcc8bc850bc",
+      "local_archive_directory": "/private/tmp/luna-index-projection-fence7382-native-gate0-local",
+      "managed_graph_leases_empty": true,
+      "managed_permit_retired": true,
+      "proof_path": "/private/tmp/luna-index-projection-fence7382-native-gate0-local/luna-index-projection-fence7382-native-gate0/executed-test-binary-corroboration.json",
+      "proof_sha256": "76c51d22135aa7c4a17b1592a406e60998fde69997f4bea29ad3d461caef5bf0",
+      "remote_output_directory": "/private/tmp/luna-index-projection-fence7382-native-gate0",
+      "resources_sha256": "272c2b137d27ecf13179aed06901a0e2df5a30ee3a5903c8b0d610c8484828e9",
+      "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1140 filtered out; finished in 4.54s",
+      "source_unchanged": true,
+      "start_utc": "2026-10-08T09:48:48.192467+00:00",
+      "test": "unchanged_durable_index_search_revalidates_bytes_and_skips_source_reprojection",
+      "test_binary": {
+        "path": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007/debug/deps/backend_local_service-fb339fe309d09189",
+        "sha256": "ad4f7150e5c448966ec2b72c8584acaa92028c131041758d050407c4a5abd1ec",
+        "size_bytes": 723020248
+      },
+      "v5": {
+        "advisory_allowed": true,
+        "allow_local_over_cap_for_remote": true,
+        "available_memory_bytes": 64490979328,
+        "destination_memory_only_for_remote": true,
+        "fleet_groups": 10,
+        "host_groups": 2,
+        "host_limit": 8,
+        "path": "/private/tmp/luna-index-projection-fence7382-native-gate0-local/luna-index-projection-fence7382-v5-gate0.json",
+        "requested_jobs": 2,
+        "root_disk_available_bytes": 1156502708224,
+        "sampled_at_utc": "2026-10-08T09:48:44.355391+00:00",
+        "sha256": "6a0f239d1847bd2b16a3a02e45c804fceaf254c629078a11281df37659b07484"
+      }
+    },
+    {
+      "cargo_stderr_sha256": "0a9152be3e173b34bd17c553463477f64d709190cf272bbc57945b75990936a0",
+      "cargo_stdout_sha256": "732356e90a108f3c658fa881483881db2b3bf4dd58e2361169dbd5f528e21905",
+      "compiler_observations_sha256": "7ba9164c8f77f5748f4aa9f81716efd157bc9205202528d18d8ef8be144e9327",
+      "completion_exit": 0,
+      "completion_retirement": "owned-child-kernel-wait",
+      "completion_sha256": "b0ec30ec4fee036761b9cb540ec9b7ac4ed4831020318b9dda19d080f125becb",
+      "diagnostics_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "end_utc": "2026-10-08T10:03:32.120158+00:00",
+      "fleet_sha256": "bde8ddc1f122d70ba30a2a86061cdff89c409632a4162c2741405533a6fe8324",
+      "frozen_graph_unchanged": true,
+      "gate": 1,
+      "launch_sha256": "410508bf4da3c22977905182b69066ac48c825efa845fb1ef0f7887ec9c9ea6e",
+      "local_archive_directory": "/private/tmp/luna-index-projection-fence7382-native-gate1-local",
+      "managed_graph_leases_empty": true,
+      "managed_permit_retired": true,
+      "proof_path": "/private/tmp/luna-index-projection-fence7382-native-gate1-local/luna-index-projection-fence7382-native-gate1/executed-test-binary-corroboration.json",
+      "proof_sha256": "fdf93695004df007d838b895fcf3bc5e410ab3b88ca4572b8ac2ba30dbf9f7f3",
+      "remote_output_directory": "/private/tmp/luna-index-projection-fence7382-native-gate1",
+      "resources_sha256": "54b74e684e84730a26a195c0c4dc5192fca176da641c69d19f9b52633dccfcbc",
+      "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 902 filtered out; finished in 0.98s",
+      "source_unchanged": true,
+      "start_utc": "2026-10-08T09:59:38.793818+00:00",
+      "test": "forge_owner_refreshes_cross_instance_publications_for_reference_and_search",
+      "test_binary": {
+        "path": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007/debug/deps/backend_engine-b4955c870b705815",
+        "sha256": "026511be7d1acc263772fa9a0fde151c4f5aa71534383e9e3af2d33f59192a34",
+        "size_bytes": 460871472
+      },
+      "v5": {
+        "advisory_allowed": true,
+        "allow_local_over_cap_for_remote": true,
+        "available_memory_bytes": 64097533952,
+        "destination_memory_only_for_remote": true,
+        "fleet_groups": 7,
+        "host_groups": 1,
+        "host_limit": 8,
+        "path": "/private/tmp/luna-index-projection-fence7382-native-gate1-local/luna-index-projection-fence7382-v5-gate1.json",
+        "requested_jobs": 2,
+        "root_disk_available_bytes": 1154886172672,
+        "sampled_at_utc": "2026-10-08T09:59:34.243666+00:00",
+        "sha256": "bde8ddc1f122d70ba30a2a86061cdff89c409632a4162c2741405533a6fe8324"
+      }
+    },
+    {
+      "cargo_stderr_sha256": "c74f959ea4f5af4e60df0b3fdebb10bee119e62cc6e944a1b3e54efe68dbc12c",
+      "cargo_stdout_sha256": "a1fae8f3b544700f8a4ae8febe1b7659d24a30ec4456b1f95cfcd501a074d891",
+      "compiler_observations_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "completion_exit": 0,
+      "completion_retirement": "owned-child-kernel-wait",
+      "completion_sha256": "ab2f57a75fdb89cc2f546623539c0effbd0926232d42b2e985298c2999c49c61",
+      "diagnostics_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "end_utc": "2026-10-08T10:05:06.822709+00:00",
+      "fleet_sha256": "da7e8bb6f167f51041b11e5caac26c9d0b4c1a2786cd3bf96c0c886c0bc1a0e9",
+      "frozen_graph_unchanged": true,
+      "gate": 2,
+      "launch_sha256": "6c0b4b0799b752fefdab7e80fbcad567c38e24d4a17064b084d11124c6914490",
+      "local_archive_directory": "/private/tmp/luna-index-projection-fence7382-native-gate2-local",
+      "managed_graph_leases_empty": true,
+      "managed_permit_retired": true,
+      "proof_path": "/private/tmp/luna-index-projection-fence7382-native-gate2-local/luna-index-projection-fence7382-native-gate2/executed-test-binary-corroboration.json",
+      "proof_sha256": "76d214b72c01e902a40bf273b29e4b6cbf2e3fa9a429b433c3e4afa5d05c0fd6",
+      "remote_output_directory": "/private/tmp/luna-index-projection-fence7382-native-gate2",
+      "resources_sha256": "eb51757d57137df35ac4d207aef32872b2948ce60ba7bdeb1276e6f923549fed",
+      "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 902 filtered out; finished in 0.90s",
+      "source_unchanged": true,
+      "start_utc": "2026-10-08T10:05:01.929237+00:00",
+      "test": "forge_search_snapshot_keeps_publication_gate_until_capture_finishes",
+      "test_binary": {
+        "path": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007/debug/deps/backend_engine-b4955c870b705815",
+        "sha256": "026511be7d1acc263772fa9a0fde151c4f5aa71534383e9e3af2d33f59192a34",
+        "size_bytes": 460871472
+      },
+      "v5": {
+        "advisory_allowed": true,
+        "allow_local_over_cap_for_remote": true,
+        "available_memory_bytes": 60878471168,
+        "destination_memory_only_for_remote": true,
+        "fleet_groups": 10,
+        "host_groups": 3,
+        "host_limit": 8,
+        "path": "/private/tmp/luna-index-projection-fence7382-native-gate2-local/luna-index-projection-fence7382-v5-gate2.json",
+        "requested_jobs": 2,
+        "root_disk_available_bytes": 1154693267456,
+        "sampled_at_utc": "2026-10-08T10:04:57.669113+00:00",
+        "sha256": "da7e8bb6f167f51041b11e5caac26c9d0b4c1a2786cd3bf96c0c886c0bc1a0e9"
+      }
+    },
+    {
+      "cargo_stderr_sha256": "37ab78c3f31458d5f58c19bfe3df78291237bad6bcf41d503ebe866b07c878a5",
+      "cargo_stdout_sha256": "50f34f01e98ceb237c18e20e75f3a93b9c1cea821d0caae69963c46646ff97bb",
+      "compiler_observations_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "completion_exit": 0,
+      "completion_retirement": "owned-child-kernel-wait",
+      "completion_sha256": "68addc6906428149a6aaf1d852eeb090299819e797f2440d737e488540b5bf62",
+      "diagnostics_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "end_utc": "2026-10-08T10:06:02.883816+00:00",
+      "fleet_sha256": "dd5b78978f906ded628ce3e1d68483d5268714ebce26b7817dc12438ebf08eb5",
+      "frozen_graph_unchanged": true,
+      "gate": 3,
+      "launch_sha256": "cc8b5c70010253c75a8d60fb06fb312c74aa2856b3bfe48485e0b0ccc9454ed5",
+      "local_archive_directory": "/private/tmp/luna-index-projection-fence7382-native-gate3-local",
+      "managed_graph_leases_empty": true,
+      "managed_permit_retired": true,
+      "proof_path": "/private/tmp/luna-index-projection-fence7382-native-gate3-local/luna-index-projection-fence7382-native-gate3/executed-test-binary-corroboration.json",
+      "proof_sha256": "09a2edc33fc3bdca9a70b5b95ac1fe5abcb6d34a5f394927170b060f0a750b0d",
+      "remote_output_directory": "/private/tmp/luna-index-projection-fence7382-native-gate3",
+      "resources_sha256": "5071d3e91f7225ba6a10acccc548608be61f73a125d6102bee994a209ac81ec3",
+      "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 902 filtered out; finished in 0.03s",
+      "source_unchanged": true,
+      "start_utc": "2026-10-08T10:06:00.063618+00:00",
+      "test": "tail_identity_tracks_exact_validated_history_across_reopen",
+      "test_binary": {
+        "path": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007/debug/deps/backend_engine-b4955c870b705815",
+        "sha256": "026511be7d1acc263772fa9a0fde151c4f5aa71534383e9e3af2d33f59192a34",
+        "size_bytes": 460871472
+      },
+      "v5": {
+        "advisory_allowed": true,
+        "allow_local_over_cap_for_remote": true,
+        "available_memory_bytes": 60837969920,
+        "destination_memory_only_for_remote": true,
+        "fleet_groups": 10,
+        "host_groups": 2,
+        "host_limit": 8,
+        "path": "/private/tmp/luna-index-projection-fence7382-native-gate3-local/luna-index-projection-fence7382-v5-gate3.json",
+        "requested_jobs": 2,
+        "root_disk_available_bytes": 1154600914944,
+        "sampled_at_utc": "2026-10-08T10:05:55.779235+00:00",
+        "sha256": "dd5b78978f906ded628ce3e1d68483d5268714ebce26b7817dc12438ebf08eb5"
+      }
+    }
+  ],
+  "plan": {
+    "cargo_jobs": 2,
+    "destination": "h16001mac",
+    "frozen_graph_identity": {
+      "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268",
+      "clean": true,
+      "commit": "fbf27ce7d0dfa9e2e39463a61531bdf2b39645cc",
+      "tree": "320f2758f1c8ac8b25979a7f479564ac8d90f075"
+    },
+    "path": "/private/tmp/luna-index-projection-mac-native-plan-fence7382.json",
+    "sha256": "7682cadd7ceedb6090a2ebf63c61c09a170583218d178f031cbd98499dd20667",
+    "source": {
+      "commit": "7382f9f8a31990f3b0fe2e2b44093717699ad934",
+      "lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+      "tree": "155f1b793645fff3bccbadae11e3a144d08db2f2"
+    },
+    "source_worktree": "/Users/rmccrar6/codex-worktrees/luna-index-projection-fastpath-7382-20261008"
+  },
+  "schema": "nudox.luna.index-projection.focused-native-evidence.v1",
+  "source_composition": {
+    "base_commit": "52bee7f1b0b46db1ee7d07f62aaefa69c8f51c30",
+    "journal_fence_fix_commit": "142b1b5e824235a2f32fae35a825e9daafaf38c4",
+    "marker_write_race_followup_commit": "7382f9f8a31990f3b0fe2e2b44093717699ad934",
+    "projection_fast_path_commit": "f3cdd396d870fba11a4f88737c658a4eb27594bd",
+    "projection_regression_controls_commit": "397e8ea31bd60a9ba8bb02549a8fa50e380ecdf5",
+    "remote_source_reconstruction": {
+      "base_tree_commit": "9ea0e0b77d84b224261d6ec74267c293fc5447d5",
+      "binary_patch_sha256": "0a7fbec339685d0c501766295782ae2e1e7f17f157bcca9a255e80b62369c55d",
+      "raw_commit_object_sha256": "8b51320fd60b2aae3f4e87c0e54a834698811ce21416a8c14baccbdb99b62a4a",
+      "verified_tree": "155f1b793645fff3bccbadae11e3a144d08db2f2"
+    }
+  },
+  "source_owner_transfer": {
+    "no_native_launch_during_transfer": true,
+    "prior_owner_archive_path": "/private/tmp/luna-index-projection-prior-owner-7382-20261008.json",
+    "prior_owner_archive_sha256": "cb25067dd4941eae9c2615dea0787707ab3a375f160b33600e3d8143829f7b33",
+    "receipt_path": "/private/tmp/luna-index-projection-owner-transfer-7382-20261008.json",
+    "receipt_sha256": "97d993a9527410032f3e3aaf6171e58bd102f64e80f99c1a771b9919864f3c8d"
+  }
+}

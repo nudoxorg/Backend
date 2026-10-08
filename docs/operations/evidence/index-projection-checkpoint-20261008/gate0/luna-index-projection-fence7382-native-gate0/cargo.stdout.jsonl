@@ -1,0 +1,6 @@
+
+running 1 test
+test builtin::product_state::tests::unchanged_durable_index_search_revalidates_bytes_and_skips_source_reprojection ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1140 filtered out; finished in 4.54s
+

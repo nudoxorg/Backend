@@ -1,0 +1,6 @@
+
+running 1 test
+test forge::tests::forge_search_snapshot_keeps_publication_gate_until_capture_finishes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 902 filtered out; finished in 0.90s
+

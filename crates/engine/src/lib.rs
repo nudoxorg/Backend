@@ -46,8 +46,9 @@ pub use forge::{
     ForgeAuthToken, ForgeCoordinate, ForgeCoordinateError, ForgeDelegatedObject,
     ForgeDelegationRequest, ForgeFact, ForgeHashAlgorithm, ForgeObjectId, ForgePackageManifest,
     ForgeProtocolError, ForgeProvider, ForgeReceipt, ForgeRefName, ForgeRejectReason,
-    ForgeRepositoryMetadata, ForgeResolution, ForgeRevision, ForgeSearchRecord, ForgeTransport,
-    ForgeTransportError, ForgeUnavailableReason, HttpForgeTransport, verify_delegated_object,
+    ForgeRepositoryMetadata, ForgeResolution, ForgeRevision, ForgeSearchCatalogRevision,
+    ForgeSearchCatalogSnapshot, ForgeSearchRecord, ForgeTransport, ForgeTransportError,
+    ForgeUnavailableReason, HttpForgeTransport, verify_delegated_object,
 };
 pub mod index_build;
 pub mod index_publish;

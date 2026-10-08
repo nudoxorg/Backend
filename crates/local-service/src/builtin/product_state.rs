@@ -13,8 +13,8 @@ use super::forge_gateway::{
 };
 use crate::discovery::{DISCOVERY_FRESHNESS_MILLIS, DiscoveryStore};
 use backend_engine::{
-    ForgeFact, ForgeSearchRecord, ProductTreeNodeId as TreeNodeId, RowId, SurfaceCommand,
-    SurfaceReply, ViewRoot,
+    ForgeFact, ForgeSearchCatalogRevision, ForgeSearchRecord, ProductTreeNodeId as TreeNodeId,
+    RowId, SurfaceCommand, SurfaceReply, ViewRoot,
 };
 use backend_library::{
     AdvisoryPackageDto, CommandMutation, DeclarationRecord, DependencyFacts, DependentSources,
@@ -211,6 +211,33 @@ impl ProductState {
         selected_catalog_snapshot: [u8; 32],
         forge_records: &[ForgeSearchRecord],
     ) -> Result<SurfaceReply, String> {
+        self.execute_with_discovery_and_forge_catalog_snapshot(
+            command,
+            view,
+            catalog,
+            catalog_index,
+            dependency_graph,
+            workspace,
+            discovery,
+            selected_catalog_snapshot,
+            forge_records,
+            None,
+        )
+    }
+
+    pub(super) fn execute_with_discovery_and_forge_catalog_snapshot(
+        &mut self,
+        command: SurfaceCommand,
+        view: &ViewRoot,
+        catalog: &[RegistryPackageRecord],
+        catalog_index: &CatalogLookupIndex,
+        dependency_graph: &IndexedCheckedPackageGraph,
+        workspace: Option<&Path>,
+        discovery: Option<&DiscoveryStore>,
+        selected_catalog_snapshot: [u8; 32],
+        forge_records: &[ForgeSearchRecord],
+        forge_catalog_revision: Option<ForgeSearchCatalogRevision>,
+    ) -> Result<SurfaceReply, String> {
         command.admit().map_err(|error| error.to_string())?;
         match command_spec(command.id()).mutation {
             CommandMutation::Read => {
@@ -224,6 +251,7 @@ impl ProductState {
                     discovery,
                     selected_catalog_snapshot,
                     forge_records,
+                    forge_catalog_revision,
                 )?;
                 if changed {
                     return Err("read command attempted to mutate product state".to_owned());
@@ -248,6 +276,7 @@ impl ProductState {
                     discovery,
                     selected_catalog_snapshot,
                     forge_records,
+                    forge_catalog_revision,
                 )?;
                 reply.admit(reply.id()).map_err(|error| error.to_string())?;
                 if changed {
@@ -270,6 +299,7 @@ impl ProductState {
         discovery: Option<&DiscoveryStore>,
         selected_catalog_snapshot: [u8; 32],
         forge_records: &[ForgeSearchRecord],
+        forge_catalog_revision: Option<ForgeSearchCatalogRevision>,
     ) -> Result<(SurfaceReply, bool), String> {
         let (reply, changed) = match command {
             SurfaceCommand::Advisory {
@@ -320,49 +350,62 @@ impl ProductState {
                 limit,
                 cursor,
             } => {
-                let mut forge_documents = Vec::new();
-                let mut forge_source_pin_documents = Vec::new();
-                for record in forge_records {
-                    forge_documents.extend(ForgeSearchDocument::from_search_record(record)?);
-                    forge_source_pin_documents
-                        .extend(ForgeSourcePinSearchDocument::from_search_record(record)?);
-                }
-                if discovery.is_some()
-                    || !forge_documents.is_empty()
-                    || !forge_source_pin_documents.is_empty()
-                    || self.discovery_search.is_some()
-                {
-                    if self.discovery_search.is_none() {
-                        self.discovery_search = Some(match discovery {
-                            Some(store) => {
-                                DiscoverySearchIndex::open_with_forge_and_source_pins_at(
-                                    store.search_projection_path(),
+                let reused_projection =
+                    match (self.discovery_search.as_ref(), forge_catalog_revision) {
+                        (Some(index), Some(revision)) => index
+                            .revalidate_unchanged_forge_catalog_snapshot(discovery, revision)?,
+                        _ => false,
+                    };
+                if !reused_projection {
+                    let mut forge_documents = Vec::new();
+                    let mut forge_source_pin_documents = Vec::new();
+                    for record in forge_records {
+                        forge_documents.extend(ForgeSearchDocument::from_search_record(record)?);
+                        forge_source_pin_documents
+                            .extend(ForgeSourcePinSearchDocument::from_search_record(record)?);
+                    }
+                    if discovery.is_some()
+                        || !forge_documents.is_empty()
+                        || !forge_source_pin_documents.is_empty()
+                        || self.discovery_search.is_some()
+                    {
+                        if self.discovery_search.is_none() {
+                            self.discovery_search = Some(match discovery {
+                                Some(store) => {
+                                    DiscoverySearchIndex::open_with_forge_and_source_pins_at(
+                                        store.search_projection_path(),
+                                        store,
+                                        &forge_documents,
+                                        &forge_source_pin_documents,
+                                    )?
+                                }
+                                None => DiscoverySearchIndex::open_forge_only_with_source_pins_at(
+                                    self.search_projection_path()?,
+                                    &forge_documents,
+                                    &forge_source_pin_documents,
+                                )?,
+                            });
+                        } else {
+                            let discovery_search =
+                                self.discovery_search.as_mut().ok_or_else(|| {
+                                    "discovery search index was not initialized".to_owned()
+                                })?;
+                            match discovery {
+                                Some(store) => discovery_search.sync_with_forge_and_source_pins(
                                     store,
                                     &forge_documents,
                                     &forge_source_pin_documents,
-                                )?
+                                )?,
+                                None => discovery_search.sync_forge_only_and_source_pins(
+                                    &forge_documents,
+                                    &forge_source_pin_documents,
+                                )?,
                             }
-                            None => DiscoverySearchIndex::open_forge_only_with_source_pins_at(
-                                self.search_projection_path()?,
-                                &forge_documents,
-                                &forge_source_pin_documents,
-                            )?,
-                        });
-                    }
-                    let discovery_search = self
-                        .discovery_search
-                        .as_mut()
-                        .ok_or_else(|| "discovery search index was not initialized".to_owned())?;
-                    match discovery {
-                        Some(store) => discovery_search.sync_with_forge_and_source_pins(
-                            store,
-                            &forge_documents,
-                            &forge_source_pin_documents,
-                        )?,
-                        None => discovery_search.sync_forge_only_and_source_pins(
-                            &forge_documents,
-                            &forge_source_pin_documents,
-                        )?,
+                        }
+                        self.discovery_search
+                            .as_mut()
+                            .ok_or_else(|| "discovery search index was not initialized".to_owned())?
+                            .bind_forge_catalog_revision(forge_catalog_revision);
                     }
                 }
                 self.local_declaration_search.sync(view)?;
@@ -3687,6 +3730,57 @@ mod tests {
         path
     }
 
+    struct SearchForgeTransport {
+        archive: Vec<u8>,
+        commit: &'static str,
+    }
+
+    impl backend_engine::ForgeTransport for SearchForgeTransport {
+        fn resolve(
+            &mut self,
+            coordinate: &backend_engine::ForgeCoordinate,
+        ) -> Result<backend_engine::ForgeResolution, backend_engine::ForgeTransportError> {
+            backend_engine::ForgeResolution::for_coordinate(
+                coordinate,
+                backend_engine::ForgeObjectId::parse(self.commit)
+                    .map_err(|_| backend_engine::ForgeTransportError::Integrity)?,
+                None,
+                self.commit,
+            )
+            .map_err(|_| backend_engine::ForgeTransportError::Integrity)
+        }
+
+        fn fetch_archive(
+            &mut self,
+            _: &backend_engine::ForgeCoordinate,
+            _: &backend_engine::ForgeResolution,
+        ) -> Result<backend_engine::ForgeArchive, backend_engine::ForgeTransportError> {
+            Ok(backend_engine::ForgeArchive::tar(
+                self.archive.clone(),
+                None::<String>,
+            ))
+        }
+    }
+
+    fn search_tar_manifest(path: &str, manifest: &str) -> Vec<u8> {
+        let bytes = manifest.as_bytes();
+        let mut header = [0_u8; 512];
+        header[..path.len()].copy_from_slice(path.as_bytes());
+        header[100..108].copy_from_slice(b"0000644\0");
+        header[124..136].copy_from_slice(format!("{:011o}\0", bytes.len()).as_bytes());
+        header[156] = b'0';
+        header[148..156].fill(b' ');
+        let checksum: u32 = header.iter().map(|byte| u32::from(*byte)).sum();
+        header[148..156].copy_from_slice(format!("{:06o}\0 ", checksum).as_bytes());
+        let mut archive = header.to_vec();
+        archive.extend_from_slice(bytes);
+        archive.resize(
+            archive.len() + ((512 - (bytes.len() % 512)) % 512) + 1024,
+            0,
+        );
+        archive
+    }
+
     fn view() -> ViewRoot {
         let root = backend_engine::view_state_root(&[]);
         let basis = backend_engine::Basis::new(root, backend_engine::object_version(b"source"));
@@ -4976,6 +5070,378 @@ mod tests {
         );
         let encoded = serde_json::to_value(group).expect("typed scope serializes");
         assert_eq!(encoded["release_match_scope"], "lineage-metadata-only");
+    }
+
+    #[test]
+    fn unchanged_durable_index_search_revalidates_bytes_and_skips_source_reprojection() {
+        let root = fixture("index-search-unchanged-projection");
+        let discovery_path = root.join("discovery/catalog.journal");
+        let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cargo, "https://index.crates.io")
+            .expect("Cargo discovery source");
+        let source = discovery_source_identity(&endpoint);
+        let observed = DiscoveryObservedAt::from_unix_millis(discovery_now());
+        let mut discovery =
+            DiscoveryStore::open(discovery_path.clone()).expect("open discovery journal");
+        let first_cursor = DiscoveryCursor::new(b"first".to_vec()).expect("first cursor");
+        let first_coordinate =
+            backend_engine::ProductPackageCoordinate::parse("pkg:cargo/fastpathmarker-one@1.0.0")
+                .expect("first package coordinate");
+        discovery
+            .commit(DiscoveryBatch {
+                source,
+                expected_base_sequence: 0,
+                previous_cursor: DiscoveryCursor::default(),
+                next_cursor: first_cursor.clone(),
+                source_high_watermark: first_cursor.clone(),
+                caught_up: true,
+                observed_at: observed,
+                completeness: DiscoveryCompleteness::CompleteThroughCursor,
+                facts: vec![DiscoveryFact {
+                    source,
+                    coordinate: first_coordinate,
+                    standing: DiscoveryStanding::Published,
+                    observed_at: observed,
+                    source_event: DiscoverySourceEvent::Snapshot,
+                    source_event_time: None,
+                    proof: [0x31; 32],
+                    metadata: backend_engine::registry::DiscoveryMetadata::default(),
+                }],
+                package_retractions: Vec::new(),
+            })
+            .expect("persist initial package fact");
+        let forge = backend_engine::ForgeAcquisitionService::open(
+            root.join("forge"),
+            backend_engine::ForgeAcquisitionPolicy::Offline,
+            backend_engine::ForgeAcquisitionLimits::default(),
+        )
+        .expect("open empty forge owner");
+        let mut forge_snapshot = forge
+            .search_catalog_snapshot()
+            .expect("select empty forge catalog");
+        let catalog = Vec::new();
+        let catalog_index = CatalogLookupIndex::from_catalog(&catalog);
+        let graph = indexed_graph(Vec::new());
+        let view = view();
+        let command = || SurfaceCommand::IndexSearch {
+            query: ProductText::new("fastpathmarker").expect("query"),
+            limit: 8,
+            cursor: None,
+        };
+        let mut product =
+            ProductState::open(root.join("product-state.json")).expect("open product state");
+        let run_search =
+            |product: &mut ProductState,
+             discovery: &DiscoveryStore,
+             forge_snapshot: &backend_engine::ForgeSearchCatalogSnapshot| {
+                product.execute_with_discovery_and_forge_catalog_snapshot(
+                    command(),
+                    &view,
+                    &catalog,
+                    &catalog_index,
+                    &graph,
+                    None,
+                    Some(discovery),
+                    CatalogLookupIndex::snapshot_for_catalog(&catalog),
+                    &forge_snapshot.records,
+                    Some(forge_snapshot.revision),
+                )
+            };
+
+        let before_first = super::super::discovery_search::search_projection_work_for_test();
+        let first_page = match run_search(&mut product, &discovery, &forge_snapshot)
+            .expect("first index search")
+        {
+            SurfaceReply::IndexSearchPage(page) => page,
+            reply => panic!("expected index search page, got {reply:?}"),
+        };
+        let after_first = super::super::discovery_search::search_projection_work_for_test();
+        assert_eq!(after_first.durable_opens - before_first.durable_opens, 1);
+        assert_eq!(
+            after_first.source_root_fact_visits - before_first.source_root_fact_visits,
+            1
+        );
+        assert_eq!(
+            after_first.source_build_fact_visits - before_first.source_build_fact_visits,
+            2
+        );
+
+        let repeated_snapshot = forge
+            .search_catalog_snapshot()
+            .expect("refresh unchanged forge snapshot");
+        assert_eq!(repeated_snapshot.revision, forge_snapshot.revision);
+        let before_repeat = super::super::discovery_search::search_projection_work_for_test();
+        let repeated_page = match run_search(&mut product, &discovery, &forge_snapshot)
+            .expect("unchanged index search")
+        {
+            SurfaceReply::IndexSearchPage(page) => page,
+            reply => panic!("expected index search page, got {reply:?}"),
+        };
+        assert_eq!(repeated_page.snapshot, first_page.snapshot);
+        assert_eq!(repeated_page.hits, first_page.hits);
+        assert_eq!(repeated_page.result_count, first_page.result_count);
+        let after_repeat = super::super::discovery_search::search_projection_work_for_test();
+        assert_eq!(after_repeat.durable_opens, before_repeat.durable_opens);
+        assert_eq!(
+            after_repeat.source_root_fact_visits,
+            before_repeat.source_root_fact_visits
+        );
+        assert_eq!(
+            after_repeat.source_build_fact_visits,
+            before_repeat.source_build_fact_visits
+        );
+        assert_eq!(
+            after_repeat.forge_record_projections,
+            before_repeat.forge_record_projections
+        );
+        assert!(after_repeat.projection_hash_bytes > before_repeat.projection_hash_bytes);
+
+        let mut publisher = backend_engine::ForgeAcquisitionService::open(
+            root.join("forge"),
+            backend_engine::ForgeAcquisitionPolicy::Online,
+            backend_engine::ForgeAcquisitionLimits::default(),
+        )
+        .expect("open foreign forge publisher");
+        let release_coordinate = backend_engine::ForgeCoordinate::new(
+            "https://github.com/acme/fastpath.git",
+            backend_engine::ForgeRevision::Tag(
+                backend_engine::ForgeRefName::new("v2.0.0").expect("release tag"),
+            ),
+            None::<String>,
+        )
+        .expect("foreign release coordinate");
+        let mut release_transport = SearchForgeTransport {
+            archive: search_tar_manifest(
+                "Cargo.toml",
+                "[package]\nname = \"fastpathmarker-release\"\nversion = \"2.0.0\"\n",
+            ),
+            commit: "0123456789012345678901234567890123456789",
+        };
+        assert!(matches!(
+            publisher.acquire(&release_coordinate, &mut release_transport),
+            backend_engine::ForgeAcquisitionOutcome::Hit(_)
+        ));
+        let release_snapshot = forge
+            .search_catalog_snapshot()
+            .expect("refresh foreign release publication");
+        assert_ne!(release_snapshot.revision, forge_snapshot.revision);
+        let before_release = super::super::discovery_search::search_projection_work_for_test();
+        let previous_search_root = product
+            .discovery_search
+            .as_ref()
+            .expect("selected projection")
+            .snapshot_root();
+        assert!(matches!(
+            run_search(&mut product, &discovery, &release_snapshot)
+                .expect("search changed foreign release snapshot"),
+            SurfaceReply::IndexSearchPage(_)
+        ));
+        let after_release = super::super::discovery_search::search_projection_work_for_test();
+        assert_eq!(
+            after_release.durable_opens - before_release.durable_opens,
+            1
+        );
+        assert_eq!(
+            after_release.forge_record_projections - before_release.forge_record_projections,
+            2
+        );
+        assert_ne!(
+            product
+                .discovery_search
+                .as_ref()
+                .expect("refreshed release projection")
+                .snapshot_root(),
+            previous_search_root
+        );
+        forge_snapshot = release_snapshot;
+
+        let source_pin_coordinate = backend_engine::ForgeCoordinate::new(
+            "https://github.com/acme/fastpath.git",
+            backend_engine::ForgeRevision::Tag(
+                backend_engine::ForgeRefName::new("v3.0.0").expect("source-pin tag"),
+            ),
+            None::<String>,
+        )
+        .expect("foreign source-pin coordinate");
+        let mut source_pin_transport = SearchForgeTransport {
+            archive: search_tar_manifest(
+                "Cargo.toml",
+                "[package]\nname = \"fastpathmarker-sourcepin\"\n",
+            ),
+            commit: "abcdefabcdefabcdefabcdefabcdefabcdefabcd",
+        };
+        assert!(matches!(
+            publisher.acquire(&source_pin_coordinate, &mut source_pin_transport),
+            backend_engine::ForgeAcquisitionOutcome::Hit(_)
+        ));
+        let source_pin_snapshot = forge
+            .search_catalog_snapshot()
+            .expect("refresh foreign source-pin publication");
+        assert_ne!(source_pin_snapshot.revision, forge_snapshot.revision);
+        assert!(
+            source_pin_snapshot
+                .records
+                .iter()
+                .find(|record| record.coordinate == source_pin_coordinate)
+                .is_some_and(|record| record.manifests.iter().any(|manifest| {
+                    matches!(
+                        &manifest.name,
+                        ForgeFact::Recorded(name) if name.as_str() == "fastpathmarker-sourcepin"
+                    ) && matches!(&manifest.version, ForgeFact::Unavailable(_))
+                }))
+        );
+        let before_source_pin = super::super::discovery_search::search_projection_work_for_test();
+        let source_pin_reply = run_search(&mut product, &discovery, &source_pin_snapshot)
+            .expect("search changed foreign source-pin snapshot");
+        assert!(matches!(
+            source_pin_reply,
+            SurfaceReply::IndexSearchPage(page)
+                if page.hits.iter().any(|hit| matches!(
+                    hit,
+                    backend_library::RegistrySearchHit::ForgeSourcePin(pin)
+                        if matches!(
+                            &pin.manifest.name,
+                            backend_library::ForgeFact::Recorded(name)
+                                if name.as_str() == "fastpathmarker-sourcepin"
+                        )
+                ))
+        ));
+        let after_source_pin = super::super::discovery_search::search_projection_work_for_test();
+        assert_eq!(
+            after_source_pin.durable_opens - before_source_pin.durable_opens,
+            1
+        );
+        assert_eq!(
+            after_source_pin.forge_record_projections - before_source_pin.forge_record_projections,
+            4
+        );
+        forge_snapshot = source_pin_snapshot;
+
+        let second_cursor = DiscoveryCursor::new(b"second".to_vec()).expect("second cursor");
+        let second_coordinate =
+            backend_engine::ProductPackageCoordinate::parse("pkg:cargo/fastpathmarker-two@1.0.0")
+                .expect("second package coordinate");
+        let previous_search_root = product
+            .discovery_search
+            .as_ref()
+            .expect("selected projection")
+            .snapshot_root();
+        discovery
+            .commit(DiscoveryBatch {
+                source,
+                expected_base_sequence: discovery.sequence(source).unwrap_or(0),
+                previous_cursor: first_cursor,
+                next_cursor: second_cursor.clone(),
+                source_high_watermark: second_cursor,
+                caught_up: true,
+                observed_at: observed,
+                completeness: DiscoveryCompleteness::CompleteThroughCursor,
+                facts: vec![DiscoveryFact {
+                    source,
+                    coordinate: second_coordinate,
+                    standing: DiscoveryStanding::Published,
+                    observed_at: observed,
+                    source_event: DiscoverySourceEvent::Snapshot,
+                    source_event_time: None,
+                    proof: [0x32; 32],
+                    metadata: backend_engine::registry::DiscoveryMetadata::default(),
+                }],
+                package_retractions: Vec::new(),
+            })
+            .expect("publish changed registry search fact");
+        let before_store_change = super::super::discovery_search::search_projection_work_for_test();
+        assert!(matches!(
+            run_search(&mut product, &discovery, &forge_snapshot)
+                .expect("search changed registry snapshot"),
+            SurfaceReply::IndexSearchPage(_)
+        ));
+        let after_store_change = super::super::discovery_search::search_projection_work_for_test();
+        assert_eq!(
+            after_store_change.durable_opens - before_store_change.durable_opens,
+            1
+        );
+        assert!(
+            after_store_change.source_root_fact_visits
+                > before_store_change.source_root_fact_visits
+        );
+        assert_ne!(
+            product
+                .discovery_search
+                .as_ref()
+                .expect("changed projection")
+                .snapshot_root(),
+            previous_search_root
+        );
+
+        drop(discovery);
+        let reopened_discovery = DiscoveryStore::open(discovery_path)
+            .expect("reopen discovery journal at same revision");
+        let before_reopen = super::super::discovery_search::search_projection_work_for_test();
+        assert!(matches!(
+            run_search(&mut product, &reopened_discovery, &forge_snapshot)
+                .expect("reopened owner takes full admission"),
+            SurfaceReply::IndexSearchPage(_)
+        ));
+        let after_reopen = super::super::discovery_search::search_projection_work_for_test();
+        assert_eq!(after_reopen.durable_opens - before_reopen.durable_opens, 1);
+        assert!(after_reopen.source_root_fact_visits > before_reopen.source_root_fact_visits);
+
+        let selected_snapshot_root = product
+            .discovery_search
+            .as_ref()
+            .expect("active projection")
+            .snapshot_root();
+        let selected_root_name = selected_snapshot_root
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let selected_root = root
+            .join("discovery/catalog-search-v1/v1")
+            .join(selected_root_name);
+        let metadata_path = selected_root.join("inner/meta.json");
+        let original_metadata = fs::metadata(&metadata_path).expect("metadata file");
+        let original_modified = original_metadata.modified().expect("mtime");
+        let mut bytes = fs::read(&metadata_path).expect("read metadata file");
+        let last = bytes.last_mut().expect("nonempty metadata file");
+        *last ^= 1;
+        fs::write(&metadata_path, bytes).expect("same-size in-place mutation");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&metadata_path)
+            .expect("open mutated metadata")
+            .set_times(std::fs::FileTimes::new().set_modified(original_modified))
+            .expect("restore mtime after same-size mutation");
+        let mutated_metadata = fs::metadata(&metadata_path).expect("mutated metadata file");
+        assert_eq!(mutated_metadata.len(), original_metadata.len());
+        assert_eq!(
+            mutated_metadata.modified().expect("restored mtime"),
+            original_modified
+        );
+        let before_tamper = super::super::discovery_search::search_projection_work_for_test();
+        assert!(
+            run_search(&mut product, &reopened_discovery, &forge_snapshot).is_err(),
+            "same-size in-place corruption must fail closed while its reader is pinned"
+        );
+        let after_tamper = super::super::discovery_search::search_projection_work_for_test();
+        assert_eq!(after_tamper.durable_opens - before_tamper.durable_opens, 1);
+        assert!(after_tamper.projection_hash_bytes > before_tamper.projection_hash_bytes);
+        assert!(
+            after_tamper.source_root_fact_visits > before_tamper.source_root_fact_visits,
+            "corruption must reject the unchanged path and take full recovery admission"
+        );
+
+        drop(product);
+        let mut cold_product = ProductState::open(root.join("product-state.json"))
+            .expect("reopen product state after tamper");
+        assert!(matches!(
+            run_search(&mut cold_product, &reopened_discovery, &forge_snapshot)
+                .expect("cold recovery rebuilds tampered disposable projection"),
+            SurfaceReply::IndexSearchPage(_)
+        ));
+        drop(cold_product);
+        drop(reopened_discovery);
+        drop(publisher);
+        drop(forge);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

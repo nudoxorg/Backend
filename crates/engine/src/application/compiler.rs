@@ -2076,11 +2076,11 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 cancelled,
             )
             .map_err(|cause| {
-                let toolchain = self.toolchain(first_application_request).unwrap_or(
-                    ToolchainSelection::ExplicitlyUnavailable {
+                let toolchain = self
+                    .toolchain_for_package(first_application_request, typescript_toolchain)
+                    .unwrap_or(ToolchainSelection::ExplicitlyUnavailable {
                         tool: NativeTool::TypeScriptCompiler,
-                    },
-                );
+                    });
                 let terminal = package_authority_terminal(
                     package.package_target.target(),
                     first_application_request,
@@ -2105,11 +2105,11 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     &budget,
                 )
                 .map_err(|cause| {
-                    let toolchain = self.toolchain(first_application_request).unwrap_or(
-                        ToolchainSelection::ExplicitlyUnavailable {
+                    let toolchain = self
+                        .toolchain_for_package(first_application_request, typescript_toolchain)
+                        .unwrap_or(ToolchainSelection::ExplicitlyUnavailable {
                             tool: NativeTool::TypeScriptCompiler,
-                        },
-                    );
+                        });
                     let terminal = package_authority_terminal(
                         package.package_target.target(),
                         first_application_request,
@@ -2132,11 +2132,11 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         let tsz_session = match (tsz_project, tsz_budget.as_ref()) {
             (Some(project), Some(budget)) => {
                 Some(project.checked_query_session(budget).map_err(|cause| {
-                    let toolchain = self.toolchain(first_application_request).unwrap_or(
-                        ToolchainSelection::ExplicitlyUnavailable {
+                    let toolchain = self
+                        .toolchain_for_package(first_application_request, typescript_toolchain)
+                        .unwrap_or(ToolchainSelection::ExplicitlyUnavailable {
                             tool: NativeTool::TypeScriptCompiler,
-                        },
-                    );
+                        });
                     let terminal = package_authority_terminal(
                         package.package_target.target(),
                         first_application_request,
@@ -2841,11 +2841,11 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         if let Some(project) = typescript_project.as_ref()
             && let Err(cause) = project.validate_current()
         {
-            let toolchain = self.toolchain(first_application_request).unwrap_or(
-                ToolchainSelection::ExplicitlyUnavailable {
+            let toolchain = self
+                .toolchain_for_package(first_application_request, typescript_toolchain)
+                .unwrap_or(ToolchainSelection::ExplicitlyUnavailable {
                     tool: NativeTool::TypeScriptCompiler,
-                },
-            );
+                });
             let terminal = package_authority_terminal(
                 package.package_target.target(),
                 first_application_request,
@@ -4641,6 +4641,107 @@ mod tests {
         let encoded = serde_json::to_string(&failure).unwrap();
         assert!(encoded.contains("dependency_package_load"));
         assert!(!encoded.contains("/toolchain"));
+    }
+
+    #[test]
+    fn project_typescript_fault_retains_its_admitted_recipe_without_global_tsc() {
+        use crate::application::{
+            LocalCompilerConfig, LocalCompilerControl, LocalCompilerTimeout, LocalPackageRootSet,
+        };
+        use backend_semantic::vocabulary::TypeScriptSource;
+
+        let cancelled = AtomicBool::new(false);
+        let unavailable = [ToolchainSelection::ExplicitlyUnavailable {
+            tool: NativeTool::TypeScriptCompiler,
+        }];
+        let execution = super::LocalCompilerExecution {
+            config: LocalCompilerConfig {
+                toolchains: LocalToolchainSet::validate(&unavailable)
+                    .expect("explicit global absence"),
+                artifact_directory: Path::new("/tmp"),
+                journal_directory: Path::new("/tmp"),
+                native_work_directory: Path::new("/tmp"),
+                control: LocalCompilerControl {
+                    timeout: LocalCompilerTimeout::new(std::time::Duration::from_secs(30))
+                        .expect("finite time"),
+                    cancelled: &cancelled,
+                },
+            },
+            package_roots: LocalPackageRootSet::EMPTY,
+            package_authority: super::PackageAuthorityConfiguration::UNAVAILABLE,
+            native_work_directory: Path::new("/tmp").into(),
+        };
+        let project = ResolvedToolchain::from_version(
+            NativeTool::TypeScriptCompiler,
+            host_path("/host/project-typescript"),
+            b"Version 5.7.2\n",
+        )
+        .expect("unit project tuple");
+        let request = super::ApplicationCompilerRequest {
+            profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+            stage: Stage::LowerIr,
+            source: "export const configured = true;",
+        };
+        let source = request_source(request).expect("exact input source");
+        let selected = execution
+            .toolchain_for_package(request, Some(project))
+            .expect("request-scoped project tuple takes precedence");
+        let terminal = package_authority_terminal(
+            backend_version::ContentId::from_canonical_bytes(b"project target"),
+            request,
+            source,
+            selected,
+            PackageAuthorityError::TypeScriptProjectHost(
+                crate::application::TypeScriptProjectHostError::CompilerApiBridge {
+                    message: "original postcss.config.js is outside the selected program".into(),
+                },
+            ),
+        );
+        let CompilerTerminal::Compile {
+            attempted,
+            cause: CompilerCause::Authority { diagnostic, .. },
+        } = &terminal
+        else {
+            panic!("a witnessed project fault must not become missing global tsc");
+        };
+        let expected = backend_semantic::vocabulary::CompileRecipeFact::derive(
+            request.profile,
+            request.stage,
+            project.tool,
+            source.identity,
+            project.invocation_identity(),
+        );
+        assert_eq!(attempted.source, source);
+        assert_eq!(attempted.recipe, expected.identity);
+        let diagnostic = diagnostic.as_ref().expect("retain concrete original cause");
+        assert!(
+            std::str::from_utf8(diagnostic.retained_bytes_for_local_debug())
+                .expect("UTF-8 diagnostic")
+                .contains("postcss.config.js")
+        );
+        let failure =
+            backend_library::PackageCompilerFailure::from_package_terminal("entry.ts", &terminal)
+                .expect("terminal projection")
+                .expect("typed project failure");
+        assert_eq!(failure.kind_tag(), "typescript_host_compiler_api_bridge");
+        assert_eq!(
+            failure.detail(),
+            "TypeScript admitted compiler API rejected its program input"
+        );
+        assert!(
+            !serde_json::to_string(&failure)
+                .unwrap()
+                .contains("postcss.config.js")
+        );
+        assert!(!failure.cause().requires_tool_configuration());
+        assert!(matches!(
+            execution
+                .toolchain(request)
+                .expect("global admission is unchanged"),
+            ToolchainSelection::ExplicitlyUnavailable {
+                tool: NativeTool::TypeScriptCompiler
+            }
+        ));
     }
 
     #[test]

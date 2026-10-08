@@ -1,0 +1,56 @@
+{
+  "schema": "nudox.root.index-projection.focused-audit.v1",
+  "integrated_source": "1ecca75841e57f75e6899f4e47dfcfd2e76935c8",
+  "candidate_source": "7382f9f8a31990f3b0fe2e2b44093717699ad934",
+  "exact_changed_paths_verified": [
+    "crates/engine/src/acquisition/lease.rs",
+    "crates/engine/src/forge/mod.rs",
+    "crates/engine/src/forge/model.rs",
+    "crates/engine/src/forge/service.rs",
+    "crates/engine/src/forge/tests.rs",
+    "crates/engine/src/journal/append.rs",
+    "crates/engine/src/journal/tests.rs",
+    "crates/engine/src/lib.rs",
+    "crates/local-service/src/builtin/commands/adapter.rs",
+    "crates/local-service/src/builtin/discovery_search.rs",
+    "crates/local-service/src/builtin/forge_gateway.rs",
+    "crates/local-service/src/builtin/product_state.rs",
+    "crates/local-service/src/discovery.rs"
+  ],
+  "native_gates": [
+    {
+      "gate": 0,
+      "test": "unchanged_durable_index_search_revalidates_bytes_and_skips_source_reprojection",
+      "passed": 1,
+      "raw_completion_sha256": "b7ec00e5c69fedae88c82f3622036d1127e88a46e15fc5027a0817f9c29cdc51",
+      "binary_hash_from_supplement_not_independently_rehashed": "ad4f7150e5c448966ec2b72c8584acaa92028c131041758d050407c4a5abd1ec"
+    },
+    {
+      "gate": 1,
+      "test": "forge_owner_refreshes_cross_instance_publications_for_reference_and_search",
+      "passed": 1,
+      "raw_completion_sha256": "b0ec30ec4fee036761b9cb540ec9b7ac4ed4831020318b9dda19d080f125becb",
+      "binary_hash_from_supplement_not_independently_rehashed": "026511be7d1acc263772fa9a0fde151c4f5aa71534383e9e3af2d33f59192a34"
+    },
+    {
+      "gate": 2,
+      "test": "forge_search_snapshot_keeps_publication_gate_until_capture_finishes",
+      "passed": 1,
+      "raw_completion_sha256": "ab2f57a75fdb89cc2f546623539c0effbd0926232d42b2e985298c2999c49c61",
+      "binary_hash_from_supplement_not_independently_rehashed": "026511be7d1acc263772fa9a0fde151c4f5aa71534383e9e3af2d33f59192a34"
+    },
+    {
+      "gate": 3,
+      "test": "tail_identity_tracks_exact_validated_history_across_reopen",
+      "passed": 1,
+      "raw_completion_sha256": "68addc6906428149a6aaf1d852eeb090299819e797f2440d737e488540b5bf62",
+      "binary_hash_from_supplement_not_independently_rehashed": "026511be7d1acc263772fa9a0fde151c4f5aa71534383e9e3af2d33f59192a34"
+    }
+  ],
+  "actual_focused_passed": 4,
+  "raw_supervisor_binary_mapping_complete": false,
+  "supplemental_verbose_invocations_verified": true,
+  "test_images_copied_or_independently_hashed_locally": false,
+  "whole_workspace_pass_inferred": false,
+  "installed_public_binaries_updated": false
+}

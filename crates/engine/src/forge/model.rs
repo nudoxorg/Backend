@@ -96,6 +96,47 @@ pub struct ForgeSearchRecord {
     pub manifests: Box<[ForgePackageManifest]>,
 }
 
+/// Exact append-only journal identity for one selected forge search catalog.
+///
+/// A caller obtains this only after the service has refreshed its journal
+/// under the publication fence. The sequence plus chain digest changes for
+/// every publication and tombstone, including events from another process.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ForgeSearchCatalogRevision {
+    next_sequence: u64,
+    chain: [u8; 32],
+}
+
+impl ForgeSearchCatalogRevision {
+    pub(crate) const fn from_tail_identity(next_sequence: u64, chain: [u8; 32]) -> Self {
+        Self {
+            next_sequence,
+            chain,
+        }
+    }
+
+    /// Returns the next journal sequence included in this catalog.
+    #[must_use]
+    pub const fn next_sequence(self) -> u64 {
+        self.next_sequence
+    }
+
+    /// Returns the validated hash-chain digest at this catalog position.
+    #[must_use]
+    pub const fn chain(self) -> [u8; 32] {
+        self.chain
+    }
+}
+
+/// Metadata-only records and the exact journal tail they represent.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ForgeSearchCatalogSnapshot {
+    /// Immutable publication identity for the complete forge journal state.
+    pub revision: ForgeSearchCatalogRevision,
+    /// Current published source records in stable coordinate order.
+    pub records: Vec<ForgeSearchRecord>,
+}
+
 impl ForgeAcquisitionResult {
     /// Projects an exact forge receipt into the normalized registry lineage
     /// association used by package/release joins.

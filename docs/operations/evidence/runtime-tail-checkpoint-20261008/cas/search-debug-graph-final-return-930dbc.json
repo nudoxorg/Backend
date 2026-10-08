@@ -1,0 +1,68 @@
+{
+  "all_three_lifetime_locks_held_for_return_verification": true,
+  "amendment": {
+    "path": "/Users/rmccrar6/sol61-fresh-cas-seal-20261008/loan-amendment-lib-only.json",
+    "sha256": "7a2cf212727d8b754755584aca20d88d1893e6089eeaab9065b4c66c24e548f7"
+  },
+  "exact_role_leases_empty": true,
+  "loan": {
+    "path": "/Users/rmccrar6/sol61-fresh-cas-seal-20261008/search-debug-graph-loan-930dbc-20261008.json",
+    "sha256": "1bd9fb59d64f589b0254bdeeb4282fd8cdf338c01c21ee9c06822b351b287e9e"
+  },
+  "native_receipt": {
+    "path": "/Users/rmccrar6/sol61-fresh-cas-seal-20261008/native-01/receipt.json",
+    "sha256": "8e3e97ab37cba2134ed4b6326278394a7a13b26e9bfc438bb0a673ca3dc0c96f"
+  },
+  "new_runtime_launched": false,
+  "original_stamps_restored": [
+    {
+      "bytes": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007\n",
+      "path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/target/.nudox-worktree-root",
+      "sha256": "36b39ec192565e9ee64732ced9c15df937c954e9df8434414282a0078c414aef"
+    },
+    {
+      "bytes": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007\n",
+      "path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/.nudox-worktree-root",
+      "sha256": "36b39ec192565e9ee64732ced9c15df937c954e9df8434414282a0078c414aef"
+    }
+  ],
+  "owned_child_kernel_wait_exit": 0,
+  "owned_group_absent": true,
+  "owner_source": {
+    "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268",
+    "clean": true,
+    "commit": "5f2a97eb4c74c175e190ff9637373c6bcf9ae39e",
+    "tree": "08d334bdf7ae6bd87c4943b58f010d4554dcbb12"
+  },
+  "prior_sealed9bdc_images_unchanged": {
+    "backend-cli": {
+      "bytes": 223994192,
+      "path": "/Users/rmccrar6/sol61-startup-phases-20261008/debug-trio-02/images/backend-cli",
+      "sha256": "b6c4f84a455ac3ec9388e02b912c47b72e080d32f51d705da1f5b104dc5dea52"
+    },
+    "backend-locald": {
+      "bytes": 692824544,
+      "path": "/Users/rmccrar6/sol61-startup-phases-20261008/debug-trio-02/images/backend-locald",
+      "sha256": "51ffb92c505618581d898a96aeddcf256dbb5f9e2dedbe02aa8d7f8439e4e07b"
+    },
+    "backend-mcp": {
+      "bytes": 165004944,
+      "path": "/Users/rmccrar6/sol61-startup-phases-20261008/debug-trio-02/images/backend-mcp",
+      "sha256": "7e357f8f805de93bc06f7b503166aa6bf0008db412522bfb46ff06eee6130c76"
+    }
+  },
+  "public_acceptance": false,
+  "schema": "nudox.explicit-retired-graph-return.v1",
+  "source": {
+    "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+    "clean": true,
+    "commit": "930dbc9e734c6a38de3c998592f22347b33b4067",
+    "tree": "cde86b570206addd15f9a1fe3e476b46cb2610a9"
+  },
+  "tools_unchanged": {
+    "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/native-environment.sh": "dfcbb9a52f71e4697efd7b036ba7413794d4ff7195e7d7f1de8375ac4e5b763a",
+    "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-managed-runner/cargo": "12db87ac9dc0241064fa14042b9c2e28734aa53867e920f2519f0d824038b552",
+    "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-managed-runner/rustc-cache.sh": "add011a45751151c5b13914888026da2f57a4752f56012a30e951480491afb7a"
+  },
+  "utc": "2026-10-08T09:51:03.460007+00:00"
+}

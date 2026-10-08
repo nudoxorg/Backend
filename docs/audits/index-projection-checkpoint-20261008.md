@@ -1,0 +1,16 @@
+# Durable index projection checkpoint — 2026-10-08
+
+Unchanged package search now reuses its admitted durable projection instead of rebuilding documents and reopening all three search indexes. The cache key retains the discovery store instance and exact revision, the validated Forge journal sequence and hash chain, and the selected durable projection identity. Existing projection files are still fully byte-hashed on each read. A different store, publication, source pin, release, corruption or cold reopen takes the normal admission path; the change does not weaken object validation.
+
+Forge captures the refreshed catalog and its journal identity inside the same interprocess publication gate. This strengthens the fence contract: a publisher cannot intervene between refresh and snapshot capture. The older refresh/read split could still represent a consistent snapshot at refresh; this checkpoint does not claim a demonstrated stale-result exploit.
+
+Root reviewed the production changes and regression controls, then independently checked the [four raw native results](../operations/evidence/index-projection-checkpoint-20261008/luna-index-projection-fence7382-evidence-manifest.json) and [exact integrated source correspondence](../operations/evidence/index-projection-checkpoint-20261008/nudox-root-index-projection-audit-20261008.json). Each focused test ran on macOS at candidate `7382f9f8a31990f3b0fe2e2b44093717699ad934`, tree `155f1b793645fff3bccbadae11e3a144d08db2f2`, with an unchanged Cargo.lock:
+
+1. Unchanged durable search skips source reprojection, root reconstruction and index reopening while continuing full file-byte validation; publication, same-size tampering and reopen controls remain within that regression.
+2. An independently opened Forge owner observes cross-instance publications in references and search.
+3. The actual parent two-process fence test confirms the other process sees the gate busy during capture, publishes after release, and the next snapshot sees the changed revision. The environment-dependent worker filter is not counted as a separate pass.
+4. Journal-tail identity follows validated history across reopen.
+
+**Four passed, zero failed, zero ignored.** All gates used fresh fleet admissions, two Cargo jobs, preserved the frozen source and borrowed graph, and recorded owned child retirement and empty leases. The raw supervisor did not populate its executable/result mapping fields. Separate supplements bind Cargo's verbose test invocation to the reported binary hashes; Root verified those supplements against the raw logs but did not copy or independently hash these large test images locally. That limitation is retained in the audit.
+
+The thirteen integrated source paths are byte-identical to the tested candidate. The four atomic commits are rebased onto canonical `b78b4ded9b203ee7bdb740afbca6fa07e1fc77a5`; the preceding runtime checkpoint and coworker changes remain intact. This is focused source validation, not a combined workspace pass, installed release, throughput benchmark or full ingest corpus pass. Earlier broad-suite failures remain open. Forge catalog cloning and complete byte verification still perform work; neither is claimed eliminated.
