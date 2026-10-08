@@ -712,6 +712,12 @@ impl OutlineDto {
 /// The engine's whole state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StatusDto {
+    /// Owner availability proven by the admitted health reply.
+    #[serde(default)]
+    pub availability: String,
+    /// Exact visible view cardinality facet; not a claim about pending work.
+    #[serde(default)]
+    pub publication: String,
     /// The single-word readiness summary.
     pub readiness: String,
     /// The exact current view revision, as canonical hexadecimal.
@@ -773,6 +779,8 @@ impl StatusDto {
     pub fn new(status: &Status) -> Self {
         let capabilities = status.capabilities();
         Self {
+            availability: status.availability().to_owned(),
+            publication: status.publication_state().name().to_owned(),
             readiness: status.readiness().to_owned(),
             revision: status.revision_id(),
             revision_tag: status.revision().to_string(),

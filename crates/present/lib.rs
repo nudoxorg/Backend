@@ -132,7 +132,7 @@ pub use shelf::{LanguageCount, Readiness, RowCount, Shelf, ShelfEntry};
 pub use signature::{Resolved, Signature, Target, Token, TokenKind};
 pub use status::{
     CapabilitySummary, EmbeddingState, FamilyRollup, PublishedRows, ReasonRollup, Sequence,
-    SlotCount, Status, unavailable_name,
+    SlotCount, Status, VisiblePublicationState, unavailable_name,
 };
 
 /// Widest human rendering used when no terminal width is known.

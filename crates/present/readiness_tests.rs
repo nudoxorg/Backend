@@ -132,3 +132,59 @@ fn missing_materialization_does_not_promise_an_active_index_job() {
         "backend.status"
     );
 }
+
+#[test]
+fn available_health_distinguishes_empty_publication_from_native_semantic_readiness() {
+    use backend_library::{
+        Basis, Cursor, Frontier, HealthReport, Library, Row, RowId, ViewRoot, package_key, view_key,
+    };
+    let empty = Library::new();
+    let basis = empty.view().basis();
+    let root = ViewRoot::new_incomplete(
+        view_key(b"status-publication-control"),
+        Basis::new(basis.root, basis.object),
+        Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+        vec![Row::new(
+            RowId::Package(package_key("/workspace/project")),
+            basis,
+            "/workspace/project",
+        )],
+        empty.view().coverage().to_vec(),
+    )
+    .expect("structural package row claims no compiler coverage");
+    let populated =
+        Library::from_view(root.clone(), Cursor::for_view_root(&root)).expect("checked view");
+    for (library, expected, rows) in [
+        (&empty, VisiblePublicationState::Empty, 0),
+        (&populated, VisiblePublicationState::Populated, 1),
+    ] {
+        let report = HealthReport::from_root(library.view(), library.cursor());
+        let status = Status::from_report(&report, None);
+        assert_eq!(status.availability(), "available");
+        assert_eq!(status.publication_state(), expected);
+        assert_eq!(status.rows().get(), rows);
+        assert_eq!(status.capabilities().oracles().ready().get(), 0);
+        let rendered = markdown::status(&status);
+        assert!(rendered.contains(&format!(
+            "owner available · publication {} · lanes {}",
+            expected.name(),
+            status.readiness()
+        )));
+        for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+            let encoded = encode_answer(
+                &Answer::Status(Box::new(status.clone())),
+                detail,
+                None,
+                DEFAULT_RESPONSE_BUDGET_BYTES,
+            )
+            .expect("bounded status");
+            let value: serde_json::Value =
+                serde_json::from_slice(&encoded.bytes).expect("status JSON");
+            assert_eq!(value["availability"], "available");
+            assert_eq!(value["publication"], expected.name());
+            assert_eq!(value["readiness"], status.readiness());
+            assert_eq!(value["rows"], rows);
+            assert_eq!(value["capabilities"]["oracles_ready"], 0);
+        }
+    }
+}

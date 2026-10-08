@@ -472,7 +472,9 @@ pub fn status(status: &Status, theme: Theme) -> String {
         _ => Style::Working,
     };
     lines.push(format!(
-        "{} {}",
+        "owner {} · publication {} · lanes {} {}",
+        status.availability(),
+        status.publication_state().name(),
         theme.paint(style, readiness),
         theme.paint(
             Style::Dim,

@@ -565,6 +565,7 @@ fn read_page(
     engine
         .probe_page(probe, continuation)
         .map_err(|error| Fault::from_client_error(&error, operand))
+        .map_err(|fault| next_step(fault, probe))
 }
 
 fn read(engine: &mut dyn Engine, probe: Probe<'_>) -> Result<ReplyDto, Fault> {
@@ -585,6 +586,11 @@ fn read(engine: &mut dyn Engine, probe: Probe<'_>) -> Result<ReplyDto, Fault> {
 /// the coordinate they supplied, so this suggests their own word back to them
 /// rather than inventing a query.
 fn next_step(fault: Fault, probe: Probe<'_>) -> Fault {
+    if let Probe::Outline(path) | Probe::OutlinePage { path, .. } = probe
+        && fault.slug() == crate::FaultSlug::NotFound
+    {
+        return Fault::unpublished_outline(path);
+    }
     let (Probe::Document(at) | Probe::Source(at) | Probe::Related(at) | Probe::Graph(at)) = probe
     else {
         return fault;
@@ -682,4 +688,69 @@ fn shape(what: &str) -> Fault {
         &ClientError::Protocol(format!("the {what} reply changed shape")),
         Operand::Text(what.to_owned()),
     )
+}
+
+#[cfg(test)]
+mod readiness_controls {
+    #![allow(clippy::expect_used)]
+    use super::*;
+    use backend_library::{
+        Command, CommandFailure, Library, OutlineQuery, PageRequest, QueryLimit, package_key,
+    };
+
+    #[test]
+    fn an_actual_absent_outline_retains_not_found_and_an_exact_reindex_action() {
+        let library = Library::new();
+        let path = "/workspace/not-yet-published";
+        let query = OutlineQuery::new(package_key(path), library.revision_root());
+        let error = library
+            .execute(Command::Outline(query))
+            .expect_err("package is absent in the actual catalog");
+        let failure = CommandFailure::from(error);
+        assert_eq!(failure, CommandFailure::NotFound);
+        let fault = next_step(
+            Fault::from_client_error(
+                &ClientError::CommandFailed(failure),
+                Operand::Path(path.to_owned()),
+            ),
+            Probe::Outline(path),
+        );
+        assert_eq!(fault.slug(), crate::FaultSlug::NotFound);
+        assert_eq!(fault.cause().slug(), crate::CauseSlug::Absent);
+        assert_eq!(fault.operand().render(), path);
+        assert_eq!(
+            fault.affordance().tool_call().expect("index action"),
+            serde_json::json!({"name":"backend.index", "arguments":{"path":path}})
+        );
+        assert!(fault.cause().sentence().contains("no outline is published"));
+        let page_error = library
+            .outline_page(
+                package_key(path),
+                PageRequest::new(library.revision_root(), QueryLimit::default()),
+            )
+            .expect_err("flat page has the same real absence");
+        assert_eq!(CommandFailure::from(page_error), CommandFailure::NotFound);
+    }
+
+    #[test]
+    fn a_corrupt_or_stale_outline_is_never_relabelled_as_missing_publication() {
+        let path = "/workspace/project";
+        for failure in [
+            CommandFailure::IncoherentView("retained relation proof is corrupt".to_owned()),
+            CommandFailure::CursorMismatch,
+        ] {
+            let fault = Fault::from_client_error(
+                &ClientError::CommandFailed(failure),
+                Operand::Path(path.to_owned()),
+            );
+            for probe in [
+                Probe::Outline(path),
+                Probe::OutlinePage { path, limit: 200 },
+            ] {
+                let observed = next_step(fault.clone(), probe);
+                assert_eq!(observed, fault);
+                assert!(!matches!(observed.affordance(), Affordance::Reindex { .. }));
+            }
+        }
+    }
 }

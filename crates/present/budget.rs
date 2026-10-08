@@ -251,6 +251,8 @@ pub fn encode_answer(
                     detail,
                     next_cursor,
                     SummaryStatusDto {
+                        availability: status.availability,
+                        publication: status.publication,
                         readiness: status.readiness,
                         revision: status.revision,
                         revision_tag: status.revision_tag,
@@ -563,6 +565,8 @@ struct SummaryOutlineDto {
 
 #[derive(Serialize)]
 struct SummaryStatusDto {
+    availability: String,
+    publication: String,
     readiness: String,
     revision: String,
     revision_tag: String,

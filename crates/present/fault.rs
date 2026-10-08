@@ -514,6 +514,21 @@ impl Fault {
         )
     }
 
+    /// Explains a typed absent outline without claiming that the package has
+    /// never been indexed: an indexed package may contain no declarations.
+    #[must_use]
+    pub fn unpublished_outline(path: &str) -> Self {
+        Self::new(
+            FaultSlug::NotFound,
+            Operand::Path(path.to_owned()),
+            Cause::new(
+                CauseSlug::Absent,
+                "no outline is published for this package at this revision",
+            ),
+            Affordance::Reindex { path: path.to_owned() },
+        )
+    }
+
     /// Builds the fault for a lane that produced no authoritative result.
     #[must_use]
     pub fn lane(lane: Lane, reason: Reason) -> Self {

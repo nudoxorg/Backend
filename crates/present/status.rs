@@ -328,6 +328,27 @@ pub struct Status {
     capabilities: CapabilitySummary,
 }
 
+/// Cardinality of the exact visible view, independently of owner availability,
+/// native semantic coverage, or work which has not published yet.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VisiblePublicationState {
+    /// The admitted view contains no rows.
+    Empty,
+    /// The admitted view contains one or more rows.
+    Populated,
+}
+
+impl VisiblePublicationState {
+    /// Stable name for the publication facet.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Empty => "empty",
+            Self::Populated => "populated",
+        }
+    }
+}
+
 impl Status {
     /// Lowers one bounded readiness report into a readable status.
     #[must_use]
@@ -392,13 +413,30 @@ impl Status {
         self.rows
     }
 
+    /// A successful admitted health reply proves an available owner; it does
+    /// not prove that any project or native semantic generation is published.
+    #[must_use]
+    pub const fn availability(&self) -> &'static str {
+        "available"
+    }
+
+    /// Returns only the observed view cardinality, never an inferred job state.
+    #[must_use]
+    pub const fn publication_state(&self) -> VisiblePublicationState {
+        if self.rows.get() == 0 {
+            VisiblePublicationState::Empty
+        } else {
+            VisiblePublicationState::Populated
+        }
+    }
+
     /// Returns the rolled-up capability inventory.
     #[must_use]
     pub const fn capabilities(&self) -> &CapabilitySummary {
         &self.capabilities
     }
 
-    /// Returns the single-word readiness summary.
+    /// Returns the lane-readiness summary, independently of publication state.
     #[must_use]
     pub fn readiness(&self) -> &'static str {
         self.coverage.readiness()
