@@ -651,10 +651,17 @@ fn native_relative_import_aliases_retain_exact_selected_function_coordinates()
     let source = sources[4].source;
     let mut proven = 0;
     for symbol in &caller.symbols {
+        eprintln!("native reference control: {symbol:?}");
+    }
+    for symbol in &caller.symbols {
         let position = symbol.span.start as usize;
         match &symbol.outcome {
             SymbolOutcome::Definition { target, .. } => {
-                assert_eq!(target.relative_path.as_ref(), "core/api/utils.py");
+                assert_eq!(
+                    target.relative_path.as_ref(),
+                    "core/api/utils.py",
+                    "native occurrence {symbol:?}"
+                );
                 let coordinate =
                     backend_semantic::ir::PythonSourceCoordinate::decode(&target.source_coordinate)
                         .ok_or("native coordinate not admitted")?;
