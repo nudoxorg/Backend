@@ -1,0 +1,5 @@
+Rust documentation now admits bounded literal arguments to the actual builtin concat! macro after rust-analyzer expansion ownership is established. Shadowed or aliased macros, nested/computed arguments, byte-budget overflow and cancellation remain explicit refusals before uncaptured input reads.
+
+Root reviewed the source and independently verified the complete recorded Git-input closure and ten producer/run receipts from native source 6a381c45. Eleven actual tests passed: six decoding/budget/cancellation units, builtin expansion, shadow/alias negatives, nested outside-input prevention, computed include refusal, and package failure followed by successful reuse of the same lane. Native images were hashed by the producing supervisor, not rehashed by Root.
+
+The three replayed source files exactly match those tested; unrelated canonical entries and its f10d lock remain unchanged. The native tested cohort used lock de7319; this canonical replay is not a fresh native or installed CLI/MCP proof. Custom Cargo source-coordinate mapping remains a separate pending slice.
