@@ -795,7 +795,7 @@ mod tests {
             &mut lane,
             writer.pending_snapshot().expect("initial snapshot"),
         );
-        writer.attach_readiness(lane.changed());
+        writer.observe_changes(lane.changed());
         // A valid owned O_PATH descriptor cannot perform metadata updates.
         // This exercises the real futimens failure without unsafe descriptor
         // fabrication or changing the SQL connection/database namespace.
