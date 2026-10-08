@@ -8,7 +8,7 @@
 
 use core::fmt::Write as _;
 
-use super::{Lines, Style, Theme};
+use super::{ContinuationTarget, Lines, Style, Theme, continuation_note};
 use crate::coverage::CoverageLine;
 use crate::drive::Answer;
 use crate::fault::Fault;
@@ -32,6 +32,20 @@ pub fn answer(answer: &Answer, theme: Theme) -> String {
         Answer::Outline(value) => outline(value, theme),
         Answer::Status(value) => status(value, theme),
         Answer::Product(value) => product(value, theme),
+    }
+}
+
+/// Renders an answer with the portable cursor issued by its caller.
+#[must_use]
+pub fn answer_with_cursor(
+    value: &Answer,
+    theme: Theme,
+    cursor: Option<&str>,
+    target: ContinuationTarget<'_>,
+) -> String {
+    match value {
+        Answer::Records(value) => records_with_cursor(value, None, theme, cursor, target),
+        _ => answer(value, theme),
     }
 }
 
@@ -129,20 +143,43 @@ pub fn fault(fault: &Fault, theme: Theme) -> String {
 /// Renders one result page: the coverage line, then two lines per record.
 #[must_use]
 pub fn records(list: &RecordList, within: Option<&ProjectRef>, theme: Theme) -> String {
+    records_with_cursor(list, within, theme, None, ContinuationTarget::CliOption)
+}
+
+fn records_with_cursor(
+    list: &RecordList,
+    within: Option<&ProjectRef>,
+    theme: Theme,
+    cursor: Option<&str>,
+    target: ContinuationTarget<'_>,
+) -> String {
     let mut lines = Lines::new();
     lines.push(coverage(list.coverage(), theme));
+    let cursor_note = if list.has_more() && list.continuation().is_some() {
+        cursor.map(|cursor| continuation_note(target, cursor))
+    } else {
+        None
+    };
+    if let Some(note) = &cursor_note {
+        lines.push(theme.paint(Style::Dim, note));
+    } else if list.has_more() && list.continuation().is_some() {
+        lines.push(theme.paint(
+            Style::Dim,
+            "… more rows; this rendering does not include the continuation token",
+        ));
+    }
+    if list.has_more() && list.continuation().is_none() {
+        lines.push(theme.paint(
+            Style::Dim,
+            "… more rows at this revision; raise --limit to see them",
+        ));
+    }
     if list.is_empty() {
         lines.push(list.empty_explanation());
         return lines.finish();
     }
     for record in list.records() {
         push_record(&mut lines, record, within, theme);
-    }
-    if list.has_more() {
-        lines.push(theme.paint(
-            Style::Dim,
-            "… more rows at this revision; raise --limit or page with the continuation",
-        ));
     }
     lines.finish()
 }

@@ -960,6 +960,20 @@ fn default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapsho
                 break;
             };
             assert_eq!(result["structuredContent"]["more"], true);
+            let preview = text_of(result);
+            assert!(
+                preview.contains(&format!("Continue `{tool}` with the same arguments")),
+                "{tool}: {preview}"
+            );
+            assert!(
+                preview.contains("copy `structuredContent.nextCursor` to `arguments.cursor`"),
+                "{tool}: {preview}"
+            );
+            assert!(
+                preview.contains(&format!("`{cursor}`")),
+                "{tool}: {preview}"
+            );
+            assert!(!preview.contains("raise `limit`"), "{tool}: {preview}");
             first_cursor.get_or_insert_with(|| cursor.to_owned());
             arguments["cursor"] = json!(cursor);
         }
@@ -3151,35 +3165,70 @@ fn wire_budget_metadata_counts_the_complete_escaped_jsonrpc_line() {
 
 #[test]
 fn graph_continuation_round_trip_is_bounded_and_authorized() {
-    let mut server = ready(Fake {
-        graph_continue: true,
-        ..Fake::default()
-    });
-    let first = call(
-        &mut server,
-        QUERY_TOOL,
-        &json!({"query":"{ Declaration { coordinate @output } }","limit":1}),
-    );
-    assert_context_bounded(&first);
-    assert_eq!(first["isError"], false);
-    assert_eq!(first["structuredContent"]["terminal"], "limit_reached");
-    let cursor = first["structuredContent"]["nextCursor"]
-        .as_str()
-        .expect("first graph page carries a cursor")
-        .to_owned();
+    for limit in [1, 200] {
+        let mut server = ready(Fake {
+            graph_continue: true,
+            ..Fake::default()
+        });
+        let first = call(
+            &mut server,
+            QUERY_TOOL,
+            &json!({"query":"{ Declaration { coordinate @output } }","limit":limit}),
+        );
+        assert_context_bounded(&first);
+        assert_eq!(first["isError"], false);
+        assert_eq!(first["structuredContent"]["terminal"], "limit_reached");
+        let cursor = first["structuredContent"]["nextCursor"]
+            .as_str()
+            .expect("first graph page carries a cursor")
+            .to_owned();
+        let preview = text_of(&first);
+        assert!(
+            preview
+                .contains("Continue `backend.query` with the same `query`, `variables`, and `limit`")
+        );
+        assert!(preview.contains("copy `structuredContent.nextCursor` into `arguments.cursor`"));
+        assert!(preview.contains(&format!("`{cursor}`")));
+        assert!(!preview.contains("raise `limit`"), "{preview}");
+        assert!(!preview.contains("narrow the query"), "{preview}");
 
-    let second = call(
-        &mut server,
-        QUERY_TOOL,
-        &json!({
-            "query":"{ Declaration { coordinate @output } }",
-            "limit":1,
-            "cursor":cursor
-        }),
-    );
-    assert_context_bounded(&second);
-    assert_eq!(second["isError"], false);
-    assert_eq!(second["structuredContent"]["terminal"], "complete");
+        let second = call(
+            &mut server,
+            QUERY_TOOL,
+            &json!({
+                "query":"{ Declaration { coordinate @output } }",
+                "limit":limit,
+                "cursor":cursor
+            }),
+        );
+        assert_context_bounded(&second);
+        assert_eq!(second["isError"], false);
+        assert_eq!(second["structuredContent"]["terminal"], "complete");
+    }
+}
+
+#[test]
+fn graph_page_text_does_not_treat_cancellation_or_missing_cursor_as_limit_advice() {
+    let cancelled = GraphQueryPage {
+        revision: view_state_root(&[]).into(),
+        source: basis().object,
+        rows: Box::new([]),
+        terminal: PageTerminal::Cancelled,
+    };
+    let cancelled_text = super::graph_page_text(&cancelled, None);
+    assert!(cancelled_text.contains("query cancelled before completion"));
+    assert!(!cancelled_text.contains("raise `limit`"));
+    assert!(!cancelled_text.contains("more rows"));
+
+    let more_without_token = GraphQueryPage {
+        terminal: PageTerminal::More(PageContinuation::from_cursor(
+            backend_library::Cursor::new(),
+        )),
+        ..cancelled
+    };
+    let unavailable_text = super::graph_page_text(&more_without_token, None);
+    assert!(unavailable_text.contains("no continuation cursor was issued"));
+    assert!(!unavailable_text.contains("raise `limit`"));
 }
 
 #[test]
