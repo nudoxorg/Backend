@@ -754,13 +754,13 @@ mod tests {
         assert_eq!(worst.budget.estimated_tokens, 33_513);
         assert_eq!(
             worst.bytes.as_ref(),
-            include_bytes!("fixtures/worst-200-full-records.json")
+            include_bytes!("fixtures/worst-200-full-records-selected-id.json")
         );
         let current: serde_json::Value = serde_json::from_slice(&worst.bytes).expect("actual native JSON");
         assert_eq!(serde_json::to_vec(&current).expect("Value serializer").len(), worst.bytes.len(),
             "stream and Value encoders measure the same complete JSON");
         let historical: serde_json::Value = serde_json::from_slice(
-            include_bytes!("fixtures/worst-200-full-records-pre-selected-id.json"))
+            include_bytes!("fixtures/worst-200-full-records.json"))
             .expect("retained prior golden bytes");
         let mut without_selected_ids = current;
         for (index, record) in without_selected_ids["records"].as_array_mut().expect("records").iter_mut().enumerate() {
@@ -905,8 +905,8 @@ mod tests {
         assert_eq!(common["bytes"], 334);
         assert_eq!(common["estimated_tokens"], 84);
         assert_eq!(common["real_tokens"], 87);
-        assert_eq!(worst["bytes"], 134_052);
-        assert_eq!(worst["estimated_tokens"], 33_513);
+        assert_eq!(worst["bytes"], 100_025);
+        assert_eq!(worst["estimated_tokens"], 25_007);
         assert_eq!(worst["real_tokens"], 23_460);
         for name in [
             "unicode_rtl_records",
@@ -1010,7 +1010,7 @@ mod tests {
         );
         assert_eq!(
             fixture["fixtures"]["worst_200_full_records"]["bytes"],
-            134_052
+            100_025
         );
         assert_eq!(
             fixture["fixtures"]["worst_200_full_records"]["real_tokens"],
