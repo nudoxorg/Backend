@@ -472,7 +472,8 @@ fn wait_for_fence_marker(path: &Path) -> io::Result<Vec<u8>> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         match fs::read(path) {
-            Ok(bytes) => return Ok(bytes),
+            Ok(bytes) if !bytes.is_empty() => return Ok(bytes),
+            Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
