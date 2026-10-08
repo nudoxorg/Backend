@@ -367,6 +367,130 @@ fn delta_field_bytes_are_bounded_across_the_whole_change() {
 }
 
 #[test]
+fn relation_admission_preserves_exact_value_order_and_owned_normalization() {
+    let fields = vec![
+        ("z".to_owned(), "last".to_owned()),
+        ("a".to_owned(), "first".to_owned()),
+    ];
+    let documents = vec![(document(18), fields.clone())];
+    let (binding, coverage) = binding(&documents);
+    let relation = RelationState::<IndexRelation>::from_entries(documents, coverage)
+        .expect("immutable unsorted field bag");
+    let selected = DocumentState::from_relation(binding, relation, Limits::default())
+        .expect("admit without changing values committed by the relation root");
+    assert_eq!(selected.binding().root, binding.root);
+    assert_eq!(selected.iter().next().expect("one document").1, fields);
+
+    let sorted = vec![
+        ("a".to_owned(), "first".to_owned()),
+        ("z".to_owned(), "last".to_owned()),
+    ];
+    let (sorted_binding, _) = self::binding(&[(document(18), sorted.clone())]);
+    let normalized = DocumentState::new(
+        sorted_binding,
+        coverage,
+        vec![(document(18), fields)],
+        Limits::default(),
+    )
+    .expect("owned admission still normalizes the field bag");
+    assert_eq!(normalized.iter().next().expect("one document").1, sorted);
+    assert_ne!(selected.binding().root, normalized.binding().root);
+}
+
+#[test]
+fn relation_admission_rejects_nonadjacent_duplicate_fields_and_exact_byte_overflow() {
+    let duplicate = vec![
+        ("z".to_owned(), "one".to_owned()),
+        ("a".to_owned(), "two".to_owned()),
+        ("z".to_owned(), "three".to_owned()),
+    ];
+    let documents = vec![(document(18), duplicate)];
+    let (binding, coverage) = binding(&documents);
+    let relation = RelationState::<IndexRelation>::from_entries(documents, coverage)
+        .expect("relation commits the malformed field bag");
+    assert_eq!(
+        DocumentState::from_relation(binding, relation, Limits::default()),
+        Err(Error::MalformedInput),
+    );
+
+    let documents = vec![(document(18), vec![("body".to_owned(), "12345".to_owned())])];
+    let (binding, coverage) = self::binding(&documents);
+    let relation = RelationState::<IndexRelation>::from_entries(documents, coverage)
+        .expect("exact byte-bound relation");
+    let limits = Limits {
+        max_field_bytes: 5,
+        max_total_text_bytes: 9,
+        ..Limits::default()
+    };
+    DocumentState::from_relation(binding, relation.clone(), limits)
+        .expect("four field-name bytes plus five text bytes fit the exact limit");
+    assert_eq!(
+        DocumentState::from_relation(
+            binding,
+            relation.clone(),
+            Limits {
+                max_total_text_bytes: 8,
+                ..limits
+            }
+        ),
+        Err(Error::SizeLimit),
+    );
+    assert_eq!(
+        DocumentState::from_relation(
+            binding,
+            relation,
+            Limits {
+                max_field_bytes: 4,
+                ..limits
+            }
+        ),
+        Err(Error::SizeLimit),
+    );
+}
+
+#[test]
+#[ignore = "owned allocation/input-size experiment; run alone with an allocation profiler"]
+fn document_relation_admission_profile() {
+    let text_bytes = std::env::var("BACKEND_DOCUMENT_ADMISSION_PROFILE_BYTES")
+        .ok()
+        .map(|value| value.parse::<usize>().expect("profile byte count"))
+        .unwrap_or(16 * 1024 * 1024);
+    assert!((64..=64 * 1024 * 1024).contains(&text_bytes));
+    let (_, coverage) = binding(&[]);
+    let relation = RelationState::<IndexRelation>::from_entries(
+        [(
+            document(18),
+            vec![("body".to_owned(), "x".repeat(text_bytes))],
+        )],
+        coverage,
+    )
+    .expect("immutable profile input");
+    let binding = Binding::new(
+        workspace(),
+        relation.root(),
+        Recipe::from_value(&[1; 32]),
+        Authority::from_value(&[2; 32]),
+        ReadManifest::from_value(&[3; 32]),
+    );
+    let limits = Limits {
+        max_field_bytes: text_bytes,
+        max_total_text_bytes: text_bytes + 4,
+        ..Limits::default()
+    };
+    let started = std::time::Instant::now();
+    for _ in 0..64 {
+        let admitted = DocumentState::from_relation(binding, relation.clone(), limits)
+            .expect("admit exact shared relation");
+        assert_eq!(admitted.binding().root, relation.root());
+        std::hint::black_box(admitted);
+    }
+    println!(
+        "document_relation_admission text_bytes={text_bytes} iterations=64 elapsed_ns={}",
+        started.elapsed().as_nanos()
+    );
+}
+
+#[test]
 fn cursor_is_bound_to_root_and_terms() {
     let (binding, coverage) = binding(&[]);
     let query = Query::new(vec!["alpha".into()], Limits::default()).expect("query");

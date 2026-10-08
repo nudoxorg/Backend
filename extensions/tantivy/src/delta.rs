@@ -241,7 +241,7 @@ fn validate_document_state(
     limits: Limits,
 ) -> Result<(), Error> {
     for (_, fields) in state.iter() {
-        let _ = normalize_fields(fields.clone(), limits, &mut 0)?;
+        validate_fields(fields, limits, &mut 0)?;
     }
     Ok(())
 }
@@ -251,6 +251,19 @@ pub(crate) fn normalize_fields(
     limits: Limits,
     total: &mut usize,
 ) -> Result<Vec<(String, String)>, Error> {
+    validate_fields(&fields, limits, total)?;
+    fields.sort();
+    Ok(fields)
+}
+
+/// Check immutable field bags without copying their admitted text. The
+/// relation's value ordering remains part of its root; only owned normalization
+/// is allowed to sort the values themselves.
+fn validate_fields(
+    fields: &[(String, String)],
+    limits: Limits,
+    total: &mut usize,
+) -> Result<(), Error> {
     if fields.len() > limits.max_fields_per_document {
         return Err(Error::SizeLimit);
     }
@@ -262,11 +275,15 @@ pub(crate) fn normalize_fields(
     }) {
         return Err(Error::SizeLimit);
     }
-    fields.sort();
-    if fields.windows(2).any(|window| window[0].0 == window[1].0) {
+    let mut names = fields
+        .iter()
+        .map(|(field, _)| field.as_str())
+        .collect::<Vec<_>>();
+    names.sort_unstable();
+    if names.windows(2).any(|window| window[0] == window[1]) {
         return Err(Error::MalformedInput);
     }
-    for (field, text) in &fields {
+    for (field, text) in fields {
         *total = total
             .checked_add(field.len())
             .and_then(|value| value.checked_add(text.len()))
@@ -275,5 +292,5 @@ pub(crate) fn normalize_fields(
     if *total > limits.max_total_text_bytes {
         return Err(Error::SizeLimit);
     }
-    Ok(fields)
+    Ok(())
 }
