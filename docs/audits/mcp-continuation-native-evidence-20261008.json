@@ -1,0 +1,160 @@
+{
+  "schema": "nudox.root.cursor13b5-native-audit.v1",
+  "source": {
+    "commit": "13b5b5288e196513a62fefd2b96bef3ca2411504",
+    "lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+    "status": "",
+    "tree": "954995d4988b5f35bd98e907c7d4877648f32000"
+  },
+  "all_git_blobs_independently_verified": 17961,
+  "bytes": 465498510,
+  "before_after_source_inputs_equal": true,
+  "actual_unique_tests_passed": 4,
+  "failed": 0,
+  "ignored": 0,
+  "gates": [
+    {
+      "gate": 0,
+      "receipt_sha256": "1a51a4b4a539d760984cf174c9f07f92143613afd04cf06c516d849c71e0d0aa",
+      "exit": 0,
+      "summary": [
+        {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        }
+      ],
+      "actual_tests": [
+        "test tests::continuation_renderings_name_the_actual_follow_up_and_nonpaged_fallback ... ok"
+      ],
+      "artifacts": [
+        {
+          "target": "backend_present",
+          "path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_present-05b6c07c9bc43044",
+          "fresh": false,
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 1,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          }
+        }
+      ],
+      "stdout_sha256": "6a21ca48010168f04a1345453b028a99ed8d7c9afba5707a1fffee4e5b6de955",
+      "stderr_sha256": "c8dc315b77f9229935678a69b7db7e2d5c7b279b2676829d8e1f2145de56de86",
+      "owned_process_group_absent": true
+    },
+    {
+      "gate": 1,
+      "receipt_sha256": "13d5a3279a317e963e0124d54f2a04cb0b74937f503cb143d47abb5ec108ffad",
+      "exit": 0,
+      "summary": [
+        {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        }
+      ],
+      "actual_tests": [
+        "test tests::cli_exports_plain_graph_continuation_without_leaking_the_wire_proof ... ok"
+      ],
+      "artifacts": [
+        {
+          "target": "backend_cli",
+          "path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_cli-15e118d8500eecb8",
+          "fresh": false,
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 1,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          }
+        }
+      ],
+      "stdout_sha256": "82c76a4ca9106952e4f568976f0c823689348acec744daa759168df019d360ce",
+      "stderr_sha256": "e1fb45e8f8e5f4d7a18059c782eed599e9d3783ca27597b045a4381fbd949841",
+      "owned_process_group_absent": true
+    },
+    {
+      "gate": 2,
+      "receipt_sha256": "695bca0d7ea26b7892e4aa0ad5ad3644f8d42b2f1dd1d1d4f4ebb9adf32da1d2",
+      "exit": 0,
+      "summary": [
+        {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        }
+      ],
+      "actual_tests": [
+        "test jsonrpc::tests::graph_continuation_round_trip_is_bounded_and_authorized ... ok"
+      ],
+      "artifacts": [
+        {
+          "target": "backend_mcp",
+          "path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_mcp-5de55973319cb62b",
+          "fresh": false,
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 1,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          }
+        }
+      ],
+      "stdout_sha256": "c77c6f38b13628e01ef2a8591d41e5097ba9499e840d278633f35014a14c02b7",
+      "stderr_sha256": "25e1abf176562cb9872d1808444cbd5a74c7931ccb3f707918b24ee018b4b416",
+      "owned_process_group_absent": true
+    },
+    {
+      "gate": 3,
+      "receipt_sha256": "e0361f6e3dae3fa6bbcf8f8eb98e605383540cbd2ca2647b2d85ae57f082c49d",
+      "exit": 0,
+      "summary": [
+        {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        }
+      ],
+      "actual_tests": [
+        "test jsonrpc::tests::graph_page_text_does_not_treat_cancellation_or_missing_cursor_as_limit_advice ... ok"
+      ],
+      "artifacts": [
+        {
+          "target": "backend_mcp",
+          "path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_mcp-5de55973319cb62b",
+          "fresh": true,
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 1,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          }
+        }
+      ],
+      "stdout_sha256": "21ddf26ea4dcbe4cdc8d35cde58eebe633d03e14bfa1ad6fc7e61c0ffcadc137",
+      "stderr_sha256": "ba05394292d16d56a1647427e0d095fd3edffeef2b0c576050949648ce87b7b8",
+      "owned_process_group_absent": true
+    },
+    {
+      "gate": 4,
+      "receipt_sha256": "76db211abb7679ddf53052f7de3f9059b796899747ade89c379cbf757283506c",
+      "exit": 0,
+      "summary": [],
+      "actual_tests": [],
+      "artifacts": [],
+      "stdout_sha256": "d8ad00e3447b036747f14e71866573f72f38ef7398506c43ad47f3a9e34914c0",
+      "stderr_sha256": "cd74d7b6bdccf6f09c8e060994e7720da48f57e4678e6374e664d6188c9187a1",
+      "owned_process_group_absent": true
+    }
+  ],
+  "return_receipt_sha256": "a0a6442800117646a76d78031bfab147dac2c1085166d7fe7d0ba5ff6b8c5d9d",
+  "warning_report_sha256": "7103418d1a14fbde295efee76938913eed117929eb5c7805dcc26bfc3cfcd82c",
+  "native_images_rehashed_by_root": false,
+  "installed_release_acceptance": false
+}

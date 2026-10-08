@@ -6,14 +6,14 @@
 //! ([`resources`]). What a command *is* lives in [`backend_library::COMMANDS`],
 //! what it *takes* lives in `backend_present::GRAMMARS`, which round trips it
 //! needs lives in `backend_present::answer`, and what the answer *reads like*
-//! lives in `backend_present::markdown`. The CLI reaches all four the same way,
-//! which is what makes `backend --format markdown` and a `tools/call` text
-//! block byte-identical rather than merely similar.
+//! lives in `backend_present::markdown`. The CLI and MCP use the same renderer;
+//! each adds the exact continuation instruction for its own next-call syntax.
 //!
 //! Two rules decide every `tools/call` result:
 //!
-//! * the text block is `markdown::answer`, and `structuredContent` uses the
-//!   same typed projection the CLI's `--format json` emits;
+//! * the text block is the shared Markdown rendering with its MCP continuation
+//!   instruction, and `structuredContent` uses the same typed projection the
+//!   CLI's `--format json` emits;
 //! * `isError` is true when the shared answer carries a [`Fault`], including
 //!   a product refusal that retains its exact typed operation receipt. The fault is
 //!   rendered in the shared three-line grammar with its affordance as the exact
@@ -27,10 +27,10 @@ use backend_library::{
     encode_id,
 };
 use backend_present::{
-    Answer, BudgetExceeded, ContinuationCursor, CursorTarget, DEFAULT_RESPONSE_BUDGET_BYTES,
-    Detail, ESTIMATED_BYTES_PER_TOKEN, Engine, Fault, Invocation, Probe, Request, answer_paged,
-    bounded_text, encode_answer, encode_serializable, estimate_tokens, fault_value, lower,
-    markdown, oversized_fault, record_list,
+    Answer, BudgetExceeded, ContinuationCursor, ContinuationTarget, CursorTarget,
+    DEFAULT_RESPONSE_BUDGET_BYTES, Detail, ESTIMATED_BYTES_PER_TOKEN, Engine, Fault, Invocation,
+    Probe, Request, answer_paged, bounded_text, encode_answer, encode_serializable,
+    estimate_tokens, fault_value, lower, markdown, oversized_fault, record_list,
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{
@@ -652,7 +652,7 @@ impl<P: Product> Server<P> {
             return self.query_tool(arguments, detail, continuation, &context);
         }
         if grammar.is_some_and(|grammar| grammar.name() == "graph") {
-            return self.graph_tool(arguments, detail, continuation, &context);
+            return self.graph_tool(name, arguments, detail, continuation, &context);
         }
         let Some(grammar) = grammar else {
             return Err(RpcError::new(-32602, "Unknown tool"));
@@ -683,6 +683,7 @@ impl<P: Product> Server<P> {
                     } else {
                         CursorTarget::CliOption
                     },
+                    name,
                 ),
                 Err(fault) => Err(RpcError::from_fault(&fault)),
             },
@@ -720,6 +721,7 @@ impl<P: Product> Server<P> {
 
     fn graph_tool(
         &mut self,
+        tool_name: &str,
         arguments: &Map<String, Value>,
         detail: Detail,
         continuation: Option<PageContinuation>,
@@ -747,7 +749,7 @@ impl<P: Product> Server<P> {
             _ => return Err(RpcError::tool("graph page reply changed shape")),
         };
         let answer = Answer::Records(Box::new(record_list(&coordinate, &page.snapshot)));
-        self.rendered(&answer, detail, context, CursorTarget::CliOption)
+        self.rendered(&answer, detail, context, CursorTarget::CliOption, tool_name)
     }
     fn surface_tool(
         &mut self,
@@ -1047,6 +1049,7 @@ impl<P: Product> Server<P> {
         detail: Detail,
         context: &[u8],
         cursor_target: CursorTarget,
+        tool_name: &str,
     ) -> Result<Value, RpcError> {
         let next = answer
             .cursor()
@@ -1070,7 +1073,11 @@ impl<P: Product> Server<P> {
         };
         let structured: Value = serde_json::from_slice(&payload.bytes)
             .map_err(|error| RpcError::tool(format!("typed projection decode failed: {error}")))?;
-        let text = bounded_text(&markdown::answer(answer));
+        let text = bounded_text(&markdown::answer_with_cursor(
+            answer,
+            next.as_deref(),
+            ContinuationTarget::McpTool(tool_name),
+        ));
         Ok(tool_result(&text, structured, answer.fault().is_some()))
     }
 
@@ -1098,7 +1105,7 @@ impl<P: Product> Server<P> {
             RpcError::tool(format!("typed graph projection decode failed: {error}"))
         })?;
         Ok(tool_result(
-            &bounded_text(&graph_page_text(page)),
+            &bounded_text(&graph_page_text(page, next.as_deref())),
             value,
             false,
         ))
@@ -1497,13 +1504,31 @@ fn tool_result(text: &str, structured: Value, is_error: bool) -> Value {
     }
 }
 
-fn graph_page_text(page: &GraphQueryPage) -> String {
+fn graph_page_text(page: &GraphQueryPage, cursor: Option<&str>) -> String {
     let mut out = format!(
         "~query {} row(s) · {} · revision {}\n",
         page.rows.len(),
         terminal_name(page.terminal),
         abbreviate(page.revision.as_bytes())
     );
+    match page.terminal {
+        PageTerminal::More(_) => {
+            if let Some(cursor) = cursor {
+                out.push_str("Continue `backend.query` with the same `query`, `variables`, and `limit`; copy `structuredContent.nextCursor` into `arguments.cursor`: ");
+                out.push('`');
+                out.push_str(cursor);
+                out.push_str("`\n");
+            } else {
+                out.push_str("… more rows are available, but no continuation cursor was issued\n");
+            }
+        }
+        PageTerminal::Cancelled => {
+            out.push_str(
+                "… query cancelled before completion; no continuation cursor is available\n",
+            );
+        }
+        PageTerminal::Complete => {}
+    }
     for row in &page.rows {
         let fields = row
             .fields()
@@ -1512,9 +1537,6 @@ fn graph_page_text(page: &GraphQueryPage) -> String {
             .collect::<Vec<_>>();
         out.push_str(&fields.join("  "));
         out.push('\n');
-    }
-    if page.terminal != PageTerminal::Complete {
-        out.push_str("… raise `limit` or narrow the query to see the rest\n");
     }
     out
 }

@@ -18,7 +18,7 @@
 
 use core::fmt::Write as _;
 
-use super::Lines;
+use super::{ContinuationTarget, Lines, continuation_note};
 use crate::coverage::CoverageLine;
 use crate::drive::Answer;
 use crate::fault::Fault;
@@ -51,6 +51,19 @@ pub fn answer(answer: &Answer) -> String {
         Answer::Outline(value) => outline(value),
         Answer::Status(value) => status(value),
         Answer::Product(value) => product(value),
+    }
+}
+
+/// Renders an answer with the portable cursor issued by its caller.
+#[must_use]
+pub fn answer_with_cursor(
+    value: &Answer,
+    cursor: Option<&str>,
+    target: ContinuationTarget<'_>,
+) -> String {
+    match value {
+        Answer::Records(value) => records_with_cursor(value, None, cursor, target),
+        _ => answer(value),
     }
 }
 
@@ -221,17 +234,36 @@ fn push_source(lines: &mut Lines, source: &Source, fence: &str) {
 /// Renders one result page: the coverage line, then two lines per record.
 #[must_use]
 pub fn records(list: &RecordList, within: Option<&ProjectRef>) -> String {
+    records_with_cursor(list, within, None, ContinuationTarget::CliOption)
+}
+
+fn records_with_cursor(
+    list: &RecordList,
+    within: Option<&ProjectRef>,
+    cursor: Option<&str>,
+    target: ContinuationTarget<'_>,
+) -> String {
     let mut lines = Lines::new();
     lines.push(coverage(list.coverage()));
+    let cursor_note = if list.has_more() && list.continuation().is_some() {
+        cursor.map(|cursor| continuation_note(target, cursor))
+    } else {
+        None
+    };
+    if let Some(note) = &cursor_note {
+        lines.push(note);
+    } else if list.has_more() && list.continuation().is_some() {
+        lines.push("… more rows; this rendering does not include the continuation token");
+    }
+    if list.has_more() && list.continuation().is_none() {
+        lines.push("… more rows at this revision; raise `limit` to see them");
+    }
     if list.is_empty() {
         lines.push(list.empty_explanation());
         return lines.finish();
     }
     for record in list.records() {
         push_record(&mut lines, record, within);
-    }
-    if list.has_more() {
-        lines.push("… more rows at this revision; raise `limit` to see them");
     }
     lines.finish()
 }

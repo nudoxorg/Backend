@@ -5,8 +5,8 @@
 //! did not move and neither did its cases. The surface half checks the things
 //! this rewrite is responsible for: that every registry row is reachable by
 //! the words a person types, that an operand the engine cannot admit fails
-//! with the operand named, and that `--format markdown` is the same bytes the
-//! MCP text block carries.
+//! with the operand named, and that `--format markdown` uses the same renderer
+//! as the MCP text block, including CLI-specific continuation syntax.
 #![allow(clippy::expect_used, clippy::panic)]
 
 use super::transport::{read_frame, write_frame};
@@ -1287,6 +1287,20 @@ fn cli_exports_plain_graph_continuation_without_leaking_the_wire_proof() {
     assert!(token.starts_with("pc3-"));
     assert!(payload.get("certificate").is_none());
     assert!(payload.get("query_proof").is_none());
+    for format in ["human", "markdown"] {
+        let options = options::split(&["--format".to_owned(), format.to_owned()])
+            .expect("text options")
+            .0;
+        let rendered = process::render_admitted_answer(&session, &answer, &options)
+            .expect("text graph response remains successful");
+        assert!(
+            rendered.contains("continue the same command with `--cursor`"),
+            "{rendered}"
+        );
+        assert!(rendered.contains(token), "{rendered}");
+        assert!(!rendered.contains("raise --limit"), "{rendered}");
+        assert!(!rendered.contains("raise `limit`"), "{rendered}");
+    }
     let owner =
         Library::from_view(root.clone(), Cursor::for_view_root(&root)).expect("reopened owner");
     let mut cold =

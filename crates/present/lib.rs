@@ -36,9 +36,10 @@
 //!   one [`Fault`] carrying a typed [`Operand`], a [`Cause`], and an
 //!   [`Affordance`]. The three-line grammar is shared, so CLI, MCP, and
 //!   desktop print the same slug, the same operand, and the same next step.
-//! * **Parity is structural.** The Markdown renderer used by MCP and by the
-//!   CLI's `--format markdown` is the *same* function; the human renderer
-//!   differs only by colour and width. So is the *request sequence*: [`answer`]
+//! * **Parity is structural.** MCP and the CLI's `--format markdown` use the
+//!   same cursor-aware Markdown renderer; it supplies the matching continuation
+//!   syntax for each surface. The human renderer differs only by colour and
+//!   width. So is the *request sequence*: [`answer`]
 //!   decides which probes a page or an outline needs, expressed against the
 //!   [`Engine`] trait rather than against a socket, so a surface contributes
 //!   only a mechanical adapter. Divergence would have to be written on purpose.
@@ -127,7 +128,9 @@ pub use product::{
     ProductView, product_view, product_view_for_command,
 };
 pub use record::{Record, RecordList, RecordState, Score};
-pub use render::{Colour, Style, Theme, Width, display_width, markdown, text};
+pub use render::{
+    Colour, ContinuationTarget, Style, Theme, Width, display_width, markdown, text,
+};
 pub use sections::{LineRole, SectionKind, SectionReader};
 pub use shelf::{LanguageCount, Readiness, RowCount, Shelf, ShelfEntry};
 pub use signature::{Resolved, Signature, Target, Token, TokenKind};

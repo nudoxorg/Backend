@@ -1,15 +1,15 @@
 //! Rendering: one presentation answer becomes bytes on a stream.
 //!
-//! This module contains no layout and no dispatch. Human output is
-//! [`backend_present::text::answer`], Markdown output is
-//! [`backend_present::markdown::answer`] — the same function the MCP text block
-//! calls — and JSON is [`backend_present::answer_value`], the same value the
-//! MCP puts in `structuredContent`. All this module decides is which of the
-//! three the caller asked for, and what exit code a fault means.
+//! This module contains no layout and no dispatch. Human and Markdown output
+//! use the shared backend-present renderers, with a CLI-specific continuation
+//! instruction when the owner issued a cursor. JSON is
+//! [`backend_present::answer_value`], the same value the MCP puts in
+//! `structuredContent`. This module decides which output the caller asked for
+//! and what exit code a fault means.
 
 use backend_present::{
-    Answer, DEFAULT_RESPONSE_BUDGET_BYTES, Detail, Fault, FaultSlug, bounded_text, encode_answer,
-    fault_value, markdown, oversized_fault, text,
+    Answer, ContinuationTarget, DEFAULT_RESPONSE_BUDGET_BYTES, Detail, Fault, FaultSlug,
+    bounded_text, encode_answer, fault_value, markdown, oversized_fault, text,
 };
 use std::process::ExitCode;
 
@@ -51,8 +51,17 @@ pub(crate) fn try_answer_with_cursor(
     cursor: Option<&str>,
 ) -> Result<String, Fault> {
     match options.format() {
-        Format::Human => Ok(bounded_text(&text::answer(answer, options.theme()))),
-        Format::Markdown => Ok(markdown_text(answer)),
+        Format::Human => Ok(bounded_text(&text::answer_with_cursor(
+            answer,
+            options.theme(),
+            cursor,
+            ContinuationTarget::CliOption,
+        ))),
+        Format::Markdown => Ok(bounded_text(&markdown::answer_with_cursor(
+            answer,
+            cursor,
+            ContinuationTarget::CliOption,
+        ))),
         Format::Json => {
             let payload = encode_answer(
                 answer,

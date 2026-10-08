@@ -3,9 +3,9 @@
 //! There are exactly two: [`text`] for a terminal and [`markdown`] for an
 //! agent. The desktop renders the model directly into its own widgets and does
 //! not need a third string form. Both renderings read the *same* values in the
-//! *same* order, so CLI `--format markdown` and an MCP `tools/call` text block
-//! are byte-identical for the same reply — which is what makes the parity
-//! journeys assertable on content rather than on shape.
+//! *same* order. CLI `--format markdown` and an MCP `tools/call` text block
+//! use the same Markdown renderer; when a caller has issued a continuation,
+//! it adds the surface-specific instruction for passing that token back.
 //!
 //! Colour lives here and nowhere else. A [`Theme`] carries whether colour is
 //! allowed and how wide the reader's terminal is; a renderer asks the theme to
@@ -17,6 +17,26 @@ pub mod markdown;
 pub mod text;
 
 use core::fmt;
+
+/// The command surface that accepts a continuation token.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContinuationTarget<'a> {
+    /// The same CLI command accepts the token through `--cursor`.
+    CliOption,
+    /// The named MCP tool accepts the token through its `cursor` argument.
+    McpTool(&'a str),
+}
+
+fn continuation_note(target: ContinuationTarget<'_>, cursor: &str) -> String {
+    match target {
+        ContinuationTarget::CliOption => {
+            format!("next cursor (continue the same command with `--cursor`): `{cursor}`")
+        }
+        ContinuationTarget::McpTool(tool) => format!(
+            "Continue `{tool}` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`: `{cursor}`"
+        ),
+    }
+}
 
 /// The role one painted span plays, independent of any colour choice.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

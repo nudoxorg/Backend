@@ -869,6 +869,67 @@ fn an_empty_graph_names_the_missing_edges() {
 }
 
 #[test]
+fn continuation_renderings_name_the_actual_follow_up_and_nonpaged_fallback() {
+    use backend_library::{Cursor, PageContinuation};
+
+    let continuation = PageContinuation::from_cursor(Cursor::new());
+    let paged = Answer::Records(Box::new(
+        RecordList::new(
+            "ferris",
+            CoverageLine::new(&[], Some(0)),
+            Vec::<Record>::new(),
+        )
+        .with_continuation(Some(continuation)),
+    ));
+    let token = "mcp1-owner-cursor";
+
+    let cli = text::answer_with_cursor(
+        &paged,
+        Theme::plain(),
+        Some(token),
+        ContinuationTarget::CliOption,
+    );
+    assert!(
+        cli.contains("continue the same command with `--cursor`"),
+        "{cli}"
+    );
+    assert!(cli.contains(token), "{cli}");
+    assert!(!cli.contains("raise --limit"), "{cli}");
+
+    let mcp = markdown::answer_with_cursor(
+        &paged,
+        Some(token),
+        ContinuationTarget::McpTool("backend.search"),
+    );
+    assert!(
+        mcp.contains("Continue `backend.search` with the same arguments"),
+        "{mcp}"
+    );
+    assert!(
+        mcp.contains("copy `structuredContent.nextCursor` to `arguments.cursor`"),
+        "{mcp}"
+    );
+    assert!(mcp.contains(token), "{mcp}");
+    assert!(!mcp.contains("raise `limit`"), "{mcp}");
+
+    let nonpaged = RecordList::new(
+        "ferris",
+        CoverageLine::new(&[], Some(0)),
+        Vec::<Record>::new(),
+    )
+    .with_more(true);
+    let markdown = markdown::records(&nonpaged, None);
+    let terminal = text::records(&nonpaged, None, Theme::plain());
+    assert!(markdown.contains("raise `limit` to see them"), "{markdown}");
+    assert!(terminal.contains("raise --limit to see them"), "{terminal}");
+
+    let omitted_token =
+        markdown::answer_with_cursor(&paged, None, ContinuationTarget::McpTool("backend.search"));
+    assert!(omitted_token.contains("does not include the continuation token"));
+    assert!(!omitted_token.contains("raise `limit`"));
+}
+
+#[test]
 fn the_answer_tag_never_overwrites_a_fact_the_payload_already_carries() {
     // The first spelling of this tag was `kind`, and a page already has one:
     // its declaration kind. The tag won, `"kind": "function"` silently became
