@@ -147,6 +147,8 @@ pub struct DefinitionTarget {
     pub name_span: Span,
     /// Native resolved module plus the exact declaration's lexical scope.
     pub qualified_name: Box<str>,
+    /// Native selected-source manifest, digest and declaration extent, encoded by shared IR admission.
+    pub source_coordinate: Box<str>,
     /// Identifier spelling confirmed against the target's exact source slice.
     pub name: Box<str>,
     /// Exact syntax declaration kind of the validated target.

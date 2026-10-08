@@ -605,3 +605,88 @@ fn source_frontier_ignores_asset_links_but_refuses_python_and_directory_aliases(
     );
     std::fs::remove_dir_all(root).expect("remove fixture");
 }
+
+#[test]
+fn native_relative_import_aliases_retain_exact_selected_function_coordinates()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = std::env::temp_dir().join(format!(
+        "nudox-python-function-coordinates-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root)?;
+    let sources = [
+        PythonProjectSource {
+            relative_path: "core/__init__.py",
+            source: "",
+        },
+        PythonProjectSource {
+            relative_path: "core/api/__init__.py",
+            source: "",
+        },
+        PythonProjectSource {
+            relative_path: "core/utils.py",
+            source: "def generate_s3_authorization_headers(key):\n    return 'wrong module'\n",
+        },
+        PythonProjectSource {
+            relative_path: "core/api/utils.py",
+            source: "# UTF-8: 🐍\ndef generate_s3_authorization_headers(key):\n    return key\n",
+        },
+        PythonProjectSource {
+            relative_path: "core/api/viewsets.py",
+            source: "from . import utils as helper\nfrom .utils import generate_s3_authorization_headers as generate\nfrom external import generate_s3_authorization_headers as external\n\ndef generate_s3_authorization_headers(key):\n    return 'same name in caller'\n\ndef qualified(key):\n    return helper.generate_s3_authorization_headers(key)\n\ndef direct(key):\n    return generate(key)\n\ndef shadowed(helper, key):\n    return helper.generate_s3_authorization_headers(key)\n\ndef shadowed_local(generate_s3_authorization_headers, key):\n    return generate_s3_authorization_headers(key)\n\ndef unselected(key):\n    return external(key)\n",
+        },
+    ];
+    let checker = NativePythonProjectAuthority::admit()?;
+    let cancelled = AtomicBool::new(false);
+    let report = checker.analyze_project(
+        &root,
+        "docs",
+        &sources,
+        PythonVersion::Python314,
+        publication_control(&cancelled),
+    )?;
+    let caller = report
+        .module("core/api/viewsets.py")
+        .ok_or("caller report absent")?;
+    let source = sources[4].source;
+    let mut proven = 0;
+    for symbol in &caller.symbols {
+        let position = symbol.span.start as usize;
+        match &symbol.outcome {
+            SymbolOutcome::Definition { target, .. } => {
+                assert_eq!(target.relative_path.as_ref(), "core/api/utils.py");
+                let coordinate =
+                    backend_semantic::ir::PythonSourceCoordinate::decode(&target.source_coordinate)
+                        .ok_or("native coordinate not admitted")?;
+                assert_eq!(coordinate.0.path, "core/api/utils.py");
+                assert_eq!(
+                    coordinate.0.source,
+                    *backend_semantic::ir::SourceIdentity::from_bytes(sources[3].source.as_bytes())
+                        .ok_or("source extent")?
+                        .identity
+                );
+                assert!(position < source.find("def shadowed").ok_or("shadowed control")?);
+                proven += 1;
+            }
+            _ if position >= source.find("def shadowed").ok_or("shadowed control")? => {}
+            _ => return Err("unambiguous selected relative import failed resolution".into()),
+        }
+    }
+    assert_eq!(
+        proven, 2,
+        "qualified module alias and direct import alias must reach the exact local function"
+    );
+    assert!(
+        caller
+            .symbols
+            .iter()
+            .any(|symbol| symbol.span.start as usize
+                >= source.find("def unselected").unwrap_or(source.len())
+                && matches!(symbol.outcome, SymbolOutcome::Unresolved))
+    );
+    report
+        .witness()
+        .validate_current(publication_control(&cancelled))?;
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}

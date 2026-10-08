@@ -1,0 +1,38 @@
+{
+  "root": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-python-current-default-20261007-v2/docs",
+  "official_source_pin": "6e5dee38e927fac86855d17dfb614fbb64b172b3",
+  "files": [
+    {
+      "path": "src/backend/core/api/utils.py",
+      "sha256": "1bc6b1f104cf50bbc6ab6f6c5f789ddf903975bc53a96987bc10a9b2f35cb2ac",
+      "byte_len": 6832,
+      "unchanged_at_git_pin": true,
+      "source_lines": {
+        "70": "def generate_s3_authorization_headers(key):",
+        "87": "    s3_client = get_s3_client()"
+      }
+    },
+    {
+      "path": "src/backend/core/api/viewsets.py",
+      "sha256": "4760bbe804351d3bb7bb3534eeca5a2c8ec63f95752621e7dc2952fe5a5f58e8",
+      "byte_len": 128577,
+      "unchanged_at_git_pin": true,
+      "source_lines": {
+        "78": "from core.utils.s3 import get_s3_client",
+        "84": "from . import permissions, serializers, utils",
+        "2151": "        s3_client = get_s3_client()",
+        "2167": "        request = utils.generate_s3_authorization_headers(key)"
+      }
+    },
+    {
+      "path": "src/backend/core/utils/s3.py",
+      "sha256": "9ccf823c657871c7871f94ffde7bbf29940a31cf8485f546120df39eeb93117c",
+      "byte_len": 2187,
+      "unchanged_at_git_pin": true,
+      "source_lines": {
+        "45": "def get_s3_client():"
+      }
+    }
+  ],
+  "scope": "read-only source ground truth, no public runtime or compiler launched"
+}

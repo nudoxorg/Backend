@@ -15,6 +15,17 @@ pub struct SourceIdentity {
     pub byte_len: u32,
 }
 
+impl SourceIdentity {
+    /// Captures exact bytes with the shared source-fact content identity domain.
+    #[must_use]
+    pub fn from_bytes(source: &[u8]) -> Option<Self> {
+        Some(Self {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source),
+            byte_len: u32::try_from(source.len()).ok()?,
+        })
+    }
+}
+
 #[derive(Debug, Eq, Error, PartialEq)]
 /// Failure to decode the typed identity of the source bytes retained by a fragment.
 pub enum SourceIdentityFault {
