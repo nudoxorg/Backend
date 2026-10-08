@@ -1,0 +1,107 @@
+{
+  "canonical-ffdc-preparation-01/launch.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/canonical-ffdc-preparation-01/launch.json",
+    "raw_sha256": "03d3c5f8c0e92912e9b490e920d10975b38d46aedd8d05b69ce0ded663220163",
+    "raw_bytes": 30831,
+    "stored_sha256": "03d3c5f8c0e92912e9b490e920d10975b38d46aedd8d05b69ce0ded663220163",
+    "stored_bytes": 30831
+  },
+  "canonical-ffdc-preparation-01/receipt.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/canonical-ffdc-preparation-01/receipt.json",
+    "raw_sha256": "9e6d7cb55e540f291409300c8ba0971756420ee0eabb3257b24519be4a585997",
+    "raw_bytes": 37668,
+    "stored_sha256": "9e6d7cb55e540f291409300c8ba0971756420ee0eabb3257b24519be4a585997",
+    "stored_bytes": 37668
+  },
+  "canonical-ffdc-preparation-01/cargo.log.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/canonical-ffdc-preparation-01/cargo.log",
+    "raw_sha256": "2dee1c8a753994adb6a8ec123b39cabb12973044436cefe8a2e53229575f7acb",
+    "raw_bytes": 1254111,
+    "stored_sha256": "c03f97594132068242d67f4ed3021953f2810617ccf56d33b4ec805eded068b3",
+    "stored_bytes": 98477
+  },
+  "canonical-ffdc-ack-01/launch.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/canonical-ffdc-ack-01/launch.json",
+    "raw_sha256": "0a4c8a0213881e8211b903cddec7cbb0ad3605a8b5e8388ddc6ad5eb49dd1a74",
+    "raw_bytes": 25286,
+    "stored_sha256": "0a4c8a0213881e8211b903cddec7cbb0ad3605a8b5e8388ddc6ad5eb49dd1a74",
+    "stored_bytes": 25286
+  },
+  "canonical-ffdc-ack-01/receipt.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/canonical-ffdc-ack-01/receipt.json",
+    "raw_sha256": "f3269bd4cb31f925e7aba9177e524486252092701eca208e5f1a8e6cc4980268",
+    "raw_bytes": 35116,
+    "stored_sha256": "f3269bd4cb31f925e7aba9177e524486252092701eca208e5f1a8e6cc4980268",
+    "stored_bytes": 35116
+  },
+  "canonical-ffdc-ack-01/cargo.log.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/canonical-ffdc-ack-01/cargo.log",
+    "raw_sha256": "439eded1334c92ef05f980bd0c57bc8e1809c368549d78622b3ce5e048da52ba",
+    "raw_bytes": 1254767,
+    "stored_sha256": "601ab726ae76415f068a9e7496d9a90af083b7844a1eeb97b940a5e09bc03da4",
+    "stored_bytes": 98559
+  },
+  "canonical-ffdc-listener-01/launch.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/canonical-ffdc-listener-01/launch.json",
+    "raw_sha256": "a62e43e1d2c50bd7b88125ea60d4a715adc184552467d4e7d026bb1a0004f135",
+    "raw_bytes": 20750,
+    "stored_sha256": "a62e43e1d2c50bd7b88125ea60d4a715adc184552467d4e7d026bb1a0004f135",
+    "stored_bytes": 20750
+  },
+  "canonical-ffdc-listener-01/receipt.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/canonical-ffdc-listener-01/receipt.json",
+    "raw_sha256": "03461acf73e8006acaea0b8449193e37a9c63a70d8f09f60794ef37b5874395a",
+    "raw_bytes": 24350,
+    "stored_sha256": "03461acf73e8006acaea0b8449193e37a9c63a70d8f09f60794ef37b5874395a",
+    "stored_bytes": 24350
+  },
+  "canonical-ffdc-listener-01/cargo.log.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/canonical-ffdc-listener-01/cargo.log",
+    "raw_sha256": "200e69af30b566b01ea75164e052a7511a1cc615b42dfbc6c1eb05c27f11fa53",
+    "raw_bytes": 1248610,
+    "stored_sha256": "124c11e0984c91bc97c55f0597a3b8fe53922b5e31d839b232c6db39f6cf699d",
+    "stored_bytes": 97887
+  },
+  "canonical-eb855-ack-01/launch.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/canonical-eb855-ack-01/launch.json",
+    "raw_sha256": "1914aee199ccc53bafa9d80b88ee56c168271a1bc5f56c89208e653f7eee7641",
+    "raw_bytes": 23096,
+    "stored_sha256": "1914aee199ccc53bafa9d80b88ee56c168271a1bc5f56c89208e653f7eee7641",
+    "stored_bytes": 23096
+  },
+  "canonical-eb855-ack-01/receipt.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/canonical-eb855-ack-01/receipt.json",
+    "raw_sha256": "670100e2c0190f4eeb51f84431ab723d843725bd6238b68fc5968ffdc0524000",
+    "raw_bytes": 32927,
+    "stored_sha256": "670100e2c0190f4eeb51f84431ab723d843725bd6238b68fc5968ffdc0524000",
+    "stored_bytes": 32927
+  },
+  "canonical-eb855-ack-01/cargo.log.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/canonical-eb855-ack-01/cargo.log",
+    "raw_sha256": "d6f0a38f157dcba35c5697b94ea113d18bfb908cc5e188760fe25938ff7da63b",
+    "raw_bytes": 1254698,
+    "stored_sha256": "c904f6e9c363b76e7e72dd63f3c23179320dcac0b971eacee17a382601905133",
+    "stored_bytes": 98571
+  },
+  "canonical-6e3-ack-01/launch.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/canonical-6e3-ack-01/launch.json",
+    "raw_sha256": "c21787cc7798d2cb922bb262977a7854341cd2e0d2e0b71104b196b92fc36b55",
+    "raw_bytes": 23982,
+    "stored_sha256": "c21787cc7798d2cb922bb262977a7854341cd2e0d2e0b71104b196b92fc36b55",
+    "stored_bytes": 23982
+  },
+  "canonical-6e3-ack-01/receipt.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/canonical-6e3-ack-01/receipt.json",
+    "raw_sha256": "394f96957157418cde360941612b54310a17ab04313fece06bcdf101e46c22f4",
+    "raw_bytes": 33809,
+    "stored_sha256": "394f96957157418cde360941612b54310a17ab04313fece06bcdf101e46c22f4",
+    "stored_bytes": 33809
+  },
+  "canonical-6e3-ack-01/cargo.log.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/canonical-6e3-ack-01/cargo.log",
+    "raw_sha256": "3ca461f041abc5eba0e4e12a0de2b214afb7d7fc10b5489c8c08c40e4017accc",
+    "raw_bytes": 1254555,
+    "stored_sha256": "705f27f175fde50c2712aa7fa204e09ffcfe1014d15753bf12b9301a54e611e2",
+    "stored_bytes": 98471
+  }
+}

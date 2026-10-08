@@ -1,0 +1,12 @@
+{
+  "evidence_commit": "1f923d8c2bcaca9b2ec0391e01809cd2726f2f37",
+  "evidence_tree": "2d160ca2be8343cc084bf7649e1ede7f532640f4",
+  "canonical_source_candidate": "ffdc7c54b0f69c34a83080ac74b844498ffecb70",
+  "canonical_source_candidate_tree": "678ccff565436f1843fcb339c64b31487e046088",
+  "actual_docs_source": "4e846ee409db999ec8221b83f96b0a1ebaa04238",
+  "actual_docs_scope": "retained-state private copy; configured 15-second idle policy; not fresh ingest or current canonical executable proof",
+  "verified_inventory_entries": 335,
+  "archive_sha256": "81088e5cdee0599224239cb983b96c00a3f6a484dada8f009395be8d2cdc3a3c",
+  "archive_bytes": 1329749,
+  "root_review": "Production source, native failures, successful raw Docs command/control/retirement scope and each retained/decompressed artifact hash reviewed; exact canonical composition native gate pending."
+}

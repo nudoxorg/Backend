@@ -6,6 +6,7 @@ mod diff;
 mod graph;
 mod index;
 mod index_operation;
+mod search_lane;
 mod semantic_query;
 mod semantic_shapes;
 mod snapshot;

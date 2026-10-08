@@ -5,6 +5,8 @@
 //! bounds, and reply admission path.
 #![forbid(unsafe_code)]
 
+#[cfg(any(unix, windows))]
+mod deferred_command;
 pub mod lease_contract;
 pub mod monotonic;
 #[cfg(any(unix, windows))]
@@ -445,8 +447,7 @@ impl UnixCommandTransport {
             CLIENT_MUTATION_TIMEOUT,
         )?;
         let body = encode_request(request)?;
-        write_body(&mut self.stream, &body)?;
-        let body = read_body(&mut self.stream)?;
+        let body = self.exchange_command(request, &body)?;
         let reply = ReplyDto::decode_against(&body, expected).map_err(ClientError::Protocol)?;
         admit_reply(&accepted, reply)
     }
@@ -474,8 +475,7 @@ impl CommandTransport for UnixCommandTransport {
             CLIENT_MUTATION_TIMEOUT,
         )?;
         let body = encode_request(&request)?;
-        write_body(&mut self.stream, &body)?;
-        let body = read_body(&mut self.stream)?;
+        let body = self.exchange_command(&request, &body)?;
         let reply = self.decode(&body)?;
         admit_reply(&request, reply)
     }
@@ -513,8 +513,7 @@ impl CertifiedCommandTransport for UnixCommandTransport {
             CLIENT_MUTATION_TIMEOUT,
         )?;
         let body = encode_request(&request)?;
-        write_body(&mut self.stream, &body)?;
-        let body = read_body(&mut self.stream)?;
+        let body = self.exchange_command(&request, &body)?;
         let reply = if capability.is_some() {
             ReplyDto::decode_with_certificate(&body, capability.clone())
                 .map_err(ClientError::Protocol)?
