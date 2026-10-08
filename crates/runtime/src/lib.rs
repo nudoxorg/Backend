@@ -15,7 +15,8 @@
 //! # Daemon lifecycle
 //!
 //! [`ensure_locald`] spawns `backend-locald` detached, so the spawning CLI is
-//! not the daemon's parent for lifetime purposes. Nothing reaps it explicitly.
+//! not the daemon's parent for lifetime purposes. Startup contenders that exit
+//! during the readiness wait are reaped through their exact child handles.
 //! Instead the daemon reaps itself: its listener carries an idle timeout
 //! (ten minutes with no connected client by default, see
 //! `backend_local_service::ListenerConfig`) and removes its socket on the way
@@ -33,7 +34,14 @@ pub use backend_discovery::DiscoveryPolicy;
 /// Bounded physical-credit admission and one-owner execution.
 pub mod server;
 
+#[cfg(unix)]
+mod bootstrap;
 mod startup;
+#[cfg(unix)]
+pub use bootstrap::{
+    LocaldStartup, SpawnedOwnerBootstrap, StartupPending, StartupPendingAction, StartupPendingCause,
+    StartupPhase, report_automatic_startup_failure, start_locald,
+};
 pub use startup::{STARTUP_DIAGNOSTIC_ENV, StartupDiagnostic, StartupFailureReporter};
 
 use std::ffi::OsString;
@@ -41,8 +49,11 @@ use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+#[cfg(any(windows, test))]
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(any(windows, test))]
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -464,7 +475,7 @@ fn is_endpoint_file(metadata: &fs::Metadata) -> bool {
 /// # Errors
 /// Returns an error when setup, executable discovery, process startup, or the
 /// bounded readiness wait fails.
-#[cfg(any(unix, windows))]
+#[cfg(windows)]
 pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
     if let Some(live) = try_attach(paths) {
         return Ok(live.into_endpoint());
@@ -527,6 +538,20 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
             );
         }
         thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// Ensures local endpoint readiness with the existing ninety-second budget.
+/// Unix performs durable initialization in the selected owner candidate.
+/// A pending error does not mean the caller's command was submitted.
+///
+/// # Errors
+/// Returns startup admission, original child failure, or pending readiness.
+#[cfg(unix)]
+pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
+    match start_locald(paths, LIVE_START_TIMEOUT, |_| {})? {
+        LocaldStartup::Ready(endpoint) => Ok(endpoint),
+        LocaldStartup::Pending(pending) => Err(RuntimeError::StartupPending(pending)),
     }
 }
 
@@ -1084,6 +1109,15 @@ pub enum RuntimeError {
         /// Original bounded startup cause, when the owner could report one.
         diagnostic: Option<StartupDiagnostic>,
     },
+    /// The existing owner candidate is still starting; no user command was submitted.
+    #[cfg(unix)]
+    StartupPending(StartupPending),
+    /// The matched automatic companion protocol could not be admitted.
+    #[cfg(unix)]
+    StartupChannel(&'static str),
+    /// Selected companion does not implement the matched startup prefix/channel.
+    #[cfg(unix)]
+    CompanionProtocolMismatch,
     /// The daemon did not become ready before the bounded deadline.
     StartTimeout(PathBuf),
     /// Automatic local composition is unavailable on this platform.
@@ -1143,6 +1177,16 @@ impl fmt::Display for RuntimeError {
                 }
                 Ok(())
             }
+            #[cfg(unix)]
+            Self::StartupPending(pending) => write!(
+                formatter,
+                "startup pending for candidate {:?} in phase {}; retry the original command; it has not been submitted",
+                pending.candidate_pid(), pending.phase().as_str()
+            ),
+            #[cfg(unix)]
+            Self::StartupChannel(cause) => formatter.write_str(cause),
+            #[cfg(unix)]
+            Self::CompanionProtocolMismatch => formatter.write_str("selected companion rejected the versioned automatic startup protocol; install matched CLI and locald or rebuild them together (cargo build -p backend-locald -p backend-cli -p backend-mcp)"),
             Self::StartTimeout(path) => {
                 write!(formatter, "backend-locald did not open {}", path.display())
             }
@@ -1160,6 +1204,8 @@ impl std::error::Error for RuntimeError {
             | Self::DefaultStateInitialization { source, .. }
             | Self::EndpointUnavailable { source, .. }
             | Self::Spawn { source, .. } => Some(source),
+            #[cfg(unix)]
+            Self::StartupPending(_) | Self::StartupChannel(_) | Self::CompanionProtocolMismatch => None,
             Self::InvalidPath(_)
             | Self::WorkspaceProjectMismatch { .. }
             | Self::InvalidCredential(_)
@@ -1686,7 +1732,11 @@ mod tests {
                                 .unwrap();
                         }
                     }
-                    let data = default_workspace_path(&root.join("project"), &state.path());
+                    // Discovery freezes canonical data identity even through macOS /var aliases.
+                    let data = normalize_identity(&default_workspace_path(
+                        &root.join("project"),
+                        &state.path(),
+                    ));
                     let paths = WorkspacePaths {
                         project: root.join("project"),
                         data: data.clone(),
@@ -1841,7 +1891,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn socket_test_directory(label: &str) -> PathBuf {
+    pub(super) fn socket_test_directory(label: &str) -> PathBuf {
         // Nix and macOS can put TMPDIR beyond sun_path's limit before the
         // fixture adds its name. Keep only socket fixtures on a short root;
         // ordinary path tests still exercise the configured temporary root.

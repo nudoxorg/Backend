@@ -1,0 +1,169 @@
+{
+  "schema": "nudox.cli-bounded-startup.checkpoint.v1",
+  "reviewed_utc": "2026-10-08T23:57:16.696473+00:00",
+  "canonical_base": "71069f343cf4eaf9ceef7018156bdac4e83c6c7b",
+  "exact_native_source": {
+    "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+    "commit": "541dba731df3a42b7c0b72f2e47a99dda96bfa43",
+    "tree": "0c29e4b6f38f551351432c22637cf433ccfdb20f"
+  },
+  "result": {
+    "passed": 25,
+    "failed": 0,
+    "ignored": 0,
+    "runtime": 23,
+    "cli": 2
+  },
+  "root_independent_checks": {
+    "receipt_sha256s": 10,
+    "raw_log_sha256s": 20,
+    "actual_success_rows_match_exact_names": true,
+    "all_five_postimages_match_native_source": true,
+    "unrelated_canonical_source_untouched": true,
+    "cargo_lock_unchanged": true
+  },
+  "gates": [
+    {
+      "path": "/Users/rmccrar6/sol61-cli-bounded-startup-native-20261008/native02-runtime-23-02/receipt.json",
+      "sha256": "653a5733bd7f6089622b20cebc5532e51ad31a058cb60587f8896c787e4235ef",
+      "source": {
+        "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+        "clean": true,
+        "commit": "541dba731df3a42b7c0b72f2e47a99dda96bfa43",
+        "tree": "0c29e4b6f38f551351432c22637cf433ccfdb20f"
+      },
+      "artifact": {
+        "bytes": 3889952,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/.local/build/runtime-fcb/.nudox-cargo/slot-0/debug/deps/backend_runtime-f403b30f5a909ec5",
+        "path": "/Users/rmccrar6/sol61-cli-bounded-startup-native-20261008/native00-runtime-compile-03/images/backend_runtime",
+        "sha256": "1c7aac3c6f064564def49877007c03042047160dbe6412883c6e75c5d104bd6b"
+      },
+      "tests": [
+        "bootstrap::tests::already_running_and_zero_budget_paths_create_no_state_or_candidate",
+        "bootstrap::tests::captured_default_root_and_owner_operands_are_checked_before_any_write",
+        "bootstrap::tests::fragmented_phases_and_original_bounded_cause_have_one_exact_interpretation",
+        "bootstrap::tests::invalid_or_repeated_phase_and_oversized_or_extra_terminal_records_refuse",
+        "bootstrap::tests::live_malformed_or_unwinding_candidate_is_kernel_retired",
+        "bootstrap::tests::original_failed_child_and_retired_contender_have_distinct_outcomes",
+        "bootstrap::tests::owned_child_can_remain_pending_before_private_state_and_then_retire_exactly",
+        "bootstrap::tests::owned_guard_explicitly_hands_off_a_live_valid_pending_candidate",
+        "bootstrap::tests::unmatched_companion_exit_has_a_rebuild_action_without_creating_state",
+        "startup::tests::diagnostic_channel_does_not_create_a_missing_or_unrelated_file",
+        "startup::tests::diagnostic_channel_refuses_symlinks_and_unprintable_control_sequences",
+        "startup::tests::duplicate_reporters_serialize_on_the_admitted_file",
+        "startup::tests::incomplete_terminal_record_is_never_reported_as_a_cause",
+        "startup::tests::original_startup_cause_is_private_bounded_and_removed_with_the_attempt",
+        "startup::tests::reporting_after_attempt_removal_does_not_recreate_the_path",
+        "startup::tests::reporting_after_path_replacement_does_not_modify_the_replacement",
+        "tests::an_owner_contender_keeps_the_cold_open_budget_without_extending_it",
+        "tests::authority_secret_admission_rejects_symlinks_without_replacing_them",
+        "tests::concurrent_initializers_publish_one_complete_authority_secret",
+        "tests::default_state_refuses_file_link_and_writable_components_without_repair",
+        "tests::empty_home_default_state_creates_only_known_suffix_and_preserves_parent_modes",
+        "tests::passive_connect_preserves_missing_endpoint_cause_without_creating_state",
+        "tests::passive_connect_preserves_refused_stale_socket_cause"
+      ],
+      "summary": [
+        [
+          "ok",
+          "23",
+          "0",
+          "0"
+        ]
+      ],
+      "retirement": "owned-child-kernel-wait"
+    },
+    {
+      "path": "/Users/rmccrar6/sol61-cli-bounded-startup-native-20261008/native05-cli-2-01/receipt.json",
+      "sha256": "37d40c52dbe5ef91d798ca1cc2229325b44a69f7692a5994d55195aa5b422a11",
+      "source": {
+        "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+        "clean": true,
+        "commit": "541dba731df3a42b7c0b72f2e47a99dda96bfa43",
+        "tree": "0c29e4b6f38f551351432c22637cf433ccfdb20f"
+      },
+      "artifact": {
+        "bytes": 164442208,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/.local/build/runtime-fcb/.nudox-cargo/slot-0/debug/deps/backend_cli-7d09bcd5f69db9da",
+        "path": "/Users/rmccrar6/sol61-cli-bounded-startup-native-20261008/native03-cli-compile-01/images/backend_cli",
+        "sha256": "4afb295908940fbbb2ce26e2da6f52c81b32d57bd258fc273f978f328ff9ed61"
+      },
+      "tests": [
+        "process::startup_tests::mismatched_companion_action_is_install_or_rebuild_instead_of_retry",
+        "process::startup_tests::pending_json_is_a_startup_observation_without_an_accepted_command"
+      ],
+      "summary": [
+        [
+          "ok",
+          "2",
+          "0",
+          "0"
+        ]
+      ],
+      "retirement": "owned-child-kernel-wait"
+    }
+  ],
+  "postimages": [
+    {
+      "bytes": 16339,
+      "git_blob": "1ee5f449516723454b40d5eee52f1749de046ce7",
+      "native541d_postimage_identical": true,
+      "path": "apps/cli/src/process.rs",
+      "sha256": "082f1bee778c79327e961a67bc31f60f16638637bf46d1ff64b2a3a980a1a548"
+    },
+    {
+      "bytes": 101192,
+      "git_blob": "fea610727e1fd9787ba65e9884e77ed28680f285",
+      "native541d_postimage_identical": true,
+      "path": "crates/local-service/src/process.rs",
+      "sha256": "9e572f9d55064b3b67d4e350af310c7355ec5a202f4db2cd8a4c4156c2d4d077"
+    },
+    {
+      "bytes": 45706,
+      "git_blob": "9e2d38d07e2577ec38aa7a8029692f3729f3f1fb",
+      "native541d_postimage_identical": true,
+      "path": "crates/runtime/src/bootstrap.rs",
+      "sha256": "6c241f7b2f45ff34cc7ec5bdd1bebe65c03cad296a2f27b47aae8f36e27d8987"
+    },
+    {
+      "bytes": 84499,
+      "git_blob": "27e3b5d37e14e5e365601372e5481bf185736963",
+      "native541d_postimage_identical": true,
+      "path": "crates/runtime/src/lib.rs",
+      "sha256": "836f348edcad0bf7f7dd7aaff34f98dcf6a71ed1cf322c5d9d2e9fde78b06349"
+    },
+    {
+      "bytes": 18271,
+      "git_blob": "d5899b2ed1dd562f0a8f789ff53bd645891e1e57",
+      "native541d_postimage_identical": true,
+      "path": "crates/runtime/src/startup.rs",
+      "sha256": "8ed935ac4453a521636d2a81225a37d3b5aeadebb7dae00195c6e940c3d78d23"
+    }
+  ],
+  "evidence_packet": {
+    "path": "/private/tmp/sol61-cli-bounded-startup-20261008/native25-review-packet.json",
+    "sha256": "536e05e451d627982c281fe679d7dd02cfc4af6e64ec86ee9e489b59c4164618"
+  },
+  "raw_archive": {
+    "path": "/private/tmp/sol61-cli-bounded-startup-20261008/native25-raw-evidence.tar.gz",
+    "sha256": "f219bfa2f181931314ec202bfda5ac7ba4c6f6cf68625b2028cd0e81232d5aa5"
+  },
+  "owned_retirement": {
+    "path": "/Users/rmccrar6/sol61-cli-bounded-startup-native-20261008/native25-final-retirement.json",
+    "sha256": "1a71d8b377a1749853cd85f0e7eda275d40a5c7e942f5634a2cc6d107a45c765"
+  },
+  "sdk_source_stamp_restoration": {
+    "sha256": "0379243f00f38afb34498b8440a32890cf3ff28e5d17ba5d9ddde6081bf6192f",
+    "reported_by": "independent SDK custodian"
+  },
+  "retained_failed_attempts": [
+    "875ee compile:101; zero tests",
+    "7685 native runtime:22 passed/1 failed; fixture default path normalization corrected in 541d"
+  ],
+  "limits": [
+    "Native controls on exact541d; canonical replay uses identical five postimages but combined canonical tree has not been rebuilt.",
+    "Matched product CLI/MCP/locald fresh-home normal-disk startup and latency remain unrun.",
+    "Unix bounded bootstrap only; Windows retains synchronous startup with no new latency guarantee.",
+    "Pending reports an unaccepted candidate with phase, retry action and command_submitted=false, not an accepted index operation."
+  ]
+}
