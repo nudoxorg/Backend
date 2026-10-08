@@ -23,13 +23,19 @@ def fast-flake-checks []: nothing -> list<string> {
 }
 
 def main []: nothing -> nothing {
+
     # Fast checks keep only compile outputs, independently of the much larger
     # Linux runtime cache. Cache loss always falls back to a clean build.
-    let cache = ($env.CI_FAST_CACHE_ROOT? | default "")
+    let cache = $env.CI_FAST_CACHE_ROOT? | default ""
     if ($cache | is-not-empty) {
         mkdir $cache
-        let limit = ($env.CI_FAST_CACHE_GIB? | default "24" | into int)
-        let used = (^du -s --block-size=1G $cache | split row "\t" | first | into int)
+        let limit = $env.CI_FAST_CACHE_GIB? | default "24" | into int
+        let used = (
+            ^du -s --block-size=1G $cache
+            | split row "\t"
+            | first
+            | into int
+        )
         if $used > $limit {
             rm --recursive --force $cache
             mkdir $cache

@@ -32,8 +32,8 @@ def main [
         error make {msg: $"($target) is not one of: ($configured | str join ', ')"}
     }
     let target_root = $env.CARGO_TARGET_DIR? | default ".local/target"
-    let concurrency = ($env.CI_COMPILE_CONCURRENCY? | default "1" | into int)
-    let jobs = ($env.CI_COMPILE_JOBS? | default "4" | into int)
+    let concurrency = $env.CI_COMPILE_CONCURRENCY? | default "1" | into int
+    let jobs = $env.CI_COMPILE_JOBS? | default "4" | into int
     if $concurrency < 1 or $concurrency > 3 or $jobs < 1 {
         error make {msg: "invalid compile concurrency or job count"}
     }
