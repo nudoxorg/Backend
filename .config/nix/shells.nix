@@ -224,7 +224,14 @@ let
     # dlopen configuration of fontconfig-sys compiles without one.
     RUST_FONTCONFIG_DLOPEN = "on";
     CC_x86_64_pc_windows_gnu = "cc-x86_64-windows-gnu";
-    CC_x86_64_unknown_linux_gnu = "cc-x86_64-linux-gnu";
+    # Native build scripts (jemalloc's configure) execute C probes. The Nix
+    # compiler links the store loader; Zig uses generic /lib64, unavailable
+    # in our CI containers. Foreign targets retain the Zig cross compiler.
+    CC_x86_64_unknown_linux_gnu =
+      if pkgs.stdenv.hostPlatform.system == "x86_64-linux" then
+        "${pkgs.stdenv.cc}/bin/cc"
+      else
+        "cc-x86_64-linux-gnu";
     CC_aarch64_unknown_linux_gnu = "cc-aarch64-linux-gnu";
     AR_x86_64_pc_windows_gnu = "ar-zig";
     # `embed_resource` (gpui) identifies its compiler by probing it; llvm-rc

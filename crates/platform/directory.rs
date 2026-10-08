@@ -1746,9 +1746,9 @@ mod tests {
         let Some(mask) = std::env::var_os("BACKEND_PLATFORM_WORKSPACE_UMASK_PROBE") else {
             return;
         };
-        let mask = u32::from_str_radix(mask.to_str().expect("umask text"), 8)
+        let mask = u16::from_str_radix(mask.to_str().expect("umask text"), 8)
             .expect("umask value");
-        let _previous_mask = rustix::process::umask(rustix::fs::Mode::from_bits_truncate(mask));
+        let _previous_mask = rustix::process::umask(rustix::fs::Mode::from_bits_truncate(mask.into()));
         let root = std::env::temp_dir().join(format!(
             "backend-platform-workspace-umask-{}-{}",
             std::process::id(),
@@ -2713,7 +2713,7 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
 
-#[cfg(not(any(unix, windows)))]
+#[cfg(not(unix))]
 fn unsupported() -> io::Error {
     io::Error::new(
         io::ErrorKind::Unsupported,
