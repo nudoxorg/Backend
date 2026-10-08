@@ -2333,6 +2333,20 @@ fn sha256_reader(
     Ok((total, digest))
 }
 
+#[cfg(unix)]
+fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+#[cfg(not(unix))]
+fn same_file_identity(_left: &fs::Metadata, _right: &fs::Metadata) -> bool {
+    // Non-Unix bundled resources already require the unsupported no-follow
+    // admission above. Metadata alone cannot attest the full Windows file id.
+    false
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
