@@ -5509,7 +5509,7 @@ mod tests {
                 CommandReply::Failed(backend_library::CommandFailure::NotFound)
             );
         }
-        let stale = backend_library::view_state_root(b"foreign-outline-view");
+        let stale = backend_library::view_state_root(&[("fixture".to_owned(), "foreign-outline-view".to_owned())]);
         let command = Command::Outline(backend_library::OutlineQuery::new(package, stale));
         assert!(matches!(
             adapter
