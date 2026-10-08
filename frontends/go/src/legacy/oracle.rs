@@ -2288,8 +2288,7 @@ fn validate_regular_file_handle(
     }
     #[cfg(windows)]
     {
-        use std::os::windows::fs::MetadataExt as _;
-        if role.require_single_link() && metadata.number_of_links() != 1 {
+        if role.require_single_link() && backend_platform::file_identity::number_of_links(file)? != 1 {
             return Err(std::io::Error::new(
                 ErrorKind::InvalidData,
                 "opened private helper artifact has multiple hard links",

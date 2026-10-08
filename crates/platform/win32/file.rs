@@ -13,8 +13,8 @@ use std::os::windows::ffi::OsStrExt as _;
 use std::os::windows::io::AsRawHandle as _;
 use std::path::Path;
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx, MOVEFILE_REPLACE_EXISTING,
-    MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    FILE_ID_INFO, FILE_STANDARD_INFO, FileIdInfo, FileStandardInfo, GetFileInformationByHandleEx,
+    MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
 };
 
 /// How a replacing rename dealt with the name it replaced.
@@ -131,6 +131,26 @@ pub(crate) fn identity_of(file: &File) -> io::Result<(u64, [u8; 16])> {
         return Err(io::Error::last_os_error());
     }
     Ok((info.VolumeSerialNumber, info.FileId.Identifier))
+}
+
+pub(crate) fn number_of_links(file: &File) -> io::Result<u64> {
+    let mut info = FILE_STANDARD_INFO::default();
+    let size = u32::try_from(size_of::<FILE_STANDARD_INFO>())
+        .map_err(|_| io::Error::other("FILE_STANDARD_INFO exceeds the u32 information size"))?;
+    // SAFETY: the owned file handle stays open, and the output buffer has
+    // exactly the size and alignment required by FileStandardInfo.
+    let read = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle().cast(),
+            FileStandardInfo,
+            (&raw mut info).cast(),
+            size,
+        )
+    };
+    if read == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(u64::from(info.NumberOfLinks))
 }
 
 /// The NUL-terminated extended-length (`\\?\`) form of `path`.

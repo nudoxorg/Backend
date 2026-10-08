@@ -1032,7 +1032,7 @@ fn an_oversized_json_page_is_a_nonzero_typed_transport_refusal() {
         rich_graph: None,
     };
     let answer = Answer::Records(Box::new(backend_present::record_list(
-        "q".repeat(backend_present::DEFAULT_RESPONSE_BUDGET_BYTES + 1),
+        &"q".repeat(backend_present::DEFAULT_RESPONSE_BUDGET_BYTES + 1),
         &snapshot,
     )));
     let session = backend_client::Session::from_transport(
