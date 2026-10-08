@@ -292,7 +292,7 @@ mod tests {
             (
                 PackageAuthorityError::TypeScriptProjectHost(
                     TypeScriptProjectHostError::BundledSdkAdmission {
-                        path: "/private/sdk/packaging-manifest.json".into(),
+                        path: std::path::Path::new("/private/sdk/packaging-manifest.json").into(),
                         message: "private receipt mismatch".into(),
                     },
                 ),
