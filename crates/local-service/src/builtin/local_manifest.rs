@@ -1323,7 +1323,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn python_source_fifo_replacement_after_preflight_never_blocks_refresh() {
-        use rustix::fs::{CWD, Mode, OFlags, mkfifoat, open};
+        use rustix::fs::{Mode, OFlags, open};
+        use std::os::unix::fs::FileTypeExt as _;
         use std::sync::mpsc;
         use std::time::Duration;
         let root = fixture("python-open-race-fifo");
@@ -1339,8 +1340,30 @@ mod tests {
             let result = read_python_metadata_with_preopen(&worker_root, &mut inputs, |path| {
                 // Deterministic seam: the regular-file preflight has passed.
                 fs::remove_file(path).map_err(|error| error.to_string())?;
-                mkfifoat(CWD, path, Mode::from_bits_truncate(0o600))
+                #[cfg(not(target_vendor = "apple"))]
+                rustix::fs::mkfifoat(rustix::fs::CWD, path, Mode::from_bits_truncate(0o600))
                     .map_err(|error| error.to_string())?;
+                // rustix has no mkfifoat on Apple; use the native fixture tool
+                // without a shell or extending this crate's unsafe boundary.
+                #[cfg(target_vendor = "apple")]
+                {
+                    let status = std::process::Command::new("/usr/bin/mkfifo")
+                        .arg("-m")
+                        .arg("600")
+                        .arg(path)
+                        .status()
+                        .map_err(|error| error.to_string())?;
+                    if !status.success() {
+                        return Err(format!("native FIFO fixture creation failed: {status}"));
+                    }
+                }
+                if !fs::symlink_metadata(path)
+                    .map_err(|error| error.to_string())?
+                    .file_type()
+                    .is_fifo()
+                {
+                    return Err("native fixture is not a FIFO".to_owned());
+                }
                 ready_send.send(()).map_err(|error| error.to_string())?;
                 Ok(())
             });
