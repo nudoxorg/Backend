@@ -458,9 +458,20 @@ impl GoPackageAuthorityWitness {
         oracle: GoOracle,
         cancelled: Option<&std::sync::atomic::AtomicBool>,
     ) {
+        let roots = self.dependency_roots(environment);
         self.dependency_closure = Some(Box::new(GoDependencyClosureWitness::capture(
-            &self.package_root, &self.workspace, environment, oracle, cancelled,
+            &self.package_root, &self.workspace, environment, oracle, &roots, cancelled,
         )));
+    }
+
+    fn dependency_roots(&self, environment: &GoOracleChildEnvironment) -> Vec<PathBuf> {
+        let mut roots = vec![self.package_root.clone(), environment.module_cache().to_path_buf(),
+            environment.goroot().to_path_buf()];
+        roots.extend(self.module_manifests.iter().filter_map(|manifest| {
+            manifest.path.as_ref().and_then(|path| path.parent()).map(Path::to_path_buf)
+        }));
+        roots.extend(self.local_trees.iter().map(|tree| tree.root.clone()));
+        roots.into_iter().filter_map(|root| root.canonicalize().ok()).collect()
     }
 
     pub(super) fn dependency_closure_failure(&self) -> Option<GoDependencyClosureFailure> {
@@ -486,7 +497,8 @@ impl GoPackageAuthorityWitness {
     }
 
     /// Reports whether any local path or incomplete closure requires local
-    /// execution.
+    /// execution. Selected dependency files remain bound to this host's cache
+    /// paths; they do not authorize horizontal placement on another host.
     #[must_use]
     pub fn requires_local_execution(&self) -> bool {
         !self.local_only_reasons.is_empty() || !self.is_complete()
@@ -508,10 +520,21 @@ impl GoPackageAuthorityWitness {
         &self,
         package_root: impl AsRef<Path>,
     ) -> Result<bool, GoPackageAuthorityWitnessError> {
+        self.matches_current_cancellable(package_root, None)
+    }
+
+    /// Revalidates every selected dependency with the request's cancellation
+    /// token, including each bounded Go loader child and file read.
+    pub fn matches_current_cancellable(
+        &self,
+        package_root: impl AsRef<Path>,
+        cancelled: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<bool, GoPackageAuthorityWitnessError> {
         let mut current = Self::capture(package_root)?;
         if let Some(closure) = &self.dependency_closure {
+            let roots = current.dependency_roots(closure.environment());
             current.dependency_closure = Some(Box::new(
-                closure.recapture(&current.package_root, &current.workspace),
+                closure.recapture(&current.package_root, &current.workspace, &roots, cancelled),
             ));
         }
         Ok(*self == current)

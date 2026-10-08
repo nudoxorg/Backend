@@ -656,15 +656,11 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                 let go_authority = match captured_go_authority {
                     Some(witness) => witness,
                     None => {
-                        owned_witness = oracle.package_authority_witness(request.package_root)?;
+                        owned_witness = oracle.package_authority_witness_cancellable(request.package_root, Some(request.control.cancelled))?;
                         &owned_witness
                     }
                 };
-                if !go_authority.matches_current(request.package_root)? {
-                    return Err(PackageAuthorityError::GoAuthorityInputsChanged {
-                        profile: request.profile,
-                    });
-                }
+                checkpoint(request.control, request.profile, PackageAuthorityStage::GoOracle)?;
                 // Scoped to exactly the package that owns `source_path`:
                 // sibling packages are import context only and are never
                 // serialized, so a module whose subpackages share a
@@ -673,10 +669,11 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                 // a coordinate-free `DuplicateDeclarationIdentity` collision
                 // into the selected package's image.
                 let image = oracle
-                    .authority_image_for_package_with_authority_witness(
+                    .authority_image_for_package_with_authority_witness_cancellable(
                         request.source_path,
                         request.package_root,
                         go_authority,
+                        Some(request.control.cancelled),
                     )
                     .map_err(PackageAuthorityError::GoOracle)?;
                 let image = retain_image(

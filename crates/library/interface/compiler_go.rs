@@ -14,6 +14,12 @@ pub enum GoAuthorityFailureKind {
     DependencyPackageLoad,
     /// Go selected no packages for the admitted root.
     DependencyEmptyGraph,
+    /// A selected dependency file changed or could not be read safely.
+    DependencyIncompleteFiles,
+    /// The loader selected a path outside the admitted filesystem roots.
+    DependencyUnsafePath,
+    /// Selected dependency files exceeded a bounded witness budget.
+    DependencyLimit,
 }
 
 impl GoAuthorityFailureKind {
@@ -25,6 +31,9 @@ impl GoAuthorityFailureKind {
             Self::DependencyProtocol => "go_dependency_protocol_invalid",
             Self::DependencyPackageLoad => "go_dependency_package_load_rejected",
             Self::DependencyEmptyGraph => "go_dependency_graph_empty",
+            Self::DependencyIncompleteFiles => "go_dependency_files_incomplete",
+            Self::DependencyUnsafePath => "go_dependency_path_rejected",
+            Self::DependencyLimit => "go_dependency_witness_limit",
         }
     }
 
@@ -43,6 +52,15 @@ impl GoAuthorityFailureKind {
             }
             Self::DependencyEmptyGraph => {
                 "Go selected no packages for semantic compilation; check the project module and source layout"
+            }
+            Self::DependencyIncompleteFiles => {
+                "Go dependency files could not be captured stably; finish dependency setup or edits and retry"
+            }
+            Self::DependencyUnsafePath => {
+                "Go selected a dependency path outside the admitted module, cache, or local replacement roots; check module replacements and source symlinks"
+            }
+            Self::DependencyLimit => {
+                "Go selected dependency files beyond the bounded semantic witness budget; the dependency closure was not admitted"
             }
         }
     }

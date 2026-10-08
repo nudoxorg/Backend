@@ -4031,6 +4031,7 @@ fn package_authority_terminal(
     if matches!(
         &cause,
         PackageAuthorityError::PythonPyrefly(PythonCheckerError::Cancelled { .. })
+        | PackageAuthorityError::GoOracle(backend_frontend_go::legacy::OracleError::Cancelled)
     ) || super::compiler_typescript_failure::failure_kind(&cause)
         .is_some_and(|failure| failure.is_cancelled())
     {
@@ -4105,6 +4106,9 @@ fn package_authority_terminal(
                         G::Protocol => F::DependencyProtocol,
                         G::PackageLoad => F::DependencyPackageLoad,
                         G::EmptyGraph => F::DependencyEmptyGraph,
+                        G::IncompleteFiles => F::DependencyIncompleteFiles,
+                        G::UnsafePath => F::DependencyUnsafePath,
+                        G::Limit => F::DependencyLimit,
                     })
                 }
                 _ => None,

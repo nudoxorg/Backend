@@ -3,7 +3,8 @@
 use std::{
     collections::BTreeSet,
     io::Read,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use serde::Deserialize;
@@ -14,6 +15,7 @@ use super::{GoOracle, GoOracleChildEnvironment, GoWorkWitness, update_path_diges
 const FILE_COUNT_LIMIT: usize = 32 * 1024;
 const FILE_BYTES_LIMIT: u64 = 16 * 1024 * 1024;
 const TOTAL_BYTES_LIMIT: u64 = 128 * 1024 * 1024;
+const MODULE_REPLACEMENT_LIMIT: usize = 8;
 
 /// Closed reason that the offline Go loader could not select a complete graph.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,6 +28,12 @@ pub enum GoDependencyClosureFailure {
     PackageLoad,
     /// No package was selected, so there is no semantic authority to admit.
     EmptyGraph,
+    /// At least one selected file could not be captured stably.
+    IncompleteFiles,
+    /// A selected path escaped the admitted module, cache, or local roots.
+    UnsafePath,
+    /// The selected file closure exceeded an existing witness bound.
+    Limit,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -76,6 +84,8 @@ struct ListedPackage {
 #[serde(rename_all = "PascalCase")]
 struct ListedModule {
     #[serde(default)]
+    dir: Option<PathBuf>,
+    #[serde(default)]
     go_mod: Option<PathBuf>,
     #[serde(default)]
     replace: Option<Box<ListedModule>>,
@@ -87,7 +97,8 @@ impl GoDependencyClosureWitness {
         work: &GoWorkWitness,
         environment: &GoOracleChildEnvironment,
         oracle: GoOracle,
-        cancelled: Option<&std::sync::atomic::AtomicBool>,
+        roots: &[PathBuf],
+        cancelled: Option<&AtomicBool>,
     ) -> Self {
         let mut command = std::process::Command::new(environment.go_executable());
         command.current_dir(root).args([
@@ -99,7 +110,10 @@ impl GoDependencyClosureWitness {
             "./...",
         ]);
         environment.apply_to(&mut command, work, false);
-        let output = match oracle.execute_with_origin(&mut command, true, cancelled) {
+        let output = match environment
+            .revalidate_toolchain()
+            .and_then(|()| oracle.execute_with_origin(&mut command, true, cancelled))
+        {
             Ok(output) => output,
             Err(error) => {
                 return Self {
@@ -125,13 +139,35 @@ impl GoDependencyClosureWitness {
                 }
             };
             count += 1;
+            if count > FILE_COUNT_LIMIT || is_cancelled(cancelled) {
+                failure = Some(GoDependencyClosureFailure::Limit);
+                break;
+            }
             if package.error.is_some() || !package.deps_errors.is_empty() {
-                failure = Some(GoDependencyClosureFailure::PackageLoad);
+                failure.get_or_insert(GoDependencyClosureFailure::PackageLoad);
             }
             if let Some(module) = package.module {
                 let mut module = Some(module);
+                let mut depth = 0usize;
                 while let Some(current) = module {
+                    depth += 1;
+                    if depth > MODULE_REPLACEMENT_LIMIT {
+                        failure = Some(GoDependencyClosureFailure::Protocol);
+                        break;
+                    }
+                    if current
+                        .dir
+                        .as_ref()
+                        .is_some_and(|path| !admitted_path(path, roots))
+                    {
+                        failure.get_or_insert(GoDependencyClosureFailure::UnsafePath);
+                        break;
+                    }
                     if let Some(path) = current.go_mod {
+                        if !admitted_path(&path, roots) {
+                            failure.get_or_insert(GoDependencyClosureFailure::UnsafePath);
+                            break;
+                        }
                         paths.insert(path);
                     }
                     module = current.replace.map(|module| *module);
@@ -140,6 +176,10 @@ impl GoDependencyClosureWitness {
             let Some(directory) = package.dir else {
                 continue;
             };
+            if !admitted_path(&directory, roots) {
+                failure.get_or_insert(GoDependencyClosureFailure::UnsafePath);
+                break;
+            }
             // GOROOT is already admitted by complete content identity, and the
             // package's own source set is bound by its ordinary input witness.
             if directory.starts_with(environment.goroot()) {
@@ -155,27 +195,47 @@ impl GoDependencyClosureWitness {
                     .collect()
             };
             for path in go_files.into_iter().chain(package.embed_files) {
-                paths.insert(if path.is_absolute() {
+                if !clean_components(&path) {
+                    failure.get_or_insert(GoDependencyClosureFailure::UnsafePath);
+                    break;
+                }
+                let path = if path.is_absolute() {
                     path
                 } else {
                     directory.join(path)
-                });
+                };
+                // A file selected for this package must stay in its admitted
+                // directory, including after symlink resolution.
+                if !admitted_path(&path, std::slice::from_ref(&directory)) {
+                    failure.get_or_insert(GoDependencyClosureFailure::UnsafePath);
+                    break;
+                }
+                paths.insert(path);
             }
             if paths.len() > FILE_COUNT_LIMIT {
+                failure = Some(GoDependencyClosureFailure::Limit);
                 break;
             }
         }
         if count == 0 && failure.is_none() {
             failure = Some(GoDependencyClosureFailure::EmptyGraph);
         }
-        let mut complete = failure.is_none() && paths.len() <= FILE_COUNT_LIMIT;
         let mut total = 0u64;
         let mut files = Vec::new();
         for path in paths.into_iter().take(FILE_COUNT_LIMIT) {
-            let state = capture_file(&path, &mut total);
-            complete &= matches!(state, DependencyFileState::File { .. });
+            let state = capture_file(&path, roots, &mut total, cancelled);
+            if failure.is_none() {
+                failure = match state {
+                    DependencyFileState::File { .. } => None,
+                    DependencyFileState::Unavailable => {
+                        Some(GoDependencyClosureFailure::IncompleteFiles)
+                    }
+                    DependencyFileState::Limit => Some(GoDependencyClosureFailure::Limit),
+                };
+            }
             files.push(DependencyFile { path, state });
         }
+        let complete = failure.is_none();
         Self {
             environment: environment.clone(),
             oracle,
@@ -186,8 +246,18 @@ impl GoDependencyClosureWitness {
         }
     }
 
-    pub(super) fn recapture(&self, root: &Path, work: &GoWorkWitness) -> Self {
-        Self::capture(root, work, &self.environment, self.oracle, None)
+    pub(super) fn environment(&self) -> &GoOracleChildEnvironment {
+        &self.environment
+    }
+
+    pub(super) fn recapture(
+        &self,
+        root: &Path,
+        work: &GoWorkWitness,
+        roots: &[PathBuf],
+        cancelled: Option<&AtomicBool>,
+    ) -> Self {
+        Self::capture(root, work, &self.environment, self.oracle, roots, cancelled)
     }
 
     pub(super) const fn is_complete(&self) -> bool {
@@ -199,10 +269,20 @@ impl GoDependencyClosureWitness {
     }
 
     pub(super) fn update_identity(&self, digest: &mut Sha256) {
-        digest.update(b"compiler.go.selected-dependency-files.v1\0");
+        digest.update(b"compiler.go.selected-dependency-files.v2\0");
         update_path_digest(digest, self.environment.module_cache());
         digest.update(self.graph);
         digest.update([u8::from(self.complete)]);
+        digest.update([match self.failure {
+            None => 0,
+            Some(GoDependencyClosureFailure::Invocation) => 1,
+            Some(GoDependencyClosureFailure::Protocol) => 2,
+            Some(GoDependencyClosureFailure::PackageLoad) => 3,
+            Some(GoDependencyClosureFailure::EmptyGraph) => 4,
+            Some(GoDependencyClosureFailure::IncompleteFiles) => 5,
+            Some(GoDependencyClosureFailure::UnsafePath) => 6,
+            Some(GoDependencyClosureFailure::Limit) => 7,
+        }]);
         for file in &self.files {
             update_path_digest(digest, &file.path);
             match file.state {
@@ -221,8 +301,61 @@ impl GoDependencyClosureWitness {
     }
 }
 
-fn capture_file(path: &Path, total: &mut u64) -> DependencyFileState {
-    if !path.is_absolute() {
+fn is_cancelled(cancelled: Option<&AtomicBool>) -> bool {
+    cancelled.is_some_and(|token| token.load(Ordering::Acquire))
+}
+
+fn clean_components(path: &Path) -> bool {
+    !path.as_os_str().is_empty()
+        && path
+            .components()
+            .all(|part| !matches!(part, Component::ParentDir | Component::CurDir))
+}
+
+fn admitted_path(path: &Path, roots: &[PathBuf]) -> bool {
+    if !path.is_absolute()
+        || !clean_components(path)
+        || !roots.iter().any(|root| path.starts_with(root))
+    {
+        return false;
+    }
+    path.canonicalize()
+        .is_ok_and(|resolved| roots.iter().any(|root| resolved.starts_with(root)))
+}
+
+#[derive(PartialEq)]
+struct FileStamp {
+    identity: backend_platform::FileIdentity,
+    bytes: u64,
+    modified: std::time::SystemTime,
+    #[cfg(unix)]
+    changed: (i64, i64),
+}
+
+fn file_stamp(file: &std::fs::File) -> std::io::Result<FileStamp> {
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::other("dependency is not a regular file"));
+    }
+    Ok(FileStamp {
+        identity: backend_platform::FileIdentity::of_file(file)?,
+        bytes: metadata.len(),
+        modified: metadata.modified()?,
+        #[cfg(unix)]
+        changed: {
+            use std::os::unix::fs::MetadataExt as _;
+            (metadata.ctime(), metadata.ctime_nsec())
+        },
+    })
+}
+
+fn capture_file(
+    path: &Path,
+    roots: &[PathBuf],
+    total: &mut u64,
+    cancelled: Option<&AtomicBool>,
+) -> DependencyFileState {
+    if is_cancelled(cancelled) || !admitted_path(path, roots) {
         return DependencyFileState::Unavailable;
     }
     let Ok(resolved) = path.canonicalize() else {
@@ -231,13 +364,13 @@ fn capture_file(path: &Path, total: &mut u64) -> DependencyFileState {
     let Ok(mut file) = backend_platform::durability::open_regular_file_nofollow(&resolved) else {
         return DependencyFileState::Unavailable;
     };
-    let Ok(metadata) = file.metadata() else {
+    let Ok(before) = file_stamp(&file) else {
         return DependencyFileState::Unavailable;
     };
-    if !metadata.is_file() {
+    if backend_platform::FileIdentity::of_path_nofollow(&resolved).ok() != Some(before.identity) {
         return DependencyFileState::Unavailable;
     }
-    let bytes = metadata.len();
+    let bytes = before.bytes;
     if bytes > FILE_BYTES_LIMIT || total.saturating_add(bytes) > TOTAL_BYTES_LIMIT {
         return DependencyFileState::Limit;
     }
@@ -245,6 +378,9 @@ fn capture_file(path: &Path, total: &mut u64) -> DependencyFileState {
     let mut read = 0u64;
     let mut buffer = [0u8; 64 * 1024];
     loop {
+        if is_cancelled(cancelled) {
+            return DependencyFileState::Unavailable;
+        }
         let Ok(count) = file.read(&mut buffer) else {
             return DependencyFileState::Unavailable;
         };
@@ -257,7 +393,12 @@ fn capture_file(path: &Path, total: &mut u64) -> DependencyFileState {
         }
         digest.update(&buffer[..count]);
     }
-    if read != bytes {
+    if read != bytes
+        || file_stamp(&file).ok().as_ref() != Some(&before)
+        || path.canonicalize().ok().as_ref() != Some(&resolved)
+        || !admitted_path(path, roots)
+        || backend_platform::FileIdentity::of_path_nofollow(&resolved).ok() != Some(before.identity)
+    {
         return DependencyFileState::Unavailable;
     }
     *total = total.saturating_add(bytes);
@@ -276,9 +417,9 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("dependency.go");
         std::fs::write(&path, b"package dep\nconst Value = 1\n").unwrap();
-        let before = capture_file(&path, &mut 0);
+        let before = capture_file(&path, &[root.path().canonicalize().unwrap()], &mut 0, None);
         std::fs::write(&path, b"package dep\nconst Value = 2\n").unwrap();
-        let after = capture_file(&path, &mut 0);
+        let after = capture_file(&path, &[root.path().canonicalize().unwrap()], &mut 0, None);
         assert!(matches!(before, DependencyFileState::File { .. }));
         assert_ne!(before, after);
     }
@@ -288,12 +429,12 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("dependency.go");
         assert_eq!(
-            capture_file(&path, &mut 0),
+            capture_file(&path, &[root.path().canonicalize().unwrap()], &mut 0, None),
             DependencyFileState::Unavailable
         );
         std::fs::write(&path, b"package dep\n").unwrap();
         assert!(matches!(
-            capture_file(&path, &mut 0),
+            capture_file(&path, &[root.path().canonicalize().unwrap()], &mut 0, None),
             DependencyFileState::File { .. }
         ));
     }
@@ -306,10 +447,21 @@ mod tests {
             .unwrap()
             .set_len(FILE_BYTES_LIMIT + 1)
             .unwrap();
-        assert_eq!(capture_file(&path, &mut 0), DependencyFileState::Limit);
+        assert_eq!(
+            capture_file(&path, &[root.path().canonicalize().unwrap()], &mut 0, None),
+            DependencyFileState::Limit
+        );
         std::fs::write(&path, b"package dep\n").unwrap();
         let mut total = TOTAL_BYTES_LIMIT;
-        assert_eq!(capture_file(&path, &mut total), DependencyFileState::Limit);
+        assert_eq!(
+            capture_file(
+                &path,
+                &[root.path().canonicalize().unwrap()],
+                &mut total,
+                None
+            ),
+            DependencyFileState::Limit
+        );
         assert_eq!(total, TOTAL_BYTES_LIMIT);
     }
 
@@ -318,7 +470,59 @@ mod tests {
     fn dependency_directory_is_refused_as_a_source_file() {
         let root = tempfile::tempdir().unwrap();
         assert_eq!(
-            capture_file(root.path(), &mut 0),
+            capture_file(
+                root.path(),
+                &[root.path().canonicalize().unwrap()],
+                &mut 0,
+                None
+            ),
+            DependencyFileState::Unavailable
+        );
+    }
+
+    #[test]
+    fn dependency_path_cannot_escape_the_admitted_root() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let path = outside.path().join("dependency.go");
+        std::fs::write(&path, b"package outside\n").unwrap();
+        let roots = [root.path().canonicalize().unwrap()];
+        assert!(!admitted_path(&path, &roots));
+        assert_eq!(
+            capture_file(&path, &roots, &mut 0, None),
+            DependencyFileState::Unavailable
+        );
+        assert!(!clean_components(Path::new("../dependency.go")));
+        assert!(!clean_components(Path::new("/admitted/../outside.go")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dependency_symlink_cannot_escape_the_admitted_root() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let source = outside.path().join("dependency.go");
+        std::fs::write(&source, b"package outside\n").unwrap();
+        let link = root.path().join("dependency.go");
+        std::os::unix::fs::symlink(&source, &link).unwrap();
+        assert_eq!(
+            capture_file(&link, &[root.path().canonicalize().unwrap()], &mut 0, None),
+            DependencyFileState::Unavailable
+        );
+    }
+
+    #[test]
+    fn cancelled_dependency_read_does_not_admit_content() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("dependency.go");
+        std::fs::write(&path, b"package dep\n").unwrap();
+        assert_eq!(
+            capture_file(
+                &path,
+                &[root.path().canonicalize().unwrap()],
+                &mut 0,
+                Some(&AtomicBool::new(true))
+            ),
             DependencyFileState::Unavailable
         );
     }

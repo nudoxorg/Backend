@@ -28,6 +28,13 @@ use sha2::{Digest, Sha256};
 
 mod authority_witness;
 mod dependency_witness;
+fn check_go_cancellation(cancelled: Option<&std::sync::atomic::AtomicBool>) -> Result<(), OracleError> {
+    if cancelled.is_some_and(|token| token.load(std::sync::atomic::Ordering::Acquire)) {
+        Err(OracleError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
 pub use self::dependency_witness::GoDependencyClosureFailure;
 pub use self::authority_witness::{
     GoFilesystemTargetKind, GoLocalOnlyReason, GoPackageAuthorityWitness,
@@ -1640,13 +1647,18 @@ impl ConfiguredGoOracle {
     }
 
     fn cached_helper_binary(&self) -> Result<(Option<PathBuf>, bool), OracleError> {
+        self.cached_helper_binary_cancellable(None)
+    }
+
+    fn cached_helper_binary_cancellable(&self, cancelled: Option<&std::sync::atomic::AtomicBool>) -> Result<(Option<PathBuf>, bool), OracleError> {
+        check_go_cancellation(cancelled)?;
         let GoOracleConfiguration::GoToolchain(executable) = &self.configuration else {
             return Ok((None, false));
         };
         let Some(environment) = &self.child_environment else {
             return Ok((None, false));
         };
-        self.prepare_cached_helper(executable.as_ref(), environment)
+        self.prepare_cached_helper(executable.as_ref(), environment, cancelled)
             .map(|(path, revalidated_after_build)| (Some(path), revalidated_after_build))
     }
 
@@ -1654,6 +1666,7 @@ impl ConfiguredGoOracle {
         &self,
         executable: &Path,
         environment: &GoOracleChildEnvironment,
+        cancelled: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<(PathBuf, bool), OracleError> {
         use fs4::fs_std::FileExt;
         use std::time::Instant;
@@ -1674,6 +1687,7 @@ impl ConfiguredGoOracle {
             })?;
         let started = Instant::now();
         loop {
+            check_go_cancellation(cancelled)?;
             let acquired = match FileExt::try_lock_exclusive(&lock_file) {
                 Ok(acquired) => acquired,
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => false,
@@ -1773,7 +1787,8 @@ impl ConfiguredGoOracle {
             .arg(".")
             .current_dir(source.path());
         environment.apply_to(&mut build, &GoWorkWitness::Disabled, true);
-        self.oracle.execute_configured(&mut build)?;
+        self.oracle.execute_with_origin(&mut build, true, cancelled)?;
+        check_go_cancellation(cancelled)?;
         // Reject toolchain drift caused by the helper build before publishing
         // a manifest that would bind its output to the old identity.
         environment.revalidate_toolchain()?;
@@ -1831,6 +1846,7 @@ impl ConfiguredGoOracle {
             .map_err(|error| OracleError::GoOracleHelperCache {
                 detail: format!("sync staged helper generation: {error}"),
             })?;
+        check_go_cancellation(cancelled)?;
         let _staging_path = staging.keep();
         cache_root
             .rename(&staging_name, &key, false)
@@ -2081,6 +2097,20 @@ impl ConfiguredGoOracle {
         package_root: &Path,
         witness: &GoPackageAuthorityWitness,
     ) -> Result<Vec<u8>, OracleError> {
+        self.authority_image_for_package_with_authority_witness_cancellable(source, package_root, witness, None)
+    }
+
+    /// Produces and rechecks the selected image under the same request lease;
+    /// loader children, helper builds, cache waits, and output rechecks observe
+    /// cancellation before the image can be returned.
+    pub fn authority_image_for_package_with_authority_witness_cancellable(
+        &self,
+        source: &Path,
+        package_root: &Path,
+        witness: &GoPackageAuthorityWitness,
+        cancelled: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<Vec<u8>, OracleError> {
+        check_go_cancellation(cancelled)?;
         let environment = self
             .child_environment
             .as_ref()
@@ -2091,14 +2121,16 @@ impl ConfiguredGoOracle {
             return Err(OracleError::UnsupportedCgoOracleBinary);
         }
 
-        if !witness.matches_current(package_root)? {
-            return Err(OracleError::PackageAuthorityWitnessChanged);
-        }
+        environment.revalidate_toolchain()?;
         if let Some(failure) = witness.dependency_closure_failure() {
             return Err(OracleError::DependencyClosureUnavailable { failure });
         }
-        environment.revalidate_toolchain()?;
-        let (helper_binary, revalidated_after_build) = self.cached_helper_binary()?;
+        let current = witness.matches_current_cancellable(package_root, cancelled)?;
+        check_go_cancellation(cancelled)?;
+        if !current {
+            return Err(OracleError::PackageAuthorityWitnessChanged);
+        }
+        let (helper_binary, revalidated_after_build) = self.cached_helper_binary_cancellable(cancelled)?;
         if !revalidated_after_build {
             environment.revalidate_toolchain()?;
         }
@@ -2113,14 +2145,19 @@ impl ConfiguredGoOracle {
             witness.go_work_witness(),
             matches!(&self.configuration, GoOracleConfiguration::GoToolchain(_)),
         );
-        if !witness.matches_current(package_root)? {
+        let current = witness.matches_current_cancellable(package_root, cancelled)?;
+        check_go_cancellation(cancelled)?;
+        if !current {
             return Err(OracleError::PackageAuthorityWitnessChanged);
         }
-        let image = self.oracle.execute_configured(command.command_mut())?;
-        if !witness.matches_current(package_root)? {
+        let image = self.oracle.execute_with_origin(command.command_mut(), true, cancelled)?;
+        let current = witness.matches_current_cancellable(package_root, cancelled)?;
+        check_go_cancellation(cancelled)?;
+        if !current {
             return Err(OracleError::PackageAuthorityWitnessChanged);
         }
         environment.revalidate_toolchain()?;
+        check_go_cancellation(cancelled)?;
         Ok(image)
     }
 

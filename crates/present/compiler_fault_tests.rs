@@ -45,6 +45,37 @@ fn compiler_fault(failure: &PackageCompilerFailure) -> Fault {
 }
 
 #[test]
+fn go_dependency_refusals_keep_exact_cli_mcp_facts_and_safe_details() {
+    use backend_library::interface::{AuthorityDiagnosticClass, AuthorityPhase, CompilerCause,
+        CompilerDiagnostic, GoAuthorityFailureKind as G};
+    for kind in [G::DependencyInvocation, G::DependencyProtocol, G::DependencyPackageLoad,
+        G::DependencyEmptyGraph, G::DependencyIncompleteFiles, G::DependencyUnsafePath,
+        G::DependencyLimit] {
+        let private = b"private /home/user/go/pkg/mod dependency stderr";
+        let failure = PackageCompilerFailure::from_package_terminal("main.go",
+            &CompilerTerminal::Compile {
+                attempted: CompilerAttempt { source: source(),
+                    recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"real-go-selection") },
+                cause: CompilerCause::Authority { phase: AuthorityPhase::Resolve,
+                    class: AuthorityDiagnosticClass::Authority,
+                    diagnostic: CompilerDiagnostic::from_native(private, private.len(), false)
+                        .map(|value| value.with_go_failure(kind)) },
+            }).unwrap().unwrap();
+        let fault = compiler_fault(&failure);
+        let rendered = fault.render(None);
+        assert!(rendered.contains(kind.kind_tag()));
+        assert!(!rendered.contains("/home/user"));
+        assert!(!rendered.contains("RAW SOURCE DIAGNOSTIC"));
+        let dto = FaultDto::new(&fault);
+        assert_eq!(dto.compiler_failure, Some(failure.clone()));
+        let value = fault_value(&fault);
+        assert_eq!(value["compiler_failure"], serde_json::to_value(&failure).unwrap());
+        assert_eq!(serde_json::from_value::<FaultDto>(value).unwrap(), dto);
+        if kind == G::DependencyPackageLoad { assert!(failure.detail().contains("go mod download")); }
+    }
+}
+
+#[test]
 fn compiler_setup_fault_retains_exact_facts_and_actionable_tool_requirement() {
     for configured in [None, Some(NativeTool::GoCompiler)] {
         let failure = setup_failure("src/main.ts", configured);
