@@ -525,7 +525,7 @@ impl Fault {
                 CauseSlug::Absent,
                 "no outline is published for this package at this revision",
             ),
-            Affordance::Reindex { path: path.to_owned() },
+            Affordance::UseCommand { name: "index", args: Box::new([path.to_owned()]) },
         )
     }
 

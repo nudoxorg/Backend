@@ -319,6 +319,7 @@ fn count_reason(reasons: &mut Vec<ReasonRollup>, reason: CapabilityUnavailable) 
 /// give it back. Display abbreviates; the value does not.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Status {
+    availability: OwnerAvailability,
     project: Option<ProjectRef>,
     revision: [u8; 32],
     source: [u8; 32],
@@ -326,6 +327,12 @@ pub struct Status {
     coverage: CoverageLine,
     rows: PublishedRows,
     capabilities: CapabilitySummary,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OwnerAvailability {
+    Unobserved,
+    Available,
 }
 
 /// Cardinality of the exact visible view, independently of owner availability,
@@ -355,6 +362,7 @@ impl Status {
     pub fn from_report(report: &HealthReport, project: Option<ProjectRef>) -> Self {
         let revision = report.revision();
         Self {
+            availability: OwnerAvailability::Unobserved,
             project,
             revision: *revision.root().as_bytes(),
             source: *report.basis().object.as_bytes(),
@@ -363,6 +371,14 @@ impl Status {
             rows: PublishedRows::new(report.row_count()),
             capabilities: CapabilitySummary::from_inventory(report.capabilities()),
         }
+    }
+
+    /// Only the shared successful-health request path records availability.
+    /// A freely constructed report alone is not evidence of a responding owner.
+    pub(crate) fn from_health_reply(report: &HealthReport, project: Option<ProjectRef>) -> Self {
+        let mut status = Self::from_report(report, project);
+        status.availability = OwnerAvailability::Available;
+        status
     }
 
     /// Returns the active project, when one is selected.
@@ -413,11 +429,15 @@ impl Status {
         self.rows
     }
 
-    /// A successful admitted health reply proves an available owner; it does
-    /// not prove that any project or native semantic generation is published.
+    /// Availability is recorded only by a successful admitted health request.
+    /// A value constructed directly from a report remains unknown; neither
+    /// path proves any published project or native semantic generation.
     #[must_use]
     pub const fn availability(&self) -> &'static str {
-        "available"
+        match self.availability {
+            OwnerAvailability::Unobserved => "unknown",
+            OwnerAvailability::Available => "available",
+        }
     }
 
     /// Returns only the observed view cardinality, never an inferred job state.

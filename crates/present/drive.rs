@@ -142,7 +142,9 @@ pub trait Engine {
     /// Returns the transport or admission failure the endpoint produced.
     fn revision(&mut self) -> Result<ViewStateRoot, ClientError>;
 
-    /// Reads the bounded readiness report.
+    /// Reads the bounded readiness report after owner, request correlation and
+    /// health proof admission. Implementations must reject malformed or
+    /// unadmitted reports instead of returning a successful health response.
     ///
     /// # Errors
     ///
@@ -410,7 +412,7 @@ fn status(engine: &mut dyn Engine) -> Result<Answer, Fault> {
     let report = engine
         .health()
         .map_err(|error| Fault::from_client_error(&error, Operand::Whole))?;
-    Ok(Answer::Status(Box::new(Status::from_report(&report, None))))
+    Ok(Answer::Status(Box::new(Status::from_health_reply(&report, None))))
 }
 
 fn intent(

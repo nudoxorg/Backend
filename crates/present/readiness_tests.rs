@@ -159,7 +159,12 @@ fn available_health_distinguishes_empty_publication_from_native_semantic_readine
         (&populated, VisiblePublicationState::Populated, 1),
     ] {
         let report = HealthReport::from_root(library.view(), library.cursor());
-        let status = Status::from_report(&report, None);
+        assert_eq!(
+            Status::from_report(&report, None).availability(),
+            "unknown",
+            "a report constructor alone never proves owner availability"
+        );
+        let status = Status::from_health_reply(&report, None);
         assert_eq!(status.availability(), "available");
         assert_eq!(status.publication_state(), expected);
         assert_eq!(status.rows().get(), rows);
@@ -187,4 +192,18 @@ fn available_health_distinguishes_empty_publication_from_native_semantic_readine
             assert_eq!(value["capabilities"]["oracles_ready"], 0);
         }
     }
+}
+
+#[test]
+fn historical_status_dtos_default_missing_facets_to_unknown_not_empty_or_available() {
+    let library = backend_library::Library::new();
+    let report = backend_library::HealthReport::from_root(library.view(), library.cursor());
+    let mut value = serde_json::to_value(StatusDto::new(&Status::from_report(&report, None)))
+        .expect("status DTO");
+    let object = value.as_object_mut().expect("DTO fields");
+    object.remove("availability");
+    object.remove("publication");
+    let historical: StatusDto = serde_json::from_value(value).expect("historical projection");
+    assert_eq!(historical.availability, "unknown");
+    assert_eq!(historical.publication, "unknown");
 }

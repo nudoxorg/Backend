@@ -713,10 +713,10 @@ impl OutlineDto {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StatusDto {
     /// Owner availability proven by the admitted health reply.
-    #[serde(default)]
+    #[serde(default = "unknown_status_facet")]
     pub availability: String,
     /// Exact visible view cardinality facet; not a claim about pending work.
-    #[serde(default)]
+    #[serde(default = "unknown_status_facet")]
     pub publication: String,
     /// The single-word readiness summary.
     pub readiness: String,
@@ -743,6 +743,10 @@ pub struct StatusDto {
     pub coverage: Vec<CoverageDto>,
     /// The rolled-up capability inventory.
     pub capabilities: CapabilitiesDto,
+}
+
+fn unknown_status_facet() -> String {
+    "unknown".to_owned()
 }
 
 /// The rolled-up capability inventory.
