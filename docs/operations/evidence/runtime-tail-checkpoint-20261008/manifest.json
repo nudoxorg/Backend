@@ -1,0 +1,291 @@
+{
+  "schema": "nudox.runtime-tail-raw-evidence.v1",
+  "description": "Unmodified compact raw receipts, outputs, compiler source inputs and Root audit. Large executable images and transfer archives are retained at the original receipt paths and hashes, not vendored into Git.",
+  "files": [
+    {
+      "path": "go/focused-tests-11-scratch-consumer-01/cargo.stderr",
+      "bytes": 487,
+      "sha256": "fe786d9e0b2fb3637e1bf5643563438eff96600379f000fbaf2f71a8d6fabb0c"
+    },
+    {
+      "path": "go/focused-tests-11-scratch-consumer-01/cargo.stdout",
+      "bytes": 304845,
+      "sha256": "ecbe0492fbc30e05e6dca57fdaa1d8791df291da38c50e3e34eb00e94f38adf3"
+    },
+    {
+      "path": "go/focused-tests-11-scratch-consumer-01/compiler-inputs-0.d",
+      "bytes": 39357,
+      "sha256": "3207770961b69f24e1efe6f8be1e96656a432d40c0003e8e8b1cbcaaa60b6be3"
+    },
+    {
+      "path": "go/focused-tests-11-scratch-consumer-01/launch.json",
+      "bytes": 27054,
+      "sha256": "f28bd2d7e74d1c552d2c5ff530dc2f1f020252501cffbb5ac3f31f374ee2dfaa"
+    },
+    {
+      "path": "go/focused-tests-11-scratch-consumer-01/pid.json",
+      "bytes": 175,
+      "sha256": "5f411298bfadb4f3037cffe1ed9b840f4fc3e5ca46b80e9eab797769529930f6"
+    },
+    {
+      "path": "go/focused-tests-11-scratch-consumer-01/receipt.json",
+      "bytes": 6075,
+      "sha256": "2bcc45d888ef5f10e6bf310669948b9a9be095770334213c6a4e39341e88290d"
+    },
+    {
+      "path": "go/focused-tests-11-scratch-existing-01/cargo.stderr",
+      "bytes": 487,
+      "sha256": "3b48b196d660c72ed3f2022027fab88513650368906b2e5e90150190435baf7c"
+    },
+    {
+      "path": "go/focused-tests-11-scratch-existing-01/cargo.stdout",
+      "bytes": 305304,
+      "sha256": "82bf62b82a349df4bec89e2be477bed394e9de0e632f7187fef9a89635a83c68"
+    },
+    {
+      "path": "go/focused-tests-11-scratch-existing-01/compiler-inputs-0.d",
+      "bytes": 39357,
+      "sha256": "3207770961b69f24e1efe6f8be1e96656a432d40c0003e8e8b1cbcaaa60b6be3"
+    },
+    {
+      "path": "go/focused-tests-11-scratch-existing-01/launch.json",
+      "bytes": 29200,
+      "sha256": "085f158d41d212485a1bb929b08ae521fbfc19fa1cc5859fac1ce7c618e28272"
+    },
+    {
+      "path": "go/focused-tests-11-scratch-existing-01/pid.json",
+      "bytes": 175,
+      "sha256": "071484d5ae5a70443cc95e126220e6a2bf89da8912e574516389ef2e8b19bcf7"
+    },
+    {
+      "path": "go/focused-tests-11-scratch-existing-01/receipt.json",
+      "bytes": 6516,
+      "sha256": "d34df4686e6d3fbd2ed1d572f4513be1b9bde4fef1f752936d636e46c013fbd1"
+    },
+    {
+      "path": "go/focused-tests-11-scratch-primitive-01/cargo.stderr",
+      "bytes": 600,
+      "sha256": "1ac0b8867cc484140dbf7b36a04c4f61986c6f52764f3a331ab00c093caefca8"
+    },
+    {
+      "path": "go/focused-tests-11-scratch-primitive-01/cargo.stdout",
+      "bytes": 305358,
+      "sha256": "8334d66a2b8c51c35a56b0bea9c0f91bddbf7ac5479a329257c521c1893add0c"
+    },
+    {
+      "path": "go/focused-tests-11-scratch-primitive-01/compiler-inputs-0.d",
+      "bytes": 39357,
+      "sha256": "3207770961b69f24e1efe6f8be1e96656a432d40c0003e8e8b1cbcaaa60b6be3"
+    },
+    {
+      "path": "go/focused-tests-11-scratch-primitive-01/launch.json",
+      "bytes": 31171,
+      "sha256": "ecfe3a92567d1c28aec34582125e3020faf5e99e4a0cca42cf82ae81eb400c91"
+    },
+    {
+      "path": "go/focused-tests-11-scratch-primitive-01/pid.json",
+      "bytes": 175,
+      "sha256": "9619c1494720d0cd598fe18c277b52c4769dd2526cbb64f8bb8dabfd4bb881e1"
+    },
+    {
+      "path": "go/focused-tests-11-scratch-primitive-01/receipt.json",
+      "bytes": 7289,
+      "sha256": "9970e63f403212b840eedc7c9fcac2c064a9e6f02aa13568c37166c72653f056"
+    },
+    {
+      "path": "go/focused-tests-11-scratch-selected-01/cargo.stderr",
+      "bytes": 627,
+      "sha256": "5486057be3e57f34d66b1252a4bdc9fcf12f64f5d4b2834f9decb1ffc3329102"
+    },
+    {
+      "path": "go/focused-tests-11-scratch-selected-01/cargo.stdout",
+      "bytes": 306416,
+      "sha256": "3038f6cde120cf9535fe582af833c7108af8520d5338f1ae2080b682713151eb"
+    },
+    {
+      "path": "go/focused-tests-11-scratch-selected-01/compiler-inputs-0.d",
+      "bytes": 52319,
+      "sha256": "21892d894ca86442fa51380e2abc3f3d62c7c105d26dfc75064fe84fdf01c2e7"
+    },
+    {
+      "path": "go/focused-tests-11-scratch-selected-01/compiler-inputs-1.d",
+      "bytes": 476,
+      "sha256": "28e9a75fbce53525995741d1b2487e96c0c58c7222b48035a7d9ce80817748c7"
+    },
+    {
+      "path": "go/focused-tests-11-scratch-selected-01/launch.json",
+      "bytes": 29068,
+      "sha256": "c4a95b0eac17a3b0a3120a533869d475fbbe6eac32a39de5555e66d67761259d"
+    },
+    {
+      "path": "go/focused-tests-11-scratch-selected-01/pid.json",
+      "bytes": 175,
+      "sha256": "81c35ea966c079ef98141ffbef8042187c6df14cbf1c7311ee30780ad25ce9f9"
+    },
+    {
+      "path": "go/focused-tests-11-scratch-selected-01/receipt.json",
+      "bytes": 36996,
+      "sha256": "2ec7873e7c607014d6f502417aeb91f65c8c83151d4a627bf95d4ce092ad4691"
+    },
+    {
+      "path": "go/go-capture-scratch-6c5853-stage.json",
+      "bytes": 29733,
+      "sha256": "c75df71bbe00c88ce8ac0e890dc922bc3491afeb45057b7bf7857e6eed9fd0f5"
+    },
+    {
+      "path": "go/scratch-6c5853-native-seal-01/compiler-inputs/0a46dbbc9dee91ea62b84e1dc8e5e529434dad7a331526a1116245af72ac11bb-lib.rs",
+      "bytes": 1437,
+      "sha256": "0a46dbbc9dee91ea62b84e1dc8e5e529434dad7a331526a1116245af72ac11bb"
+    },
+    {
+      "path": "go/scratch-6c5853-native-seal-01/compiler-inputs/23ab36b101f158c6f7cff6bbfef2dd42d188c21815f98621b2bf34cc66561a55-authority_witness.rs",
+      "bytes": 66293,
+      "sha256": "23ab36b101f158c6f7cff6bbfef2dd42d188c21815f98621b2bf34cc66561a55"
+    },
+    {
+      "path": "go/scratch-6c5853-native-seal-01/compiler-inputs/2fcedfbbba8403fc1a308b007d1a42ba197ba08536e080c439d0e79d1323dda9-mod.rs",
+      "bytes": 1662,
+      "sha256": "2fcedfbbba8403fc1a308b007d1a42ba197ba08536e080c439d0e79d1323dda9"
+    },
+    {
+      "path": "go/scratch-6c5853-native-seal-01/compiler-inputs/639aa18854dc54d471fee28657d6f48cda7d38311c7f77332959efd8b259bf16-go_oracle_sources.rs",
+      "bytes": 19441,
+      "sha256": "639aa18854dc54d471fee28657d6f48cda7d38311c7f77332959efd8b259bf16"
+    },
+    {
+      "path": "go/scratch-6c5853-native-seal-01/compiler-inputs/6b7974d9c7e04e4051f4755cb7312953ed3a3d9c6f54a9e7ca6549fb54d7725c-image.rs",
+      "bytes": 113140,
+      "sha256": "6b7974d9c7e04e4051f4755cb7312953ed3a3d9c6f54a9e7ca6549fb54d7725c"
+    },
+    {
+      "path": "go/scratch-6c5853-native-seal-01/compiler-inputs/7981afedb670e5f4e7abecd70a0aecbfb703e65f316d7859508a1f1cea83fb44-staging.rs",
+      "bytes": 27519,
+      "sha256": "7981afedb670e5f4e7abecd70a0aecbfb703e65f316d7859508a1f1cea83fb44"
+    },
+    {
+      "path": "go/scratch-6c5853-native-seal-01/compiler-inputs/7a0304139dd7d8cc92c24ee6fd534f2ecb1acf542a1874a4730f27304c707d5f-dependency_witness.rs",
+      "bytes": 19247,
+      "sha256": "7a0304139dd7d8cc92c24ee6fd534f2ecb1acf542a1874a4730f27304c707d5f"
+    },
+    {
+      "path": "go/scratch-6c5853-native-seal-01/compiler-inputs/7c40fed77f023527b1356aff9e4a55934729b3a14de690493dfc9ac616da6352-selected_dependency_loader.rs",
+      "bytes": 13800,
+      "sha256": "7c40fed77f023527b1356aff9e4a55934729b3a14de690493dfc9ac616da6352"
+    },
+    {
+      "path": "go/scratch-6c5853-native-seal-01/compiler-inputs/beec7f9e16eeddeb2cdc320f083cc36a8853bc83b5cb74f42b494c01267e226c-capture_digest.rs",
+      "bytes": 17534,
+      "sha256": "beec7f9e16eeddeb2cdc320f083cc36a8853bc83b5cb74f42b494c01267e226c"
+    },
+    {
+      "path": "go/scratch-6c5853-native-seal-01/compiler-inputs/db3bc955a0db95d0644f68fff879af2f313eda87a0d25dab0e76d167e82e4dad-oracle.rs",
+      "bytes": 162913,
+      "sha256": "db3bc955a0db95d0644f68fff879af2f313eda87a0d25dab0e76d167e82e4dad"
+    },
+    {
+      "path": "go/scratch-6c5853-native-seal-01/receipt.json",
+      "bytes": 50251,
+      "sha256": "a96103dc7cc65fb17d5b8a591c8be99835bcc6fd937f4df20fb94943378f7a06"
+    },
+    {
+      "path": "cas/loan-amendment-lib-only.json",
+      "bytes": 990,
+      "sha256": "7a2cf212727d8b754755584aca20d88d1893e6089eeaab9065b4c66c24e548f7"
+    },
+    {
+      "path": "cas/mac-store-native-supervisor.py",
+      "bytes": 8747,
+      "sha256": "0151c210febe70880148031b4d571ec574f04f35fe4949cf9db7a1868bd072a2"
+    },
+    {
+      "path": "cas/native-01/admission.json",
+      "bytes": 22981,
+      "sha256": "133b724467a95df71fd0fa05b0afe1eff659f9f14845ceceda5c46664b0ab192"
+    },
+    {
+      "path": "cas/native-01/launch.json",
+      "bytes": 2705,
+      "sha256": "ebfb71569dbaefade0e724f757ea793bad9d0947a0486f226c2721d600067470"
+    },
+    {
+      "path": "cas/native-01/process-samples.jsonl",
+      "bytes": 625114,
+      "sha256": "1ba1bef83d847a9641769f49fb6d6b811700c9d77f8192eacbddf588043bf2c1"
+    },
+    {
+      "path": "cas/native-01/receipt.json",
+      "bytes": 10796,
+      "sha256": "8e3e97ab37cba2134ed4b6326278394a7a13b26e9bfc438bb0a673ca3dc0c96f"
+    },
+    {
+      "path": "cas/native-01/source-inputs.json",
+      "bytes": 35304,
+      "sha256": "27fcbace3dcdeebc9d461abce8eccd5063b98780a33f4598f991ac8b1e52b729"
+    },
+    {
+      "path": "cas/native-01/stderr.log",
+      "bytes": 11460,
+      "sha256": "57da22861145af4d28b73c80f83725f5f960d5a614cdeaf342590541ddc3c91b"
+    },
+    {
+      "path": "cas/native-01/stdout.log",
+      "bytes": 575,
+      "sha256": "c5b573a9243cf884aa1f3ef155d8b78ed20550102902ef409bd378b4562ab643"
+    },
+    {
+      "path": "cas/search-debug-graph-final-return-930dbc.json",
+      "bytes": 3394,
+      "sha256": "31ca74b26a5f124f05081bb6ad6341894461908be243bc7957fba0518c76ca7b"
+    },
+    {
+      "path": "cas/search-debug-graph-loan-930dbc-20261008.json",
+      "bytes": 8974,
+      "sha256": "1bd9fb59d64f589b0254bdeeb4282fd8cdf338c01c21ee9c06822b351b287e9e"
+    },
+    {
+      "path": "cas/source-ready.json",
+      "bytes": 732,
+      "sha256": "7fcd6fdd586efe75652f6651c71465bf25149c5adf124fa488b62835a908494b"
+    },
+    {
+      "path": "typescript/cargo.log",
+      "bytes": 237674,
+      "sha256": "4a569aece800c950d81d9c8cb7834a71590db24f1448e653eb083f52ca68981c"
+    },
+    {
+      "path": "typescript/compiler-inputs.json",
+      "bytes": 2672073,
+      "sha256": "ef9e202589db2d5a3de5446cb7e26988204b2df3172796639865a0831c612fba"
+    },
+    {
+      "path": "typescript/launch.json",
+      "bytes": 24091,
+      "sha256": "a39db9450827e8bacef708a569c7b636d2ef720902d35617e5162d9d26945eae"
+    },
+    {
+      "path": "typescript/local-audit.json",
+      "bytes": 1914,
+      "sha256": "df7a6ba1c2774b26d2a7ed77a19485d024ce0a616695e34ac35208d33fb0269d"
+    },
+    {
+      "path": "typescript/receipt.json",
+      "bytes": 25914,
+      "sha256": "f3bc37b292bac477db16287af69907b206d29dca42a709411c06609667999d26"
+    },
+    {
+      "path": "typescript/retirement-and-audit.json",
+      "bytes": 26610,
+      "sha256": "ded6b6c1cb7d7f894a98021aa4ad209f4ac0bfe2dc67043dd18c52f0b8cb83bf"
+    },
+    {
+      "path": "nudox-root-runtime-tail-audit-20261008.json",
+      "bytes": 2440,
+      "sha256": "525f69463513127a353f6944833de938e1b66c886e75502df2817804203f0682"
+    },
+    {
+      "path": "nudox-root-runtime-tail-audit-20261008.py",
+      "bytes": 8847,
+      "sha256": "d70b50ee4f7c3401e7dd4d7fde9a7b8dbdb359099702507cf80c025c48f54c4d"
+    }
+  ]
+}

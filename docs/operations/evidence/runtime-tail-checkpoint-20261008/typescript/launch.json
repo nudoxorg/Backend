@@ -1,0 +1,636 @@
+{
+  "compiler_inputs_sha256": "ef9e202589db2d5a3de5446cb7e26988204b2df3172796639865a0831c612fba",
+  "tool_sha256_before": {
+    "rustc": "312adc99331d2e50de49ec76bbde65fcc4bc75e5b7ea2370b19594d5b20ced9d",
+    "cc": "7d5b8a9041b43a4dcb3b887c523b3a88c3557fecf989cef092f09d7b986b9de9",
+    "rustc_wrapper": "c63dedcaa14fa6e6db4e325c56e8e271fa90f125b3614a0d4f030263d15c95e1",
+    "cargo_wrapper": "48562288e604d85ed3fc8930bb8c440877b4d507f8f925aa35d97918be04ff1f"
+  },
+  "source_before": {
+    "commit": "c05549365b139e5c189cb98ffdef961c017b1336",
+    "tree": "6f1f346a463e1ed816a969e811f4a6bc8a75b385",
+    "clean": true,
+    "lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e"
+  },
+  "admission": {
+    "advisory_allowed": true,
+    "allow_local_over_cap_for_remote": true,
+    "collector_elapsed_seconds": 2.701,
+    "collector_started_at_utc": "2026-10-08T09:43:10.051861+00:00",
+    "current_fleet_compiler_group_count": 8,
+    "destination": "ilo",
+    "destination_memory_only_for_remote": true,
+    "evidence_path": "/Users/mileswirht/Downloads/sol61-journal-public-recovery-20261008/admission-20261008T094309943777Z.json",
+    "fleet_compiler_group_limit": 16,
+    "host_compiler_group_limits": {
+      "h16001mac": 8,
+      "ilo": 8,
+      "local": 5
+    },
+    "hosts": {
+      "h16001mac": {
+        "age_seconds": 1.382,
+        "available_memory_bytes": 62019420160,
+        "available_memory_source": "darwin-vm-stat-free-inactive-speculative",
+        "cargo_entries": 0,
+        "census_sha256": "f6785192313e4cd8274a5fd552801e4b8937998d53228f82564e940709ca8c01",
+        "compiler_group_count": 1,
+        "compiler_groups": [
+          {
+            "cargo_pids": [],
+            "classification": "runtime-owner",
+            "job_limit_known": false,
+            "kind": "runtime-owner",
+            "pgid": 63153,
+            "pids": [
+              63164
+            ],
+            "requested_cargo_jobs": null,
+            "runtime_owner_pids": [
+              63164
+            ],
+            "rustc_process_count": 0
+          }
+        ],
+        "complete": true,
+        "host_limit": 8,
+        "memory_floor_applies": false,
+        "resource_sampled_at_utc": "2026-10-08T09:43:11.403396+00:00",
+        "root_disk_available_bytes": 1157504860160,
+        "sample_finished_at_utc": "2026-10-08T09:43:11.403265+00:00",
+        "sample_started_at_utc": "2026-10-08T09:43:11.370291+00:00",
+        "snapshot_issue_counts": {},
+        "snapshot_race_counts": {},
+        "visible_process_count": 931
+      },
+      "ilo": {
+        "age_seconds": 0.121,
+        "available_memory_bytes": 57873260544,
+        "available_memory_source": "linux-proc-meminfo-MemAvailable",
+        "cargo_entries": 2,
+        "census_sha256": "5ca3c369205b898c973edd34932942878dc68cc2b4754ca63e4fca4223e7f297",
+        "compiler_group_count": 3,
+        "compiler_groups": [
+          {
+            "cargo_pids": [],
+            "classification": "runtime-owner",
+            "job_limit_known": false,
+            "kind": "runtime-owner",
+            "pgid": 557079,
+            "pids": [
+              557079
+            ],
+            "requested_cargo_jobs": null,
+            "runtime_owner_pids": [
+              557079
+            ],
+            "rustc_process_count": 0
+          },
+          {
+            "cargo_pids": [
+              3032399
+            ],
+            "classification": "build",
+            "job_limit_known": true,
+            "kind": "cargo",
+            "pgid": 3032057,
+            "pids": [
+              3032399,
+              3032432
+            ],
+            "requested_cargo_jobs": 2,
+            "runtime_owner_pids": [],
+            "rustc_process_count": 1
+          },
+          {
+            "cargo_pids": [
+              3036762
+            ],
+            "classification": "build",
+            "job_limit_known": true,
+            "kind": "cargo",
+            "pgid": 3036756,
+            "pids": [
+              3036762
+            ],
+            "requested_cargo_jobs": 4,
+            "runtime_owner_pids": [],
+            "rustc_process_count": 0
+          }
+        ],
+        "complete": true,
+        "host_limit": 8,
+        "memory_floor_applies": true,
+        "resource_sampled_at_utc": "2026-10-08T09:43:12.655321+00:00",
+        "root_disk_available_bytes": 75430133760,
+        "sample_finished_at_utc": "2026-10-08T09:43:12.655189+00:00",
+        "sample_started_at_utc": "2026-10-08T09:43:12.631421+00:00",
+        "snapshot_issue_counts": {},
+        "snapshot_race_counts": {
+          "pid-exited-during-scan": 274
+        },
+        "visible_process_count": 449
+      },
+      "local": {
+        "age_seconds": 2.612,
+        "available_memory_bytes": 11782586368,
+        "available_memory_source": "darwin-vm-stat-free-inactive-speculative",
+        "cargo_entries": 0,
+        "census_sha256": "fc4fe4127a041012a37c1e1f5e9416b8376ed5f702284e021cb5be858fb7fda8",
+        "compiler_group_count": 4,
+        "compiler_groups": [
+          {
+            "cargo_pids": [],
+            "classification": "runtime-owner",
+            "job_limit_known": false,
+            "kind": "runtime-owner",
+            "pgid": 749,
+            "pids": [
+              749
+            ],
+            "requested_cargo_jobs": null,
+            "runtime_owner_pids": [
+              749
+            ],
+            "rustc_process_count": 0
+          },
+          {
+            "cargo_pids": [],
+            "classification": "runtime-owner",
+            "job_limit_known": false,
+            "kind": "runtime-owner",
+            "pgid": 4707,
+            "pids": [
+              4707
+            ],
+            "requested_cargo_jobs": null,
+            "runtime_owner_pids": [
+              4707
+            ],
+            "rustc_process_count": 0
+          },
+          {
+            "cargo_pids": [],
+            "classification": "unknown",
+            "job_limit_known": false,
+            "kind": "unknown",
+            "pgid": 11935,
+            "pids": [
+              11939
+            ],
+            "requested_cargo_jobs": null,
+            "runtime_owner_pids": [],
+            "rustc_process_count": 0
+          },
+          {
+            "cargo_pids": [],
+            "classification": "unknown",
+            "job_limit_known": false,
+            "kind": "unknown",
+            "pgid": 11950,
+            "pids": [
+              11955
+            ],
+            "requested_cargo_jobs": null,
+            "runtime_owner_pids": [],
+            "rustc_process_count": 0
+          }
+        ],
+        "complete": true,
+        "host_limit": 5,
+        "memory_floor_applies": false,
+        "resource_sampled_at_utc": "2026-10-08T09:43:10.198884+00:00",
+        "root_disk_available_bytes": 40475451392,
+        "sample_finished_at_utc": "2026-10-08T09:43:10.198704+00:00",
+        "sample_started_at_utc": "2026-10-08T09:43:10.139977+00:00",
+        "snapshot_issue_counts": {},
+        "snapshot_race_counts": {
+          "pid-exited-during-scan": 8
+        },
+        "visible_process_count": 738
+      }
+    },
+    "limitations": [
+      "local:unresolved-compiler-group-counted-conservatively"
+    ],
+    "managed_host_permit_required": true,
+    "max_cargo_jobs_per_group": 4,
+    "max_sample_age_seconds": 30,
+    "memory_guard_scope": "destination",
+    "minimum_available_memory_bytes_destination": 8589934592,
+    "minimum_available_memory_bytes_each_host": null,
+    "minimum_destination_root_disk_bytes": 17179869184,
+    "processes_signaled": [],
+    "raw_samples": {
+      "h16001mac": {
+        "census": {
+          "argv_budget_exhausted": false,
+          "capacity": {
+            "conservative_local_occupancy": 0,
+            "decision_reason": "local-build-capacity-available",
+            "exited_cargo_processes": 0,
+            "introspection_processes": 0,
+            "known_build_processes": 0,
+            "local_build_capacity": 3,
+            "reserved_remote_builds": 1,
+            "snapshot_allows_new_local_build": true,
+            "total_build_capacity": 4,
+            "unknown_cargo_processes": 0
+          },
+          "captured_argv_bytes": 0,
+          "captured_argv_processes": 0,
+          "compiler_groups": [
+            {
+              "cargo_pids": [],
+              "classification": "runtime-owner",
+              "job_limit_known": false,
+              "kind": "runtime-owner",
+              "pgid": 63153,
+              "pids": [
+                63164
+              ],
+              "requested_cargo_jobs": null,
+              "runtime_owner_pids": [
+                63164
+              ],
+              "rustc_process_count": 0
+            }
+          ],
+          "compiler_groups_omitted_count": 0,
+          "complete": true,
+          "effective_uid": 1893584017,
+          "entries": [],
+          "entries_omitted_count": 0,
+          "process_scope": "host-visible-process-table",
+          "processes_signaled": [],
+          "resource_snapshot": {
+            "available_memory_bytes": 62019420160,
+            "available_memory_source": "darwin-vm-stat-free-inactive-speculative",
+            "root_disk_available_bytes": 1157504860160,
+            "root_disk_total_bytes": 1995218165760,
+            "root_disk_used_bytes": 837713305600,
+            "sampled_at_utc": "2026-10-08T09:43:11.403396+00:00"
+          },
+          "resource_snapshot_complete": true,
+          "sample_finished_at_utc": "2026-10-08T09:43:11.403265+00:00",
+          "sample_started_at_utc": "2026-10-08T09:43:11.370291+00:00",
+          "schema": "build-census.v1",
+          "scope_note": "Foreign Cargo, rustc, and locald/backend-locald/backend-desktop-looking rows are inspected; inaccessible candidates count as occupied unknown process groups. Same-UID process executable paths are inspected, and paths that remain unavailable count as unknown occupied process groups. Cargo argv is read through native process APIs and redacted. Other foreign rows and processes hidden by OS namespaces or permissions are not validated, so this advisory cannot guarantee whole-machine capacity.",
+          "slot_reserved": false,
+          "snapshot_atomic": false,
+          "snapshot_issue_counts": {},
+          "snapshot_race_counts": {},
+          "visible_process_count": 931
+        },
+        "census_sha256": "f6785192313e4cd8274a5fd552801e4b8937998d53228f82564e940709ca8c01",
+        "collector_finished_at_utc": "2026-10-08T09:43:11.498958+00:00",
+        "collector_started_at_utc": "2026-10-08T09:43:10.057862+00:00",
+        "host": "h16001mac",
+        "return_code": 0,
+        "stderr_bytes": 0,
+        "transport_complete": true
+      },
+      "ilo": {
+        "census": {
+          "argv_budget_exhausted": false,
+          "capacity": {
+            "conservative_local_occupancy": 2,
+            "decision_reason": "local-build-capacity-available",
+            "exited_cargo_processes": 0,
+            "introspection_processes": 0,
+            "known_build_processes": 2,
+            "local_build_capacity": 3,
+            "reserved_remote_builds": 1,
+            "snapshot_allows_new_local_build": true,
+            "total_build_capacity": 4,
+            "unknown_cargo_processes": 0
+          },
+          "captured_argv_bytes": 333,
+          "captured_argv_processes": 2,
+          "compiler_groups": [
+            {
+              "cargo_pids": [],
+              "classification": "runtime-owner",
+              "job_limit_known": false,
+              "kind": "runtime-owner",
+              "pgid": 557079,
+              "pids": [
+                557079
+              ],
+              "requested_cargo_jobs": null,
+              "runtime_owner_pids": [
+                557079
+              ],
+              "rustc_process_count": 0
+            },
+            {
+              "cargo_pids": [
+                3032399
+              ],
+              "classification": "build",
+              "job_limit_known": true,
+              "kind": "cargo",
+              "pgid": 3032057,
+              "pids": [
+                3032399,
+                3032432
+              ],
+              "requested_cargo_jobs": 2,
+              "runtime_owner_pids": [],
+              "rustc_process_count": 1
+            },
+            {
+              "cargo_pids": [
+                3036762
+              ],
+              "classification": "build",
+              "job_limit_known": true,
+              "kind": "cargo",
+              "pgid": 3036756,
+              "pids": [
+                3036762
+              ],
+              "requested_cargo_jobs": 4,
+              "runtime_owner_pids": [],
+              "rustc_process_count": 0
+            }
+          ],
+          "compiler_groups_omitted_count": 0,
+          "complete": true,
+          "effective_uid": 0,
+          "entries": [
+            {
+              "ancestry": [
+                {
+                  "pid": 3032081,
+                  "start_token": "linux:2ead60ad-39e1-4149-89bf-ffaca12e4235:79664297"
+                },
+                {
+                  "pid": 3032057,
+                  "start_token": "linux:2ead60ad-39e1-4149-89bf-ffaca12e4235:79664289"
+                },
+                {
+                  "pid": 3031954,
+                  "start_token": "linux:2ead60ad-39e1-4149-89bf-ffaca12e4235:79664250"
+                },
+                {
+                  "pid": 3031548,
+                  "start_token": "linux:2ead60ad-39e1-4149-89bf-ffaca12e4235:79664078"
+                },
+                {
+                  "pid": 276742,
+                  "start_token": "linux:2ead60ad-39e1-4149-89bf-ffaca12e4235:16525242"
+                },
+                {
+                  "pid": 1,
+                  "start_token": "linux:2ead60ad-39e1-4149-89bf-ffaca12e4235:22"
+                }
+              ],
+              "ancestry_complete": true,
+              "argv": {
+                "argc": 11,
+                "status": "complete",
+                "tokens": [
+                  "cargo",
+                  "test",
+                  "--locked",
+                  "--offline",
+                  "-j<redacted>",
+                  "--message-format=<redacted>",
+                  "-p",
+                  "<arg>",
+                  "--lib",
+                  "--",
+                  "--test-threads=<redacted>"
+                ],
+                "truncated": false
+              },
+              "argv_verb": "test",
+              "classification": "build",
+              "classification_reason": null,
+              "executable": "cargo",
+              "identity_validated": true,
+              "pgid": 3032057,
+              "pid": 3032399,
+              "ppid": 3032081,
+              "requested_cargo_jobs": 2,
+              "start_token": "linux:2ead60ad-39e1-4149-89bf-ffaca12e4235:79664329"
+            },
+            {
+              "ancestry": [],
+              "ancestry_complete": false,
+              "ancestry_error": "missing-parent",
+              "argv": {
+                "argc": 9,
+                "status": "complete",
+                "tokens": [
+                  "cargo",
+                  "check",
+                  "--locked",
+                  "--workspace",
+                  "--all-targets",
+                  "--target",
+                  "<arg>",
+                  "--jobs",
+                  "<arg>"
+                ],
+                "truncated": false
+              },
+              "argv_verb": "check",
+              "classification": "build",
+              "classification_reason": null,
+              "executable": "cargo",
+              "identity_validated": true,
+              "pgid": 3036756,
+              "pid": 3036762,
+              "ppid": 3036759,
+              "requested_cargo_jobs": 4,
+              "start_token": "linux:2ead60ad-39e1-4149-89bf-ffaca12e4235:79669980"
+            }
+          ],
+          "entries_omitted_count": 0,
+          "process_scope": "host-visible-process-table",
+          "processes_signaled": [],
+          "resource_snapshot": {
+            "available_memory_bytes": 57873260544,
+            "available_memory_source": "linux-proc-meminfo-MemAvailable",
+            "root_disk_available_bytes": 75430133760,
+            "root_disk_total_bytes": 501864161280,
+            "root_disk_used_bytes": 400865501184,
+            "sampled_at_utc": "2026-10-08T09:43:12.655321+00:00"
+          },
+          "resource_snapshot_complete": true,
+          "sample_finished_at_utc": "2026-10-08T09:43:12.655189+00:00",
+          "sample_started_at_utc": "2026-10-08T09:43:12.631421+00:00",
+          "schema": "build-census.v1",
+          "scope_note": "Foreign Cargo, rustc, and locald/backend-locald/backend-desktop-looking rows are inspected; inaccessible candidates count as occupied unknown process groups. Same-UID process executable paths are inspected, and paths that remain unavailable count as unknown occupied process groups. Cargo argv is read through native process APIs and redacted. Other foreign rows and processes hidden by OS namespaces or permissions are not validated, so this advisory cannot guarantee whole-machine capacity.",
+          "slot_reserved": false,
+          "snapshot_atomic": false,
+          "snapshot_issue_counts": {},
+          "snapshot_race_counts": {
+            "pid-exited-during-scan": 274
+          },
+          "visible_process_count": 449
+        },
+        "census_sha256": "5ca3c369205b898c973edd34932942878dc68cc2b4754ca63e4fca4223e7f297",
+        "collector_finished_at_utc": "2026-10-08T09:43:12.751469+00:00",
+        "collector_started_at_utc": "2026-10-08T09:43:10.055963+00:00",
+        "host": "ilo",
+        "return_code": 0,
+        "stderr_bytes": 0,
+        "transport_complete": true
+      },
+      "local": {
+        "census": {
+          "argv_budget_exhausted": false,
+          "capacity": {
+            "conservative_local_occupancy": 0,
+            "decision_reason": "local-build-capacity-available",
+            "exited_cargo_processes": 0,
+            "introspection_processes": 0,
+            "known_build_processes": 0,
+            "local_build_capacity": 3,
+            "reserved_remote_builds": 1,
+            "snapshot_allows_new_local_build": true,
+            "total_build_capacity": 4,
+            "unknown_cargo_processes": 0
+          },
+          "captured_argv_bytes": 0,
+          "captured_argv_processes": 0,
+          "compiler_groups": [
+            {
+              "cargo_pids": [],
+              "classification": "runtime-owner",
+              "job_limit_known": false,
+              "kind": "runtime-owner",
+              "pgid": 749,
+              "pids": [
+                749
+              ],
+              "requested_cargo_jobs": null,
+              "runtime_owner_pids": [
+                749
+              ],
+              "rustc_process_count": 0
+            },
+            {
+              "cargo_pids": [],
+              "classification": "runtime-owner",
+              "job_limit_known": false,
+              "kind": "runtime-owner",
+              "pgid": 4707,
+              "pids": [
+                4707
+              ],
+              "requested_cargo_jobs": null,
+              "runtime_owner_pids": [
+                4707
+              ],
+              "rustc_process_count": 0
+            },
+            {
+              "cargo_pids": [],
+              "classification": "unknown",
+              "job_limit_known": false,
+              "kind": "unknown",
+              "pgid": 11935,
+              "pids": [
+                11939
+              ],
+              "requested_cargo_jobs": null,
+              "runtime_owner_pids": [],
+              "rustc_process_count": 0
+            },
+            {
+              "cargo_pids": [],
+              "classification": "unknown",
+              "job_limit_known": false,
+              "kind": "unknown",
+              "pgid": 11950,
+              "pids": [
+                11955
+              ],
+              "requested_cargo_jobs": null,
+              "runtime_owner_pids": [],
+              "rustc_process_count": 0
+            }
+          ],
+          "compiler_groups_omitted_count": 0,
+          "complete": true,
+          "effective_uid": 501,
+          "entries": [],
+          "entries_omitted_count": 0,
+          "process_scope": "host-visible-process-table",
+          "processes_signaled": [],
+          "resource_snapshot": {
+            "available_memory_bytes": 11782586368,
+            "available_memory_source": "darwin-vm-stat-free-inactive-speculative",
+            "root_disk_available_bytes": 40475451392,
+            "root_disk_total_bytes": 994662584320,
+            "root_disk_used_bytes": 954187132928,
+            "sampled_at_utc": "2026-10-08T09:43:10.198884+00:00"
+          },
+          "resource_snapshot_complete": true,
+          "sample_finished_at_utc": "2026-10-08T09:43:10.198704+00:00",
+          "sample_started_at_utc": "2026-10-08T09:43:10.139977+00:00",
+          "schema": "build-census.v1",
+          "scope_note": "Foreign Cargo, rustc, and locald/backend-locald/backend-desktop-looking rows are inspected; inaccessible candidates count as occupied unknown process groups. Same-UID process executable paths are inspected, and paths that remain unavailable count as unknown occupied process groups. Cargo argv is read through native process APIs and redacted. Other foreign rows and processes hidden by OS namespaces or permissions are not validated, so this advisory cannot guarantee whole-machine capacity.",
+          "slot_reserved": false,
+          "snapshot_atomic": false,
+          "snapshot_issue_counts": {},
+          "snapshot_race_counts": {
+            "pid-exited-during-scan": 8
+          },
+          "visible_process_count": 738
+        },
+        "census_sha256": "fc4fe4127a041012a37c1e1f5e9416b8376ed5f702284e021cb5be858fb7fda8",
+        "collector_finished_at_utc": "2026-10-08T09:43:10.222232+00:00",
+        "collector_started_at_utc": "2026-10-08T09:43:10.055470+00:00",
+        "host": "local",
+        "return_code": 0,
+        "stderr_bytes": 0,
+        "transport_complete": true
+      }
+    },
+    "reasons": [],
+    "requested_cargo_jobs": 2,
+    "sampled_at_utc": "2026-10-08T09:43:12.752021+00:00",
+    "sampler_path": "/Users/mileswirht/Downloads/nudox-active-20261005/root-quality-integration-20261007/.config/scripts/build-census.py",
+    "sampler_sha256": "95895b8959d2803a0e01f1b05c9462a46ed1b2e9976382bcae6ee9744f4cfea4",
+    "schema": "compiler-capacity-admission.v5",
+    "slot_reserved": false
+  },
+  "psi_before": {
+    "io": "some avg10=10.84 avg60=7.19 avg300=9.89 total=84615498156\nfull avg10=10.79 avg60=6.78 avg300=9.33 total=79489391298\n",
+    "cpu": "some avg10=0.00 avg60=0.03 avg300=0.03 total=7637804104\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+    "memory": "some avg10=0.39 avg60=0.11 avg300=0.02 total=437187469\nfull avg10=0.39 avg60=0.11 avg300=0.02 total=417459295\n"
+  },
+  "runner_install_receipt_sha256": "560f13489b8fa852e224ae7ce12f2f733eb128d444408c6a13d4640dccb3bbd9",
+  "started_utc": "2026-10-08T09:43:37.771289+00:00",
+  "argv": [
+    "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+    "test",
+    "--locked",
+    "--offline",
+    "-j2",
+    "-p",
+    "backend-engine",
+    "--lib",
+    "--",
+    "--test-threads=1",
+    "--nocapture",
+    "project_typescript_fault_retains_its_admitted_recipe_without_global_tsc",
+    "typescript_real_native_authority_stop_preserves_typed_cause_and_terminal",
+    "compiler_typescript_failure::tests"
+  ],
+  "filters": [
+    "project_typescript_fault_retains_its_admitted_recipe_without_global_tsc",
+    "typescript_real_native_authority_stop_preserves_typed_cause_and_terminal",
+    "compiler_typescript_failure::tests"
+  ],
+  "lifetime_lock": "/root/codex-worktrees/sol61-journal-recovery-eb019-20261008/.local/journal-recovery-owner.lock",
+  "rustc_wrapper": "/nix/store/2x0xss9q35c7f82hqz5j09j1mcr637vv-nudox-dependency-rustc-cache",
+  "target_role": "warm reuse of the same owned native-01 test target; no foreign build graph copied",
+  "profile_debug": 0,
+  "pid": 3037850
+}

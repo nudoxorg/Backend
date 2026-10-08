@@ -1,0 +1,28 @@
+{
+  "borrower_source": {
+    "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+    "clean": true,
+    "commit": "930dbc9e734c6a38de3c998592f22347b33b4067",
+    "tree": "cde86b570206addd15f9a1fe3e476b46cb2610a9"
+  },
+  "build_argv": [
+    "test",
+    "--locked",
+    "--offline",
+    "-j2",
+    "-p",
+    "backend-store",
+    "--lib",
+    "immutable_read_tests",
+    "--",
+    "--nocapture"
+  ],
+  "managed_leases_empty": true,
+  "parent_loan": {
+    "path": "/Users/rmccrar6/sol61-fresh-cas-seal-20261008/search-debug-graph-loan-930dbc-20261008.json",
+    "sha256": "1bd9fb59d64f589b0254bdeeb4282fd8cdf338c01c21ee9c06822b351b287e9e"
+  },
+  "reason": "SDK explicitly approved adding --lib only to limit existing DEBUG native gate to unit immutable_read_tests; source/tools/target/role/locks/jobs/profile unchanged.",
+  "schema": "nudox.graph-loan-command-amendment.v1",
+  "source_and_original_stamps_revalidated_under_all_three_lifetime_locks": true
+}

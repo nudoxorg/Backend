@@ -1,0 +1,301 @@
+warning: resolver for the non root package will be ignored, specify resolver at the workspace root:
+package:   /Users/rmccrar6/codex-worktrees/sol61-fresh-cas-seal-20261008/vendor/gpui_ce_components/Cargo.toml
+workspace: /Users/rmccrar6/codex-worktrees/sol61-fresh-cas-seal-20261008/Cargo.toml
+   Compiling syn v2.0.119
+   Compiling serde_core v1.0.229
+   Compiling getrandom v0.3.4
+   Compiling zerocopy-derive v0.8.56
+   Compiling equivalent v1.0.2
+   Compiling memchr v2.8.3
+   Compiling indexmap v2.14.2
+   Compiling rand_core v0.9.5
+   Compiling winnow v0.5.40
+   Compiling zerocopy v0.8.56
+   Compiling toml_datetime v0.6.11
+   Compiling toml_edit v0.20.7
+   Compiling serde v1.0.229
+   Compiling ppv-lite86 v0.2.21
+   Compiling proc-macro-crate v2.0.0
+   Compiling aho-corasick v1.1.5
+   Compiling regex-syntax v0.8.11
+   Compiling bolero-generator-derive v0.13.4
+   Compiling regex-automata v0.4.18
+   Compiling rand_chacha v0.9.0
+   Compiling rstest_macros v0.26.1
+   Compiling rand_xoshiro v0.7.0
+   Compiling rustix v1.1.4
+   Compiling serde_json v1.0.151
+   Compiling winnow v1.0.4
+   Compiling either v1.18.0
+   Compiling target-tuple v1.0.2
+   Compiling thiserror v2.0.20
+   Compiling bolero-generator v0.13.5
+   Compiling toml_parser v1.1.3+spec-1.1.0
+   Compiling derive_more-impl v2.1.1
+   Compiling strum_macros v0.28.0
+   Compiling regex v1.13.1
+   Compiling rand v0.9.5
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling serde_spanned v1.1.1
+   Compiling toml_writer v1.1.2+spec-1.1.0
+   Compiling relative-path v1.9.3
+   Compiling pretty-hex v0.4.2
+   Compiling bolero-engine v0.13.4
+   Compiling toml v1.1.5+spec-1.1.0
+   Compiling strum v0.28.0
+   Compiling derive_more v2.1.1
+   Compiling smallvec v1.16.0
+   Compiling termcolor v1.4.1
+   Compiling backend-version v0.2.0 (/Users/rmccrar6/codex-worktrees/sol61-fresh-cas-seal-20261008/crates/version)
+   Compiling trybuild v1.0.121
+   Compiling backend-platform v0.2.0 (/Users/rmccrar6/codex-worktrees/sol61-fresh-cas-seal-20261008/crates/platform)
+   Compiling fearless_simd v0.7.0
+   Compiling rstest v0.26.1
+   Compiling bolero v0.13.4
+   Compiling backend-store v0.2.0 (/Users/rmccrar6/codex-worktrees/sol61-fresh-cas-seal-20261008/crates/store)
+warning: unnecessary qualification
+   --> crates/store/src/durable/gc/sweep.rs:339:8
+    |
+339 |     if super::take_test_fault(2) {
+    |        ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+    |
+339 -     if super::take_test_fault(2) {
+339 +     if take_test_fault(2) {
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/durable/gc/sweep.rs:347:8
+    |
+347 |     if super::take_test_fault(3) {
+    |        ^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+347 -     if super::take_test_fault(3) {
+347 +     if take_test_fault(3) {
+    |
+
+warning: unnecessary qualification
+  --> crates/store/src/durable/gc/tests.rs:52:40
+   |
+52 | fn physical_pack_path(root: &Path, id: super::super::super::PackId) -> PathBuf {
+   |                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+help: remove the unnecessary path segments
+   |
+52 - fn physical_pack_path(root: &Path, id: super::super::super::PackId) -> PathBuf {
+52 + fn physical_pack_path(root: &Path, id: PackId) -> PathBuf {
+   |
+
+warning: unnecessary qualification
+  --> crates/store/src/durable/gc/tests.rs:66:43
+   |
+66 | fn physical_closure_path(root: &Path, id: super::super::super::ClosureId) -> PathBuf {
+   |                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+help: remove the unnecessary path segments
+   |
+66 - fn physical_closure_path(root: &Path, id: super::super::super::ClosureId) -> PathBuf {
+66 + fn physical_closure_path(root: &Path, id: ClosureId) -> PathBuf {
+   |
+
+warning: unnecessary qualification
+   --> crates/store/src/durable/gc/tests.rs:677:13
+    |
+677 |             super::super::super::StoredValue::new(Vec::new(), 1, vec![*target.as_bytes()]),
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+677 -             super::super::super::StoredValue::new(Vec::new(), 1, vec![*target.as_bytes()]),
+677 +             StoredValue::new(Vec::new(), 1, vec![*target.as_bytes()]),
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/durable/objects.rs:637:39
+    |
+637 |         let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    |                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+637 -         let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+637 +         let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/durable/streaming_closure.rs:965:21
+    |
+965 |                     super::super::ArtifactClosureClaim::from_id(expected),
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+965 -                     super::super::ArtifactClosureClaim::from_id(expected),
+965 +                     ArtifactClosureClaim::from_id(expected),
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/durable/streaming_closure.rs:999:17
+    |
+999 |                 super::super::ArtifactClosureClaim::from_id(expected),
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+999 -                 super::super::ArtifactClosureClaim::from_id(expected),
+999 +                 ArtifactClosureClaim::from_id(expected),
+    |
+
+warning: unnecessary qualification
+    --> crates/store/src/durable/streaming_closure.rs:1092:21
+     |
+1092 |                     super::super::ArtifactClosureClaim::from_id(expected),
+     |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1092 -                     super::super::ArtifactClosureClaim::from_id(expected),
+1092 +                     ArtifactClosureClaim::from_id(expected),
+     |
+
+warning: unnecessary qualification
+    --> crates/store/src/durable/streaming_closure.rs:1160:25
+     |
+1160 |                         super::super::ArtifactClosureClaim::from_id(expected),
+     |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1160 -                         super::super::ArtifactClosureClaim::from_id(expected),
+1160 +                         ArtifactClosureClaim::from_id(expected),
+     |
+
+warning: unnecessary qualification
+    --> crates/store/src/durable/streaming_closure.rs:1175:21
+     |
+1175 |                     super::super::ArtifactClosureClaim::from_id(expected),
+     |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1175 -                     super::super::ArtifactClosureClaim::from_id(expected),
+1175 +                     ArtifactClosureClaim::from_id(expected),
+     |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/journal/tests.rs:175:16
+    |
+175 |     assert_eq!(core::mem::align_of::<HeaderRecord>(), 1);
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+175 -     assert_eq!(core::mem::align_of::<HeaderRecord>(), 1);
+175 +     assert_eq!(align_of::<HeaderRecord>(), 1);
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/journal/tests.rs:176:16
+    |
+176 |     assert_eq!(core::mem::align_of::<FrameRecord>(), 1);
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+176 -     assert_eq!(core::mem::align_of::<FrameRecord>(), 1);
+176 +     assert_eq!(align_of::<FrameRecord>(), 1);
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/journal/tests.rs:411:24
+    |
+411 |     let event_offset = core::mem::size_of::<WorkflowVersion>() + core::mem::size_of::<StageKey>();
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+411 -     let event_offset = core::mem::size_of::<WorkflowVersion>() + core::mem::size_of::<StageKey>();
+411 +     let event_offset = size_of::<WorkflowVersion>() + core::mem::size_of::<StageKey>();
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/journal/tests.rs:411:66
+    |
+411 |     let event_offset = core::mem::size_of::<WorkflowVersion>() + core::mem::size_of::<StageKey>();
+    |                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+411 -     let event_offset = core::mem::size_of::<WorkflowVersion>() + core::mem::size_of::<StageKey>();
+411 +     let event_offset = core::mem::size_of::<WorkflowVersion>() + size_of::<StageKey>();
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/publication/owner/tests.rs:146:9
+    |
+146 |         super::super::format::ChainLink {
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+146 -         super::super::format::ChainLink {
+146 +         ChainLink {
+    |
+
+warning: unnecessary qualification
+  --> crates/store/src/journal/publication/service/tests.rs:78:17
+   |
+78 |         latest: super::LatestPublication::empty(),
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+help: remove the unnecessary path segments
+   |
+78 -         latest: super::LatestPublication::empty(),
+78 +         latest: LatestPublication::empty(),
+   |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/publication/service/tests.rs:120:17
+    |
+120 |         latest: super::LatestPublication::empty(),
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+120 -         latest: super::LatestPublication::empty(),
+120 +         latest: LatestPublication::empty(),
+    |
+
+warning: unnecessary qualification
+   --> crates/store/src/journal/publication/service/tests.rs:140:17
+    |
+140 |         latest: super::LatestPublication::empty(),
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+140 -         latest: super::LatestPublication::empty(),
+140 +         latest: LatestPublication::empty(),
+    |
+
+warning: unnecessary qualification
+    --> crates/store/src/tests.rs:1251:42
+     |
+1251 |     let auxiliary_rows = 129 * u64::from(backend_version::DEFAULT_CUT_POLICY.max_entries);
+     |                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1251 -     let auxiliary_rows = 129 * u64::from(backend_version::DEFAULT_CUT_POLICY.max_entries);
+1251 +     let auxiliary_rows = 129 * u64::from(DEFAULT_CUT_POLICY.max_entries);
+     |
+
+warning: `backend-store` (lib test) generated 20 warnings (run `cargo fix --lib -p backend-store --tests` to apply 20 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 41.66s
+     Running unittests src/lib.rs (/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_store-9a66300fbe9b1cf0)
+SEALED_READ_BEGIN
+SEALED_READ_END

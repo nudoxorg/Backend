@@ -1,0 +1,41 @@
+{
+  "admission_sha256": "133b724467a95df71fd0fa05b0afe1eff659f9f14845ceceda5c46664b0ab192",
+  "amendment_sha256": "7a2cf212727d8b754755584aca20d88d1893e6089eeaab9065b4c66c24e548f7",
+  "argv": [
+    "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-managed-runner/cargo",
+    "test",
+    "--locked",
+    "--offline",
+    "-j2",
+    "-p",
+    "backend-store",
+    "--lib",
+    "immutable_read_tests",
+    "--",
+    "--nocapture"
+  ],
+  "cwd": "/Users/rmccrar6/codex-worktrees/sol61-fresh-cas-seal-20261008",
+  "loan_sha256": "1bd9fb59d64f589b0254bdeeb4282fd8cdf338c01c21ee9c06822b351b287e9e",
+  "owner_before": {
+    "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268",
+    "clean": true,
+    "commit": "5f2a97eb4c74c175e190ff9637373c6bcf9ae39e",
+    "tree": "08d334bdf7ae6bd87c4943b58f010d4554dcbb12"
+  },
+  "pid": 15610,
+  "pressure": {
+    "linux_psi": "unavailable on Darwin",
+    "vm_stat_before": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                  1808525.\nPages active:                                2026140.\nPages inactive:                              2141355.\nPages speculative:                             11457.\nPages throttled:                                   0.\nPages wired down:                             236803.\nPages purgeable:                               17056.\n\"Translation faults\":                    13021816953.\nPages copy-on-write:                      2761718792.\nPages zero filled:                        4515359593.\nPages reactivated:                            932262.\nPages purged:                                5877990.\nFile-backed pages:                           2402013.\nAnonymous pages:                             1776939.\nPages stored in compressor:                    36560.\nPages occupied by compressor:                   9296.\nDecompressions:                                29283.\nCompressions:                                  83581.\nPageins:                                   211723422.\nPageouts:                                      10624.\nSwapins:                                           0.\nSwapouts:                                          0.\n"
+  },
+  "process_start": "Thu Oct  8 05:48:32 2026",
+  "rustc_processes": [],
+  "schema": "nudox.focused-store-native-receipt.v1",
+  "source_before": {
+    "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+    "clean": true,
+    "commit": "930dbc9e734c6a38de3c998592f22347b33b4067",
+    "tree": "cde86b570206addd15f9a1fe3e476b46cb2610a9"
+  },
+  "started_utc": "2026-10-08T09:48:32.314650+00:00",
+  "supervisor_pid": 15590
+}

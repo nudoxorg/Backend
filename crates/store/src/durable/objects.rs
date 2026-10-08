@@ -207,7 +207,18 @@ fn write_immutable_with_status_inner(
         };
     }
     let (temporary, mut file) = create_temp(path)?;
-    if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+    let written = file.write_all(bytes).and_then(|()| {
+        // Seal the private inode before its existing pre-link durability
+        // barrier. Its first admitted read then needs no permission change
+        // or second file sync; legacy unsealed members still seal on read.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o400))?;
+        }
+        file.sync_all()
+    });
+    if let Err(error) = written {
         let _ = fs::remove_file(&temporary);
         return Err(io_error(&error));
     }
