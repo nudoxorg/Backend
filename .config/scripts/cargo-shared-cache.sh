@@ -453,6 +453,7 @@ selected=""
 selected_lock=""
 selected_slot=""
 selected_lock_acquired=false
+selected_file_lock=false
 selected_graph_lock=""
 selected_graph_slot=""
 selected_graph_lock_acquired=false
@@ -481,7 +482,12 @@ release_all() {
   [ "$released" = true ] && return
   released=true
   release_explicit_graph_lock
-  if [ "$selected_lock_acquired" = true ] && [ -n "$selected_lock" ]; then
+  if [ "$selected_file_lock" = true ]; then
+    # Regular host permit files belong to the shared flock protocol. Closing
+    # our descriptor releases the permit; their pathname and bytes stay intact.
+    exec 9>&-
+    selected_file_lock=false
+  elif [ "$selected_lock_acquired" = true ] && [ -n "$selected_lock" ]; then
     rm -f "$selected_lock/pid" "$selected_lock/start" "$selected_lock/workspace"
     rmdir "$selected_lock" 2>/dev/null || true
   fi
@@ -740,6 +746,7 @@ printf '%s\n' "$workspace_root" > "$worktree_lock/workspace"
 acquire_slot() {
   candidate="$1"
   lock="$cache_root/locks/slot-$candidate.lock"
+  [ ! -L "$lock" ] || return 1
   if mkdir "$lock" 2>/dev/null; then
     # Publish ownership to the EXIT trap before any metadata write. A signal
     # in the tiny initialization window must still remove this fresh lock.
@@ -752,7 +759,47 @@ acquire_slot() {
     printf '%s\n' "$workspace_root" > "$lock/workspace"
     return 0
   fi
-  recover_stale_lock "$lock" || true
+  # Existing legacy directories remain occupied, including apparently stale
+  # owners. A different runner may own them; admission must never rename or
+  # remove another protocol's permit. Existing regular files use kernel flock
+  # in this same namespace, so mkdir-only and flock runners share one ceiling.
+  [ -f "$lock" ] || return 1
+  exec 9<> "$lock"
+  selected_file_lock=true
+  if @python3@ - "$lock" <<'PY'
+import fcntl
+import os
+import stat
+import sys
+
+try:
+    opened = os.fstat(9)
+    named = os.lstat(sys.argv[1])
+    if (not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISREG(named.st_mode)
+            or opened.st_uid != os.getuid()
+            or opened.st_nlink != 1
+            or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)):
+        sys.exit(1)
+    # The shell and this child share fd 9's open file description. The lock
+    # survives this helper's exit and stays held through Cargo and kernel wait.
+    fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    current = os.lstat(sys.argv[1])
+    if (not stat.S_ISREG(current.st_mode)
+            or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)):
+        sys.exit(1)
+except OSError:
+    sys.exit(1)
+PY
+  then
+    selected_lock="$lock"
+    selected="$candidate"
+    selected_slot="$candidate"
+    selected_lock_acquired=true
+    return 0
+  fi
+  exec 9>&-
+  selected_file_lock=false
   return 1
 }
 
