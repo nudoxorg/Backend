@@ -179,7 +179,7 @@ func scanBuildConstraints(pkg *packages.Package, context build.Context) ([]*Buil
 		if importsCgo && !context.CgoEnabled {
 			reason += " cgo-disabled-import-C"
 		}
-		out = append(out, &BuildConstraint{File: path, Constraints: constraints, ExcludedReason: reason, ExportedDecls: declarations})
+		out = append(out, &BuildConstraint{File: path, Constraints: constraints, ExcludedReason: reason, ExportedDecls: declarations, packageUnavailable: headerError != nil})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].File < out[j].File })
 	return out, nil

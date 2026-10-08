@@ -1742,7 +1742,7 @@ func authorityOutputForSource(output *Output, sourcePath string) (*Output, error
 		}
 		for _, constraint := range pkg.BuildConstraints {
 			if constraint != nil && sameFile(constraint.File, sourcePath) {
-				if strings.Contains(constraint.ExcludedReason, " package-unavailable:go-parser") {
+				if constraint.packageUnavailable {
 					return nil, fmt.Errorf("Go ignored source package ownership is unavailable: %s", sourcePath)
 				}
 				if excluded != nil {

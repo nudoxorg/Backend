@@ -164,6 +164,9 @@ type BuildConstraint struct {
 	// build-tag expression, such as cgo-disabled-import-C.
 	ExcludedReason string       `json:"excludedReason,omitempty"`
 	ExportedDecls  []*BuildDecl `json:"exportedDecls,omitempty"`
+	// Internal admission state, independent of diagnostic text or filenames.
+	// An unreadable dormant package clause cannot mint a source package owner.
+	packageUnavailable bool
 }
 
 // BuildDecl identifies an exported declaration found in an excluded file.
