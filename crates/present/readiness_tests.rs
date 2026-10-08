@@ -78,6 +78,29 @@ fn accepted_pending_work_offers_an_exact_executable_poll_without_becoming_a_faul
     let shell = next.shell().expect("shell");
     assert!(shell.contains("backend index_progress '"));
     assert!(shell.ends_with("--after-sequence 19"));
+    #[cfg(unix)]
+    {
+        let script = format!(r#"backend() {{ printf '%s\000' "$@"; }}; {shell}"#);
+        let parsed = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(script)
+            .output()
+            .expect("actual executable affordance argv");
+        assert!(parsed.status.success());
+        let argv = parsed
+            .stdout
+            .split(|b| *b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| std::str::from_utf8(s).expect("UTF-8 argv"))
+            .collect::<Vec<_>>();
+        assert_eq!(argv.len(), 4);
+        assert_eq!(argv[0], "index_progress");
+        let actual: IndexJobTicket =
+            serde_json::from_str(argv[1]).expect("strict exact ticket JSON");
+        assert_eq!(actual, ticket);
+        assert_eq!(&argv[2..], &["--after-sequence", "19"]);
+    }
+
     let markdown = markdown::product(&view);
     assert!(markdown.contains("Operation in flight"));
     assert!(markdown.contains("\"after_sequence\":19"));

@@ -3842,7 +3842,15 @@ mod tests {
         let view = product_view(&reply);
         let job = view.index_job().expect("typed job projection");
         assert_eq!(job.ticket(), Some(&ticket));
-        assert!(crate::markdown::product(&view).contains("after_sequence 5"));
+        let markdown = crate::markdown::product(&view);
+        let action = markdown.split("poll with `").nth(1).expect("executable poll")
+            .split('`').next().expect("complete action");
+        let action: serde_json::Value = serde_json::from_str(action).expect("actual poll JSON");
+        assert_eq!(action, job.poll_affordance().expect("poll").tool_call().expect("tool"));
+        assert_eq!(action["arguments"]["after_sequence"], 5);
+        let roundtrip: backend_library::IndexJobTicket = serde_json::from_value(
+            action["arguments"]["ticket"].clone()).expect("exact owner ticket");
+        assert_eq!(roundtrip, ticket);
         assert!(crate::markdown::product(&view).contains(&job.ticket_json().expect("ticket")));
 
         let dto = crate::dto::ProductDto::new(&view);

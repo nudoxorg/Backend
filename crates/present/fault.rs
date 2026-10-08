@@ -294,13 +294,13 @@ impl Affordance {
     pub fn shell(&self) -> Option<String> {
         match self {
             Self::Retry => Some("re-run the same command".to_owned()),
-            Self::Reindex { path } => Some(format!("backend index {}", quote(path))),
-            Self::OpenFolder { path } => Some(format!("open {}", quote(path))),
+            Self::Reindex { path } => Some(format!("backend index {}", crate::shell::quote_argument(path))),
+            Self::OpenFolder { path } => Some(format!("open {}", crate::shell::quote_argument(path))),
             Self::UseCommand { name, args } => {
                 let mut line = format!("backend {name}");
                 for argument in args {
                     line.push(' ');
-                    line.push_str(&quote(argument));
+                    line.push_str(&crate::shell::quote_argument(argument));
                 }
                 Some(line)
             }
@@ -309,7 +309,7 @@ impl Affordance {
             }
             Self::PollIndex { ticket, after_sequence } => Some(format!(
                 "backend index_progress {} --after-sequence {after_sequence}",
-                quote(&crate::product::index_ticket_json(ticket)),
+                crate::shell::quote_argument(&crate::product::index_ticket_json(ticket)),
             )),
             Self::None => None,
         }
@@ -357,13 +357,7 @@ fn tool_arguments(name: &str, args: &[String]) -> serde_json::Value {
     )
 }
 
-fn quote(value: &str) -> String {
-    if value.is_empty() || value.bytes().any(|byte| byte.is_ascii_whitespace()) {
-        format!("'{}'", value.replace('\'', "'\\''"))
-    } else {
-        value.to_owned()
-    }
-}
+
 
 /// One typed failure, complete enough to render on any surface.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -525,7 +519,7 @@ impl Fault {
                 CauseSlug::Absent,
                 "no outline is published for this package at this revision",
             ),
-            Affordance::UseCommand { name: "index", args: Box::new([path.to_owned()]) },
+            Affordance::Reindex { path: path.to_owned() },
         )
     }
 

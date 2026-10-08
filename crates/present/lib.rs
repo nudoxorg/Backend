@@ -74,6 +74,7 @@ mod render;
 mod sections;
 mod shelf;
 mod signature;
+mod shell;
 mod status;
 
 pub use assemble::{

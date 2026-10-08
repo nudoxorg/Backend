@@ -750,6 +750,9 @@ mod tests {
         let worst_answer = Answer::Records(Box::new(worst.clone()));
         let worst = encode_answer(&worst_answer, Detail::Full, None, 256 * 1024)
             .expect("worst typed page fits hard cap");
+        if let Some(path) = std::env::var_os("NUDOX_OWNED_BUDGET_FIXTURE_CAPTURE") {
+            std::fs::write(path, &worst.bytes).expect("capture actual native serializer bytes");
+        }
         assert_eq!(worst.bytes.len(), 100_025);
         assert_eq!(worst.budget.estimated_tokens, 25_007);
         assert_eq!(
