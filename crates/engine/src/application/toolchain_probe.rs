@@ -809,6 +809,26 @@ pub(crate) fn probe_command(
     probe_prepared_command(tool, executable, command, limits, None)
 }
 
+/// Runs one admitted version command with the request's cancellation authority.
+pub(crate) fn probe_command_cancellable(
+    tool: NativeTool,
+    executable: &Path,
+    arguments: &[&str],
+    limits: ToolchainProbeLimits,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> Result<Box<[u8]>, ToolchainProbeError> {
+    if !executable.is_absolute() {
+        return Err(ToolchainProbeError::RelativeExecutable {
+            tool,
+            executable: executable.to_path_buf(),
+        });
+    }
+    let mut command = Command::new(executable);
+    NativeCompilerEnvironment::apply(&mut command, tool);
+    command.args(arguments);
+    probe_prepared_command(tool, executable, command, limits, Some(cancelled))
+}
+
 /// Probes the package-owned TypeScript JavaScript entry through one exact Node executable.
 ///
 /// `tsc`'s package-manager link and its `#!/usr/bin/env node` shebang are never executed by the

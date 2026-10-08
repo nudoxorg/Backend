@@ -138,6 +138,15 @@ impl LocalHostEnvironment for EmbeddedCompilerEnvironment {
         self.compiler_environment.is_none().then(|| ProcessHostEnvironment.cargo_home()).flatten()
     }
 
+    fn cargo_home_selection(
+        &self,
+    ) -> backend_engine::application::LocalHostCargoHomeSelection {
+        self.compiler_environment.as_ref().map_or(
+            backend_engine::application::LocalHostCargoHomeSelection::Strict,
+            backend_engine::application::ClosedLocalHostEnvironmentSnapshot::cargo_home_selection,
+        )
+    }
+
     fn user_profile(&self) -> Option<OsString> {
         self.compiler_environment.is_none().then(|| ProcessHostEnvironment.user_profile()).flatten()
     }

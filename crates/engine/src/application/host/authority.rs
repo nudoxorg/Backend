@@ -18,7 +18,7 @@ use backend_frontend_typescript::legacy::Checker as TypeScriptChecker;
 use backend_library::interface::PackageEcosystem;
 use backend_semantic::vocabulary::NativeTool;
 
-use super::paths::{TypeScriptHostSelection, canonicalize_existing, create_directory};
+use super::paths::{TypeScriptHostSelection, create_directory};
 use super::{
     AUTHORITY_IMAGE_BYTES, LocalCompilerHost, LocalCompilerHostError, LocalHostDirectory,
     LocalHostEnvironment, LocalHostPathRole, LocalHostVariable, PACKAGE_SOURCE_BYTES, nonzero,
@@ -28,9 +28,10 @@ use crate::application::toolchain_probe::{
 };
 use crate::application::typescript_host::{TypeScriptProjectHost, is_module_tsc_script};
 use crate::application::{
-    LocalRuntimeCSharpAuthority, LocalRuntimeGoAuthorityFailure, LocalRuntimeJavaAuthority,
+    DeferredRustToolchain, LocalRuntimeCSharpAuthority, LocalRuntimeGoAuthorityFailure, LocalRuntimeJavaAuthority,
     LocalRuntimePackageAuthority, LocalRuntimePackageRoot, LocalRuntimePythonCheckerAdmission,
-    LocalRuntimePythonCheckerProbeFailure, LocalRuntimeRustAuthority, LocalRuntimeToolchain,
+    LocalRuntimePythonCheckerProbeFailure, LocalRuntimeRustAuthority,
+    LocalRuntimeRustToolchainSelection, LocalRuntimeToolchain,
     PyreflyToolchainIdentity,
 };
 
@@ -174,7 +175,20 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             executables.cargo_home.as_deref(),
         ) {
             (Some(rustc), Some(cargo), Some(cargo_home)) => {
-                Some(self.rust_authority(rustc, cargo, cargo_home, probe_limits)?)
+                let sysroot = self.optional_absolute_path(LocalHostVariable::NudoxRustSysroot)?;
+                Some(match (executables.cargo_home_deferred, sysroot) {
+                    (false, Some(sysroot)) => {
+                        self.rust_authority(rustc, cargo, cargo_home, sysroot)?
+                    }
+                    (cargo_home_deferred, sysroot) => self.deferred_rust_authority(
+                        rustc,
+                        cargo,
+                        cargo_home,
+                        cargo_home_deferred,
+                        sysroot,
+                        probe_limits,
+                    )?,
+                })
             }
             _ => None,
         };
@@ -258,41 +272,13 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         rustc: &Path,
         cargo: &Path,
         cargo_home: &Path,
-        probe_limits: ToolchainProbeLimits,
+        sysroot: PathBuf,
     ) -> Result<LocalRuntimeRustAuthority, LocalCompilerHostError> {
-        let sysroot = match self.optional_absolute_path(LocalHostVariable::NudoxRustSysroot)? {
-            Some(path) => self.validate_directory(
-                LocalHostPathRole::RustSysroot,
-                LocalHostVariable::NudoxRustSysroot,
-                path,
-            )?,
-            None => {
-                let output = probe_command(
-                    NativeTool::Rustc,
-                    rustc,
-                    &["--print", "sysroot"],
-                    probe_limits,
-                )?;
-                let path = match str::from_utf8(&output) {
-                    Ok(text) => PathBuf::from(text.trim()),
-                    Err(source) => {
-                        return Err(LocalCompilerHostError::RustSysrootEncoding { output, source });
-                    }
-                };
-                if path.as_os_str().is_empty() {
-                    return Err(LocalCompilerHostError::RustSysrootEmpty {
-                        compiler: rustc.to_path_buf().into_boxed_path(),
-                    });
-                }
-                if !path.is_absolute() {
-                    return Err(LocalCompilerHostError::RustSysrootRelative {
-                        compiler: rustc.to_path_buf().into_boxed_path(),
-                        sysroot: path.into_boxed_path(),
-                    });
-                }
-                canonicalize_existing(LocalHostPathRole::RustSysroot, &path)?
-            }
-        };
+        let sysroot = self.validate_directory(
+            LocalHostPathRole::RustSysroot,
+            LocalHostVariable::NudoxRustSysroot,
+            sysroot,
+        )?;
         let toolchain = RustToolchain::from_paths_with_cargo(
             rustc.to_path_buf(),
             sysroot,
@@ -300,7 +286,48 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             cargo_home.to_path_buf(),
         )?;
         Ok(LocalRuntimeRustAuthority {
-            toolchain,
+            toolchain: LocalRuntimeRustToolchainSelection::Ready(toolchain),
+            maximum_source_bytes: SourceByteLimit::from(PACKAGE_SOURCE_BYTES),
+            all_features: true,
+            no_default_features: false,
+            features: Box::new([]),
+            metadata_policy: self.rust_cargo_metadata_policy,
+        })
+    }
+
+    fn deferred_rust_authority(
+        &self,
+        rustc: &Path,
+        cargo: &Path,
+        cargo_home: &Path,
+        cargo_home_deferred: bool,
+        sysroot: Option<PathBuf>,
+        probe_limits: ToolchainProbeLimits,
+    ) -> Result<LocalRuntimeRustAuthority, LocalCompilerHostError> {
+        // Explicit paths keep their strict current validation. Inferring a sysroot, including
+        // with an existing Cargo home, must not run Rust during unrelated owner startup.
+        let sysroot = sysroot
+            .map(|path| {
+                self.validate_directory(
+                    LocalHostPathRole::RustSysroot,
+                    LocalHostVariable::NudoxRustSysroot,
+                    path,
+                )
+            })
+            .transpose()?;
+        Ok(LocalRuntimeRustAuthority {
+            toolchain: LocalRuntimeRustToolchainSelection::Deferred(DeferredRustToolchain::new(
+                rustc.to_path_buf(),
+                cargo.to_path_buf(),
+                cargo_home.to_path_buf(),
+                if cargo_home_deferred {
+                    super::LocalHostCargoHomeSelection::DeferredDefault
+                } else {
+                    super::LocalHostCargoHomeSelection::Strict
+                },
+                sysroot,
+                probe_limits,
+            )),
             maximum_source_bytes: SourceByteLimit::from(PACKAGE_SOURCE_BYTES),
             all_features: true,
             no_default_features: false,
@@ -506,6 +533,7 @@ pub(super) struct NativeExecutables {
     pub(super) rustc: Option<PathBuf>,
     pub(super) cargo: Option<PathBuf>,
     pub(super) cargo_home: Option<PathBuf>,
+    pub(super) cargo_home_deferred: bool,
     pub(super) clang: Option<PathBuf>,
     pub(super) python: Option<PathBuf>,
     pub(super) typescript: Option<PathBuf>,
@@ -632,6 +660,7 @@ mod invocation_selection_tests {
             rustc: None,
             cargo: None,
             cargo_home: None,
+            cargo_home_deferred: false,
             clang: None,
             python: None,
             typescript,

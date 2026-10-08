@@ -86,11 +86,11 @@ use crate::application::package_authority::{
     enter_package_authority_with_go_authority_witness, enter_package_authority_with_rust_workspace,
 };
 use crate::application::{
-    LocalCompilerConfig, LocalCompilerControl, LocalCompilerExecutionIdentity,
-    LocalCompilerOpenError, LocalCompilerPath, LocalCompilerPlaneExecutionIdentity,
-    LocalCompilerPlaneExecutionSeed, LocalCompilerScratch, LocalPackageRootSet,
-    PackageAuthorityConfiguration, PackageAuthorityError, PackageAuthorityRequest,
-    enter_package_authority, package_source,
+    AdmittedRustRequestAuthority, LocalCompilerConfig, LocalCompilerControl,
+    LocalCompilerExecutionIdentity, LocalCompilerOpenError, LocalCompilerPath,
+    LocalCompilerPlaneExecutionIdentity, LocalCompilerPlaneExecutionSeed, LocalCompilerScratch,
+    LocalPackageRootSet, PackageAuthorityConfiguration, PackageAuthorityError,
+    PackageAuthorityRequest, enter_package_authority, package_source,
     terminal::{compile_terminal, source_authority},
 };
 
@@ -1946,7 +1946,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
     pub(crate) fn stage_package_sources(
         &self,
         package: PackageSourceSet<'_>,
-        execution_identity: Option<LocalCompilerExecutionIdentity>,
+        mut execution_identity: Option<LocalCompilerExecutionIdentity>,
         plane_execution_seed: Option<LocalCompilerPlaneExecutionSeed>,
         embedding_runtime: Option<&EmbeddingExecutable>,
         embedding_cache_session: Option<&EmbeddingCacheSession>,
@@ -2219,7 +2219,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         };
         // Captured configuration and actual producer facts must affect identity,
         // including direct callers whose source-only fallback claim omits config.
-        let plane_execution_seed = if let Some(project) = python_project.as_ref() {
+        let mut plane_execution_seed = if let Some(project) = python_project.as_ref() {
             let fingerprint = project.witness().fingerprint();
             // An admitted caller claim identifies its exact publication attempt.
             // Preserve that opaque provenance; the execution seed below still
@@ -2379,6 +2379,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         // Cross-call reuse is disabled because the RA owner cannot report all
         // positive and negative reads. This operation's lease keeps its fresh
         // database alive through staging; every exit drops it after completion.
+        let mut deferred_rust_authority = false;
+        let mut rust_request_authority = None;
         let rust_workspace_lease =
             if let backend_semantic::vocabulary::LanguageProfile::Rust(edition) = target.profile {
                 let toolchain = self
@@ -2407,36 +2409,82 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         )),
                     }
                 })?;
-                let (toolchain_identity, environment_identity, local_authority_identity) =
-                    execution_identity
-                        .filter(|identity| {
-                            identity.target() == package.package_target.target()
-                                && identity.profile() == target.profile
-                                && identity.stage() == target.stage
-                        })
-                        .map(|identity| {
-                            (
-                                Some(identity.toolchain_identity()),
-                                Some(identity.environment_identity()),
-                                Some(identity.local_authority_fingerprint()),
-                            )
-                        })
-                        .or_else(|| {
-                            plane_execution_seed
-                                .filter(|identity| {
-                                    identity.target() == package.package_target.target()
-                                        && identity.profile() == target.profile
-                                        && identity.stage() == target.stage
-                                })
-                                .map(|identity| {
-                                    (
-                                        Some(identity.toolchain_identity()),
-                                        Some(identity.environment_identity()),
-                                        Some(identity.local_authority_fingerprint()),
-                                    )
-                                })
-                        })
-                        .unwrap_or((None, None, None));
+                // Compare exact selected executables before request-time cache creation/probing.
+                let resolved = match toolchain {
+                    ToolchainSelection::ResolvedNative(resolved) => resolved,
+                    ToolchainSelection::ExplicitlyUnavailable { tool } => {
+                        return Err(PackageSemanticError::Compile {
+                            path: first_source.relative_path.into(),
+                            terminal: Box::new(package_authority_terminal(
+                                package.package_target.target(),
+                                first_application_request,
+                                first_authority,
+                                toolchain,
+                                PackageAuthorityError::ToolchainUnavailable {
+                                    profile: target.profile,
+                                    tool,
+                                },
+                            )),
+                        });
+                    }
+                };
+                if authority_configuration.toolchain.selected_rustc() != resolved.as_ref() {
+                    return Err(PackageSemanticError::Compile {
+                        path: first_source.relative_path.into(),
+                        terminal: Box::new(package_authority_terminal(
+                            package.package_target.target(),
+                            first_application_request,
+                            first_authority,
+                            toolchain,
+                            PackageAuthorityError::RustToolchainExecutableMismatch {
+                                profile: target.profile,
+                                configured: authority_configuration
+                                    .toolchain
+                                    .selected_rustc()
+                                    .to_path_buf()
+                                    .into_boxed_path(),
+                                resolved: resolved.as_ref().to_path_buf().into_boxed_path(),
+                            },
+                        )),
+                    });
+                }
+                let rust_toolchain = authority_configuration
+                    .resolve_toolchain(target.profile, control)
+                    .map_err(|cause| {
+                        package_authority_terminal(
+                            package.package_target.target(),
+                            first_application_request,
+                            first_authority,
+                            toolchain,
+                            cause,
+                        )
+                    })
+                    .map_err(|terminal| PackageSemanticError::Compile {
+                        path: first_source.relative_path.into(),
+                        terminal: Box::new(terminal),
+                    })?;
+                let request_seed = AdmittedRustRequestAuthority::new(
+                    package.package_target.target(),
+                    target.profile,
+                    target.stage,
+                    resolved,
+                    rust_toolchain,
+                    authority_configuration,
+                    self.package_authority.maximum_image_bytes,
+                )
+                .ok_or(PackageSemanticError::Capacity {
+                    lane: "admitted Rust request authority identity",
+                })?;
+                deferred_rust_authority = authority_configuration.toolchain.is_deferred();
+                if deferred_rust_authority {
+                    // No caller/startup path-policy identity may survive actual Rust admission.
+                    execution_identity = None;
+                }
+                plane_execution_seed = None;
+                rust_request_authority = Some(request_seed);
+                let toolchain_identity = Some(request_seed.toolchain_identity());
+                let environment_identity = Some(request_seed.environment_identity());
+                let local_authority_identity = Some(request_seed.local_authority_fingerprint());
                 let source_paths = package
                     .sources
                     .iter()
@@ -2444,7 +2492,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     .collect::<Vec<_>>();
                 let key = RustWorkspaceSessionKey::new(
                     package.package_root,
-                    authority_configuration.toolchain,
+                    rust_toolchain,
                     edition,
                     target.stage,
                     authority_configuration.features,
@@ -2885,6 +2933,31 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 )
             })
         });
+        let mut rust_plane_execution_identity = None;
+        if let Some(lease) = rust_workspace_lease.as_ref() {
+            if let Some(facts) = lease.workspace().cargo_workspace_facts() {
+                rust_plane_execution_identity =
+                    rust_request_authority.map(|authority| authority.bind_workspace(facts, input));
+            } else if deferred_rust_authority {
+                let toolchain = self.toolchain(first_application_request).unwrap_or(
+                    ToolchainSelection::ExplicitlyUnavailable {
+                        tool: NativeTool::Rustc,
+                    },
+                );
+                return Err(PackageSemanticError::Compile {
+                    path: first_source.relative_path.into(),
+                    terminal: Box::new(package_authority_terminal(
+                        package.package_target.target(),
+                        first_application_request,
+                        first_authority,
+                        toolchain,
+                        PackageAuthorityError::RustWorkspaceWitnessUnavailable {
+                            profile: target.profile,
+                        },
+                    )),
+                });
+            }
+        }
         let staged = StagedPackageCompilation {
             compilation_attempt_id,
             artifacts,
@@ -2897,9 +2970,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             stage: target.stage,
             input,
             execution_identity,
-            plane_execution_identity: plane_execution_seed
-                .or(project_plane_seed)
-                .map(|seed| seed.bind_input(input)),
+            plane_execution_identity: rust_plane_execution_identity.or_else(|| {
+                plane_execution_seed.or(project_plane_seed).map(|seed| seed.bind_input(input))
+            }),
             cargo_workspace_facts: rust_workspace_lease.as_ref().and_then(|lease| {
                 lease
                     .workspace()
@@ -4483,7 +4556,10 @@ fn package_authority_projection(
         | PackageAuthorityError::ClangProject(_) => (Phase::Open, Class::Binding),
         PackageAuthorityError::PythonSyntax(_) => (Phase::Parse, Class::Syntax),
         PackageAuthorityError::PythonPyrefly(_) => (Phase::TypeCheck, Class::Type),
-        PackageAuthorityError::RustProject(_) => (Phase::Resolve, Class::Authority),
+        PackageAuthorityError::RustProject(_)
+        | PackageAuthorityError::RustWorkspaceWitnessUnavailable { .. } => {
+            (Phase::Resolve, Class::Authority)
+        }
         PackageAuthorityError::GoOracle(cause) => go_authority_projection(cause),
         PackageAuthorityError::CSharp(_) => (Phase::TypeCheck, Class::Authority),
         PackageAuthorityError::TypeScript(_) => (Phase::TypeCheck, Class::Authority),
@@ -4492,6 +4568,7 @@ fn package_authority_projection(
         PackageAuthorityError::JavaHarness(_)
         | PackageAuthorityError::GoAuthorityWitness(_)
         | PackageAuthorityError::ImageTooLarge { .. }
+        | PackageAuthorityError::RustToolchainAdmission { .. }
         | PackageAuthorityError::ToolchainUnavailable { .. }
         | PackageAuthorityError::Cancelled { .. }
         | PackageAuthorityError::Deadline { .. }

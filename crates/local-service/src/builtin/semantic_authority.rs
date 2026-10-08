@@ -4147,8 +4147,8 @@ mod tests {
         use backend_engine::application::{
             LocalCompilerClient, LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths,
             LocalCompilerScratch, LocalCompilerTimeout, LocalRuntimePackageAuthority,
-            LocalRuntimeRustAuthority, LocalRuntimeToolchain, OwnedPackageSource,
-            OwnedPackageSourceSet,
+            LocalRuntimeRustAuthority, LocalRuntimeRustToolchainSelection,
+            LocalRuntimeToolchain, OwnedPackageSource, OwnedPackageSourceSet,
         };
         use backend_frontend_rust::legacy::{
             RustCargoMetadataPolicy, RustToolchain, SourceByteLimit,
@@ -4210,7 +4210,7 @@ mod tests {
         )
         .expect("build Rust package compiler request");
         let runtime_authority = LocalRuntimeRustAuthority {
-            toolchain: rust_toolchain.clone(),
+            toolchain: LocalRuntimeRustToolchainSelection::Ready(rust_toolchain.clone()),
             maximum_source_bytes: SourceByteLimit::from(16 * 1024),
             all_features: false,
             no_default_features: false,

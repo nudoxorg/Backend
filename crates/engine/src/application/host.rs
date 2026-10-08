@@ -49,6 +49,7 @@ pub use rust_selection::{InstalledRustInputs, InstalledRustSelectionSource, Inst
 pub use snapshot::{
     ClosedLocalHostEnvironmentSnapshot, ClosedLocalHostEnvironmentSnapshotError,
     LocalCompilerHostSelection, LocalCompilerHostSelectionIssue, LocalCompilerHostSelectionSource,
+    LocalHostCargoHomeSelection,
     MAX_CLOSED_LOCAL_HOST_ENVIRONMENT_BYTES,
 };
 
@@ -232,6 +233,11 @@ pub trait LocalHostEnvironment {
     /// Cargo's configured user cache, captured only during installed-tool selection.
     fn cargo_home(&self) -> Option<OsString> { None }
 
+    /// Typed request-time Cargo-home selection carried by a closed v3 snapshot.
+    fn cargo_home_selection(&self) -> LocalHostCargoHomeSelection {
+        LocalHostCargoHomeSelection::Strict
+    }
+
     /// Windows user home when HOME is absent.
     fn user_profile(&self) -> Option<OsString> { None }
 }
@@ -372,8 +378,8 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
     /// kind. An invalid explicit Go path is retained as a Go-only admission failure so it
     /// cannot prevent other languages from starting; other invalid explicit paths return their
     /// typed error instead of choosing a PATH alternative. The returned selection contains no
-    /// ambient search inputs. A discovered Rust pair may create only its absent default Cargo
-    /// cache beneath the existing user home; explicit cache content and permissions are retained.
+    /// ambient search inputs. An absent default Cargo home is recorded as typed deferred
+    /// authority and is not created during capture.
     ///
     /// # Errors
     ///
@@ -453,7 +459,12 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             paths.push((LocalHostVariable::Home, home.clone()));
         }
 
-        self.capture_installed_rust_paths(&mut paths, home.as_deref())?;
+        let mut deferred_default_cargo_home = false;
+        self.capture_installed_rust_paths(
+            &mut paths,
+            home.as_deref(),
+            &mut deferred_default_cargo_home,
+        )?;
 
         let typescript = self.typescript_host_selection(home.as_deref())?;
         if let Some(compiler) = typescript.compiler {
@@ -557,11 +568,15 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             }
         }
 
-        let snapshot = ClosedLocalHostEnvironmentSnapshot::from_paths(paths.clone())
+        let mut snapshot = ClosedLocalHostEnvironmentSnapshot::from_paths(paths.clone())
             .map_err(LocalCompilerHostError::HostSnapshot)?;
+        if deferred_default_cargo_home {
+            snapshot = snapshot
+                .with_deferred_default_cargo_home()
+                .map_err(LocalCompilerHostError::HostSnapshot)?;
+        }
         let selection = LocalCompilerHostSelection::captured_installed_tools(snapshot, go_failure)
             .map_err(LocalCompilerHostError::HostSnapshot)?;
-        self.realize_installed_rust_cache(&paths, home.as_deref())?;
         Ok(selection)
     }
 
@@ -690,6 +705,29 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         if self.go_authority_failure.is_some() {
             go_discovery_failure = self.go_authority_failure;
         }
+        let cargo_home_deferred = self.environment.cargo_home_selection()
+            == LocalHostCargoHomeSelection::DeferredDefault;
+        let (cargo_home, cargo_home_deferred) = if cargo_home_deferred {
+            let selected = self.required_absolute_path(LocalHostVariable::NudoxCargoHome)?;
+            let home = self.required_absolute_path(LocalHostVariable::Home)?;
+            if selected != home.join(".cargo") {
+                return Err(LocalCompilerHostError::HostSnapshot(
+                    ClosedLocalHostEnvironmentSnapshotError::InvalidDeferredCargoHome,
+                ));
+            }
+            snapshot::validate_deferred_cargo_home_parent(&home)
+                .map_err(LocalCompilerHostError::HostSnapshot)?;
+            (Some(selected), true)
+        } else {
+            (
+                self.directory(
+                    LocalHostVariable::NudoxCargoHome,
+                    LocalHostPathRole::CargoHome,
+                    ArrayVec::new(),
+                )?,
+                false,
+            )
+        };
         let executables = NativeExecutables {
             rustc: self.executable(
                 LocalHostVariable::NudoxRustc,
@@ -701,11 +739,8 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 LocalHostPathRole::Cargo,
                 self.auxiliary_candidates(home.as_deref(), "cargo"),
             )?,
-            cargo_home: self.directory(
-                LocalHostVariable::NudoxCargoHome,
-                LocalHostPathRole::CargoHome,
-                ArrayVec::new(),
-            )?,
+            cargo_home,
+            cargo_home_deferred,
             clang: self.executable(
                 LocalHostVariable::NudoxClang,
                 LocalHostPathRole::Native(NativeTool::Clang),

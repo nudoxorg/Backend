@@ -76,7 +76,7 @@ pub use self::host::{
     ClosedLocalHostEnvironmentSnapshot, ClosedLocalHostEnvironmentSnapshotError, LocalCompilerHost,
     LocalCompilerHostError, LocalCompilerHostSelection, LocalCompilerHostSelectionIssue,
     LocalCompilerHostSelectionSource, LocalHostDirectory, LocalHostDiscovery, LocalHostEnvironment,
-    LocalHostPathKind, LocalHostPathRole, LocalHostVariable,
+    LocalHostCargoHomeSelection, LocalHostPathKind, LocalHostPathRole, LocalHostVariable,
     MAX_CLOSED_LOCAL_HOST_ENVIRONMENT_BYTES, ProcessHostEnvironment, WorkspaceCompilerEnvironment,
 };
 pub use self::package_authority::{
@@ -86,7 +86,7 @@ pub use self::package_authority::{
     enter_package_authority,
 };
 pub use self::package_source::MAX_LOCAL_PACKAGE_SOURCE_BYTES;
-pub(crate) use self::runtime::LocalCompilerPlaneExecutionSeed;
+pub(crate) use self::runtime::{AdmittedRustRequestAuthority, LocalCompilerPlaneExecutionSeed};
 pub use self::runtime::{
     CompilerSessionLineage, ExactInputWitness, LocalCompilerCapabilities, LocalCompilerCapability,
     LocalCompilerCapabilityState, LocalCompilerClient, LocalCompilerExecutionIdentity,
@@ -95,7 +95,8 @@ pub use self::runtime::{
     LocalCompilerRuntimeOpenError, LocalCompilerRuntimePaths, LocalRuntimeCSharpAuthority,
     LocalRuntimeGoAuthorityFailure, LocalRuntimeJavaAuthority, LocalRuntimePackageAuthority,
     LocalRuntimePackageRoot, LocalRuntimePackageRootFacts, LocalRuntimePythonCheckerAdmission,
-    LocalRuntimePythonCheckerProbeFailure, LocalRuntimeRustAuthority, LocalRuntimeToolchain,
+    LocalRuntimePythonCheckerProbeFailure, DeferredRustToolchain, LocalRuntimeRustAuthority,
+    LocalRuntimeRustAuthorityFailure, LocalRuntimeRustToolchainSelection, LocalRuntimeToolchain,
     LocalRuntimeToolchainFacts, LocalRuntimeToolchainState, OwnedPackageSource,
     OwnedPackageSourceSet, PackageSemanticRuntimeError, PyreflyToolchainIdentity,
 };
