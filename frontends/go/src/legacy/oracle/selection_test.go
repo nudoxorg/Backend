@@ -291,11 +291,20 @@ func TestNativeSelectionRetainsTheClosedParentPolicy(t *testing.T) {
 
 func TestAuthoritySourceSelectionMustHaveOneOwner(t *testing.T) {
 	source := "/selected/source.go"
+	excluded := &sourceExclusion{
+		constraint: &BuildConstraint{File: source},
+		directory:  compilerDirectoryWitness{path: "/selected", importPath: "example.com/actual-directory"},
+	}
 	for _, output := range []*Output{
 		{Packages: []*Package{{Files: []string{"/selected/other.go"}}}},
 		{Packages: []*Package{{Files: []string{source}, BuildConstraints: []*BuildConstraint{{File: source}}}}},
 		{Packages: []*Package{{Files: []string{source, source}}}},
 		{Packages: []*Package{{BuildConstraints: []*BuildConstraint{{File: source}, {File: source}}}}},
+		{sourceExclusions: []*sourceExclusion{nil}},
+		{sourceExclusions: []*sourceExclusion{{constraint: &BuildConstraint{File: source}}}},
+		{sourceExclusions: []*sourceExclusion{excluded, excluded}},
+		{Packages: []*Package{{Files: []string{source}}}, sourceExclusions: []*sourceExclusion{excluded}},
+		{Packages: []*Package{{BuildConstraints: []*BuildConstraint{{File: source}}}}, sourceExclusions: []*sourceExclusion{excluded}},
 	} {
 		if _, err := authorityOutputForSource(output, source); err == nil {
 			t.Fatalf("accepted unowned/contradictory source: %#v", output)
@@ -455,7 +464,95 @@ func TestIgnoredMalformedBodyDoesNotPoisonActiveCompilerPackage(t *testing.T) {
 	if len(plan.decls) != 0 || len(plan.refs) != 0 || len(plan.docs) != 0 || len(plan.cons) != 1 {
 		t.Fatal("malformed ignored source received active facts")
 	}
-	if _, err := authorityOutputForSource(output, filepath.Join(dir, "broken_header_windows.go")); err == nil {
-		t.Fatal("unknown dormant package header must not invent a source owner")
+	unknown, err := authorityOutputForSource(output, filepath.Join(dir, "broken_header_windows.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unknown.Packages) != 0 || len(unknown.sourceExclusions) != 1 || !unknown.sourceExclusions[0].constraint.packageUnavailable || unknown.sourceExclusions[0].declaredNamespace != "" {
+		t.Fatal("unknown dormant package header must remain explicitly unavailable without a semantic package owner")
+	}
+	plan, err = buildAuthorityPlan(unknown, filepath.Join(dir, "broken_header_windows.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.finalize(); err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.packages) != 0 || len(plan.decls) != 0 || len(plan.refs) != 0 || len(plan.docs) != 0 || len(plan.cons) != 1 || plan.cons[0].count != 0 {
+		t.Fatal("malformed dormant header must retain source availability only")
+	}
+}
+
+func TestInactiveOnlyExternalSourceHasNoInventedPackage(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"go.mod":                   "module example.com/only-ignored\n\ngo 1.23\n",
+		"active.go":                "package foo\n// Active stays compiler-derived.\nfunc Active() int { return 42 }\nfunc Caller() int { return Active() }\nvar Inferred = Active()\n",
+		"external_windows_test.go": "package foo_test\n// Dormant is excluded on Darwin.\nfunc Dormant() int { return 7 }\n",
+	}
+	for name, source := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(source), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	output, err := extractWithSelection(dir, ".", testSelection(t, "darwin", "arm64", false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(output.Errors) != 0 || len(output.Packages) != 1 || output.Packages[0].ImportPath != "example.com/only-ignored" || len(output.sourceExclusions) != 1 {
+		t.Fatalf("actual native package/exclusion ownership: %#v", output)
+	}
+	active, err := authorityOutputForSource(output, filepath.Join(dir, "active.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	knownCall, knownDoc, inferredInt := false, false, false
+	for _, reference := range active.Packages[0].References {
+		knownCall = knownCall || (reference.Owner == "Caller" && reference.Target == "Active" && reference.TargetPkg == "")
+	}
+	for _, decl := range active.Packages[0].Decls {
+		knownDoc = knownDoc || (decl.Name == "Active" && strings.TrimSpace(decl.Doc) == "Active stays compiler-derived.")
+		inferredInt = inferredInt || (decl.Name == "Inferred" && decl.Type != nil && decl.Type.Kind == "basic" && decl.Type.Name == "int")
+	}
+	if !knownCall || !knownDoc || !inferredInt {
+		t.Fatalf("active sibling compiler facts: call=%v doc=%v inferred-int=%v", knownCall, knownDoc, inferredInt)
+	}
+	path := filepath.Join(dir, "external_windows_test.go")
+	selected, err := authorityOutputForSource(output, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selected.Packages) != 0 || len(selected.sourceExclusions) != 1 || selected.sourceExclusions[0].declaredNamespace != "foo_test" || selected.sourceExclusions[0].constraint.packageUnavailable {
+		t.Fatal("inactive-only external source invented or lost namespace availability")
+	}
+	if selected.sourceExclusions[0].directory.path != dir || selected.sourceExclusions[0].directory.importPath != "example.com/only-ignored" || selected.sourceExclusions[0].sourceDigest != sha256.Sum256([]byte(files["external_windows_test.go"])) {
+		t.Fatal("source-only exclusion lost its actual compiler directory or captured-byte witness")
+	}
+	plan, err := buildAuthorityPlan(selected, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.finalize(); err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.packages) != 0 || len(plan.decls) != 0 || len(plan.refs) != 0 || len(plan.docs) != 0 || len(plan.cons) != 1 || plan.cons[0].count != 1 {
+		t.Fatal("source-only exclusion must retain Dormant availability without active package facts")
+	}
+	if len(selected.sourceExclusions[0].constraint.ExportedDecls) != 1 || selected.sourceExclusions[0].constraint.ExportedDecls[0].Name != "Dormant" {
+		t.Fatal("actual excluded declaration availability was lost")
+	}
+	var image bytes.Buffer
+	if err := writeAuthorityImage(&image, path, output); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(image.Bytes(), []byte("example.com/only-ignored_test")) {
+		t.Fatal("source image fabricated an external semantic package path")
+	}
+	changed := strings.Replace(files["external_windows_test.go"], "return 7", "return 8", 1)
+	if err := os.WriteFile(path, []byte(changed), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAuthorityImage(&image, path, output); err == nil {
+		t.Fatal("source-only witness admitted same-length content drift")
 	}
 }

@@ -1,5 +1,11 @@
 # Production readiness: what still needs attention
 
+### Go source-only availability — 2026-10-08
+
+The compiler now retains availability for inactive-only external-test sources and unknown dormant package clauses without inventing semantic package owners. Selection and parsing consume the same captured bytes; image emission rejects drift. Root and Luna reviewed the source, and Root independently verified **nine actual native helper passes plus four platform subcases**, the 99 source inputs, emitted image and owned retirement. [The audit](../../audits/go-source-availability-checkpoint-20261008.md) retains the distinction from unrun Rust frontend/engine controls and current installed-product acceptance. Cargo.lock retains the coworker's `tempfile` repair.
+
+The newest installed historical-c001 experiments sharpen the remaining work. Caddy fails native publication on its genuine JavaScript fixture; its default FULL200 Resolve and Tantivy replies independently exceed the 49,152-byte response budget, while Search produces an actual bounded 57-row page with a continuation. Ripgrep indexes and serves known documentation, source and paged graphs, but a known cross-file reference is absent. None is called a complete Go/Rust product pass. The seven original targeted TypeScript frontend controls now pass on trace-free `172123`; solver-unit compilation exposed an ambiguous empty-slice test assertion and its test-only correction is entering validation. Current matching-release replay, normal-disk startup and the GUI failures remain open.
+
 ### Mac packaging and four-language follow-through — 2026-10-08
 
 This checkpoint integrates the reviewed managed native-host Mac packaging chain. Root checked all five final packaging files against the reviewed source, preserved all unrelated canonical entries and the current lock, rehashed the sealed source packet and read its final **49-pass ordinary Python fixture log**. [The audit](../../audits/mac-native-host-checkpoint-20261008.md) states the exact source and trust boundary. No genuine release build, native SDK probe, signing, installation or current live GUI pass is claimed.

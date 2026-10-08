@@ -3920,6 +3920,109 @@ mod tests {
                 .unwrap_or_else(|error| panic!("external source admission failed: {error:?}"))
                 .len();
         FragmentView::validate(&output[..length]).expect("committed external-test fragment");
+
+        // With no active external-test package, go/packages returns only the
+        // ordinary semantic owner. The ignored file still has source-level
+        // availability, but it must not invent an external package identity.
+        std::fs::remove_file(&external).expect("remove the active external variant");
+        let external = project.join(format!("external_{other}_test.go"));
+        let external_source = b"package selection_test\nfunc Dormant() int { return 7 }\n";
+        std::fs::write(&external, external_source).expect("inactive-only external fixture");
+        let malformed = project.join(format!("malformed_{other}.go"));
+        let malformed_source = b"package ???\n";
+        std::fs::write(&malformed, malformed_source).expect("inactive malformed header");
+        let witness = oracle
+            .package_authority_witness_cancellable(&project, None)
+            .expect("fresh source-only package witness after the fixture mutation");
+        assert!(witness.is_complete());
+        for (path, source, expected_facts, unavailable) in [
+            (&external, external_source.as_slice(), 1, false),
+            (&malformed, malformed_source.as_slice(), 0, true),
+        ] {
+            let image = oracle
+                .authority_image_for_package_with_authority_witness_cancellable(
+                    path, &project, &witness, None,
+                )
+                .expect("actual source-only ignored image");
+            let borrowed = GoImage::open(&image).expect("validated source-only Go image");
+            assert_eq!(borrowed.package_count(), 0, "no invented semantic owner");
+            assert_eq!(borrowed.declaration_count(), 0);
+            assert_eq!(borrowed.reference_count(), 0);
+            assert_eq!(borrowed.doc_count(), 0);
+            assert_eq!(borrowed.constraint_count(), 1);
+            let constraint = borrowed.constraint(0).expect("source exclusion witness");
+            assert_eq!(constraint.file, path.to_string_lossy().as_bytes());
+            assert_eq!(constraint.exported_count as usize, expected_facts);
+            assert!(
+                constraint
+                    .constraint
+                    .windows(b"source-only".len())
+                    .any(|row| row == b"source-only")
+            );
+            if unavailable {
+                assert!(
+                    constraint
+                        .constraint
+                        .windows(b"package-unavailable:go-parser".len())
+                        .any(|row| row == b"package-unavailable:go-parser")
+                );
+            } else {
+                assert!(
+                    constraint
+                        .exported
+                        .windows(b"Dormant".len())
+                        .any(|row| row == b"Dormant")
+                );
+            }
+            let mut facts = FactSet::new();
+            collect(source, &image, &mut facts)
+                .unwrap_or_else(|error| panic!("source-only projection failed: {error:?}"));
+            assert_eq!(facts.len(), expected_facts);
+            let identity = SourceIdentity {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source),
+                byte_len: u32::try_from(source.len()).expect("source-only bound"),
+            };
+            let recipe = CompileRecipeFact::derive(
+                recipe.profile,
+                Stage::LowerIr,
+                NativeTool::GoCompiler,
+                identity.identity,
+                ContentId::<ToolchainDomain>::from_canonical_bytes(&toolchain_identity),
+            );
+            output.fill(0xa5);
+            let length =
+                crate::driver::lower::admit(&facts, identity, recipe, recipe.profile, &mut output)
+                    .unwrap_or_else(|error| panic!("source-only admission failed: {error:?}"))
+                    .len();
+            assert!(output[length..].iter().all(|byte| *byte == 0xa5));
+            FragmentView::validate(&output[..length]).expect("committed source-only fragment");
+        }
+        let active_image = oracle
+            .authority_image_for_package_with_authority_witness_cancellable(
+                &caller, &project, &witness, None,
+            )
+            .expect("active sibling image survives both dormant source cases");
+        let active_image = GoImage::open(&active_image).expect("validated active sibling image");
+        assert_eq!(active_image.package_count(), 1);
+        assert_eq!(
+            active_image
+                .package(0)
+                .expect("actual ordinary owner")
+                .import_path,
+            b"example.com/go-selection"
+        );
+        assert!(active_image.references().any(|row| {
+            row.is_ok_and(|row| {
+                row.target == b"Platform"
+                    && row.target_package.is_empty()
+                    && row.file == caller.to_string_lossy().as_bytes()
+            })
+        }));
+        assert!((0..active_image.doc_count()).any(|index| {
+            active_image
+                .doc(index)
+                .is_ok_and(|row| row.text == b"Platform is selected.")
+        }));
     }
 
     /// Fixture declaration-kind tags.

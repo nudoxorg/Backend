@@ -918,6 +918,65 @@ func sameFile(left, right string) bool {
 	return filepath.Clean(left) == filepath.Clean(right)
 }
 
+// appendBuildConstraint emits source availability without requiring a
+// semantic Package row. A source-only witness never fabricates an import path.
+func (p *imagePlan) appendBuildConstraint(constraint *BuildConstraint) error {
+	if constraint == nil || constraint.File == "" {
+		return fmt.Errorf("go/types emitted a missing build-constraint file")
+	}
+	spelling := ""
+	if len(constraint.Constraints) > 0 {
+		spelling = constraint.Constraints[0]
+	}
+	if constraint.ExcludedReason != "" {
+		if spelling != "" {
+			spelling += "; "
+		}
+		spelling += "excluded: " + constraint.ExcludedReason
+	}
+	if spelling == "" {
+		return fmt.Errorf(
+			"go/types emitted an empty build constraint for %s", constraint.File)
+	}
+	file, err := p.atom(constraint.File)
+	if err != nil {
+		return err
+	}
+	spellingCell, err := p.atom(spelling)
+	if err != nil {
+		return err
+	}
+	var blob bytes.Buffer
+	for _, decl := range constraint.ExportedDecls {
+		if decl == nil || decl.Name == "" {
+			return fmt.Errorf(
+				"go/types emitted a missing constrained declaration name")
+		}
+		kind, err := imageDeclarationKind(decl.Kind)
+		if err != nil {
+			return err
+		}
+		blob.WriteByte(kind)
+		blob.WriteString(decl.Name)
+		blob.WriteByte(0)
+	}
+	blobCell, err := p.atom(blob.String())
+	if err != nil {
+		return err
+	}
+	count, err := u32(len(constraint.ExportedDecls), "constrained declarations")
+	if err != nil {
+		return err
+	}
+	p.cons = append(p.cons, conPlan{
+		file:       file,
+		constraint: spellingCell,
+		blob:       blobCell,
+		count:      count,
+	})
+	return nil
+}
+
 // buildAuthorityPlan flattens the complete Output into ordered planes. Every
 // plane emerges in the canonical order the Rust reader validates: methods and
 // type parameters sorted by owner declaration, documentation rows sorted by
@@ -1245,61 +1304,18 @@ func buildAuthorityPlan(output *Output, boundSource string) (*imagePlan, error) 
 				recvType:    recvType,
 			})
 		}
-		// Build-constraint exclusions with their exported-declaration blob.
 		for _, constraint := range pkg.BuildConstraints {
-			if constraint == nil || constraint.File == "" {
-				return nil, fmt.Errorf("go/types emitted a missing build-constraint file")
-			}
-			spelling := ""
-			if len(constraint.Constraints) > 0 {
-				spelling = constraint.Constraints[0]
-			}
-			if constraint.ExcludedReason != "" {
-				if spelling != "" {
-					spelling += "; "
-				}
-				spelling += "excluded: " + constraint.ExcludedReason
-			}
-			if spelling == "" {
-				return nil, fmt.Errorf(
-					"go/types emitted an empty build constraint for %s", constraint.File)
-			}
-			file, err := p.atom(constraint.File)
-			if err != nil {
+			if err := p.appendBuildConstraint(constraint); err != nil {
 				return nil, err
 			}
-			spellingCell, err := p.atom(spelling)
-			if err != nil {
-				return nil, err
-			}
-			var blob bytes.Buffer
-			for _, decl := range constraint.ExportedDecls {
-				if decl == nil || decl.Name == "" {
-					return nil, fmt.Errorf(
-						"go/types emitted a missing constrained declaration name")
-				}
-				kind, err := imageDeclarationKind(decl.Kind)
-				if err != nil {
-					return nil, err
-				}
-				blob.WriteByte(kind)
-				blob.WriteString(decl.Name)
-				blob.WriteByte(0)
-			}
-			blobCell, err := p.atom(blob.String())
-			if err != nil {
-				return nil, err
-			}
-			count, err := u32(len(constraint.ExportedDecls), "constrained declarations")
-			if err != nil {
-				return nil, err
-			}
-			p.cons = append(p.cons, conPlan{
-				file:       file,
-				constraint: spellingCell,
-				blob:       blobCell,
-				count:      count,
-			})
+		}
+	}
+	for _, excluded := range output.sourceExclusions {
+		if excluded == nil {
+			return nil, fmt.Errorf("Go authority has a missing source exclusion witness")
+		}
+		if err := p.appendBuildConstraint(excluded.constraint); err != nil {
+			return nil, err
 		}
 	}
 	// References must be canonically ordered by (file, start) across the
@@ -1707,6 +1723,11 @@ func writeAuthorityImage(destination io.Writer, sourcePath string, output *Outpu
 	if err != nil {
 		return err
 	}
+	for _, excluded := range selected.sourceExclusions {
+		if excluded.sourceDigest != sha256.Sum256(source) {
+			return fmt.Errorf("Go source exclusion bytes changed after compiler selection: %s", sourcePath)
+		}
+	}
 	plan, err := buildAuthorityPlan(selected, sourcePath)
 	if err != nil {
 		return err
@@ -1751,6 +1772,27 @@ func authorityOutputForSource(output *Output, sourcePath string) (*Output, error
 				excludedPackage, excluded = pkg, constraint
 			}
 		}
+	}
+	var sourceOnly *sourceExclusion
+	for _, candidate := range output.sourceExclusions {
+		if candidate == nil || candidate.constraint == nil {
+			return nil, fmt.Errorf("Go authority has a missing source exclusion witness")
+		}
+		if sameFile(candidate.constraint.File, sourcePath) {
+			if candidate.directory.importPath == "" || !filepath.IsAbs(candidate.directory.path) || filepath.Clean(candidate.directory.path) != candidate.directory.path || filepath.Dir(candidate.constraint.File) != candidate.directory.path {
+				return nil, fmt.Errorf("Go source exclusion has no compiler directory witness: %s", sourcePath)
+			}
+			if sourceOnly != nil {
+				return nil, fmt.Errorf("Go source has contradictory source-only exclusions: %s", sourcePath)
+			}
+			sourceOnly = candidate
+		}
+	}
+	if sourceOnly != nil {
+		if active != 0 || excluded != nil {
+			return nil, fmt.Errorf("Go source has contradictory package/source-only selection: %s", sourcePath)
+		}
+		return &Output{SchemaVersion: output.SchemaVersion, Module: output.Module, Errors: output.Errors, sourceExclusions: []*sourceExclusion{sourceOnly}}, nil
 	}
 	if active > 1 || (active != 0 && excluded != nil) {
 		return nil, fmt.Errorf("Go source has contradictory active/ignored selection: %s", sourcePath)
