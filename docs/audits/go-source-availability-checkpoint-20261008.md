@@ -1,0 +1,11 @@
+# Go source-only compiler availability
+
+An excluded Go source may have no active semantic package: an external-test namespace can consist entirely of files for another platform, and a dormant source can have an unreadable package clause. This checkpoint retains compiler-backed per-file availability without manufacturing an import path, package row, active declaration, reference or documentation record.
+
+The native helper captures each compiler-returned ignored source once. Go's `MatchFile`, package-header parser and exported-declaration parser consume those same bytes. A private witness binds the actual compiler directory, declared namespace when available and source digest. Image emission refuses same-length content drift. Existing selected package ownership and contradictory active/ignored-source refusals remain strict. The established constraint plane carries availability; no wire version changes.
+
+Root read all five changed files and surrounding selection/image boundaries. Luna independently reviewed the same immutable source without finding a blocker. Root replayed `e79018baf4e474aa48c88afa0062695c5ae20d70` onto canonical `16eba67c24661ebb1b69c759c041524f97bd9978`, verified all five postfiles exactly, preserved all unrelated canonical entries and kept the corrected current Cargo lock.
+
+The genuine Go1.26.4 compiler produced the native helper image. **Nine parent controls and four platform subcases passed**, with zero failures or skips. Root independently checked all 99 input SHA256/Git blob identities, the raw result names, compiler/linker observations, image bytes before/after, fresh destination admission and owned process retirement. The image is 8,120,962 bytes, SHA256 `605cbe00b2e98b447f6c08c154b3f8bb65a9097d4da4ceb02f13603c3dacff50`. [The evidence record](go-source-availability-native-evidence-20261008.json) binds these checks.
+
+These are native helper controls. The Rust frontend selected-loader/cold-reopen and engine lower/admit controls remain queued on this dependency-correct successor; they are not passed by association. A matching installed whole-project CLI/MCP run remains open. In particular, installed historical c001 fails Caddy on its JavaScript fixture and lacks the later inferred-JavaScript and Go repairs. That failure is preserved rather than relabeled as a current-source Go result.

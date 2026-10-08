@@ -1,0 +1,43 @@
+{
+  "schema": "nudox.root.go-dormant-availability-native-audit.v1",
+  "source_commit": "e79018baf4e474aa48c88afa0062695c5ae20d70",
+  "source_tree": "5ad890591e79aa887f21411b1e08b940a964e662",
+  "raw_archive_sha256": "9ceff03f83f627bc96a20af70eaa91bbd7893deed95e646702e981cb64254d19",
+  "all99_source_blobs_independently_verified": true,
+  "source_input_bytes": 1351207,
+  "native_image_bytes": 8120962,
+  "native_image_sha256": "605cbe00b2e98b447f6c08c154b3f8bb65a9097d4da4ceb02f13603c3dacff50",
+  "actual_parent_passes": [
+    "TestCompilerSelectionTargetsTagsAndInactiveImage",
+    "TestCompilerCgoSelectionBothPolicies",
+    "TestActualRestServerPairUsesCompilerFilenameSelection",
+    "TestCompilerSelectionContradictionsRefuse",
+    "TestNativeSelectionRetainsTheClosedParentPolicy",
+    "TestAuthoritySourceSelectionMustHaveOneOwner",
+    "TestExternalTestSourceRetainsCompilerPackageOwner",
+    "TestIgnoredMalformedBodyDoesNotPoisonActiveCompilerPackage",
+    "TestInactiveOnlyExternalSourceHasNoInventedPackage"
+  ],
+  "actual_platform_subcases": 4,
+  "actual_failures": 0,
+  "actual_skips": 0,
+  "compile_receipt_sha256": "c68f85c7d277945e94afee3bef5f47f1453b06ffb84c5a084b08b7567af9eb99",
+  "test_receipt_sha256": "0f154f1af96fe73213fe9dafab04cd710b01003777dd2cbeb71c18dbc2c2ae34",
+  "raw_artifact_hashes_verified": true,
+  "source_tool_image_before_after_checked": true,
+  "fresh_destination_guards_and_owned_retirement_checked": true,
+  "rust_engine_and_frontend_native_status": "UNRUN",
+  "installed_product_status": "UNRUN",
+  "canonical_base": "16eba67c24661ebb1b69c759c041524f97bd9978",
+  "source_replay": "89cf41fb786aa1bd22f34a4d5018b97a4f96c3a6",
+  "source_replay_tree": "67f5c373d4359d10e1cac85dd20582ea9fbfff8c",
+  "exact_reviewed_changed_paths": [
+    "crates/engine/src/driver/lower/go.rs",
+    "frontends/go/src/legacy/oracle/image.go",
+    "frontends/go/src/legacy/oracle/main.go",
+    "frontends/go/src/legacy/oracle/selection.go",
+    "frontends/go/src/legacy/oracle/selection_test.go"
+  ],
+  "unrelated_canonical_entries_preserved": 17955,
+  "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4"
+}
