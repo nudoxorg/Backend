@@ -44,13 +44,19 @@ mod error;
 pub use error::WorkspaceError;
 mod authority;
 mod gc;
+mod handoff;
 mod lease;
 mod lifecycle;
 mod publication;
 mod recovery;
 mod transaction;
 pub(crate) use super::recovery::{open_diagnostic_journal, recover_store_head};
-pub use lease::OwnerLease;
+pub use handoff::{
+    PreparedWorkspaceCandidate, PublishGrant, PublishedWorkspaceWriter, RetiredWorkspaceHead,
+    UnselectedWorkspaceCandidate, WorkspaceCandidateClaim, WorkspacePublicationFailure,
+    WorkspaceWriter,
+};
+pub use lease::{OwnerLease, OwnerLeaseIdentity};
 pub(crate) use recovery::{store_head_matches, sync_directory, write_diagnostic};
 
 const DIAGNOSTIC_FILE: &str = "workspace.diagnostic";
@@ -89,16 +95,18 @@ impl Drop for WorkspaceGcPin {
 
 /// Filesystem-backed sole owner.
 pub struct WorkspaceOwner<M: WorkspaceModel> {
-    model: M,
+    model: Arc<M>,
     directory: PathBuf,
-    lease: OwnerLease,
+    lease: OwnerLeaseIdentity,
+    writer: Option<WriterAuthority>,
+    handoff: Option<handoff::Reservation>,
+    next_handoff: u64,
     store: Arc<FileStore>,
-    journal: HashChainJournal<WorkspaceLog>,
     head: WorkspaceHead,
     catalog: CatalogState,
     faults: Arc<Faults>,
     gc_roots: Arc<Mutex<BTreeMap<u64, GcRoot>>>,
-    next_gc_pin: AtomicU64,
+    next_gc_pin: Arc<AtomicU64>,
 }
 
 impl<M: WorkspaceModel> fmt::Debug for WorkspaceOwner<M> {
@@ -108,5 +116,24 @@ impl<M: WorkspaceModel> fmt::Debug for WorkspaceOwner<M> {
             .field("head", &self.head)
             .field("epoch", &self.lease.epoch())
             .finish_non_exhaustive()
+    }
+}
+
+/// The only movable physical writer. Neither its kernel lease nor journal is
+/// cloned when an admitted read head remains on the owner loop.
+struct WriterAuthority {
+    lease: OwnerLease,
+    journal: HashChainJournal<WorkspaceLog>,
+}
+
+impl<M: WorkspaceModel> WorkspaceOwner<M> {
+    /// Returns whether a worker exclusively holds the physical writer.
+    #[must_use]
+    pub const fn writer_reserved(&self) -> bool {
+        self.writer.is_none()
+    }
+
+    fn writer(&self) -> Result<&WriterAuthority, WorkspaceError> {
+        self.writer.as_ref().ok_or(WorkspaceError::WriterReserved)
     }
 }

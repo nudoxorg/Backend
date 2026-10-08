@@ -27,7 +27,7 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
         expected: HeadExpectation,
         intent: M::Intent,
     ) -> Result<PreparedPublication, WorkspaceError> {
-        self.lease.assert_current()?;
+        self.writer()?.lease.assert_current()?;
         let request = self.model.request_id(&intent);
         // A retry can arrive with the caller's pre-commit expectation after
         // the selected HEAD has already advanced.  The request identity is
@@ -107,7 +107,7 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
         expected: HeadExpectation,
         proof: DerivedOutputProof,
     ) -> Result<StagedDerivedOutput, WorkspaceError> {
-        self.lease.assert_current()?;
+        self.writer()?.lease.assert_current()?;
         if expected != self.head.expectation() {
             return Err(WorkspaceError::HeadConflict);
         }
@@ -136,7 +136,7 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
         &mut self,
         staged: StagedDerivedOutput,
     ) -> Result<DerivedOutputPublication, WorkspaceError> {
-        self.lease.assert_current()?;
+        self.writer()?.lease.assert_current()?;
         if staged.owner_epoch != self.lease.epoch() || staged.base != self.head.expectation() {
             return Err(WorkspaceError::HeadConflict);
         }
@@ -235,7 +235,7 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
         expected: HeadExpectation,
         proof: DerivedOutputProof,
     ) -> Result<DerivedOutputPublication, WorkspaceError> {
-        self.lease.assert_current()?;
+        self.writer()?.lease.assert_current()?;
         if expected != self.head.expectation() {
             return Err(WorkspaceError::HeadConflict);
         }

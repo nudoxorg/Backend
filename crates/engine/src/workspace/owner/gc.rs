@@ -13,7 +13,7 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
     /// Returns an error when validation, persistence, or admission of the
     /// supplied value fails.
     pub fn write_object(&self, object: &TypedObject) -> Result<ObjectId, WorkspaceError> {
-        self.lease.assert_current()?;
+        self.writer()?.lease.assert_current()?;
         self.store
             .write_object(object)
             .map_err(WorkspaceError::store)
@@ -40,7 +40,7 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
         &self,
         pack: &backend_store::Pack,
     ) -> Result<backend_store::PackId, WorkspaceError> {
-        self.lease.assert_current()?;
+        self.writer()?.lease.assert_current()?;
         self.store.write_pack(pack).map_err(WorkspaceError::store)
     }
 
@@ -166,7 +166,7 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
     /// Returns an error when validation, persistence, or admission of the
     /// supplied value fails.
     pub fn collect_garbage(&self, limits: GcLimits) -> Result<GcReport, WorkspaceError> {
-        self.lease.assert_current()?;
+        self.writer()?.lease.assert_current()?;
         let selected = self.store.head().map_err(WorkspaceError::store)?;
         let mut roots = GcRoots::new();
         match selected {

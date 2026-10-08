@@ -32,7 +32,42 @@ impl fmt::Debug for OwnerLease {
     }
 }
 
+/// Immutable observation of the owner's epoch and fence. This has no kernel
+/// lock or store publication capability and cannot select a workspace head.
+#[derive(Clone, Debug)]
+pub struct OwnerLeaseIdentity {
+    directory: PathBuf,
+    epoch: u64,
+    fence: [u8; 32],
+}
+
+impl OwnerLeaseIdentity {
+    /// Returns the epoch observed while the exclusive lease was held.
+    #[must_use]
+    pub const fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// Returns the full-width observed owner fence.
+    #[must_use]
+    pub const fn fence(&self) -> [u8; 32] {
+        self.fence
+    }
+
+    /// Checks the durable identity without creating or duplicating a writer.
+    pub fn assert_current(&self) -> Result<(), WorkspaceError> {
+        assert_owner_identity(&self.directory, self.epoch, self.fence)
+    }
+}
+
 impl OwnerLease {
+    pub(super) fn identity(&self) -> OwnerLeaseIdentity {
+        OwnerLeaseIdentity {
+            directory: self.directory.clone(),
+            epoch: self.epoch,
+            fence: self.fence,
+        }
+    }
     /// Acquires the owner lock and durably advances the epoch.
     /// # Errors
     ///
@@ -103,19 +138,27 @@ impl OwnerLease {
     /// Returns an error when validation, persistence, or admission of the
     /// supplied value fails.
     pub fn assert_current(&self) -> Result<(), WorkspaceError> {
-        let state = match fs::read(self.directory.join(OWNER_STATE_FILE)) {
-            Ok(state) => state,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Err(WorkspaceError::Fenced);
-            }
-            Err(error) => return Err(WorkspaceError::io(error)),
-        };
-        let (epoch, fence) = decode_owner_state(&state)?;
-        if epoch == self.epoch && fence == self.fence {
-            Ok(())
-        } else {
-            Err(WorkspaceError::Fenced)
+        assert_owner_identity(&self.directory, self.epoch, self.fence)
+    }
+}
+
+fn assert_owner_identity(
+    directory: &Path,
+    expected_epoch: u64,
+    expected_fence: [u8; 32],
+) -> Result<(), WorkspaceError> {
+    let state = match fs::read(directory.join(OWNER_STATE_FILE)) {
+        Ok(state) => state,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(WorkspaceError::Fenced);
         }
+        Err(error) => return Err(WorkspaceError::io(error)),
+    };
+    let (epoch, fence) = decode_owner_state(&state)?;
+    if epoch == expected_epoch && fence == expected_fence {
+        Ok(())
+    } else {
+        Err(WorkspaceError::Fenced)
     }
 }
 

@@ -376,7 +376,9 @@ impl<'key> SelectedSemanticPublicationKey<'key> {
 
 #[derive(Default)]
 pub(super) struct SelectedClosureSnapshot {
-    by_binding: BTreeMap<HistoryKey, SelectedGeneration>,
+    // Immutable proof inventory shared by captured reads. Remembering a new
+    // selection uses copy-on-write and cannot change an admitted old reader.
+    by_binding: Arc<BTreeMap<HistoryKey, SelectedGeneration>>,
     /// The product workspace root is the serving marker. Turso may contain a
     /// newer candidate after a crash, but it is never served until this map is
     /// advanced after the corresponding `BuiltinIntent` commits.
@@ -435,6 +437,14 @@ pub(super) struct SelectedClosureImageLoader {
     native_history_fence_gate: Mutex<Option<NativeHistoryFenceGate>>,
     #[cfg(test)]
     native_history_writer_probe: Mutex<Option<std::sync::mpsc::SyncSender<bool>>>,
+}
+
+/// Immutable exact binding proofs paired with their CAS reader. A captured
+/// view supplies the exact key/claim; this loader neither consults mutable
+/// latest selectors nor carries publication or native-history CAS authority.
+struct CapturedClosureImageLoader {
+    store: FileStore,
+    by_binding: Arc<BTreeMap<HistoryKey, SelectedGeneration>>,
 }
 
 /// Holds the serving-selector write lock from validation through the durable
@@ -585,7 +595,7 @@ impl SelectedClosureImageLoader {
         // number is projection-local and may advance when the same retained
         // closure is reselected during recovery. Keep the latest exact event
         // observed for that claim so range stamps match the reconciled head.
-        selections.by_binding.insert((key, binding), selected);
+        Arc::make_mut(&mut selections.by_binding).insert((key, binding), selected);
         Ok(())
     }
 
@@ -835,95 +845,115 @@ impl generation_residence::SelectedSemanticImageLoader for SelectedClosureImageL
         max_images: usize,
     ) -> Result<Box<[SemanticImageSnapshot]>, BuiltinModelError> {
         let selected = self.selected(key, claim)?;
-        let reopened =
-            reopen_selected_compiler_metadata(&self.store, &selected).map_err(|error| {
-                BuiltinModelError(format!("reopen selected semantic metadata: {error}"))
-            })?;
-        let manifest = self
-            .store
-            .open_closure_claim(ArtifactClosureClaim::from_bytes(*selected.closure_id()))
-            .map_err(|error| {
-                BuiltinModelError(format!("open selected semantic image index: {error:?}"))
-            })?;
-        let members = reopened.metadata().images();
-        if members.len() > max_images {
-            return Err(BuiltinModelError(format!(
-                "selected semantic image count {} exceeds residence admission limit {max_images}",
-                members.len()
-            )));
-        }
-        let admitted_bytes = members.iter().try_fold(0_usize, |total, member| {
-            total.checked_add(member.byte_length() as usize)
-        });
-        let Some(admitted_bytes) = admitted_bytes else {
-            return Err(BuiltinModelError(
-                "selected semantic image byte count overflowed residence accounting".to_owned(),
-            ));
-        };
-        if admitted_bytes > max_bytes {
-            return Err(BuiltinModelError(format!(
-                "selected semantic image bytes {admitted_bytes} exceed residence admission limit {max_bytes}"
-            )));
-        }
-        let mut images = Vec::new();
-        images.try_reserve_exact(members.len()).map_err(|_| {
-            BuiltinModelError("selected semantic image inventory is too large".to_owned())
-        })?;
-        for member in members {
-            let claim = UntrustedObjectId::from_bytes(*member.object_id());
-            let object_id = manifest
-                .admit_claim(claim)
-                .map_err(|error| {
-                    BuiltinModelError(format!("admit selected semantic image claim: {error:?}"))
-                })?
-                .ok_or_else(|| {
-                    BuiltinModelError(
-                        "selected semantic image is absent from its closure".to_owned(),
-                    )
-                })?;
-            let object = manifest
-                .get(object_id)
-                .map_err(|error| {
-                    BuiltinModelError(format!("read selected semantic image: {error:?}"))
-                })?
-                .ok_or_else(|| {
-                    BuiltinModelError(
-                        "selected semantic image disappeared from its closure".to_owned(),
-                    )
-                })?;
-            if object.schema() != COMPILER_SEMANTIC_IMAGE_SCHEMA
-                || u32::try_from(object.bytes().len()).ok() != Some(member.byte_length())
-            {
-                return Err(BuiltinModelError(
-                    "selected semantic image schema or length differs from Turso inventory"
-                        .to_owned(),
-                ));
-            }
-            let identity =
-                ArtifactId::<IrSemanticImageEncoding, IrSemanticImageDomain>::from_encoded_bytes(
-                    object.bytes(),
-                );
-            if identity.as_ref() != member.semantic_image_identity() {
-                return Err(BuiltinModelError(
-                    "selected semantic image identity differs from its Turso inventory".to_owned(),
-                ));
-            }
-            let authority = SemanticImageAuthority {
-                identity,
-                byte_len: member.byte_length(),
-            };
-            images.push(
-                SemanticImageSnapshot::try_from_reopened(authority, object.bytes()).map_err(
-                    |error| {
-                        BuiltinModelError(format!(
-                            "admit selected semantic image from Turso closure: {error:?}"
-                        ))
-                    },
-                )?,
-            );
-        }
-        Ok(images.into_boxed_slice())
+        load_selected_images(&self.store, &selected, max_bytes, max_images)
     }
+}
+
+impl generation_residence::SelectedSemanticImageLoader for CapturedClosureImageLoader {
+    fn load(
+        &self,
+        key: &ProductSemanticPublicationKey,
+        claim: SemanticPublicationClaim,
+        max_bytes: usize,
+        max_images: usize,
+    ) -> Result<Box<[SemanticImageSnapshot]>, BuiltinModelError> {
+        let binding = *claim.binding().identity.as_ref();
+        let selected = self.by_binding.get(&(key.clone(), binding)).ok_or_else(|| {
+            BuiltinModelError("semantic projection names a generation absent from the captured admitted proof inventory".to_owned())
+        })?;
+        load_selected_images(&self.store, selected, max_bytes, max_images)
+    }
+}
+
+/// One decoder and credit law for both mutable preparation and immutable read
+/// proof inventories. The caller must already possess the exact admitted
+/// SelectedGeneration; CAS schema, membership and image identity checks remain
+/// mandatory and unchanged on every miss.
+fn load_selected_images(
+    store: &FileStore,
+    selected: &SelectedGeneration,
+    max_bytes: usize,
+    max_images: usize,
+) -> Result<Box<[SemanticImageSnapshot]>, BuiltinModelError> {
+    let reopened = reopen_selected_compiler_metadata(store, selected).map_err(|error| {
+        BuiltinModelError(format!("reopen selected semantic metadata: {error}"))
+    })?;
+    let manifest = store
+        .open_closure_claim(ArtifactClosureClaim::from_bytes(*selected.closure_id()))
+        .map_err(|error| {
+            BuiltinModelError(format!("open selected semantic image index: {error:?}"))
+        })?;
+    let members = reopened.metadata().images();
+    if members.len() > max_images {
+        return Err(BuiltinModelError(format!(
+            "selected semantic image count {} exceeds residence admission limit {max_images}",
+            members.len()
+        )));
+    }
+    let admitted_bytes = members.iter().try_fold(0_usize, |total, member| {
+        total.checked_add(member.byte_length() as usize)
+    });
+    let Some(admitted_bytes) = admitted_bytes else {
+        return Err(BuiltinModelError(
+            "selected semantic image byte count overflowed residence accounting".to_owned(),
+        ));
+    };
+    if admitted_bytes > max_bytes {
+        return Err(BuiltinModelError(format!(
+            "selected semantic image bytes {admitted_bytes} exceed residence admission limit {max_bytes}"
+        )));
+    }
+    let mut images = Vec::new();
+    images.try_reserve_exact(members.len()).map_err(|_| {
+        BuiltinModelError("selected semantic image inventory is too large".to_owned())
+    })?;
+    for member in members {
+        let claim = UntrustedObjectId::from_bytes(*member.object_id());
+        let object_id = manifest
+            .admit_claim(claim)
+            .map_err(|error| {
+                BuiltinModelError(format!("admit selected semantic image claim: {error:?}"))
+            })?
+            .ok_or_else(|| {
+                BuiltinModelError("selected semantic image is absent from its closure".to_owned())
+            })?;
+        let object = manifest
+            .get(object_id)
+            .map_err(|error| BuiltinModelError(format!("read selected semantic image: {error:?}")))?
+            .ok_or_else(|| {
+                BuiltinModelError("selected semantic image disappeared from its closure".to_owned())
+            })?;
+        if object.schema() != COMPILER_SEMANTIC_IMAGE_SCHEMA
+            || u32::try_from(object.bytes().len()).ok() != Some(member.byte_length())
+        {
+            return Err(BuiltinModelError(
+                "selected semantic image schema or length differs from Turso inventory".to_owned(),
+            ));
+        }
+        let identity =
+            ArtifactId::<IrSemanticImageEncoding, IrSemanticImageDomain>::from_encoded_bytes(
+                object.bytes(),
+            );
+        if identity.as_ref() != member.semantic_image_identity() {
+            return Err(BuiltinModelError(
+                "selected semantic image identity differs from its Turso inventory".to_owned(),
+            ));
+        }
+        let authority = SemanticImageAuthority {
+            identity,
+            byte_len: member.byte_length(),
+        };
+        images.push(
+            SemanticImageSnapshot::try_from_reopened(authority, object.bytes()).map_err(
+                |error| {
+                    BuiltinModelError(format!(
+                        "admit selected semantic image from Turso closure: {error:?}"
+                    ))
+                },
+            )?,
+        );
+    }
+    Ok(images.into_boxed_slice())
 }
 
 struct HistoryFact {
@@ -2119,6 +2149,28 @@ impl SemanticAuthority {
             ));
         }
         Ok(PendingRemoteResultProof::Superseded(proof))
+    }
+
+    /// Captures fixed immutable selection proofs before transferring private
+    /// publication work. Old admitted reads can miss their residence while a
+    /// native-history/marker writer holds the separate mutable selector fence.
+    pub(crate) fn capture_image_loader(
+        &self,
+    ) -> Result<Arc<dyn generation_residence::SelectedSemanticImageLoader>, BuiltinModelError> {
+        let by_binding = Arc::clone(
+            &self
+                .image_loader
+                .selections
+                .read()
+                .map_err(|_| {
+                    BuiltinModelError("semantic authority image snapshot is poisoned".to_owned())
+                })?
+                .by_binding,
+        );
+        Ok(Arc::new(CapturedClosureImageLoader {
+            store: self.store.clone(),
+            by_binding,
+        }))
     }
 
     pub(crate) fn install_image_loader(
@@ -4378,9 +4430,41 @@ mod tests {
         let attempt = authority
             .begin_candidate_attempt(&key, &observation)
             .expect("begin exact Rust compiler attempt");
-        authority
+        let before = authority
+            .capture_image_loader()
+            .expect("capture prior immutable proof inventory");
+        let (claim, _) = authority
             .publish_staged(&key, attempt, &staged, |_| Ok(()))
             .expect("publish actual multifile Rust output through semantic authority");
+        assert!(
+            before.load(&key, claim, 16 * 1024 * 1024, 2).is_err(),
+            "a later remembered generation cannot mutate the captured prior proof inventory"
+        );
+        let captured = authority
+            .capture_image_loader()
+            .expect("capture exact admitted image proofs");
+        let publication_fence = authority
+            .image_loader
+            .selections
+            .write()
+            .expect("hold mutable publication/native-history fence");
+        let (loaded_tx, loaded_rx) = std::sync::mpsc::sync_channel(1);
+        let read_key = key.clone();
+        let reader = std::thread::spawn(move || {
+            loaded_tx
+                .send(captured.load(&read_key, claim, 16 * 1024 * 1024, 2))
+                .expect("return actual captured-image read");
+        });
+        let loaded = loaded_rx.recv_timeout(Duration::from_secs(10));
+        drop(publication_fence);
+        reader.join().expect("read worker retired");
+        assert_eq!(
+            loaded
+                .expect("retained read never waits for mutable selector write lease")
+                .expect("same production CAS schema/membership/identity decoder")
+                .len(),
+            2
+        );
 
         let changed_input = [0xa7; 32];
         assert_ne!(changed_input, *staged.input_witness().input_root());

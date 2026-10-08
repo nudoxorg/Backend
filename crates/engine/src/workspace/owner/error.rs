@@ -15,6 +15,10 @@ pub enum WorkspaceError {
     Version(String),
     /// Another owner currently holds the lock.
     AlreadyOwned,
+    /// The sole writer is reserved by a prepared-candidate worker.
+    WriterReserved,
+    /// Cancellation won before the single-use publication grant.
+    PublicationCancelled,
     /// This lease is fenced.
     Fenced,
     /// The selected head changed.
