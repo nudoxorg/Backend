@@ -1,6 +1,7 @@
 """Ordinary signing-mutation fixtures; these are not native SDK/release evidence."""
 import copy
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -24,7 +25,7 @@ class SdkFinalizationContracts(unittest.TestCase):
             mock.start(); self.addCleanup(mock.stop)
 
     def admit(self, app, evidence):
-        return finalizer.admit(app, evidence, self.output, self.selected_receipt_sha256)
+        return finalizer.admit(app, evidence, self.output, self.selected_receipt_sha256, self.selected_manifest_sha256)
 
     def assembly(self):
         self.output = self.root / 'release'
@@ -50,15 +51,21 @@ class SdkFinalizationContracts(unittest.TestCase):
             image.write_bytes(fixture(code=name.encode()))
         paths = {f'Contents/MacOS/{name}' for name in fixtures.bundle.EXECUTABLES}
         paths.add('Contents/Resources/Helpers/typescript/node/bin/node')
+        executables={name:fixtures.bundle.sha256(app/'Contents/MacOS'/name) for name in fixtures.bundle.EXECUTABLES}
+        build_receipt=self.output/'build/application-build-receipt.json'
+        build_receipt.parent.mkdir()
+        build_receipt.write_text(json.dumps({'source':self.source,'executables':executables}))
         evidence = {'schema':1, 'source':self.source,
                     'target':{'triple':self.target,'architecture':'arm64'},
                     'bundle':{'minimum_macos':'14.4','signature':'unsigned'},
-                    'application_build':{'executables':{name:fixtures.bundle.sha256(app/'Contents/MacOS'/name) for name in fixtures.bundle.EXECUTABLES}},
+                    'application_build':{'executables':executables,'receipt_sha256':fixtures.bundle.sha256(build_receipt)},
                     'compiler_helpers':{'assembly_mode':'typescript-sdk-only', 'receipt_sha256':fixtures.bundle.sha256(receipt_path),
                         'files':receipt['files'],'tools':receipt['tools'],'source_receipt_sha256':fixtures.bundle.sha256(origin)},
                     'macho_images':[{'path':name} for name in sorted(paths)],
                     'files':fixtures.bundle.file_inventory(app)}
         (app/finalizer.MANIFEST).write_text(json.dumps(evidence))
+        self.selected_manifest_sha256=fixtures.bundle.sha256(app/finalizer.MANIFEST)
+        (app.parent/'Nudox-macOS.receipt.json').write_text(json.dumps({'schema':1,'application_source':self.source,'bundle_manifest_sha256':self.selected_manifest_sha256}))
         return app, evidence
 
     def inspect(self, app, arch, minimum, required):
@@ -132,7 +139,9 @@ class SdkFinalizationContracts(unittest.TestCase):
                 'helpers_receipt':str(self.selected_receipt)}
         outer_manifest=[]
         def run(command,**kwargs):
-            if command[0]=='codesign' and '--sign' in command:
+            if Path(command[0]).name=='codesign':
+                self.assertEqual(command[0],'/usr/bin/codesign')
+            if command[0]=='/usr/bin/codesign' and '--sign' in command:
                 path=Path(command[-1])
                 if path.is_file():
                     code = b'original Node code' if path.name == 'node' else path.name.encode()
@@ -147,7 +156,7 @@ class SdkFinalizationContracts(unittest.TestCase):
                     sidecar=app/'Contents/_CodeSignature/CodeResources';sidecar.parent.mkdir();sidecar.write_bytes(b'unit outer seal')
             if command[0]=='ditto':Path(command[-1]).write_bytes(b'unit archive')
             return subprocess.CompletedProcess(command,0,'{"status":"Accepted"}' if command[:3]==['xcrun','notarytool','submit'] else '')
-        with patch.object(release,'preflight',return_value={'ready':True}), patch.object(release,'run',side_effect=run), patch.object(release.subprocess,'check_output',return_value='EXECUTE'), patch.object(finalizer.bundle,'inspect_macho_tree',side_effect=self.inspect), patch.object(finalizer.bundle,'verify_sdk_runtime',return_value={'unit_post_sign_probe':True}):
+        with patch.dict(os.environ,{'PATH':'/hostile/shadow/bin'}), patch.object(release,'preflight',return_value={'ready':True}), patch.object(release,'run',side_effect=run), patch.object(release.subprocess,'check_output',return_value='EXECUTE'), patch.object(finalizer.bundle,'inspect_macho_tree',side_effect=self.inspect), patch.object(finalizer.bundle,'verify_sdk_runtime',return_value={'unit_post_sign_probe':True}):
             release.finalize(config)
         self.assertEqual(len(outer_manifest),1)
         self.assertEqual((app/finalizer.MANIFEST).read_bytes(),outer_manifest[0])
@@ -180,6 +189,7 @@ class SdkFinalizationContracts(unittest.TestCase):
     def test_native_probe_cannot_leave_stale_application_image_hashes(self):
         app,evidence=self.assembly();precursor=self.admit(app,evidence)
         original=(app/finalizer.MANIFEST).read_bytes()
+        original_receipt=(app/finalizer.RECEIPT).read_bytes()
         def probe(*args):
             image=app/'Contents/MacOS/backend-cli'
             image.write_bytes(image.read_bytes()+b'unit concurrent mutation')
@@ -188,6 +198,16 @@ class SdkFinalizationContracts(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'files changed during native probes'):
                 finalizer.refresh(app,evidence,precursor)
         self.assertEqual((app/finalizer.MANIFEST).read_bytes(),original)
+        self.assertEqual((app/finalizer.RECEIPT).read_bytes(),original_receipt)
+
+    def test_unexpected_nested_signature_sidecar_is_not_ignored(self):
+        app,evidence=self.assembly();precursor=self.admit(app,evidence)
+        sidecar=app/'Contents/Resources/unexpected/_CodeSignature/CodeResources'
+        sidecar.parent.mkdir(parents=True);sidecar.write_bytes(b'not an admitted outer seal')
+        with patch.object(finalizer.bundle,'inspect_macho_tree',side_effect=self.inspect), patch.object(finalizer.bundle,'verify_sdk_runtime') as probe:
+            with self.assertRaisesRegex(ValueError,'non-code SDK assembly bytes'):
+                finalizer.refresh(app,evidence,precursor)
+            probe.assert_not_called()
 
     def test_signed_substitution_of_node_or_application_is_rejected_before_probe(self):
         for name in ('Contents/Resources/Helpers/typescript/node/bin/node', 'Contents/MacOS/backend-cli'):
@@ -214,9 +234,35 @@ class SdkFinalizationContracts(unittest.TestCase):
         evidence['compiler_helpers']['receipt_sha256']=fixtures.bundle.sha256(receipt_path)
         evidence['files']=fixtures.bundle.file_inventory(app);evidence['files'].pop(finalizer.MANIFEST)
         (app/finalizer.MANIFEST).write_text(json.dumps(evidence))
+        # Isolate the helper-origin selector; the manifest selector has its own test.
+        self.selected_manifest_sha256=fixtures.bundle.sha256(app/finalizer.MANIFEST)
         with self.assertRaisesRegex(ValueError,'manifest/origin binding'):
             self.admit(app,evidence)
         self.assertFalse((self.output/'sdk-assembly-evidence').exists())
+
+    def test_coherent_pre_sign_executable_manifest_replacement_cannot_change_external_package_pin(self):
+        app,evidence=self.assembly()
+        image=app/'Contents/MacOS/backend-cli';image.write_bytes(fixture(code=b'replaced before signing'))
+        evidence['files']=fixtures.bundle.file_inventory(app);evidence['files'].pop(finalizer.MANIFEST)
+        (app/finalizer.MANIFEST).write_text(json.dumps(evidence))
+        with self.assertRaisesRegex(ValueError,'selected external package receipt'):
+            self.admit(app,evidence)
+        self.assertFalse((self.output/'sdk-assembly-evidence').exists())
+
+    def test_release_cross_checks_external_build_receipt_before_signing(self):
+        self.source['cargo_lock_sha256']=__import__('hashlib').sha256(b'unit lock').hexdigest()
+        app,evidence=self.assembly()
+        source=self.root/'source';source.mkdir();(source/'Cargo.lock').write_bytes(b'unit lock')
+        config={'source_root':str(source),'output_dir':str(self.output),'sdk_only':True,
+                'expected_revision':self.source['git_revision'],'expected_tree':self.source['git_tree'],
+                'minimum_os':'14.4','helpers_receipt':str(self.selected_receipt)}
+        receipt=self.output/'build/application-build-receipt.json'
+        value=json.loads(receipt.read_text());value['executables']['backend-cli']='0'*64
+        receipt.write_text(json.dumps(value))
+        with patch.object(release,'preflight',return_value={'ready':True}), patch.object(release,'run') as run:
+            with self.assertRaisesRegex(ValueError,'external application build receipt'):
+                release.finalize(config)
+            run.assert_not_called()
 
     def test_mode_mutation_after_admission_is_rejected_before_probes(self):
         app,evidence=self.assembly();precursor=self.admit(app,evidence)

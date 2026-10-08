@@ -29,6 +29,7 @@ class ReleasePreflightTests(unittest.TestCase):
                 self.assertFalse(report["ready"])
                 self.assertTrue(any("admission floor" in item for item in report["blockers"]))
                 self.assertTrue(any("Developer ID" in item for item in report["blockers"]))
+                self.assertTrue(any("selected Apple /usr/bin/codesign" in item for item in report["blockers"]))
                 with self.assertRaisesRegex(ValueError, "preflight failed"):
                     release.prepare(config)
                 run.assert_not_called()

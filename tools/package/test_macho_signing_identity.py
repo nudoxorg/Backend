@@ -14,7 +14,7 @@ def fixture(signature=b'fixture signature', *, code=b'original code', vm_extent=
     content[1024:1024 + len(code)] = code
     payload = b'linkedit payload' + bytes(112)
     size = len(payload) + len(signature)
-    vm_extent = vm_extent or ((size + 4095) // 4096) * 4096
+    vm_extent = vm_extent or ((size + 16383) // 16384) * 16384
     struct.pack_into('<IiiIIIII', content, 0, 0xfeedfacf, 0x100000c, 0, 2, 2, 88, 0, 0)
     struct.pack_into('<II16sQQQQiiII', content, 32, 0x19, 72, b'__LINKEDIT', 8192, vm_extent, 4096, size, 7, 1, 0, 0)
     struct.pack_into('<IIII', content, 104, 0x1d, 16, 4096 + len(payload), len(signature))
@@ -24,7 +24,7 @@ def fixture(signature=b'fixture signature', *, code=b'original code', vm_extent=
 def remove_signature(command, cwd, environment):
     path = pathlib.Path(command[-1])
     data = bytearray(path.read_bytes())
-    endian, _, fileoff, _, signature = identity.layout(path)
+    endian, _, fileoff, _, signature, _ = identity.layout(path)
     assert signature is not None
     data = data[:signature[0]]
     struct.pack_into(endian + 'II', data, 16, 1, 72)
@@ -54,7 +54,8 @@ class MachoSigningIdentity(unittest.TestCase):
         after = self.capture(fixture(b'changed signature' * 512))
         self.assertNotEqual(before['raw_sha256'], after['raw_sha256'])
         self.assertEqual(before['signature_independent_sha256'], after['signature_independent_sha256'])
-        self.assertEqual(self.capture(fixture(vm_extent=16384))['signature_independent_sha256'], before['signature_independent_sha256'])
+        with self.assertRaisesRegex(ValueError, 'VM extent'):
+            self.capture(fixture(vm_extent=4096))
 
     def test_code_and_adjacent_segment_field_are_never_masked(self):
         before = self.capture(fixture())['signature_independent_sha256']

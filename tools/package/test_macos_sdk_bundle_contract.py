@@ -137,6 +137,11 @@ class SdkOnlyContracts(unittest.TestCase):
             with self.assertRaisesRegex(bundle.PackageError,'special file'):
                 bundle.file_inventory(root)
 
+    def test_signature_inspection_uses_the_absolute_selected_apple_tool(self):
+        with patch.object(bundle.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'Authority=unit signing identity\n')) as run:
+            self.assertEqual(bundle.inspect_signature(self.payload/'typescript/node/bin/node'),'signed')
+        self.assertEqual([call.args[0][0] for call in run.call_args_list],['/usr/bin/codesign','/usr/bin/codesign'])
+
     def test_relocation_receipt_keeps_original_and_binds_actual_changed_node(self):
         original = self.root/'source-receipt.json';original.write_text(json.dumps(self.receipt))
         original_bytes = original.read_bytes()

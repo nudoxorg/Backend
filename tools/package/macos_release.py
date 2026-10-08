@@ -67,6 +67,8 @@ def preflight(config, stage="build"):
     for tool in ("xcrun", "codesign", "security", "ditto", "otool", "spctl"):
         if shutil.which(tool) is None:
             problems.append(f"missing native distribution tool: {tool}")
+    if shutil.which("codesign") != "/usr/bin/codesign":
+        problems.append("codesign must resolve to the selected Apple /usr/bin/codesign")
     if not source.is_dir():
         problems.append("source checkout is missing")
     else:
@@ -148,7 +150,20 @@ def finalize(config):
             if selected_receipt.is_relative_to(app.resolve(strict=True)):
                 raise ValueError("selected SDK source receipt must be external to the assembled app")
             selected_bytes = sdk.read_regular_bytes(selected_receipt, 16 * 1024**2, "selected external SDK source receipt")
-            precursor = sdk.admit(app, evidence, output, hashlib.sha256(selected_bytes).hexdigest())
+            package_receipt_bytes = sdk.read_regular_bytes(package / "Nudox-macOS.receipt.json", 16 * 1024**2, "external package receipt")
+            package_receipt = json.loads(package_receipt_bytes)
+            if (not isinstance(package_receipt, dict) or package_receipt.get("schema") != 1
+                    or package_receipt.get("application_source") != expected_source):
+                raise ValueError("external package receipt differs from the selected clean source")
+            build_receipt_bytes = sdk.read_regular_bytes(output / "build/application-build-receipt.json", 16 * 1024**2, "external application build receipt")
+            build_receipt = json.loads(build_receipt_bytes)
+            if (not isinstance(build_receipt, dict) or build_receipt.get("source") != expected_source
+                    or hashlib.sha256(build_receipt_bytes).hexdigest() != evidence["application_build"].get("receipt_sha256")
+                    or build_receipt.get("executables") != evidence["application_build"].get("executables")):
+                raise ValueError("external application build receipt differs from packaged build provenance")
+            precursor = sdk.admit(app, evidence, output, hashlib.sha256(selected_bytes).hexdigest(), package_receipt.get("bundle_manifest_sha256"))
+            precursor["external_package_receipt_sha256"] = hashlib.sha256(package_receipt_bytes).hexdigest()
+            precursor["external_application_build_receipt_sha256"] = hashlib.sha256(build_receipt_bytes).hexdigest()
         except sdk.bundle.PackageError as error:
             raise ValueError(str(error)) from error
     elif evidence.get("compiler_helpers", {}).get("assembly_mode") == "typescript-sdk-only":
@@ -166,20 +181,20 @@ def finalize(config):
         if magic not in MACHO:
             continue
         header = subprocess.check_output(["otool", "-hv", str(path)], text=True)
-        command = ["codesign", "--force", "--timestamp", "--options", "runtime", "--sign", config["signing_identity"]]
+        command = ["/usr/bin/codesign", "--force", "--timestamp", "--options", "runtime", "--sign", config["signing_identity"]]
         if "EXECUTE" in header:
             command += ["--entitlements", str(entitlements)]
         run(command + [str(path)])
     for nested in sorted(app.rglob("*"), key=lambda p: len(p.parts), reverse=True):
         if nested.is_dir() and not nested.is_symlink() and nested.suffix in {".framework", ".bundle", ".xpc", ".app"}:
-            run(["codesign", "--force", "--timestamp", "--options", "runtime", "--sign", config["signing_identity"], str(nested)])
+            run(["/usr/bin/codesign", "--force", "--timestamp", "--options", "runtime", "--sign", config["signing_identity"], str(nested)])
     if sdk is not None:
         try:
             sdk.refresh(app, evidence, precursor)
         except sdk.bundle.PackageError as error:
             raise ValueError(str(error)) from error
-    run(["codesign", "--force", "--timestamp", "--options", "runtime", "--sign", config["signing_identity"], str(app)])
-    run(["codesign", "--verify", "--deep", "--strict", str(app)])
+    run(["/usr/bin/codesign", "--force", "--timestamp", "--options", "runtime", "--sign", config["signing_identity"], str(app)])
+    run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)])
     submission = output / "notarization.zip"
     run(["ditto", "-c", "-k", "--keepParent", str(app), str(submission)])
     result = run(["xcrun", "notarytool", "submit", str(submission), "--keychain-profile", config["notary_profile"], "--wait", "--output-format", "json"], stdout=subprocess.PIPE, text=True)
@@ -189,7 +204,7 @@ def finalize(config):
         raise ValueError("notarization was not accepted; inspect notarization.json")
     run(["xcrun", "stapler", "staple", str(app)])
     run(["xcrun", "stapler", "validate", str(app)])
-    run(["codesign", "--verify", "--deep", "--strict", str(app)])
+    run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)])
     run(["spctl", "--assess", "--type", "execute", str(app)])
     candidate.mkdir()
     archive = candidate / ASSET

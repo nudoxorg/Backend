@@ -1459,7 +1459,7 @@ def process_contexts_for_relative(relative: str, process_root_relatives: set[str
 
 def inspect_signature(path: Path) -> str:
     completed = subprocess.run(
-        ["codesign", "--display", "--verbose=4", str(path)],
+        ["/usr/bin/codesign", "--display", "--verbose=4", str(path)],
         check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -1473,7 +1473,7 @@ def inspect_signature(path: Path) -> str:
     if not completed.returncode and not is_adhoc and not is_signed:
         fail(f"cannot classify code-signature state for {path}: {output.strip()}")
     verification = subprocess.run(
-        ["codesign", "--verify", "--strict", str(path)],
+        ["/usr/bin/codesign", "--verify", "--strict", str(path)],
         check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

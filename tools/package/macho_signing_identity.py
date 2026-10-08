@@ -17,6 +17,10 @@ def layout(path, *, signed_input=True):
         endian = {b'\xcf\xfa\xed\xfe': '<', b'\xfe\xed\xfa\xcf': '>'}.get(header[:4])
         if endian is None or len(header) != 32:
             raise ValueError('code identity requires a thin 64-bit Mach-O header')
+        cpu = struct.unpack_from(endian + 'I', header, 4)[0]
+        page = {0x100000c: 16384, 0x1000007: 4096}.get(cpu)
+        if page is None:
+            raise ValueError('code identity requires an admitted arm64 or x86_64 Mach-O CPU')
         count, length = struct.unpack_from(endian + 'II', header, 16)
         if count > 4096 or length > MAX_COMMANDS or 32 + length > size:
             raise ValueError('Mach-O load-command table exceeds its bounded extent')
@@ -62,13 +66,12 @@ def layout(path, *, signed_input=True):
     if signed_input:
         # Apple's signer extends this allocation for its signature. Require the
         # actual signed file extent to explain it; never mask an arbitrary VM size.
-        page_extents = {((filesize + page - 1) // page) * page for page in (4096, 16384)}
-        if vmsize not in page_extents:
+        if vmsize != ((filesize + page - 1) // page) * page:
             raise ValueError('__LINKEDIT VM extent does not match its signed file extent')
         for name, start, extent, _, _ in segments:
             if name != b'__LINKEDIT' and extent and start < vmaddr + vmsize and vmaddr < start + extent:
                 raise ValueError('__LINKEDIT VM extent overlaps another segment')
-    return endian, field, fileoff, filesize, signature
+    return endian, field, fileoff, filesize, signature, page
 
 
 def code_identity(image, probe):
@@ -80,18 +83,18 @@ def code_identity(image, probe):
         copy = root / 'image'
         copy_admitted_file(image, copy, raw_sha, size, MAX_IMAGE)
         copy.chmod(0o600)
-        _, _, _, _, signature = layout(copy)
+        _, _, _, _, signature, _ = layout(copy)
         if signature is not None:
             completed = probe([str(CODESIGN), '--remove-signature', str(copy)], str(root),
                               {'PATH': '/usr/bin:/bin', 'HOME': str(root), 'TMPDIR': str(root)})
             if completed.returncode:
                 raise ValueError('Apple code-signature removal failed on private image copy')
-        endian, field, _, unsigned_size, remaining = layout(copy, signed_input=False)
+        endian, field, _, unsigned_size, remaining, page = layout(copy, signed_input=False)
         if remaining is not None:
             raise ValueError('Apple removal left an LC_CODE_SIGNATURE command')
         # Removal retains the former signature's __LINKEDIT.vmsize. The entire
         # unsigned file is otherwise hashed, including all code/load commands.
-        canonical_vm_extent = ((unsigned_size + 16383) // 16384) * 16384
+        canonical_vm_extent = ((unsigned_size + page - 1) // page) * page
         with copy.open('r+b') as stream:
             stream.seek(field)
             stream.write(struct.pack(endian + 'Q', canonical_vm_extent))
@@ -100,4 +103,4 @@ def code_identity(image, probe):
         raise ValueError('Mach-O image or selected Apple codesign changed during identity admission')
     return {'raw_sha256': raw_sha, 'signature_independent_sha256': normalized_sha,
             'codesign_path': str(CODESIGN), 'codesign_sha256': tool_sha,
-            'normalization': 'Apple signature removal; unsigned terminal __LINKEDIT.vmsize rounded to 16KiB; every other byte retained'}
+            'normalization': 'Apple signature removal; unsigned terminal __LINKEDIT.vmsize rounded to admitted CPU page size; every other byte retained'}

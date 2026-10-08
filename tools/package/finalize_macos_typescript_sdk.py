@@ -3,6 +3,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 from linux_release_package import parse_json_bytes, read_regular_bytes
@@ -21,10 +22,14 @@ def read_json(path, label):
     return parse_json_bytes(read_regular_bytes(path, 16 * 1024**2, label), label)
 
 
-def admit(app, evidence, output, expected_source_receipt_sha256):
+def admit(app, evidence, output, expected_source_receipt_sha256, expected_assembly_manifest_sha256):
     """Reject changed assembly inputs and retain their exact precursor bytes."""
     bundle.require_sha(expected_source_receipt_sha256, "selected external SDK receipt")
     manifest_raw = read_regular_bytes(app / MANIFEST, 16 * 1024**2, "SDK assembly manifest")
+    if (not isinstance(expected_assembly_manifest_sha256, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", expected_assembly_manifest_sha256)
+            or hashlib.sha256(manifest_raw).hexdigest() != expected_assembly_manifest_sha256):
+        raise ValueError("SDK assembly manifest differs from its selected external package receipt")
     if parse_json_bytes(manifest_raw, "SDK assembly manifest") != evidence:
         raise ValueError("SDK assembly manifest changed before signing")
     observed = bundle.file_inventory(app)
@@ -98,7 +103,7 @@ def refresh(app, evidence, precursor):
     # Signing may change admitted Mach-O bytes and create signature sidecars.
     # Everything else, including the original SDK receipt, must remain exact.
     def signature_record(name):
-        return "_CodeSignature" in Path(name).parts
+        return name.startswith("Contents/_CodeSignature/")
     allowed = original_images | {RECEIPT}
     before = {name: value for name, value in evidence["files"].items()
               if name not in allowed and not signature_record(name)}
@@ -111,14 +116,14 @@ def refresh(app, evidence, precursor):
             raise ValueError("signed Mach-O changed before native probes")
     pre_probe_inventory = observed
     probes = bundle.verify_sdk_runtime(payload, receipt)
+    observed = bundle.file_inventory(app)
+    observed.pop(MANIFEST, None)
+    if observed != pre_probe_inventory:
+        raise ValueError("signed application/SDK files changed during native probes")
     receipt["runtime_probe_status"] = "passed post-sign Node and Compiler API probes"
     (app / RECEIPT).write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
     observed = bundle.file_inventory(app)
     observed.pop(MANIFEST, None)
-    after = {name: value for name, value in observed.items()
-             if name not in allowed and not signature_record(name)}
-    if before != after:
-        raise ValueError("non-code SDK assembly bytes changed during native probes")
     if ({name: value for name, value in observed.items() if name != RECEIPT}
             != {name: value for name, value in pre_probe_inventory.items() if name != RECEIPT}):
         raise ValueError("signed application/SDK files changed during native probes")
@@ -137,6 +142,9 @@ def refresh(app, evidence, precursor):
                                   "code_identity_before": precursor["code_identities"],
                                   "code_identity_after": signed_identities,
                                   "native_probes_stage": "after inner signing, before outer app seal"}
+    for key in ("external_package_receipt_sha256", "external_application_build_receipt_sha256"):
+        if key in precursor:
+            result["sdk_finalization"][key] = precursor[key]
     result["bundle"]["signature"] = "outer seal is recorded by the release manifest"
     result["distribution_status"] = "signed inner images and SDK probes admitted; outer app signing/notarization and native installed QA pending"
     (app / MANIFEST).write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
