@@ -48,7 +48,7 @@ fn real_selected_loader_refreshes_missing_dependencies_without_owner_restart()
     )?;
     std::fs::write(
         &source,
-        "package consumer\nimport \"example.com/dependency\"\nfunc Value() int { return dependency.Value() }\n",
+        "package consumer\nimport \"example.com/dependency\"\nfunc Value() int { return dependency.Value() }\nvar Selected = dependency.Value()\n",
     )?;
     let module_cache = root.path().join("modules");
     std::fs::create_dir(&module_cache)?;
@@ -299,6 +299,33 @@ fn assert_selected_call_and_type(
     let result = image.type_row(result as usize)?;
     assert_eq!(result.kind, TypeRowKind::Basic);
     assert_eq!(result.name, b"int");
+    let inferred = declarations
+        .iter()
+        .filter(|row| {
+            row.bound
+                && row.kind == DeclarationKind::Static
+                && row.name == b"Selected"
+                && row.package == b"example.com/consumer"
+                && row.file == declaration.file
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        inferred.len(),
+        1,
+        "one bound inferred Selected variable is required"
+    );
+    let inferred = image.type_row(
+        inferred[0]
+            .type_root
+            .expect("inferred dependency call result") as usize,
+    )?;
+    assert_eq!(inferred.kind, TypeRowKind::Basic);
+    assert_eq!(inferred.name, b"int");
+    assert!(
+        source
+            .windows(b"var Selected = dependency.Value()".len())
+            .any(|bytes| bytes == b"var Selected = dependency.Value()")
+    );
     let references = image.references().collect::<Result<Vec<_>, _>>()?;
     let selected = references
         .iter()
@@ -308,6 +335,8 @@ fn assert_selected_call_and_type(
                 && reference.file == declaration.file
                 && reference.use_kind == ReferenceUseKind::Call
                 && reference.target_class == ReferenceTargetClass::Func
+                && reference.owner_is_declaration
+                && reference.owner_row as usize == owner
         })
         .collect::<Vec<_>>();
     assert_eq!(
@@ -330,7 +359,7 @@ fn assert_selected_call_and_type(
     assert_eq!(call.span, (expected as u32, expected as u32 + 5));
     println!(
         "{}",
-        serde_json::json!({"phase":phase,"elapsed_seconds":elapsed.as_secs_f64(),"declaration_count":declarations.len(),"reference_count":references.len(),"selected_owner":"example.com/consumer::Value","selected_target":"example.com/dependency::Value","known_call_span":call.span,"result_type":"int","exact_foreign_call_count":1})
+        serde_json::json!({"phase":phase,"elapsed_seconds":elapsed.as_secs_f64(),"declaration_count":declarations.len(),"reference_count":references.len(),"selected_owner":"example.com/consumer::Value","selected_target":"example.com/dependency::Value","known_call_span":call.span,"consumer_signature_result_type":"int","inferred_variable":"Selected","inferred_dependency_result_type":"int","exact_owner_foreign_call_count":1})
     );
     Ok(())
 }
