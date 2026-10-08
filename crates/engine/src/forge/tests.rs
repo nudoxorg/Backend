@@ -357,6 +357,12 @@ fn forge_owner_refreshes_cross_instance_publications_for_reference_and_search() 
         Some("crates/widget"),
     )
     .expect("second coordinate");
+    let third_coordinate = ForgeCoordinate::new(
+        "https://github.com/acme/mono.git",
+        ForgeRevision::Tag(ForgeRefName::new("v3.0.0").expect("tag")),
+        Some("examples/source-pin"),
+    )
+    .expect("third coordinate");
     let mut first_transport = Fixture {
         calls: AtomicUsize::new(0),
         archive: tar_one(
@@ -371,6 +377,13 @@ fn forge_owner_refreshes_cross_instance_publications_for_reference_and_search() 
             b"[package]\nname=\"widget\"\nversion=\"2.0.0\"\n",
         ),
     };
+    let mut third_transport = Fixture {
+        calls: AtomicUsize::new(0),
+        archive: tar_one(
+            "examples/source-pin/Cargo.toml",
+            b"[package]\nname=\"source-pin\"\n",
+        ),
+    };
     let first_owner = ForgeAcquisitionService::open(
         &root,
         ForgeAcquisitionPolicy::Online,
@@ -383,11 +396,21 @@ fn forge_owner_refreshes_cross_instance_publications_for_reference_and_search() 
         ForgeAcquisitionLimits::default(),
     )
     .expect("second owner");
+    let third_owner = ForgeAcquisitionService::open(
+        &root,
+        ForgeAcquisitionPolicy::Online,
+        ForgeAcquisitionLimits::default(),
+    )
+    .expect("third owner");
 
     assert!(matches!(
         first_owner.acquire(&first_coordinate, &mut first_transport),
         ForgeAcquisitionOutcome::Hit(_)
     ));
+    let first_revision = first_owner
+        .search_catalog_snapshot()
+        .expect("first selected forge snapshot")
+        .revision;
     assert!(matches!(
         second_owner.acquire(&second_coordinate, &mut second_transport),
         ForgeAcquisitionOutcome::Hit(_)
@@ -398,13 +421,46 @@ fn forge_owner_refreshes_cross_instance_publications_for_reference_and_search() 
         .expect("refresh external forge record")
         .expect("second owner publication visible");
     assert_eq!(recovered.coordinate, second_coordinate);
+    let refreshed = first_owner
+        .search_catalog_snapshot()
+        .expect("refreshed search snapshot");
+    assert_eq!(refreshed.records.len(), 2);
+    assert_ne!(refreshed.revision, first_revision);
+    assert!(matches!(
+        third_owner.acquire(&third_coordinate, &mut third_transport),
+        ForgeAcquisitionOutcome::Hit(_)
+    ));
+    let with_source_pin = first_owner
+        .search_catalog_snapshot()
+        .expect("foreign source-pin publication refreshed");
+    assert_eq!(with_source_pin.records.len(), 3);
+    assert_ne!(with_source_pin.revision, refreshed.revision);
+    let source_pin = with_source_pin
+        .records
+        .iter()
+        .find(|record| record.coordinate == third_coordinate)
+        .expect("source-pin publication selected");
+    assert!(source_pin.manifests.iter().any(|manifest| {
+        matches!(
+            &manifest.name,
+            ForgeFact::Recorded(name) if name.as_str() == "source-pin"
+        ) && matches!(&manifest.version, ForgeFact::Unavailable(_))
+    }));
+    let reopened = ForgeAcquisitionService::open(
+        &root,
+        ForgeAcquisitionPolicy::Offline,
+        ForgeAcquisitionLimits::default(),
+    )
+    .expect("reopen refreshed forge catalog");
     assert_eq!(
-        first_owner
-            .search_records()
-            .expect("refreshed search")
-            .len(),
-        2
+        reopened
+            .search_catalog_snapshot()
+            .expect("recovered exact snapshot")
+            .revision,
+        with_source_pin.revision
     );
+    drop(reopened);
+    drop(third_owner);
     drop(second_owner);
     drop(first_owner);
     fs::remove_dir_all(root).expect("cleanup");

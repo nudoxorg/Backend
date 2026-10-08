@@ -59,6 +59,81 @@ const MAX_SEARCH_PROJECTION_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SEARCH_ROOT_SCAN_ENTRIES: usize = 65_536;
 static NEXT_SEARCH_STAGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct SearchProjectionWorkForTest {
+    pub(super) durable_opens: usize,
+    pub(super) source_root_fact_visits: usize,
+    pub(super) source_build_fact_visits: usize,
+    pub(super) forge_record_projections: usize,
+    pub(super) projection_hash_bytes: u64,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static SEARCH_PROJECTION_WORK_FOR_TEST: std::cell::RefCell<SearchProjectionWorkForTest> =
+        const { std::cell::RefCell::new(SearchProjectionWorkForTest {
+            durable_opens: 0,
+            source_root_fact_visits: 0,
+            source_build_fact_visits: 0,
+            forge_record_projections: 0,
+            projection_hash_bytes: 0,
+        }) };
+}
+
+#[cfg(test)]
+pub(super) fn search_projection_work_for_test() -> SearchProjectionWorkForTest {
+    SEARCH_PROJECTION_WORK_FOR_TEST.with(|work| *work.borrow())
+}
+
+#[cfg(test)]
+fn note_durable_open() {
+    SEARCH_PROJECTION_WORK_FOR_TEST.with(|work| work.borrow_mut().durable_opens += 1);
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn note_durable_open() {}
+
+#[cfg(test)]
+fn note_source_root_fact_visit() {
+    SEARCH_PROJECTION_WORK_FOR_TEST.with(|work| work.borrow_mut().source_root_fact_visits += 1);
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn note_source_root_fact_visit() {}
+
+#[cfg(test)]
+fn note_source_build_fact_visit() {
+    SEARCH_PROJECTION_WORK_FOR_TEST.with(|work| work.borrow_mut().source_build_fact_visits += 1);
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn note_source_build_fact_visit() {}
+
+#[cfg(test)]
+fn note_forge_record_projection() {
+    SEARCH_PROJECTION_WORK_FOR_TEST.with(|work| work.borrow_mut().forge_record_projections += 1);
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn note_forge_record_projection() {}
+
+#[cfg(test)]
+fn note_projection_hash_bytes(bytes: u64) {
+    SEARCH_PROJECTION_WORK_FOR_TEST.with(|work| {
+        let mut work = work.borrow_mut();
+        work.projection_hash_bytes = work.projection_hash_bytes.saturating_add(bytes);
+    });
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn note_projection_hash_bytes(_bytes: u64) {}
+
 /// Identity for one source-specific discovery claim. A second configured source
 /// may publish the same coordinate and remains a distinct search result.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -219,6 +294,7 @@ impl ForgeSourcePinSearchDocument {
     /// Projects only manifests for which no valid package release PURL was
     /// admitted. The row remains searchable by source, manifest, and commit.
     pub(crate) fn from_search_record(record: &ForgeSearchRecord) -> Result<Vec<Self>, String> {
+        note_forge_record_projection();
         let mut documents = Vec::new();
         for manifest in record.manifests.iter() {
             if forge_manifest_package_coordinate(manifest).is_some() {
@@ -408,6 +484,7 @@ impl ForgeSearchDocument {
     /// Projects the bounded metadata-only forge catalog snapshot into search
     /// documents without reopening its content-addressed archive.
     pub(crate) fn from_search_record(record: &ForgeSearchRecord) -> Result<Vec<Self>, String> {
+        note_forge_record_projection();
         let mut documents = Vec::new();
         for manifest in record.manifests.iter() {
             if let Some(document) = forge_search_document(record, manifest)? {
@@ -1941,6 +2018,7 @@ impl DiscoverySearchIndex {
         let mut lineage_changes = Vec::new();
         if let Some(store) = store {
             for (source, fact) in store.facts() {
+                note_source_build_fact_visit();
                 let lineage = qualified_lineage(&fact.coordinate)?;
                 add_discovery_document(
                     &mut inner,
@@ -2003,6 +2081,7 @@ impl DiscoverySearchIndex {
         cache_root: &Path,
         budget: DurableCacheBudget,
     ) -> Result<Self, String> {
+        note_durable_open();
         // This process-safe lock fences stage cleanup, publication, and pruning
         // across every durable discovery open for this cache.
         let cache_directory = OwnedWorkspaceDirectory::open(cache_root)
@@ -3610,6 +3689,7 @@ fn selected_discovery_root(
     let mut release_ids = BTreeSet::new();
     if let Some(store) = store {
         for (source, fact) in store.facts() {
+            note_source_root_fact_visit();
             let source = DiscoverySearchSource::Registry(*source);
             let lineage = qualified_lineage(&fact.coordinate)?;
             let key = DiscoverySearchKey {
@@ -3893,6 +3973,7 @@ fn search_projection_file_fingerprints(
                 if read == 0 {
                     break;
                 }
+                note_projection_hash_bytes(read as u64);
                 size = size
                     .checked_add(read as u64)
                     .ok_or_else(|| std::io::Error::other("projection file size overflow"))?;

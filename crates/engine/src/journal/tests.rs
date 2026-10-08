@@ -48,6 +48,30 @@ fn limits() -> JournalLimits {
     }
 }
 
+#[test]
+fn tail_identity_tracks_exact_validated_history_across_reopen() {
+    let path = test_path("tail-identity");
+    let (journal, _) = HashChainJournal::<TestLog>::open(&path).expect("open");
+    let empty = journal.tail_identity().expect("empty tail identity");
+    assert_eq!(empty, (0, [0; 32]));
+    let first = journal.append(&b"first".to_vec()).expect("first append");
+    let after_first = journal.tail_identity().expect("first tail identity");
+    assert_eq!(after_first, (1, *first.chain.as_bytes()));
+    let second = journal.append(&b"second".to_vec()).expect("second append");
+    let after_second = journal.tail_identity().expect("second tail identity");
+    assert_eq!(after_second, (2, *second.chain.as_bytes()));
+    assert_ne!(after_first, after_second);
+    drop(journal);
+
+    let (reopened, _) = HashChainJournal::<TestLog>::open(&path).expect("reopen");
+    assert_eq!(
+        reopened.tail_identity().expect("recovered tail identity"),
+        after_second
+    );
+    drop(reopened);
+    remove(&path);
+}
+
 fn remove(path: &Path) {
     let _ = std::fs::remove_file(path);
 }
@@ -246,7 +270,10 @@ fn cold_open_syncs_a_hard_exited_writer_suffix_before_returning_the_cursor() {
     )
     .expect("cold replay crosses durability barrier");
     assert_eq!(scan.last_sequence, Some(1));
-    assert_eq!(*replayed.borrow(), vec![b"first".to_vec(), b"cold-replay".to_vec()]);
+    assert_eq!(
+        *replayed.borrow(),
+        vec![b"first".to_vec(), b"cold-replay".to_vec()]
+    );
     assert_eq!(*order.borrow(), vec!["visitor", "visitor", "sync"]);
     drop(journal);
     remove(&candidate_path);
