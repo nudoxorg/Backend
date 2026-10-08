@@ -11,6 +11,7 @@ use std::{
     sync::{
         Arc, Condvar, Mutex, RwLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
+        OnceLock,
         mpsc::{
             Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError, channel, sync_channel,
         },
@@ -19,7 +20,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::driver::{ResolvedToolchain, ToolchainResolutionError, ToolchainSelection};
+use crate::driver::{CompileControl, ResolvedToolchain, ToolchainResolutionError, ToolchainSelection};
 use crate::publication::{binding::CompilationBindingFacts, manifest::CompilationManifestFacts};
 use arrayvec::ArrayVec;
 use backend_compile::{EmbeddingCacheSession, EmbeddingExecutable};
@@ -70,7 +71,8 @@ use crate::application::executor::{
     BoundedLaneQueue, LaneIdentity, LaneSendError, StagedOutputBudget, StagedOutputLease,
 };
 use crate::application::toolchain_probe::{
-    ToolchainProbeError, ToolchainProbeLimits, admit_typescript_script_invocation, probe_version,
+    ToolchainProbeError, ToolchainProbeLimits, ToolchainProbePrimary,
+    admit_typescript_script_invocation, probe_command_cancellable, probe_version,
 };
 use crate::application::typescript_host::TypeScriptProjectHost;
 use crate::application::{
@@ -270,6 +272,9 @@ pub enum LocalCompilerCapabilityState {
     Probing,
     /// The selected executable failed bounded identity admission.
     ProbeFailed,
+    /// A selected Rust authority must be admitted by an actual package request.
+    /// No reusable invocation manifest or recipe has been established yet.
+    Deferred,
     /// Exact toolchain and package authority are ready.
     Ready,
 }
@@ -521,6 +526,120 @@ pub(crate) struct LocalCompilerPlaneExecutionSeed {
     capability_identity: [u8; 32],
 }
 
+/// Concrete request admission needed by a fresh Rust workspace session.
+/// This is not a portable identity, local-plane seed, or publication recipe.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AdmittedRustRequestAuthority {
+    target: ContentId<CompilationTargetDomain>,
+    profile: LanguageProfile,
+    stage: Stage,
+    toolchain_identity: [u8; 32],
+    local_authority_fingerprint: [u8; 32],
+    environment_identity: [u8; 32],
+    target_platform_identity: [u8; 32],
+}
+
+impl AdmittedRustRequestAuthority {
+    /// Creates request-owned Rust authority only after concrete toolchain admission.
+    /// The selected path/creation policy is deliberately not an input to this constructor.
+    pub(crate) fn new(
+        target: ContentId<CompilationTargetDomain>,
+        profile: LanguageProfile,
+        stage: Stage,
+        resolved: ResolvedToolchain<'_>,
+        toolchain: &RustToolchain,
+        configuration: super::RustPackageAuthorityConfiguration<'_>,
+        maximum_image_bytes: usize,
+    ) -> Option<Self> {
+        if profile.language() != Language::Rust
+            || resolved.tool != NativeTool::Rustc
+            || resolved.as_ref() != toolchain.tool.as_path()
+            || configuration.toolchain.selected_rustc() != toolchain.tool.as_path()
+        {
+            return None;
+        }
+        let mut authority = blake3::Hasher::new();
+        authority.update(b"compiler-application.package-authority.v1\0");
+        authority.update(&<[u8; 2]>::from(profile));
+        update_admitted_rust_toolchain_identity(&mut authority, toolchain)?;
+        authority.update(&configuration.maximum_source_bytes.0.to_be_bytes());
+        authority.update(&[
+            u8::from(configuration.features.all_features),
+            u8::from(configuration.features.no_default_features),
+            match configuration.metadata_policy {
+                RustCargoMetadataPolicy::Offline => 0,
+                RustCargoMetadataPolicy::Online => 1,
+            },
+        ]);
+        authority.update(&(configuration.features.features.len() as u64).to_be_bytes());
+        for feature in configuration.features.features {
+            authority.update(&(feature.len() as u64).to_be_bytes());
+            authority.update(feature.as_bytes());
+        }
+        authority.update(&(maximum_image_bytes as u64).to_be_bytes());
+        let local_authority_fingerprint = *authority.finalize().as_bytes();
+        let environment_identity = compiler_environment_identity(profile);
+        let target_platform_identity = runtime_target_platform_identity()?;
+        let toolchain_identity = resolved.invocation_identity();
+        Some(Self {
+            target,
+            profile,
+            stage,
+            toolchain_identity: *toolchain_identity.as_ref(),
+            local_authority_fingerprint,
+            environment_identity,
+            target_platform_identity,
+        })
+    }
+
+    /// Mints the local recipe from the exact fresh workspace and final input/read witness.
+    pub(crate) fn bind_workspace(
+        self,
+        facts: &backend_compile::RustCargoWorkspaceFactsV1,
+        input: SemanticInputWitness,
+    ) -> LocalCompilerPlaneExecutionIdentity {
+        let mut authority = blake3::Hasher::new();
+        authority.update(b"compiler.rust.request-workspace-authority.v1\0");
+        authority.update(&self.local_authority_fingerprint);
+        update_path_identity(&mut authority, &facts.manifest_path);
+        update_path_identity(&mut authority, &facts.workspace_root);
+        authority.update(&facts.metadata_response_digest);
+        authority.update(&facts.resolved_lockfile_digest);
+        authority.update(&facts.toolchain_binding_digest);
+        let local_authority_fingerprint = *authority.finalize().as_bytes();
+        let capability_identity = semantic_recipe(
+            self.profile,
+            NativeTool::Rustc,
+            ContentId::from_digest(self.toolchain_identity),
+            local_authority_fingerprint,
+            self.environment_identity,
+            self.target_platform_identity,
+        );
+        LocalCompilerPlaneExecutionSeed {
+            target: self.target,
+            profile: self.profile,
+            stage: self.stage,
+            toolchain: NativeTool::Rustc,
+            toolchain_identity: self.toolchain_identity,
+            local_authority_fingerprint,
+            environment_identity: self.environment_identity,
+            target_platform_identity: self.target_platform_identity,
+            capability_identity,
+        }
+        .bind_input(input)
+    }
+
+    pub(crate) const fn toolchain_identity(self) -> [u8; 32] {
+        self.toolchain_identity
+    }
+    pub(crate) const fn environment_identity(self) -> [u8; 32] {
+        self.environment_identity
+    }
+    pub(crate) const fn local_authority_fingerprint(self) -> [u8; 32] {
+        self.local_authority_fingerprint
+    }
+}
+
 impl LocalCompilerPlaneExecutionSeed {
     pub(crate) fn for_typescript_project(
         target: ContentId<CompilationTargetDomain>,
@@ -554,30 +673,6 @@ impl LocalCompilerPlaneExecutionSeed {
             target_platform_identity,
             capability_identity,
         })
-    }
-
-    pub(crate) const fn target(self) -> ContentId<CompilationTargetDomain> {
-        self.target
-    }
-
-    pub(crate) const fn profile(self) -> LanguageProfile {
-        self.profile
-    }
-
-    pub(crate) const fn stage(self) -> Stage {
-        self.stage
-    }
-
-    pub(crate) const fn toolchain_identity(self) -> [u8; 32] {
-        self.toolchain_identity
-    }
-
-    pub(crate) const fn local_authority_fingerprint(self) -> [u8; 32] {
-        self.local_authority_fingerprint
-    }
-
-    pub(crate) const fn environment_identity(self) -> [u8; 32] {
-        self.environment_identity
     }
 
     fn with_local_authority_fingerprint(mut self, fingerprint: [u8; 32]) -> Self {
@@ -979,6 +1074,28 @@ impl LocalCompilerCapabilities {
                     failure: CompilerToolFailure::ProbeFailed,
                     ..
                 }) => LocalCompilerCapabilityState::ProbeFailed,
+                None if profile.language() == Language::Rust
+                    && configuration
+                        .package_authority
+                        .rust
+                        .as_ref()
+                        .is_some_and(|rust| rust.toolchain.is_deferred()) =>
+                {
+                    match runtime.map(|candidate| candidate.state) {
+                        Some(LocalRuntimeToolchainState::Probing) => {
+                            LocalCompilerCapabilityState::Probing
+                        }
+                        Some(LocalRuntimeToolchainState::Ready) => {
+                            LocalCompilerCapabilityState::Deferred
+                        }
+                        Some(LocalRuntimeToolchainState::ProbeFailed) => {
+                            LocalCompilerCapabilityState::ProbeFailed
+                        }
+                        Some(LocalRuntimeToolchainState::Unavailable) | None => {
+                            LocalCompilerCapabilityState::Unavailable
+                        }
+                    }
+                }
                 None if local_authority_fingerprint.is_none() => {
                     LocalCompilerCapabilityState::Unavailable
                 }
@@ -1055,6 +1172,40 @@ impl LocalCompilerCapabilities {
     }
 }
 
+fn update_admitted_rust_toolchain_identity(
+    identity: &mut blake3::Hasher,
+    toolchain: &RustToolchain,
+) -> Option<()> {
+    let cargo = toolchain.cargo.as_deref()?;
+    let cargo_home = toolchain.cargo_home.as_deref()?;
+    if [
+        toolchain.tool.as_path(),
+        toolchain.sysroot.as_path(),
+        cargo,
+        cargo_home,
+    ]
+    .into_iter()
+    .any(|path| !path.is_absolute())
+        || toolchain
+            .rustup_home
+            .as_deref()
+            .is_some_and(|path| !path.is_absolute())
+    {
+        return None;
+    }
+    identity.update(
+        backend_frontend_rust::legacy::RUST_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1.as_bytes(),
+    );
+    identity.update(b"rust-toolchain-ready.v1\0");
+    update_path_identity(identity, &toolchain.tool);
+    update_path_identity(identity, cargo);
+    update_path_identity(identity, cargo_home);
+    update_optional_path_identity(identity, Some(&toolchain.sysroot));
+    update_optional_string_identity(identity, toolchain.rustup_toolchain.as_deref());
+    update_optional_path_identity(identity, toolchain.rustup_home.as_deref());
+    Some(())
+}
+
 fn package_authority_fingerprint(
     profile: LanguageProfile,
     authority: &LocalRuntimePackageAuthority,
@@ -1066,21 +1217,11 @@ fn package_authority_fingerprint(
     match profile.language() {
         Language::Rust => {
             let rust = authority.rust.as_ref()?;
-            identity.update(
-                backend_frontend_rust::legacy::RUST_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1
-                    .as_bytes(),
-            );
-            let cargo = rust.toolchain.cargo.as_deref()?;
-            let cargo_home = rust.toolchain.cargo_home.as_deref()?;
-            update_path_identity(&mut identity, &rust.toolchain.tool);
-            update_path_identity(&mut identity, &rust.toolchain.sysroot);
-            update_path_identity(&mut identity, cargo);
-            update_path_identity(&mut identity, cargo_home);
-            update_optional_string_identity(
-                &mut identity,
-                rust.toolchain.rustup_toolchain.as_deref(),
-            );
-            update_optional_path_identity(&mut identity, rust.toolchain.rustup_home.as_deref());
+            let LocalRuntimeRustToolchainSelection::Ready(toolchain) = &rust.toolchain else {
+                // A captured path/creation policy is not an admitted compiler authority.
+                return None;
+            };
+            update_admitted_rust_toolchain_identity(&mut identity, toolchain)?;
             identity.update(&rust.maximum_source_bytes.0.to_be_bytes());
             identity.update(&[
                 u8::from(rust.all_features),
@@ -1348,6 +1489,9 @@ fn portable_invocation_options_digest(
     match profile.language() {
         Language::Rust => {
             let rust = authority.rust.as_ref()?;
+            if rust.toolchain.is_deferred() {
+                return None;
+            }
             options.update(b"rust-cargo-authority-options-v2\0");
             options.update(&[
                 u8::from(rust.all_features),
@@ -2215,11 +2359,200 @@ impl core::ops::Deref for LocalRuntimePackageRoot {
     }
 }
 
+/// Request-time failure while admitting a captured Rust toolchain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LocalRuntimeRustAuthorityFailure {
+    /// The selected default Cargo home could not be created or safely opened.
+    CargoHomeUnavailable,
+    /// The selected rustc could not provide a usable sysroot.
+    SysrootUnavailable,
+    /// The Rust request was cancelled before authority admission completed.
+    Cancelled,
+    /// The Rust request deadline elapsed before authority admission completed.
+    Deadline,
+    /// The selected compiler, Cargo, and sysroot could not form a toolchain.
+    ToolchainUnavailable,
+}
+
+/// Request-time inferred sysroot and, when absent, default Cargo-home admission.
+#[derive(Debug)]
+pub struct DeferredRustToolchain {
+    rustc: PathBuf,
+    cargo: PathBuf,
+    cargo_home: PathBuf,
+    cargo_home_selection: super::LocalHostCargoHomeSelection,
+    sysroot: Option<PathBuf>,
+    probe_limits: ToolchainProbeLimits,
+    ready: OnceLock<RustToolchain>,
+}
+
+impl DeferredRustToolchain {
+    pub(crate) fn new(
+        rustc: PathBuf,
+        cargo: PathBuf,
+        cargo_home: PathBuf,
+        cargo_home_selection: super::LocalHostCargoHomeSelection,
+        sysroot: Option<PathBuf>,
+        probe_limits: ToolchainProbeLimits,
+    ) -> Self {
+        Self {
+            rustc,
+            cargo,
+            cargo_home,
+            cargo_home_selection,
+            sysroot,
+            probe_limits,
+            ready: OnceLock::new(),
+        }
+    }
+
+    pub(crate) fn resolve(
+        &self,
+        control: CompileControl<'_>,
+    ) -> Result<&RustToolchain, LocalRuntimeRustAuthorityFailure> {
+        self.check_request(control)?;
+        if let Some(toolchain) = self.ready.get() {
+            return Ok(toolchain);
+        }
+        // This owner-local OnceLock publishes only a complete successful admission. Failed,
+        // cancelled, timed-out, or transient attempts remain retryable for a later Rust request.
+        // Concurrent first requests may do bounded duplicate admission work; neither request
+        // waits behind another request's child process or inherits its failure.
+        let toolchain = self.initialize(control)?;
+        self.check_request(control)?;
+        let _ = self.ready.set(toolchain);
+        self.ready
+            .get()
+            .ok_or(LocalRuntimeRustAuthorityFailure::ToolchainUnavailable)
+    }
+
+    fn initialize(
+        &self,
+        control: CompileControl<'_>,
+    ) -> Result<RustToolchain, LocalRuntimeRustAuthorityFailure> {
+        self.check_request(control)?;
+        match self.cargo_home_selection {
+            super::LocalHostCargoHomeSelection::DeferredDefault => {
+                backend_platform::durable::ensure_private_child_directory(&self.cargo_home)
+                    .map_err(|_| LocalRuntimeRustAuthorityFailure::CargoHomeUnavailable)?;
+            }
+            super::LocalHostCargoHomeSelection::Strict => {
+                backend_platform::DirectoryCapability::open(&self.cargo_home)
+                    .map_err(|_| LocalRuntimeRustAuthorityFailure::CargoHomeUnavailable)?;
+            }
+        }
+        self.check_request(control)?;
+
+        let sysroot = if let Some(sysroot) = &self.sysroot {
+            sysroot.clone()
+        } else {
+            let timeout = control
+                .deadline
+                .saturating_duration_since(Instant::now())
+                .min(self.probe_limits.timeout);
+            if timeout.is_zero() {
+                return Err(LocalRuntimeRustAuthorityFailure::Deadline);
+            }
+            let limits = ToolchainProbeLimits::new(timeout, self.probe_limits.maximum_stream_bytes)
+                .map_err(|_| LocalRuntimeRustAuthorityFailure::Deadline)?;
+            let output = probe_command_cancellable(
+                NativeTool::Rustc,
+                &self.rustc,
+                &["--print", "sysroot"],
+                limits,
+                control.cancelled,
+            )
+            .map_err(|error| match error {
+                ToolchainProbeError::Bounded {
+                    primary: ToolchainProbePrimary::Cancelled,
+                    ..
+                } => LocalRuntimeRustAuthorityFailure::Cancelled,
+                ToolchainProbeError::Bounded {
+                    primary: ToolchainProbePrimary::Deadline { .. },
+                    ..
+                } => LocalRuntimeRustAuthorityFailure::Deadline,
+                _ => LocalRuntimeRustAuthorityFailure::SysrootUnavailable,
+            })?;
+            let text = std::str::from_utf8(&output)
+                .map_err(|_| LocalRuntimeRustAuthorityFailure::SysrootUnavailable)?;
+            let selected = PathBuf::from(text.trim());
+            if !selected.is_absolute() {
+                return Err(LocalRuntimeRustAuthorityFailure::SysrootUnavailable);
+            }
+            let selected = std::fs::canonicalize(selected)
+                .map_err(|_| LocalRuntimeRustAuthorityFailure::SysrootUnavailable)?;
+            if !selected.is_dir() {
+                return Err(LocalRuntimeRustAuthorityFailure::SysrootUnavailable);
+            }
+            selected
+        };
+        self.check_request(control)?;
+        RustToolchain::from_paths_with_cargo(
+            self.rustc.clone(),
+            sysroot,
+            self.cargo.clone(),
+            self.cargo_home.clone(),
+        )
+        .map_err(|_| LocalRuntimeRustAuthorityFailure::ToolchainUnavailable)
+    }
+
+    fn check_request(
+        &self,
+        control: CompileControl<'_>,
+    ) -> Result<(), LocalRuntimeRustAuthorityFailure> {
+        if control.cancelled.load(Ordering::Acquire) {
+            return Err(LocalRuntimeRustAuthorityFailure::Cancelled);
+        }
+        if Instant::now() >= control.deadline {
+            return Err(LocalRuntimeRustAuthorityFailure::Deadline);
+        }
+        Ok(())
+    }
+}
+
+/// Rust toolchain authority that is either already admitted or safely deferred to first use.
+#[derive(Debug)]
+pub enum LocalRuntimeRustToolchainSelection {
+    /// Strict existing cache and sysroot authority admitted during host startup.
+    Ready(RustToolchain),
+    /// Exact selected paths with request-time sysroot and optional default-home admission.
+    Deferred(DeferredRustToolchain),
+}
+
+impl LocalRuntimeRustToolchainSelection {
+    pub(crate) const fn is_deferred(&self) -> bool {
+        matches!(self, Self::Deferred(_))
+    }
+
+    pub(crate) fn selected_rustc(&self) -> &Path {
+        match self {
+            Self::Ready(toolchain) => &toolchain.tool,
+            Self::Deferred(deferred) => &deferred.rustc,
+        }
+    }
+
+    pub(crate) fn resolve(
+        &self,
+        control: CompileControl<'_>,
+    ) -> Result<&RustToolchain, LocalRuntimeRustAuthorityFailure> {
+        if control.cancelled.load(Ordering::Acquire) {
+            return Err(LocalRuntimeRustAuthorityFailure::Cancelled);
+        }
+        if Instant::now() >= control.deadline {
+            return Err(LocalRuntimeRustAuthorityFailure::Deadline);
+        }
+        match self {
+            Self::Ready(toolchain) => Ok(toolchain),
+            Self::Deferred(deferred) => deferred.resolve(control),
+        }
+    }
+}
+
 /// Owned Rust authority configuration retained for the worker lifetime.
 #[derive(Debug)]
 pub struct LocalRuntimeRustAuthority {
-    /// Exact compiler and sysroot authority.
-    pub toolchain: RustToolchain,
+    /// Exact compiler authority with strict or deferred Cargo-home admission.
+    pub toolchain: LocalRuntimeRustToolchainSelection,
     /// Maximum root-source extent admitted before Cargo graph loading.
     pub maximum_source_bytes: SourceByteLimit,
     /// Enable every package feature.
@@ -4761,14 +5094,14 @@ mod portable_recipe_tests {
         let profile = LanguageProfile::Rust(RustEdition::Rust2024);
         let authority = LocalRuntimePackageAuthority {
             rust: Some(LocalRuntimeRustAuthority {
-                toolchain: RustToolchain {
+                toolchain: LocalRuntimeRustToolchainSelection::Ready(RustToolchain {
                     tool: host_path("/test/bin/rustc").to_path_buf(),
                     sysroot: host_path("/test/lib/rustlib").to_path_buf(),
                     cargo: Some(host_path("/test/bin/cargo").to_path_buf()),
                     cargo_home: Some(host_path("/test/cargo-home").to_path_buf()),
                     rustup_home: None,
                     rustup_toolchain: None,
-                },
+                }),
                 maximum_source_bytes: SourceByteLimit::from(1024),
                 all_features: false,
                 no_default_features: false,
@@ -5464,5 +5797,430 @@ mod request_lease_tests {
                 "abandonment must unregister the exact request"
             );
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod deferred_rust_toolchain_tests {
+    use super::{DeferredRustToolchain, LocalRuntimeRustAuthorityFailure};
+    use crate::{application::toolchain_probe::ToolchainProbeLimits, driver::CompileControl};
+    use std::{
+        num::NonZeroUsize,
+        os::unix::fs::PermissionsExt as _,
+        path::Path,
+        sync::atomic::{AtomicBool, AtomicU64, Ordering},
+        time::{Duration, Instant},
+    };
+
+    #[test]
+    fn cancelled_and_transient_failures_do_not_publish_or_poison_deferred_rust() {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "nudox-deferred-rust-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let home = root.join("home");
+        let bin = root.join("bin");
+        let sysroot = root.join("sysroot");
+        std::fs::create_dir_all(&home).expect("home");
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::fs::create_dir_all(&sysroot).expect("sysroot");
+        let root = std::fs::canonicalize(root).expect("canonical root");
+        let home = std::fs::canonicalize(home).expect("canonical home");
+        let bin = std::fs::canonicalize(bin).expect("canonical bin");
+        let sysroot = std::fs::canonicalize(sysroot).expect("canonical sysroot");
+        let rustc = bin.join("rustc");
+        let cargo = bin.join("cargo");
+        write_tool(&cargo, "#!/bin/sh\nexit 0\n");
+        write_tool(&rustc, "#!/bin/sh\nexit 1\n");
+        let limits = ToolchainProbeLimits::new(
+            Duration::from_secs(3),
+            NonZeroUsize::new(4096).expect("nonzero stream bound"),
+        )
+        .expect("valid probe limits");
+        let deferred = DeferredRustToolchain::new(
+            rustc.clone(),
+            cargo,
+            home.join(".cargo"),
+            super::super::LocalHostCargoHomeSelection::DeferredDefault,
+            None,
+            limits,
+        );
+
+        let cancelled = AtomicBool::new(true);
+        assert_eq!(
+            deferred.resolve(control(&cancelled)),
+            Err(LocalRuntimeRustAuthorityFailure::Cancelled)
+        );
+        assert!(
+            !home.join(".cargo").exists(),
+            "pre-admission cancellation must not create the Cargo home"
+        );
+
+        let cancelled = AtomicBool::new(false);
+        std::fs::write(home.join(".cargo"), "not a directory").expect("temporary blocker");
+        assert_eq!(
+            deferred.resolve(control(&cancelled)),
+            Err(LocalRuntimeRustAuthorityFailure::CargoHomeUnavailable)
+        );
+        std::fs::remove_file(home.join(".cargo")).expect("remove temporary blocker");
+
+        assert_eq!(
+            deferred.resolve(control(&cancelled)),
+            Err(LocalRuntimeRustAuthorityFailure::SysrootUnavailable)
+        );
+        assert!(home.join(".cargo").is_dir(), "only a Rust request creates it");
+
+        write_tool(
+            &rustc,
+            &format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", sysroot.display()),
+        );
+        let admitted = deferred.resolve(control(&cancelled)).expect("retry succeeds");
+        assert_eq!(admitted.tool, rustc);
+        assert_eq!(admitted.sysroot, sysroot);
+        assert_eq!(admitted.cargo_home.as_deref(), Some(home.join(".cargo").as_path()));
+
+        std::fs::remove_dir_all(root).expect("fixture cleanup");
+    }
+
+    #[test]
+    fn inferred_sysroot_with_a_strict_existing_home_never_creates_or_rewrites_it() {
+        let root =
+            std::env::temp_dir().join(format!("nudox-strict-rust-home-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("fixture root");
+        let root = std::fs::canonicalize(root).unwrap();
+        let home = root.join("explicit-cache");
+        std::fs::create_dir(&home).unwrap();
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(home.join("marker"), b"preserve").unwrap();
+        let rustc = root.join("rustc");
+        let cargo = root.join("cargo");
+        let sysroot = root.join("sysroot");
+        std::fs::create_dir(&sysroot).unwrap();
+        write_tool(&cargo, "#!/bin/sh\nexit 0\n");
+        write_tool(
+            &rustc,
+            &format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", sysroot.display()),
+        );
+        let deferred = DeferredRustToolchain::new(
+            rustc.clone(),
+            cargo.clone(),
+            home.clone(),
+            super::super::LocalHostCargoHomeSelection::Strict,
+            None,
+            ToolchainProbeLimits::new(Duration::from_secs(3), NonZeroUsize::new(4096).unwrap())
+                .unwrap(),
+        );
+        let cancelled = AtomicBool::new(false);
+        assert_eq!(
+            deferred.resolve(control(&cancelled)).unwrap().sysroot,
+            sysroot
+        );
+        assert_eq!(std::fs::read(home.join("marker")).unwrap(), b"preserve");
+        assert_eq!(
+            std::fs::metadata(&home).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        let absent = root.join("absent-explicit-cache");
+        let strict_absent = DeferredRustToolchain::new(
+            rustc,
+            cargo,
+            absent.clone(),
+            super::super::LocalHostCargoHomeSelection::Strict,
+            None,
+            ToolchainProbeLimits::new(Duration::from_secs(3), NonZeroUsize::new(4096).unwrap())
+                .unwrap(),
+        );
+        assert_eq!(
+            strict_absent.resolve(control(&cancelled)),
+            Err(LocalRuntimeRustAuthorityFailure::CargoHomeUnavailable)
+        );
+        assert!(
+            !absent.exists(),
+            "request admission must not create a strict explicit home"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn write_tool(path: &Path, contents: &str) {
+        std::fs::write(path, contents).expect("write tool");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .expect("tool permissions");
+    }
+
+    fn control(cancelled: &AtomicBool) -> CompileControl<'_> {
+        CompileControl {
+            deadline: Instant::now() + Duration::from_secs(3),
+            cancelled,
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod rust_request_authority_tests {
+    use super::*;
+    use crate::application::{LocalHostCargoHomeSelection, RustPackageAuthorityConfiguration};
+    use backend_compile::{RustCargoFeatureSelectionV1, RustCargoWorkspaceFactsV1};
+    use backend_semantic::vocabulary::RustEdition;
+    use backend_version::ScopeRoot;
+
+    fn selected(sysroot: &str) -> RustToolchain {
+        RustToolchain {
+            tool: PathBuf::from("/selected/bin/rustc"),
+            sysroot: PathBuf::from(sysroot),
+            cargo: Some(PathBuf::from("/selected/bin/cargo")),
+            cargo_home: Some(PathBuf::from("/selected/cargo-home")),
+            rustup_home: None,
+            rustup_toolchain: None,
+        }
+    }
+
+    fn admitted(
+        toolchain: &RustToolchain,
+        profile: LanguageProfile,
+    ) -> AdmittedRustRequestAuthority {
+        let selection = LocalRuntimeRustToolchainSelection::Ready(toolchain.clone());
+        let resolved =
+            ResolvedToolchain::from_version(NativeTool::Rustc, &toolchain.tool, b"rustc 1 exact")
+                .expect("selected compiler version");
+        AdmittedRustRequestAuthority::new(
+            ContentId::from_digest([1; 32]),
+            profile,
+            Stage::LowerIr,
+            resolved,
+            toolchain,
+            RustPackageAuthorityConfiguration {
+                toolchain: &selection,
+                maximum_source_bytes: SourceByteLimit::from(4096),
+                features: RustFeatureControl {
+                    all_features: false,
+                    no_default_features: false,
+                    features: &["selected"],
+                },
+                metadata_policy: RustCargoMetadataPolicy::Offline,
+            },
+            4096,
+        )
+        .expect("concrete request authority")
+    }
+
+    fn facts() -> RustCargoWorkspaceFactsV1 {
+        RustCargoWorkspaceFactsV1 {
+            manifest_path: PathBuf::from("/package/Cargo.toml"),
+            workspace_root: PathBuf::from("/package"),
+            selected_package_id: None,
+            requested_features: RustCargoFeatureSelectionV1 {
+                all_features: false,
+                no_default_features: false,
+                features: vec![Box::<str>::from("selected")].into_boxed_slice(),
+            },
+            workspace_packages: Box::new([]),
+            resolved_packages: Box::new([]),
+            metadata_response_digest: [2; 32],
+            resolved_lockfile_digest: [3; 32],
+            toolchain_binding_digest: [4; 32],
+        }
+    }
+
+    fn input(input_root: u8, manifest: u8) -> SemanticInputWitness {
+        SemanticInputWitness::claimed_state(
+            [input_root; 32],
+            ScopeRoot::from_bytes([manifest; 32]),
+            Coverage::Partial,
+        )
+    }
+
+    #[test]
+    fn deferred_selection_has_no_pre_request_manifest_or_invocation_for_any_rust_edition() {
+        let root = std::env::temp_dir().join(format!(
+            "nudox-rust-deferred-capability-{}",
+            std::process::id()
+        ));
+        let cargo_home = root.join("absent-cargo-home");
+        assert!(!cargo_home.exists());
+        let runtime = LocalRuntimeToolchain::resolved(
+            NativeTool::Rustc,
+            root.join("rustc"),
+            b"rustc exact version",
+        )
+        .expect("selected version");
+        let authority = LocalRuntimePackageAuthority {
+            rust: Some(LocalRuntimeRustAuthority {
+                toolchain: LocalRuntimeRustToolchainSelection::Deferred(
+                    DeferredRustToolchain::new(
+                        root.join("rustc"),
+                        root.join("cargo"),
+                        cargo_home.clone(),
+                        LocalHostCargoHomeSelection::DeferredDefault,
+                        None,
+                        ToolchainProbeLimits::new(Duration::from_secs(1), NonZeroUsize::MIN)
+                            .unwrap(),
+                    ),
+                ),
+                maximum_source_bytes: SourceByteLimit::from(4096),
+                all_features: false,
+                no_default_features: false,
+                features: Box::new([]),
+                metadata_policy: RustCargoMetadataPolicy::Offline,
+            }),
+            ..LocalRuntimePackageAuthority::default()
+        };
+        let configuration = LocalCompilerRuntimeConfiguration::new(
+            LocalCompilerRuntimePaths::new(
+                root.join("artifacts"),
+                root.join("journal"),
+                root.join("native"),
+            )
+            .unwrap(),
+            vec![runtime].into_boxed_slice(),
+            Box::new([]),
+            authority,
+            LocalCompilerTimeout::new(Duration::from_secs(1)).unwrap(),
+            PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN).unwrap(),
+            LocalCompilerScratch::with_fragment_capacity(NonZeroUsize::MIN).unwrap(),
+        )
+        .unwrap();
+        let capabilities = configuration.capabilities();
+        for edition in [
+            RustEdition::Rust2015,
+            RustEdition::Rust2018,
+            RustEdition::Rust2021,
+            RustEdition::Rust2024,
+        ] {
+            let profile = LanguageProfile::Rust(edition);
+            let capability = capabilities.for_profile(profile);
+            assert_eq!(capability.state(), LocalCompilerCapabilityState::Deferred);
+            assert_eq!(
+                capability.setup_issue(),
+                None,
+                "the selected Rust tool is not missing"
+            );
+            assert_eq!(capability.manifest(), None);
+            assert_eq!(capability.session_lineage(), None);
+            assert_eq!(capability.local_authority_fingerprint(), None);
+            assert_eq!(
+                capability.execution_identity(
+                    ContentId::from_digest([1; 32]),
+                    profile,
+                    Stage::LowerIr
+                ),
+                None
+            );
+            assert_eq!(
+                capability.plane_execution_seed(
+                    ContentId::from_digest([1; 32]),
+                    profile,
+                    Stage::LowerIr
+                ),
+                None
+            );
+        }
+        assert!(
+            !cargo_home.exists(),
+            "capability inspection cannot realize a default cache"
+        );
+    }
+
+    #[test]
+    fn staged_rust_recipe_binds_concrete_sysroot_cargo_resolution_and_final_read_witness() {
+        let profile = LanguageProfile::Rust(RustEdition::Rust2024);
+        let first = admitted(&selected("/sysroot/one"), profile);
+        let other = admitted(&selected("/sysroot/two"), profile);
+        assert_ne!(
+            first.local_authority_fingerprint(),
+            other.local_authority_fingerprint()
+        );
+        let exact = facts();
+        let baseline = first.bind_workspace(&exact, input(5, 6));
+        assert_eq!(baseline.profile(), profile);
+        assert_eq!(baseline.target(), ContentId::from_digest([1; 32]));
+        assert_eq!(
+            baseline.input_witness().coverage().state(),
+            Coverage::Partial
+        );
+        assert_ne!(
+            baseline.recipe_identity(),
+            other.bind_workspace(&exact, input(5, 6)).recipe_identity()
+        );
+        for cargo_home in [false, true] {
+            let mut changed_toolchain = selected("/sysroot/one");
+            if cargo_home {
+                changed_toolchain.cargo_home = Some(PathBuf::from("/different/cargo-home"));
+            } else {
+                changed_toolchain.cargo = Some(PathBuf::from("/different/bin/cargo"));
+            }
+            assert_ne!(
+                baseline.recipe_identity(),
+                admitted(&changed_toolchain, profile)
+                    .bind_workspace(&exact, input(5, 6))
+                    .recipe_identity()
+            );
+        }
+        for field in 0..3 {
+            let mut changed = facts();
+            match field {
+                0 => changed.metadata_response_digest = [12; 32],
+                1 => changed.resolved_lockfile_digest = [13; 32],
+                _ => changed.toolchain_binding_digest = [14; 32],
+            }
+            assert_ne!(
+                baseline.recipe_identity(),
+                first
+                    .bind_workspace(&changed, input(5, 6))
+                    .recipe_identity()
+            );
+        }
+        assert_ne!(
+            baseline.recipe_identity(),
+            first.bind_workspace(&exact, input(15, 6)).recipe_identity()
+        );
+        assert_ne!(
+            baseline.recipe_identity(),
+            first.bind_workspace(&exact, input(5, 16)).recipe_identity()
+        );
+        let old_edition = admitted(
+            &selected("/sysroot/one"),
+            LanguageProfile::Rust(RustEdition::Rust2018),
+        );
+        assert_ne!(
+            baseline.recipe_identity(),
+            old_edition
+                .bind_workspace(&exact, input(5, 6))
+                .recipe_identity()
+        );
+    }
+
+    #[test]
+    fn request_authority_rejects_a_different_resolved_compiler_before_any_recipe() {
+        let toolchain = selected("/sysroot/one");
+        let selection = LocalRuntimeRustToolchainSelection::Ready(toolchain.clone());
+        let resolved = ResolvedToolchain::from_version(
+            NativeTool::Rustc,
+            Path::new("/different/rustc"),
+            b"rustc 1 exact",
+        )
+        .unwrap();
+        assert_eq!(
+            AdmittedRustRequestAuthority::new(
+                ContentId::from_digest([1; 32]),
+                LanguageProfile::Rust(RustEdition::Rust2024),
+                Stage::LowerIr,
+                resolved,
+                &toolchain,
+                RustPackageAuthorityConfiguration {
+                    toolchain: &selection,
+                    maximum_source_bytes: SourceByteLimit::from(4096),
+                    features: RustFeatureControl {
+                        all_features: false,
+                        no_default_features: false,
+                        features: &[]
+                    },
+                    metadata_policy: RustCargoMetadataPolicy::Offline,
+                },
+                4096,
+            ),
+            None
+        );
     }
 }

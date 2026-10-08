@@ -22,6 +22,7 @@ pub enum InstalledToolPlace {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::application::ClosedLocalHostEnvironmentSnapshot;
     use std::os::unix::fs::PermissionsExt as _;
 
     struct RustEnvironment {
@@ -90,10 +91,15 @@ mod tests {
             )
         };
         let mut paths = Vec::new();
+        let mut deferred_default = false;
         let invalid_cargo = root.join("configured/missing-cargo");
         paths.push((LocalHostVariable::NudoxCargo, invalid_cargo.clone()));
         assert!(matches!(
-            make(Some(invalid_cargo), None).capture_installed_rust_paths(&mut paths, Some(&home)),
+            make(Some(invalid_cargo), None).capture_installed_rust_paths(
+                &mut paths,
+                Some(&home),
+                &mut deferred_default,
+            ),
             Err(LocalCompilerHostError::ConfiguredPath {
                 variable: LocalHostVariable::NudoxCargo,
                 ..
@@ -105,7 +111,11 @@ mod tests {
         );
         let mut paths = Vec::new();
         assert!(matches!(
-            make(None, Some(OsString::new())).capture_installed_rust_paths(&mut paths, Some(&home)),
+            make(None, Some(OsString::new())).capture_installed_rust_paths(
+                &mut paths,
+                Some(&home),
+                &mut deferred_default,
+            ),
             Err(LocalCompilerHostError::RelativeEnvironmentPath {
                 variable: LocalHostVariable::NudoxCargoHome,
                 ..
@@ -160,23 +170,23 @@ mod tests {
         }
         let mut paths = Vec::new();
         make(None, None)
-            .capture_installed_rust_paths(&mut paths, Some(&home))
+            .capture_installed_rust_paths(&mut paths, Some(&home), &mut deferred_default)
             .expect("shared default pair");
         assert!(paths.contains(&(LocalHostVariable::NudoxRustc, bin.join("rustc"))));
         assert!(paths.contains(&(LocalHostVariable::NudoxCargo, bin.join("cargo"))));
-        make(None, None)
-            .realize_installed_rust_cache(&paths, Some(&home))
-            .expect("realize selected default");
+        assert!(deferred_default, "absent inferred Cargo home is deferred");
         let cache = home.join(".cargo");
+        assert!(!cache.exists(), "capture does not create the Cargo home");
+        std::fs::create_dir(&cache).expect("simulate a preexisting Cargo home");
         assert_eq!(
             std::fs::metadata(&cache).unwrap().permissions().mode() & 0o777,
-            0o700
+            0o755
         );
         std::fs::write(cache.join("owned-marker"), "preserve").expect("user content");
         std::fs::set_permissions(&cache, std::fs::Permissions::from_mode(0o755))
             .expect("existing user permissions");
         make(None, None)
-            .capture_installed_rust_paths(&mut Vec::new(), Some(&home))
+            .capture_installed_rust_paths(&mut Vec::new(), Some(&home), &mut deferred_default)
             .expect("repeat capture");
         assert_eq!(
             std::fs::read_to_string(cache.join("owned-marker")).unwrap(),
@@ -186,6 +196,216 @@ mod tests {
             std::fs::metadata(&cache).unwrap().permissions().mode() & 0o777,
             0o755
         );
+        std::fs::remove_dir_all(root).expect("owned fixture cleanup");
+    }
+
+    #[test]
+    fn installed_capture_transports_only_the_absent_inferred_default_as_v3() {
+        let root = std::env::temp_dir().join(format!(
+            "nudox-rust-capture-v3-{}-{}",
+            std::process::id(),
+            super::super::NEXT_NATIVE_WORK.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let home = root.join("home");
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&home).expect("home");
+        std::fs::create_dir_all(&bin).expect("bin");
+        let root = std::fs::canonicalize(root).expect("canonical fixture root");
+        let home = root.join("home");
+        let bin = root.join("bin");
+        for tool in ["rustc", "cargo"] {
+            let path = bin.join(tool);
+            std::fs::write(&path, "#!/bin/sh\nexit 0\n").expect("tool");
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+                .expect("tool permissions");
+        }
+
+        let capture = |cargo_home, configured| {
+            LocalCompilerHost::new(
+                RustEnvironment {
+                    home: home.clone(),
+                    bin: bin.clone(),
+                    cargo: None,
+                    cargo_home,
+                    typescript: None,
+                    configured,
+                },
+                super::super::LocalHostDiscovery::InstalledTools,
+            )
+            .capture_installed_selection()
+        };
+
+        let cache = home.join(".cargo");
+        let captured = capture(None, None).expect("capture installed Rust pair");
+        assert_eq!(
+            captured.snapshot().cargo_home_selection(),
+            super::super::LocalHostCargoHomeSelection::DeferredDefault
+        );
+        assert_eq!(
+            captured.snapshot().path(LocalHostVariable::NudoxCargoHome),
+            Some(cache.as_path())
+        );
+        assert_eq!(
+            captured.snapshot().path(LocalHostVariable::NudoxRustc),
+            Some(bin.join("rustc").as_path())
+        );
+        assert_eq!(
+            captured.snapshot().path(LocalHostVariable::NudoxCargo),
+            Some(bin.join("cargo").as_path())
+        );
+        assert!(!cache.exists(), "capture must not materialize the cache");
+        let wire = captured.snapshot().encode().expect("encode v3");
+        assert!(wire.starts_with("{\"version\":3,"));
+        let received = ClosedLocalHostEnvironmentSnapshot::parse(&wire).expect("parse v3");
+        assert_eq!(received, *captured.snapshot());
+        assert!(!cache.exists(), "transport must not materialize the cache");
+
+        let explicit_cargo_home = root.join("explicit-cargo-home");
+        std::fs::create_dir(&explicit_cargo_home).expect("explicit CARGO_HOME");
+        let explicit = capture(Some(explicit_cargo_home.clone().into_os_string()), None)
+            .expect("capture explicit CARGO_HOME");
+        assert_eq!(
+            explicit.snapshot().cargo_home_selection(),
+            super::super::LocalHostCargoHomeSelection::Strict
+        );
+        assert_eq!(
+            explicit.snapshot().path(LocalHostVariable::NudoxCargoHome),
+            Some(explicit_cargo_home.as_path())
+        );
+        assert!(!cache.exists(), "explicit cache does not create HOME/.cargo");
+
+        let explicit_nudox_home = root.join("explicit-nudox-cargo-home");
+        std::fs::create_dir(&explicit_nudox_home).expect("explicit NUDOX_CARGO_HOME");
+        let explicit = capture(
+            None,
+            Some((LocalHostVariable::NudoxCargoHome, explicit_nudox_home.clone())),
+        )
+        .expect("capture explicit NUDOX_CARGO_HOME");
+        assert_eq!(
+            explicit.snapshot().cargo_home_selection(),
+            super::super::LocalHostCargoHomeSelection::Strict
+        );
+        assert_eq!(
+            explicit.snapshot().path(LocalHostVariable::NudoxCargoHome),
+            Some(explicit_nudox_home.as_path())
+        );
+        assert!(!cache.exists(), "explicit NUDOX cache does not create HOME/.cargo");
+
+        std::fs::remove_dir_all(root).expect("owned fixture cleanup");
+    }
+
+    #[test]
+    fn captured_rust_with_absent_or_existing_default_home_does_not_probe_sysroot_at_startup() {
+        struct ClosedEnvironment {
+            snapshot: ClosedLocalHostEnvironmentSnapshot,
+            data_root: PathBuf,
+        }
+        impl LocalHostEnvironment for ClosedEnvironment {
+            fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
+                if variable == LocalHostVariable::NudoxDataRoot {
+                    return Some(self.data_root.clone().into_os_string());
+                }
+                self.snapshot
+                    .path(variable)
+                    .map(|path| path.as_os_str().to_owned())
+            }
+
+            fn cargo_home_selection(&self) -> super::super::LocalHostCargoHomeSelection {
+                self.snapshot.cargo_home_selection()
+            }
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "nudox-rust-startup-read-only-{}-{}",
+            std::process::id(),
+            super::super::NEXT_NATIVE_WORK.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(root.join("home")).expect("home");
+        std::fs::create_dir(root.join("bin")).expect("bin");
+        let root = std::fs::canonicalize(root).expect("canonical fixture root");
+        let home = root.join("home");
+        let bin = root.join("bin");
+        let marker = root.join("unexpected-sysroot-probe");
+        std::fs::write(
+            bin.join("rustc"),
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = --print ]; then printf probe > '{}'; exit 71; fi\nprintf 'rustc 1.97.1 fixture\\n'\n",
+                marker.display(),
+            ),
+        )
+        .expect("sysroot-probe sentinel");
+        std::fs::write(
+            bin.join("cargo"),
+            "#!/bin/sh\nprintf 'cargo 1.97.1 fixture\\n'\n",
+        )
+        .expect("Cargo version fixture");
+        for tool in ["rustc", "cargo"] {
+            std::fs::set_permissions(bin.join(tool), std::fs::Permissions::from_mode(0o700))
+                .expect("tool permissions");
+        }
+        let cache = home.join(".cargo");
+        for existing in [false, true] {
+            if existing {
+                std::fs::create_dir(&cache).expect("existing default cache");
+                std::fs::set_permissions(&cache, std::fs::Permissions::from_mode(0o755))
+                    .expect("existing user permissions");
+                std::fs::write(cache.join("user-marker"), b"preserve").expect("user content");
+            }
+            let captured = LocalCompilerHost::new(
+                RustEnvironment {
+                    home: home.clone(),
+                    bin: bin.clone(),
+                    cargo: None,
+                    cargo_home: None,
+                    typescript: None,
+                    configured: None,
+                },
+                super::super::LocalHostDiscovery::InstalledTools,
+            )
+            .capture_installed_selection()
+            .expect("read-only installed capture");
+            let host = LocalCompilerHost::new(
+                ClosedEnvironment {
+                    snapshot: captured.snapshot().clone(),
+                    data_root: root.join("absent-runtime-data"),
+                },
+                super::super::LocalHostDiscovery::ClosedSnapshot,
+            );
+            let capabilities = host
+                .inspect_capabilities()
+                .expect("bounded version inspection");
+            let rust =
+                capabilities.for_profile(backend_semantic::vocabulary::LanguageProfile::Rust(
+                    backend_semantic::vocabulary::RustEdition::Rust2024,
+                ));
+            assert_eq!(
+                rust.state(),
+                crate::application::LocalCompilerCapabilityState::Deferred
+            );
+            assert_eq!(rust.manifest(), None);
+            assert_eq!(
+                rust.setup_issue(),
+                None,
+                "selected Rust remains available for request admission"
+            );
+            assert!(!marker.exists(), "startup must not infer a Rust sysroot");
+            assert!(!root.join("absent-runtime-data").exists());
+            assert_eq!(
+                cache.exists(),
+                existing,
+                "startup must not create a default cache"
+            );
+            if existing {
+                assert_eq!(
+                    std::fs::read(cache.join("user-marker")).unwrap(),
+                    b"preserve"
+                );
+                assert_eq!(
+                    std::fs::metadata(&cache).unwrap().permissions().mode() & 0o777,
+                    0o755
+                );
+            }
+        }
         std::fs::remove_dir_all(root).expect("owned fixture cleanup");
     }
 }
@@ -390,52 +610,12 @@ use backend_semantic::vocabulary::NativeTool;
 use std::path::Path;
 
 impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
-    /// Realize only the inferred Cargo home after every launch path has been admitted.
-    pub(super) fn realize_installed_rust_cache(
-        &self,
-        paths: &[(LocalHostVariable, PathBuf)],
-        home: Option<&Path>,
-    ) -> Result<(), LocalCompilerHostError> {
-        if self
-            .environment
-            .value(LocalHostVariable::NudoxCargoHome)
-            .is_some()
-            || self.environment.cargo_home().is_some()
-        {
-            return Ok(());
-        }
-        let selected = |variable| {
-            paths
-                .iter()
-                .find(|(key, _)| *key == variable)
-                .map(|(_, path)| path.as_path())
-        };
-        let (Some(rustc), Some(cargo), Some(cache), Some(home)) = (
-            selected(LocalHostVariable::NudoxRustc),
-            selected(LocalHostVariable::NudoxCargo),
-            selected(LocalHostVariable::NudoxCargoHome),
-            home,
-        ) else {
-            return Ok(());
-        };
-        if cache != home.join(".cargo") || cache.exists() || !rustc.is_file() || !cargo.is_file() {
-            return Ok(());
-        }
-        backend_platform::durable::ensure_private_child_directory(cache).map_err(|source| {
-            LocalCompilerHostError::ConfiguredPath {
-                role: LocalHostPathRole::CargoHome,
-                variable: LocalHostVariable::NudoxCargoHome,
-                path: cache.to_path_buf().into_boxed_path(),
-                source,
-            }
-        })
-    }
-
     /// Complete the same installed Rust pair for every local service surface.
     pub(super) fn capture_installed_rust_paths(
         &self,
         paths: &mut Vec<(LocalHostVariable, PathBuf)>,
         home: Option<&Path>,
+        deferred_default_cargo_home: &mut bool,
     ) -> Result<(), LocalCompilerHostError> {
         let inputs = InstalledRustInputs {
             configured_rustc: self.environment.value(LocalHostVariable::NudoxRustc),
@@ -484,6 +664,11 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             .any(|(key, _)| *key == LocalHostVariable::NudoxCargoHome)
         {
             let configured = self.environment.cargo_home();
+            let has_explicit_cargo_home = configured.is_some()
+                || self
+                    .environment
+                    .value(LocalHostVariable::NudoxCargoHome)
+                    .is_some();
             let cargo_home = configured
                 .map(PathBuf::from)
                 .or_else(|| home.map(|home| home.join(".cargo")));
@@ -493,6 +678,12 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                         variable: LocalHostVariable::NudoxCargoHome,
                         path: cargo_home.into_boxed_path(),
                     });
+                }
+                if !has_explicit_cargo_home {
+                    *deferred_default_cargo_home = matches!(
+                        std::fs::symlink_metadata(&cargo_home),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+                    );
                 }
                 paths.push((LocalHostVariable::NudoxCargoHome, cargo_home));
             }

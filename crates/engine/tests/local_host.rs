@@ -278,6 +278,255 @@ fn explicit_rust_toolchain_selected_through_its_proxies_starts_a_ready_owner() {
 }
 
 #[test]
+fn deferred_default_rust_admits_a_real_workspace_and_local_recipe_then_reopens_offline()
+-> Result<(), Box<dyn std::error::Error>> {
+    use backend_engine::application::{
+        ClosedLocalHostEnvironmentSnapshot, LocalHostCargoHomeSelection, OwnedPackageSource,
+        OwnedPackageSourceSet,
+    };
+    use backend_library::interface::{
+        CorrelationId, GenerateTarget, PackageCompileRequest, PackageUrl,
+    };
+    use backend_semantic::ir::{
+        Confidence, ExternalTarget, ForeignTargetOrigin, ItemKind, LinkKind, LinkTarget,
+        SemanticCoreReader, SemanticReader,
+    };
+    use backend_semantic::vocabulary::{RustEdition, Stage};
+
+    struct SelectedEnvironment {
+        home: PathBuf,
+        rustc: PathBuf,
+        cargo: PathBuf,
+        data: PathBuf,
+    }
+    impl LocalHostEnvironment for SelectedEnvironment {
+        fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
+            match variable {
+                LocalHostVariable::Home => Some(self.home.clone().into_os_string()),
+                LocalHostVariable::NudoxRustc => Some(self.rustc.clone().into_os_string()),
+                LocalHostVariable::NudoxCargo => Some(self.cargo.clone().into_os_string()),
+                LocalHostVariable::NudoxDataRoot => Some(self.data.clone().into_os_string()),
+                _ => None,
+            }
+        }
+    }
+    struct ClosedEnvironment(ClosedLocalHostEnvironmentSnapshot, PathBuf);
+    impl LocalHostEnvironment for ClosedEnvironment {
+        fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
+            if variable == LocalHostVariable::NudoxDataRoot {
+                return Some(self.1.clone().into_os_string());
+            }
+            self.0
+                .path(variable)
+                .map(|path| path.as_os_str().to_owned())
+        }
+
+        fn cargo_home_selection(&self) -> LocalHostCargoHomeSelection {
+            self.0.cargo_home_selection()
+        }
+    }
+
+    let rustc = std::env::var_os("RUSTC")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute() && path.is_file())
+        .or_else(|| on_path("rustc"))
+        .ok_or("an actual Rust compiler is required")?;
+    let cargo = rustc.with_file_name(format!("cargo{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        cargo.is_file(),
+        "the actual selected Rust pair must include Cargo"
+    );
+    let root = fresh_root("deferred-rust-real");
+    fs::create_dir_all(root.join("home"))?;
+    fs::create_dir(root.join("project"))?;
+    let root = fs::canonicalize(root)?;
+    let home = root.join("home");
+    let package = root.join("project");
+    fs::create_dir(package.join("src"))?;
+    let manifest =
+        "[package]\nname=\"deferred_request_fixture\"\nversion=\"0.1.0\"\nedition=\"2024\"\n";
+    let caller = "mod service;\npub fn drive(service: &service::Service) { service.set_note(); }\n";
+    let declaration = "pub struct Service;\nimpl Service { pub fn set_note(&self) {} }\n";
+    fs::write(package.join("Cargo.toml"), manifest)?;
+    fs::write(package.join("src/lib.rs"), caller)?;
+    fs::write(package.join("src/service.rs"), declaration)?;
+    let profile = LanguageProfile::Rust(RustEdition::Rust2024);
+    let request = PackageCompileRequest::new(
+        GenerateTarget {
+            correlation: CorrelationId(36),
+            profile,
+            stage: Stage::LowerIr,
+        },
+        PackageUrl::try_from("pkg:cargo/deferred-request-fixture@0.1.0".to_owned())
+            .map_err(|error| std::io::Error::other(format!("package URL: {error:?}")))?,
+    )
+    .map_err(|error| std::io::Error::other(format!("package profile: {error:?}")))?;
+
+    for cold in [false, true] {
+        let captured = LocalCompilerHost::new(
+            SelectedEnvironment {
+                home: home.clone(),
+                rustc: rustc.clone(),
+                cargo: cargo.clone(),
+                data: root.join("runtime-data"),
+            },
+            LocalHostDiscovery::InstalledTools,
+        )
+        .capture_installed_selection()?;
+        assert_eq!(
+            home.join(".cargo").exists(),
+            cold,
+            "capture performs no cache creation"
+        );
+        assert_eq!(
+            captured.snapshot().cargo_home_selection(),
+            if cold {
+                LocalHostCargoHomeSelection::Strict
+            } else {
+                LocalHostCargoHomeSelection::DeferredDefault
+            }
+        );
+        let client = LocalCompilerHost::new(
+            ClosedEnvironment(captured.snapshot().clone(), root.join("runtime-data")),
+            LocalHostDiscovery::ClosedSnapshot,
+        )
+        .with_rust_cargo_metadata_policy(
+            backend_engine::application::RustCargoMetadataPolicy::Offline,
+        )
+        .open()?;
+        let capability = client.capabilities().for_profile(profile);
+        assert_eq!(capability.manifest(), None);
+        assert_eq!(capability.setup_issue(), None);
+        assert!(!package.join("Cargo.lock").exists());
+        let staged = client.compile_package_sources_staged(OwnedPackageSourceSet::new(
+            request.clone(),
+            package.clone(),
+            vec![
+                OwnedPackageSource::new("src/lib.rs", caller)?,
+                OwnedPackageSource::new("src/service.rs", declaration)?,
+            ]
+            .into_boxed_slice(),
+        )?)?;
+        assert_eq!(staged.artifacts().len(), 2);
+        assert!(staged.coverage_gaps().is_empty());
+        assert_eq!(
+            staged.execution_identity(),
+            None,
+            "deferred Rust never gains a portable claim"
+        );
+        let plane = staged
+            .plane_execution_identity()
+            .ok_or("actual Rust request needs a local recipe")?;
+        assert_eq!(plane.profile(), profile);
+        assert_eq!(plane.input_witness(), staged.input_witness());
+        let facts = staged
+            .cargo_workspace_facts()
+            .ok_or("actual Cargo resolution facts are required")?;
+        assert_eq!(facts.manifest_path, package.join("Cargo.toml"));
+        assert!(!facts.workspace_packages.is_empty());
+        assert!(!facts.resolved_packages.is_empty());
+        assert!(facts.toolchain_binding_digest.iter().any(|byte| *byte != 0));
+        assert_eq!(staged.versioned_planes()?.artifacts().len(), 2);
+        let mut selected_call = 0;
+        for ordinal in 0..staged.artifacts().len() {
+            selected_call += staged.with_semantic_reader(ordinal, |reader, _| {
+                eprintln!(
+                    "rust-native cold={cold} artifact={ordinal} entities={:?}",
+                    reader
+                        .canonical_entities()
+                        .map(|entity| {
+                            (
+                                entity.id,
+                                entity.kind,
+                                entity.source,
+                                entity.name.named_atom().and_then(|name| reader.atom(name)),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                );
+                let mut drives = reader.canonical_entities().filter(|entity| {
+                    entity.kind == ItemKind::Function
+                        && entity.name.named_atom().and_then(|name| reader.atom(name))
+                            == Some(b"drive")
+                });
+                let Some(drive) = drives.next() else {
+                    return Ok::<_, std::io::Error>(0);
+                };
+                assert!(drives.next().is_none(), "the fixture has one drive function");
+                assert_eq!(
+                    drive.source.map(|span| (span.start(), span.end())),
+                    Some((13, 77)),
+                    "select the exact function declaration, never its named result carrier"
+                );
+                let drive = drive.id;
+                let expected_start = u32::try_from(caller.find("set_note").unwrap()).unwrap();
+                let mut count = 0;
+                for (_, occurrence) in reader.link_occurrences() {
+                    let link = reader
+                        .link(occurrence.link)
+                        .ok_or_else(|| std::io::Error::other("missing call link"))?;
+                    eprintln!(
+                        "rust-native cold={cold} artifact={ordinal} drive={drive:?} link={link:?} occurrence={occurrence:?}"
+                    );
+                    if link.from != drive
+                        || link.kind != LinkKind::MethodCall
+                        || occurrence.confidence != Confidence::Compiler
+                    {
+                        continue;
+                    }
+                    let LinkTarget::External(external) = link.target else {
+                        continue;
+                    };
+                    let Some(ExternalTarget::Foreign(foreign)) = reader.external(external) else {
+                        continue;
+                    };
+                    let ForeignTargetOrigin::Package { ecosystem, package } = foreign.origin else {
+                        continue;
+                    };
+                    let Some(span) = occurrence.source else {
+                        continue;
+                    };
+                    eprintln!(
+                        "rust-native cold={cold} artifact={ordinal} foreign={:?}:{:?} path={:?} display={:?} span={}..{} expected={expected_start}..{}",
+                        reader.atom(ecosystem), reader.atom(package), reader.atom(foreign.path),
+                        reader.atom(foreign.display), span.start(), span.end(), expected_start + 8
+                    );
+                    if reader.atom(ecosystem) == Some(b"cargo")
+                        && reader.atom(package) == Some(b"src/service")
+                        && reader.atom(foreign.path) == Some(b"set_note")
+                        && reader.atom(foreign.display) == Some(b"set_note")
+                        && span.start() == expected_start
+                        && span.end() == expected_start + 8
+                    {
+                        count += 1;
+                    }
+                }
+                Ok::<_, std::io::Error>(count)
+            })?;
+        }
+        assert_eq!(
+            selected_call, 1,
+            "the exact compiler cross-file call must be present"
+        );
+        assert!(home.join(".cargo").is_dir());
+        assert!(
+            !package.join("Cargo.lock").exists(),
+            "lockless loading must not mutate the project"
+        );
+        assert_eq!(fs::read_to_string(package.join("Cargo.toml"))?, manifest);
+        assert_eq!(fs::read_to_string(package.join("src/lib.rs"))?, caller);
+        assert_eq!(
+            fs::read_to_string(package.join("src/service.rs"))?,
+            declaration
+        );
+        assert_eq!(client.capabilities().for_profile(profile).manifest(), None);
+        drop(client);
+    }
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn compiled_python_authority_is_ready_with_empty_path_and_no_external_tools() {
     let root = fresh_root("native-python-empty-path");
     let host = LocalCompilerHost::new(

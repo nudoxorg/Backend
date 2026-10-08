@@ -1,0 +1,747 @@
+{
+  "canonical_base": "b07e51d809f018166eb144ebc8d5ae23a499b1f1",
+  "current_open_failed_controls": {
+    "engine-rust-retry-run01": "Recovered doc concat expression hits unchanged preloader refusal after first oversize terminal assertion; production/test contract conflict, not PASS.",
+    "service-real-rust-add-run01": "Before add, test searches Rust2021 health rows but product catalog advertises Rust2024. Source-only2948 corrects selector; actual real service add/graph/shape/cold UNRUN."
+  },
+  "existing_ignored_prerequisite": "actual_project_sdk_precedes_the_frozen_installed_global_sdk requires pinned dependency-installed real TypeScript app and installed host SDK; strict host gate remains unaccepted, not waived",
+  "limitations": [
+    "Native positive Rust crossfile/cold loader proof is real and source-bound; service public add control remains OPEN",
+    "No installed CLI/MCP/Tantivy acceptance inferred from native tests",
+    "Current c001 release excludes deferred Rust production slice",
+    "No current graph reservation or compiler/runtime child remains",
+    "The exact canonical replay9880 has not been rebuilt or run. Native receipts identify their actual predecessor commits."
+  ],
+  "native_gate_receipts": [
+    {
+      "accepted": true,
+      "artifact": {
+        "bytes": 411288584,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/local_host-38a21c496a564d2a",
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-request-authority-678d-native-20261008/engine-local-host-build02/images/engine-local-host",
+        "sha256": "7b91290fcde9e1ace42e48bdb82b01bbb6dd463f05d94659eef6bd6a5e4f6bad"
+      },
+      "compiler_source_bound": true,
+      "exit": 0,
+      "group_survivors": [],
+      "managed_leases_empty": true,
+      "name": "engine-local-host-build02",
+      "pgid": 77173,
+      "receipt_sha256": "c7e6422d3788335d80a491078c71f8b53afea914eefd95178577b9bba878d6dd",
+      "retirement": "owned-child-kernel-wait",
+      "source": {
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+        "clean": true,
+        "commit": "87ed3debedb6aa03ea6c62d64643d20fbc9accfa",
+        "tree": "aae498ffc21c2871cb2887fa73b1d8e396fbd4e2"
+      },
+      "test_summaries": null
+    },
+    {
+      "accepted": false,
+      "artifact": {
+        "bytes": 411288584,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/local_host-38a21c496a564d2a",
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-request-authority-678d-native-20261008/engine-local-host-build02/images/engine-local-host",
+        "sha256": "7b91290fcde9e1ace42e48bdb82b01bbb6dd463f05d94659eef6bd6a5e4f6bad"
+      },
+      "compiler_source_bound": true,
+      "exit": 101,
+      "group_survivors": [],
+      "managed_leases_empty": true,
+      "name": "engine-real-rust-run02",
+      "pgid": 78605,
+      "receipt_sha256": "9b477c3431d8de34c0090a6932bc16851f4cebdbf5f31d64dceb49e912d54aae",
+      "retirement": "owned-child-kernel-wait",
+      "source": {
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+        "clean": true,
+        "commit": "87ed3debedb6aa03ea6c62d64643d20fbc9accfa",
+        "tree": "aae498ffc21c2871cb2887fa73b1d8e396fbd4e2"
+      },
+      "test_summaries": [
+        [
+          "FAILED",
+          "0",
+          "1",
+          "0"
+        ]
+      ]
+    },
+    {
+      "accepted": true,
+      "artifact": {
+        "bytes": 411289272,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/local_host-38a21c496a564d2a",
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-request-authority-678d-native-20261008/engine-local-host-build03/images/engine-local-host",
+        "sha256": "77e11109e273f5050ef6c5d6ffd1b38c899bae104e2fd1d158654c21ddcc5d07"
+      },
+      "compiler_source_bound": true,
+      "exit": 0,
+      "group_survivors": [],
+      "managed_leases_empty": true,
+      "name": "engine-local-host-build03",
+      "pgid": 92906,
+      "receipt_sha256": "9f8d82986b8b4aa103093917bfe336170cdc8c911c4c59586771ef2a3acda3e9",
+      "retirement": "owned-child-kernel-wait",
+      "source": {
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+        "clean": true,
+        "commit": "24a45a76eb0f58f9529a52ef03537e61d7bc469a",
+        "tree": "8d0f475be1abcf25a5ceeb5606337b2f4625582d"
+      },
+      "test_summaries": null
+    },
+    {
+      "accepted": true,
+      "artifact": {
+        "bytes": 411289272,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/local_host-38a21c496a564d2a",
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-request-authority-678d-native-20261008/engine-local-host-build03/images/engine-local-host",
+        "sha256": "77e11109e273f5050ef6c5d6ffd1b38c899bae104e2fd1d158654c21ddcc5d07"
+      },
+      "compiler_source_bound": true,
+      "exit": 0,
+      "group_survivors": [],
+      "managed_leases_empty": true,
+      "name": "engine-real-rust-run03",
+      "pgid": 94888,
+      "receipt_sha256": "e7ddb430206dff9650e379f327497723b5c6143ac544ea8422ab41c3a9936b37",
+      "retirement": "owned-child-kernel-wait",
+      "source": {
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+        "clean": true,
+        "commit": "24a45a76eb0f58f9529a52ef03537e61d7bc469a",
+        "tree": "8d0f475be1abcf25a5ceeb5606337b2f4625582d"
+      },
+      "test_summaries": [
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "accepted": false,
+      "artifact": null,
+      "compiler_source_bound": false,
+      "exit": 101,
+      "group_survivors": [],
+      "managed_leases_empty": true,
+      "name": "engine-lib-build01",
+      "pgid": 26448,
+      "receipt_sha256": "e377b54749fc99e988d231f6f82695c3fcc94d2e4a87963abb8e9ba7495791e0",
+      "retirement": "owned-child-kernel-wait",
+      "source": {
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+        "clean": true,
+        "commit": "678d55f662c61832f2fb603e597b9e95c2ae703e",
+        "tree": "007e8253fe9f38f61add51208d8b82c3c6c3b1d0"
+      },
+      "test_summaries": null
+    },
+    {
+      "accepted": true,
+      "artifact": {
+        "bytes": 461186384,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_engine-b4955c870b705815",
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-request-authority-678d-native-20261008/engine-lib-build02/images/engine-lib",
+        "sha256": "6f4eab5b163d7dbd9b5621b7a4f86c8b4e77ccfb5ed3bd1b792d3b5bbd96ee06"
+      },
+      "compiler_source_bound": true,
+      "exit": 0,
+      "group_survivors": [],
+      "managed_leases_empty": true,
+      "name": "engine-lib-build02",
+      "pgid": 40078,
+      "receipt_sha256": "86dabb7d04735599bb218ad10cdab34b4ba8fb371f238452af50b75c89206599",
+      "retirement": "owned-child-kernel-wait",
+      "source": {
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+        "clean": true,
+        "commit": "9a59064851e8781954b7f9bb2449564b05345707",
+        "tree": "06580ed4d432b17a0dbe02ed9bf98f1b6cc66a77"
+      },
+      "test_summaries": null
+    },
+    {
+      "accepted": false,
+      "artifact": {
+        "bytes": 461186384,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_engine-b4955c870b705815",
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-request-authority-678d-native-20261008/engine-lib-build02/images/engine-lib",
+        "sha256": "6f4eab5b163d7dbd9b5621b7a4f86c8b4e77ccfb5ed3bd1b792d3b5bbd96ee06"
+      },
+      "compiler_source_bound": true,
+      "exit": 0,
+      "group_survivors": [],
+      "managed_leases_empty": true,
+      "name": "engine-host-run01",
+      "pgid": 53133,
+      "receipt_sha256": "05e6e3c3c0040e423245e257ef0a961854f4e77c85e08f6837b13613edeec380",
+      "retirement": "owned-child-kernel-wait",
+      "source": {
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+        "clean": true,
+        "commit": "9a59064851e8781954b7f9bb2449564b05345707",
+        "tree": "06580ed4d432b17a0dbe02ed9bf98f1b6cc66a77"
+      },
+      "test_summaries": [
+        [
+          "ok",
+          "47",
+          "0",
+          "1"
+        ]
+      ]
+    },
+    {
+      "accepted": true,
+      "artifact": {
+        "bytes": 461186384,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_engine-b4955c870b705815",
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-request-authority-678d-native-20261008/engine-lib-build02/images/engine-lib",
+        "sha256": "6f4eab5b163d7dbd9b5621b7a4f86c8b4e77ccfb5ed3bd1b792d3b5bbd96ee06"
+      },
+      "compiler_source_bound": true,
+      "exit": 0,
+      "group_survivors": [],
+      "managed_leases_empty": true,
+      "name": "engine-portable-run01",
+      "pgid": 55411,
+      "receipt_sha256": "1dbe0c4bedc3f2ba752ae920e351dd7223bb16d3c463ca05c8732f8a04f1fcc5",
+      "retirement": "owned-child-kernel-wait",
+      "source": {
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+        "clean": true,
+        "commit": "9a59064851e8781954b7f9bb2449564b05345707",
+        "tree": "06580ed4d432b17a0dbe02ed9bf98f1b6cc66a77"
+      },
+      "test_summaries": [
+        [
+          "ok",
+          "5",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "accepted": true,
+      "artifact": {
+        "bytes": 461186384,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_engine-b4955c870b705815",
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-request-authority-678d-native-20261008/engine-lib-build02/images/engine-lib",
+        "sha256": "6f4eab5b163d7dbd9b5621b7a4f86c8b4e77ccfb5ed3bd1b792d3b5bbd96ee06"
+      },
+      "compiler_source_bound": true,
+      "exit": 0,
+      "group_survivors": [],
+      "managed_leases_empty": true,
+      "name": "engine-plane-run01",
+      "pgid": 55972,
+      "receipt_sha256": "2735bc3ad46f8a84cf29e9e8d937134c7fb58f0436ef8d4ea222e5f6e12a1162",
+      "retirement": "owned-child-kernel-wait",
+      "source": {
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+        "clean": true,
+        "commit": "9a59064851e8781954b7f9bb2449564b05345707",
+        "tree": "06580ed4d432b17a0dbe02ed9bf98f1b6cc66a77"
+      },
+      "test_summaries": [
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "accepted": true,
+      "artifact": {
+        "bytes": 461186384,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_engine-b4955c870b705815",
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-request-authority-678d-native-20261008/engine-lib-build02/images/engine-lib",
+        "sha256": "6f4eab5b163d7dbd9b5621b7a4f86c8b4e77ccfb5ed3bd1b792d3b5bbd96ee06"
+      },
+      "compiler_source_bound": true,
+      "exit": 0,
+      "group_survivors": [],
+      "managed_leases_empty": true,
+      "name": "engine-deferred-run01",
+      "pgid": 56330,
+      "receipt_sha256": "b768f81d59ed261cdcae1ece1d7ce761b4977cdb8ca9a5bc287ac569b0e5a0f6",
+      "retirement": "owned-child-kernel-wait",
+      "source": {
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+        "clean": true,
+        "commit": "9a59064851e8781954b7f9bb2449564b05345707",
+        "tree": "06580ed4d432b17a0dbe02ed9bf98f1b6cc66a77"
+      },
+      "test_summaries": [
+        [
+          "ok",
+          "2",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "accepted": true,
+      "artifact": {
+        "bytes": 461186384,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_engine-b4955c870b705815",
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-request-authority-678d-native-20261008/engine-lib-build02/images/engine-lib",
+        "sha256": "6f4eab5b163d7dbd9b5621b7a4f86c8b4e77ccfb5ed3bd1b792d3b5bbd96ee06"
+      },
+      "compiler_source_bound": true,
+      "exit": 0,
+      "group_survivors": [],
+      "managed_leases_empty": true,
+      "name": "engine-rust-authority-run01",
+      "pgid": 56717,
+      "receipt_sha256": "8c8850b036ad2696cd5055a5c133e6e871950722c5bab032ba6c5ee455d9ab0d",
+      "retirement": "owned-child-kernel-wait",
+      "source": {
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+        "clean": true,
+        "commit": "9a59064851e8781954b7f9bb2449564b05345707",
+        "tree": "06580ed4d432b17a0dbe02ed9bf98f1b6cc66a77"
+      },
+      "test_summaries": [
+        [
+          "ok",
+          "3",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "accepted": true,
+      "artifact": {
+        "bytes": 461186384,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_engine-b4955c870b705815",
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-request-authority-678d-native-20261008/engine-lib-build02/images/engine-lib",
+        "sha256": "6f4eab5b163d7dbd9b5621b7a4f86c8b4e77ccfb5ed3bd1b792d3b5bbd96ee06"
+      },
+      "compiler_source_bound": true,
+      "exit": 0,
+      "group_survivors": [],
+      "managed_leases_empty": true,
+      "name": "engine-probe-run01",
+      "pgid": 57061,
+      "receipt_sha256": "e03a480a9a95033e369a9450b9a15dcfec6d72ca922cba7c50eff53d64098738",
+      "retirement": "owned-child-kernel-wait",
+      "source": {
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+        "clean": true,
+        "commit": "9a59064851e8781954b7f9bb2449564b05345707",
+        "tree": "06580ed4d432b17a0dbe02ed9bf98f1b6cc66a77"
+      },
+      "test_summaries": [
+        [
+          "ok",
+          "7",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "accepted": true,
+      "artifact": {
+        "bytes": 411280104,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/local_host-38a21c496a564d2a",
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-request-authority-678d-native-20261008/engine-local-host-build01/images/engine-local-host",
+        "sha256": "a2fb5446021dea0e5c8ab57a2318a71f3c2fe8d9543258d1726532bb434217b8"
+      },
+      "compiler_source_bound": true,
+      "exit": 0,
+      "group_survivors": [],
+      "managed_leases_empty": true,
+      "name": "engine-local-host-build01",
+      "pgid": 57723,
+      "receipt_sha256": "37d5f649a416ce73816321e3a7fa44947764ea295c4344c976242a8225b2f632",
+      "retirement": "owned-child-kernel-wait",
+      "source": {
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+        "clean": true,
+        "commit": "9a59064851e8781954b7f9bb2449564b05345707",
+        "tree": "06580ed4d432b17a0dbe02ed9bf98f1b6cc66a77"
+      },
+      "test_summaries": null
+    },
+    {
+      "accepted": false,
+      "artifact": null,
+      "compiler_source_bound": null,
+      "exit": 101,
+      "group_survivors": [],
+      "managed_leases_empty": true,
+      "name": "engine-real-rust-run01",
+      "pgid": 61256,
+      "receipt_sha256": "a5269f9ad905386e4daf5e9c3a3b1fdd7629e783781b4dda9a82b6f5ffe6a8f6",
+      "retirement": "owned-child-kernel-wait",
+      "source": {
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+        "clean": true,
+        "commit": "9a59064851e8781954b7f9bb2449564b05345707",
+        "tree": "06580ed4d432b17a0dbe02ed9bf98f1b6cc66a77"
+      },
+      "test_summaries": [
+        [
+          "FAILED",
+          "0",
+          "1",
+          "0"
+        ]
+      ]
+    },
+    {
+      "accepted": true,
+      "artifact": {
+        "bytes": 411280104,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/local_host-38a21c496a564d2a",
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-request-authority-678d-native-20261008/engine-local-host-build01/images/engine-local-host",
+        "sha256": "a2fb5446021dea0e5c8ab57a2318a71f3c2fe8d9543258d1726532bb434217b8"
+      },
+      "compiler_source_bound": true,
+      "exit": 0,
+      "group_survivors": [],
+      "managed_leases_empty": true,
+      "name": "engine-explicit-rust-run01",
+      "pgid": 69230,
+      "receipt_sha256": "65a21a0659006919ae0a573a81a1603ec0c9718cb48eae8781d9a9cc6201520d",
+      "retirement": "owned-child-kernel-wait",
+      "source": {
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+        "clean": true,
+        "commit": "9a59064851e8781954b7f9bb2449564b05345707",
+        "tree": "06580ed4d432b17a0dbe02ed9bf98f1b6cc66a77"
+      },
+      "test_summaries": [
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "accepted": true,
+      "artifact": {
+        "bytes": 411280104,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/local_host-38a21c496a564d2a",
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-request-authority-678d-native-20261008/engine-local-host-build01/images/engine-local-host",
+        "sha256": "a2fb5446021dea0e5c8ab57a2318a71f3c2fe8d9543258d1726532bb434217b8"
+      },
+      "compiler_source_bound": true,
+      "exit": 0,
+      "group_survivors": [],
+      "managed_leases_empty": true,
+      "name": "engine-explicit-only-run01",
+      "pgid": 69675,
+      "receipt_sha256": "0a2d835ecb82116245d3ce3f79cc9b58d1b93bd832f75a5cffdd56e4b4203b9b",
+      "retirement": "owned-child-kernel-wait",
+      "source": {
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+        "clean": true,
+        "commit": "9a59064851e8781954b7f9bb2449564b05345707",
+        "tree": "06580ed4d432b17a0dbe02ed9bf98f1b6cc66a77"
+      },
+      "test_summaries": [
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "accepted": true,
+      "artifact": {
+        "bytes": 412291904,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/local_compiler-cdecc317941d1080",
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-request-authority-678d-native-20261008/engine-ready-package-build01/images/engine-ready-package",
+        "sha256": "20ef78ca86dfe1cc88b682cb604c727bafc297d4e94878f53451903fae7b374c"
+      },
+      "compiler_source_bound": true,
+      "exit": 0,
+      "group_survivors": [],
+      "managed_leases_empty": true,
+      "name": "engine-ready-package-build01",
+      "pgid": 98618,
+      "receipt_sha256": "6eb6db7b842858b9c29b9a1be669ef56311cec1418961e4f11259730665c639b",
+      "retirement": "owned-child-kernel-wait",
+      "source": {
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+        "clean": true,
+        "commit": "24a45a76eb0f58f9529a52ef03537e61d7bc469a",
+        "tree": "8d0f475be1abcf25a5ceeb5606337b2f4625582d"
+      },
+      "test_summaries": null
+    },
+    {
+      "accepted": false,
+      "artifact": {
+        "bytes": 412291904,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/local_compiler-cdecc317941d1080",
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-request-authority-678d-native-20261008/engine-ready-package-build01/images/engine-ready-package",
+        "sha256": "20ef78ca86dfe1cc88b682cb604c727bafc297d4e94878f53451903fae7b374c"
+      },
+      "compiler_source_bound": true,
+      "exit": 101,
+      "group_survivors": [],
+      "managed_leases_empty": true,
+      "name": "engine-rust-retry-run01",
+      "pgid": 723,
+      "receipt_sha256": "a5c7aa07cffb85ab5f9b2ed448e58b34465062fc41cf2208741f000f853984a8",
+      "retirement": "owned-child-kernel-wait",
+      "source": {
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+        "clean": true,
+        "commit": "24a45a76eb0f58f9529a52ef03537e61d7bc469a",
+        "tree": "8d0f475be1abcf25a5ceeb5606337b2f4625582d"
+      },
+      "test_summaries": [
+        [
+          "FAILED",
+          "0",
+          "1",
+          "0"
+        ]
+      ]
+    },
+    {
+      "accepted": true,
+      "artifact": {
+        "bytes": 412291904,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/local_compiler-cdecc317941d1080",
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-request-authority-678d-native-20261008/engine-ready-package-build01/images/engine-ready-package",
+        "sha256": "20ef78ca86dfe1cc88b682cb604c727bafc297d4e94878f53451903fae7b374c"
+      },
+      "compiler_source_bound": true,
+      "exit": 0,
+      "group_survivors": [],
+      "managed_leases_empty": true,
+      "name": "engine-rust-scope-run01",
+      "pgid": 9786,
+      "receipt_sha256": "f4198188c1229b17b3b513d940b0390dc110498ac47c8e4fd780e81f6ef72634",
+      "retirement": "owned-child-kernel-wait",
+      "source": {
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+        "clean": true,
+        "commit": "24a45a76eb0f58f9529a52ef03537e61d7bc469a",
+        "tree": "8d0f475be1abcf25a5ceeb5606337b2f4625582d"
+      },
+      "test_summaries": [
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "accepted": false,
+      "artifact": null,
+      "compiler_source_bound": false,
+      "exit": 101,
+      "group_survivors": [],
+      "managed_leases_empty": true,
+      "name": "service-deferred-build01",
+      "pgid": 13137,
+      "receipt_sha256": "d6d8554f7d4c2f8ebac9b5548211515290b7459fc39e1f26a46c9aef60f6ea0e",
+      "retirement": "owned-child-kernel-wait",
+      "source": {
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+        "clean": true,
+        "commit": "24a45a76eb0f58f9529a52ef03537e61d7bc469a",
+        "tree": "8d0f475be1abcf25a5ceeb5606337b2f4625582d"
+      },
+      "test_summaries": null
+    },
+    {
+      "accepted": true,
+      "artifact": {
+        "bytes": 694469384,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/index_operation_lifecycle-3e2ad7909d76dc35",
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-request-authority-678d-native-20261008/service-deferred-build02/images/service-deferred-add",
+        "sha256": "b263dad3c0017c8df11da81c3adac5dfd6f0f30b2be4f15e0a1bbdcef4d3a32f"
+      },
+      "compiler_source_bound": true,
+      "exit": 0,
+      "group_survivors": [],
+      "managed_leases_empty": true,
+      "name": "service-deferred-build02",
+      "pgid": 33592,
+      "receipt_sha256": "f2d5f042d6fa76172c02d08f62b8faae000cc1ad57ff95ceb3e51862bcf19943",
+      "retirement": "owned-child-kernel-wait",
+      "source": {
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+        "clean": true,
+        "commit": "8f0ec4a43ef1064ee4bbfebb1f2cb9dd159a61e2",
+        "tree": "d89070253e15e253f6495de22c4940e38bd3eeae"
+      },
+      "test_summaries": null
+    },
+    {
+      "accepted": false,
+      "artifact": {
+        "bytes": 694469384,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/index_operation_lifecycle-3e2ad7909d76dc35",
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-request-authority-678d-native-20261008/service-deferred-build02/images/service-deferred-add",
+        "sha256": "b263dad3c0017c8df11da81c3adac5dfd6f0f30b2be4f15e0a1bbdcef4d3a32f"
+      },
+      "compiler_source_bound": true,
+      "exit": 101,
+      "group_survivors": [],
+      "managed_leases_empty": true,
+      "name": "service-real-rust-add-run01",
+      "pgid": 35088,
+      "receipt_sha256": "90e6ae2ca4206cdf4a88cf8e7b583a298fd579045a7b302630897eb5e45b4a02",
+      "retirement": "owned-child-kernel-wait",
+      "source": {
+        "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+        "clean": true,
+        "commit": "8f0ec4a43ef1064ee4bbfebb1f2cb9dd159a61e2",
+        "tree": "d89070253e15e253f6495de22c4940e38bd3eeae"
+      },
+      "test_summaries": [
+        [
+          "FAILED",
+          "0",
+          "1",
+          "0"
+        ]
+      ]
+    }
+  ],
+  "native_raw": {
+    "bytes": 19066880,
+    "sha256": "a3b4a9228b337859c318bbca9bc897cb304531671acf636c5e4e571eac15fe57"
+  },
+  "other_unique_native_passes": [
+    "engine-explicit-rust-run01",
+    "engine-explicit-only-run01",
+    "engine-real-rust-run03",
+    "engine-rust-scope-run01"
+  ],
+  "reviewed_replay_commit": "9880ee42090d69828ef99c7858e96254873c6999",
+  "reviewed_replay_tree": "d7acdd310c16bfd959990b4ebf801864db6ce485",
+  "root_source_audit": {
+    "base": "b07e51d809f018166eb144ebc8d5ae23a499b1f1",
+    "candidate_donor_changed_path_differences": [
+      "crates/engine/src/application/compiler.rs"
+    ],
+    "changed_paths": [
+      "crates/engine/src/application/compiler.rs",
+      "crates/engine/src/application/host.rs",
+      "crates/engine/src/application/host/authority.rs",
+      "crates/engine/src/application/host/rust_selection.rs",
+      "crates/engine/src/application/host/snapshot.rs",
+      "crates/engine/src/application/mod.rs",
+      "crates/engine/src/application/package_authority.rs",
+      "crates/engine/src/application/runtime.rs",
+      "crates/engine/src/application/toolchain_probe.rs",
+      "crates/engine/tests/local_compiler/package_batch.rs",
+      "crates/engine/tests/local_host.rs",
+      "crates/local-service/src/builtin/embedded_host.rs",
+      "crates/local-service/src/builtin/ingest.rs",
+      "crates/local-service/src/builtin/semantic_authority.rs",
+      "crates/local-service/tests/index_operation_lifecycle.rs"
+    ],
+    "donor": "2948daf6e96357084b58c4ac9846ce142166e453",
+    "head": "9880ee42090d69828ef99c7858e96254873c6999",
+    "status": "",
+    "unchanged_canonical_entries": 17920
+  },
+  "root_source_audit_sha256": "055c2cdd196800e39856219185244d7e074c4f216f06d5c4e73377b7834d2588",
+  "schema": "nudox.deferred-rust-source-checkpoint.v1",
+  "source_only_test_successor": {
+    "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+    "commit": "2948daf6e96357084b58c4ac9846ce142166e453",
+    "native": "UNRUN",
+    "packet": "/private/tmp/sol61-rust-health-profile-2948-source-packet-20261008.json",
+    "packet_sha256": "3b67779da2fb28804968d90e29544d731de054a3019dd627656b0be5077743e9",
+    "tree": "e862b958d6e97266ba4147c781bd83d7c4e689bc"
+  },
+  "total_unique_native_passes": 69,
+  "unique_native_unit_names": [
+    "application::host::authority::invocation_selection_tests::global_typescript_script_without_node_is_a_typed_refusal",
+    "application::host::authority::invocation_selection_tests::go_without_installed_modules_uses_an_isolated_owner_cache",
+    "application::host::authority::invocation_selection_tests::host_wrapper_is_probed_as_an_executable_not_as_a_typescript_js_script",
+    "application::host::authority::invocation_selection_tests::module_owned_tsc_entry_uses_the_admitted_node_runtime",
+    "application::host::authority::invocation_selection_tests::selected_node_keeps_global_typescript_compiler_pending",
+    "application::host::authority::python_checker_probe_tests::pyrefly_probe_failure_projection_keeps_only_bounded_typed_causes",
+    "application::host::capture::tests::repeated_discovery_reads_cannot_change_the_frozen_launch_inputs",
+    "application::host::paths::tests::absent_first_gopath_cache_keeps_precedence_over_later_existing_roots",
+    "application::host::paths::tests::absent_gomodcache_keeps_precedence_over_an_existing_home_cache",
+    "application::host::paths::tests::bundle_hashing_refuses_oversized_and_growing_payloads_with_bounded_reads",
+    "application::host::paths::tests::bundled_node_requires_current_executable_and_runtime_inventory_matches",
+    "application::host::paths::tests::bundled_typescript_sdk_is_a_complete_receipt_bound_relative_resource_set",
+    "application::host::paths::tests::closed_node_roles_round_trip_exact_paths_and_keep_truthful_origins",
+    "application::host::paths::tests::closed_snapshot_never_uses_path_or_compiler_relative_fallbacks",
+    "application::host::paths::tests::cold_go_cache_capture_survives_ordinary_dependency_setup",
+    "application::host::paths::tests::explicit_node_override_precedes_finite_host_locations",
+    "application::host::paths::tests::explicit_only_service_discovers_a_paired_global_typescript_host_from_path",
+    "application::host::paths::tests::explicit_only_service_finds_node_from_the_finite_user_host_locations",
+    "application::host::paths::tests::explicit_typescript_compiler_and_module_root_override_discovery",
+    "application::host::paths::tests::go_only_refusals_survive_frozen_capture_and_closed_snapshot_handoff",
+    "application::host::paths::tests::installed_capture_preserves_bad_explicit_overrides_and_reports_missing_pyrefly",
+    "application::host::paths::tests::installed_tool_capture_closes_one_paired_selection_and_repeats_its_witness",
+    "application::host::paths::tests::invalid_explicit_go_executable_is_deferred_to_the_go_language_lane",
+    "application::host::paths::tests::invalid_explicit_go_root_is_retained_without_blocking_installed_selection",
+    "application::host::paths::tests::project_node_can_be_selected_from_process_path_then_pinned",
+    "application::host::paths::tests::resource_open_refuses_fifo_and_link_swaps_after_regular_metadata_admission",
+    "application::host::paths::tests::standalone_node_receipt_uses_shared_system_loader_classification",
+    "application::host::paths::tests::standalone_selected_package_proof_refuses_added_members_after_admission",
+    "application::host::rust_selection::tests::captured_rust_with_absent_or_existing_default_home_does_not_probe_sysroot_at_startup",
+    "application::host::rust_selection::tests::installed_capture_transports_only_the_absent_inferred_default_as_v3",
+    "application::host::rust_selection::tests::shared_rust_pair_prepares_only_its_default_cache_and_retains_explicit_failures",
+    "application::host::snapshot::tests::canonical_snapshot_sorts_roles_and_round_trips_paths",
+    "application::host::snapshot::tests::deferred_default_accepts_canonical_rustup_proxy_names",
+    "application::host::snapshot::tests::deferred_default_is_explicit_v3_and_changes_selection_identity",
+    "application::host::snapshot::tests::deferred_default_rejects_forged_or_ambiguous_v3_snapshots",
+    "application::host::snapshot::tests::empty_snapshot_is_a_valid_closed_value_distinct_from_no_snapshot",
+    "application::host::snapshot::tests::snapshot_rejects_bad_roles_paths_versions_and_noncanonical_json",
+    "application::host::snapshot::tests::snapshot_rejects_duplicate_roles_and_wrong_platform_path_units_from_wire",
+    "application::host::snapshot::tests::snapshot_rejects_more_roles_than_the_closed_vocabulary",
+    "application::host::snapshot::tests::snapshot_rejects_oversized_paths_before_encoding",
+    "application::host::snapshot::tests::snapshot_roles_and_environment_names_form_one_closed_vocabulary",
+    "application::host::snapshot::tests::snapshot_round_trips_non_utf8_native_paths_without_loss",
+    "application::host::snapshot::tests::typed_go_failure_survives_closed_transport_without_changing_clean_v1_bytes",
+    "application::host::tests::capability_inspection_does_not_create_runtime_directories",
+    "application::host::tests::closed_go_refusal_keeps_the_actual_native_python_owner_usable",
+    "application::host::tests::emit_scope_identity_for_environment_regression",
+    "application::host::tests::unrelated_owner_environment_does_not_churn_scope_identity",
+    "application::runtime::deferred_rust_toolchain_tests::cancelled_and_transient_failures_do_not_publish_or_poison_deferred_rust",
+    "application::runtime::deferred_rust_toolchain_tests::inferred_sysroot_with_a_strict_existing_home_never_creates_or_rewrites_it",
+    "application::runtime::local_plane_identity_tests::local_plane_identity_is_host_scoped_input_bound_and_disjoint_from_portable_recipe",
+    "application::runtime::portable_recipe_tests::failed_optional_go_admission_is_a_go_only_probe_failure",
+    "application::runtime::portable_recipe_tests::portable_environment_identity_is_profile_specific_and_recipe_binds_real_inputs",
+    "application::runtime::portable_recipe_tests::python_checker_admission_is_closed_and_reports_each_required_tool",
+    "application::runtime::portable_recipe_tests::python_recipe_uses_ordered_options_and_ignores_host_executable_path",
+    "application::runtime::portable_recipe_tests::rust_online_and_offline_metadata_policies_produce_distinct_reportable_recipes",
+    "application::runtime::rust_request_authority_tests::deferred_selection_has_no_pre_request_manifest_or_invocation_for_any_rust_edition",
+    "application::runtime::rust_request_authority_tests::request_authority_rejects_a_different_resolved_compiler_before_any_recipe",
+    "application::runtime::rust_request_authority_tests::staged_rust_recipe_binds_concrete_sysroot_cargo_resolution_and_final_read_witness",
+    "application::toolchain_probe::failure_tests::a_failed_probe_keeps_and_shows_what_the_tool_said",
+    "application::toolchain_probe::failure_tests::failing_tool_fixture",
+    "application::toolchain_probe::failure_tests::the_quotation_is_bounded_escaped_and_names_each_nonempty_stream",
+    "application::toolchain_probe::failure_tests::the_selected_rustc_answers_as_a_compiler_not_as_the_toolchain_manager",
+    "application::toolchain_probe::tests::a_missing_admitted_executable_has_a_typed_spawn_failure",
+    "application::toolchain_probe::tests::compiler_environment_contract_is_versioned_and_removes_ambient_settings",
+    "application::toolchain_probe::tests::dotnet_probe_and_compile_share_only_the_fixed_cli_controls"
+  ],
+  "unique_native_unit_pass_count": 65,
+  "upstream_packet_sha256": "455007290b66c0db26a791dc64e5e6f58a3c4ef600cdeacf6e9f8736ae3fe5e2"
+}

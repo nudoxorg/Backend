@@ -47,6 +47,272 @@ fn first_real_compiler_refusal_has_no_selected_authority_after_cold_reopen()
     }
     result
 }
+/// A public unavailable manifest describes startup authority, not permission to
+/// submit Rust work. This real compiler control crosses the service scheduler,
+/// authenticated transport, staged admission, and selected semantic projection.
+#[test]
+fn deferred_rust_manifest_does_not_gate_real_public_indexing() -> Result<(), Box<dyn Error>> {
+    let mut fixture = FailureFixture::new(lifecycle_tempdir()?);
+    let result = run_deferred_rust_public_indexing(&fixture);
+    if result.is_err() {
+        fixture.preserve_after_failure();
+    }
+    result
+}
+
+fn run_deferred_rust_public_indexing(fixture: &FailureFixture) -> Result<(), Box<dyn Error>> {
+    use backend_engine::application::{
+        LocalCompilerHost, LocalHostDiscovery, LocalHostEnvironment,
+    };
+    use backend_library::{
+        CapabilityFamily, CapabilityLifecycle, CapabilityUnavailable, GraphEdgeKind, GraphNodeId,
+        SemanticConfidence, SemanticLinkKind,
+    };
+    use backend_semantic::vocabulary::{LanguageProfile, PythonVersion, RustEdition};
+    use std::ffi::OsString;
+
+    #[derive(Clone)]
+    struct RealRustEnvironment {
+        home: PathBuf,
+        rustc: PathBuf,
+        cargo: PathBuf,
+    }
+    impl LocalHostEnvironment for RealRustEnvironment {
+        fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
+            match variable {
+                LocalHostVariable::Home => Some(self.home.clone().into_os_string()),
+                LocalHostVariable::NudoxRustc => Some(self.rustc.clone().into_os_string()),
+                LocalHostVariable::NudoxCargo => Some(self.cargo.clone().into_os_string()),
+                _ => None,
+            }
+        }
+    }
+    let home = fixture.path().join("isolated-home");
+    fs::create_dir(&home)?;
+    let environment = RealRustEnvironment {
+        home: fs::canonicalize(&home)?,
+        rustc: executable_in_path("rustc")?,
+        cargo: executable_in_path("cargo")?,
+    };
+    let default_cache = home.join(".cargo");
+    let paths = backend_runtime::WorkspacePaths::discover(
+        Some(fixture.path().to_path_buf()),
+        Some(fixture.path().join("service-state")),
+        Some(fixture.path().join("owner.sock")),
+    )?;
+    paths.initialize()?;
+    let mut config = ProcessConfig::parse([
+        "--endpoint".to_owned(),
+        paths.endpoint().to_string_lossy().into_owned(),
+        "--workspace".to_owned(),
+        paths.data().to_string_lossy().into_owned(),
+        "--registry-offline".to_owned(),
+        "--registry-discovery-offline".to_owned(),
+        "--advisory-offline".to_owned(),
+        "--forge-offline".to_owned(),
+    ])?;
+    config.profile = "builtin".to_owned();
+    config.worker_endpoint = None;
+    config.authority_secret = Some(paths.authority_secret().to_path_buf());
+    let package_root = fixture.path().join("real-deferred-package");
+    fs::create_dir_all(package_root.join("src"))?;
+    let manifest =
+        "[package]\nname=\"deferred_public_fixture\"\nversion=\"0.1.0\"\nedition=\"2021\"\n";
+    let caller = "mod child;\npub fn deferred_public_marker() -> u32 { child::answer() }\n";
+    let child = "pub fn answer() -> u32 { 42 }\n";
+    for (path, content) in [
+        ("Cargo.toml", manifest),
+        ("src/lib.rs", caller),
+        ("src/child.rs", child),
+    ] {
+        fs::write(package_root.join(path), content)?;
+    }
+    let package = PackageReference::parse(
+        fs::canonicalize(&package_root)?
+            .to_string_lossy()
+            .into_owned(),
+    )
+    .map_err(|error| io::Error::other(error.to_string()))?;
+    // Health advertises the canonical product profile; the package keeps its
+    // independently parsed Rust 2021 edition throughout actual indexing.
+    let rust_health_profile = LanguageProfile::Rust(RustEdition::Rust2024);
+    let mut selected_generation = None;
+    for cold in [false, true] {
+        let selection =
+            LocalCompilerHost::new(environment.clone(), LocalHostDiscovery::InstalledTools)
+                .capture_installed_selection()?;
+        config.compiler_environment = Some(selection.snapshot().clone());
+        assert_eq!(default_cache.exists(), cold, "capture must be read-only");
+        let owner = EmbeddedLocalService::start(config.clone())?;
+        let mut session = Session::connect(owner.endpoint())?;
+        let probe_deadline = Instant::now() + Duration::from_secs(6);
+        loop {
+            let health = session.health()?;
+            let rust = health
+                .capabilities()
+                .as_slice()
+                .iter()
+                .filter(|row| {
+                    matches!(
+                        row.family(), CapabilityFamily::LanguageOracle { profile, .. }
+                            if profile == rust_health_profile
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                rust.len(),
+                2,
+                "both public Rust oracle tasks must be present"
+            );
+            if rust
+                .iter()
+                .any(|row| row.lifecycle() == CapabilityLifecycle::Probing)
+            {
+                assert!(
+                    Instant::now() < probe_deadline,
+                    "real Rust version probe did not finish"
+                );
+                thread::sleep(Duration::from_millis(25));
+                continue;
+            }
+            assert!(rust.iter().all(|row| row.lifecycle()
+                == CapabilityLifecycle::Unavailable(CapabilityUnavailable::NoManifest)
+                && row.manifest().is_none()
+                && row.authority().is_none()));
+            assert!(health.capabilities().as_slice().iter().any(|row| matches!(
+                row.family(), CapabilityFamily::LanguageOracle { profile, .. }
+                    if profile == LanguageProfile::Python(PythonVersion::Python314)
+            ) && row.lifecycle()
+                == CapabilityLifecycle::Ready));
+            break;
+        }
+        assert_eq!(
+            default_cache.exists(),
+            cold,
+            "health must not realize Cargo home"
+        );
+        if !cold {
+            let key = IndexOperationKey::from_bytes([0x79; 32])
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            let mut observation = session.start_index_operation(
+                key,
+                package.clone(),
+                CompileExecutionIntent::Interactive,
+            )?;
+            let deadline = Instant::now() + Duration::from_secs(180);
+            loop {
+                let status = known_status_for_key(observation, key)?;
+                match status.state {
+                    IndexOperationState::Published(_) => break,
+                    IndexOperationState::Accepted | IndexOperationState::Active { .. } => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "real Rust add exceeded 180 seconds"
+                        );
+                        thread::sleep(Duration::from_millis(25));
+                        observation =
+                            read_status_with_keyed_reconnect(&mut session, key, deadline)?;
+                    }
+                    state => {
+                        return Err(io::Error::other(format!(
+                            "Deferred startup incorrectly prevented native publication: {state:?}"
+                        ))
+                        .into());
+                    }
+                }
+            }
+            session.reconnect()?;
+        }
+        let source = selected_rust_source(&mut session, &package)?;
+        assert!(matches!(
+            source.freshness,
+            backend_library::SemanticVersionFreshness::Current { .. }
+        ));
+        assert!(source.selected_source_frontier.is_some());
+        if let Some(expected) = selected_generation {
+            assert_eq!(
+                source.generation, expected,
+                "cold read must retain the selected generation"
+            );
+        }
+        selected_generation = Some(source.generation);
+        let marker = selected_symbol_by_name(&mut session, "deferred_public_marker")?;
+        let marker_package =
+            selected_package_by_symbol(&mut session, "deferred_public_marker", marker)?;
+        let marker = selected_symbol_by_name_and_kind(
+            &mut session,
+            "deferred_public_marker",
+            DeclarationKind::Function,
+            marker_package,
+        )?;
+        let answer = selected_symbol_by_name(&mut session, "answer")?;
+        let answer_package = selected_package_by_symbol(&mut session, "answer", answer)?;
+        let answer = selected_symbol_by_name_and_kind(
+            &mut session,
+            "answer",
+            DeclarationKind::Function,
+            answer_package,
+        )?;
+        let shapes = session.semantic_shapes(
+            source.clone(),
+            &[marker],
+            SemanticShapeBudget::new(512, 64 * 1024)?,
+        )?;
+        assert_eq!(shapes.entries.len(), 1);
+        let backend_library::SemanticShapeFact::Available {
+            shape: SemanticDeclarationShape::Callable(callable),
+            ..
+        } = &shapes.entries[0].fact
+        else {
+            return Err(io::Error::other("published caller has no compiler callable shape").into());
+        };
+        assert!(callable.parameters.is_empty());
+        assert_eq!(callable.results.len(), 1);
+        assert!(matches!(
+            &callable.results[0].ty,
+            SemanticTypeFact::Known(SemanticTypeExpr::Builtin(
+                backend_semantic::ir::BuiltinType::U32
+            ))
+        ));
+        let CommandReply::Graph(graph) = session.graph_symbol(marker)?.reply else {
+            return Err(io::Error::other("public graph returned another reply shape").into());
+        };
+        let rich = graph
+            .rich_graph
+            .ok_or("compiler graph omitted its authority evidence")?;
+        assert!(
+            rich.edges
+                .iter()
+                .any(|edge| edge.from == GraphNodeId::for_symbol(marker)
+                    && edge.to == GraphNodeId::for_symbol(answer)
+                    && edge.kind
+                        == GraphEdgeKind::Code {
+                            relation: SemanticLinkKind::Calls
+                        }
+                    && edge.provenance.confidence == Some(SemanticConfidence::Compiler)
+                    && edge.provenance.semantic_generation == Some(source.generation)),
+            "the exact cross-file call must retain Compiler confidence and selected generation"
+        );
+        assert!(
+            default_cache.is_dir(),
+            "only the actual Rust request realizes its default cache"
+        );
+        assert!(!package_root.join("Cargo.lock").exists());
+        assert_eq!(
+            fs::read_to_string(package_root.join("Cargo.toml"))?,
+            manifest
+        );
+        assert_eq!(fs::read_to_string(package_root.join("src/lib.rs"))?, caller);
+        assert_eq!(
+            fs::read_to_string(package_root.join("src/child.rs"))?,
+            child
+        );
+        drop(session);
+        assert_eq!(owner.close()?.failures, 0);
+    }
+    Ok(())
+}
+
 fn run_public_index_operation_lifecycle(
     fixture: &FailureFixture,
     first_refusal: bool,
