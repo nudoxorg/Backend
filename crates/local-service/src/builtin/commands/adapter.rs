@@ -4064,7 +4064,13 @@ impl CommandAdapter {
         let library = daemon.engine().daemon().library();
         let selected =
             Self::claimed_graph_symbol(daemon, symbol, page.basis(), certificate.as_ref());
-        let reply = if let Some(resolved) = selected.resolve(library.view()) {
+        // A canonical address resolves to its key even when no selected row
+        // exists. Check membership before opening semantic graph residence so
+        // an absent source keeps the library's typed read refusal.
+        let resolved = selected.resolve(library.view()).filter(|symbol| {
+            library.view().row_ref(backend_engine::RowId::Symbol(*symbol)).is_some()
+        });
+        let reply = if let Some(resolved) = resolved {
             let query =
                 backend_engine::GraphNeighborhoodQuery::new(resolved, library.revision_root());
             // A stale page must be refused before executing against a newer graph.
