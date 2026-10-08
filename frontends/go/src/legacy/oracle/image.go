@@ -1727,6 +1727,7 @@ func writeAuthorityImage(destination io.Writer, sourcePath string, output *Outpu
 // image retains the compiler-selected file list and its own excluded facts.
 func authorityOutputForSource(output *Output, sourcePath string) (*Output, error) {
 	active := 0
+	var activePackage *Package
 	var excludedPackage *Package
 	var excluded *BuildConstraint
 	for _, pkg := range output.Packages {
@@ -1736,10 +1737,14 @@ func authorityOutputForSource(output *Output, sourcePath string) (*Output, error
 		for _, file := range pkg.Files {
 			if sameFile(file, sourcePath) {
 				active++
+				activePackage = pkg
 			}
 		}
 		for _, constraint := range pkg.BuildConstraints {
 			if constraint != nil && sameFile(constraint.File, sourcePath) {
+				if strings.Contains(constraint.ExcludedReason, " package-unavailable:go-parser") {
+					return nil, fmt.Errorf("Go ignored source package ownership is unavailable: %s", sourcePath)
+				}
 				if excluded != nil {
 					return nil, fmt.Errorf("Go source has contradictory ignored owners: %s", sourcePath)
 				}
@@ -1751,7 +1756,7 @@ func authorityOutputForSource(output *Output, sourcePath string) (*Output, error
 		return nil, fmt.Errorf("Go source has contradictory active/ignored selection: %s", sourcePath)
 	}
 	if active == 1 {
-		return output, nil
+		return &Output{SchemaVersion: output.SchemaVersion, Module: output.Module, Packages: []*Package{activePackage}, Errors: output.Errors}, nil
 	}
 	if excluded == nil {
 		return nil, fmt.Errorf("Go compiler did not select or exclude authority source: %s", sourcePath)

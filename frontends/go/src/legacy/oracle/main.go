@@ -306,23 +306,9 @@ func extractWithSelection(dir, pattern string, selection *packageSelection) (*Ou
 	// module, not only its own package. See collectInterfaceCandidates.
 	candidates := collectInterfaceCandidates(selected)
 	for _, pkg := range selected {
-		// An external `foo_test` package (files ending in `_test.go`
-		// declaring `package foo_test`) is never compiled by a plain `go
-		// build`; Go's one-package-per-directory rule makes it unreachable
-		// except through this exact test-only construction, so every one of
-		// its CompiledGoFiles ends in `_test.go`. Its declarations stay out
-		// of `out.Packages` (they can never be the source file an authority
-		// image is bound to) but the package remains in `selected` above, so
-		// its interfaces still count as satisfaction candidates. Skipping it
-		// here is what keeps a same-named external-test declaration (e.g.
-		// `toml_test.parser`) from colliding, under the coordinate-free
-		// declaration identity, with the real package's own same-named
-		// declaration (e.g. `toml.parser`): the identity has no room for a
-		// package discriminant, so the only correct fix is to never
-		// serialize the test-only declaration in the first place.
-		if isExternalTestPackage(pkg) {
-			continue
-		}
+		// Preserve external foo_test as its actual distinct compiler package.
+		// Image emission selects the package that owns the requested source;
+		// same-spelled declarations in its sibling cannot share an image owner.
 		serialized, err := extractPackage(pkg, candidates, selection.context)
 		if err != nil {
 			return nil, err
@@ -460,25 +446,6 @@ func richerPackageVariant(candidate, current *packages.Package) bool {
 	return packageVariantKey(candidate) < packageVariantKey(current)
 }
 
-// isExternalTestPackage reports whether every file packages.Load compiled
-// into pkg ends in `_test.go`. The internal test-augmented variant
-// richerPackageVariant prefers always mixes production files in (that is
-// what makes it "richer"), so a package left with nothing but `_test.go`
-// files is, by construction, an external `foo_test` package: Go admits at
-// most one non-test package name per directory, so files besides `_test.go`
-// ones can never carry a second package name there.
-func isExternalTestPackage(pkg *packages.Package) bool {
-	if len(pkg.CompiledGoFiles) == 0 {
-		return false
-	}
-	for _, file := range pkg.CompiledGoFiles {
-		if !strings.HasSuffix(file, "_test.go") {
-			return false
-		}
-	}
-	return true
-}
-
 func testFileCount(pkg *packages.Package) int {
 	count := 0
 	for _, file := range pkg.CompiledGoFiles {
@@ -515,7 +482,11 @@ func extractPackage(pkg *packages.Package, candidates []interfaceCandidate, sele
 	if err != nil {
 		return nil, err
 	}
-	p.CgoExcludedFiles = scanCgoExcludedFiles(pkg)
+	for _, constraint := range p.BuildConstraints {
+		if strings.HasSuffix(constraint.ExcludedReason, " cgo-disabled-import-C") {
+			p.CgoExcludedFiles = append(p.CgoExcludedFiles, constraint.File)
+		}
+	}
 	p.References = extractReferences(pkg, docs)
 
 	scope := pkg.Types.Scope()
@@ -924,31 +895,6 @@ func referenceOwner(pkg *packages.Package, fn *ast.FuncDecl) (owner *types.Func,
 		return nil, "", false
 	}
 	return obj, named.Obj().Name(), true
-}
-
-// scanCgoExcludedFiles returns only import-C files Go excluded from this
-// package under the explicit CGO_ENABLED=0 authority environment. Active
-// files are compiled and type-checked; cgo files are retained as excluded
-// source facts instead of poisoning the transitive import closure.
-func scanCgoExcludedFiles(pkg *packages.Package) []string {
-	var out []string
-	for _, filename := range pkg.IgnoredFiles {
-		importsCgo, err := fileImportsCgo(filename)
-		if err == nil && importsCgo {
-			out = append(out, filename)
-		}
-	}
-	sort.Strings(out)
-	if len(out) < 2 {
-		return out
-	}
-	deduped := out[:1]
-	for _, filename := range out[1:] {
-		if filename != deduped[len(deduped)-1] {
-			deduped = append(deduped, filename)
-		}
-	}
-	return deduped
 }
 
 func fileImportsCgo(filename string) (bool, error) {

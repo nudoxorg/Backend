@@ -2,11 +2,15 @@ package main
 
 import (
 	"fmt"
+	"go/ast"
 	"go/build"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
@@ -86,32 +90,29 @@ func (selection *packageSelection) buildFlags() []string {
 // checks its agreement with that exact target, including implicit GOOS/GOARCH
 // suffixes, source build expressions, compiler/release tags, and custom tags.
 // Import-C selection is the separate, explicit cgo policy Go applies after
-// MatchFile. Every read/parse/selection contradiction refuses the image.
+// MatchFile. A dormant declaration parse failure is recorded as unavailable;
+// it cannot turn source that the compiler ignores into an active load failure.
 func scanBuildConstraints(pkg *packages.Package, context build.Context) ([]*BuildConstraint, error) {
 	if !filepath.IsAbs(pkg.Dir) || filepath.Clean(pkg.Dir) != pkg.Dir {
 		return nil, fmt.Errorf("Go package has no admitted absolute directory")
 	}
 	active := make(map[string]bool, len(pkg.GoFiles))
-	selected := func(path string) (bool, bool, error) {
+	match := func(path string) (bool, error) {
 		if !filepath.IsAbs(path) || filepath.Clean(path) != path || filepath.Dir(path) != pkg.Dir {
-			return false, false, fmt.Errorf("Go selected file escapes its package directory: %s", path)
+			return false, fmt.Errorf("Go selected file escapes its package directory: %s", path)
 		}
-		matches, err := context.MatchFile(pkg.Dir, filepath.Base(path))
-		if err != nil {
-			return false, false, err
-		}
-		importsCgo, err := fileImportsCgo(path)
-		if err != nil {
-			return false, false, err
-		}
-		return matches && (context.CgoEnabled || !importsCgo), importsCgo, nil
+		return context.MatchFile(pkg.Dir, filepath.Base(path))
 	}
 	for _, path := range pkg.GoFiles {
-		matches, _, err := selected(path)
+		matches, err := match(path)
 		if err != nil {
 			return nil, err
 		}
-		if !matches || active[path] {
+		importsCgo, err := fileImportsCgo(path)
+		if err != nil {
+			return nil, err
+		}
+		if !matches || (!context.CgoEnabled && importsCgo) || active[path] {
 			return nil, fmt.Errorf("Go active file contradicts build selection: %s", path)
 		}
 		active[path] = true
@@ -122,11 +123,11 @@ func scanBuildConstraints(pkg *packages.Package, context build.Context) ([]*Buil
 		if !strings.HasSuffix(path, ".go") {
 			continue
 		}
-		matches, importsCgo, err := selected(path)
+		matches, err := match(path)
 		if err != nil {
 			return nil, err
 		}
-		if matches || active[path] || ignored[path] {
+		if active[path] || ignored[path] {
 			return nil, fmt.Errorf("Go ignored file contradicts build selection: %s", path)
 		}
 		ignored[path] = true
@@ -134,12 +135,22 @@ func scanBuildConstraints(pkg *packages.Package, context build.Context) ([]*Buil
 		if err != nil {
 			return nil, err
 		}
-		expr, err := parseConstraint(source)
-		if err != nil {
-			return nil, err
+		header, headerError := parser.ParseFile(token.NewFileSet(), path, source, parser.ImportsOnly)
+		importsCgo := false
+		if headerError == nil {
+			// go list's ignored set is shared by same-directory test variants.
+			// The Go parser supplies the actual declared package namespace.
+			if header.Name.Name != pkg.Name {
+				continue
+			}
+			importsCgo, headerError = headerImportsCgo(header)
 		}
+		if matches && (headerError != nil || context.CgoEnabled || !importsCgo) {
+			return nil, fmt.Errorf("Go ignored file contradicts build selection: %s", path)
+		}
+		expr, constraintError := parseConstraint(source)
 		constraints := []string(nil)
-		if expr != nil {
+		if constraintError == nil && expr != nil {
 			constraints = append(constraints, expr.String())
 		}
 		// This is identity/availability metadata from a compiler-returned
@@ -152,15 +163,37 @@ func scanBuildConstraints(pkg *packages.Package, context build.Context) ([]*Buil
 			cgo = "1"
 		}
 		reason := fmt.Sprintf("go-build-selection GOOS=%s GOARCH=%s CGO_ENABLED=%s tags=%q file=%q", context.GOOS, context.GOARCH, cgo, tags, pkg.PkgPath+"/"+filepath.Base(path))
+		if constraintError != nil {
+			reason += " constraint-text-unavailable:go-parser"
+		}
+		var declarations []*BuildDecl
+		if headerError != nil {
+			reason += " package-unavailable:go-parser declarations-unavailable:go-parser"
+		} else {
+			declarations, err = exportedDecls(path)
+			if err != nil {
+				declarations = nil
+				reason += " declarations-unavailable:go-parser"
+			}
+		}
 		if importsCgo && !context.CgoEnabled {
 			reason += " cgo-disabled-import-C"
-		}
-		declarations, err := exportedDecls(path)
-		if err != nil {
-			return nil, err
 		}
 		out = append(out, &BuildConstraint{File: path, Constraints: constraints, ExcludedReason: reason, ExportedDecls: declarations})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].File < out[j].File })
 	return out, nil
+}
+
+func headerImportsCgo(file *ast.File) (bool, error) {
+	for _, imported := range file.Imports {
+		path, err := strconv.Unquote(imported.Path.Value)
+		if err != nil {
+			return false, err
+		}
+		if path == "C" {
+			return true, nil
+		}
+	}
+	return false, nil
 }

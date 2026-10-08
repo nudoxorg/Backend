@@ -3795,6 +3795,9 @@ mod tests {
             "fixture must expose active call spans outside the inactive source bytes"
         );
         std::fs::write(&inactive, source).expect("implicit filename exclusion fixture");
+        let external = project.join("external_test.go");
+        let external_source = b"package selection_test\nimport selected \"example.com/go-selection\"\nfunc Platform() string { return \"external\" }\nfunc Caller() int { return selected.Platform() }\n";
+        std::fs::write(&external, external_source).expect("external test package fixture");
         let modules = root.path().join("modules");
         std::fs::create_dir(&modules).expect("empty offline module cache");
         let environment = GoOracleChildEnvironment::new(
@@ -3853,6 +3856,70 @@ mod tests {
                 .len();
         assert!(output[length..].iter().all(|byte| *byte == 0xa5));
         FragmentView::validate(&output[..length]).expect("committed inactive-source fragment");
+
+        let image = oracle
+            .authority_image_for_package_with_authority_witness_cancellable(
+                &external, &project, &witness, None,
+            )
+            .expect("actual external test source image");
+        let borrowed = GoImage::open(&image).expect("validated external test image");
+        assert_eq!(borrowed.package_count(), 1);
+        assert_eq!(
+            borrowed.package(0).expect("external package").import_path,
+            b"example.com/go-selection_test"
+        );
+        let platform = borrowed
+            .declarations()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("external declarations")
+            .into_iter()
+            .filter(|row| row.name == b"Platform")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            platform.len(),
+            1,
+            "ordinary Platform must not conflate the external declaration"
+        );
+        let signature = borrowed
+            .type_row(platform[0].type_root.expect("external signature") as usize)
+            .expect("signature row");
+        let (result, _) = borrowed
+            .type_child(signature.children.0 as usize)
+            .expect("external result");
+        assert_eq!(
+            borrowed
+                .type_row(result as usize)
+                .expect("result type")
+                .name,
+            b"string"
+        );
+        assert!(
+            borrowed
+                .references()
+                .any(|row| row.is_ok_and(|row| row.target == b"Platform"
+                    && row.target_package == b"example.com/go-selection"
+                    && row.file == external.to_string_lossy().as_bytes()))
+        );
+        let mut facts = FactSet::new();
+        collect(external_source, &image, &mut facts)
+            .unwrap_or_else(|error| panic!("external package projection failed: {error:?}"));
+        assert!(facts.len() >= 2);
+        let identity = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(external_source),
+            byte_len: u32::try_from(external_source.len()).expect("external source bound"),
+        };
+        let recipe = CompileRecipeFact::derive(
+            recipe.profile,
+            Stage::LowerIr,
+            NativeTool::GoCompiler,
+            identity.identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(&toolchain_identity),
+        );
+        let length =
+            crate::driver::lower::admit(&facts, identity, recipe, recipe.profile, &mut output)
+                .unwrap_or_else(|error| panic!("external source admission failed: {error:?}"))
+                .len();
+        FragmentView::validate(&output[..length]).expect("committed external-test fragment");
     }
 
     /// Fixture declaration-kind tags.

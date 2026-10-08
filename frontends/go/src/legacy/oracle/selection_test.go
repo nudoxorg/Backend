@@ -34,7 +34,7 @@ func testSelection(t *testing.T, goos, goarch string, cgo bool, tags ...string) 
 	}
 	environment = append(environment, "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED="+cgoValue,
 		"GOCACHE="+filepath.Join(t.TempDir(), "build"), "GOMODCACHE="+t.TempDir(),
-		"GOENV=off", "GOTOOLCHAIN=local", "GOPROXY=off", "GOSUMDB=off", "GOPACKAGESDRIVER=off", "GOWORK=off")
+		"GOENV=off", "GOTOOLCHAIN=local", "GOPROXY=off", "GOSUMDB=off", "GOPACKAGESDRIVER=off", "GOWORK=off", "GOMAXPROCS=2")
 	selection, err := newPackageSelection(context, environment)
 	if err != nil {
 		t.Fatal(err)
@@ -255,9 +255,9 @@ func TestCompilerSelectionContradictionsRefuse(t *testing.T) {
 	}
 	dir := writeSelectionFixture(t)
 	for _, pkg := range []*packages.Package{
-		{Dir: dir, GoFiles: []string{filepath.Join(dir, "listener_windows.go")}},
-		{Dir: dir, IgnoredFiles: []string{filepath.Join(dir, "listener_darwin.go")}},
-		{Dir: dir, IgnoredFiles: []string{filepath.Join(filepath.Dir(dir), "outside.go")}},
+		{Name: "selection", Dir: dir, GoFiles: []string{filepath.Join(dir, "listener_windows.go")}},
+		{Name: "selection", Dir: dir, IgnoredFiles: []string{filepath.Join(dir, "listener_darwin.go")}},
+		{Name: "selection", Dir: dir, IgnoredFiles: []string{filepath.Join(filepath.Dir(dir), "outside.go")}},
 	} {
 		if _, err := scanBuildConstraints(pkg, selection.context); err == nil {
 			t.Fatalf("accepted contradictory package operands: %#v", pkg)
@@ -297,5 +297,144 @@ func TestAuthoritySourceSelectionMustHaveOneOwner(t *testing.T) {
 		if _, err := authorityOutputForSource(output, source); err == nil {
 			t.Fatalf("accepted unowned/contradictory source: %#v", output)
 		}
+	}
+}
+
+func TestExternalTestSourceRetainsCompilerPackageOwner(t *testing.T) {
+	dir := t.TempDir()
+	for name, source := range map[string]string{
+		"go.mod":                   "module example.com/test-owner\n\ngo 1.23\n",
+		"foo.go":                   "package foo\nfunc Same() int { return 42 }\n",
+		"internal_test.go":         "package foo\nfunc Internal() int { return Same() }\n",
+		"external_test.go":         "package foo_test\nimport foo \"example.com/test-owner\"\nfunc Same() string { return \"external\" }\nfunc Caller() int { return foo.Same() }\nvar Inferred = foo.Same()\n",
+		"external_windows_test.go": "package foo_test\nfunc Dormant() int { return 7 }\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(source), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	output, err := extractWithSelection(dir, ".", testSelection(t, "darwin", "arm64", false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(output.Errors) != 0 || len(output.Packages) != 2 {
+		t.Fatalf("actual test package load: errors=%v packages=%d", output.Errors, len(output.Packages))
+	}
+	for _, test := range []struct{ file, owner, result string }{
+		{"foo.go", "example.com/test-owner", "int"},
+		{"internal_test.go", "example.com/test-owner", "int"},
+		{"external_test.go", "example.com/test-owner_test", "string"},
+		{"external_windows_test.go", "example.com/test-owner_test", ""},
+	} {
+		selected, err := authorityOutputForSource(output, filepath.Join(dir, test.file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(selected.Packages) != 1 || selected.Packages[0].ImportPath != test.owner {
+			t.Fatalf("%s got wrong owner: %#v", test.file, selected.Packages)
+		}
+		pkg := selected.Packages[0]
+		plan, err := buildAuthorityPlan(selected, filepath.Join(dir, test.file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if test.result == "" {
+			if len(plan.cons) != 1 || len(plan.decls) != 0 || len(plan.refs) != 0 {
+				t.Fatal("dormant external test image contains active sibling semantics")
+			}
+			continue
+		}
+		var same []*Decl
+		for _, decl := range pkg.Decls {
+			if decl.Name == "Same" {
+				same = append(same, decl)
+			}
+		}
+		if len(same) != 1 || same[0].Signature == nil || len(same[0].Signature.Results) != 1 || same[0].Signature.Results[0].Type.Name != test.result {
+			t.Fatalf("%s conflated Same result: %#v", test.file, same)
+		}
+		if test.file == "external_test.go" {
+			known := false
+			for _, reference := range pkg.References {
+				// Empty kind/class are the protocol's closed free-function call
+				// spelling; the image maps them to Call/Func discriminants.
+				known = known || (reference.Owner == "Caller" && reference.Target == "Same" && reference.TargetPkg == "example.com/test-owner" && reference.Kind == "" && reference.Class == "")
+			}
+			if !known {
+				t.Fatalf("missing compiler-resolved external test -> ordinary package call: %#v", pkg.References)
+			}
+			var inferred *Decl
+			for _, decl := range pkg.Decls {
+				if decl.Name == "Inferred" {
+					inferred = decl
+				}
+			}
+			if inferred == nil || inferred.Type == nil || inferred.Type.Kind != "basic" || inferred.Type.Name != "int" {
+				t.Fatalf("external inferred result: %#v", inferred)
+			}
+		}
+		var image bytes.Buffer
+		if err := writeAuthorityImage(&image, filepath.Join(dir, test.file), output); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestIgnoredMalformedBodyDoesNotPoisonActiveCompilerPackage(t *testing.T) {
+	dir := t.TempDir()
+	for name, source := range map[string]string{
+		"go.mod":                   "module example.com/dormant\n\ngo 1.23\n",
+		"active.go":                "package dormant\n// Active remains compiler-typed.\nfunc Active() int { return 1 }\nvar Inferred = Active()\n",
+		"broken.go":                "//go:build ignore\n\npackage dormant\nfunc Broken( {\n",
+		"broken_header_windows.go": "package ???\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(source), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	output, err := extractWithSelection(dir, ".", testSelection(t, "darwin", "arm64", false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(output.Errors) != 0 || len(output.Packages) != 1 {
+		t.Fatalf("native Go must ignore malformed dormant code: %v", output.Errors)
+	}
+	active, err := authorityOutputForSource(output, filepath.Join(dir, "active.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := buildAuthorityPlan(active, filepath.Join(dir, "active.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.decls) == 0 || len(plan.refs) == 0 || len(plan.docs) == 0 {
+		t.Fatal("unrelated active compiler facts were lost")
+	}
+	for _, decl := range active.Packages[0].Decls {
+		if decl.Name == "Broken" {
+			t.Fatal("malformed dormant declaration was fabricated")
+		}
+	}
+	var image bytes.Buffer
+	if err := writeAuthorityImage(&image, filepath.Join(dir, "active.go"), output); err != nil {
+		t.Fatal(err)
+	}
+	dormant, err := authorityOutputForSource(output, filepath.Join(dir, "broken.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	constraint := dormant.Packages[0].BuildConstraints[0]
+	if !strings.Contains(constraint.ExcludedReason, " declarations-unavailable:go-parser") || len(constraint.ExportedDecls) != 0 {
+		t.Fatalf("untruthful dormant parse status: %#v", constraint)
+	}
+	plan, err = buildAuthorityPlan(dormant, filepath.Join(dir, "broken.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.decls) != 0 || len(plan.refs) != 0 || len(plan.cons) != 1 {
+		t.Fatal("malformed ignored source received active facts")
+	}
+	if _, err := authorityOutputForSource(output, filepath.Join(dir, "broken_header_windows.go")); err == nil {
+		t.Fatal("unknown dormant package header must not invent a source owner")
 	}
 }
