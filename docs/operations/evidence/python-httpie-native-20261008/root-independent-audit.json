@@ -1,0 +1,19 @@
+{
+  "source": "b97584982d77f51b1bb182426f4be77b2396b481",
+  "source_inputs_checked": 2067,
+  "native_tests": {
+    "passed": 9,
+    "failed": 0,
+    "ignored": 0
+  },
+  "real_source_files": 265,
+  "python_modules_per_fresh_state": 133,
+  "fresh_states": 2,
+  "native_coordinates_checked": 5240,
+  "root_coordinate_replay_matches": true,
+  "scope": "native compiler authority only; installed CLI/MCP acceptance remains open",
+  "root_remote_frozen_example_sha256": "920b8ae90d5ecb66cb3a2b5d55c02b30e5000efb981fa99c86e0066dbe42aafe",
+  "integration_source_inputs_identical": 2066,
+  "integration_lock_difference": "existing allocation-counter dependency line in backend-extension-tantivy; no Python dependency changes",
+  "integration_lock_sha256": "9206616740b78b7cb330272655ee9fdc3213a9818da4bb964abd6ed083381363"
+}

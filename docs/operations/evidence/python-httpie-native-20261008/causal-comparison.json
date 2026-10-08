@@ -1,0 +1,44 @@
+{
+  "schema": "nudox.python-httpie-causal-comparison.v1",
+  "baseline": {
+    "source": "dba9c253206cd9df13bb8ec93042ace48aacb18d",
+    "tree": "aa8ddaad4213ac5e84368fa96cdc59a1963221c0",
+    "same_tree_as_installed8809": true,
+    "exit_code": 1,
+    "observed_error": {
+      "path": "httpie/cli/__init__.py",
+      "message": "native target source coordinate is inadmissible"
+    },
+    "immutable_image_sha256": "4d73655efbec33b905645dd27e61350e72d557d66e4a869d3fd81fdf332d50a4",
+    "raw_receipt": "/private/tmp/sol61-httpie-python-report-20261008/raw-proof/baseline-run-01/receipt.json",
+    "raw_stderr": "/private/tmp/sol61-httpie-python-report-20261008/raw-proof/baseline-run-01/stderr.log"
+  },
+  "candidate": {
+    "production_repair_commit": "0247d28a30c3f9e8ee7cf7932b49a33fbed33865",
+    "native_proof_source_commit": "b97584982d77f51b1bb182426f4be77b2396b481",
+    "native_proof_tree": "c0bccf4aece310753fbbacfa4d833b4839f94346",
+    "exit_code": 0,
+    "immutable_image_sha256": "920b8ae90d5ecb66cb3a2b5d55c02b30e5000efb981fa99c86e0066dbe42aafe",
+    "native_suite": {
+      "passed": 9,
+      "failed": 0,
+      "ignored": 0
+    },
+    "fresh_native_states": 2,
+    "all133_modules_retained_each": true,
+    "independent_coordinate_checks": 5240,
+    "proof": "/private/tmp/sol61-httpie-python-report-20261008/httpie-causal-native-proof.json",
+    "proof_sha256": "c54b18b92bf793bc687a181864b3ca5eee4490b5f621fd6f823cf5c09ab892b6"
+  },
+  "five_phase_raw_evidence_root": "/private/tmp/sol61-httpie-python-report-20261008/raw-proof",
+  "raw_archive_sha256": "d739f8c64a35d4a534059a7347a1bc2c4467c89a4c670dd4dff4fa649bdc206a",
+  "graph_return": {
+    "path": "/private/tmp/sol61-httpie-python-report-20261008/raw-proof/search-graph-final-return-20261008.json",
+    "sha256": "33e7d994458c03a6cfe8afbd67bcadf7728165b6036a57067f1a89526de011f0"
+  },
+  "limits": [
+    "Native project authority only; no installed CLI/MCP acceptance",
+    "No whole cold-search or end-to-end latency acceleration claim",
+    "Typed diagnostic draft remains separate and has not passed native gates"
+  ]
+}
