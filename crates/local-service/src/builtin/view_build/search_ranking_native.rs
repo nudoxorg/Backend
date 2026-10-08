@@ -67,6 +67,7 @@ fn source_declaration_ranking_native_python_import_types_keep_real_function_firs
     for index in 0..32 {
         modules.push((format!("caller_{index}.py"), format!("from core.config import get_app_settings\n\ndef use_settings_{index}():\n    return get_app_settings()\n")));
     }
+    modules.sort_by(|left, right| left.0.cmp(&right.0));
     for (path, source) in &modules {
         std::fs::write(project_root.join(path), source).expect("actual native source bytes");
     }
