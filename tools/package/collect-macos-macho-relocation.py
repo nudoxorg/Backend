@@ -119,6 +119,7 @@ def source_origin_records(
         "backend-desktop": "Contents/MacOS/backend-desktop",
         "backend-mcp": "Contents/MacOS/backend-mcp",
         "backend-locald": "Contents/MacOS/backend-locald",
+        "backend-cli": "Contents/MacOS/backend-cli",
     }
     app_tree = file_tree_manifest(app_root)
     origins["application"] = {
@@ -131,6 +132,24 @@ def source_origin_records(
     roots["application"] = InputRoot("application", app_root, "origin", "application", "Contents/MacOS")
     for name in app_processes:
         owner_source_paths[app_processes[name]] = app_outputs[name]
+
+    if getattr(args, "sdk_only", False):
+        if set(receipts) != {"application", "helpers"}:
+            fail("SDK-only relocation requires exactly application and SDK helper receipts")
+        helper_path = receipts["helpers"]
+        helper_root = args.helpers_dir.resolve(strict=True)
+        bundle.validate_helper_payload(helper_path, helper_root, args.source_root.resolve(strict=True), source, target, sdk_only=True)
+        process = "Contents/Resources/Helpers/typescript/node/bin/node"
+        origins["helpers"] = {
+            "receipt_kind": "helpers", "receipt_sha256": hashlib.sha256(helper_path.read_bytes()).hexdigest(),
+            "root_tree_sha256": file_tree_sha256(file_tree_manifest(helper_root)),
+            "bundle_prefix": "Contents/Resources/Helpers", "process_roots": {"typescript/node/bin/node": process},
+        }
+        roots["helpers"] = InputRoot("helpers", helper_root, "origin", "helpers", "Contents/Resources/Helpers")
+        owner_source_paths[process] = helper_root / "typescript/node/bin/node"
+        if arch != bundle.MACOS_TARGETS[target]:
+            fail("SDK-only origin target identities do not agree")
+        return origins, roots, owner_source_paths
 
     roslyn_receipt_path = receipts["roslyn"]
     roslyn_root = args.roslyn_dir.resolve(strict=True)
@@ -636,13 +655,14 @@ def main() -> int:
     parser.add_argument("--expected-runner-sha256", required=True)
     parser.add_argument("--artifact-dir", required=True, type=Path)
     parser.add_argument("--build-receipt", required=True, type=Path)
-    parser.add_argument("--roslyn-dir", required=True, type=Path)
-    parser.add_argument("--roslyn-receipt", required=True, type=Path)
+    parser.add_argument("--sdk-only", action="store_true", help="collect only application and genuine Node/TypeScript SDK origins")
+    parser.add_argument("--roslyn-dir", type=Path)
+    parser.add_argument("--roslyn-receipt", type=Path)
     parser.add_argument("--helpers-dir", required=True, type=Path)
     parser.add_argument("--helpers-receipt", required=True, type=Path)
-    parser.add_argument("--dotnet-root", required=True, type=Path)
-    parser.add_argument("--dotnet-receipt", required=True, type=Path)
-    parser.add_argument("--dotnet-pin", required=True, type=Path)
+    parser.add_argument("--dotnet-root", type=Path)
+    parser.add_argument("--dotnet-receipt", type=Path)
+    parser.add_argument("--dotnet-pin", type=Path)
     parser.add_argument("--dotnet-source-archive", type=Path)
     parser.add_argument("--package-spec", required=True, type=Path, help="pinned package identities, roots, and notice paths")
     parser.add_argument("--package-root", action="append", default=[], metavar="ROLE=PATH")
@@ -651,6 +671,11 @@ def main() -> int:
     parser.add_argument("--output-dir", required=True, type=Path, help="new directory for the shared plan and wrapped receipts")
     parser.add_argument("--target", choices=bundle.MACOS_TARGETS, default="aarch64-apple-darwin")
     args = parser.parse_args()
+    legacy = [args.roslyn_dir, args.roslyn_receipt, args.dotnet_root, args.dotnet_receipt, args.dotnet_pin]
+    if args.sdk_only and any(value is not None for value in [*legacy, args.dotnet_source_archive]):
+        fail("SDK-only collection must not include legacy language-helper inputs")
+    if not args.sdk_only and any(value is None for value in legacy):
+        fail("full-helper collection requires all .NET and Roslyn inputs")
     bundle.macos_tools()
     source_root = args.source_root.resolve(strict=True)
     source = bundle.validate_source(source_root, args.expected_revision, args.expected_tree)
@@ -660,12 +685,9 @@ def main() -> int:
     if args.output_dir.exists() or args.output_dir.is_symlink():
         fail(f"refusing to overwrite relocation output directory: {args.output_dir}")
 
-    receipts = {
-        "application": args.build_receipt.resolve(strict=True),
-        "roslyn": args.roslyn_receipt.resolve(strict=True),
-        "helpers": args.helpers_receipt.resolve(strict=True),
-        "dotnet-runtime": args.dotnet_receipt.resolve(strict=True),
-    }
+    receipts = {"application": args.build_receipt.resolve(strict=True), "helpers": args.helpers_receipt.resolve(strict=True)}
+    if not args.sdk_only:
+        receipts.update({"roslyn": args.roslyn_receipt.resolve(strict=True), "dotnet-runtime": args.dotnet_receipt.resolve(strict=True)})
     origins, origin_roots, owner_paths = source_origin_records(args, {"target": {"triple": args.target, "architecture": target_arch}}, source, receipts)
     package_roots = parse_pairs(args.package_root, "package root")
     notice_roots = parse_pairs(args.notice_root, "notice root")
