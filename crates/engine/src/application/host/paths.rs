@@ -1470,6 +1470,7 @@ pub(crate) fn bundled_typescript_sdk(
             message: "installed TypeScript package tree differs from its complete receipt".into(),
         });
     }
+    proof.package_closures.push((package_root.clone(), expected_package_files));
     let package_manifest_path = package_root.join("package.json");
     let package_manifest_bytes =
         read_bounded(&package_manifest_path, 64 * 1024).map_err(|source| {
@@ -1564,6 +1565,7 @@ fn recognized_bundle_application(executable: Option<&Path>) -> Option<PathBuf> {
 pub(crate) struct BundleTypeScriptResourceProof {
     files: Vec<(PathBuf, u64, String, fs::Metadata)>,
     pub(crate) expected_node_version: Option<Box<str>>,
+    package_closures: Vec<(PathBuf, std::collections::BTreeSet<String>)>,
 }
 
 impl BundleTypeScriptResourceProof {
@@ -1580,12 +1582,31 @@ impl BundleTypeScriptResourceProof {
             files: vec![(path.to_path_buf(),
             maximum, digest, metadata)],
             expected_node_version: None,
+            package_closures: Vec::new(),
         };
         proof.validate_current()?;
         Ok(proof)
     }
 
     pub(crate) fn validate_current(&self) -> Result<(), LocalCompilerHostError> {
+        for (root, expected) in &self.package_closures {
+            if fs::canonicalize(root).ok().as_deref() != Some(root.as_path()) {
+                return Err(LocalCompilerHostError::BundleManifest {
+                    path: root.clone().into_boxed_path(), message: "selected SDK package root changed after admission".into(),
+                });
+            }
+            let directories = expected.iter().flat_map(|relative| {
+                Path::new(relative).ancestors().skip(1).filter(|parent| !parent.as_os_str().is_empty())
+                    .map(|parent| parent.to_string_lossy().into_owned()).collect::<Vec<_>>()
+            }).collect::<std::collections::BTreeSet<_>>();
+            let mut actual = std::collections::BTreeSet::new();
+            collect_bundle_typescript_files(root, root, &directories, &mut actual)?;
+            if &actual != expected {
+                return Err(LocalCompilerHostError::BundleManifest {
+                    path: root.clone().into_boxed_path(), message: "selected SDK package member closure changed after admission".into(),
+                });
+            }
+        }
         for (path, maximum, expected, identity) in &self.files {
             let (_, observed) = sha256_file(path, *maximum)?;
     let metadata = fs::symlink_metadata(path).map_err(|source| {
@@ -1993,6 +2014,7 @@ fn standalone_typescript_sdk(
             message: "standalone compiler tree differs from its complete receipt".into(),
         });
     }
+    resources.proof.package_closures.push((package.clone(), expected));
     let package_json: serde_json::Value = serde_json::from_slice(
         &read_bounded(&package.join("package.json"), 64 * 1024).map_err(|source| {
             LocalCompilerHostError::BundleManifest {
@@ -2787,6 +2809,10 @@ mod tests {
         fs::write(&node, b"same version, changed selected Node").unwrap();
         assert!(admitted.proof.validate_current().is_err());
         fs::write(&node, b"fixture node").unwrap();
+        let added_api = helper_root.join("node_modules/typescript/lib/added-after-admission.js");
+        fs::write(&added_api, b"unreceipted member").unwrap();
+        assert!(admitted.proof.validate_current().is_err());
+        fs::remove_file(&added_api).unwrap();
 
         // Unselected wrapper and driver assets cannot change this default checker recipe.
         fs::write(&report_program, b"broken unused wrapper").expect("alter unused report wrapper");
@@ -2842,6 +2868,30 @@ mod tests {
             Err(LocalCompilerHostError::BundleManifest { .. })
         ));
         fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
+    fn standalone_selected_package_proof_refuses_added_members_after_admission() {
+        let root = private_test_directory("standalone-package-closure");
+        let package = root.join("share/nudox/typescript/node_modules/typescript");
+        fs::create_dir_all(package.join("lib")).unwrap();
+        let api = package.join("lib/typescript.js");
+        fs::write(&api, b"receipted API bytes").unwrap();
+        let manifest = root.join("packaging-manifest.json");
+        fs::write(&manifest, b"{}").unwrap();
+        let mut proof = BundleTypeScriptResourceProof::from_bytes(&manifest, 1024, b"{}").unwrap();
+        let (size, digest) = sha256_file(&api, 1024).unwrap();
+        retain_selected_inventory_file(&mut proof,
+            &serde_json::json!({"kind":"file", "size_bytes":size, "sha256":digest}),
+            &api, 1024, &manifest).unwrap();
+        proof.package_closures.push((package.clone(), ["lib/typescript.js".to_owned()].into_iter().collect()));
+        proof.validate_current().unwrap();
+        let added = package.join("lib/added-after-admission.js");
+        fs::write(&added, b"unreceipted standalone package member").unwrap();
+        assert!(proof.validate_current().is_err());
+        fs::remove_file(&added).unwrap();
+        proof.validate_current().unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
