@@ -1037,6 +1037,12 @@ fn sha256_file(path: &Path, maximum_bytes: u64) -> Result<(u64, String), LocalCo
             message: format!("file exceeds its {maximum_bytes}-byte hash bound").into_boxed_str(),
         });
     }
+    let identity_error = |source: io::Error| LocalCompilerHostError::BundleManifest {
+        path: path.to_path_buf().into_boxed_path(),
+        message: source.to_string().into_boxed_str(),
+    };
+    let path_identity = backend_platform::FileIdentity::of_path_nofollow(path)
+        .map_err(&identity_error)?;
     let mut file =
         fs::File::open(path).map_err(|source| LocalCompilerHostError::BundleManifest {
             path: path.to_path_buf().into_boxed_path(),
@@ -1048,9 +1054,11 @@ fn sha256_file(path: &Path, maximum_bytes: u64) -> Result<(u64, String), LocalCo
                 path: path.to_path_buf().into_boxed_path(),
                 message: source.to_string().into_boxed_str(),
             })?;
+    let opened_identity = backend_platform::FileIdentity::of_file(&file)
+        .map_err(&identity_error)?;
     if !opened_metadata.is_file()
         || opened_metadata.len() > maximum_bytes
-        || !same_file_identity(&path_metadata, &opened_metadata)
+        || path_identity != opened_identity
     {
         return Err(LocalCompilerHostError::BundleManifest {
             path: path.to_path_buf().into_boxed_path(),
@@ -1070,8 +1078,8 @@ fn sha256_file(path: &Path, maximum_bytes: u64) -> Result<(u64, String), LocalCo
             message: source.to_string().into_boxed_str(),
         })?;
     if after_path.file_type().is_symlink()
-        || !same_file_identity(&opened_metadata, &after_handle)
-        || !same_file_identity(&opened_metadata, &after_path)
+        || opened_identity != backend_platform::FileIdentity::of_file(&file).map_err(&identity_error)?
+        || opened_identity != backend_platform::FileIdentity::of_path_nofollow(path).map_err(&identity_error)?
         || after_handle.len() != length
         || after_path.len() != length
     {
@@ -1123,21 +1131,6 @@ fn sha256_reader(
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     Ok((total, digest))
-}
-
-#[cfg(unix)]
-fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
-    use std::os::unix::fs::MetadataExt;
-
-    left.dev() == right.dev() && left.ino() == right.ino()
-}
-
-#[cfg(windows)]
-fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-
-    left.volume_serial_number() == right.volume_serial_number()
-        && left.file_index() == right.file_index()
 }
 
 #[cfg(all(test, unix))]

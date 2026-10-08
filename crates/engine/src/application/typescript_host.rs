@@ -44,7 +44,7 @@ const MAX_RESOLVER_DEPTH: usize = 32;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FileIdentity {
     pub(crate) first: u64,
-    pub(crate) second: u64,
+    pub(crate) second: super::toolchain_probe::FileObjectId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -977,7 +977,7 @@ fn capture_realpath_snapshot(
 ) -> Result<Option<(PathBuf, Option<FileIdentity>)>, TypeScriptProjectHostError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
-            let identity = file_identity(&metadata).map_err(|source| {
+            let identity = file_identity(&metadata, path, None).map_err(|source| {
                 TypeScriptProjectHostError::PackagePath {
                     path: path.to_path_buf().into_boxed_path(),
                     source,
@@ -1269,12 +1269,13 @@ impl TypeScriptProjectWitness {
                 path: package_root.clone().into_boxed_path(),
             });
         }
-        let package_identity = file_identity(&package_metadata).map_err(|source| {
-            TypeScriptProjectHostError::PackagePath {
-                path: package_root.clone().into_boxed_path(),
-                source,
-            }
-        })?;
+        let package_identity =
+            file_identity(&package_metadata, &package_root, None).map_err(|source| {
+                TypeScriptProjectHostError::PackagePath {
+                    path: package_root.clone().into_boxed_path(),
+                    source,
+                }
+            })?;
         let module_closure_digest = module_files_digest(&typescript_files, &package_root)?;
         let invocation_lease = TypeScriptProjectInvocationLease {
             compiler_path: compiler.to_path_buf().into_boxed_path(),
@@ -1659,11 +1660,12 @@ fn capture_directory_snapshot(
             path: canonical.into_boxed_path(),
         });
     }
-    let identity =
-        file_identity(&metadata).map_err(|source| TypeScriptProjectHostError::PackagePath {
+    let identity = file_identity(&metadata, &canonical, None).map_err(|source| {
+        TypeScriptProjectHostError::PackagePath {
             path: canonical.clone().into_boxed_path(),
             source,
-        })?;
+        }
+    })?;
     let mut entries = Vec::new();
     for entry in
         fs::read_dir(&canonical).map_err(|source| TypeScriptProjectHostError::PackagePath {
@@ -1690,12 +1692,13 @@ fn capture_directory_snapshot(
                 source,
             }
         })?;
-        let entry_identity = file_identity(&entry_metadata).map_err(|source| {
-            TypeScriptProjectHostError::PackagePath {
-                path: entry_path.clone().into_boxed_path(),
-                source,
-            }
-        })?;
+        let entry_identity =
+            file_identity(&entry_metadata, &entry_path, None).map_err(|source| {
+                TypeScriptProjectHostError::PackagePath {
+                    path: entry_path.clone().into_boxed_path(),
+                    source,
+                }
+            })?;
         let kind = if entry_metadata.file_type().is_symlink() {
             TypeScriptDirectoryEntryKind::Symlink
         } else if entry_metadata.is_dir() {
@@ -1996,11 +1999,12 @@ fn read_regular_file(
             maximum: maximum_bytes,
         });
     }
-    let identity =
-        file_identity(&before).map_err(|source| TypeScriptProjectHostError::PackagePath {
+    let identity = file_identity(&before, path, Some(&file)).map_err(|source| {
+        TypeScriptProjectHostError::PackagePath {
             path: path.to_path_buf().into_boxed_path(),
             source,
-        })?;
+        }
+    })?;
     let reserve = usize::try_from(before.len()).unwrap_or(usize::MAX);
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(reserve).map_err(|source| {
@@ -2030,9 +2034,11 @@ fn read_regular_file(
             source,
         })?;
     if identity
-        != file_identity(&after).map_err(|source| TypeScriptProjectHostError::PackagePath {
-            path: path.to_path_buf().into_boxed_path(),
-            source,
+        != file_identity(&after, path, Some(&file)).map_err(|source| {
+            TypeScriptProjectHostError::PackagePath {
+                path: path.to_path_buf().into_boxed_path(),
+                source,
+            }
         })?
         || after.len() != u64::try_from(bytes.len()).unwrap_or(u64::MAX)
     {
@@ -2050,7 +2056,11 @@ fn read_regular_file(
 }
 
 #[cfg(unix)]
-fn file_identity(metadata: &fs::Metadata) -> io::Result<FileIdentity> {
+fn file_identity(
+    metadata: &fs::Metadata,
+    _path: &Path,
+    _file: Option<&fs::File>,
+) -> io::Result<FileIdentity> {
     use std::os::unix::fs::MetadataExt;
 
     Ok(FileIdentity {
@@ -2060,24 +2070,25 @@ fn file_identity(metadata: &fs::Metadata) -> io::Result<FileIdentity> {
 }
 
 #[cfg(windows)]
-fn file_identity(metadata: &fs::Metadata) -> io::Result<FileIdentity> {
-    use std::os::windows::fs::MetadataExt;
-
-    Ok(FileIdentity {
-        first: u64::from(metadata.volume_serial_number().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::Unsupported,
-                "file volume identity is unavailable",
-            )
-        })?),
-        second: metadata.file_index().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::Unsupported, "file index is unavailable")
-        })?,
-    })
+fn file_identity(
+    _metadata: &fs::Metadata,
+    path: &Path,
+    file: Option<&fs::File>,
+) -> io::Result<FileIdentity> {
+    let identity = match file {
+        Some(file) => backend_platform::FileIdentity::of_file(file)?,
+        None => backend_platform::FileIdentity::of_path_nofollow(path)?,
+    };
+    let (first, second) = identity.parts();
+    Ok(FileIdentity { first, second })
 }
 
 #[cfg(not(any(unix, windows)))]
-fn file_identity(_metadata: &fs::Metadata) -> io::Result<FileIdentity> {
+fn file_identity(
+    _metadata: &fs::Metadata,
+    _path: &Path,
+    _file: Option<&fs::File>,
+) -> io::Result<FileIdentity> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "this platform cannot provide stable file identity",

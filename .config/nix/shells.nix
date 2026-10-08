@@ -207,6 +207,13 @@ let
   # into every cross run. `nushell` runs the standalone lane runner at
   # `.config/ci/cross-check.nu`; nothing here closes over the `backend` command.
   crossAttrs = {
+    # Cargo's debug C builds use -O0. jemalloc's configure probes add -Werror,
+    # which turns glibc's "_FORTIFY_SOURCE requires optimization" into a
+    # failure. This compile/test shell does not configure release hardening.
+    hardeningDisable = [
+      "fortify"
+      "fortify3"
+    ];
     packages = [
       toolchains.cross
       pkgs.nushell

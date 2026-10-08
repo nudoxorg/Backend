@@ -19,6 +19,12 @@ pub struct FileIdentity {
 }
 
 impl FileIdentity {
+    /// Returns the volume and full object identifier without truncating Windows file ids.
+    #[must_use]
+    pub const fn parts(self) -> (u64, u128) {
+        (self.volume, self.object)
+    }
+
     /// Returns the stable platform-independent volume/object identity bytes.
     /// These bytes identify one filesystem instance, rather than its path.
     #[must_use]
