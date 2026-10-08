@@ -1,0 +1,97 @@
+{
+  "schema": "nudox.root-focused-js-and-installed-httpie-audit.v1",
+  "base": "0dd104dbe83a3a0623f88db40f883257c05ebba5",
+  "production_commit": "f0eb911f056b9fb9adddd3f9664e677000db47dd",
+  "production_tree": "e173fe31b4d94f4bbe03154d03a4f842128614c6",
+  "changed_production": [
+    "crates/engine/src/application/compiler_typescript_failure.rs",
+    "crates/engine/src/application/typescript_host.rs",
+    "crates/engine/src/application/typescript_program.rs"
+  ],
+  "unchanged_canonical_entries": 17944,
+  "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+  "javascript": {
+    "native_source": "4ba330c3ec78d7ed538a276e012be3363bc49e2d",
+    "tree": "52f338b0fe64afa61f87ccf0f8705c4f2f86adb9",
+    "raw_archive_sha256": "80e2bc723cd81495e979a50d5de7627b387c9b520cad03775b00b29cc00e6a83",
+    "raw_archive_bytes": 1545649,
+    "tracked_blob_map_entries_checked": 17944,
+    "test_passes": 1,
+    "test_failures": 0,
+    "image_sha256": "bf0c380c44c12fa54045200a81e3f608cd3b34234bef9e0b9af0c045308b435d",
+    "image_fresh": false,
+    "node": {
+      "path": "/nix/store/0nbp03038s33ck712yx9219gcj3a2sqm-nodejs-slim-24.18.0/bin/node",
+      "sha256_after": "47ce0b0ce242dc8a97a9c9fe5fda1d0c0ff1430457b6efe71072274b76a67c9e",
+      "sha256_before": "47ce0b0ce242dc8a97a9c9fe5fda1d0c0ff1430457b6efe71072274b76a67c9e",
+      "version": "v24.18.0"
+    },
+    "typescript": {
+      "after_inventory_sha256": "bfddfe6caa76a27c321e9986ad50bbf51add56e23e44e921e801f1dc845ab881",
+      "api_path": "/root/sol61-caddy-inferred-js-runtime-4ba-20261008/node_modules/typescript/lib/typescript.js",
+      "api_sha256": "3ae902c92cc44dace175c0e69e13a4b0899f6983c6121d76b9ab8dd5795e7675",
+      "before_inventory_sha256": "bfddfe6caa76a27c321e9986ad50bbf51add56e23e44e921e801f1dc845ab881",
+      "inventory_identical_before_after": true,
+      "packaging_manifest_sha256": "63df22ff504313f1e296e40514ccd87d5617422ce63f7a21ee981a30dcf4f5bf",
+      "runtime_manifest_sha256_after": "de9227b5e7769f47d250f9c0863d6f8a0834ae3344dc52df2149041a51a6ea1a",
+      "runtime_manifest_sha256_before": "de9227b5e7769f47d250f9c0863d6f8a0834ae3344dc52df2149041a51a6ea1a",
+      "source_file_count": 133,
+      "source_receipt_sha256": "676b73aff6f08fa23ebdc8d7c929f27634bb8082ecc01aae680a738fc82e0ce3",
+      "staged_file_count": 133,
+      "version": "5.9.3"
+    },
+    "attempt_sha256": "a1e5bca7a558ac9f4c8e39c0c25a0abb27bc0f3a5c896998bd8683cf0d6433ed",
+    "return_sha256": "b260ecdaeca8b6809446a6d018ba90b0f2e30b5da241a7aca251bbef1d34c9c0",
+    "kernel_wait_and_group_absence": true,
+    "initial_incomplete_sdk_failure_preserved": true,
+    "installed_or_composed_canonical_e2e": false,
+    "test_elapsed_seconds": 2.1946868896484375
+  },
+  "installed_httpie_RAM_diagnostic": {
+    "ledger_sha256": "cda160128068c39670d24199be5ccffa04604ce66e853ebaf09611c0905184b5",
+    "raw_archive_sha256": "e3197209c94dc84e4f8a703fbef22d6c472c184f8a7d4b0bef02ced4b2aa961f",
+    "manifest_files_verified": 490,
+    "correlated_responses_verified": 99,
+    "tool_calls_verified": 81,
+    "wire_metadata_frames_verified": 81,
+    "maximum_complete_wire_bytes": 39171,
+    "successful_listed_tools": [
+      "backend.document",
+      "backend.graph",
+      "backend.index",
+      "backend.index_cancel",
+      "backend.index_progress",
+      "backend.index_search",
+      "backend.index_start",
+      "backend.outline",
+      "backend.package",
+      "backend.packages",
+      "backend.read",
+      "backend.references",
+      "backend.remove",
+      "backend.resolve",
+      "backend.search",
+      "backend.source",
+      "backend.status"
+    ],
+    "additional_successful_catalog_tools": [
+      "backend.semantic_versions"
+    ],
+    "same_original_graph_cursor_and_page2_records_across_interleave_and_owner_restart": true,
+    "installed_source": "c0016d4f4fc9b0f0a452c7c9556954e2287948b3",
+    "images": {
+      "backend-cli": "8db8898e9f9423eabe2a21ec1a0c76de9b760e2bfd9c336f6974d9dd87f6fe13",
+      "backend-mcp": "567de09f425db399029d71ebfe8b03a42e68a0e987c31ef97d55492088df89d4",
+      "backend-locald": "eb8a762d8eb6710c4a492fd72dea76633f4ebe09dd0e541f9c4ef7c3df66319e"
+    },
+    "scope": "Root-authorized process-private bounded tmpfs binding under platform-default HOME state paths; same genuine GNU24 installed c001, ordinary PATH, no NUDOX/loader overrides",
+    "not_claimed": [
+      "normal disk performance/readiness",
+      "physical or power-loss durability",
+      "latest canonical source or Python PR80 acceptance",
+      "WireCreditReached or wide byte-packing proof",
+      "in-flight cancellation efficacy",
+      "all optional catalog lanes or all compiler profiles"
+    ]
+  }
+}

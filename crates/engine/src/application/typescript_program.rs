@@ -703,7 +703,15 @@ try {
       directory_query_cache_bytes:directoryQueryCacheBytes,
       unsupported_options:[], error:'project references are not yet admitted as one TSZ program', failure_kind:null});
   } else {
-    const options = parsed.options;
+    // With no tsconfig, the package's captured source frontier is the complete
+    // project input. TypeScript defaults `allowJs` to false and silently omits
+    // inferred JavaScript roots unless the host opts them in. Clone the defaults
+    // so this narrow inference does not mutate explicit project options or
+    // accidentally enable JavaScript checking.
+    const options = {...parsed.options};
+    const inferredJavaScriptRoots = !configPath && Array.isArray(inferredRootNames)
+      && inferredRootNames.some(name => /\.(?:js|jsx|mjs|cjs)$/i.test(name));
+    if (inferredJavaScriptRoots) options.allowJs = true;
     const host = ts.createCompilerHost(options, true);
     for (const name of ['readFile', 'fileExists', 'directoryExists', 'realpath', 'readDirectory', 'getDirectories']) {
       if (typeof host[name] === 'function' && typeof ts.sys[name] === 'function') host[name] = ts.sys[name].bind(ts.sys);
@@ -986,15 +994,15 @@ pub(crate) fn build_native_inputs(
         let package_path = source.relative_path();
         let absolute = inputs.package_root.join(package_path);
         let Some(admitted) = resolver.try_load_source(&absolute)? else {
-            return Err(bridge_error(&format!(
-                "package source {package_path:?} is absent from the admitted compiler program"
-            )));
+            return Err(TypeScriptProjectHostError::CompilerProgramSourceMissing {
+                package_relative_path: package_path.into(),
+            });
         };
         let canonical = normalize_path(&admitted.path);
         let Some(virtual_path) = virtual_by_canonical.get(&canonical) else {
-            return Err(bridge_error(&format!(
-                "package source {package_path:?} is absent from the selected tsconfig program"
-            )));
+            return Err(TypeScriptProjectHostError::CompilerProgramSourceMissing {
+                package_relative_path: package_path.into(),
+            });
         };
         let expected = source.source().as_bytes();
         if admitted.bytes.as_ref() != expected {
@@ -2095,6 +2103,215 @@ mod tests {
         matcher_path_list_digest, normalize_compiler_api_lib_names, validate_matcher_transcript,
     };
     use serde_json::json;
+
+    struct TemporaryProgramRoot(std::path::PathBuf);
+
+    impl Drop for TemporaryProgramRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn report_contains_source(report: &super::ProgramReport, path: &std::path::Path) -> bool {
+        let path = path.to_string_lossy();
+        report.files.iter().any(|file| file.path == path.as_ref())
+    }
+
+    fn control_contains_source(report: &serde_json::Value, path: &std::path::Path) -> bool {
+        let path = path.to_string_lossy();
+        report["files"].as_array().is_some_and(|files| {
+            files
+                .iter()
+                .any(|file| file.as_str() == Some(path.as_ref()))
+        })
+    }
+
+    const JAVASCRIPT_DIAGNOSTICS_CONTROL_SCRIPT: &str = r#"
+'use strict';
+const ts = require(process.argv[1]);
+const rootNames = JSON.parse(process.argv[2]);
+const options = {
+  ...ts.getDefaultCompilerOptions(),
+  allowJs: true,
+  checkJs: false,
+  jsx: ts.JsxEmit.Preserve,
+  noEmit: true
+};
+const program = ts.createProgram({rootNames, options});
+const diagnostics = ts.getPreEmitDiagnostics(program);
+process.stdout.write(JSON.stringify({
+  files:program.getSourceFiles().map(file => file.fileName),
+  diagnostics:diagnostics.map(diagnostic => ({code:diagnostic.code, category:diagnostic.category}))
+}));
+"#;
+
+    fn run_program_report(
+        root: &std::path::Path,
+        node: &std::path::Path,
+        compiler_api: &std::path::Path,
+        config: Option<&std::path::Path>,
+        roots: &[std::path::PathBuf],
+    ) -> super::ProgramReport {
+        use std::{ffi::OsString, num::NonZeroUsize, sync::atomic::AtomicBool, time::Duration};
+
+        use crate::application::{
+            ToolchainProbeLimits, toolchain_probe::run_typescript_program_bridge,
+        };
+
+        let root_names = roots
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let arguments = [
+            OsString::from(compiler_api.as_os_str()),
+            config
+                .map(|path| OsString::from(path.as_os_str()))
+                .unwrap_or_default(),
+            OsString::from(root.as_os_str()),
+            OsString::from(serde_json::to_string(&root_names).expect("encode test roots")),
+        ];
+        let output = run_typescript_program_bridge(
+            node,
+            super::COMPILER_API_PROGRAM_SCRIPT,
+            &arguments,
+            root,
+            ToolchainProbeLimits::new(
+                Duration::from_secs(30),
+                NonZeroUsize::new(super::MAX_BRIDGE_STDOUT_BYTES).expect("nonzero test output cap"),
+            )
+            .expect("bounded test probe"),
+            &AtomicBool::new(false),
+        )
+        .expect("run the pinned TypeScript Compiler API fixture");
+        serde_json::from_slice(&output).expect("decode the pinned TypeScript program report")
+    }
+
+    fn run_javascript_diagnostics_control(
+        root: &std::path::Path,
+        node: &std::path::Path,
+        compiler_api: &std::path::Path,
+        roots: &[std::path::PathBuf],
+    ) -> serde_json::Value {
+        use std::{ffi::OsString, num::NonZeroUsize, sync::atomic::AtomicBool, time::Duration};
+
+        use crate::application::{
+            ToolchainProbeLimits, toolchain_probe::run_typescript_program_bridge,
+        };
+
+        let root_names = roots
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let arguments = [
+            OsString::from(compiler_api.as_os_str()),
+            OsString::from(serde_json::to_string(&root_names).expect("encode test roots")),
+        ];
+        let output = run_typescript_program_bridge(
+            node,
+            JAVASCRIPT_DIAGNOSTICS_CONTROL_SCRIPT,
+            &arguments,
+            root,
+            ToolchainProbeLimits::new(
+                Duration::from_secs(30),
+                NonZeroUsize::new(super::MAX_BRIDGE_STDOUT_BYTES).expect("nonzero test output cap"),
+            )
+            .expect("bounded test probe"),
+            &AtomicBool::new(false),
+        )
+        .expect("run the TypeScript JavaScript diagnostics control");
+        serde_json::from_slice(&output).expect("decode TypeScript JavaScript diagnostics")
+    }
+
+    #[test]
+    #[ignore = "requires pinned Node and TypeScript API paths in TSZ_PROGRAM_TEST_NODE and TSZ_PROGRAM_TEST_TYPESCRIPT_API"]
+    fn configless_javascript_roots_are_admitted_without_checking_js() {
+        use std::{env, fs, path::PathBuf};
+
+        let node = PathBuf::from(
+            env::var_os("TSZ_PROGRAM_TEST_NODE").expect("set the pinned Node executable"),
+        );
+        let compiler_api = PathBuf::from(
+            env::var_os("TSZ_PROGRAM_TEST_TYPESCRIPT_API").expect("set the pinned TypeScript API"),
+        );
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after Unix epoch")
+            .as_nanos();
+        let root = env::temp_dir().join(format!(
+            "nudox-typescript-js-control-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).expect("create isolated TypeScript source fixture");
+        let fixture = TemporaryProgramRoot(root);
+        let root = fixture.0.as_path();
+        fs::write(root.join("plain.js"), "module.exports = 1;\n").expect("write JavaScript");
+        fs::write(
+            root.join("view.jsx"),
+            "const view = <div data-kind=\"ok\" />;\nmodule.exports = view;\n",
+        )
+        .expect("write JSX");
+        fs::write(root.join("typed.ts"), "export const typed: number = 1;\n")
+            .expect("write TypeScript");
+
+        let javascript_roots = [root.join("plain.js"), root.join("view.jsx")];
+        let report = run_program_report(root, &node, &compiler_api, None, &javascript_roots);
+        assert!(report.error.is_none(), "bridge error: {:?}", report.error);
+        let options = &report.compiler_options["compilerOptions"];
+        assert_eq!(options["allowJs"], true);
+        assert_eq!(
+            options["checkJs"], false,
+            "inference must not enable JS checking"
+        );
+        for source in &javascript_roots {
+            assert!(report_contains_source(&report, source));
+        }
+
+        let diagnostics =
+            run_javascript_diagnostics_control(root, &node, &compiler_api, &javascript_roots);
+        assert_eq!(diagnostics["diagnostics"], serde_json::json!([]));
+        for source in &javascript_roots {
+            assert!(control_contains_source(&diagnostics, source));
+        }
+
+        let config = root.join("tsconfig.json");
+        fs::write(
+            &config,
+            r#"{"compilerOptions":{"allowJs":false,"strict":true,"target":"ES2020","jsx":"preserve"},"include":["plain.js"]}"#,
+        )
+        .expect("write explicit JavaScript exclusion config");
+        let explicit =
+            run_program_report(root, &node, &compiler_api, Some(&config), &javascript_roots);
+        assert!(
+            explicit.error.is_none(),
+            "bridge error: {:?}",
+            explicit.error
+        );
+        let explicit_options = &explicit.compiler_options["compilerOptions"];
+        assert_eq!(explicit_options["allowJs"], false);
+        assert_eq!(explicit_options["strict"], true);
+        assert_eq!(explicit_options["target"], "ES2020");
+        assert_eq!(explicit_options["jsx"], "Preserve");
+        assert!(!report_contains_source(&explicit, &root.join("plain.js")));
+
+        let typescript_root = [root.join("typed.ts")];
+        let typescript_only =
+            run_program_report(root, &node, &compiler_api, None, &typescript_root);
+        assert!(
+            typescript_only.error.is_none(),
+            "bridge error: {:?}",
+            typescript_only.error
+        );
+        let typescript_options = &typescript_only.compiler_options["compilerOptions"];
+        assert_eq!(typescript_options["allowJs"], false);
+        assert_eq!(typescript_options["checkJs"], false);
+        assert_eq!(typescript_options["target"], "ES5");
+        assert!(report_contains_source(
+            &typescript_only,
+            &root.join("typed.ts")
+        ));
+    }
 
     /// Re-runs TypeScript 5.9's own matcher against the complete directory
     /// snapshots retained from an installed configured project. Every probe

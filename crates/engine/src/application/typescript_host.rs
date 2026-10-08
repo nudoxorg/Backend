@@ -4027,6 +4027,10 @@ pub enum TypeScriptProjectHostError {
     },
     #[error("TypeScript configuration {config:?} does not exist")]
     ConfigMissing { config: Box<Path> },
+    #[error(
+        "admitted TypeScript package source {package_relative_path:?} was absent from the compiler program"
+    )]
+    CompilerProgramSourceMissing { package_relative_path: Box<str> },
     #[error("the admitted TypeScript compiler API rejected its program input: {message}")]
     CompilerApiBridge { message: Box<str> },
     #[error("TypeScript compiler I/O closure exceeded its {phase} budget: {detail}")]
