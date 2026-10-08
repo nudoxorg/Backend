@@ -4658,6 +4658,166 @@ mod tests {
         }
     }
 
+    /// A compiler-resolved re-export in a nonstandard Cargo bin retains its
+    /// selected source coordinate through the actual emitted foreign cell.
+    #[test]
+    fn selected_cargo_bin_reexport_emits_exact_package_call()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use backend_frontend_rust::legacy::{
+            RustCargoMetadataPolicy, RustWorkspaceFile, RustWorkspaceSessionKey,
+            RustWorkspaceSessionLane,
+        };
+        use std::path::Path;
+
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let outer = std::env::temp_dir().join(format!(
+            "rust-selected-bin-call-{}-{nonce}-{sequence}",
+            std::process::id()
+        ));
+        let _guard = FixtureRoot(outer.clone());
+        let toolchain = RustToolchain::discover(rustc_path())?;
+        let main = "mod flags;\nfn main() { let _ = flags::parse(); }\n";
+        let flags = "mod parse;\npub(crate) use parse::parse;\n";
+        let parse = "pub(crate) fn parse() -> i32 { 7 }\n";
+        let source_identity = SourceIdentity::from_bytes(main.as_bytes())
+            .ok_or(TestError::Missing("source identity"))?;
+        let profile = LanguageProfile::Rust(RustEdition::Rust2024);
+        let recipe = CompileRecipeFact::derive(
+            profile,
+            Stage::LowerIr,
+            NativeTool::Rustc,
+            ContentId::<SourceFactDomain>::from_canonical_bytes(main.as_bytes()),
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"selected-bin-call-fixture"),
+        );
+        for ancestor in ["workspace", "src/parent"] {
+            let root = outer.join(ancestor);
+            fs::create_dir_all(root.join("crates/core/flags"))?;
+            let manifest = "[package]\nname = \"selected_bin_call\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[[bin]]\nname = \"coordinate\"\npath = \"crates/core/main.rs\"\n";
+            fs::write(root.join("Cargo.toml"), manifest)?;
+            for (path, text) in [
+                ("crates/core/main.rs", main),
+                ("crates/core/flags/mod.rs", flags),
+                ("crates/core/flags/parse.rs", parse),
+            ] {
+                fs::write(root.join(path), text)?;
+            }
+            for captured_target in [true, false] {
+                let mut files = vec![RustWorkspaceFile {
+                    relative_path: Path::new("crates/core/flags/mod.rs"),
+                    source: flags,
+                }];
+                if captured_target {
+                    files.push(RustWorkspaceFile {
+                        relative_path: Path::new("crates/core/flags/parse.rs"),
+                        source: parse,
+                    });
+                }
+                files.push(RustWorkspaceFile {
+                    relative_path: Path::new("crates/core/main.rs"),
+                    source: main,
+                });
+                let paths = files
+                    .iter()
+                    .map(|file| file.relative_path.to_path_buf())
+                    .collect::<Vec<_>>();
+                let key = RustWorkspaceSessionKey::new(
+                    &root,
+                    &toolchain,
+                    RustEdition::Rust2024,
+                    Stage::LowerIr,
+                    RustFeatureControl::default(),
+                    RustCargoMetadataPolicy::Offline,
+                    None,
+                    None,
+                    None,
+                    [0x48; 32],
+                    &paths,
+                )?;
+                let cancelled = AtomicBool::new(false);
+                let deadline = Instant::now() + Duration::from_secs(180);
+                let mut lane = RustWorkspaceSessionLane::default();
+                let lease = lane.begin(
+                    key,
+                    &files,
+                    RustAnalysisControl {
+                        cancelled: &cancelled,
+                        maximum_source_bytes: SourceByteLimit::from(8_192),
+                        deadline,
+                    },
+                )?;
+                let mut facts = FactSet::new();
+                collect_workspace(
+                    lease.workspace(),
+                    &root.join("crates/core/main.rs"),
+                    SourceByteLimit::from(8_192),
+                    CompileControl {
+                        cancelled: &cancelled,
+                        deadline,
+                    },
+                    main.as_bytes(),
+                    &mut facts,
+                )
+                .map_err(TestError::Collection)?;
+                let mut output = vec![0xa5; 65_536];
+                let length = admit(&facts, source_identity, recipe, profile, &mut output)
+                    .map_err(TestError::Admission)?
+                    .len();
+                assert!(output[length..].iter().all(|byte| *byte == 0xa5));
+                let view = FragmentView::validate(&output[..length])?;
+                let owner = fact_of(&view, b"main", EntityKind::Function)?;
+                let calls = occurrences(&view)?
+                    .into_iter()
+                    .filter(|(from, occurrence)| {
+                        *from == owner && occurrence.kind == ReferenceKind::FunctionCall
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    calls.len(),
+                    1,
+                    "the containing function has one actual call"
+                );
+                let call = calls[0].1;
+                assert_eq!(call.confidence, OccurrenceConfidence::Oracle);
+                let start =
+                    u32::try_from(main.find("parse()").unwrap() - main.find("fn main").unwrap())?;
+                assert_eq!(
+                    call.span,
+                    RelSpan {
+                        start,
+                        end: start + 5
+                    }
+                );
+                let OccurrenceTarget::Foreign(target) = call.target else {
+                    return Err(TestError::Missing("cross-file foreign call").into());
+                };
+                if captured_target {
+                    let ForeignOrigin::Package(lineage) = target.origin else {
+                        return Err(TestError::Missing("selected package coordinate").into());
+                    };
+                    assert_eq!(lineage.ecosystem, "cargo");
+                    assert_eq!(lineage.name, "crates/core/flags/parse");
+                    assert_eq!(target.path, "parse");
+                    assert_eq!(target.display, "parse");
+                } else {
+                    assert!(matches!(
+                        target.origin,
+                        ForeignOrigin::Universe { ecosystem: "cargo" }
+                    ));
+                    assert_eq!(target.path, "flags::parse");
+                }
+                lease.commit();
+                assert!(!root.join("Cargo.lock").exists());
+                assert_eq!(fs::read_to_string(root.join("Cargo.toml"))?, manifest);
+                assert_eq!(
+                    fs::read_to_string(root.join("crates/core/flags/parse.rs"))?,
+                    parse
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Lowers one fixture crate root through the complete Rust lane and
     /// returns its validated compact fragment, proving the untouched output
     /// tail stayed unchanged.

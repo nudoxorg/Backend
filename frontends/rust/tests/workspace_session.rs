@@ -19,6 +19,201 @@ use ra_ap_syntax::AstNode;
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+/// A real Cargo bin and re-export resolve only through captured source coordinates.
+#[test]
+fn nonstandard_cargo_bin_targets_bind_only_selected_source_coordinates()
+-> Result<(), Box<dyn std::error::Error>> {
+    for ancestor in ["workspace", "src/parent"] {
+        nonstandard_cargo_bin_target_coordinates(ancestor)?;
+    }
+    Ok(())
+}
+
+fn nonstandard_cargo_bin_target_coordinates(
+    ancestor: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use backend_frontend_rust::legacy::{
+        SemanticKind,
+        ra_ap_hir::{ModuleDef, PathResolution},
+    };
+    use backend_semantic::ir::SourceIdentity;
+
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    // An unrelated /src/ ancestor must not influence module coordinates.
+    let outer = std::env::temp_dir().join(format!("rust-bin-coordinate-{nonce}-{sequence}"));
+    let root = outer.join(ancestor);
+    fs::create_dir_all(root.join("crates/core/flags"))?;
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"bin_coordinate_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[[bin]]\nname = \"coordinate\"\npath = \"crates/core/main.rs\"\n",
+    )?;
+    let main = "mod flags;\nfn main() { let _ = flags::parse(); }\n";
+    let flags = "mod parse;\npub(crate) use parse::parse;\n";
+    let parse = "pub(crate) fn parse() -> i32 { 7 }\n";
+    for (path, text) in [
+        ("crates/core/main.rs", main),
+        ("crates/core/flags/mod.rs", flags),
+        ("crates/core/flags/parse.rs", parse),
+    ] {
+        fs::write(root.join(path), text)?;
+    }
+    let outcome = (|| {
+        let toolchain = RustToolchain::discover(rustc_path())?;
+        let cancelled = AtomicBool::new(false);
+        let control = || RustAnalysisControl {
+            cancelled: &cancelled,
+            maximum_source_bytes: SourceByteLimit::from(8_192),
+            deadline: Instant::now() + Duration::from_secs(180),
+        };
+        // Direct opening loads a real Cargo graph but does not admit a
+        // captured source frontier. Even a resolved HIR target stays outside
+        // the selected-coordinate authority until a session admits it.
+        let direct = RustWorkspace::open(&root, &toolchain, RustEdition::Rust2024, control())?;
+        direct.analyze_source(
+            root.join("crates/core/main.rs"),
+            main.as_bytes(),
+            control(),
+            |authority| {
+                let path = authority
+                    .top_level_paths()
+                    .find(|path| {
+                        authority
+                            .span(path.syntax())
+                            .ok()
+                            .and_then(|span| authority.source_at(span).ok())
+                            == Some(b"flags::parse".as_slice())
+                    })
+                    .ok_or(RustAuthorityError::MissingSemanticFact {
+                        fact: SemanticKind::Function,
+                    })?;
+                let Some((PathResolution::Def(ModuleDef::Function(function)), _)) =
+                    authority.resolve_path(&path)
+                else {
+                    return Err(RustAuthorityError::MissingSemanticFact {
+                        fact: SemanticKind::Function,
+                    });
+                };
+                let definition = authority.semantics.source(function).ok_or(
+                    RustAuthorityError::MissingSemanticFact {
+                        fact: SemanticKind::Function,
+                    },
+                )?;
+                let file = authority
+                    .semantics
+                    .original_range(definition.value.syntax())
+                    .file_id;
+                assert!(authority.selected_source_coordinate(file).is_none());
+                assert!(authority.cross_file_method_package_path(function).is_none());
+                Ok(())
+            },
+        )?;
+        drop(direct);
+        for captured_target in [true, false] {
+            let mut files = vec![RustWorkspaceFile {
+                relative_path: Path::new("crates/core/flags/mod.rs"),
+                source: flags,
+            }];
+            if captured_target {
+                files.push(RustWorkspaceFile {
+                    relative_path: Path::new("crates/core/flags/parse.rs"),
+                    source: parse,
+                });
+            }
+            files.push(RustWorkspaceFile {
+                relative_path: Path::new("crates/core/main.rs"),
+                source: main,
+            });
+            let paths = files
+                .iter()
+                .map(|file| file.relative_path.to_path_buf())
+                .collect::<Vec<_>>();
+            let key = RustWorkspaceSessionKey::new(
+                &root,
+                &toolchain,
+                RustEdition::Rust2024,
+                Stage::LowerIr,
+                RustFeatureControl::default(),
+                RustCargoMetadataPolicy::Offline,
+                None,
+                None,
+                None,
+                [0x39; 32],
+                &paths,
+            )?;
+            let mut lane = RustWorkspaceSessionLane::default();
+            let lease = lane.begin(key, &files, control())?;
+            lease.workspace().analyze_source(
+                root.join("crates/core/main.rs"),
+                main.as_bytes(),
+                control(),
+                |authority| {
+                    let path = authority
+                        .top_level_paths()
+                        .find(|path| {
+                            authority
+                                .span(path.syntax())
+                                .ok()
+                                .and_then(|span| authority.source_at(span).ok())
+                                == Some(b"flags::parse".as_slice())
+                        })
+                        .ok_or(RustAuthorityError::MissingSemanticFact {
+                            fact: SemanticKind::Function,
+                        })?;
+                    let Some((PathResolution::Def(ModuleDef::Function(function)), _)) =
+                        authority.resolve_path(&path)
+                    else {
+                        return Err(RustAuthorityError::MissingSemanticFact {
+                            fact: SemanticKind::Function,
+                        });
+                    };
+                    let definition = authority.semantics.source(function).ok_or(
+                        RustAuthorityError::MissingSemanticFact {
+                            fact: SemanticKind::Function,
+                        },
+                    )?;
+                    let file = authority
+                        .semantics
+                        .original_range(definition.value.syntax())
+                        .file_id;
+                    let coordinate = authority.selected_source_coordinate(file);
+                    if captured_target {
+                        let coordinate =
+                            coordinate.ok_or(RustAuthorityError::MissingSemanticFact {
+                                fact: SemanticKind::Function,
+                            })?;
+                        assert_eq!(
+                            coordinate.relative_path,
+                            Path::new("crates/core/flags/parse.rs")
+                        );
+                        assert_eq!(
+                            Some(coordinate.source),
+                            SourceIdentity::from_bytes(parse.as_bytes())
+                        );
+                        assert_eq!(
+                            authority
+                                .cross_file_method_package_path(function)
+                                .as_deref(),
+                            Some("crates/core/flags/parse")
+                        );
+                    } else {
+                        assert!(
+                            coordinate.is_none(),
+                            "a loaded but unselected module has no captured identity"
+                        );
+                        assert!(authority.cross_file_method_package_path(function).is_none());
+                    }
+                    Ok(())
+                },
+            )?;
+            lease.commit();
+        }
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })();
+    fs::remove_dir_all(outer)?;
+    outcome
+}
+
 #[test]
 fn workspace_session_key_orders_normalized_paths_by_spelling()
 -> Result<(), Box<dyn std::error::Error>> {
