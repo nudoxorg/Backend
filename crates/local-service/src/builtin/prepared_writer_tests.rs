@@ -219,45 +219,69 @@ fn prepared_writer_cancellation_after_grant_cannot_discard_a_durable_publication
 }
 
 #[test]
-fn prepared_writer_failed_grant_returns_authority_after_exact_worker_reconciliation() {
+fn prepared_writer_durable_publish_frame_before_head_recovers_selected_candidate() {
     use std::sync::atomic::AtomicBool;
     let workspace = TempWorkspace::new();
     let mut daemon = open_daemon(workspace.0.path());
-    let intent = BuiltinIntent::add(backend_engine::package_key("failed-grant"), "failed-grant")
+    let old_root = daemon.engine().daemon().owner().snapshot().root();
+    let intent = BuiltinIntent::add(backend_engine::package_key("before-head"), "before-head")
         .expect("real intent");
     let mut writer = daemon
         .engine_mut()
         .daemon_mut()
         .reserve_workspace_writer()
         .expect("writer");
-    let candidate = writer.prepare(intent.clone()).expect("candidate");
+    let candidate = writer.prepare(intent).expect("candidate");
     let grant = daemon
         .engine_mut()
         .daemon_mut()
         .grant_workspace_candidate(candidate.claim(), &AtomicBool::new(false))
         .expect("grant");
+    // WorkspaceFileDurable::publish_inner durably appends the paired
+    // PUBLISHED frame before this hook. That frame is the recovery decision:
+    // FileStore::head repairs a missing HEAD receipt from it. A failed HEAD
+    // receipt is therefore not proof that the candidate remained unselected.
     daemon
         .engine()
         .daemon()
         .owner()
         .faults()
         .arm(backend_engine::Boundary::HeadWrite);
-    let failure = writer
+    let committed = writer
         .publish(candidate, grant)
-        .expect_err("actual pre-HEAD fault remains a failure");
-    let backend_engine::WorkspacePublicationFailure::Unsettled { mut writer, .. } = failure else {
-        panic!("physical publication was attempted");
-    };
-    let unselected = writer
-        .prove_unselected()
-        .expect("worker verifies unchanged physical head on same exclusive lease");
-    daemon
+        .expect("durable publish decision recovers selected candidate before HEAD acknowledgement");
+    let status = committed.status();
+    assert!(status.store_publish_pending());
+    assert!(status.journal_select_pending());
+    assert!(status.journal_flush_pending());
+    assert!(status.head_write_pending());
+    assert!(status.head_sync_pending());
+    assert!(status.head_selection_pending());
+    assert!(status.journal_published_pending());
+    assert!(status.notification_pending());
+    assert!(!status.is_confirmed());
+    assert_eq!(
+        daemon.engine().daemon().owner().snapshot().root(),
+        old_root,
+        "serving owner remains on its prior admitted root until checked install"
+    );
+    let retired = daemon
         .engine_mut()
         .daemon_mut()
-        .return_failed_workspace_writer(writer, unselected)
-        .expect("failed attempt returns writer");
-    super::super::super::commands::commit_builtin_intent(&mut daemon, 1, &intent)
-        .expect("next real commit cannot deadlock");
+        .install_workspace_candidate(committed)
+        .expect("install recovered selected candidate with the same writer");
+    drop(retired);
+    let root = daemon.engine().daemon().owner().snapshot().root();
+    assert_ne!(root, old_root);
+    assert_eq!(daemon.engine().daemon().owner().snapshot().sequence(), 1);
+    drop(daemon);
+    let reopened = open_daemon(workspace.0.path());
+    assert_eq!(reopened.engine().daemon().owner().snapshot().root(), root);
+    assert_eq!(
+        reopened.engine().daemon().owner().snapshot().sequence(),
+        1,
+        "cold recovery must preserve the durable Published decision, never Failed or Cancelled"
+    );
 }
 
 #[test]
