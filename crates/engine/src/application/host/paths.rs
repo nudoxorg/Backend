@@ -2128,22 +2128,52 @@ fn validate_bundle_inventory_file(
     Ok(())
 }
 
-fn read_bounded(path: &Path, maximum_bytes: u64) -> io::Result<Vec<u8>> {
-    let file = fs::File::open(path)?;
-    if file.metadata()?.len() > maximum_bytes {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "file exceeds byte limit",
-        ));
+#[cfg(unix)]
+fn open_regular_resource(
+    path: &Path,
+    maximum_bytes: u64,
+    before: &fs::Metadata,
+) -> io::Result<fs::File> {
+    use rustix::fs::{Mode, OFlags};
+    // NONBLOCK prevents a regular-file-to-FIFO race from waiting before fstat;
+    // NOFOLLOW closes the corresponding final-component symlink race.
+    let descriptor = rustix::fs::open(
+        path, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC, Mode::empty(),
+    )?;
+    let file = fs::File::from(descriptor);
+    let opened = file.metadata()?;
+    if !opened.is_file() || opened.len() > maximum_bytes || !same_file_identity(before, &opened) {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "resource is not the admitted bounded regular object"));
     }
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+fn open_regular_resource(
+    _path: &Path,
+    _maximum_bytes: u64,
+    _before: &fs::Metadata,
+) -> io::Result<fs::File> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "bundled SDK resources require platform no-follow regular-file admission"))
+}
+
+fn read_bounded(path: &Path, maximum_bytes: u64) -> io::Result<Vec<u8>> {
+    let before = fs::symlink_metadata(path)?;
+    if !before.is_file() || before.file_type().is_symlink() || before.len() > maximum_bytes {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "resource is not a bounded regular file"));
+    }
+    let mut file = open_regular_resource(path, maximum_bytes, &before)?;
     let mut bytes = Vec::new();
-    file.take(maximum_bytes.saturating_add(1))
-        .read_to_end(&mut bytes)?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > maximum_bytes {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "file exceeds byte limit",
-        ));
+    (&mut file).take(maximum_bytes.saturating_add(1)).read_to_end(&mut bytes)?;
+    let after = file.metadata()?;
+    let current = fs::symlink_metadata(path)?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > maximum_bytes
+        || !same_file_identity(&before, &after) || !same_file_identity(&before, &current)
+        || current.file_type().is_symlink() || current.len() != after.len()
+        || after.len() != u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+        || before.modified().ok() != after.modified().ok()
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "resource changed during bounded read"));
     }
     Ok(bytes)
 }
@@ -2170,7 +2200,7 @@ fn sha256_file(path: &Path, maximum_bytes: u64) -> Result<(u64, String), LocalCo
     let path_identity = backend_platform::FileIdentity::of_path_nofollow(path)
         .map_err(&identity_error)?;
     let mut file =
-        fs::File::open(path).map_err(|source| LocalCompilerHostError::BundleManifest {
+        open_regular_resource(path, maximum_bytes, &path_metadata).map_err(|source| LocalCompilerHostError::BundleManifest {
             path: path.to_path_buf().into_boxed_path(),
             message: source.to_string().into_boxed_str(),
         })?;
@@ -3201,6 +3231,26 @@ mod tests {
             .is_none()
         );
         fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn resource_open_refuses_fifo_and_link_swaps_after_regular_metadata_admission() {
+        let root = private_test_directory("bundle-resource-open-race");
+        let resource = root.join("resource");
+        fs::write(&resource, b"admitted regular bytes").unwrap();
+        let before = fs::symlink_metadata(&resource).unwrap();
+        fs::remove_file(&resource).unwrap();
+        rustix::fs::mkfifo(&resource, rustix::fs::Mode::from_raw_mode(0o600)).unwrap();
+        assert!(open_regular_resource(&resource, 1024, &before).is_err());
+        assert!(read_bounded(&resource, 1024).is_err());
+        assert!(sha256_file(&resource, 1024).is_err());
+        fs::remove_file(&resource).unwrap();
+        let outside = root.join("outside");
+        fs::write(&outside, b"unadmitted external bytes").unwrap();
+        std::os::unix::fs::symlink(&outside, &resource).unwrap();
+        assert!(open_regular_resource(&resource, 1024, &before).is_err());
+        assert!(read_bounded(&resource, 1024).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

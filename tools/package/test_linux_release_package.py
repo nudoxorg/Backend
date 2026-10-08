@@ -113,6 +113,28 @@ class SDKReceiptAdmissionTests(unittest.TestCase):
 
 
 class CopiedAdmissionTests(unittest.TestCase):
+    def test_sdk_builder_refuses_output_alias_back_into_the_source_package(self):
+        import build_typescript_sdk as builder
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            payload = base / "payload"
+            payload.mkdir()
+            _, _, source = SDKReceiptAdmissionTests().fixture(payload)
+            manifest = base / "build.json"
+            manifest.write_text(json.dumps({"schema":"nudox.runtime-build-manifest.v1", "source":source}))
+            package_root = payload / "node_modules/typescript"
+            alias = base / "alias"
+            os.symlink(package_root, alias)
+            arguments = ["builder", "--manifest", str(manifest), "--node", str(payload / "node/bin/node"),
+                         "--node-version", "v24.18.0", "--node-license", str(payload / "node/LICENSE"),
+                         "--node-license-origin", "https://example.invalid/fixture-notice",
+                         "--typescript-package", str(package_root), "--output", str(alias / "stage")]
+            with patch.object(builder.sys, "argv", arguments):
+                with self.assertRaisesRegex(ValueError, "outside the installed package"):
+                    builder.main()
+            self.assertFalse((package_root / "stage").exists())
+
     def test_sdk_change_after_admission_cannot_be_reinventoried_as_the_old_receipt(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "payload"

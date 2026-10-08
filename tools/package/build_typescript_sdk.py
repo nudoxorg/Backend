@@ -38,7 +38,7 @@ def main() -> int:
         fail("SDK staging requires the genuine TypeScript npm package")
     if node.stat().st_size > 512 * 1024 * 1024 or license_path.stat().st_size > 1024 * 1024:
         fail("Node or its notice exceeds the SDK staging bounds")
-    output = args.output.absolute()
+    output = args.output.resolve(strict=False)
     if output.exists() or output == package_root or package_root in output.parents:
         fail("SDK output must be new and outside the installed package")
     payload = output / "payload"
