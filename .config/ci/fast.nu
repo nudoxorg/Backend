@@ -27,9 +27,9 @@ def main []: nothing -> nothing {
     # Fast checks keep only compile outputs, independently of the much larger
     # Linux runtime cache. Cache loss always falls back to a clean build.
     let cache = $env.CI_FAST_CACHE_ROOT? | default ""
+    let limit = $env.CI_FAST_CACHE_GIB? | default "24" | into int
     if ($cache | is-not-empty) {
         mkdir $cache
-        let limit = $env.CI_FAST_CACHE_GIB? | default "24" | into int
         let used = (
             ^du -s --block-size=1G $cache
             | split row "\t"
@@ -40,6 +40,30 @@ def main []: nothing -> nothing {
             rm --recursive --force $cache
             mkdir $cache
             print $"fast cache: reclaimed ($used) GiB; limit ($limit) GiB"
+        }
+        let free = (
+            ^df --output=avail -B1G $cache
+            | lines
+            | last
+            | str trim
+            | into int
+        )
+        if $free < 40 {
+            # Reclaim only this serial worker's accelerator, never sources or
+            # another job's artifacts. Cache loss is a normal cold-build case.
+            rm --recursive --force $cache
+            mkdir $cache
+            let recovered = (
+                ^df --output=avail -B1G $cache
+                | lines
+                | last
+                | str trim
+                | into int
+            )
+            if $recovered < 40 {
+                print $"CI problem: only ($recovered) GiB free; fast compilation requires 40"
+                exit 75
+            }
         }
         $env.CARGO_TARGET_DIR = ($cache | path join "targets")
         $env.ZIG_GLOBAL_CACHE_DIR = ($cache | path join "zig")
@@ -67,6 +91,16 @@ def main []: nothing -> nothing {
     }
     if ($cache | is-not-empty) {
         print $"CI-CACHE fast: (^du -sh $cache | str trim)"
+        let used = (
+            ^du -s --block-size=1G $cache
+            | split row "\t"
+            | first
+            | into int
+        )
+        if $used > $limit {
+            rm --recursive --force $cache
+            print $"fast cache: evicted ($used) GiB after build; limit ($limit) GiB"
+        }
     } else { reclaim-build-output }
     finish-lane "fast" [$checks $compiles]
 }
