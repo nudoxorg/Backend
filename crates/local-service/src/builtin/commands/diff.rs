@@ -23,106 +23,373 @@ pub(super) fn execute_semantic_diff(
     structural_package_diff(daemon, from, to)
 }
 
+/// Package-relative declaration coordinates used by the structural fallback.
+/// It preserves repeated signature/documentation variants but cannot prove
+/// identity across file moves or parent-only changes.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct StructuralCoordinate<'row> {
+    path: &'row str,
+    kind: backend_engine::DeclarationKind,
+    // File-module rows are addressed by their exact source path; ordinary
+    // declarations and semantic rows retain their typed name.
+    name: Option<&'row str>,
+    semantic_family: Option<backend_semantic::ir::DeclarationFamilyId>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct StructuralDeclarationSummary {
+struct StructuralOccurrence {
     identity: backend_semantic::ir::DeclarationIdentity,
-    fingerprint: [u8; 32],
+    count: usize,
 }
 
-fn structural_declaration_name(label: &str) -> Option<&str> {
-    label.rsplit("::").next().filter(|name| !name.is_empty())
+type StructuralVariantMap = BTreeMap<[u8; 32], StructuralOccurrence>;
+type StructuralDeclarations<'row> = BTreeMap<StructuralCoordinate<'row>, StructuralVariantMap>;
+
+struct AdmittedStructuralRow<'row> {
+    row: &'row backend_engine::Row,
+    coordinate: StructuralCoordinate<'row>,
+    semantic_variant: Option<backend_semantic::ir::VariantFingerprint>,
 }
 
-fn structural_declaration_fingerprint(row: &backend_engine::Row) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
-    if let Some(signature) = &row.signature {
-        hasher.update(signature.as_bytes());
+fn admitted_structural_row<'row>(
+    row: &'row backend_engine::Row,
+    package_label: &str,
+    package_key: backend_engine::PackageKey,
+) -> Result<Option<AdmittedStructuralRow<'row>>, BuiltinModelError> {
+    if row.package != Some(package_key) {
+        return Ok(None);
     }
-    for fragment in row.document.iter() {
+    let Some(kind) = row.kind else {
+        return Ok(None);
+    };
+    let invalid = || {
+        BuiltinModelError(
+            "structural diff declaration failed canonical identity admission".to_owned(),
+        )
+    };
+    if row.label.contains('\0')
+        || !row.label.starts_with(package_label)
+        || row
+            .label
+            .strip_prefix(package_label)
+            .is_none_or(|suffix| !suffix.starts_with("::"))
+    {
+        return Err(invalid());
+    }
+    let (path, name, semantic_identity) = match row.identity_preimage() {
+        None => {
+            if row.id != backend_engine::RowId::Symbol(backend_engine::symbol_key(&row.label)) {
+                return Err(invalid());
+            }
+            let (path, name) = structural_coordinate_parts(row, package_label)?;
+            (path, name, None)
+        }
+        Some(preimage) if preimage.as_str().contains('\0') => {
+            let preimage = preimage.as_str();
+            let mut fields = preimage.split('\0');
+            let coordinate = fields.next().ok_or_else(invalid)?;
+            let encoded_kind = fields.next().ok_or_else(invalid)?;
+            let signature = fields.next().ok_or_else(invalid)?;
+            let occurrence = fields.next().ok_or_else(invalid)?;
+            let occurrence_number = occurrence.parse::<u32>().map_err(|_| invalid())?;
+            if fields.next().is_some()
+                || coordinate != row.label
+                || encoded_kind != kind.name()
+                || row.signature.as_deref() != Some(signature)
+                || occurrence != occurrence_number.to_string()
+                || row.id != backend_engine::RowId::Symbol(backend_engine::symbol_key(preimage))
+            {
+                return Err(invalid());
+            }
+            let (path, name) = structural_coordinate_parts(row, package_label)?;
+            (path, name, None)
+        }
+        Some(preimage) => {
+            let (path, name, identity) =
+                semantic_coordinate_parts(row, package_label, package_key, preimage.as_str())?;
+            (path, Some(name), Some(identity))
+        }
+    };
+    let (semantic_family, semantic_variant) = semantic_identity
+        .map(|identity| (Some(identity.family), Some(identity.variant)))
+        .unwrap_or((None, None));
+    Ok(Some(AdmittedStructuralRow {
+        row,
+        coordinate: StructuralCoordinate {
+            path,
+            kind,
+            name,
+            semantic_family,
+        },
+        semantic_variant,
+    }))
+}
+
+fn checked_source_path(row: &backend_engine::Row) -> Result<&str, BuiltinModelError> {
+    let path = row.source.file_path().ok_or_else(|| {
+        BuiltinModelError("structural diff declaration has no source path".to_owned())
+    })?;
+    if path.is_empty()
+        || path == "<unknown>"
+        || path.len() > backend_engine::SourceLocation::MAX_PATH_BYTES
+        || path.starts_with('/')
+        || path.contains(['\\', '\0'])
+        || path
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+        || (path.len() >= 2 && path.as_bytes()[1] == b':')
+    {
+        return Err(BuiltinModelError(
+            "structural diff declaration has an invalid package-relative source path".to_owned(),
+        ));
+    }
+    Ok(path)
+}
+
+fn structural_coordinate_parts<'row>(
+    row: &'row backend_engine::Row,
+    package_label: &str,
+) -> Result<(&'row str, Option<&'row str>), BuiltinModelError> {
+    let invalid = || {
+        BuiltinModelError(
+            "structural diff declaration coordinate disagrees with its source".to_owned(),
+        )
+    };
+    let path = checked_source_path(row)?;
+    let location = match &row.source {
+        backend_library::SourceAvailability::Captured(location) => Some(location),
+        // A stale file retains its admitted package-relative path but no
+        // current line. The label still carries a canonical old line; line is
+        // deliberately excluded from the structural comparison key.
+        backend_library::SourceAvailability::StaleFile { .. } => None,
+        backend_library::SourceAvailability::NotCaptured
+        | backend_library::SourceAvailability::NotHydrated
+        | backend_library::SourceAvailability::Unconfigured => return Err(invalid()),
+    };
+    let root = row.label.strip_prefix(package_label).ok_or_else(invalid)?;
+    let root = root.strip_prefix("::").ok_or_else(invalid)?;
+    if row.kind == Some(backend_engine::DeclarationKind::Module) && root == path {
+        if location.is_some_and(|location| location.start_line() != 1) {
+            return Err(invalid());
+        }
+        return Ok((path, None));
+    }
+    let file = root.strip_prefix(path).ok_or_else(invalid)?;
+    let line_and_name = file.strip_prefix(':').ok_or_else(invalid)?;
+    let (line, name) = line_and_name.split_once("::").ok_or_else(invalid)?;
+    let line_number = line
+        .parse::<u32>()
+        .ok()
+        .filter(|line_number| *line_number > 0)
+        .ok_or_else(invalid)?;
+    if line != line_number.to_string()
+        || location.is_some_and(|location| line_number != location.start_line())
+        || name.is_empty()
+        || name.len() > backend_library::MAX_PRODUCT_TEXT_BYTES
+        || name.contains('\0')
+    {
+        return Err(invalid());
+    }
+    Ok((path, Some(name)))
+}
+
+fn semantic_coordinate_parts<'row>(
+    row: &'row backend_engine::Row,
+    package_label: &str,
+    package_key: backend_engine::PackageKey,
+    preimage: &str,
+) -> Result<
+    (
+        &'row str,
+        &'row str,
+        backend_semantic::ir::DeclarationIdentity,
+    ),
+    BuiltinModelError,
+> {
+    let invalid = || {
+        BuiltinModelError(
+            "structural diff semantic declaration failed canonical identity admission".to_owned(),
+        )
+    };
+    let package_prefix = format!("{}::", backend_engine::encode_id(package_key.as_bytes()));
+    let identity_hex = preimage.strip_prefix(&package_prefix).ok_or_else(invalid)?;
+    let bytes = backend_library::decode_id(identity_hex).map_err(|_| invalid())?;
+    if bytes.len() != 32
+        || backend_engine::encode_id(&bytes) != identity_hex
+        || row.id != backend_engine::RowId::Symbol(backend_engine::symbol_key(preimage))
+    {
+        return Err(invalid());
+    }
+    let mut family = [0_u8; 16];
+    family.copy_from_slice(&bytes[..16]);
+    let mut variant = [0_u8; 16];
+    variant.copy_from_slice(&bytes[16..]);
+    let identity = backend_semantic::ir::DeclarationIdentity {
+        family: backend_semantic::ir::DeclarationFamilyId::from_raw(family),
+        variant: backend_semantic::ir::VariantFingerprint::from_raw(variant),
+    };
+    let label_suffix = row
+        .label
+        .strip_prefix(package_label)
+        .and_then(|suffix| suffix.strip_prefix("::semantic::"))
+        .ok_or_else(invalid)?;
+    let (label_identity, name) = label_suffix.split_once("::").ok_or_else(invalid)?;
+    if label_identity != identity_hex
+        || name.is_empty()
+        || name.len() > backend_library::MAX_PRODUCT_TEXT_BYTES
+        || name.contains('\0')
+    {
+        return Err(invalid());
+    }
+    Ok((checked_source_path(row)?, name, identity))
+}
+
+fn structural_family_identity(
+    coordinate: StructuralCoordinate<'_>,
+) -> backend_semantic::ir::DeclarationFamilyId {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"nudox.structural-diff.family.v1\0");
+    hash_structural_bytes(&mut hasher, coordinate.path.as_bytes());
+    hasher.update(&[coordinate.kind.wire_tag()]);
+    match coordinate.name {
+        None => {
+            hasher.update(&[0]);
+        }
+        Some(name) => {
+            hasher.update(&[1]);
+            hash_structural_bytes(&mut hasher, name.as_bytes());
+        }
+    }
+    match coordinate.semantic_family {
+        None => {
+            hasher.update(&[0]);
+        }
+        Some(family) => {
+            hasher.update(&[1]);
+            hasher.update(family.as_bytes());
+        }
+    };
+    let digest = hasher.finalize();
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest.as_bytes()[..16]);
+    backend_semantic::ir::DeclarationFamilyId::from_raw(bytes)
+}
+
+fn structural_declaration_fingerprint(admitted: &AdmittedStructuralRow<'_>) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"nudox.structural-diff.variant.v1\0");
+    match admitted.row.signature.as_deref() {
+        None => {
+            hasher.update(&[0]);
+        }
+        Some(signature) => {
+            hasher.update(&[1]);
+            hash_structural_bytes(&mut hasher, signature.as_bytes());
+        }
+    };
+    match admitted.semantic_variant {
+        None => {
+            hasher.update(&[0]);
+        }
+        Some(variant) => {
+            hasher.update(&[1]);
+            hasher.update(variant.as_bytes());
+        }
+    };
+    hasher.update(&(admitted.row.document.len() as u64).to_le_bytes());
+    for fragment in admitted.row.document.iter() {
         match fragment {
             backend_library::Fragment::Text(text) => {
-                hasher.update(text.as_bytes());
+                hasher.update(&[0]);
+                hash_structural_bytes(&mut hasher, text.as_bytes());
             }
             backend_library::Fragment::Code(text) => {
-                hasher.update(text.as_bytes());
+                hasher.update(&[1]);
+                hash_structural_bytes(&mut hasher, text.as_bytes());
             }
             backend_library::Fragment::Link { label, .. } => {
-                hasher.update(label.as_bytes());
+                hasher.update(&[2]);
+                hash_structural_bytes(&mut hasher, label.as_bytes());
+                // Raw link targets may be rooted or foreign. This facade
+                // preserves their display text but does not claim target
+                // identity when the semantic diff is unavailable.
             }
             backend_library::Fragment::Break => {
-                hasher.update(b"\n");
+                hasher.update(&[3]);
             }
-        }
+        };
     }
     *hasher.finalize().as_bytes()
 }
 
-fn structural_declaration_identity(
-    name: &str,
+fn hash_structural_bytes(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+    hasher.update(&(bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
+}
+
+fn structural_identity(
+    coordinate: StructuralCoordinate<'_>,
     fingerprint: [u8; 32],
 ) -> backend_semantic::ir::DeclarationIdentity {
-    let family = blake3::hash(name.as_bytes());
+    let mut variant = [0_u8; 16];
+    variant.copy_from_slice(&fingerprint[..16]);
     backend_semantic::ir::DeclarationIdentity {
-        family: backend_semantic::ir::DeclarationFamilyId::from_raw({
-            let mut bytes = [0_u8; 16];
-            bytes.copy_from_slice(&family.as_bytes()[..16]);
-            bytes
-        }),
-        variant: backend_semantic::ir::VariantFingerprint::from_raw({
-            let mut bytes = [0_u8; 16];
-            bytes.copy_from_slice(&fingerprint[..16]);
-            bytes
-        }),
+        family: structural_family_identity(coordinate),
+        variant: backend_semantic::ir::VariantFingerprint::from_raw(variant),
     }
 }
 
-fn structural_package_declarations(
-    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+fn append_structural_row<'row>(
+    row: &'row backend_engine::Row,
+    package_label: &str,
+    package_key: backend_engine::PackageKey,
+    declarations: &mut StructuralDeclarations<'row>,
+) -> Result<(), BuiltinModelError> {
+    let Some(admitted) = admitted_structural_row(row, package_label, package_key)? else {
+        return Ok(());
+    };
+    let fingerprint = structural_declaration_fingerprint(&admitted);
+    let identity = structural_identity(admitted.coordinate, fingerprint);
+    let count = &mut declarations
+        .entry(admitted.coordinate)
+        .or_default()
+        .entry(fingerprint)
+        .or_insert(StructuralOccurrence { identity, count: 0 })
+        .count;
+    *count = count.checked_add(1).ok_or_else(|| {
+        BuiltinModelError("structural diff occurrence count overflowed".to_owned())
+    })?;
+    Ok(())
+}
+
+fn structural_declarations_from_rows<'row>(
+    rows: impl IntoIterator<Item = &'row backend_engine::Row>,
+    package_label: &str,
+    package_key: backend_engine::PackageKey,
+) -> Result<StructuralDeclarations<'row>, BuiltinModelError> {
+    let mut declarations = BTreeMap::new();
+    for row in rows {
+        append_structural_row(row, package_label, package_key, &mut declarations)?;
+    }
+    Ok(declarations)
+}
+
+fn structural_package_declarations<'view>(
+    daemon: &'view crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     package: &backend_engine::PackageReference,
-) -> Result<BTreeMap<String, StructuralDeclarationSummary>, BuiltinModelError> {
+) -> Result<StructuralDeclarations<'view>, BuiltinModelError> {
     let view = daemon.engine().daemon().library().view();
     let package_key = backend_engine::package_key(package.as_str());
     if view
         .row_ref(backend_engine::RowId::Package(package_key))
-        .filter(|row| row.label == package.as_str())
+        .filter(|row| {
+            row.label == package.as_str() && row.id == backend_engine::RowId::Package(package_key)
+        })
         .is_none()
     {
         return Err(BuiltinModelError("diff package is not indexed".to_owned()));
     }
-    let mut declarations = BTreeMap::new();
-    let mut cursor = backend_engine::ViewPageCursor::first(view);
-    loop {
-        let page = view
-            .page(cursor, backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
-            .map_err(|error| BuiltinModelError(format!("page structural diff view: {error:?}")))?;
-        for row in page.rows() {
-            if row.package != Some(package_key) || row.kind.is_none() {
-                continue;
-            }
-            let name = structural_declaration_name(&row.label)
-                .ok_or_else(|| {
-                    BuiltinModelError(
-                        "structural diff declaration coordinate omitted a name".to_owned(),
-                    )
-                })?
-                .to_owned();
-            let fingerprint = structural_declaration_fingerprint(row);
-            let summary = StructuralDeclarationSummary {
-                identity: structural_declaration_identity(&name, fingerprint),
-                fingerprint,
-            };
-            if declarations.insert(name, summary).is_some() {
-                return Err(BuiltinModelError(
-                    "structural diff package contains a duplicate declaration name".to_owned(),
-                ));
-            }
-        }
-        let Some(next) = page.next() else {
-            break;
-        };
-        cursor = next;
-    }
-    Ok(declarations)
+    structural_declarations_from_rows(view.row_refs(), package.as_str(), package_key)
 }
 
 fn structural_package_diff(
@@ -132,40 +399,216 @@ fn structural_package_diff(
 ) -> Result<Box<[backend_engine::DiffRecord]>, BuiltinModelError> {
     let before = structural_package_declarations(daemon, from)?;
     let after = structural_package_declarations(daemon, to)?;
+    diff_structural_declarations(&before, &after)
+}
+
+fn diff_structural_declarations(
+    before: &StructuralDeclarations<'_>,
+    after: &StructuralDeclarations<'_>,
+) -> Result<Box<[backend_engine::DiffRecord]>, BuiltinModelError> {
     let mut rows = Vec::new();
-    let mut remaining = before;
-    for (name, after_summary) in after {
-        match remaining.remove(&name) {
-            None => push_diff(
-                &mut rows,
-                &name,
-                backend_engine::DeclarationChange::Added,
-                None,
-                Some(after_summary.identity),
-            )?,
-            Some(before_summary) if before_summary.fingerprint != after_summary.fingerprint => {
-                push_diff(
-                    &mut rows,
-                    &name,
-                    backend_engine::DeclarationChange::Changed,
-                    Some(before_summary.identity),
-                    Some(after_summary.identity),
-                )?;
+    let mut left = before.iter().peekable();
+    let mut right = after.iter().peekable();
+    while left.peek().is_some() || right.peek().is_some() {
+        match (left.peek(), right.peek()) {
+            (Some((old_coordinate, old_variants)), Some((new_coordinate, new_variants))) => {
+                match old_coordinate.cmp(new_coordinate) {
+                    std::cmp::Ordering::Less => {
+                        diff_structural_group(
+                            **old_coordinate,
+                            Some(*old_variants),
+                            None,
+                            &mut rows,
+                        )?;
+                        left.next();
+                    }
+                    std::cmp::Ordering::Greater => {
+                        diff_structural_group(
+                            **new_coordinate,
+                            None,
+                            Some(*new_variants),
+                            &mut rows,
+                        )?;
+                        right.next();
+                    }
+                    std::cmp::Ordering::Equal => {
+                        diff_structural_group(
+                            **old_coordinate,
+                            Some(*old_variants),
+                            Some(*new_variants),
+                            &mut rows,
+                        )?;
+                        left.next();
+                        right.next();
+                    }
+                }
             }
-            Some(_) => {}
+            (Some((coordinate, variants)), None) => {
+                diff_structural_group(**coordinate, Some(*variants), None, &mut rows)?;
+                left.next();
+            }
+            (None, Some((coordinate, variants))) => {
+                diff_structural_group(**coordinate, None, Some(*variants), &mut rows)?;
+                right.next();
+            }
+            (None, None) => break,
         }
     }
-    for (name, before_summary) in remaining {
-        push_diff(
-            &mut rows,
-            &name,
-            backend_engine::DeclarationChange::Removed,
-            Some(before_summary.identity),
-            None,
-        )?;
-    }
-    rows.sort_by(|left, right| left.label.as_str().cmp(right.label.as_str()));
+    rows.sort_by(|left, right| {
+        left.label.cmp(&right.label).then_with(|| {
+            declaration_change_order(left.change).cmp(&declaration_change_order(right.change))
+        })
+    });
     Ok(rows.into_boxed_slice())
+}
+
+fn structural_coordinate_label(coordinate: StructuralCoordinate<'_>) -> String {
+    match coordinate.name {
+        Some(name) => format!("{}::{}", coordinate.path, name),
+        None => coordinate.path.to_owned(),
+    }
+}
+
+fn diff_structural_group(
+    coordinate: StructuralCoordinate<'_>,
+    older: Option<&StructuralVariantMap>,
+    newer: Option<&StructuralVariantMap>,
+    rows: &mut Vec<backend_engine::DiffRecord>,
+) -> Result<(), BuiltinModelError> {
+    let (removed, added, removed_identity, added_identity) =
+        structural_residual_counts(older, newer)?;
+    if removed == 0 && added == 0 {
+        return Ok(());
+    }
+    let label = structural_coordinate_label(coordinate);
+    if removed == 1 && added == 1 {
+        return push_diff(
+            rows,
+            &label,
+            backend_engine::DeclarationChange::Changed,
+            removed_identity,
+            added_identity,
+        );
+    }
+    append_structural_residuals(older, newer, &label, rows)
+}
+
+fn structural_residual_counts(
+    older: Option<&StructuralVariantMap>,
+    newer: Option<&StructuralVariantMap>,
+) -> Result<
+    (
+        usize,
+        usize,
+        Option<backend_semantic::ir::DeclarationIdentity>,
+        Option<backend_semantic::ir::DeclarationIdentity>,
+    ),
+    BuiltinModelError,
+> {
+    let mut removed = 0_usize;
+    let mut added = 0_usize;
+    let mut removed_identity = None;
+    let mut added_identity = None;
+    walk_structural_variant_deltas(older, newer, |old, new| {
+        let old_count = old.map_or(0, |summary| summary.count);
+        let new_count = new.map_or(0, |summary| summary.count);
+        if old_count > new_count {
+            removed = removed.checked_add(old_count - new_count).ok_or_else(|| {
+                BuiltinModelError("structural diff occurrence count overflowed".to_owned())
+            })?;
+            removed_identity = old.map(|summary| summary.identity);
+        } else if new_count > old_count {
+            added = added.checked_add(new_count - old_count).ok_or_else(|| {
+                BuiltinModelError("structural diff occurrence count overflowed".to_owned())
+            })?;
+            added_identity = new.map(|summary| summary.identity);
+        }
+        Ok(())
+    })?;
+    Ok((removed, added, removed_identity, added_identity))
+}
+
+fn append_structural_residuals(
+    older: Option<&StructuralVariantMap>,
+    newer: Option<&StructuralVariantMap>,
+    label: &str,
+    rows: &mut Vec<backend_engine::DiffRecord>,
+) -> Result<(), BuiltinModelError> {
+    walk_structural_variant_deltas(older, newer, |old, new| {
+        let old_count = old.map_or(0, |summary| summary.count);
+        let new_count = new.map_or(0, |summary| summary.count);
+        if old_count > new_count {
+            for _ in 0..old_count - new_count {
+                push_diff(
+                    rows,
+                    label,
+                    backend_engine::DeclarationChange::Removed,
+                    old.map(|summary| summary.identity),
+                    None,
+                )?;
+            }
+        } else if new_count > old_count {
+            for _ in 0..new_count - old_count {
+                push_diff(
+                    rows,
+                    label,
+                    backend_engine::DeclarationChange::Added,
+                    None,
+                    new.map(|summary| summary.identity),
+                )?;
+            }
+        }
+        Ok(())
+    })
+}
+
+fn walk_structural_variant_deltas(
+    older: Option<&StructuralVariantMap>,
+    newer: Option<&StructuralVariantMap>,
+    mut visit: impl FnMut(
+        Option<&StructuralOccurrence>,
+        Option<&StructuralOccurrence>,
+    ) -> Result<(), BuiltinModelError>,
+) -> Result<(), BuiltinModelError> {
+    let mut left = older
+        .into_iter()
+        .flat_map(|variants| variants.iter())
+        .peekable();
+    let mut right = newer
+        .into_iter()
+        .flat_map(|variants| variants.iter())
+        .peekable();
+    while left.peek().is_some() || right.peek().is_some() {
+        match (left.peek().copied(), right.peek().copied()) {
+            (Some((old_fingerprint, old)), Some((new_fingerprint, new))) => {
+                match old_fingerprint.cmp(new_fingerprint) {
+                    std::cmp::Ordering::Less => {
+                        visit(Some(old), None)?;
+                        left.next();
+                    }
+                    std::cmp::Ordering::Greater => {
+                        visit(None, Some(new))?;
+                        right.next();
+                    }
+                    std::cmp::Ordering::Equal => {
+                        visit(Some(old), Some(new))?;
+                        left.next();
+                        right.next();
+                    }
+                }
+            }
+            (Some((_, old)), None) => {
+                visit(Some(old), None)?;
+                left.next();
+            }
+            (None, Some((_, new))) => {
+                visit(None, Some(new))?;
+                right.next();
+            }
+            (None, None) => break,
+        }
+    }
+    Ok(())
 }
 
 fn diff_semantic_snapshots(
@@ -1524,5 +1967,899 @@ mod semantic_diff_tests {
                 .map(|index| declaration(index as u16, 1, 1, "added")),
         );
         assert!(diff_semantic_snapshots(&before, &after).is_err());
+    }
+
+    fn structural_fixture_row(
+        basis: backend_engine::Basis,
+        package_label: &str,
+        path: &str,
+        line: u32,
+        name: &str,
+        kind: backend_engine::DeclarationKind,
+        signature: Option<&str>,
+        documentation: &str,
+        occurrence: Option<u32>,
+    ) -> backend_engine::Row {
+        let package = backend_engine::package_key(package_label);
+        let coordinate = format!("{package_label}::{path}:{line}::{name}");
+        let (id, preimage) = match occurrence {
+            None => (backend_engine::symbol_key(&coordinate), None),
+            Some(occurrence) => {
+                let preimage = format!(
+                    "{coordinate}\0{}\0{}\0{occurrence}",
+                    kind.name(),
+                    signature.unwrap_or_default()
+                );
+                (backend_engine::symbol_key(&preimage), Some(preimage))
+            }
+        };
+        let mut row = backend_engine::Row::in_package(
+            backend_engine::RowId::Symbol(id),
+            basis,
+            package,
+            coordinate,
+        )
+        .with_kind(kind)
+        .with_source(backend_engine::SourceLocation::new(path, line).expect("source location"))
+        .with_document(vec![backend_library::Fragment::Text(
+            documentation.to_owned(),
+        )]);
+        if let Some(signature) = signature {
+            row = row.with_signature(signature);
+        }
+        if let Some(preimage) = preimage {
+            row = row
+                .try_with_identity_preimage(&preimage)
+                .expect("identity preimage");
+        }
+        row
+    }
+
+    fn semantic_fixture_row(
+        basis: backend_engine::Basis,
+        package_label: &str,
+        path: &str,
+        line: u32,
+        name: &str,
+        kind: backend_engine::DeclarationKind,
+        family: [u8; 16],
+        variant: [u8; 16],
+    ) -> backend_engine::Row {
+        let package = backend_engine::package_key(package_label);
+        let mut identity_bytes = [0_u8; 32];
+        identity_bytes[..16].copy_from_slice(&family);
+        identity_bytes[16..].copy_from_slice(&variant);
+        let identity_hex = backend_engine::encode_id(&identity_bytes);
+        let preimage = format!(
+            "{}::{identity_hex}",
+            backend_engine::encode_id(package.as_bytes())
+        );
+        let label = format!("{package_label}::semantic::{identity_hex}::{name}");
+        backend_engine::Row::in_package(
+            backend_engine::RowId::Symbol(backend_engine::symbol_key(&preimage)),
+            basis,
+            package,
+            label,
+        )
+        .with_kind(kind)
+        .with_source(backend_engine::SourceLocation::new(path, line).expect("source location"))
+        .with_signature(format!("{name}()"))
+        .with_document(vec![backend_library::Fragment::Text(
+            "semantic docs".to_owned(),
+        )])
+        .try_with_identity_preimage(&preimage)
+        .expect("semantic preimage")
+    }
+
+    fn structural_fixture_declarations<'row>(
+        rows: &'row [backend_engine::Row],
+        package_label: &str,
+    ) -> Result<StructuralDeclarations<'row>, BuiltinModelError> {
+        let package = backend_engine::package_key(package_label);
+        structural_declarations_from_rows(rows.iter(), package_label, package)
+    }
+
+    fn structural_fixture_basis() -> backend_engine::Basis {
+        crate::builtin::initial_view()
+            .expect("initial view")
+            .0
+            .basis()
+    }
+
+    #[test]
+    fn structural_multiset_is_root_and_line_independent_and_keeps_homonyms() {
+        let basis = structural_fixture_basis();
+        let root_a = "/private/project-a";
+        let root_b = "/private/project-b";
+        let package_a = [
+            structural_fixture_row(
+                basis,
+                root_a,
+                "src/first.ts",
+                10,
+                "status",
+                backend_engine::DeclarationKind::Property,
+                Some("status: string"),
+                "current status",
+                None,
+            ),
+            structural_fixture_row(
+                basis,
+                root_a,
+                "src/second.ts",
+                24,
+                "status",
+                backend_engine::DeclarationKind::Property,
+                Some("status: number"),
+                "another status",
+                None,
+            ),
+        ];
+        let package_b = [
+            structural_fixture_row(
+                basis,
+                root_b,
+                "src/first.ts",
+                88,
+                "status",
+                backend_engine::DeclarationKind::Property,
+                Some("status: string"),
+                "current status",
+                None,
+            ),
+            structural_fixture_row(
+                basis,
+                root_b,
+                "src/second.ts",
+                24,
+                "status",
+                backend_engine::DeclarationKind::Property,
+                Some("status: number"),
+                "another status",
+                None,
+            ),
+        ];
+        let before = structural_fixture_declarations(&package_a, root_a).expect("before");
+        let after = structural_fixture_declarations(&package_b, root_b).expect("after");
+        assert_eq!(
+            before.len(),
+            2,
+            "same terminal name in two files is two families"
+        );
+        assert!(
+            diff_structural_declarations(&before, &after)
+                .expect("cross-root and moved-line diff")
+                .is_empty()
+        );
+
+        let homonyms = structural_fixture_declarations(&package_a, root_a).expect("homonyms");
+        assert!(
+            diff_structural_declarations(&homonyms, &homonyms)
+                .expect("same-snapshot homonym diff")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn structural_file_module_uses_exact_package_relative_path_coordinate() {
+        let basis = structural_fixture_basis();
+        let package = "/private/module-project";
+        let path = "src/frontend/useFindReplace.ts";
+        let label = format!("{package}::{path}");
+        let row = backend_engine::Row::in_package(
+            backend_engine::RowId::Symbol(backend_engine::symbol_key(&label)),
+            basis,
+            backend_engine::package_key(package),
+            label.clone(),
+        )
+        .with_kind(backend_engine::DeclarationKind::Module)
+        .with_source(
+            backend_engine::SourceLocation::new(path, 1).expect("file module source location"),
+        );
+        let admitted = admitted_structural_row(&row, package, backend_engine::package_key(package))
+            .expect("file module identity admission")
+            .expect("package row is a declaration");
+        assert_eq!(admitted.coordinate.path, path);
+        assert_eq!(admitted.coordinate.name, None);
+        assert_eq!(structural_coordinate_label(admitted.coordinate), path);
+
+        let wrong_line = row.clone().with_source(
+            backend_engine::SourceLocation::new(path, 2).expect("non-module-start source location"),
+        );
+        assert!(
+            admitted_structural_row(&wrong_line, package, backend_engine::package_key(package),)
+                .is_err()
+        );
+
+        let wrong_kind = row
+            .clone()
+            .with_kind(backend_engine::DeclarationKind::Function);
+        assert!(
+            admitted_structural_row(&wrong_kind, package, backend_engine::package_key(package),)
+                .is_err()
+        );
+
+        let mut foreign_path_prefix = row;
+        foreign_path_prefix.label = format!("{label}-foreign");
+        foreign_path_prefix.id =
+            backend_engine::RowId::Symbol(backend_engine::symbol_key(&foreign_path_prefix.label));
+        assert!(
+            admitted_structural_row(
+                &foreign_path_prefix,
+                package,
+                backend_engine::package_key(package),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn structural_coordinate_uses_typed_path_when_source_line_is_stale() {
+        let basis = structural_fixture_basis();
+        let package = "/private/stale-project";
+        let mut stale = structural_fixture_row(
+            basis,
+            package,
+            "src/api.ts",
+            14,
+            "run",
+            backend_engine::DeclarationKind::Function,
+            Some("run()"),
+            "docs",
+            None,
+        );
+        stale.source = backend_library::SourceAvailability::stale_file("src/api.ts")
+            .expect("bounded stale package-relative path");
+        let admitted =
+            admitted_structural_row(&stale, package, backend_engine::package_key(package))
+                .expect("stale source keeps path evidence")
+                .expect("stale declaration is admitted");
+        assert_eq!(admitted.coordinate.path, "src/api.ts");
+        assert_eq!(admitted.coordinate.name, Some("run"));
+
+        for source in [
+            backend_library::SourceAvailability::NotCaptured,
+            backend_library::SourceAvailability::NotHydrated,
+            backend_library::SourceAvailability::Unconfigured,
+        ] {
+            let mut unavailable = stale.clone();
+            unavailable.source = source;
+            assert!(
+                admitted_structural_row(
+                    &unavailable,
+                    package,
+                    backend_engine::package_key(package),
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn structural_duplicate_overloads_preserve_counts_and_only_pair_single_residuals() {
+        let basis = structural_fixture_basis();
+        let package = "/private/overload-project";
+        let rows = [
+            structural_fixture_row(
+                basis,
+                package,
+                "src/api.ts",
+                6,
+                "send",
+                backend_engine::DeclarationKind::Function,
+                Some("send(number)"),
+                "send a value",
+                Some(0),
+            ),
+            structural_fixture_row(
+                basis,
+                package,
+                "src/api.ts",
+                6,
+                "send",
+                backend_engine::DeclarationKind::Function,
+                Some("send(number)"),
+                "send a value",
+                Some(1),
+            ),
+            structural_fixture_row(
+                basis,
+                package,
+                "src/api.ts",
+                6,
+                "send",
+                backend_engine::DeclarationKind::Function,
+                Some("send(date)"),
+                "send a value",
+                Some(0),
+            ),
+        ];
+        let after_rows = [
+            rows[0].clone(),
+            rows[2].clone(),
+            structural_fixture_row(
+                basis,
+                package,
+                "src/api.ts",
+                6,
+                "send",
+                backend_engine::DeclarationKind::Function,
+                Some("send(boolean)"),
+                "send a value",
+                Some(0),
+            ),
+        ];
+        let before = structural_fixture_declarations(&rows, package).expect("before overloads");
+        let after = structural_fixture_declarations(&after_rows, package).expect("after overloads");
+        assert!(
+            diff_structural_declarations(&before, &before)
+                .expect("repeated same-snapshot diff")
+                .is_empty()
+        );
+        let reversed_before_rows = rows.iter().rev().cloned().collect::<Vec<_>>();
+        let reversed_before = structural_fixture_declarations(&reversed_before_rows, package)
+            .expect("reverse before");
+        assert!(
+            diff_structural_declarations(&before, &reversed_before)
+                .expect("input-order-independent self-diff")
+                .is_empty()
+        );
+        let changed = diff_structural_declarations(&before, &after).expect("one residual pair");
+        assert_eq!(changed.len(), 1);
+        assert_eq!(
+            changed[0].change,
+            backend_engine::DeclarationChange::Changed
+        );
+
+        let reversed_rows = after_rows.into_iter().rev().collect::<Vec<_>>();
+        let reversed =
+            structural_fixture_declarations(&reversed_rows, package).expect("reversed overloads");
+        assert_eq!(
+            diff_structural_declarations(&before, &reversed).expect("order stable"),
+            changed
+        );
+
+        let ambiguous_before_rows = [rows[0].clone(), rows[2].clone()];
+        let ambiguous_before = structural_fixture_declarations(&ambiguous_before_rows, package)
+            .expect("two overloads");
+        let ambiguous_after_rows = [
+            structural_fixture_row(
+                basis,
+                package,
+                "src/api.ts",
+                6,
+                "send",
+                backend_engine::DeclarationKind::Function,
+                Some("send(string)"),
+                "send a value",
+                Some(0),
+            ),
+            structural_fixture_row(
+                basis,
+                package,
+                "src/api.ts",
+                6,
+                "send",
+                backend_engine::DeclarationKind::Function,
+                Some("send(boolean)"),
+                "send a value",
+                Some(0),
+            ),
+        ];
+        let ambiguous_after = structural_fixture_declarations(&ambiguous_after_rows, package)
+            .expect("ambiguous variants");
+        let ambiguous = diff_structural_declarations(&ambiguous_before, &ambiguous_after)
+            .expect("ambiguous residuals");
+        assert_eq!(ambiguous.len(), 4);
+        assert_eq!(
+            ambiguous
+                .iter()
+                .filter(|row| row.change == backend_engine::DeclarationChange::Changed)
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn structural_signature_document_and_occurrence_changes_keep_multiset_evidence() {
+        let basis = structural_fixture_basis();
+        let package = "/private/evidence-project";
+        let before_rows = [
+            structural_fixture_row(
+                basis,
+                package,
+                "src/api.ts",
+                12,
+                "run",
+                backend_engine::DeclarationKind::Function,
+                Some("run()"),
+                "old docs",
+                Some(0),
+            ),
+            structural_fixture_row(
+                basis,
+                package,
+                "src/api.ts",
+                12,
+                "run",
+                backend_engine::DeclarationKind::Function,
+                Some("run()"),
+                "old docs",
+                Some(1),
+            ),
+        ];
+        let after_rows = [structural_fixture_row(
+            basis,
+            package,
+            "src/api.ts",
+            12,
+            "run",
+            backend_engine::DeclarationKind::Function,
+            Some("run()"),
+            "old docs",
+            Some(0),
+        )];
+        let before = structural_fixture_declarations(&before_rows, package).expect("before");
+        let after = structural_fixture_declarations(&after_rows, package).expect("after");
+        let result = diff_structural_declarations(&before, &after).expect("duplicate removal");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].change, backend_engine::DeclarationChange::Removed);
+
+        let added_rows = [
+            before_rows[0].clone(),
+            before_rows[1].clone(),
+            structural_fixture_row(
+                basis,
+                package,
+                "src/api.ts",
+                12,
+                "run",
+                backend_engine::DeclarationKind::Function,
+                Some("run()"),
+                "old docs",
+                Some(2),
+            ),
+        ];
+        let added = structural_fixture_declarations(&added_rows, package).expect("added repeat");
+        let original =
+            structural_fixture_declarations(&before_rows, package).expect("original repeats");
+        let growth =
+            diff_structural_declarations(&original, &added).expect("one repeated addition");
+        assert_eq!(growth.len(), 1);
+        assert_eq!(growth[0].change, backend_engine::DeclarationChange::Added);
+
+        let old_docs_rows = [structural_fixture_row(
+            basis,
+            package,
+            "src/api.ts",
+            12,
+            "documented",
+            backend_engine::DeclarationKind::Function,
+            Some("documented()"),
+            "old docs",
+            None,
+        )];
+        let old_docs = structural_fixture_declarations(&old_docs_rows, package).expect("old docs");
+        let new_docs_rows = [structural_fixture_row(
+            basis,
+            package,
+            "src/api.ts",
+            12,
+            "documented",
+            backend_engine::DeclarationKind::Function,
+            Some("documented()"),
+            "new docs",
+            None,
+        )];
+        let new_docs = structural_fixture_declarations(&new_docs_rows, package).expect("new docs");
+        let documentation_change =
+            diff_structural_declarations(&old_docs, &new_docs).expect("documentation change");
+        assert_eq!(documentation_change.len(), 1);
+        assert_eq!(
+            documentation_change[0].change,
+            backend_engine::DeclarationChange::Changed
+        );
+
+        let old_signature_rows = [structural_fixture_row(
+            basis,
+            package,
+            "src/api.ts",
+            12,
+            "optional",
+            backend_engine::DeclarationKind::Function,
+            None,
+            "same docs",
+            None,
+        )];
+        let old_signature = structural_fixture_declarations(&old_signature_rows, package)
+            .expect("absent signature");
+        let new_signature_rows = [structural_fixture_row(
+            basis,
+            package,
+            "src/api.ts",
+            12,
+            "optional",
+            backend_engine::DeclarationKind::Function,
+            Some(""),
+            "same docs",
+            None,
+        )];
+        let new_signature =
+            structural_fixture_declarations(&new_signature_rows, package).expect("empty signature");
+        let signature_change = diff_structural_declarations(&old_signature, &new_signature)
+            .expect("None differs from Some");
+        assert_eq!(signature_change.len(), 1);
+        assert_eq!(
+            signature_change[0].change,
+            backend_engine::DeclarationChange::Changed
+        );
+
+        let moved_path_rows = [structural_fixture_row(
+            basis,
+            package,
+            "src/new-api.ts",
+            12,
+            "optional",
+            backend_engine::DeclarationKind::Function,
+            None,
+            "same docs",
+            None,
+        )];
+        let moved_path =
+            structural_fixture_declarations(&moved_path_rows, package).expect("moved path");
+        let move_change = diff_structural_declarations(&old_signature, &moved_path)
+            .expect("path move is remove/add");
+        assert_eq!(move_change.len(), 2);
+        assert!(
+            move_change
+                .iter()
+                .any(|row| row.change == backend_engine::DeclarationChange::Added)
+        );
+        assert!(
+            move_change
+                .iter()
+                .any(|row| row.change == backend_engine::DeclarationChange::Removed)
+        );
+    }
+
+    #[test]
+    fn semantic_fallback_rows_keep_typed_family_and_variant_multisets() {
+        let basis = structural_fixture_basis();
+        let root_a = "/private/semantic-a";
+        let root_b = "/private/semantic-b";
+        let family_a = [0x31; 16];
+        let family_b = [0x32; 16];
+        let first = semantic_fixture_row(
+            basis,
+            root_a,
+            "src/module.py",
+            8,
+            "load",
+            backend_engine::DeclarationKind::Function,
+            family_a,
+            [0x41; 16],
+        );
+        let moved_same = semantic_fixture_row(
+            basis,
+            root_b,
+            "src/module.py",
+            80,
+            "load",
+            backend_engine::DeclarationKind::Function,
+            family_a,
+            [0x41; 16],
+        );
+        let before = structural_fixture_declarations(std::slice::from_ref(&first), root_a)
+            .expect("first family");
+        let same = structural_fixture_declarations(std::slice::from_ref(&moved_same), root_b)
+            .expect("same family");
+        assert!(
+            diff_structural_declarations(&before, &same)
+                .expect("root and line independent semantic row")
+                .is_empty()
+        );
+
+        let changed_variant_rows = [semantic_fixture_row(
+            basis,
+            root_b,
+            "src/module.py",
+            80,
+            "load",
+            backend_engine::DeclarationKind::Function,
+            family_a,
+            [0x42; 16],
+        )];
+        let changed_variant = structural_fixture_declarations(&changed_variant_rows, root_b)
+            .expect("changed semantic variant");
+        let changed = diff_structural_declarations(&before, &changed_variant)
+            .expect("semantic variant change");
+        assert_eq!(changed.len(), 1);
+        assert_eq!(
+            changed[0].change,
+            backend_engine::DeclarationChange::Changed
+        );
+
+        let homonymous_family_rows = [semantic_fixture_row(
+            basis,
+            root_a,
+            "src/module.py",
+            8,
+            "load",
+            backend_engine::DeclarationKind::Function,
+            family_b,
+            [0x41; 16],
+        )];
+        let homonymous_family = structural_fixture_declarations(&homonymous_family_rows, root_a)
+            .expect("second semantic family");
+        let distinct = diff_structural_declarations(&before, &homonymous_family)
+            .expect("different semantic families");
+        assert_eq!(distinct.len(), 2);
+        assert!(
+            distinct
+                .iter()
+                .any(|row| row.change == backend_engine::DeclarationChange::Added)
+        );
+        assert!(
+            distinct
+                .iter()
+                .any(|row| row.change == backend_engine::DeclarationChange::Removed)
+        );
+    }
+
+    #[test]
+    fn structural_foreign_prefix_malformed_coordinates_and_duplicate_signature_are_rejected() {
+        let basis = structural_fixture_basis();
+        let package = "/private/admission-project";
+        let mut foreign = structural_fixture_row(
+            basis,
+            package,
+            "src/api.ts",
+            3,
+            "run",
+            backend_engine::DeclarationKind::Function,
+            Some("run()"),
+            "docs",
+            None,
+        );
+        foreign.label = format!("{package}-foreign::src/api.ts:3::run");
+        foreign.id = backend_engine::RowId::Symbol(backend_engine::symbol_key(&foreign.label));
+        assert!(
+            admitted_structural_row(&foreign, package, backend_engine::package_key(package))
+                .is_err()
+        );
+
+        let mut malformed = structural_fixture_row(
+            basis,
+            package,
+            "src/api.ts",
+            3,
+            "run",
+            backend_engine::DeclarationKind::Function,
+            Some("run()"),
+            "docs",
+            None,
+        );
+        malformed.label = format!("{package}::src/other.ts:3::run");
+        malformed.id = backend_engine::RowId::Symbol(backend_engine::symbol_key(&malformed.label));
+        assert!(
+            admitted_structural_row(&malformed, package, backend_engine::package_key(package))
+                .is_err()
+        );
+
+        // The production builder always supplies a signature string before it
+        // creates a duplicate-coordinate preimage. A None signature in that
+        // preimage is therefore malformed; None vs Some("") remains distinct
+        // for the ordinary non-preimage fallback rows above.
+        let duplicate_without_signature = structural_fixture_row(
+            basis,
+            package,
+            "src/api.ts",
+            3,
+            "run",
+            backend_engine::DeclarationKind::Function,
+            None,
+            "docs",
+            Some(0),
+        );
+        assert!(
+            admitted_structural_row(
+                &duplicate_without_signature,
+                package,
+                backend_engine::package_key(package)
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn dump_admitted_docs_structural_collision() -> Result<(), String> {
+        let Some(workspace) = std::env::var_os("NUDOX_DOCS_DIAG_WORKSPACE") else {
+            return Ok(());
+        };
+        let workspace = std::path::PathBuf::from(workspace);
+        let package_label = std::env::var("NUDOX_DOCS_DIAG_PACKAGE")
+            .map_err(|error| format!("NUDOX_DOCS_DIAG_PACKAGE: {error}"))?;
+        let profile = crate::builtin::profile_descriptor(crate::builtin::BuiltinProfile::Product)?;
+        let authority_secret =
+            backend_engine::read_authority_secret(&workspace.join("authority.secret"))
+                .map_err(|error| error.to_string())?;
+        let dispatcher = crate::builtin::builtin_dispatcher(
+            Some(authority_secret),
+            std::sync::Arc::clone(&profile),
+            60_000,
+        )?;
+        let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
+            &workspace,
+            crate::builtin::BuiltinModel,
+            crate::builtin::genesis().map_err(|error| error.to_string())?,
+            dispatcher,
+            backend_engine::DaemonConfig::default(),
+            crate::builtin::product_relation_registry().map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        let owner = daemon.engine().daemon().owner();
+        let snapshot = owner.snapshot();
+        let capability = crate::builtin::builtin_view_capability_for_workspace(&snapshot)
+            .map_err(|error| error.to_string())?;
+        let workspace_root = owner.head().root();
+        let journal =
+            crate::builtin::view_journal::ViewJournal::open(workspace.join("view.journal"))?;
+        let recovered = journal
+            .load_for_workspace(workspace_root, &capability)?
+            .ok_or_else(|| {
+                "production view journal had no matching admitted snapshot".to_owned()
+            })?;
+        let admission = crate::builtin::BuiltinViewAdmission {
+            workspace_root,
+            source_root: recovered.view.basis().root,
+        };
+        daemon
+            .engine_mut()
+            .daemon_mut()
+            .set_view_persistence(Box::new(journal));
+        daemon
+            .engine_mut()
+            .daemon_mut()
+            .restore_view(
+                recovered.view,
+                recovered.cursor,
+                &admission,
+                recovered.events,
+                recovered.base_sequence,
+            )
+            .map_err(|error| error.to_string())?;
+        let view = daemon.engine().daemon().library().view();
+        let package = backend_engine::package_key(&package_label);
+        let package_row = view
+            .row_ref(backend_engine::RowId::Package(package))
+            .filter(|row| row.label == package_label)
+            .ok_or_else(|| format!("admitted package row absent: {package_label}"))?;
+        eprintln!(
+            "DOCS_DIAG root={} package_label={:?} package_row_id={:?} workspace_root={:?} view_root={:?} rows={}",
+            workspace.display(),
+            package_row.label,
+            package_row.id,
+            workspace_root,
+            view.root(),
+            view.row_count(),
+        );
+
+        #[derive(Clone, Debug)]
+        struct RowEvidence {
+            label: String,
+            id: backend_engine::RowId,
+            preimage: Option<String>,
+            kind: String,
+            source: Option<(String, u32)>,
+        }
+        let capture = |row: &backend_engine::Row| RowEvidence {
+            label: row.label.clone(),
+            id: row.id,
+            preimage: row
+                .identity_preimage()
+                .map(|preimage| preimage.as_str().to_owned()),
+            kind: format!("{:?}", row.kind),
+            source: row
+                .source
+                .captured()
+                .map(|location| (location.path().to_owned(), location.start_line())),
+        };
+        let expected_sites = [
+            ("src/yhub-server/src/backend.ts", 150_u32),
+            ("src/yhub-server/__tests__/metrics.spec.ts", 241_u32),
+        ];
+        let mut docs_rows = Vec::new();
+        let mut cursor = backend_engine::ViewPageCursor::first(&view);
+        loop {
+            let page = view
+                .page(cursor, backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+                .map_err(|error| format!("page admitted Docs view: {error:?}"))?;
+            for row in page.rows() {
+                if row.package != Some(package) || row.kind.is_none() {
+                    continue;
+                }
+                let name = row
+                    .label
+                    .rsplit("::")
+                    .next()
+                    .filter(|name| !name.is_empty())
+                    .ok_or_else(|| "declaration row had no terminal name".to_owned())?
+                    .to_owned();
+                let current = capture(row);
+                if name == "status"
+                    && current.source.as_ref().is_some_and(|source| {
+                        expected_sites
+                            .iter()
+                            .any(|expected| *expected == (source.0.as_str(), source.1))
+                    })
+                {
+                    docs_rows.push(current);
+                }
+            }
+            let Some(next) = page.next() else {
+                break;
+            };
+            cursor = next;
+        }
+        let mut before = None;
+        let mut after = None;
+        for row in docs_rows {
+            match row
+                .source
+                .as_ref()
+                .map(|source| (source.0.as_str(), source.1))
+            {
+                Some(("src/yhub-server/src/backend.ts", 150)) => before = Some(row),
+                Some(("src/yhub-server/__tests__/metrics.spec.ts", 241)) => after = Some(row),
+                _ => {}
+            }
+        }
+        let before = before.ok_or_else(|| {
+            "admitted Docs image omitted the expected backend.ts status row".to_owned()
+        })?;
+        let after = after.ok_or_else(|| {
+            "admitted Docs image omitted the expected metrics.spec.ts status row".to_owned()
+        })?;
+        if before.id == after.id
+            || before.preimage.is_some()
+            || after.preimage.is_some()
+            || before.kind != "Some(Property)"
+            || after.kind != "Some(Property)"
+        {
+            return Err(
+                "admitted Docs status homonyms did not match canonical row controls".to_owned(),
+            );
+        }
+        eprintln!("DOCS_DIAG duplicate_terminal_name=\"status\"");
+        eprintln!("DOCS_DIAG before={before:#?}");
+        eprintln!("DOCS_DIAG after={after:#?}");
+        for row in view
+            .row_refs()
+            .filter(|row| row.package == Some(package) && row.kind.is_some())
+        {
+            if let Err(error) = admitted_structural_row(row, &package_label, package) {
+                eprintln!(
+                    "DOCS_DIAG first_rejected_row label={:?} id={:?} preimage={:?} kind={:?} source={:?} error={error}",
+                    row.label,
+                    row.id,
+                    row.identity_preimage().map(|preimage| preimage.as_str()),
+                    row.kind,
+                    row.source,
+                );
+                break;
+            }
+        }
+        let reference = backend_engine::PackageReference::parse(package_label)
+            .map_err(|error| error.to_string())?;
+        let rows = structural_package_diff(&daemon, &reference, &reference)
+            .map_err(|error| format!("production structural self-diff: {error}"))?;
+        if !rows.is_empty() {
+            return Err(format!(
+                "production structural self-diff returned {} rows",
+                rows.len()
+            ));
+        }
+        eprintln!("DOCS_DIAG same_root_self_diff=empty");
+        Ok(())
     }
 }
