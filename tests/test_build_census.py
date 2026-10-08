@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ctypes
+import errno
 import importlib.util
 import json
 import pathlib
@@ -40,6 +42,68 @@ def process(
 
 
 class CargoCensusTests(unittest.TestCase):
+    def test_unreadable_same_uid_executable_is_retained_as_unknown_occupied_group(self) -> None:
+        row = census._PsRow(11939, 1, 8800, 501, "Wed Oct 7 13:46:26 2026", "browser_crashpad")
+
+        def pidinfo(_pid: int, _flavor: int, _arg: int, output: object, _size: int) -> int:
+            info = ctypes.cast(output, ctypes.POINTER(census._ProcBsdInfo)).contents
+            info.pid = row.pid
+            info.ppid = row.ppid
+            info.uid = 501
+            info.pgid = row.pgid
+            info.start_sec = 1_791_380_786
+            info.start_usec = 289_586
+            info.status = 2
+            return ctypes.sizeof(info)
+
+        def pidpath(_pid: int, _buffer: object, _size: int) -> int:
+            ctypes.set_errno(errno.ENOENT)
+            return 0
+
+        proc = mock.Mock()
+        proc.proc_pidinfo = pidinfo
+        proc.proc_pidpath = pidpath
+        libc = mock.Mock()
+        libc.sysctl = lambda *_args: 0
+
+        def load_library(path: str, **_kwargs: object) -> object:
+            return proc if path.endswith("libproc.dylib") else libc
+
+        with mock.patch.object(census.ctypes, "CDLL", side_effect=load_library):
+            records, issues, races = census._darwin_processes(
+                501,
+                [row],
+                census._ArgvBudget(),
+            )
+
+        self.assertEqual(issues, {})
+        self.assertEqual(races, {})
+        record = records[row.pid]
+        self.assertTrue(record.identity_validated)
+        self.assertEqual(record.start_token, "darwin:1791380786:289586")
+        self.assertEqual((record.ppid, record.pgid), (row.ppid, row.pgid))
+        self.assertIsNone(record.executable)
+        self.assertTrue(record.unknown_executable_candidate)
+
+        snapshot = census.ProcessSnapshot(
+            records=records,
+            started_at_utc="2026-10-08T05:09:05+00:00",
+            finished_at_utc="2026-10-08T05:09:05.1+00:00",
+            complete=not issues,
+            issue_counts=issues,
+            race_counts=races,
+            effective_uid=501,
+            visible_process_count=1,
+            captured_argv_bytes=0,
+            captured_argv_processes=0,
+            argv_budget_exhausted=False,
+        )
+        groups = census.compiler_groups(snapshot, census.cargo_entries(snapshot))
+        self.assertEqual(groups[0]["kind"], "unknown")
+        self.assertEqual(groups[0]["classification"], "unknown")
+        self.assertEqual(groups[0]["pgid"], row.pgid)
+        self.assertEqual(groups[0]["pids"], [row.pid])
+
     def test_compiler_groups_count_known_and_foreign_runtime_owners_by_process_group(self) -> None:
         known = census.ProcessRecord(
             pid=701,

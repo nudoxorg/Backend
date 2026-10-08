@@ -126,6 +126,29 @@ class FleetCapacityTests(unittest.TestCase):
         self.assertEqual(result["current_fleet_compiler_group_count"], 16)
         self.assertFalse(result["advisory_allowed"])
 
+    def test_unknown_executable_groups_are_valid_and_count_toward_capacity(self) -> None:
+        self.samples["local"]["census"]["compiler_groups"] = [
+            {
+                "pgid": 8000 + index,
+                "kind": "unknown",
+                "classification": "unknown",
+                "pids": [8000 + index],
+                "cargo_pids": [],
+                "runtime_owner_pids": [],
+                "rustc_process_count": 0,
+                "requested_cargo_jobs": None,
+                "job_limit_known": False,
+            }
+            for index in range(5)
+        ]
+
+        result = self.evaluate("local")
+
+        self.assertEqual(result["current_fleet_compiler_group_count"], 5)
+        self.assertFalse(result["advisory_allowed"])
+        self.assertIn("local:host-compiler-group-limit-reached", result["reasons"])
+        self.assertIn("local:unresolved-compiler-group-counted-conservatively", result["limitations"])
+
     def test_unknown_processes_count_conservatively_and_known_overlarge_jobs_refuse(self) -> None:
         self.samples["ilo"]["census"]["compiler_groups"] = [
             compiler_group(2200, kind="cargo", classification="unknown")
