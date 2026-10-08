@@ -1,0 +1,34 @@
+{
+  "sdk8809-linux-build03-proof.tar.gz": {
+    "sha256": "9691837d8d7b8e9388b8146b352a541753e553b238aaf3f31ede4cb92ad74deb",
+    "bytes": 800994
+  },
+  "sdk8809-mac-native-proof.tar.gz": {
+    "sha256": "3894b41665a9c82a76bd3f59a4ea562f89ba8f2cca49c487361ac01a2866348d",
+    "bytes": 597511
+  },
+  "sdk8809-linux-root-audit.json": {
+    "sha256": "3337ef1723e65b15f549b6bc993eca073bd92b993510bbada0c73e1d5336e1b7",
+    "bytes": 950
+  },
+  "sdk8809-mac-root-audit.json": {
+    "sha256": "2d31398e9c7835a910729875b11e93a177adcd3a64db26a1ec6b0bc4e4738ccd",
+    "bytes": 1462
+  },
+  "sdk8809-mac-root-audit.py": {
+    "sha256": "10896c924183d273610b5f82ede3fc01d74bc4d78f087edd676dae5fc46cae67",
+    "bytes": 5773
+  },
+  "lexical-admission-native-allocation-proof.tar.gz": {
+    "sha256": "cb9fa1b6500d5e16970bf967b06a68db30e883619546198e0be319d7987f7d58",
+    "bytes": 32771
+  },
+  "lexical-admission-root-audit.json": {
+    "sha256": "3cde76e7500ea38bc79a43dbb12e8f58fb135c8b891a9f8de118dbe45d5a10fe",
+    "bytes": 789
+  },
+  "lexical-admission-comparison.json": {
+    "sha256": "733acd79b64aff5394ee68d012277f0efd2968552207c98f9c5cd8bae480bffe",
+    "bytes": 4658
+  }
+}

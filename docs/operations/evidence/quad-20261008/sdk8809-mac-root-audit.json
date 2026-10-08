@@ -1,0 +1,40 @@
+{
+  "source": {
+    "commit": "8809eb34a5c44ee83145c143b9d444124542adc8",
+    "tree": "aa8ddaad4213ac5e84368fa96cdc59a1963221c0",
+    "clean": true,
+    "cargo_lock_sha256": "5d0b0b75a5acb9fd95db98d160ede1e3c780069cdc9989561491fe2cb5ba3da0"
+  },
+  "archive_sha256": "3894b41665a9c82a76bd3f59a4ea562f89ba8f2cca49c487361ac01a2866348d",
+  "archive_members": 24,
+  "all_receipt_logs_and_source_input_digests_verified": true,
+  "source_inputs_verified_against_root_checkout_per_gate": 2386,
+  "actual_fresh_engine_artifact": {
+    "path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_engine-b4955c870b705815",
+    "sha256": "e7942aff278dc008e4df194eee1a267cf56ef98cedf64ee8af37adbceae0daed",
+    "bytes": 460079232
+  },
+  "native_results": {
+    "host-01": {
+      "passed": 39,
+      "failed": 0,
+      "ignored": 1
+    },
+    "typescript-01": {
+      "passed": 31,
+      "failed": 0,
+      "ignored": 0
+    },
+    "classifier-01": {
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0
+    }
+  },
+  "total_passed": 72,
+  "total_ignored": 1,
+  "retirement_and_graph_return_verified": true,
+  "immutable_image_independent_remote_hash": "PASS: Root ssh shasum matched e7942aff278dc008e4df194eee1a267cf56ef98cedf64ee8af37adbceae0daed",
+  "installed_real_project_acceptance": "PENDING",
+  "status": "PASS for exact-source native controls; no installed-app acceptance claim"
+}

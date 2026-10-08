@@ -1,0 +1,25 @@
+{
+  "source": {
+    "commit": "8809eb34a5c44ee83145c143b9d444124542adc8",
+    "tree": "aa8ddaad4213ac5e84368fa96cdc59a1963221c0",
+    "clean": true,
+    "cargo_lock_sha256": "5d0b0b75a5acb9fd95db98d160ede1e3c780069cdc9989561491fe2cb5ba3da0"
+  },
+  "receipt_sha256": "b85763e285d7e45b56b1707ca52d3b125f7fefb211aa730890b9e738a6661d93",
+  "raw_manifest_sha256": "5971f38d1fe7cf56c2d5f27cddd53748513daf041281c48ba91ced8f42cee376",
+  "raw_source_inputs_sha256": "4583a11a2b109be9653bbe6da55c3dfd8c5d7fada521e7463a4afbe852ecbd73",
+  "verified_checkout_inputs": {
+    "file": 11496,
+    "unmaterialized-gitlink": 1
+  },
+  "actual_fresh_binary_events": [
+    "backend-cli",
+    "backend-locald",
+    "backend-mcp"
+  ],
+  "cargo_event_count": 1097,
+  "native_tests_executed": 0,
+  "compile_receipt_admission": "PASS",
+  "runtime_acceptance": "PENDING",
+  "image_bytes_independently_rehashed": "PASS: Root ssh sha256sum/stat matched all three sealed images"
+}
