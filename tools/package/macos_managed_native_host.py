@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import selectors
 import shutil
 import signal
 import stat
@@ -60,6 +61,35 @@ def capture(command, maximum, **kwargs):
             except ProcessLookupError:pass
             process.wait()
         process.stdout.close()
+
+
+def capture_metadata(command, maximum, diagnostic_maximum, **kwargs):
+    """Keep Cargo's JSON and diagnostics separate, with independent byte bounds."""
+    process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+                             start_new_session=True,**kwargs)
+    streams={'stdout':bytearray(),'stderr':bytearray()}
+    limits={'stdout':maximum,'stderr':diagnostic_maximum}
+    try:
+        with selectors.DefaultSelector() as pending:
+            pending.register(process.stdout,selectors.EVENT_READ,'stdout')
+            pending.register(process.stderr,selectors.EVENT_READ,'stderr')
+            while pending.get_map():
+                for key,_ in pending.select():
+                    name=key.data
+                    chunk=os.read(key.fd,min(65536,limits[name]-len(streams[name])+1))
+                    if not chunk:
+                        pending.unregister(key.fileobj)
+                        continue
+                    streams[name].extend(chunk)
+                    require(len(streams[name])<=limits[name],
+                            'native-host metadata '+name+' exceeds its bound')
+        return bytes(streams['stdout']),bytes(streams['stderr']),process.wait()
+    finally:
+        if process.poll() is None:
+            try:os.killpg(process.pid,signal.SIGKILL)
+            except ProcessLookupError:pass
+            process.wait()
+        process.stdout.close();process.stderr.close()
 
 
 def source_git(source, *arguments):
@@ -342,7 +372,7 @@ def validate(proof, source, target, runner, receipt_path, expected_plan_sha256):
             and proof.get('exit_status') == 0 and type(proof['exit_status']) is int,
             'native-host proof lacks exact recipe or successful kernel wait')
     refs = proof.get('raw_evidence')
-    require(isinstance(refs, dict) and set(refs) == {'source_before','source_after','tools_before','tools_after','cargo_log','wrapper','runner_script','environment_script','configs_before','configs_after','environment','metadata','execution','plan','graph_after'},
+    require(isinstance(refs, dict) and set(refs) == {'source_before','source_after','tools_before','tools_after','cargo_log','wrapper','runner_script','environment_script','configs_before','configs_after','environment','metadata','metadata_stderr','execution','plan','graph_after'},
             'native-host proof lacks its raw evidence')
     require(proof.get('record_sha256') == proof_digest(proof),
             'native-host raw evidence digest differs')
@@ -451,6 +481,7 @@ def validate(proof, source, target, runner, receipt_path, expected_plan_sha256):
             and all(isinstance(k,str) and isinstance(v,str) and not k.startswith('CARGO_PROFILE_') for k,v in environment.items()),
             'native-host effective environment differs')
     metadata=json.loads(_read_ref(receipt_path,refs['metadata'],8*1024**2))
+    _read_ref(receipt_path,refs['metadata_stderr'],1024**2)
     for name in PACKAGES:
         package=[p for p in metadata.get('packages',[]) if p.get('name')==name]
         require(len(package)==1 and package[0].get('manifest_path')==workspace+'/'+PACKAGE_ROOTS[name]+'/Cargo.toml',
@@ -569,8 +600,11 @@ def build(args, api):
         refs['environment_script']=_raw_reference(evidence,'environment.sh',read_regular_bytes(Path(paths['environment.0']),128*1024,'native-host environment script'))
         refs['configs_before']=_reference(evidence,'configs-before.json',configs_before)
         refs['environment']=_reference(evidence,'environment.json',env)
-        metadata=capture([tool_paths['cargo'],'metadata','--locked','--offline','--no-deps','--format-version','1'],8*1024**2,cwd=source,env=env)
-        refs['metadata']=_reference(evidence,'metadata.json',json.loads(metadata))
+        metadata,diagnostics,status=capture_metadata([tool_paths['cargo'],'metadata','--locked','--offline','--no-deps','--format-version','1'],8*1024**2,1024**2,cwd=source,env=env)
+        refs['metadata']=_raw_reference(evidence,'metadata.json',metadata)
+        refs['metadata_stderr']=_raw_reference(evidence,'metadata.stderr',diagnostics)
+        require(status==0,'native-host Cargo metadata failed; raw streams retained')
+        json.loads(metadata)
         refs['source_before']=_reference(evidence,'source-before.json',tracked_inputs(source,identity))
         refs['tools_before']=_reference(evidence,'tools-before.json',tool_snapshot())
         provenance_dir=source/'.local/target/.nudox-provenance';previous={p.name for p in provenance_dir.glob('*.json')}
