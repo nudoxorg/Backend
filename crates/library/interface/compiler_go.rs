@@ -22,6 +22,68 @@ pub enum GoAuthorityFailureKind {
     DependencyLimit,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::GoAuthorityFailureKind as G;
+
+    #[test]
+    fn public_go_failure_contract_has_exact_closed_names_and_guidance() {
+        for (kind, wire, tag, detail) in [
+            (
+                G::DependencyInvocation,
+                "dependency_invocation",
+                "go_dependency_invocation_failed",
+                "Go could not inspect the dependency graph with the selected offline toolchain; run `go mod download` in the project and retry",
+            ),
+            (
+                G::DependencyProtocol,
+                "dependency_protocol",
+                "go_dependency_protocol_invalid",
+                "Go returned an invalid dependency listing; check the installed Go toolchain and retry",
+            ),
+            (
+                G::DependencyPackageLoad,
+                "dependency_package_load",
+                "go_dependency_package_load_rejected",
+                "Go rejected the offline package dependency graph; run `go mod download` in the project and retry; use `go list -deps ./...` to inspect any remaining Go errors",
+            ),
+            (
+                G::DependencyEmptyGraph,
+                "dependency_empty_graph",
+                "go_dependency_graph_empty",
+                "Go selected no packages for semantic compilation; check the project module and source layout",
+            ),
+            (
+                G::DependencyIncompleteFiles,
+                "dependency_incomplete_files",
+                "go_dependency_files_incomplete",
+                "Go dependency files could not be captured stably; finish dependency setup or edits and retry",
+            ),
+            (
+                G::DependencyUnsafePath,
+                "dependency_unsafe_path",
+                "go_dependency_path_rejected",
+                "Go selected a dependency path outside the admitted module, cache, or local replacement roots; check module replacements and source symlinks",
+            ),
+            (
+                G::DependencyLimit,
+                "dependency_limit",
+                "go_dependency_witness_limit",
+                "Go selected dependency files beyond the bounded semantic witness budget; the dependency closure was not admitted",
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(kind).unwrap(), serde_json::json!(wire));
+            assert_eq!(
+                serde_json::from_value::<G>(serde_json::json!(wire)).unwrap(),
+                kind
+            );
+            assert_eq!(kind.kind_tag(), tag);
+            assert_eq!(kind.detail(), detail);
+        }
+        assert!(serde_json::from_value::<G>(serde_json::json!("unrecognized_go_failure")).is_err());
+    }
+}
+
 impl GoAuthorityFailureKind {
     /// Stable machine-readable refusal tag.
     #[must_use]
