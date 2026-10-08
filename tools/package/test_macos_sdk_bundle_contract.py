@@ -122,10 +122,16 @@ class SdkOnlyContracts(unittest.TestCase):
 
     def test_sdk_launcher_propagates_literal_arguments_without_injected_tool_paths(self):
         macos=self.root/'Nudox.app/Contents/MacOS';macos.mkdir(parents=True)
-        desktop=macos/'backend-desktop';desktop.write_text(f'#!{sys.executable}\nimport os,json,sys\nprint(json.dumps(dict(args=sys.argv[1:],overrides={{k:v for k,v in os.environ.items() if k.startswith(("NUDOX_","BACKEND_"))}})))\n');desktop.chmod(0o755)
+        for executable in bundle.EXECUTABLES:
+            probe=macos/executable
+            probe.write_text(f'#!{sys.executable}\nimport os,json,sys\nprint(json.dumps(dict(binary=os.path.basename(sys.argv[0]),args=sys.argv[1:],overrides={{k:v for k,v in os.environ.items() if k.startswith(("NUDOX_","BACKEND_"))}})))\n')
+            probe.chmod(0o755)
         bundle.write_application_launcher(macos,sdk_only=True)
-        observed=json.loads(subprocess.check_output([str(macos/'Nudox'),'space argument','$(literal)'],env={'PATH':'/usr/bin:/bin'}))
-        self.assertEqual(observed,dict(args=['space argument','$(literal)'],overrides={}))
+        for name, executable in {'Nudox':'backend-desktop','nudox-cli':'backend-cli','nudox-mcp':'backend-mcp','nudox-locald':'backend-locald'}.items():
+            link=self.root/'bin'/name;link.parent.mkdir(exist_ok=True);link.symlink_to(macos/name)
+            relative=self.root/'aliases'/name;relative.parent.mkdir(exist_ok=True);relative.symlink_to(Path('../bin')/name)
+            observed=json.loads(subprocess.check_output([str(relative),'space argument','$(literal)'],env={'PATH':'/usr/bin:/bin'}))
+            self.assertEqual(observed,dict(binary=executable,args=['space argument','$(literal)'],overrides={}))
 
     def test_sdk_collector_declares_four_application_processes_and_only_real_sdk_origin(self):
         artifact=self.root/'images';artifact.mkdir()
