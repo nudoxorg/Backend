@@ -1246,9 +1246,12 @@ fn stored_extension_installs_auxiliary_children_before_membership_rebind() {
     let old_auxiliary = must(
         backend_version::RelationState::<AuxiliaryRelation>::from_entries([(1, 2)], coverage()),
     );
+    // Even maximally packed leaves must exceed the pairwise-work threshold.
+    // The canonical producer caps every leaf at this many logical rows.
+    let auxiliary_rows = 129 * u64::from(backend_version::DEFAULT_CUT_POLICY.max_entries);
     let target_auxiliary = must(
         backend_version::RelationState::<AuxiliaryRelation>::from_entries(
-            (0..20_000).map(|key| (key, key * 2)),
+            (0..auxiliary_rows).map(|key| (key, key * 2)),
             coverage(),
         ),
     );
@@ -1360,10 +1363,27 @@ fn stored_extension_installs_auxiliary_children_before_membership_rebind() {
     // Exercise the actual durable stage with a large admitted physical
     // frontier. The bound includes version/CAS verification and serialization;
     // it rules out a pairwise identity union without relying on wall time.
+    let selected_count = next.selected_roots().len();
+    let changed_count = next.control_manifest().changed_objects().count();
+    let selected_payload_bytes = next
+        .selected_roots()
+        .iter()
+        .map(|object| object.bytes().len())
+        .sum::<usize>();
+    let changed_payload_bytes = next
+        .control_manifest()
+        .changed_objects()
+        .map(|object| object.bytes().len())
+        .sum::<usize>();
+    eprintln!(
+        "durable_frontier_fixture rows={auxiliary_rows} auxiliary_nodes={} selected_nodes={selected_count} changed_nodes={changed_count} selected_payload_bytes={selected_payload_bytes} changed_payload_bytes={changed_payload_bytes}",
+        frontier.len()
+    );
     assert!(
-        frontier.len() > 128,
+        frontier.len() > 128 && selected_count > 128,
         "the fixture must distinguish linear from pairwise union work"
     );
+    assert!(selected_payload_bytes < 16 * 1024 * 1024);
     closure::take_object_commitment_work();
     let stage_started = std::time::Instant::now();
     must(store.stage_workspace_frontier(&next));
