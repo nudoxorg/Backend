@@ -137,6 +137,15 @@ class SdkOnlyContracts(unittest.TestCase):
             with self.assertRaisesRegex(bundle.PackageError,'special file'):
                 bundle.file_inventory(root)
 
+    def test_bundle_walk_rejects_a_symlink_root_before_traversal(self):
+        root=self.root/'real-app';root.mkdir();(root/'file').write_bytes(b'payload')
+        link=self.root/'Nudox.app';link.symlink_to(root,target_is_directory=True)
+        with patch.object(bundle.os,'scandir') as scan:
+            for observe in (bundle.file_inventory,bundle.bundle_size):
+                with self.assertRaisesRegex(bundle.PackageError,'root must be a real directory'):
+                    observe(link)
+            scan.assert_not_called()
+
     def test_signature_inspection_uses_the_absolute_selected_apple_tool(self):
         with patch.object(bundle.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'Authority=unit signing identity\n')) as run:
             self.assertEqual(bundle.inspect_signature(self.payload/'typescript/node/bin/node'),'signed')

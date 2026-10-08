@@ -108,6 +108,8 @@ def sha256(path: Path) -> str:
 def bundle_entries(root: Path, *, maximum_entries: int = 65536,
                    maximum_bytes: int = 8 * 1024**3):
     """Walk a finite bundle without following links or reading file payloads."""
+    if not stat.S_ISDIR(root.lstat().st_mode):
+        fail("bundle inventory root must be a real directory")
     pending = [root]
     entries = total = 0
     while pending:
