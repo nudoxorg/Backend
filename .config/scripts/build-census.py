@@ -357,6 +357,50 @@ def cargo_entries(snapshot: ProcessSnapshot) -> list[CargoEntry]:
     return entries
 
 
+def _admission_slots(
+    cargo: list[CargoEntry],
+    members: list[ProcessRecord],
+    records: Mapping[int, ProcessRecord],
+) -> dict[str, Any]:
+    """Count Cargo roots and any residual work not proven below those roots.
+
+    PGID membership alone is not process-tree ownership. A Rust compiler or
+    runtime in a Cargo group is folded into a Cargo root's slot only when its
+    captured, start-token-qualified ancestry contains that exact Cargo process.
+    Otherwise one residual slot covers the unproved members of the PGID.
+    """
+    roots = {
+        ProcessIdentity(entry.record.pid, entry.record.start_token)
+        for entry in cargo
+        if entry.record.identity_validated and entry.record.start_token is not None
+    }
+    root_pids = sorted(entry.record.pid for entry in cargo)
+    unattributed: list[int] = []
+    for member in members:
+        ancestry, _complete, _error = ancestry_for(member.pid, records)
+        if not any(identity in roots for identity in ancestry):
+            unattributed.append(member.pid)
+    unattributed = sorted(set(unattributed))
+
+    # Every live Cargo PID consumes one slot, even if nested under another
+    # Cargo process. Non-Cargo compiler/runtime PGIDs always consume at least
+    # one residual slot; Cargo PGIDs need one only for unproved members.
+    residual_slots = 1 if (unattributed or not cargo) else 0
+    return {
+        "admission_slot_count": len(cargo) + residual_slots if cargo else 1,
+        "admission_slot_provenance": {
+            "cargo_root_pids": root_pids,
+            "residual_slot_count": residual_slots,
+            "residual_member_pids": unattributed if cargo else sorted({member.pid for member in members}),
+            "residual_reason": (
+                "unattributed-active-members" if cargo and unattributed
+                else "non-cargo-process-group" if not cargo
+                else None
+            ),
+        },
+    }
+
+
 def compiler_groups(snapshot: ProcessSnapshot, entries: Iterable[CargoEntry]) -> list[dict[str, Any]]:
     """Group compiler, unresolved, and known runtime-owner processes by OS process group."""
     by_pgid: dict[int, dict[str, Any]] = {}
@@ -405,12 +449,14 @@ def compiler_groups(snapshot: ProcessSnapshot, entries: Iterable[CargoEntry]) ->
         runtime: list[ProcessRecord] = group["runtime"]
         unknown_runtime: list[ProcessRecord] = group["unknown_runtime"]
         unknown_executable: list[ProcessRecord] = group["unknown_executable"]
+        members = [*rustc, *unknown_rustc, *runtime, *unknown_runtime, *unknown_executable]
         if not cargo and not rustc and not unknown_rustc and not runtime and not unknown_runtime and not unknown_executable:
             continue
         if cargo:
             unknown = any(entry.classification == "unknown" for entry in cargo) or bool(unknown_rustc or unknown_runtime or unknown_executable)
             jobs = [entry.requested_jobs for entry in cargo]
             requested_jobs = sum(jobs) if jobs and all(value is not None for value in jobs) else None
+            admission = _admission_slots(cargo, members, snapshot.records)
             result.append(
                 {
                     "pgid": pgid,
@@ -429,9 +475,11 @@ def compiler_groups(snapshot: ProcessSnapshot, entries: Iterable[CargoEntry]) ->
                     "rustc_process_count": len(rustc) + len(unknown_rustc),
                     "requested_cargo_jobs": requested_jobs,
                     "job_limit_known": requested_jobs is not None,
+                    **admission,
                 }
             )
         elif rustc or unknown_rustc:
+            admission = _admission_slots([], members, snapshot.records)
             result.append(
                 {
                     "pgid": pgid,
@@ -443,9 +491,11 @@ def compiler_groups(snapshot: ProcessSnapshot, entries: Iterable[CargoEntry]) ->
                     "rustc_process_count": len(rustc) + len(unknown_rustc),
                     "requested_cargo_jobs": None,
                     "job_limit_known": False,
+                    **admission,
                 }
             )
         elif runtime or unknown_runtime:
+            admission = _admission_slots([], members, snapshot.records)
             result.append(
                 {
                     "pgid": pgid,
@@ -457,9 +507,11 @@ def compiler_groups(snapshot: ProcessSnapshot, entries: Iterable[CargoEntry]) ->
                     "rustc_process_count": 0,
                     "requested_cargo_jobs": None,
                     "job_limit_known": False,
+                    **admission,
                 }
             )
         else:
+            admission = _admission_slots([], members, snapshot.records)
             result.append(
                 {
                     "pgid": pgid,
@@ -471,6 +523,7 @@ def compiler_groups(snapshot: ProcessSnapshot, entries: Iterable[CargoEntry]) ->
                     "rustc_process_count": 0,
                     "requested_cargo_jobs": None,
                     "job_limit_known": False,
+                    **admission,
                 }
             )
     return result

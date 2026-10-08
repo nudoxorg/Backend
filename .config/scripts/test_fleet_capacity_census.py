@@ -29,6 +29,7 @@ class FleetAdmissionTests(unittest.TestCase):
                     "sample_started_at_utc": stamp,
                     "sample_finished_at_utc": stamp,
                     "entries_omitted_count": 0,
+                    "entries": [],
                     "compiler_groups_omitted_count": 0,
                     "compiler_groups": [],
                     "resource_snapshot": {
@@ -52,8 +53,15 @@ class FleetAdmissionTests(unittest.TestCase):
 
     def groups(self, name, count):
         self.samples[name]["census"]["compiler_groups"] = [
-            {"pgid": number + 1, "kind": "cargo", "classification": "build",
-             "requested_cargo_jobs": 2, "job_limit_known": True}
+            {"pgid": number + 1, "kind": "orphan-rustc", "classification": "orphan-rustc",
+             "pids": [number + 1], "cargo_pids": [],
+             "requested_cargo_jobs": None, "job_limit_known": False,
+             "admission_slot_count": 1,
+             "admission_slot_provenance": {
+                 "cargo_root_pids": [], "residual_slot_count": 1,
+                 "residual_member_pids": [number + 1],
+                 "residual_reason": "non-cargo-process-group",
+             }}
             for number in range(count)
         ]
 
@@ -136,14 +144,14 @@ class FleetAdmissionTests(unittest.TestCase):
         self.groups("h16001mac", 4)
         report = self.report(destination_memory_only_for_remote=True)
         self.assertFalse(report["advisory_allowed"])
-        self.assertIn("fleet-compiler-group-limit-reached", report["reasons"])
+        self.assertIn("fleet-compiler-admission-slot-limit-reached", report["reasons"])
 
     def test_remote_cap_distinguishes_full_other_host_from_destination(self):
         self.groups("h16001mac", 8)
         self.assertTrue(self.report(destination_memory_only_for_remote=True)["advisory_allowed"])
         report = self.report("h16001mac", destination_memory_only_for_remote=True)
         self.assertFalse(report["advisory_allowed"])
-        self.assertIn("h16001mac:host-compiler-group-limit-reached", report["reasons"])
+        self.assertIn("h16001mac:host-compiler-admission-slot-limit-reached", report["reasons"])
 
     def test_local_cap_waiver_requires_its_separate_authorization(self):
         self.groups("local", 6)
@@ -155,11 +163,24 @@ class FleetAdmissionTests(unittest.TestCase):
         self.assertIn("local:over-host-cap-remote-admission-authorized", report["limitations"])
 
     def test_existing_cargo_job_limit_is_retained(self):
-        self.groups("h16001mac", 1)
-        self.samples["h16001mac"]["census"]["compiler_groups"][0]["requested_cargo_jobs"] = 5
+        self.samples["h16001mac"]["census"]["compiler_groups"] = [{
+            "pgid": 1, "kind": "cargo", "classification": "build",
+            "pids": [2], "cargo_pids": [2],
+            "requested_cargo_jobs": 5, "job_limit_known": True,
+            "admission_slot_count": 1,
+            "admission_slot_provenance": {
+                "cargo_root_pids": [2], "residual_slot_count": 0,
+                "residual_member_pids": [], "residual_reason": None,
+            },
+        }]
+        self.samples["h16001mac"]["census"]["entries"] = [{
+            "pid": 2, "pgid": 1, "classification": "build",
+            "identity_validated": True, "start_token": "test:2:start",
+            "requested_cargo_jobs": 5,
+        }]
         report = self.report(destination_memory_only_for_remote=True)
         self.assertFalse(report["advisory_allowed"])
-        self.assertIn("h16001mac:active-cargo-jobs-exceed-4", report["reasons"])
+        self.assertIn("h16001mac:active-cargo-process-jobs-exceed-4", report["reasons"])
 
 
 if __name__ == "__main__":

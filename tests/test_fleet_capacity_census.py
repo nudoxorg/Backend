@@ -49,17 +49,65 @@ def empty_samples(now: dt.datetime) -> dict[str, dict[str, object]]:
     return result
 
 
-def compiler_group(pgid: int, *, kind: str = "orphan-rustc", classification: str = "orphan-rustc", jobs: int | None = None) -> dict[str, object]:
+def compiler_group(
+    pgid: int,
+    *,
+    kind: str = "orphan-rustc",
+    classification: str = "orphan-rustc",
+    jobs: int | None = None,
+    cargo_pids: list[int] | None = None,
+    pids: list[int] | None = None,
+    residual_member_pids: list[int] | None = None,
+) -> dict[str, object]:
+    cargo_pids = cargo_pids if cargo_pids is not None else ([pgid] if kind == "cargo" else [])
+    pids = pids if pids is not None else sorted(set([pgid, *cargo_pids]))
+    residual_member_pids = residual_member_pids if residual_member_pids is not None else ([] if kind == "cargo" else [pgid])
+    residual_slots = 1 if kind != "cargo" or residual_member_pids else 0
+    slot_count = len(cargo_pids) + residual_slots if kind == "cargo" else 1
     return {
         "pgid": pgid,
         "kind": kind,
         "classification": classification,
-        "pids": [pgid],
-        "cargo_pids": [pgid] if kind == "cargo" else [],
+        "pids": pids,
+        "cargo_pids": cargo_pids,
         "rustc_process_count": 1,
         "requested_cargo_jobs": jobs,
         "job_limit_known": jobs is not None,
+        "admission_slot_count": slot_count,
+        "admission_slot_provenance": {
+            "cargo_root_pids": sorted(cargo_pids),
+            "residual_slot_count": residual_slots,
+            "residual_member_pids": residual_member_pids,
+            "residual_reason": (
+                "unattributed-active-members" if kind == "cargo" and residual_slots
+                else "non-cargo-process-group" if kind != "cargo"
+                else None
+            ),
+        },
     }
+
+
+def cargo_entry(pid: int, pgid: int, jobs: int | None, *, classification: str = "build") -> dict[str, object]:
+    return {
+        "pid": pid,
+        "pgid": pgid,
+        "classification": classification,
+        "identity_validated": True,
+        "start_token": f"test:{pid}:start",
+        "requested_cargo_jobs": jobs,
+    }
+
+
+def install_groups(
+    samples: dict[str, dict[str, object]],
+    host: str,
+    groups: list[dict[str, object]],
+    entries: list[dict[str, object]] | None = None,
+) -> None:
+    census = samples[host]["census"]
+    assert isinstance(census, dict)
+    census["compiler_groups"] = groups
+    census["entries"] = entries if entries is not None else []
 
 
 class FleetCapacityTests(unittest.TestCase):
@@ -113,61 +161,61 @@ class FleetCapacityTests(unittest.TestCase):
         self.assertFalse(self.evaluate()["advisory_allowed"])
 
     def test_host_and_total_group_limits_include_the_proposed_slot(self) -> None:
-        self.samples["local"]["census"]["compiler_groups"] = [compiler_group(100 + index) for index in range(5)]
+        install_groups(self.samples, "local", [compiler_group(100 + index) for index in range(5)])
         self.assertFalse(self.evaluate("local")["advisory_allowed"])
 
         self.samples = empty_samples(self.now)
         for host_index, (host, count) in enumerate((("local", 4), ("ilo", 6), ("h16001mac", 6)), start=1):
-            self.samples[host]["census"]["compiler_groups"] = [
+            install_groups(self.samples, host, [
                 compiler_group(1000 * host_index + offset)
                 for offset in range(count)
-            ]
+            ])
         result = self.evaluate("local")
         self.assertEqual(result["current_fleet_compiler_group_count"], 16)
+        self.assertEqual(result["current_fleet_compiler_admission_slot_count"], 16)
         self.assertFalse(result["advisory_allowed"])
 
     def test_unknown_executable_groups_are_valid_and_count_toward_capacity(self) -> None:
-        self.samples["local"]["census"]["compiler_groups"] = [
-            {
-                "pgid": 8000 + index,
-                "kind": "unknown",
-                "classification": "unknown",
-                "pids": [8000 + index],
-                "cargo_pids": [],
-                "runtime_owner_pids": [],
-                "rustc_process_count": 0,
-                "requested_cargo_jobs": None,
-                "job_limit_known": False,
-            }
-            for index in range(5)
-        ]
+        install_groups(
+            self.samples,
+            "local",
+            [compiler_group(8000 + index, kind="unknown", classification="unknown") for index in range(5)],
+        )
 
         result = self.evaluate("local")
 
         self.assertEqual(result["current_fleet_compiler_group_count"], 5)
         self.assertFalse(result["advisory_allowed"])
-        self.assertIn("local:host-compiler-group-limit-reached", result["reasons"])
+        self.assertIn("local:host-compiler-admission-slot-limit-reached", result["reasons"])
         self.assertIn("local:unresolved-compiler-group-counted-conservatively", result["limitations"])
 
     def test_unknown_processes_count_conservatively_and_known_overlarge_jobs_refuse(self) -> None:
-        self.samples["ilo"]["census"]["compiler_groups"] = [
-            compiler_group(2200, kind="cargo", classification="unknown")
-        ]
+        install_groups(
+            self.samples,
+            "ilo",
+            [compiler_group(2200, kind="cargo", classification="unknown")],
+            [cargo_entry(2200, 2200, None, classification="unknown")],
+        )
         result = self.evaluate("h16001mac")
         self.assertTrue(result["advisory_allowed"])
         self.assertEqual(result["current_fleet_compiler_group_count"], 1)
         self.assertTrue(any("counted-conservatively" in item for item in result["limitations"]))
 
         self.samples = empty_samples(self.now)
-        self.samples["ilo"]["census"]["compiler_groups"] = [
-            compiler_group(2201, kind="cargo", classification="build", jobs=5)
-        ]
+        install_groups(
+            self.samples,
+            "ilo",
+            [compiler_group(2201, kind="cargo", classification="build", jobs=5)],
+            [cargo_entry(2201, 2201, 5)],
+        )
         self.assertFalse(self.evaluate("h16001mac")["advisory_allowed"])
 
         self.samples = empty_samples(self.now)
-        self.samples["h16001mac"]["census"]["compiler_groups"] = [
-            compiler_group(2202, kind="runtime-owner", classification="runtime-owner")
-        ]
+        install_groups(
+            self.samples,
+            "h16001mac",
+            [compiler_group(2202, kind="runtime-owner", classification="runtime-owner")],
+        )
         runtime_result = self.evaluate("h16001mac")
         self.assertTrue(runtime_result["advisory_allowed"])
         self.assertEqual(runtime_result["current_fleet_compiler_group_count"], 1)
@@ -180,6 +228,130 @@ class FleetCapacityTests(unittest.TestCase):
             now=self.now,
         )
         self.assertFalse(result["advisory_allowed"])
+
+    def test_two_sibling_cargo_checks_jobs_four_each_use_two_slots_and_are_allowed(self) -> None:
+        group = compiler_group(
+            9000,
+            kind="cargo",
+            classification="build",
+            jobs=8,
+            cargo_pids=[9001, 9002],
+            pids=[9001, 9002],
+        )
+        install_groups(
+            self.samples,
+            "ilo",
+            [group],
+            [cargo_entry(9001, 9000, 4), cargo_entry(9002, 9000, 4)],
+        )
+
+        result = self.evaluate("h16001mac")
+
+        self.assertTrue(result["advisory_allowed"], result["reasons"])
+        self.assertEqual(result["hosts"]["ilo"]["compiler_group_count"], 1)
+        self.assertEqual(result["hosts"]["ilo"]["compiler_admission_slot_count"], 2)
+        self.assertEqual(result["current_fleet_compiler_group_count"], 1)
+        self.assertEqual(result["current_fleet_compiler_admission_slot_count"], 2)
+        self.assertEqual(result["hosts"]["ilo"]["compiler_groups"][0]["requested_cargo_jobs"], 8)
+        self.assertIn("compatibility aliases only", result["capacity_compatibility_note"])
+
+    def test_per_process_jobs_cap_refuses_four_plus_five_siblings(self) -> None:
+        group = compiler_group(
+            9100,
+            kind="cargo",
+            classification="build",
+            jobs=9,
+            cargo_pids=[9101, 9102],
+            pids=[9101, 9102],
+        )
+        install_groups(
+            self.samples,
+            "ilo",
+            [group],
+            [cargo_entry(9101, 9100, 4), cargo_entry(9102, 9100, 5)],
+        )
+
+        result = self.evaluate("h16001mac")
+
+        self.assertFalse(result["advisory_allowed"])
+        self.assertIn("ilo:active-cargo-process-jobs-exceed-4", result["reasons"])
+
+    def test_sibling_slots_count_toward_host_and_fleet_limits(self) -> None:
+        sibling_group = compiler_group(
+            9200,
+            kind="cargo",
+            classification="build",
+            jobs=8,
+            cargo_pids=[9201, 9202],
+            pids=[9201, 9202],
+        )
+        sibling_rows = [cargo_entry(9201, 9200, 4), cargo_entry(9202, 9200, 4)]
+
+        # Five local slots already fill the local host cap; the two Cargo
+        # roots count separately even though they share one PGID.
+        install_groups(
+            self.samples,
+            "local",
+            [sibling_group, *[compiler_group(9210 + index) for index in range(3)]],
+            sibling_rows,
+        )
+        local = self.evaluate("local")
+        self.assertFalse(local["advisory_allowed"])
+        self.assertEqual(local["hosts"]["local"]["compiler_group_count"], 4)
+        self.assertEqual(local["hosts"]["local"]["compiler_admission_slot_count"], 5)
+        self.assertLessEqual(
+            local["hosts"]["local"]["compiler_group_count"] + 1,
+            local["hosts"]["local"]["host_limit"],
+        )
+        self.assertIn("local:host-compiler-admission-slot-limit-reached", local["reasons"])
+
+        # ILO 8 + local 5 + Mac 3 = 16 occupied slots. The proposed Mac slot
+        # must be refused at the fleet limit, even though ILO's siblings are
+        # represented by a single raw PGID group.
+        self.samples = empty_samples(self.now)
+        install_groups(
+            self.samples,
+            "ilo",
+            [sibling_group, *[compiler_group(9220 + index) for index in range(6)]],
+            sibling_rows,
+        )
+        install_groups(self.samples, "local", [compiler_group(9300 + index) for index in range(5)])
+        install_groups(self.samples, "h16001mac", [compiler_group(9400 + index) for index in range(3)])
+        fleet_full = self.evaluate("h16001mac")
+        self.assertEqual(fleet_full["current_fleet_compiler_group_count"], 15)
+        self.assertEqual(fleet_full["current_fleet_compiler_admission_slot_count"], 16)
+        self.assertLessEqual(
+            fleet_full["current_fleet_compiler_group_count"] + 1,
+            fleet_full["fleet_compiler_group_limit"],
+        )
+        self.assertFalse(fleet_full["advisory_allowed"])
+        self.assertIn("fleet-compiler-admission-slot-limit-reached", fleet_full["reasons"])
+
+        # One fewer existing slot permits the proposed slot exactly at 16.
+        install_groups(self.samples, "h16001mac", [compiler_group(9400 + index) for index in range(2)])
+        exactly_full = self.evaluate("h16001mac")
+        self.assertEqual(exactly_full["current_fleet_compiler_admission_slot_count"], 15)
+        self.assertTrue(exactly_full["advisory_allowed"], exactly_full["reasons"])
+
+    def test_missing_and_duplicate_cargo_entry_joins_refuse(self) -> None:
+        group = compiler_group(
+            9500,
+            kind="cargo",
+            classification="build",
+            jobs=4,
+            cargo_pids=[9501],
+            pids=[9501],
+        )
+        install_groups(self.samples, "ilo", [group], [])
+        missing = self.evaluate("h16001mac")
+        self.assertFalse(missing["advisory_allowed"])
+        self.assertIn("ilo:cargo-entry-pid-join-missing-or-ambiguous", missing["reasons"])
+
+        duplicate = cargo_entry(9501, 9500, 4)
+        install_groups(self.samples, "ilo", [group], [duplicate, dict(duplicate)])
+        ambiguous = self.evaluate("h16001mac")
+        self.assertFalse(ambiguous["advisory_allowed"])
+        self.assertIn("ilo:cargo-entry-pid-join-ambiguous", ambiguous["reasons"])
 
     def test_collect_once_calls_each_configured_host_exactly_once(self) -> None:
         counts: Counter[str] = Counter()
@@ -197,9 +369,7 @@ class FleetCapacityTests(unittest.TestCase):
         self.assertEqual(counts, Counter({name: 1 for name in fleet.DEFAULT_HOSTS}))
 
     def test_authorized_remote_exception_retains_every_other_gate(self) -> None:
-        self.samples["local"]["census"]["compiler_groups"] = [
-            compiler_group(3000 + index) for index in range(9)
-        ]
+        install_groups(self.samples, "local", [compiler_group(3000 + index) for index in range(9)])
 
         def authorized(destination: str = "h16001mac") -> dict[str, object]:
             return fleet.evaluate_fleet(
