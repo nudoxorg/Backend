@@ -1,0 +1,35 @@
+{
+  "raw_archive_sha256": "9a0a3f6621209021270dbd38a430fd0c28c410dc3df519178017b7c874c2ae88",
+  "raw_files_verified": true,
+  "source_tree_inventory_and_critical_raw_hashes_match_local_frozen_source": true,
+  "tests": [
+    "test application::compiler::tests::project_typescript_fault_retains_its_admitted_recipe_without_global_tsc ... ok",
+    "test application::compiler::tests::typescript_real_native_authority_stop_preserves_typed_cause_and_terminal ... ok",
+    "test application::compiler_typescript_failure::tests::typescript_failure_distinguishes_host_bridge_staging_and_checker_exit ... ok",
+    "test application::compiler_typescript_failure::tests::typescript_failure_retains_native_stop_site_and_reason ... ok"
+  ],
+  "test_results": [
+    "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 898 filtered out; finished in 0.00s"
+  ],
+  "source": {
+    "commit": "c05549365b139e5c189cb98ffdef961c017b1336",
+    "tree": "6f1f346a463e1ed816a969e811f4a6bc8a75b385",
+    "clean": true,
+    "lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e"
+  },
+  "elapsed_seconds": 290.02614290302154,
+  "peak_child_rss_kib": 3263536,
+  "warnings": [
+    "warning: `backend-engine` (lib test) generated 222 warnings (run `cargo fix --lib -p backend-engine --tests` to apply 181 suggestions)"
+  ],
+  "images": [
+    {
+      "path": "/root/codex-worktrees/sol61-journal-recovery-eb019-20261008/.local/journal-owned-build-role/.nudox-cargo/slot-0/debug/deps/backend_engine-c5d94d5a92b30961",
+      "sha256": "7c6fcd1fc5630de95a3d720df3a69e03b40735e6eb12189e4dbd6171f6a319ab",
+      "sealed_path": "/root/sol61-journal-recovery-c68d-evidence-20261008/native-12-excalidraw-admitted-project-diagnostic/images/backend_engine-c5d94d5a92b30961",
+      "bytes": 320565880,
+      "mode": "0o444"
+    }
+  ],
+  "seal_sha256": "ded6b6c1cb7d7f894a98021aa4ad209f4ac0bfe2dc67043dd18c52f0b8cb83bf"
+}

@@ -1,0 +1,1054 @@
+{
+  "schema": "nudox.go-scratch-native-seal.v1",
+  "admission": {
+    "advisory_allowed": true,
+    "allow_local_over_cap_for_remote": true,
+    "collector_elapsed_seconds": 2.923,
+    "collector_started_at_utc": "2026-10-08T09:54:48.595990+00:00",
+    "current_fleet_compiler_group_count": 10,
+    "destination": "ilo",
+    "destination_memory_only_for_remote": true,
+    "evidence_path": "/Users/mileswirht/Downloads/sol61-real-app-tail-matrix-20261008/admission-20261008T095448455471Z.json",
+    "fleet_compiler_group_limit": 16,
+    "host_compiler_group_limits": {
+      "h16001mac": 8,
+      "ilo": 8,
+      "local": 5
+    },
+    "hosts": {
+      "h16001mac": {
+        "age_seconds": 1.458,
+        "available_memory_bytes": 60449685504,
+        "available_memory_source": "darwin-vm-stat-free-inactive-speculative",
+        "cargo_entries": 1,
+        "census_sha256": "f8b0c5e3278a90f94fbecb5ebe17c30874363e291d47cad52a7016d94a4aed49",
+        "compiler_group_count": 2,
+        "compiler_groups": [
+          {
+            "cargo_pids": [
+              17055
+            ],
+            "classification": "build",
+            "job_limit_known": true,
+            "kind": "cargo",
+            "pgid": 17055,
+            "pids": [
+              17055,
+              20596
+            ],
+            "requested_cargo_jobs": 2,
+            "runtime_owner_pids": [],
+            "rustc_process_count": 1
+          },
+          {
+            "cargo_pids": [],
+            "classification": "runtime-owner",
+            "job_limit_known": false,
+            "kind": "runtime-owner",
+            "pgid": 63153,
+            "pids": [
+              63164
+            ],
+            "requested_cargo_jobs": null,
+            "runtime_owner_pids": [
+              63164
+            ],
+            "rustc_process_count": 0
+          }
+        ],
+        "complete": true,
+        "host_limit": 8,
+        "memory_floor_applies": false,
+        "resource_sampled_at_utc": "2026-10-08T09:54:50.092832+00:00",
+        "root_disk_available_bytes": 1155969028096,
+        "sample_finished_at_utc": "2026-10-08T09:54:50.092656+00:00",
+        "sample_started_at_utc": "2026-10-08T09:54:50.059874+00:00",
+        "snapshot_issue_counts": {},
+        "snapshot_race_counts": {},
+        "visible_process_count": 904
+      },
+      "ilo": {
+        "age_seconds": 0.132,
+        "available_memory_bytes": 55072452608,
+        "available_memory_source": "linux-proc-meminfo-MemAvailable",
+        "cargo_entries": 1,
+        "census_sha256": "6e16a937103ff0d093d5c45480eb75bf976e2f3bb59840de724a06524d3bbd1c",
+        "compiler_group_count": 2,
+        "compiler_groups": [
+          {
+            "cargo_pids": [],
+            "classification": "runtime-owner",
+            "job_limit_known": false,
+            "kind": "runtime-owner",
+            "pgid": 557079,
+            "pids": [
+              557079
+            ],
+            "requested_cargo_jobs": null,
+            "runtime_owner_pids": [
+              557079
+            ],
+            "rustc_process_count": 0
+          },
+          {
+            "cargo_pids": [
+              3134013
+            ],
+            "classification": "build",
+            "job_limit_known": true,
+            "kind": "cargo",
+            "pgid": 3036756,
+            "pids": [
+              3134013,
+              3139718,
+              3141806,
+              3141819
+            ],
+            "requested_cargo_jobs": 4,
+            "runtime_owner_pids": [],
+            "rustc_process_count": 3
+          }
+        ],
+        "complete": true,
+        "host_limit": 8,
+        "memory_floor_applies": true,
+        "resource_sampled_at_utc": "2026-10-08T09:54:51.414720+00:00",
+        "root_disk_available_bytes": 63264583680,
+        "sample_finished_at_utc": "2026-10-08T09:54:51.414580+00:00",
+        "sample_started_at_utc": "2026-10-08T09:54:51.385674+00:00",
+        "snapshot_issue_counts": {},
+        "snapshot_race_counts": {
+          "pid-exited-during-scan": 269
+        },
+        "visible_process_count": 454
+      },
+      "local": {
+        "age_seconds": 2.754,
+        "available_memory_bytes": 11206164480,
+        "available_memory_source": "darwin-vm-stat-free-inactive-speculative",
+        "cargo_entries": 2,
+        "census_sha256": "9a48479ceae8b3762d2154d06327e917ad55e1fe644023e5a03e665aa969a96c",
+        "compiler_group_count": 6,
+        "compiler_groups": [
+          {
+            "cargo_pids": [],
+            "classification": "runtime-owner",
+            "job_limit_known": false,
+            "kind": "runtime-owner",
+            "pgid": 749,
+            "pids": [
+              749
+            ],
+            "requested_cargo_jobs": null,
+            "runtime_owner_pids": [
+              749
+            ],
+            "rustc_process_count": 0
+          },
+          {
+            "cargo_pids": [],
+            "classification": "runtime-owner",
+            "job_limit_known": false,
+            "kind": "runtime-owner",
+            "pgid": 4707,
+            "pids": [
+              4707
+            ],
+            "requested_cargo_jobs": null,
+            "runtime_owner_pids": [
+              4707
+            ],
+            "rustc_process_count": 0
+          },
+          {
+            "cargo_pids": [],
+            "classification": "unknown",
+            "job_limit_known": false,
+            "kind": "unknown",
+            "pgid": 11935,
+            "pids": [
+              11939
+            ],
+            "requested_cargo_jobs": null,
+            "runtime_owner_pids": [],
+            "rustc_process_count": 0
+          },
+          {
+            "cargo_pids": [],
+            "classification": "unknown",
+            "job_limit_known": false,
+            "kind": "unknown",
+            "pgid": 11950,
+            "pids": [
+              11955
+            ],
+            "requested_cargo_jobs": null,
+            "runtime_owner_pids": [],
+            "rustc_process_count": 0
+          },
+          {
+            "cargo_pids": [
+              29938
+            ],
+            "classification": "build",
+            "job_limit_known": false,
+            "kind": "cargo",
+            "pgid": 29938,
+            "pids": [
+              29938,
+              57168
+            ],
+            "requested_cargo_jobs": null,
+            "runtime_owner_pids": [],
+            "rustc_process_count": 1
+          },
+          {
+            "cargo_pids": [
+              79387
+            ],
+            "classification": "build",
+            "job_limit_known": false,
+            "kind": "cargo",
+            "pgid": 71074,
+            "pids": [
+              44458,
+              53210,
+              79387
+            ],
+            "requested_cargo_jobs": null,
+            "runtime_owner_pids": [],
+            "rustc_process_count": 2
+          }
+        ],
+        "complete": true,
+        "host_limit": 5,
+        "memory_floor_applies": false,
+        "resource_sampled_at_utc": "2026-10-08T09:54:48.865063+00:00",
+        "root_disk_available_bytes": 36505276416,
+        "sample_finished_at_utc": "2026-10-08T09:54:48.864723+00:00",
+        "sample_started_at_utc": "2026-10-08T09:54:48.763576+00:00",
+        "snapshot_issue_counts": {},
+        "snapshot_race_counts": {
+          "pid-exited-during-scan": 6
+        },
+        "visible_process_count": 787
+      }
+    },
+    "limitations": [
+      "local:unresolved-compiler-group-counted-conservatively",
+      "local:active-cargo-jobs-unknown-group-counted-conservatively",
+      "local:over-host-cap-remote-admission-authorized"
+    ],
+    "managed_host_permit_required": true,
+    "max_cargo_jobs_per_group": 4,
+    "max_sample_age_seconds": 30,
+    "memory_guard_scope": "destination",
+    "minimum_available_memory_bytes_destination": 8589934592,
+    "minimum_available_memory_bytes_each_host": null,
+    "minimum_destination_root_disk_bytes": 17179869184,
+    "processes_signaled": [],
+    "raw_samples": {
+      "h16001mac": {
+        "census": {
+          "argv_budget_exhausted": false,
+          "capacity": {
+            "conservative_local_occupancy": 1,
+            "decision_reason": "local-build-capacity-available",
+            "exited_cargo_processes": 0,
+            "introspection_processes": 0,
+            "known_build_processes": 1,
+            "local_build_capacity": 3,
+            "reserved_remote_builds": 1,
+            "snapshot_allows_new_local_build": true,
+            "total_build_capacity": 4,
+            "unknown_cargo_processes": 0
+          },
+          "captured_argv_bytes": 17580,
+          "captured_argv_processes": 1,
+          "compiler_groups": [
+            {
+              "cargo_pids": [
+                17055
+              ],
+              "classification": "build",
+              "job_limit_known": true,
+              "kind": "cargo",
+              "pgid": 17055,
+              "pids": [
+                17055,
+                20596
+              ],
+              "requested_cargo_jobs": 2,
+              "runtime_owner_pids": [],
+              "rustc_process_count": 1
+            },
+            {
+              "cargo_pids": [],
+              "classification": "runtime-owner",
+              "job_limit_known": false,
+              "kind": "runtime-owner",
+              "pgid": 63153,
+              "pids": [
+                63164
+              ],
+              "requested_cargo_jobs": null,
+              "runtime_owner_pids": [
+                63164
+              ],
+              "rustc_process_count": 0
+            }
+          ],
+          "compiler_groups_omitted_count": 0,
+          "complete": true,
+          "effective_uid": 1893584017,
+          "entries": [
+            {
+              "ancestry": [
+                {
+                  "pid": 17001,
+                  "start_token": "darwin:1791452927:279496"
+                },
+                {
+                  "pid": 16997,
+                  "start_token": "darwin:1791452927:127092"
+                }
+              ],
+              "ancestry_complete": false,
+              "ancestry_error": "missing-parent",
+              "argv": {
+                "argc": 13,
+                "status": "complete",
+                "tokens": [
+                  "cargo",
+                  "test",
+                  "--verbose",
+                  "--locked",
+                  "--offline",
+                  "-j<redacted>",
+                  "-p",
+                  "<arg>",
+                  "--lib",
+                  "<arg>",
+                  "--",
+                  "--test-threads=<redacted>",
+                  "--nocapture"
+                ],
+                "truncated": false
+              },
+              "argv_verb": "test",
+              "classification": "build",
+              "classification_reason": null,
+              "executable": "cargo",
+              "identity_validated": true,
+              "pgid": 17055,
+              "pid": 17055,
+              "ppid": 17001,
+              "requested_cargo_jobs": 2,
+              "start_token": "darwin:1791452928:193959"
+            }
+          ],
+          "entries_omitted_count": 0,
+          "process_scope": "host-visible-process-table",
+          "processes_signaled": [],
+          "resource_snapshot": {
+            "available_memory_bytes": 60449685504,
+            "available_memory_source": "darwin-vm-stat-free-inactive-speculative",
+            "root_disk_available_bytes": 1155969028096,
+            "root_disk_total_bytes": 1995218165760,
+            "root_disk_used_bytes": 839249137664,
+            "sampled_at_utc": "2026-10-08T09:54:50.092832+00:00"
+          },
+          "resource_snapshot_complete": true,
+          "sample_finished_at_utc": "2026-10-08T09:54:50.092656+00:00",
+          "sample_started_at_utc": "2026-10-08T09:54:50.059874+00:00",
+          "schema": "build-census.v1",
+          "scope_note": "Foreign Cargo, rustc, and locald/backend-locald/backend-desktop-looking rows are inspected; inaccessible candidates count as occupied unknown process groups. Same-UID process executable paths are inspected, and paths that remain unavailable count as unknown occupied process groups. Cargo argv is read through native process APIs and redacted. Other foreign rows and processes hidden by OS namespaces or permissions are not validated, so this advisory cannot guarantee whole-machine capacity.",
+          "slot_reserved": false,
+          "snapshot_atomic": false,
+          "snapshot_issue_counts": {},
+          "snapshot_race_counts": {},
+          "visible_process_count": 904
+        },
+        "census_sha256": "f8b0c5e3278a90f94fbecb5ebe17c30874363e291d47cad52a7016d94a4aed49",
+        "collector_finished_at_utc": "2026-10-08T09:54:50.196483+00:00",
+        "collector_started_at_utc": "2026-10-08T09:54:48.613868+00:00",
+        "host": "h16001mac",
+        "return_code": 0,
+        "stderr_bytes": 0,
+        "transport_complete": true
+      },
+      "ilo": {
+        "census": {
+          "argv_budget_exhausted": false,
+          "capacity": {
+            "conservative_local_occupancy": 1,
+            "decision_reason": "local-build-capacity-available",
+            "exited_cargo_processes": 0,
+            "introspection_processes": 0,
+            "known_build_processes": 1,
+            "local_build_capacity": 3,
+            "reserved_remote_builds": 1,
+            "snapshot_allows_new_local_build": true,
+            "total_build_capacity": 4,
+            "unknown_cargo_processes": 0
+          },
+          "captured_argv_bytes": 150,
+          "captured_argv_processes": 1,
+          "compiler_groups": [
+            {
+              "cargo_pids": [],
+              "classification": "runtime-owner",
+              "job_limit_known": false,
+              "kind": "runtime-owner",
+              "pgid": 557079,
+              "pids": [
+                557079
+              ],
+              "requested_cargo_jobs": null,
+              "runtime_owner_pids": [
+                557079
+              ],
+              "rustc_process_count": 0
+            },
+            {
+              "cargo_pids": [
+                3134013
+              ],
+              "classification": "build",
+              "job_limit_known": true,
+              "kind": "cargo",
+              "pgid": 3036756,
+              "pids": [
+                3134013,
+                3139718,
+                3141806,
+                3141819
+              ],
+              "requested_cargo_jobs": 4,
+              "runtime_owner_pids": [],
+              "rustc_process_count": 3
+            }
+          ],
+          "compiler_groups_omitted_count": 0,
+          "complete": true,
+          "effective_uid": 0,
+          "entries": [
+            {
+              "ancestry": [],
+              "ancestry_complete": false,
+              "ancestry_error": "missing-parent",
+              "argv": {
+                "argc": 9,
+                "status": "complete",
+                "tokens": [
+                  "cargo",
+                  "check",
+                  "--locked",
+                  "--workspace",
+                  "--all-targets",
+                  "--target",
+                  "<arg>",
+                  "--jobs",
+                  "<arg>"
+                ],
+                "truncated": false
+              },
+              "argv_verb": "check",
+              "classification": "build",
+              "classification_reason": null,
+              "executable": "cargo",
+              "identity_validated": true,
+              "pgid": 3036756,
+              "pid": 3134013,
+              "ppid": 3036759,
+              "requested_cargo_jobs": 4,
+              "start_token": "linux:2ead60ad-39e1-4149-89bf-ffaca12e4235:79737437"
+            }
+          ],
+          "entries_omitted_count": 0,
+          "process_scope": "host-visible-process-table",
+          "processes_signaled": [],
+          "resource_snapshot": {
+            "available_memory_bytes": 55072452608,
+            "available_memory_source": "linux-proc-meminfo-MemAvailable",
+            "root_disk_available_bytes": 63264583680,
+            "root_disk_total_bytes": 501864161280,
+            "root_disk_used_bytes": 413031051264,
+            "sampled_at_utc": "2026-10-08T09:54:51.414720+00:00"
+          },
+          "resource_snapshot_complete": true,
+          "sample_finished_at_utc": "2026-10-08T09:54:51.414580+00:00",
+          "sample_started_at_utc": "2026-10-08T09:54:51.385674+00:00",
+          "schema": "build-census.v1",
+          "scope_note": "Foreign Cargo, rustc, and locald/backend-locald/backend-desktop-looking rows are inspected; inaccessible candidates count as occupied unknown process groups. Same-UID process executable paths are inspected, and paths that remain unavailable count as unknown occupied process groups. Cargo argv is read through native process APIs and redacted. Other foreign rows and processes hidden by OS namespaces or permissions are not validated, so this advisory cannot guarantee whole-machine capacity.",
+          "slot_reserved": false,
+          "snapshot_atomic": false,
+          "snapshot_issue_counts": {},
+          "snapshot_race_counts": {
+            "pid-exited-during-scan": 269
+          },
+          "visible_process_count": 454
+        },
+        "census_sha256": "6e16a937103ff0d093d5c45480eb75bf976e2f3bb59840de724a06524d3bbd1c",
+        "collector_finished_at_utc": "2026-10-08T09:54:51.516880+00:00",
+        "collector_started_at_utc": "2026-10-08T09:54:48.606010+00:00",
+        "host": "ilo",
+        "return_code": 0,
+        "stderr_bytes": 0,
+        "transport_complete": true
+      },
+      "local": {
+        "census": {
+          "argv_budget_exhausted": false,
+          "capacity": {
+            "conservative_local_occupancy": 2,
+            "decision_reason": "local-build-capacity-available",
+            "exited_cargo_processes": 0,
+            "introspection_processes": 0,
+            "known_build_processes": 2,
+            "local_build_capacity": 3,
+            "reserved_remote_builds": 1,
+            "snapshot_allows_new_local_build": true,
+            "total_build_capacity": 4,
+            "unknown_cargo_processes": 0
+          },
+          "captured_argv_bytes": 13904,
+          "captured_argv_processes": 2,
+          "compiler_groups": [
+            {
+              "cargo_pids": [],
+              "classification": "runtime-owner",
+              "job_limit_known": false,
+              "kind": "runtime-owner",
+              "pgid": 749,
+              "pids": [
+                749
+              ],
+              "requested_cargo_jobs": null,
+              "runtime_owner_pids": [
+                749
+              ],
+              "rustc_process_count": 0
+            },
+            {
+              "cargo_pids": [],
+              "classification": "runtime-owner",
+              "job_limit_known": false,
+              "kind": "runtime-owner",
+              "pgid": 4707,
+              "pids": [
+                4707
+              ],
+              "requested_cargo_jobs": null,
+              "runtime_owner_pids": [
+                4707
+              ],
+              "rustc_process_count": 0
+            },
+            {
+              "cargo_pids": [],
+              "classification": "unknown",
+              "job_limit_known": false,
+              "kind": "unknown",
+              "pgid": 11935,
+              "pids": [
+                11939
+              ],
+              "requested_cargo_jobs": null,
+              "runtime_owner_pids": [],
+              "rustc_process_count": 0
+            },
+            {
+              "cargo_pids": [],
+              "classification": "unknown",
+              "job_limit_known": false,
+              "kind": "unknown",
+              "pgid": 11950,
+              "pids": [
+                11955
+              ],
+              "requested_cargo_jobs": null,
+              "runtime_owner_pids": [],
+              "rustc_process_count": 0
+            },
+            {
+              "cargo_pids": [
+                29938
+              ],
+              "classification": "build",
+              "job_limit_known": false,
+              "kind": "cargo",
+              "pgid": 29938,
+              "pids": [
+                29938,
+                57168
+              ],
+              "requested_cargo_jobs": null,
+              "runtime_owner_pids": [],
+              "rustc_process_count": 1
+            },
+            {
+              "cargo_pids": [
+                79387
+              ],
+              "classification": "build",
+              "job_limit_known": false,
+              "kind": "cargo",
+              "pgid": 71074,
+              "pids": [
+                44458,
+                53210,
+                79387
+              ],
+              "requested_cargo_jobs": null,
+              "runtime_owner_pids": [],
+              "rustc_process_count": 2
+            }
+          ],
+          "compiler_groups_omitted_count": 0,
+          "complete": true,
+          "effective_uid": 501,
+          "entries": [
+            {
+              "ancestry": [
+                {
+                  "pid": 579,
+                  "start_token": "darwin:1791436081:666692"
+                },
+                {
+                  "pid": 97086,
+                  "start_token": "darwin:1791436078:791675"
+                }
+              ],
+              "ancestry_complete": false,
+              "ancestry_error": "missing-parent",
+              "argv": {
+                "argc": 9,
+                "status": "complete",
+                "tokens": [
+                  "cargo",
+                  "test",
+                  "--locked",
+                  "-p",
+                  "<arg>",
+                  "--lib",
+                  "--features",
+                  "<arg>",
+                  "<arg>"
+                ],
+                "truncated": false
+              },
+              "argv_verb": "test",
+              "classification": "build",
+              "classification_reason": null,
+              "executable": "cargo",
+              "identity_validated": true,
+              "pgid": 29938,
+              "pid": 29938,
+              "ppid": 579,
+              "requested_cargo_jobs": null,
+              "start_token": "darwin:1791453253:336089"
+            },
+            {
+              "ancestry": [
+                {
+                  "pid": 71074,
+                  "start_token": "darwin:1791452953:366699"
+                },
+                {
+                  "pid": 579,
+                  "start_token": "darwin:1791436081:666692"
+                },
+                {
+                  "pid": 97086,
+                  "start_token": "darwin:1791436078:791675"
+                }
+              ],
+              "ancestry_complete": false,
+              "ancestry_error": "missing-parent",
+              "argv": {
+                "argc": 14,
+                "status": "complete",
+                "tokens": [
+                  "cargo",
+                  "build",
+                  "-Z<redacted>",
+                  "--locked",
+                  "--manifest-path",
+                  "<arg>",
+                  "-p",
+                  "<arg>",
+                  "--target",
+                  "<arg>",
+                  "--release",
+                  "--no-default-features",
+                  "--features",
+                  "<arg>"
+                ],
+                "truncated": false
+              },
+              "argv_verb": "build",
+              "classification": "build",
+              "classification_reason": null,
+              "executable": "cargo",
+              "identity_validated": true,
+              "pgid": 71074,
+              "pid": 79387,
+              "ppid": 71074,
+              "requested_cargo_jobs": null,
+              "start_token": "darwin:1791452961:493188"
+            }
+          ],
+          "entries_omitted_count": 0,
+          "process_scope": "host-visible-process-table",
+          "processes_signaled": [],
+          "resource_snapshot": {
+            "available_memory_bytes": 11206164480,
+            "available_memory_source": "darwin-vm-stat-free-inactive-speculative",
+            "root_disk_available_bytes": 36505276416,
+            "root_disk_total_bytes": 994662584320,
+            "root_disk_used_bytes": 958157307904,
+            "sampled_at_utc": "2026-10-08T09:54:48.865063+00:00"
+          },
+          "resource_snapshot_complete": true,
+          "sample_finished_at_utc": "2026-10-08T09:54:48.864723+00:00",
+          "sample_started_at_utc": "2026-10-08T09:54:48.763576+00:00",
+          "schema": "build-census.v1",
+          "scope_note": "Foreign Cargo, rustc, and locald/backend-locald/backend-desktop-looking rows are inspected; inaccessible candidates count as occupied unknown process groups. Same-UID process executable paths are inspected, and paths that remain unavailable count as unknown occupied process groups. Cargo argv is read through native process APIs and redacted. Other foreign rows and processes hidden by OS namespaces or permissions are not validated, so this advisory cannot guarantee whole-machine capacity.",
+          "slot_reserved": false,
+          "snapshot_atomic": false,
+          "snapshot_issue_counts": {},
+          "snapshot_race_counts": {
+            "pid-exited-during-scan": 6
+          },
+          "visible_process_count": 787
+        },
+        "census_sha256": "9a48479ceae8b3762d2154d06327e917ad55e1fe644023e5a03e665aa969a96c",
+        "collector_finished_at_utc": "2026-10-08T09:54:48.907542+00:00",
+        "collector_started_at_utc": "2026-10-08T09:54:48.601134+00:00",
+        "host": "local",
+        "return_code": 0,
+        "stderr_bytes": 0,
+        "transport_complete": true
+      }
+    },
+    "reasons": [],
+    "requested_cargo_jobs": 2,
+    "sampled_at_utc": "2026-10-08T09:54:51.518022+00:00",
+    "sampler_path": "/Users/mileswirht/Downloads/nudox-active-20261005/root-quality-integration-20261007/.config/scripts/build-census.py",
+    "sampler_sha256": "95895b8959d2803a0e01f1b05c9462a46ed1b2e9976382bcae6ee9744f4cfea4",
+    "schema": "compiler-capacity-admission.v5",
+    "slot_reserved": false
+  },
+  "source": {
+    "commit": "6c58535f63fd31d65aafe18ae4219077753f6f07",
+    "tree": "25ebd17cc11f19ce864308541a41c54417e29ae3",
+    "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+    "clean": true
+  },
+  "release_graph_used": false,
+  "runs": [
+    {
+      "phase": "scratch-primitive",
+      "passed": 8,
+      "failed": 0,
+      "ignored": 0,
+      "elapsed_seconds": 5.9369394310051575,
+      "receipt": "/root/sol61-go-rust-public-repairs-20261008/focused-tests-11-scratch-primitive-01/receipt.json",
+      "receipt_sha256": "9970e63f403212b840eedc7c9fcac2c064a9e6f02aa13568c37166c72653f056",
+      "launch_sha256": "ecfe3a92567d1c28aec34582125e3020faf5e99e4a0cca42cf82ae81eb400c91",
+      "stdout_sha256": "8334d66a2b8c51c35a56b0bea9c0f91bddbf7ac5479a329257c521c1893add0c",
+      "stderr_sha256": "1ac0b8867cc484140dbf7b36a04c4f61986c6f52764f3a331ab00c093caefca8",
+      "summary": "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.01s",
+      "raw_semantic_rows": [],
+      "artifacts": [
+        {
+          "path": "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/.local/go-public-check-role/.nudox-cargo/slot-0/debug/deps/backend_frontend_go-11b1b3305bba076c",
+          "sha256": "e9cc24f5463605610f7af080aadd49d4feaa2d3e7cb3318f83b701da32938191",
+          "bytes": 144111800,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/images/e9cc24f5463605610f7af080aadd49d4feaa2d3e7cb3318f83b701da32938191-backend_frontend_go-11b1b3305bba076c"
+        }
+      ],
+      "compiler_inputs": {
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/lib.rs": {
+          "sha256": "0a46dbbc9dee91ea62b84e1dc8e5e529434dad7a331526a1116245af72ac11bb",
+          "bytes": 1437,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/0a46dbbc9dee91ea62b84e1dc8e5e529434dad7a331526a1116245af72ac11bb-lib.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/mod.rs": {
+          "sha256": "2fcedfbbba8403fc1a308b007d1a42ba197ba08536e080c439d0e79d1323dda9",
+          "bytes": 1662,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/2fcedfbbba8403fc1a308b007d1a42ba197ba08536e080c439d0e79d1323dda9-mod.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/image.rs": {
+          "sha256": "6b7974d9c7e04e4051f4755cb7312953ed3a3d9c6f54a9e7ca6549fb54d7725c",
+          "bytes": 113140,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/6b7974d9c7e04e4051f4755cb7312953ed3a3d9c6f54a9e7ca6549fb54d7725c-image.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/oracle.rs": {
+          "sha256": "db3bc955a0db95d0644f68fff879af2f313eda87a0d25dab0e76d167e82e4dad",
+          "bytes": 162913,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/db3bc955a0db95d0644f68fff879af2f313eda87a0d25dab0e76d167e82e4dad-oracle.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/oracle/authority_witness.rs": {
+          "sha256": "23ab36b101f158c6f7cff6bbfef2dd42d188c21815f98621b2bf34cc66561a55",
+          "bytes": 66293,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/23ab36b101f158c6f7cff6bbfef2dd42d188c21815f98621b2bf34cc66561a55-authority_witness.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/oracle/capture_digest.rs": {
+          "sha256": "beec7f9e16eeddeb2cdc320f083cc36a8853bc83b5cb74f42b494c01267e226c",
+          "bytes": 17534,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/beec7f9e16eeddeb2cdc320f083cc36a8853bc83b5cb74f42b494c01267e226c-capture_digest.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/oracle/dependency_witness.rs": {
+          "sha256": "7a0304139dd7d8cc92c24ee6fd534f2ecb1acf542a1874a4730f27304c707d5f",
+          "bytes": 19247,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/7a0304139dd7d8cc92c24ee6fd534f2ecb1acf542a1874a4730f27304c707d5f-dependency_witness.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/staging.rs": {
+          "sha256": "7981afedb670e5f4e7abecd70a0aecbfb703e65f316d7859508a1f1cea83fb44",
+          "bytes": 27519,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/7981afedb670e5f4e7abecd70a0aecbfb703e65f316d7859508a1f1cea83fb44-staging.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/.local/go-public-check-role/.nudox-cargo/slot-0/debug/build/backend-frontend-go-b0e30d0ae04541a6/out/go_oracle_sources.rs": {
+          "sha256": "639aa18854dc54d471fee28657d6f48cda7d38311c7f77332959efd8b259bf16",
+          "bytes": 19441,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/639aa18854dc54d471fee28657d6f48cda7d38311c7f77332959efd8b259bf16-go_oracle_sources.rs"
+        }
+      }
+    },
+    {
+      "phase": "scratch-consumer",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "elapsed_seconds": 2.3281283039832488,
+      "receipt": "/root/sol61-go-rust-public-repairs-20261008/focused-tests-11-scratch-consumer-01/receipt.json",
+      "receipt_sha256": "2bcc45d888ef5f10e6bf310669948b9a9be095770334213c6a4e39341e88290d",
+      "launch_sha256": "f28bd2d7e74d1c552d2c5ff530dc2f1f020252501cffbb5ac3f31f374ee2dfaa",
+      "stdout_sha256": "ecbe0492fbc30e05e6dca57fdaa1d8791df291da38c50e3e34eb00e94f38adf3",
+      "stderr_sha256": "fe786d9e0b2fb3637e1bf5643563438eff96600379f000fbaf2f71a8d6fabb0c",
+      "summary": "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 41 filtered out; finished in 0.02s",
+      "raw_semantic_rows": [],
+      "artifacts": [
+        {
+          "path": "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/.local/go-public-check-role/.nudox-cargo/slot-0/debug/deps/backend_frontend_go-11b1b3305bba076c",
+          "sha256": "e9cc24f5463605610f7af080aadd49d4feaa2d3e7cb3318f83b701da32938191",
+          "bytes": 144111800,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/images/e9cc24f5463605610f7af080aadd49d4feaa2d3e7cb3318f83b701da32938191-backend_frontend_go-11b1b3305bba076c"
+        }
+      ],
+      "compiler_inputs": {
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/lib.rs": {
+          "sha256": "0a46dbbc9dee91ea62b84e1dc8e5e529434dad7a331526a1116245af72ac11bb",
+          "bytes": 1437,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/0a46dbbc9dee91ea62b84e1dc8e5e529434dad7a331526a1116245af72ac11bb-lib.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/mod.rs": {
+          "sha256": "2fcedfbbba8403fc1a308b007d1a42ba197ba08536e080c439d0e79d1323dda9",
+          "bytes": 1662,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/2fcedfbbba8403fc1a308b007d1a42ba197ba08536e080c439d0e79d1323dda9-mod.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/image.rs": {
+          "sha256": "6b7974d9c7e04e4051f4755cb7312953ed3a3d9c6f54a9e7ca6549fb54d7725c",
+          "bytes": 113140,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/6b7974d9c7e04e4051f4755cb7312953ed3a3d9c6f54a9e7ca6549fb54d7725c-image.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/oracle.rs": {
+          "sha256": "db3bc955a0db95d0644f68fff879af2f313eda87a0d25dab0e76d167e82e4dad",
+          "bytes": 162913,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/db3bc955a0db95d0644f68fff879af2f313eda87a0d25dab0e76d167e82e4dad-oracle.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/oracle/authority_witness.rs": {
+          "sha256": "23ab36b101f158c6f7cff6bbfef2dd42d188c21815f98621b2bf34cc66561a55",
+          "bytes": 66293,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/23ab36b101f158c6f7cff6bbfef2dd42d188c21815f98621b2bf34cc66561a55-authority_witness.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/oracle/capture_digest.rs": {
+          "sha256": "beec7f9e16eeddeb2cdc320f083cc36a8853bc83b5cb74f42b494c01267e226c",
+          "bytes": 17534,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/beec7f9e16eeddeb2cdc320f083cc36a8853bc83b5cb74f42b494c01267e226c-capture_digest.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/oracle/dependency_witness.rs": {
+          "sha256": "7a0304139dd7d8cc92c24ee6fd534f2ecb1acf542a1874a4730f27304c707d5f",
+          "bytes": 19247,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/7a0304139dd7d8cc92c24ee6fd534f2ecb1acf542a1874a4730f27304c707d5f-dependency_witness.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/staging.rs": {
+          "sha256": "7981afedb670e5f4e7abecd70a0aecbfb703e65f316d7859508a1f1cea83fb44",
+          "bytes": 27519,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/7981afedb670e5f4e7abecd70a0aecbfb703e65f316d7859508a1f1cea83fb44-staging.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/.local/go-public-check-role/.nudox-cargo/slot-0/debug/build/backend-frontend-go-b0e30d0ae04541a6/out/go_oracle_sources.rs": {
+          "sha256": "639aa18854dc54d471fee28657d6f48cda7d38311c7f77332959efd8b259bf16",
+          "bytes": 19441,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/639aa18854dc54d471fee28657d6f48cda7d38311c7f77332959efd8b259bf16-go_oracle_sources.rs"
+        }
+      }
+    },
+    {
+      "phase": "scratch-existing",
+      "passed": 8,
+      "failed": 0,
+      "ignored": 0,
+      "elapsed_seconds": 3.907558848033659,
+      "receipt": "/root/sol61-go-rust-public-repairs-20261008/focused-tests-11-scratch-existing-01/receipt.json",
+      "receipt_sha256": "d34df4686e6d3fbd2ed1d572f4513be1b9bde4fef1f752936d636e46c013fbd1",
+      "launch_sha256": "085f158d41d212485a1bb929b08ae521fbfc19fa1cc5859fac1ce7c618e28272",
+      "stdout_sha256": "82bf62b82a349df4bec89e2be477bed394e9de0e632f7187fef9a89635a83c68",
+      "stderr_sha256": "3b48b196d660c72ed3f2022027fab88513650368906b2e5e90150190435baf7c",
+      "summary": "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.76s",
+      "raw_semantic_rows": [],
+      "artifacts": [
+        {
+          "path": "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/.local/go-public-check-role/.nudox-cargo/slot-0/debug/deps/backend_frontend_go-11b1b3305bba076c",
+          "sha256": "e9cc24f5463605610f7af080aadd49d4feaa2d3e7cb3318f83b701da32938191",
+          "bytes": 144111800,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/images/e9cc24f5463605610f7af080aadd49d4feaa2d3e7cb3318f83b701da32938191-backend_frontend_go-11b1b3305bba076c"
+        }
+      ],
+      "compiler_inputs": {
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/lib.rs": {
+          "sha256": "0a46dbbc9dee91ea62b84e1dc8e5e529434dad7a331526a1116245af72ac11bb",
+          "bytes": 1437,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/0a46dbbc9dee91ea62b84e1dc8e5e529434dad7a331526a1116245af72ac11bb-lib.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/mod.rs": {
+          "sha256": "2fcedfbbba8403fc1a308b007d1a42ba197ba08536e080c439d0e79d1323dda9",
+          "bytes": 1662,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/2fcedfbbba8403fc1a308b007d1a42ba197ba08536e080c439d0e79d1323dda9-mod.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/image.rs": {
+          "sha256": "6b7974d9c7e04e4051f4755cb7312953ed3a3d9c6f54a9e7ca6549fb54d7725c",
+          "bytes": 113140,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/6b7974d9c7e04e4051f4755cb7312953ed3a3d9c6f54a9e7ca6549fb54d7725c-image.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/oracle.rs": {
+          "sha256": "db3bc955a0db95d0644f68fff879af2f313eda87a0d25dab0e76d167e82e4dad",
+          "bytes": 162913,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/db3bc955a0db95d0644f68fff879af2f313eda87a0d25dab0e76d167e82e4dad-oracle.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/oracle/authority_witness.rs": {
+          "sha256": "23ab36b101f158c6f7cff6bbfef2dd42d188c21815f98621b2bf34cc66561a55",
+          "bytes": 66293,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/23ab36b101f158c6f7cff6bbfef2dd42d188c21815f98621b2bf34cc66561a55-authority_witness.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/oracle/capture_digest.rs": {
+          "sha256": "beec7f9e16eeddeb2cdc320f083cc36a8853bc83b5cb74f42b494c01267e226c",
+          "bytes": 17534,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/beec7f9e16eeddeb2cdc320f083cc36a8853bc83b5cb74f42b494c01267e226c-capture_digest.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/oracle/dependency_witness.rs": {
+          "sha256": "7a0304139dd7d8cc92c24ee6fd534f2ecb1acf542a1874a4730f27304c707d5f",
+          "bytes": 19247,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/7a0304139dd7d8cc92c24ee6fd534f2ecb1acf542a1874a4730f27304c707d5f-dependency_witness.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/staging.rs": {
+          "sha256": "7981afedb670e5f4e7abecd70a0aecbfb703e65f316d7859508a1f1cea83fb44",
+          "bytes": 27519,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/7981afedb670e5f4e7abecd70a0aecbfb703e65f316d7859508a1f1cea83fb44-staging.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/.local/go-public-check-role/.nudox-cargo/slot-0/debug/build/backend-frontend-go-b0e30d0ae04541a6/out/go_oracle_sources.rs": {
+          "sha256": "639aa18854dc54d471fee28657d6f48cda7d38311c7f77332959efd8b259bf16",
+          "bytes": 19441,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/639aa18854dc54d471fee28657d6f48cda7d38311c7f77332959efd8b259bf16-go_oracle_sources.rs"
+        }
+      }
+    },
+    {
+      "phase": "scratch-selected",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "elapsed_seconds": 126.13142960600089,
+      "receipt": "/root/sol61-go-rust-public-repairs-20261008/focused-tests-11-scratch-selected-01/receipt.json",
+      "receipt_sha256": "2ec7873e7c607014d6f502417aeb91f65c8c83151d4a627bf95d4ce092ad4691",
+      "launch_sha256": "c4a95b0eac17a3b0a3120a533869d475fbbe6eac32a39de5555e66d67761259d",
+      "stdout_sha256": "3038f6cde120cf9535fe582af833c7108af8520d5338f1ae2080b682713151eb",
+      "stderr_sha256": "5486057be3e57f34d66b1252a4bdc9fcf12f64f5d4b2834f9decb1ffc3329102",
+      "summary": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 109.56s",
+      "raw_semantic_rows": [
+        "{\"consumer_signature_result_type\":\"int\",\"declaration_count\":2,\"elapsed_seconds\":30.264269902,\"exact_owner_foreign_call_count\":1,\"inferred_dependency_result_type\":\"int\",\"inferred_variable\":\"Selected\",\"known_call_span\":[86,91],\"phase\":\"same-owner-after-setup\",\"reference_count\":4,\"selected_owner\":\"example.com/consumer::Value\",\"selected_target\":\"example.com/dependency::Value\"}",
+        "{\"consumer_signature_result_type\":\"int\",\"declaration_count\":2,\"elapsed_seconds\":28.585023802,\"exact_owner_foreign_call_count\":1,\"inferred_dependency_result_type\":\"int\",\"inferred_variable\":\"Selected\",\"known_call_span\":[86,91],\"phase\":\"cold-owner-offline\",\"reference_count\":4,\"selected_owner\":\"example.com/consumer::Value\",\"selected_target\":\"example.com/dependency::Value\"}"
+      ],
+      "artifacts": [
+        {
+          "path": "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/.local/go-public-check-role/.nudox-cargo/slot-0/debug/deps/libbackend_frontend_go-3d243c0f5bdcd55a.rlib",
+          "sha256": "b8f1f4d51159c2f330e98779357dc5fb3798d76d4880e8bb63b2deb585433687",
+          "bytes": 14112312,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/images/b8f1f4d51159c2f330e98779357dc5fb3798d76d4880e8bb63b2deb585433687-libbackend_frontend_go-3d243c0f5bdcd55a.rlib"
+        },
+        {
+          "path": "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/.local/go-public-check-role/.nudox-cargo/slot-0/debug/deps/libbackend_frontend_go-3d243c0f5bdcd55a.rmeta",
+          "sha256": "f8963151ed93c821550b1a779c50fff4c7bdf6a03db4b88deda90facd6f05a54",
+          "bytes": 2977661,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/images/f8963151ed93c821550b1a779c50fff4c7bdf6a03db4b88deda90facd6f05a54-libbackend_frontend_go-3d243c0f5bdcd55a.rmeta"
+        },
+        {
+          "path": "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/.local/go-public-check-role/.nudox-cargo/slot-0/debug/deps/selected_dependency_loader-408d37c71e380223",
+          "sha256": "ba974d5d9729f216c8ccbe519ad85f3c13f77c7001a7a90bd36541bc9f52819b",
+          "bytes": 142932904,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/images/ba974d5d9729f216c8ccbe519ad85f3c13f77c7001a7a90bd36541bc9f52819b-selected_dependency_loader-408d37c71e380223"
+        }
+      ],
+      "compiler_inputs": {
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/lib.rs": {
+          "sha256": "0a46dbbc9dee91ea62b84e1dc8e5e529434dad7a331526a1116245af72ac11bb",
+          "bytes": 1437,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/0a46dbbc9dee91ea62b84e1dc8e5e529434dad7a331526a1116245af72ac11bb-lib.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/mod.rs": {
+          "sha256": "2fcedfbbba8403fc1a308b007d1a42ba197ba08536e080c439d0e79d1323dda9",
+          "bytes": 1662,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/2fcedfbbba8403fc1a308b007d1a42ba197ba08536e080c439d0e79d1323dda9-mod.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/image.rs": {
+          "sha256": "6b7974d9c7e04e4051f4755cb7312953ed3a3d9c6f54a9e7ca6549fb54d7725c",
+          "bytes": 113140,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/6b7974d9c7e04e4051f4755cb7312953ed3a3d9c6f54a9e7ca6549fb54d7725c-image.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/oracle.rs": {
+          "sha256": "db3bc955a0db95d0644f68fff879af2f313eda87a0d25dab0e76d167e82e4dad",
+          "bytes": 162913,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/db3bc955a0db95d0644f68fff879af2f313eda87a0d25dab0e76d167e82e4dad-oracle.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/oracle/authority_witness.rs": {
+          "sha256": "23ab36b101f158c6f7cff6bbfef2dd42d188c21815f98621b2bf34cc66561a55",
+          "bytes": 66293,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/23ab36b101f158c6f7cff6bbfef2dd42d188c21815f98621b2bf34cc66561a55-authority_witness.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/oracle/capture_digest.rs": {
+          "sha256": "beec7f9e16eeddeb2cdc320f083cc36a8853bc83b5cb74f42b494c01267e226c",
+          "bytes": 17534,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/beec7f9e16eeddeb2cdc320f083cc36a8853bc83b5cb74f42b494c01267e226c-capture_digest.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/oracle/dependency_witness.rs": {
+          "sha256": "7a0304139dd7d8cc92c24ee6fd534f2ecb1acf542a1874a4730f27304c707d5f",
+          "bytes": 19247,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/7a0304139dd7d8cc92c24ee6fd534f2ecb1acf542a1874a4730f27304c707d5f-dependency_witness.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/staging.rs": {
+          "sha256": "7981afedb670e5f4e7abecd70a0aecbfb703e65f316d7859508a1f1cea83fb44",
+          "bytes": 27519,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/7981afedb670e5f4e7abecd70a0aecbfb703e65f316d7859508a1f1cea83fb44-staging.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/.local/go-public-check-role/.nudox-cargo/slot-0/debug/build/backend-frontend-go-b0e30d0ae04541a6/out/go_oracle_sources.rs": {
+          "sha256": "639aa18854dc54d471fee28657d6f48cda7d38311c7f77332959efd8b259bf16",
+          "bytes": 19441,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/639aa18854dc54d471fee28657d6f48cda7d38311c7f77332959efd8b259bf16-go_oracle_sources.rs"
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/tests/selected_dependency_loader.rs": {
+          "sha256": "7c40fed77f023527b1356aff9e4a55934729b3a14de690493dfc9ac616da6352",
+          "bytes": 13800,
+          "sealed_copy": "/root/sol61-go-rust-public-repairs-20261008/scratch-6c5853-native-seal-01/compiler-inputs/7c40fed77f023527b1356aff9e4a55934729b3a14de690493dfc9ac616da6352-selected_dependency_loader.rs"
+        }
+      }
+    }
+  ],
+  "total_passed": 20,
+  "all_children_kernel_retired": true,
+  "managed_leases_empty": true,
+  "stamps_unchanged": true,
+  "public_cli_mcp_acceptance_inferred": false,
+  "created_utc": "2026-10-08T09:54:55.361559+00:00"
+}

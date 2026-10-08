@@ -1,5 +1,11 @@
 # Production readiness: what still needs attention
 
+### Focused compiler/runtime checkpoint — 2026-10-08, 10:12 UTC
+
+TypeScript, Python, Go and Rust remain equally in scope. This checkpoint adds per-capture Go digest sharing with safe fresh hashing when a platform change witness is unavailable, truthful admitted-project TypeScript error recipes, and immutable Unix CAS publication before its existing durability barrier. Root reviewed the source and independently checked **28 actual focused passes**: Go20, TypeScript diagnostics4 and CAS4. [The audit and raw evidence](../../audits/runtime-tail-checkpoint-20261008.md) bind each result to its frozen source and distinguish generated inputs from tracked source. Cargo.lock is unchanged. This is a source checkpoint, not a combined workspace or installed product pass.
+
+Current ordinary installed GNU experiments found a real Rust virtual-workspace discovery failure, partial Excalidraw publication, slow cold-owner startup and poor Mealie declaration ranking. Two real Python applications produced 796 complete Python artifacts; Mealie's JavaScript lane still failed. The separate combined startup and byte-packed MCP/CLI candidate is now building and running focused tests on both remotes. Its earlier isolated 640 passes do not validate the current composition. No new installer, release or full GUI walkthrough is certified. The earlier ledgers below are historical checkpoints, not silently upgraded current results.
+
 
 ### Go/Rust integration checkpoint — 2026-10-08, 08:57 UTC
 

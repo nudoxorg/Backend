@@ -1,0 +1,211 @@
+{
+  "source_transition_receipt_sha256": "c75df71bbe00c88ce8ac0e890dc922bc3491afeb45057b7bf7857e6eed9fd0f5",
+  "approved_source": "6c58535f63fd31d65aafe18ae4219077753f6f07",
+  "compiler_artifacts": [
+    {
+      "package_id": "path+file:///root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go#backend-frontend-go@0.2.0",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "backend_frontend_go",
+        "src_path": "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 1,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": true
+      },
+      "fresh": false,
+      "executable": "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/.local/go-public-check-role/.nudox-cargo/slot-0/debug/deps/backend_frontend_go-11b1b3305bba076c",
+      "filenames": [
+        {
+          "path": "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/.local/go-public-check-role/.nudox-cargo/slot-0/debug/deps/backend_frontend_go-11b1b3305bba076c",
+          "sha256": "e9cc24f5463605610f7af080aadd49d4feaa2d3e7cb3318f83b701da32938191",
+          "bytes": 144111800
+        }
+      ]
+    }
+  ],
+  "actual_compiler_dep_info_inputs": {
+    "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/.local/go-public-check-role/.nudox-cargo/slot-0/debug/deps/backend_frontend_go-11b1b3305bba076c.d": {
+      "raw_copy": "/root/sol61-go-rust-public-repairs-20261008/focused-tests-11-scratch-primitive-01/compiler-inputs-0.d",
+      "sha256": "3207770961b69f24e1efe6f8be1e96656a432d40c0003e8e8b1cbcaaa60b6be3",
+      "inputs": {
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/lib.rs": {
+          "sha256": "0a46dbbc9dee91ea62b84e1dc8e5e529434dad7a331526a1116245af72ac11bb",
+          "bytes": 1437
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/mod.rs": {
+          "sha256": "2fcedfbbba8403fc1a308b007d1a42ba197ba08536e080c439d0e79d1323dda9",
+          "bytes": 1662
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/image.rs": {
+          "sha256": "6b7974d9c7e04e4051f4755cb7312953ed3a3d9c6f54a9e7ca6549fb54d7725c",
+          "bytes": 113140
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/oracle.rs": {
+          "sha256": "db3bc955a0db95d0644f68fff879af2f313eda87a0d25dab0e76d167e82e4dad",
+          "bytes": 162913
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/oracle/authority_witness.rs": {
+          "sha256": "23ab36b101f158c6f7cff6bbfef2dd42d188c21815f98621b2bf34cc66561a55",
+          "bytes": 66293
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/oracle/capture_digest.rs": {
+          "sha256": "beec7f9e16eeddeb2cdc320f083cc36a8853bc83b5cb74f42b494c01267e226c",
+          "bytes": 17534
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/oracle/dependency_witness.rs": {
+          "sha256": "7a0304139dd7d8cc92c24ee6fd534f2ecb1acf542a1874a4730f27304c707d5f",
+          "bytes": 19247
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/frontends/go/src/legacy/staging.rs": {
+          "sha256": "7981afedb670e5f4e7abecd70a0aecbfb703e65f316d7859508a1f1cea83fb44",
+          "bytes": 27519
+        },
+        "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/.local/go-public-check-role/.nudox-cargo/slot-0/debug/build/backend-frontend-go-b0e30d0ae04541a6/out/go_oracle_sources.rs": {
+          "sha256": "639aa18854dc54d471fee28657d6f48cda7d38311c7f77332959efd8b259bf16",
+          "bytes": 19441
+        }
+      }
+    }
+  },
+  "release_graph_used": false,
+  "executables": [
+    {
+      "path": "/root/codex-worktrees/sol61-go-rust-public-tails-20261008/.local/go-public-check-role/.nudox-cargo/slot-0/debug/deps/backend_frontend_go-11b1b3305bba076c",
+      "sha256": "e9cc24f5463605610f7af080aadd49d4feaa2d3e7cb3318f83b701da32938191",
+      "bytes": 144111800
+    }
+  ],
+  "managed_leases_empty": true,
+  "stdout_sha256": "8334d66a2b8c51c35a56b0bea9c0f91bddbf7ac5479a329257c521c1893add0c",
+  "stderr_sha256": "1ac0b8867cc484140dbf7b36a04c4f61986c6f52764f3a331ab00c093caefca8",
+  "exit": 0,
+  "timed_out": false,
+  "elapsed_seconds": 5.9369394310051575,
+  "source": {
+    "commit": "6c58535f63fd31d65aafe18ae4219077753f6f07",
+    "tree": "25ebd17cc11f19ce864308541a41c54417e29ae3",
+    "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+    "clean": true
+  },
+  "stamps_unchanged": true,
+  "children_kernel_retired": true,
+  "owned_adopted_waits": [],
+  "observed_child_identities": [
+    {
+      "pid": 3089123,
+      "start_ticks": "79702501",
+      "state": "S",
+      "pgid": 3089123
+    },
+    {
+      "pid": 3089425,
+      "start_ticks": "79702546",
+      "state": "S",
+      "pgid": 3089123
+    },
+    {
+      "pid": 3089437,
+      "start_ticks": "79702551",
+      "state": "S",
+      "pgid": 3089123
+    },
+    {
+      "pid": 3089633,
+      "start_ticks": "79702597",
+      "state": "S",
+      "pgid": 3089123
+    },
+    {
+      "pid": 3089862,
+      "start_ticks": "79702648",
+      "state": "S",
+      "pgid": 3089123
+    },
+    {
+      "pid": 3090059,
+      "start_ticks": "79702700",
+      "state": "S",
+      "pgid": 3089123
+    },
+    {
+      "pid": 3090066,
+      "start_ticks": "79702701",
+      "state": "S",
+      "pgid": 3089123
+    },
+    {
+      "pid": 3090242,
+      "start_ticks": "79702751",
+      "state": "S",
+      "pgid": 3089123
+    },
+    {
+      "pid": 3090356,
+      "start_ticks": "79702799",
+      "state": "S",
+      "pgid": 3089123
+    },
+    {
+      "pid": 3090480,
+      "start_ticks": "79702850",
+      "state": "S",
+      "pgid": 3089123
+    },
+    {
+      "pid": 3090661,
+      "start_ticks": "79702902",
+      "state": "S",
+      "pgid": 3089123
+    },
+    {
+      "pid": 3090951,
+      "start_ticks": "79702948",
+      "state": "S",
+      "pgid": 3089123
+    },
+    {
+      "pid": 3090961,
+      "start_ticks": "79702952",
+      "state": "S",
+      "pgid": 3089123
+    },
+    {
+      "pid": 3091225,
+      "start_ticks": "79703000",
+      "state": "S",
+      "pgid": 3089123
+    },
+    {
+      "pid": 3091008,
+      "start_ticks": "79702954",
+      "state": "S",
+      "pgid": 3089123
+    },
+    {
+      "pid": 3091009,
+      "start_ticks": "79702954",
+      "state": "R",
+      "pgid": 3089123
+    }
+  ],
+  "survivors": [],
+  "pressure_after": {
+    "io": "some avg10=2.39 avg60=15.19 avg300=21.60 total=84708462193\nfull avg10=1.88 avg60=12.39 avg300=18.78 total=79569753199\n",
+    "cpu": "some avg10=0.18 avg60=0.30 avg300=0.27 total=7640017479\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+    "memory": "some avg10=0.00 avg60=0.08 avg300=0.24 total=439360710\nfull avg10=0.00 avg60=0.08 avg300=0.23 total=419561885\n"
+  },
+  "completed_utc": "2026-10-08T09:48:27.252549+00:00"
+}
