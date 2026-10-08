@@ -1500,12 +1500,21 @@ impl CommandAdapter {
                                 ));
                             }
                         };
-                        // If the receipt file cannot be replaced after a fully
-                        // checked workspace/view proof, keep Prepared on disk;
-                        // a future status read or restart can reconstruct it.
-                        let _ = self
+                        // Selected workspace/view evidence does not make the
+                        // journal terminal. Keep Prepared and report a typed
+                        // retryable observation if its receipt cannot persist.
+                        if self
                             .index_operations
-                            .published(operation_key, receipt.clone());
+                            .published(operation_key, receipt.clone())
+                            .is_err()
+                        {
+                            return Ok(Self::unresolved_index_operation(
+                                operation_key,
+                                &entry,
+                                backend_library::IndexOperationUnresolvedReason::ReceiptPersistenceFailed,
+                                "the exact workspace and view are selected but the owner could not durably record the publication receipt",
+                            ));
+                        }
                         return Ok(observation);
                     }
                     Ok(Self::unresolved_index_operation(
@@ -2257,7 +2266,9 @@ impl CommandAdapter {
                 .as_ref()
                 .is_none_or(|job| job.operation_key != Some(operation_key))
         {
-            let _ = self.resolve_index_operation(daemon, operation_key, None);
+            let result = self.resolve_index_operation(daemon, operation_key, None);
+            self.journal_readiness
+                .recovery_finished(operation_key, &result);
         }
         if let Some(mut indexing) = self.indexing.take() {
             let mut terminal;
@@ -6844,7 +6855,7 @@ mod tests {
             .join("index-operations-v1.turso");
         let foreign = super::IndexOperationJournal::open(path).expect("foreign journal");
         adapter.journal_readiness.close();
-        let writer = foreign.connection_for_test();
+        let mut writer = foreign.connection_for_test();
         let (locked, lock_ready) = std::sync::mpsc::sync_channel(1);
         let (release, released) = std::sync::mpsc::sync_channel(1);
         let holder = std::thread::spawn(move || {
@@ -6927,6 +6938,135 @@ mod tests {
                 ..
             }))
         ));
+    }
+
+    #[test]
+    fn orphan_recovery_sql_busy_rearms_once_on_public_retry_without_notifications() {
+        let mut fixture = AdapterFixture::new();
+        let package = fixture.package;
+        let label = fixture.label.clone();
+        let (adapter, daemon) = fixture.parts();
+        let operation = backend_library::IndexOperationKey::from_bytes([112; 32]).expect("key");
+        let path = adapter
+            .product_state
+            .workspace_path()
+            .expect("workspace")
+            .join("index-operations-v1.turso");
+        let mut foreign = super::IndexOperationJournal::open(path).expect("foreign journal");
+        foreign
+            .accept(
+                operation,
+                backend_library::PackageReference::parse(label.clone()).expect("package"),
+                CompileExecutionIntent::Interactive,
+            )
+            .expect("accept orphan");
+        let head = daemon.engine().daemon().owner().head();
+        foreign
+            .prepare(operation, None, *head.root().as_bytes(), head.sequence())
+            .expect("exact no-op marker");
+        assert!(matches!(
+            adapter.execute_or_defer(daemon, &remove_body(1, package, &label), 704),
+            Ok(Executed::Deferred)
+        ));
+        // Lose native notifications while retaining apparently healthy
+        // coverage. The reader still handles finite explicit refreshes.
+        adapter.journal_readiness.lose_notifications();
+        adapter.journal_readiness.refresh();
+        adapter.journal_readiness.poll();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !adapter.journal_readiness.prepared_hint() && std::time::Instant::now() < deadline {
+            adapter.journal_readiness.poll();
+            std::thread::yield_now();
+        }
+        assert!(adapter.journal_readiness.prepared_hint());
+        let mut writer = foreign.connection_for_test();
+        let (locked, lock_ready) = std::sync::mpsc::sync_channel(1);
+        let (release, released) = std::sync::mpsc::sync_channel(1);
+        let holder = std::thread::spawn(move || {
+            futures_executor::block_on(async {
+                let transaction = writer
+                    .transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate)
+                    .await
+                    .expect("hold independent writer");
+                locked.send(()).expect("writer ready");
+                let _ = released.recv_timeout(std::time::Duration::from_secs(10));
+                transaction.rollback().await.expect("release writer");
+            })
+        });
+        lock_ready
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("writer acquired");
+        let started = std::time::Instant::now();
+        assert!(adapter.poll_deferred(daemon).is_empty());
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(200),
+            "the actual orphan receipt persistence hit bounded SQL busy"
+        );
+        assert!(matches!(
+            adapter
+                .resolve_index_operation(daemon, operation, None)
+                .expect("selected workspace remains observable"),
+            backend_library::IndexOperationObservation::Known(backend_library::IndexOperationStatus {
+                state: backend_library::IndexOperationState::Unresolved {
+                    reason: backend_library::IndexOperationUnresolvedReason::ReceiptPersistenceFailed,
+                    ..
+                },
+                ..
+            })
+        ));
+        release.send(()).expect("release independent writer");
+        holder.join().expect("writer retired");
+        assert!(matches!(
+            foreign.entry(operation).expect("retained marker"),
+            Some(JournalEntry::Retained(StoredOperation {
+                state: StoredOperationState::Prepared { .. },
+                ..
+            }))
+        ));
+        let reads = adapter.index_operations.read_query_count();
+        for _ in 0..1000 {
+            assert!(adapter.poll_deferred(daemon).is_empty());
+        }
+        assert_eq!(
+            adapter.index_operations.read_query_count(),
+            reads,
+            "failed recovery does not become periodic SQL"
+        );
+        // The unkeyed client does not know the orphan's durable key. Its
+        // actual public retry must wake the failed recovery and the FIFO.
+        assert!(matches!(
+            adapter.execute_or_defer(daemon, &remove_body(2, package, &label), 705),
+            Ok(Executed::Deferred)
+        ));
+        let mut ready = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while ready.len() < 2 && std::time::Instant::now() < deadline {
+            ready.extend(adapter.poll_deferred(daemon));
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            ready.iter().map(|(ticket, _)| *ticket).collect::<Vec<_>>(),
+            vec![704, 705]
+        );
+        assert!(ready[0].1.is_ok());
+        assert!(!project_is_admitted(daemon, package));
+        assert!(matches!(
+            foreign.entry(operation).expect("recovered receipt"),
+            Some(JournalEntry::Retained(StoredOperation {
+                state: StoredOperationState::Published { .. },
+                ..
+            }))
+        ));
+        adapter.journal_readiness.close();
+        let reads = adapter.index_operations.read_query_count();
+        for _ in 0..1000 {
+            assert!(adapter.poll_deferred(daemon).is_empty());
+        }
+        assert_eq!(
+            adapter.index_operations.read_query_count(),
+            reads,
+            "settled recovery stays quiet"
+        );
     }
 
     #[test]

@@ -97,6 +97,20 @@ enum Readiness {
     Degraded(Stamp, Pending),
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum RecoveryOutcome {
+    Consumed,
+    RetryableFailure,
+}
+
+struct Reconciliation {
+    stamp: Stamp,
+    pending: Pending,
+    cursor: Cursor,
+    retry: RetryToken,
+    outcome: RecoveryOutcome,
+}
+
 pub(super) struct JournalReadiness {
     epoch: [u8; 16],
     changed: Changed,
@@ -104,7 +118,7 @@ pub(super) struct JournalReadiness {
     observations: Option<mpsc::Receiver<Observation>>,
     worker: Option<JoinHandle<()>>,
     selected: Readiness,
-    reconciled: Option<(Stamp, Pending, Cursor)>,
+    reconciled: Option<Reconciliation>,
     explicit_retry: Arc<()>,
 }
 
@@ -278,16 +292,49 @@ impl JournalReadiness {
         else {
             return None;
         };
-        if self.reconciled.is_some_and(|(previous, payload, basis)| {
-            previous.owner_epoch == stamp.owner_epoch
-                && payload == pending
-                && basis == cursor
-                && (!degraded || previous.event_sequence == stamp.event_sequence)
+        if self.reconciled.as_ref().is_some_and(|previous| {
+            previous.stamp.owner_epoch == stamp.owner_epoch
+                && previous.pending == pending
+                && previous.cursor == cursor
+                && if previous.outcome == RecoveryOutcome::RetryableFailure {
+                    previous.retry == self.retry_token()
+                } else {
+                    !degraded || previous.stamp.event_sequence == stamp.event_sequence
+                }
         }) {
             return None;
         }
-        self.reconciled = Some((stamp, pending, cursor));
+        self.reconciled = Some(Reconciliation {
+            stamp,
+            pending,
+            cursor,
+            retry: self.retry_token(),
+            outcome: RecoveryOutcome::Consumed,
+        });
         pending.first
+    }
+
+    pub(super) fn recovery_finished(
+        &mut self,
+        operation_key: IndexOperationKey,
+        result: &Result<backend_library::IndexOperationObservation, JournalError>,
+    ) {
+        let Some(previous) = self
+            .reconciled
+            .as_mut()
+            .filter(|previous| previous.pending.first == Some(operation_key))
+        else {
+            return;
+        };
+        previous.outcome = match result {
+            Err(_) => RecoveryOutcome::RetryableFailure,
+            Ok(backend_library::IndexOperationObservation::Known(status))
+                if matches!(status.state, backend_library::IndexOperationState::Unresolved {
+                    reason: backend_library::IndexOperationUnresolvedReason::ReceiptPersistenceFailed,
+                    ..
+                }) => RecoveryOutcome::RetryableFailure,
+            _ => RecoveryOutcome::Consumed,
+        };
     }
 
     #[cfg(test)]
@@ -314,6 +361,11 @@ impl JournalReadiness {
         let selected = self.selected;
         self.close();
         self.selected = selected;
+    }
+
+    #[cfg(test)]
+    pub(super) fn lose_notifications(&mut self) {
+        self.watcher.take();
     }
 
     pub(super) fn close(&mut self) {
