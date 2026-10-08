@@ -367,6 +367,131 @@ fn delta_field_bytes_are_bounded_across_the_whole_change() {
 }
 
 #[test]
+fn relation_admission_preserves_exact_value_order_and_owned_normalization() {
+    let fields = vec![
+        ("z".to_owned(), "last".to_owned()),
+        ("a".to_owned(), "first".to_owned()),
+    ];
+    let documents = vec![(document(18), fields.clone())];
+    let (binding, coverage) = binding(&documents);
+    let relation = RelationState::<IndexRelation>::from_entries(documents, coverage)
+        .expect("immutable unsorted field bag");
+    let selected = DocumentState::from_relation(binding, relation, Limits::default())
+        .expect("admit without changing values committed by the relation root");
+    assert_eq!(selected.binding().root, binding.root);
+    assert_eq!(selected.iter().next().expect("one document").1, fields);
+
+    let sorted = vec![
+        ("a".to_owned(), "first".to_owned()),
+        ("z".to_owned(), "last".to_owned()),
+    ];
+    let (sorted_binding, _) = self::binding(&[(document(18), sorted.clone())]);
+    let normalized = DocumentState::new(
+        sorted_binding,
+        coverage,
+        vec![(document(18), fields)],
+        Limits::default(),
+    )
+    .expect("owned admission still normalizes the field bag");
+    assert_eq!(normalized.iter().next().expect("one document").1, sorted);
+    assert_ne!(selected.binding().root, normalized.binding().root);
+}
+
+#[test]
+fn relation_admission_rejects_nonadjacent_duplicate_fields_and_exact_byte_overflow() {
+    let duplicate = vec![
+        ("z".to_owned(), "one".to_owned()),
+        ("a".to_owned(), "two".to_owned()),
+        ("z".to_owned(), "three".to_owned()),
+    ];
+    let documents = vec![(document(18), duplicate)];
+    let (binding, coverage) = binding(&documents);
+    let relation = RelationState::<IndexRelation>::from_entries(documents, coverage)
+        .expect("relation commits the malformed field bag");
+    assert_eq!(
+        DocumentState::from_relation(binding, relation, Limits::default()),
+        Err(Error::MalformedInput),
+    );
+
+    let documents = vec![(document(18), vec![("body".to_owned(), "12345".to_owned())])];
+    let (binding, coverage) = self::binding(&documents);
+    let relation = RelationState::<IndexRelation>::from_entries(documents, coverage)
+        .expect("exact byte-bound relation");
+    let limits = Limits {
+        max_field_bytes: 5,
+        max_total_text_bytes: 9,
+        ..Limits::default()
+    };
+    DocumentState::from_relation(binding, relation.clone(), limits)
+        .expect("four field-name bytes plus five text bytes fit the exact limit");
+    assert_eq!(
+        DocumentState::from_relation(
+            binding,
+            relation.clone(),
+            Limits {
+                max_total_text_bytes: 8,
+                ..limits
+            }
+        ),
+        Err(Error::SizeLimit),
+    );
+    assert_eq!(
+        DocumentState::from_relation(
+            binding,
+            relation,
+            Limits {
+                max_field_bytes: 4,
+                ..limits
+            }
+        ),
+        Err(Error::SizeLimit),
+    );
+}
+
+#[test]
+#[ignore = "owned allocation/input-size experiment; run alone under a fresh runtime permit"]
+fn document_relation_admission_profile() {
+    let text_bytes = std::env::var("BACKEND_DOCUMENT_ADMISSION_PROFILE_BYTES")
+        .ok()
+        .map(|value| value.parse::<usize>().expect("profile byte count"))
+        .unwrap_or(16 * 1024 * 1024);
+    assert!((64..=64 * 1024 * 1024).contains(&text_bytes));
+    let limits = Limits::default();
+    let document_count = text_bytes.div_ceil(limits.max_field_bytes);
+    let documents = (0..document_count).map(|row| {
+        let bytes = (text_bytes - row * limits.max_field_bytes).min(limits.max_field_bytes);
+        (
+            document(18 + u64::try_from(row).expect("bounded profile row")),
+            vec![("body".to_owned(), "x".repeat(bytes))],
+        )
+    });
+    let (_, coverage) = binding(&[]);
+    let relation = RelationState::<IndexRelation>::from_entries(documents, coverage)
+        .expect("immutable profile input under the default document and tree-node limits");
+    let binding = Binding::new(
+        workspace(),
+        relation.root(),
+        Recipe::from_value(&[1; 32]),
+        Authority::from_value(&[2; 32]),
+        ReadManifest::from_value(&[3; 32]),
+    );
+    let started = std::time::Instant::now();
+    let allocations = allocation_counter::measure(|| {
+        for _ in 0..64 {
+            let admitted = DocumentState::from_relation(binding, relation.clone(), limits)
+                .expect("admit exact shared relation");
+            assert_eq!(admitted.binding().root, relation.root());
+            std::hint::black_box(admitted);
+        }
+    });
+    println!(
+        "document_relation_admission text_bytes={text_bytes} iterations=64 elapsed_ns={} allocation_count={} allocation_bytes={} allocation_peak_bytes={} documents={document_count}",
+        started.elapsed().as_nanos(), allocations.count_total,
+        allocations.bytes_total, allocations.bytes_max,
+    );
+}
+
+#[test]
 fn cursor_is_bound_to_root_and_terms() {
     let (binding, coverage) = binding(&[]);
     let query = Query::new(vec!["alpha".into()], Limits::default()).expect("query");
@@ -1476,7 +1601,8 @@ fn cold_posting_cover_counts_distinct_edges_across_case_and_field_duplicates() {
         .expect("cold-bind exact posting cover");
     assert_eq!(
         engine::test_support::binding_work(&reopened),
-        (1, 16)
+        (1, 13),
+        "membership checks visit the same distinct source edges as exact cover"
     );
     assert_eq!(
         engine::test_support::posting_cover_edges_scanned(&reopened),
@@ -1485,6 +1611,69 @@ fn cold_posting_cover_counts_distinct_edges_across_case_and_field_duplicates() {
     );
     drop(reopened);
     std::fs::remove_dir_all(directory).expect("remove test index directory");
+}
+
+#[test]
+fn cold_posting_edges_preserve_unicode_case_and_exact_field_names() {
+    let mut fields = vec![
+        ("name".into(), "Alpha alpha Alpha É É é".into()),
+        ("Name".into(), "alpha É".into()),
+        ("signature".into(), "ALPHA alpha É".into()),
+    ];
+    fields.sort();
+    let state = state_for(vec![(document(23), fields)], [0x97; 32]);
+    let fields = state.iter().next().expect("one source row").1.to_vec();
+    let directory = std::env::temp_dir().join(format!(
+        "backend-tantivy-unicode-edges-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).expect("create projection directory");
+    drop(
+        TantivySource::build_in_dir(&state, Limits::default(), &directory)
+            .expect("build exact source projection"),
+    );
+    let reopened = TantivySource::open_in_dir(&state, Limits::default(), &directory)
+        .expect("admit distinct source edges");
+    // Raw: Alpha, alpha, ALPHA, É, é (5); ASCII folded: alpha, É, é (3).
+    // Qualified raw: name=4, Name=2, signature=3 (9); folded: 3+2+2 (7).
+    assert_eq!(engine::test_support::binding_work(&reopened), (1, 24));
+    assert_eq!(
+        engine::test_support::posting_cover_edges_scanned(&reopened),
+        24
+    );
+    assert_eq!(term_hits(&reopened, "É"), vec![document(23)]);
+    assert_eq!(term_hits(&reopened, "é"), vec![document(23)]);
+    drop(reopened);
+    std::fs::remove_dir_all(&directory).expect("remove exact projection");
+
+    // Swapping the case-sensitive field names preserves all unqualified
+    // tokens, rank payload, row count, and posting cardinalities. Membership
+    // admission must still reject the missing qualified source edge.
+    std::fs::create_dir(&directory).expect("create forged projection directory");
+    let swapped = fields
+        .iter()
+        .map(|(field, text)| {
+            let swapped = match field.as_str() {
+                "name" => "Name",
+                "Name" => "name",
+                field => field,
+            };
+            (swapped.to_owned(), text.clone())
+        })
+        .collect::<Vec<_>>();
+    engine::test_support::write_projection_mismatch_fixture(&state, &directory, &swapped, &fields)
+        .expect("write independently forged qualified postings with source-bound rank payload");
+    assert!(matches!(
+        TantivySource::open_in_dir(&state, Limits::default(), &directory),
+        Err(TantivySourceError::Corrupt(
+            "Tantivy term dictionary omits a source-bound token"
+        ))
+    ));
+    std::fs::remove_dir_all(directory).expect("remove forged projection");
 }
 
 #[test]

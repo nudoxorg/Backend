@@ -17,6 +17,9 @@ blake3.workspace = true
 tantivy = "0.26.1"
 thiserror.workspace = true
 
+[dev-dependencies]
+allocation-counter.workspace = true
+
 [lints]
 workspace = true
 
