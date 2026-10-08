@@ -7,7 +7,8 @@ use backend_extension_trustfall::{
 };
 use backend_semantic::ir::{
     DeclarationFamilyId, DeclarationIdentity, ExternalFragmentId, ExternalTarget,
-    ExternalTargetIdentity, IrBuilder, SourceIdentity, StableRef, VariantFingerprint,
+    ExternalTargetIdentity, IrBuilder, SemanticCoreReader as _, SourceIdentity, StableRef,
+    VariantFingerprint,
 };
 use backend_semantic::vocabulary::{
     CompileRecipeFact, GoVersion, Language, LanguageProfile, PackageUrl, PythonVersion,
