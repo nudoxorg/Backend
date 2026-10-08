@@ -132,6 +132,9 @@ func TestCompilerSelectionTargetsTagsAndInactiveImage(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				if err := plan.finalize(); err != nil {
+					t.Fatal(err)
+				}
 				if len(plan.decls) != 0 || len(plan.refs) != 0 || len(plan.docs) != 0 || len(plan.cons) != 1 {
 					t.Fatalf("inactive source received active semantics: decl=%d refs=%d docs=%d constraints=%d", len(plan.decls), len(plan.refs), len(plan.docs), len(plan.cons))
 				}
@@ -338,8 +341,11 @@ func TestExternalTestSourceRetainsCompilerPackageOwner(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if err := plan.finalize(); err != nil {
+			t.Fatal(err)
+		}
 		if test.result == "" {
-			if len(plan.cons) != 1 || len(plan.decls) != 0 || len(plan.refs) != 0 {
+			if len(plan.cons) != 1 || len(plan.decls) != 0 || len(plan.refs) != 0 || len(plan.docs) != 0 {
 				t.Fatal("dormant external test image contains active sibling semantics")
 			}
 			continue
@@ -407,13 +413,25 @@ func TestIgnoredMalformedBodyDoesNotPoisonActiveCompilerPackage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.decls) == 0 || len(plan.refs) == 0 || len(plan.docs) == 0 {
-		t.Fatal("unrelated active compiler facts were lost")
+	if err := plan.finalize(); err != nil {
+		t.Fatal(err)
 	}
+	if len(plan.decls) == 0 || len(plan.refs) == 0 || len(plan.docs) == 0 {
+		t.Fatalf("unrelated active compiler facts were lost: declarations=%d references=%d docs=%d", len(plan.decls), len(plan.refs), len(plan.docs))
+	}
+	knownDoc, knownCall, inferredInt := false, false, false
 	for _, decl := range active.Packages[0].Decls {
+		knownDoc = knownDoc || (decl.Name == "Active" && strings.TrimSpace(decl.Doc) == "Active remains compiler-typed.")
+		inferredInt = inferredInt || (decl.Name == "Inferred" && decl.Type != nil && decl.Type.Kind == "basic" && decl.Type.Name == "int")
 		if decl.Name == "Broken" {
 			t.Fatal("malformed dormant declaration was fabricated")
 		}
+	}
+	for _, reference := range active.Packages[0].References {
+		knownCall = knownCall || (reference.Owner == "Inferred" && reference.Target == "Active" && reference.TargetPkg == "example.com/dormant" && reference.File == filepath.Join(dir, "active.go"))
+	}
+	if !knownDoc || !knownCall || !inferredInt {
+		t.Fatalf("known active compiler facts were lost: doc=%v call=%v inferred-int=%v", knownDoc, knownCall, inferredInt)
 	}
 	var image bytes.Buffer
 	if err := writeAuthorityImage(&image, filepath.Join(dir, "active.go"), output); err != nil {
@@ -431,7 +449,10 @@ func TestIgnoredMalformedBodyDoesNotPoisonActiveCompilerPackage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.decls) != 0 || len(plan.refs) != 0 || len(plan.cons) != 1 {
+	if err := plan.finalize(); err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.decls) != 0 || len(plan.refs) != 0 || len(plan.docs) != 0 || len(plan.cons) != 1 {
 		t.Fatal("malformed ignored source received active facts")
 	}
 	if _, err := authorityOutputForSource(output, filepath.Join(dir, "broken_header_windows.go")); err == nil {

@@ -280,7 +280,21 @@ func extractWithSelection(dir, pattern string, selection *packageSelection) (*Ou
 	}
 	out := &Output{SchemaVersion: SchemaVersion}
 	selected := make(map[string]*packages.Package)
+	ignoredByDirectory := make(map[string]map[string]struct{})
 	for _, pkg := range pkgs {
+		// go/packages can expose a directory's ignored external test files
+		// only on its ordinary variant. Preserve the compiler's returned
+		// operands for every actual same-directory namespace; the Go parser
+		// below assigns each file to the namespace it actually declares.
+		if len(pkg.IgnoredFiles) != 0 && (!filepath.IsAbs(pkg.Dir) || filepath.Clean(pkg.Dir) != pkg.Dir) {
+			return nil, fmt.Errorf("Go ignored files have no admitted absolute package directory")
+		}
+		for _, path := range pkg.IgnoredFiles {
+			if ignoredByDirectory[pkg.Dir] == nil {
+				ignoredByDirectory[pkg.Dir] = make(map[string]struct{})
+			}
+			ignoredByDirectory[pkg.Dir][path] = struct{}{}
+		}
 		for _, e := range pkg.Errors {
 			out.Errors = append(out.Errors, e.Error())
 		}
@@ -312,7 +326,13 @@ func extractWithSelection(dir, pattern string, selection *packageSelection) (*Ou
 		// Preserve external foo_test as its actual distinct compiler package.
 		// Image emission selects the package that owns the requested source;
 		// same-spelled declarations in its sibling cannot share an image owner.
-		serialized, err := extractPackage(pkg, candidates, selection.context)
+		variant := *pkg
+		variant.IgnoredFiles = nil
+		for path := range ignoredByDirectory[pkg.Dir] {
+			variant.IgnoredFiles = append(variant.IgnoredFiles, path)
+		}
+		sort.Strings(variant.IgnoredFiles)
+		serialized, err := extractPackage(&variant, candidates, selection.context)
 		if err != nil {
 			return nil, err
 		}
