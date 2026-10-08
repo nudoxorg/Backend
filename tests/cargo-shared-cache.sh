@@ -1015,6 +1015,24 @@ assert value["toolchain"]["rustc_path"] == sys.argv[2]
 assert value["toolchain"]["rustc"].startswith("rustc 1.98.1-homebrew-test")
 PY
 
+# Developer builds respect the host reserve; scheduled CI retains per-lane
+# admission and can consume its reserved space.
+reserve_file="$test_root/ci-disk-reserve"
+reserve_log="$test_root/reserve.log"
+printf '%s\n' 999999 > "$reserve_file"
+reserve_status=0
+CI= CI_HEAD_SHA= NUDOX_CI_DISK_RESERVE_FILE="$reserve_file" \
+  NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$reserve_log" \
+  NUDOX_BUILD_CACHE_ROOT="$test_root/reserve-cache" \
+  "$test_root/wrapper" build || reserve_status="$?"
+assert_eq 75 "$reserve_status"
+[ ! -e "$reserve_log" ] || fail "reserve rejection launched Cargo"
+CI_HEAD_SHA=0123456789abcdef NUDOX_CI_DISK_RESERVE_FILE="$reserve_file" \
+  NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$reserve_log" \
+  NUDOX_BUILD_CACHE_ROOT="$test_root/reserve-cache" \
+  SCCACHE_SERVER_UDS="$test_root/sccache.sock" "$test_root/wrapper" build
+assert_file_lines "$reserve_log" 1
+
 # Provenance is emitted for a failed Cargo invocation too, while the original
 # arguments and exact Cargo exit status remain intact. The executable output
 # hash, source/lock identity, toolchain, wrapper and feature selection are all

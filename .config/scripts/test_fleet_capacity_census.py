@@ -138,6 +138,15 @@ class FleetAdmissionTests(unittest.TestCase):
         self.assertFalse(report["advisory_allowed"])
         self.assertIn("destination-root-disk-below-16-gib-or-missing", report["reasons"])
 
+    def test_destination_preserves_ci_disk_reserve(self):
+        self.resources("ilo")["root_disk_reserved_bytes"] = 180 * fleet.GIB
+        self.resources("ilo")["root_disk_available_bytes"] = 179 * fleet.GIB
+        report = self.report(destination_memory_only_for_remote=True)
+        self.assertFalse(report["advisory_allowed"])
+        self.assertIn("destination-root-disk-below-ci-reserve", report["reasons"])
+        self.resources("ilo")["root_disk_available_bytes"] = 180 * fleet.GIB
+        self.assertTrue(self.report(destination_memory_only_for_remote=True)["advisory_allowed"])
+
     def test_fleet_capacity_includes_the_proposed_workload(self):
         self.groups("local", 5)
         self.groups("ilo", 7)

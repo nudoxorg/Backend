@@ -1270,11 +1270,22 @@ def _host_resource_snapshot() -> dict[str, Any]:
         disk = shutil.disk_usage(os.path.abspath(os.sep))
     except OSError as error:
         raise CensusError(f"root-disk-usage-unavailable:{type(error).__name__}") from error
+    reserve_file = pathlib.Path('/etc/nudox-ci-disk-reserve-gib')
+    reserve_bytes = 0
+    if reserve_file.exists():
+        try:
+            reserve_gib = int(reserve_file.read_text().strip())
+            if reserve_gib < 1:
+                raise ValueError('reserve must be positive')
+            reserve_bytes = reserve_gib * 1024 ** 3
+        except (OSError, ValueError) as error:
+            raise CensusError(f'root-disk-reserve-invalid:{type(error).__name__}') from error
     return {
         "sampled_at_utc": sampled_at,
         "available_memory_bytes": available_bytes,
         "available_memory_source": memory_source,
         "root_disk_available_bytes": disk.free,
+        "root_disk_reserved_bytes": reserve_bytes,
         "root_disk_total_bytes": disk.total,
         "root_disk_used_bytes": disk.used,
     }

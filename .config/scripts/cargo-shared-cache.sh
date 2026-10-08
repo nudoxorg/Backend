@@ -145,6 +145,31 @@ case "$cargo_command" in
     ;;
 esac
 
+reserve_file="${NUDOX_CI_DISK_RESERVE_FILE:-/etc/nudox-ci-disk-reserve-gib}"
+case "${CI:-}" in
+  true|1) ;;
+  *)
+    if [ -z "${CI_HEAD_SHA:-}" ] && [ -f "$reserve_file" ]; then
+      @python3@ - "$reserve_file" "$workspace_root" <<'PY' || exit 75
+import pathlib
+import shutil
+import sys
+
+try:
+    reserve = int(pathlib.Path(sys.argv[1]).read_text().strip())
+    if reserve < 1:
+        raise ValueError('reserve must be positive')
+    available = shutil.disk_usage(sys.argv[2]).free // (1024 ** 3)
+    if available < reserve:
+        raise ValueError(f'{available} GiB free; {reserve} GiB reserved for CI')
+except (OSError, ValueError) as error:
+    print(f'nudox cargo: build deferred to preserve CI disk headroom: {error}', file=sys.stderr)
+    sys.exit(75)
+PY
+    fi
+    ;;
+esac
+
 export RUSTC_WRAPPER="${RUSTC_WRAPPER:-@rustc_cache_wrapper@}"
 export SCCACHE_DIR="${SCCACHE_DIR:-$cache_root/sccache}"
 export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-8G}"

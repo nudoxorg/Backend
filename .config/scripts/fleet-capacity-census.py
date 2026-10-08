@@ -488,6 +488,7 @@ def evaluate_fleet(
             "memory_floor_applies": memory_floor_applies,
             "available_memory_source": resources.get("available_memory_source"),
             "root_disk_available_bytes": resources.get("root_disk_available_bytes"),
+            "root_disk_reserved_bytes": resources.get("root_disk_reserved_bytes", 0),
             "snapshot_issue_counts": census.get("snapshot_issue_counts"),
             "snapshot_race_counts": census.get("snapshot_race_counts"),
             "census_sha256": sample.get("census_sha256"),
@@ -499,6 +500,11 @@ def evaluate_fleet(
         disk = host_summaries[destination].get("root_disk_available_bytes")
         if type(disk) is not int or disk < MIN_DESTINATION_DISK:
             reasons.append("destination-root-disk-below-16-gib-or-missing")
+        reserved = host_summaries[destination].get("root_disk_reserved_bytes")
+        if type(reserved) is not int or reserved < 0:
+            reasons.append("destination-root-disk-reserve-invalid")
+        elif type(disk) is int and reserved and disk < reserved:
+            reasons.append("destination-root-disk-below-ci-reserve")
     unique_reasons = list(dict.fromkeys(reasons))
     return {
         "schema": "compiler-capacity-admission.v5",
