@@ -68,6 +68,7 @@ backend-frontend-typescript = {
     features = ["tsz-semantic-session-test-support"],
 }
 futures-core.workspace = true
+tempfile.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
