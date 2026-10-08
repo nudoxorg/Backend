@@ -1,0 +1,57 @@
+{
+  "schema": "nudox.virtual-cargo-manifest.commit-filemap.v1",
+  "commit": {
+    "sha1": "d65fdc7a0c5f141219a628dde48a83118d1ab7b3",
+    "parent_sha1": "7382f9f8a31990f3b0fe2e2b44093717699ad934",
+    "tree_sha1": "6bd690971032b1b726538e0d68ec180114f165ca",
+    "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+    "subject": "Handle virtual Cargo workspace roots"
+  },
+  "bundle": {
+    "path": "/private/tmp/virtual-cargo-manifest-d65fdc7a.bundle",
+    "sha256": "aeccf3c709b620fb147ac021c6eeeb6c18032c5622808fbc5920cfce4496a6cb",
+    "size_bytes": 4689,
+    "verified_in_repository": "/Users/mileswirht/Downloads/nudox-active-20261005/root-quality-integration-20261007",
+    "verification": "bundle is okay; advertises d65fdc7a; prerequisite 7382f9f8 is present"
+  },
+  "reviewed_diff_sha256": "23b15996e1546e8595589b05638b8547209bd5cb8febfc4add1d059fc6acd02f",
+  "changed_files": [
+    {
+      "path": "crates/local-service/src/builtin/local_manifest.rs",
+      "status": "M",
+      "mode_before": "100644",
+      "mode_after": "100644",
+      "git_blob_before_sha1": "b84141915df33de5f3c22e9261707bc892e7cd4c",
+      "git_blob_after_sha1": "1335d3c1ac02309d112c356650afa86d9ad7afc4",
+      "file_before_sha256": "57f6e63dc227028ac223bca8c34162ad9b123150a8e2d8a0dca22d92c3ff1297",
+      "file_after_sha256": "9633cbd5ce872be5d122e1df3cbb6d935b98a01e3585a7d43b6682ce1249ed54"
+    },
+    {
+      "path": "crates/local-service/src/builtin/local_manifest_dependencies.rs",
+      "status": "M",
+      "mode_before": "100644",
+      "mode_after": "100644",
+      "git_blob_before_sha1": "c6c5cc076194d17be3c0a3e26c694540fc589ca1",
+      "git_blob_after_sha1": "de8b9626a1385a7818061dce4dbc646e6e38e3dd",
+      "file_before_sha256": "6aaff6bd5f1f7f42fb05a7b5b6a78f69653d6f0034d26a3a06117c7f75e45490",
+      "file_after_sha256": "42e1eeb85b47cf4c3b8d1d7bf52cc9c21a6482468f4695c5e2330fcaa69824f2"
+    },
+    {
+      "path": "crates/local-service/src/builtin/product_state.rs",
+      "status": "M",
+      "mode_before": "100644",
+      "mode_after": "100644",
+      "git_blob_before_sha1": "a88f6a19e5a8f4f009136e01201d75260b8a0e19",
+      "git_blob_after_sha1": "1523a5475bb9113b7830d702bf10fd16f6d53356",
+      "file_before_sha256": "8416c64c0f9bfc37990a4cd2c530c1dde6fbdf7ef4376bb900b5a81271024cd6",
+      "file_after_sha256": "8a406de45bdc35c9f6fdf5576c9c26095b5fabf46c1a11ade1053f7bd8d49c99"
+    }
+  ],
+  "verified_diff_summary": {
+    "files_changed": 3,
+    "insertions": 349,
+    "deletions": 44,
+    "source_worktree": "/Users/rmccrar6/codex-worktrees/luna-current-virtual-manifest-7382-20261008",
+    "source_clean": true
+  }
+}

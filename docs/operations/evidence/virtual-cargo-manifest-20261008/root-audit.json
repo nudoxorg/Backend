@@ -1,0 +1,30 @@
+{
+  "schema": "nudox.root.virtual-cargo-manifest.audit.v1",
+  "status": "PASS",
+  "native_source": {
+    "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+    "commit": "d65fdc7a0c5f141219a628dde48a83118d1ab7b3",
+    "reviewed_diff_sha256": "23b15996e1546e8595589b05638b8547209bd5cb8febfc4add1d059fc6acd02f",
+    "tree": "6bd690971032b1b726538e0d68ec180114f165ca",
+    "worktree": "/Users/rmccrar6/codex-worktrees/luna-current-virtual-manifest-7382-20261008"
+  },
+  "integration_commit": "c835cf09bddb8eef3e8bfa9a181df24137eed935",
+  "integration_base": "88263669f3cfd44a8db3bece8118763bbbd6a94a",
+  "native_tests_passed": 4,
+  "verified_raw_file_bindings": 43,
+  "verified_unique_raw_files": 43,
+  "source_files_exact": [
+    "crates/local-service/src/builtin/local_manifest.rs",
+    "crates/local-service/src/builtin/local_manifest_dependencies.rs",
+    "crates/local-service/src/builtin/product_state.rs"
+  ],
+  "cargo_lock_unchanged": true,
+  "reviewed_diff_git_abbrev": 8,
+  "supervisor_binary_mapping_complete": false,
+  "supplement": "Exact verbose Cargo Running lines, matching result text and remote executable identity in four crosswalks.",
+  "limits": [
+    "No local rehash of the 723 MB remote executable.",
+    "No full library suite, native real-project compiler run, Clippy or whole-app proof.",
+    "Constructed public-search control is not a native Rust compiler acceptance test."
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "binary": {
+    "format": "Mach-O 64-bit executable arm64",
+    "path": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007/debug/deps/backend_local_service-fb339fe309d09189",
+    "sha256": "2f220c5a174bbb50fe8c70479a4a87f2c8a83cc519428791d5e825a801f20dc0",
+    "size_bytes": 723284824
+  },
+  "gate": 1,
+  "mapping_note": "Supplemental manual mapping from exact Cargo verbose Running line to the test binary; supervisor mapping remains incomplete because Cargo JSON message format was omitted from the sealed plan.",
+  "plan_sha256": "eb240dd5bd3e7966ae321926f16597c157ccbacc00c2cfba534a5e3ee07c94bb",
+  "raw_artifacts": {
+    "cargo.stderr.log_sha256": "8cb650930f5205a422d1298c866be07cb219f7c862ae99bc67a82208d45d3bda",
+    "cargo.stdout.jsonl_sha256": "d364a28434dc483fc31f2bf650340458dd4f7e9e488d59939812ef95f35f0815",
+    "completion.json_sha256": "f18923f2c09da5913eac7fa2379bdfab4595aecd70ac6790ab149662f08d8c24",
+    "launch.json_sha256": "ba73297853c49f8c80afc3ec2cbbca741e1a3244a5ed4c46e91b5117973d7512"
+  },
+  "schema": "nudox.luna.virtual-manifest.test-binary-crosswalk.v1",
+  "source": {
+    "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+    "commit": "d65fdc7a0c5f141219a628dde48a83118d1ab7b3",
+    "tree": "6bd690971032b1b726538e0d68ec180114f165ca",
+    "worktree": "/Users/rmccrar6/codex-worktrees/luna-current-virtual-manifest-7382-20261008"
+  },
+  "supervisor_artifact_mapping_complete": false,
+  "test": {
+    "exit": 0,
+    "name": "virtual_cargo_workspace_has_no_package_facts_but_members_keep_their_edges",
+    "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1143 filtered out; finished in 0.02s",
+    "running_line": "Running `/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007/debug/deps/backend_local_service-fb339fe309d09189 virtual_cargo_workspace_has_no_package_facts_but_members_keep_their_edges --test-threads=1 --nocapture`"
+  }
+}
