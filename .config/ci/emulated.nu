@@ -100,7 +100,10 @@ def wine-bin [tool: string]: nothing -> string {
 # holds nextest's output pipes open, so every test reads as a timeout. The
 # server is started detached from this process's output for the same reason.
 def --env start-wine []: nothing -> nothing {
-    ^sh -c $"'(wine-bin wineboot)' --init </dev/null >/dev/null 2>&1"
+    # A fresh heavy-lane checkout has no .local parent yet. Wine refuses
+    # a missing prefix path before Cargo gets a chance to create it.
+    mkdir $env.WINEPREFIX
+    ^sh -c $"'(wine-bin wineboot)' --init </dev/null"
     ^sh -c $"'(wine-bin wineserver)' -p </dev/null >/dev/null 2>&1 &"
     sleep 2sec
     # Code under test finds its state root through LOCALAPPDATA (then
