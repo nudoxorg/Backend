@@ -1241,6 +1241,19 @@ fn cli_exports_plain_graph_continuation_without_leaking_the_wire_proof() {
         Library::from_view(root.clone(), Cursor::for_view_root(&root)).expect("graph owner");
     let mut session =
         backend_client::Session::from_transport("/private/graph-owner.sock", GraphTransport(owner));
+    let baseline = session
+        .graph_page("pkg::Parent", 200, None)
+        .expect("ordinary graph order");
+    let CommandReply::ProjectionPage(baseline) = baseline.reply else {
+        panic!("graph baseline");
+    };
+    let expected = baseline
+        .snapshot
+        .root
+        .rows()
+        .iter()
+        .map(|row| row.id)
+        .collect::<Vec<_>>();
     let reply = session
         .graph_page("pkg::Parent", 2, None)
         .expect("real bounded graph page");
@@ -1290,8 +1303,8 @@ fn cli_exports_plain_graph_continuation_without_leaking_the_wire_proof() {
             .root
             .rows()
             .iter()
-            .map(|row| row.label.as_str())
+            .map(|row| row.id)
             .collect::<Vec<_>>(),
-        vec!["pkg::Child2", "pkg::Child3"]
+        expected[2..4]
     );
 }
