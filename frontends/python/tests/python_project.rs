@@ -675,7 +675,12 @@ fn native_relative_import_aliases_retain_exact_selected_function_coordinates()
                 assert!(position < source.find("def shadowed").ok_or("shadowed control")?);
                 proven += 1;
             }
-            _ if position >= source.find("def shadowed").ok_or("shadowed control")? => {}
+            _ if position >= source.find("def shadowed").ok_or("shadowed control")? => {
+                assert!(
+                    matches!(symbol.outcome, SymbolOutcome::Unresolved),
+                    "unproven callable {symbol:?}"
+                );
+            }
             _ => return Err("unambiguous selected relative import failed resolution".into()),
         }
     }

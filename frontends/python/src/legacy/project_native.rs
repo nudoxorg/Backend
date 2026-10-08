@@ -35,7 +35,7 @@ use super::{
     CheckerError, CheckerReport, ImportResolution, Inference, InferenceSite, InferredType,
     NativePythonTypeConstructor, SymbolOutcome, SymbolResolution,
 };
-use crate::legacy::{AnnotationPosition, DeclarationKind, ModuleFacts, Span};
+use crate::legacy::{AnnotationPosition, DeclarationKind, ModuleFacts, OccurrenceKind, Span};
 
 pub(super) struct NativeProjectResult {
     pub(super) modules: BTreeMap<Box<str>, CheckerReport>,
@@ -492,6 +492,19 @@ pub(super) fn analyze(
                 let [target] = matches.as_slice() else {
                     continue;
                 };
+                // The native IDE query falls back to the local import binding
+                // when its imported declaration is unavailable. That location
+                // proves the binding spelling, not a resolved callable target.
+                if matches!(
+                    occurrence.kind,
+                    OccurrenceKind::FunctionCall | OccurrenceKind::MethodCall
+                ) && target.kind == DeclarationKind::Alias
+                    && imports[path]
+                        .iter()
+                        .any(|import| import.binding_span == target.name_span)
+                {
+                    continue;
+                }
                 let mut enclosing = syntax[path]
                     .declarations
                     .iter()
