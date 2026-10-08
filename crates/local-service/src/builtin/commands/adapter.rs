@@ -5842,6 +5842,264 @@ mod tests {
         );
     }
 
+    #[test]
+    fn official_httpie_dependency_graph_keeps_package_and_search_surfaces_readable() {
+        let fixture = AdapterFixture::new();
+        let project = PathBuf::from(&fixture.label);
+        for (path, bytes) in [
+            (
+                "setup.cfg",
+                include_bytes!("../../../../engine/tests/fixtures/httpie-5b604c37/setup.cfg")
+                    .as_slice(),
+            ),
+            (
+                "setup.py",
+                include_bytes!("../../../../engine/tests/fixtures/httpie-5b604c37/setup.py")
+                    .as_slice(),
+            ),
+            (
+                "httpie/__init__.py",
+                include_bytes!(
+                    "../../../../engine/tests/fixtures/httpie-5b604c37/httpie/__init__.py"
+                )
+                .as_slice(),
+            ),
+        ] {
+            let destination = project.join(path);
+            fs::create_dir_all(destination.parent().expect("source parent"))
+                .expect("HTTPie source directory");
+            fs::write(destination, bytes).expect("unchanged official HTTPie metadata");
+        }
+        assert_httpie_graph_surfaces(fixture);
+    }
+
+    fn assert_httpie_graph_surfaces(mut fixture: AdapterFixture) {
+        use backend_library::{DependencyFacts, SurfaceCommand as S, SurfaceReply as R};
+        let local = backend_library::PackageReference::parse(fixture.label.clone())
+            .expect("local HTTPie project");
+        let coordinate = backend_library::PackageReference::parse("pkg:pypi/httpie@3.2.4")
+            .expect("HTTPie coordinate");
+        for epoch in 0..2 {
+            let (adapter, daemon) = fixture.parts();
+            for (offset, surface) in [
+                (
+                    0,
+                    S::Package {
+                        package: local.clone(),
+                    },
+                ),
+                (
+                    1,
+                    S::Package {
+                        package: coordinate.clone(),
+                    },
+                ),
+                (
+                    2,
+                    S::Dependencies {
+                        package: local.clone(),
+                    },
+                ),
+                (
+                    3,
+                    S::Dependencies {
+                        package: coordinate.clone(),
+                    },
+                ),
+                (
+                    4,
+                    S::PackageProfile {
+                        package: local.clone(),
+                    },
+                ),
+                (
+                    5,
+                    S::IndexSearch {
+                        query: backend_library::ProductText::from_static("httpie"),
+                        limit: 10,
+                        cursor: None,
+                    },
+                ),
+            ] {
+                let request = 0x2a00 + epoch * 16 + offset;
+                let body = serde_json::to_vec(&backend_engine::CommandDto::new(
+                    request,
+                    Command::Surface(surface),
+                ))
+                .expect("real surface request DTO");
+                let Executed::Reply(bytes) = adapter
+                    .execute_or_defer(daemon, &body, request + 0x1000)
+                    .expect("HTTPie cannot poison the shared graph")
+                else {
+                    panic!("local graph reads must reply without deferred compilation");
+                };
+                let dto = backend_engine::decode_reply_dto(&bytes).expect("strict reply admission");
+                assert_eq!(dto.request_id, request);
+                match (offset, dto.reply) {
+                    (0 | 1, backend_engine::CommandReply::Surface(R::Package(rows))) => {
+                        assert_eq!(rows.len(), 1);
+                        assert_eq!(rows[0].coordinate, coordinate);
+                        assert_eq!(rows[0].name.as_str(), "httpie");
+                        assert_eq!(rows[0].version.as_str(), "3.2.4");
+                    }
+                    (
+                        2 | 3,
+                        backend_engine::CommandReply::Surface(R::Dependencies(
+                            DependencyFacts::Known(rows),
+                        )),
+                    ) => {
+                        assert_eq!(rows.len(), 27);
+                        assert_eq!(
+                            backend_library::admit_dependency_rows(rows.to_vec())
+                                .expect("canonical graph edges"),
+                            rows
+                        );
+                        assert_eq!(rows.iter().filter(|row| row.scope == backend_library::DependencyScope::Runtime).count(), 11);
+                        assert_eq!(
+                            rows.iter()
+                                .filter(
+                                    |row| row.scope == backend_library::DependencyScope::Optional
+                                )
+                                .count(),
+                            16
+                        );
+                    }
+                    (
+                        4,
+                        backend_engine::CommandReply::Surface(R::PackageProfile {
+                            source_metadata: Some(metadata),
+                            ..
+                        }),
+                    ) => {
+                        let declarations = metadata
+                            .dependencies
+                            .recorded()
+                            .expect("complete source declarations");
+                        assert_eq!(declarations.len(), 32);
+                        assert_eq!(
+                            declarations
+                                .iter()
+                                .filter(|row| row.group.as_deref() == Some("dev"))
+                                .count(),
+                            16
+                        );
+                        assert_eq!(
+                            declarations
+                                .iter()
+                                .filter(|row| row.group.as_deref() == Some("test"))
+                                .count(),
+                            5
+                        );
+                    }
+                    (5, backend_engine::CommandReply::Surface(R::IndexSearchPage(page))) => {
+                        assert!(
+                            page.hits.is_empty(),
+                            "graph-only fixture cannot invent native declarations"
+                        );
+                        assert_eq!(
+                            page.result_count,
+                            backend_library::IndexSearchResultCount::Exact(0)
+                        );
+                    }
+                    (_, reply) => panic!(
+                        "unexpected HTTPie graph reply in epoch {epoch} surface {offset}: {reply:?}"
+                    ),
+                }
+            }
+            assert!(
+                adapter.indexing.is_none(),
+                "graph reads never manufacture a compiler job"
+            );
+            if epoch == 0 {
+                fixture = fixture.reopen();
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the full pinned HTTPie Git checkout via NUDOX_TEST_HTTP_GRAPH_PROJECT"]
+    fn pinned_full_httpie_dependency_graph_keeps_package_and_search_surfaces_readable() {
+        let source = PathBuf::from(
+            std::env::var_os("NUDOX_TEST_HTTP_GRAPH_PROJECT")
+                .expect("explicit pinned HTTPie checkout"),
+        );
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&source)
+                .args(args)
+                .output()
+                .expect("fixture Git inventory");
+            assert!(
+                output.status.success(),
+                "Git fixture refusal: {:?}",
+                output.stderr
+            );
+            output.stdout
+        };
+        assert_eq!(
+            String::from_utf8(git(&["rev-parse", "HEAD"]))
+                .expect("commit")
+                .trim(),
+            "5b604c37c6c67e18e7c3e9aee6c88a8c22b98345"
+        );
+        assert_eq!(
+            String::from_utf8(git(&["rev-parse", "HEAD^{tree}"]))
+                .expect("tree")
+                .trim(),
+            "ce66abc6fa4078b0d549dd0e4a3b512d9f1ee90e"
+        );
+        assert!(
+            git(&["status", "--porcelain"]).is_empty(),
+            "pinned fixture must remain clean"
+        );
+        let fixture = AdapterFixture::new();
+        let inventory = git(&["ls-files", "-z"]);
+        let paths = inventory
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(paths.len(), 265, "full source inventory");
+        let mut copied_bytes = 0;
+        let mut python_files = 0;
+        for path in paths {
+            let relative = Path::new(std::str::from_utf8(path).expect("UTF-8 source path"));
+            assert!(
+                relative
+                    .components()
+                    .all(|part| matches!(part, std::path::Component::Normal(_))),
+                "owned fixture copy only"
+            );
+            let from = source.join(relative);
+            assert!(
+                fs::symlink_metadata(&from)
+                    .expect("tracked source metadata")
+                    .is_file(),
+                "regular pinned source only"
+            );
+            let bytes = fs::read(from).expect("tracked source bytes");
+            copied_bytes += bytes.len();
+            python_files += usize::from(
+                relative
+                    .extension()
+                    .is_some_and(|extension| extension == "py"),
+            );
+            let to = Path::new(&fixture.label).join(relative);
+            fs::create_dir_all(to.parent().expect("copied source parent"))
+                .expect("owned source directories");
+            fs::write(to, bytes).expect("owned project copy");
+        }
+        assert_eq!(copied_bytes, 2_096_089);
+        assert_eq!(python_files, 133);
+        eprintln!(
+            "pinned HTTPie graph control: commit=5b604c37c6c67e18e7c3e9aee6c88a8c22b98345 tree=ce66abc6fa4078b0d549dd0e4a3b512d9f1ee90e files=265 bytes={copied_bytes} python_files={python_files}"
+        );
+        assert_httpie_graph_surfaces(fixture);
+        assert!(
+            git(&["status", "--porcelain"]).is_empty(),
+            "shared pinned source remains read-only"
+        );
+    }
     #[derive(Clone)]
     struct MixedNativeEnvironment(std::path::PathBuf);
 
