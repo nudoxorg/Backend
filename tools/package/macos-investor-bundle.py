@@ -626,7 +626,7 @@ def validate_app_build(
     if runner_before["sha256"] != expected_runner_sha256:
         fail("application receipt Cargo runner differs from the package operator's explicit pin")
     execution_kind = runner_before.get("execution_kind", "wrapper")
-    if execution_kind not in {"wrapper", "direct-cargo"}:
+    if execution_kind not in {"wrapper", "direct-cargo", "managed-native-host"}:
         fail("application receipt has an unsupported Cargo runner execution kind")
     runner_assets = runner_before.get("referenced_asset_sha256")
     required_assets = {
@@ -636,9 +636,9 @@ def validate_app_build(
         "runner.tool.RUSTC",
         "runner.exec",
     }
-    if execution_kind == "wrapper":
+    if execution_kind in {"wrapper", "managed-native-host"}:
         required_assets.add("runner.tool.RUSTC_WRAPPER")
-    else:
+    if execution_kind in {"direct-cargo", "managed-native-host"}:
         required_assets.update({"runner.tool.CARGO", "runner.tool.RUSTDOC"})
     if not isinstance(runner_assets, dict) or not required_assets.issubset(runner_assets):
         fail("application receipt is missing hashes for pinned runner and toolchain references")
@@ -715,6 +715,9 @@ def validate_app_build(
     ]
     if execution_kind == "direct-cargo":
         expected_command.append("--message-format=json-render-diagnostics")
+    if execution_kind == "managed-native-host":
+        import macos_managed_native_host as managed
+        expected_command = [*invocation_prefix, *managed.build_arguments()]
     if command != expected_command:
         fail("application receipt must record the exact locked release build through the pinned runner")
     provenance = receipt.get("cargo_provenance")
@@ -741,8 +744,13 @@ def validate_app_build(
             or provenance.get("toolchain_unchanged") is not True
         ):
             fail("schema-2 wrapper provenance does not bind a successful unchanged build to this source/target")
-    else:
+    elif execution_kind == "direct-cargo":
         validate_direct_cargo_provenance(provenance, source, target, runner_before)
+    else:
+        try:
+            managed.validate(provenance, expected_source, target, runner_before, receipt_path)
+        except (ValueError, OSError, KeyError, TypeError, RuntimeError) as error:
+            fail("managed native-host provenance refused: " + str(error))
     versions = provenance.get("toolchain")
     if execution_kind == "wrapper":
         if not isinstance(versions, dict) or any(
@@ -767,7 +775,8 @@ def validate_app_build(
     if len({item["path"] for item in outputs}) != len(outputs):
         fail("Cargo provenance output manifest contains duplicate paths")
     provenance_outputs = {item["path"]: item["sha256"] for item in outputs}
-    expected_output_names = {f"{target}/release/{name}" for name in EXECUTABLES}
+    output_name = managed.output_name if execution_kind == "managed-native-host" else lambda name: f"{target}/release/{name}"
+    expected_output_names = {output_name(name) for name in EXECUTABLES}
     if not expected_output_names.issubset(provenance_outputs):
         fail("Cargo provenance is missing one or more exact application executable outputs")
     if execution_kind == "direct-cargo" and set(provenance_outputs) != expected_output_names:
@@ -787,7 +796,7 @@ def validate_app_build(
             fail(f"missing executable build output: {path}")
         if sha256(path) != require_sha(listed[name], f"application receipt {name}"):
             fail(f"application build receipt hash mismatch for {name}")
-        target_output = f"{target}/release/{name}"
+        target_output = output_name(name)
         if sha256(path) != provenance_outputs[target_output]:
             fail(f"Cargo provenance output hash mismatch for {name}")
         paths[name] = path

@@ -66,6 +66,14 @@ def preflight(config, stage="build"):
     for key in sorted(release_inputs(config)):
         if not config.get(key) or not Path(config[key]).is_absolute() or not Path(config[key]).exists():
             problems.append(f"missing absolute release input: {key}")
+    if config.get("managed_native_host_plan"):
+        plan_path = Path(config["managed_native_host_plan"])
+        if not plan_path.is_absolute() or not plan_path.is_file() or plan_path.is_symlink() or plan_path.stat().st_size > 65536:
+            problems.append("missing bounded regular managed-native-host plan")
+        elif hashlib.sha256(plan_path.read_bytes()).hexdigest() != config.get("expected_managed_plan_sha256"):
+            problems.append("managed-native-host plan content pin differs")
+    elif config.get("expected_managed_plan_sha256"):
+        problems.append("managed-native-host plan pin requires a selected plan")
     for key in ("expected_revision", "expected_tree", "expected_runner_sha256", "expected_icon_sha256", "minimum_os", "signing_identity", "notary_profile"):
         if not config.get(key):
             problems.append(f"missing release configuration: {key}")
@@ -109,7 +117,10 @@ def prepare(config):
     build = output / "build"
     package = output / "package"
     common = ["--source-root", str(source), "--expected-revision", config["expected_revision"], "--expected-tree", config["expected_tree"], "--expected-runner-sha256", config["expected_runner_sha256"]]
-    run([sys.executable, str(HERE / "build-macos-investor-app.py"), *common, "--cargo-runner", config["cargo_runner"], "--output-dir", str(build)])
+    build_arguments = [sys.executable, str(HERE / "build-macos-investor-app.py"), *common, "--cargo-runner", config["cargo_runner"], "--output-dir", str(build)]
+    if config.get("managed_native_host_plan"):
+        build_arguments.extend(["--managed-native-host-plan", config["managed_native_host_plan"], "--expected-managed-plan-sha256", config["expected_managed_plan_sha256"]])
+    run(build_arguments)
     arguments = [sys.executable, str(HERE / "macos-investor-bundle.py"), *common, "--artifact-dir", str(build / "artifacts"), "--build-receipt", str(build / "application-build-receipt.json"), "--output-dir", str(package), "--minimum-os", config["minimum_os"], "--expected-icon-sha256", config["expected_icon_sha256"]]
     for key in sorted(release_inputs(config) - {"cargo_runner"}):
         arguments.extend(["--" + key.replace("_", "-"), config[key]])
