@@ -53,7 +53,7 @@ impl Changed {
 
     fn sequence(&self) -> Option<u64> {
         let sequence = self.sequence.load(Ordering::Acquire);
-        (sequence != u64::MAX && self.watch_healthy.load(Ordering::Acquire)).then_some(sequence)
+        (sequence != u64::MAX).then_some(sequence)
     }
 }
 
@@ -75,6 +75,10 @@ enum Unknown {
 enum Readiness {
     Unknown(Unknown),
     Observed(Stamp, Pending),
+    /// A finite fresh read is useful for positive recovery even when no
+    /// reliable future change notifications are available. Never an absence
+    /// certificate; another explicit refresh is required to update it.
+    Degraded(Stamp, Pending),
 }
 
 pub(super) struct JournalReadiness {
@@ -89,6 +93,14 @@ pub(super) struct JournalReadiness {
 
 impl JournalReadiness {
     pub(super) fn start(path: PathBuf, epoch: [u8; 16]) -> Result<Self, String> {
+        Self::start_with_watch(path, epoch, false)
+    }
+
+    fn start_with_watch(
+        path: PathBuf,
+        epoch: [u8; 16],
+        fail_registration: bool,
+    ) -> Result<Self, String> {
         let (wake, wakes) = mpsc::sync_channel(1);
         let (complete, observations) = mpsc::sync_channel(1);
         let changed = Changed {
@@ -117,15 +129,19 @@ impl JournalReadiness {
         });
         // Register before the initial read so a foreign commit cannot fall
         // between an empty read and watch registration.
-        let watcher = match watcher {
-            Ok(mut watcher) => watcher
-                .watch(
-                    path.parent().ok_or("journal has no directory")?,
-                    RecursiveMode::NonRecursive,
-                )
-                .is_ok()
-                .then_some(watcher),
-            Err(_) => None,
+        let watcher = if fail_registration {
+            None
+        } else {
+            match watcher {
+                Ok(mut watcher) => watcher
+                    .watch(
+                        path.parent().ok_or("journal has no directory")?,
+                        RecursiveMode::NonRecursive,
+                    )
+                    .is_ok()
+                    .then_some(watcher),
+                Err(_) => None,
+            }
         };
         if watcher.is_none() {
             changed.watch_healthy.store(false, Ordering::Release);
@@ -188,13 +204,24 @@ impl JournalReadiness {
         if let Some(observation) = self.observations.as_ref().and_then(|r| r.try_recv().ok()) {
             self.admit(observation);
         }
-        if !self.changed.watch_healthy.load(Ordering::Acquire) {
-            self.selected = Readiness::Unknown(Unknown::WatchFailed);
-        } else if self.changed.sequence.load(Ordering::Acquire) == u64::MAX {
+        if self.changed.sequence.load(Ordering::Acquire) == u64::MAX {
             self.selected = Readiness::Unknown(Unknown::EventSequenceExhausted);
-        } else if matches!(self.selected, Readiness::Observed(stamp, _) if Some(stamp.event_sequence) != self.changed.sequence())
+        } else if matches!(self.selected, Readiness::Observed(stamp, _) | Readiness::Degraded(stamp, _) if Some(stamp.event_sequence) != self.changed.sequence())
         {
-            self.selected = Readiness::Unknown(Unknown::AwaitingChange);
+            self.selected =
+                Readiness::Unknown(if self.changed.watch_healthy.load(Ordering::Acquire) {
+                    Unknown::AwaitingChange
+                } else {
+                    Unknown::WatchFailed
+                });
+        } else if !self.changed.watch_healthy.load(Ordering::Acquire)
+            && let Readiness::Observed(stamp, pending) = self.selected
+        {
+            self.selected = Readiness::Degraded(stamp, pending);
+        } else if !self.changed.watch_healthy.load(Ordering::Acquire)
+            && self.selected == Readiness::Unknown(Unknown::AwaitingChange)
+        {
+            self.selected = Readiness::Unknown(Unknown::WatchFailed);
         }
     }
 
@@ -203,7 +230,10 @@ impl JournalReadiness {
             && Some(observation.stamp.event_sequence) == self.changed.sequence()
         {
             self.selected = match observation.pending {
-                Ok(pending) => Readiness::Observed(observation.stamp, pending),
+                Ok(pending) if self.changed.watch_healthy.load(Ordering::Acquire) => {
+                    Readiness::Observed(observation.stamp, pending)
+                }
+                Ok(pending) => Readiness::Degraded(observation.stamp, pending),
                 Err(_) => Readiness::Unknown(Unknown::ReadFailed),
             };
         }
@@ -212,11 +242,17 @@ impl JournalReadiness {
     /// Resolve each exact recovery hint once per selected workspace cursor.
     /// Persisted Unresolved is not a reason to retry SQL on every owner poll.
     pub(super) fn recovery(&mut self, cursor: Cursor) -> Option<IndexOperationKey> {
-        let Readiness::Observed(stamp, pending) = self.selected else {
+        let degraded = matches!(self.selected, Readiness::Degraded(_, _));
+        let (Readiness::Observed(stamp, pending) | Readiness::Degraded(stamp, pending)) =
+            self.selected
+        else {
             return None;
         };
         if self.reconciled.is_some_and(|(previous, payload, basis)| {
-            previous.owner_epoch == stamp.owner_epoch && payload == pending && basis == cursor
+            previous.owner_epoch == stamp.owner_epoch
+                && payload == pending
+                && basis == cursor
+                && (!degraded || previous.event_sequence == stamp.event_sequence)
         }) {
             return None;
         }
@@ -225,7 +261,13 @@ impl JournalReadiness {
     }
 
     pub(super) fn prepared_hint(&self) -> bool {
-        matches!(self.selected, Readiness::Observed(_, pending) if pending.prepared)
+        matches!(self.selected, Readiness::Observed(_, pending) | Readiness::Degraded(_, pending) if pending.prepared)
+    }
+
+    /// Scheduling token only; neither notification delivery nor its absence
+    /// supplies durable writer authority.
+    pub(super) fn event_sequence(&self) -> Option<u64> {
+        self.changed.sequence()
     }
 
     pub(super) fn close(&mut self) {
@@ -296,7 +338,8 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             lane.poll();
-            if matches!(lane.selected, Readiness::Observed(_, pending) if pending == wanted) {
+            if matches!(lane.selected, Readiness::Observed(_, pending) | Readiness::Degraded(_, pending) if pending == wanted)
+            {
                 return;
             }
             let receipt = lane
@@ -382,6 +425,83 @@ mod tests {
         );
         assert!(!cold.prepared_hint());
         cold.close();
+    }
+
+    #[test]
+    fn failed_registration_and_watch_error_allow_finite_explicit_refresh() {
+        let scratch = tempfile::tempdir().expect("journal scratch");
+        let path = scratch.path().join("workspace/operations.turso");
+        let mut foreign = IndexOperationJournal::open(&path).expect("foreign journal");
+        let mut lane = JournalReadiness::start_with_watch(path.clone(), [1; 16], true)
+            .expect("degraded observer still starts");
+        wait_for(
+            &mut lane,
+            foreign.pending_snapshot().expect("initial snapshot"),
+        );
+        assert!(matches!(lane.selected, Readiness::Degraded(_, _)));
+        foreign
+            .accept(
+                key(),
+                PackageReference::parse("/workspace/docs").expect("package"),
+                CompileExecutionIntent::Interactive,
+            )
+            .expect("foreign accepted");
+        lane.refresh();
+        wait_for(
+            &mut lane,
+            foreign.pending_snapshot().expect("accepted snapshot"),
+        );
+        assert!(matches!(lane.selected, Readiness::Degraded(_, _)));
+        let cursor = Cursor::at(backend_library::view_state_root(&[]), 0);
+        assert_eq!(lane.recovery(cursor), Some(key()));
+        assert_eq!(lane.recovery(cursor), None);
+        lane.refresh();
+        wait_for(
+            &mut lane,
+            foreign.pending_snapshot().expect("explicit retry snapshot"),
+        );
+        assert_eq!(
+            lane.recovery(cursor),
+            Some(key()),
+            "degraded explicit refresh retries once even at the same cursor"
+        );
+        lane.close();
+        let mut lane = JournalReadiness::start(path, [2; 16]).expect("registered observer");
+        wait_for(
+            &mut lane,
+            foreign.pending_snapshot().expect("registered snapshot"),
+        );
+        // Simulate callback failure after a successful registration. A fresh
+        // one-shot read still works without claiming restored watch coverage.
+        lane.changed.watch_healthy.store(false, Ordering::Release);
+        foreign
+            .prepare(key(), Some([4; 32]), [5; 32], 9)
+            .expect("prepared");
+        lane.changed.watch_healthy.store(false, Ordering::Release);
+        lane.changed.invalidate();
+        wait_for(
+            &mut lane,
+            foreign.pending_snapshot().expect("prepared snapshot"),
+        );
+        assert!(lane.prepared_hint());
+        foreign
+            .failed(
+                key(),
+                IndexOperationFailureReason::WorkerFailed,
+                ProductText::from_static("foreign terminal"),
+            )
+            .expect("terminal");
+        lane.refresh();
+        wait_for(
+            &mut lane,
+            foreign.pending_snapshot().expect("terminal snapshot"),
+        );
+        assert!(!lane.prepared_hint());
+        assert!(
+            !lane.changed.watch_healthy.load(Ordering::Acquire),
+            "one-shot reads must not pretend notification coverage recovered"
+        );
+        lane.close();
     }
 
     #[test]

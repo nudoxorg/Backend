@@ -167,6 +167,7 @@ pub(super) enum JournalError {
     Corrupt(String),
     KeyspaceFull,
     PendingLimit,
+    PreparedBusy,
     KeyConflict,
     Missing,
     InvalidTransition,
@@ -187,6 +188,7 @@ impl std::fmt::Display for JournalError {
             Self::PendingLimit => formatter.write_str(
                 "durable index-operation pending limit is full; the request was not accepted",
             ),
+            Self::PreparedBusy => formatter.write_str("another durable index operation is prepared; retry after its publication is reconciled"),
             Self::KeyConflict => {
                 formatter.write_str("index-operation key was reused with another request")
             }
@@ -330,7 +332,7 @@ impl IndexOperationJournal {
                 let mut rows = transaction
                     .query(
                         "SELECT operation_key, state, payload FROM backend_index_operations \
-                     WHERE state IN (1, 2) ORDER BY acceptance_sequence ASC LIMIT 33",
+                     WHERE state IN (1, 2) ORDER BY state DESC, acceptance_sequence ASC LIMIT 33",
                         (),
                     )
                     .await
@@ -508,6 +510,21 @@ impl IndexOperationJournal {
             return Err(JournalError::InvalidTransition);
         }
         self.transition(operation_key, |mut entry| {
+            if let StoredOperationState::Prepared {
+                request_identity: previous,
+                base_workspace_root: root,
+                base_workspace_sequence: sequence,
+            } = &entry.state
+            {
+                return if *previous == request_identity
+                    && *root == base_workspace_root
+                    && *sequence == base_workspace_sequence
+                {
+                    Ok(entry)
+                } else {
+                    Err(JournalError::InvalidTransition)
+                };
+            }
             if !matches!(entry.state, StoredOperationState::Accepted) {
                 return Err(JournalError::InvalidTransition);
             }
@@ -901,6 +918,28 @@ impl IndexOperationJournal {
                 validate_entry(&updated)?;
                 let new_state =
                     stored_state_code(&updated.state).ok_or(JournalError::InvalidTransition)?;
+                if previous_state == STATE_ACCEPTED && new_state == STATE_PREPARED {
+                    // The Immediate write transaction serializes competing
+                    // connections. A separate admission read is only an
+                    // avoid-work hint and cannot enforce this invariant.
+                    let meta = read_meta_transaction(&transaction).await?;
+                    validate_meta(&meta)?;
+                    if meta.prepared_count != 0 {
+                        return Err(JournalError::PreparedBusy);
+                    }
+                    let mut rows = transaction
+                        .query(
+                            "SELECT 1 FROM backend_index_operations WHERE state=2 LIMIT 1",
+                            (),
+                        )
+                        .await
+                        .map_err(database_error)?;
+                    if rows.next().await.map_err(database_error)?.is_some() {
+                        return Err(JournalError::Corrupt(
+                            "prepared count disagrees with retained rows".to_owned(),
+                        ));
+                    }
+                }
                 let payload = encode_entry(&updated)?;
                 let is_terminal = matches!(new_state, STATE_PUBLISHED | STATE_FAILED);
                 let terminal_sequence = if is_terminal {
@@ -2627,6 +2666,101 @@ mod tests {
         ));
         assert!(journal.has_prepared().expect("prepared state probe"));
         drop(journal);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn competing_connections_prepare_only_one_and_preserve_accepted_retry() {
+        let path = path();
+        let mut owner = open(&path);
+        for value in [80, 81] {
+            owner
+                .accept(key(value), package(), CompileExecutionIntent::Interactive)
+                .expect("accept");
+        }
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let (ready, readiness) = std::sync::mpsc::sync_channel(2);
+        let mut releases = Vec::new();
+        let workers: Vec<_> = [80, 81]
+            .into_iter()
+            .map(|value| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                let ready = ready.clone();
+                let (release, released) = std::sync::mpsc::sync_channel(1);
+                releases.push(release);
+                std::thread::spawn(move || {
+                    let opened = IndexOperationJournal::open(&path);
+                    let _ = ready.send(opened.is_ok());
+                    let mut journal = match opened {
+                        Ok(journal) => journal,
+                        Err(error) => return (value, Err(error)),
+                    };
+                    if released.recv_timeout(Duration::from_secs(10)) != Ok(true) {
+                        return (
+                            value,
+                            Err(JournalError::Database(
+                                "test prepare rendezvous unavailable".to_owned(),
+                            )),
+                        );
+                    }
+                    barrier.wait();
+                    (
+                        value,
+                        journal.prepare(key(value), Some([4; 32]), [5; 32], 9),
+                    )
+                })
+            })
+            .collect();
+        let all_opened = (0..2)
+            .map(|_| readiness.recv_timeout(Duration::from_secs(10)))
+            .all(|result| result == Ok(true));
+        for release in releases {
+            let _ = release.send(all_opened);
+        }
+        let results: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("prepare thread"))
+            .collect();
+        assert!(
+            all_opened,
+            "both independent connections must open before the concurrent prepare attempt: {results:?}"
+        );
+        assert_eq!(results.iter().filter(|(_, r)| r.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|(_, r)| *r == Err(JournalError::PreparedBusy))
+                .count(),
+            1
+        );
+        let winner = results.iter().find(|(_, r)| r.is_ok()).expect("winner").0;
+        let loser = results.iter().find(|(_, r)| r.is_err()).expect("loser").0;
+        assert!(matches!(
+            owner.entry(key(loser)).expect("loser row"),
+            Some(JournalEntry::Retained(StoredOperation {
+                state: StoredOperationState::Accepted,
+                ..
+            }))
+        ));
+        owner
+            .prepare(key(winner), Some([4; 32]), [5; 32], 9)
+            .expect("exact same-key retry is idempotent");
+        assert_eq!(
+            owner.prepare(key(winner), Some([6; 32]), [5; 32], 9),
+            Err(JournalError::InvalidTransition)
+        );
+        owner
+            .failed(
+                key(winner),
+                IndexOperationFailureReason::WorkerFailed,
+                ProductText::from_static("winner retired"),
+            )
+            .expect("retire winner");
+        owner
+            .prepare(key(loser), Some([4; 32]), [5; 32], 9)
+            .expect("accepted loser retries after slot retires");
+        drop(owner);
         cleanup(&path);
     }
 
