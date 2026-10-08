@@ -526,14 +526,10 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         )? {
             paths.push((LocalHostVariable::NudoxPyrefly, pyrefly));
         }
-        match self.directory(
-            LocalHostVariable::NudoxGoRoot,
-            LocalHostPathRole::PackageRoot(backend_library::interface::PackageEcosystem::Golang),
-            self.package_root_candidates(
-                home.as_deref(),
-                backend_library::interface::PackageEcosystem::Golang,
-            ),
-        ) {
+        let go_selected = paths
+            .iter()
+            .any(|(variable, _)| *variable == LocalHostVariable::NudoxGo);
+        match self.go_module_cache_directory(home.as_deref(), go_selected) {
             Ok(Some(go_root)) => paths.push((LocalHostVariable::NudoxGoRoot, go_root)),
             Ok(None) => {}
             Err(error) => {

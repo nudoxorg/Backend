@@ -31,7 +31,7 @@ pub enum LocalHostDirectory {
     NativeWorkParent,
     /// One process-unique empty native work owner.
     NativeWork,
-    /// Isolated module cache for a Go owner without an installed package cache.
+    /// Selected ordinary module cache, or an isolated cache for an explicit-only Go owner.
     GoModuleCache,
 }
 
@@ -307,6 +307,35 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             return Ok(None);
         }
         first_existing_directory(role, candidates)
+    }
+
+    /// Keeps the cache selected by normal Go precedence even before the first
+    /// dependency download. A later `go mod download` must populate the same
+    /// path that the already-running compiler owner admitted.
+    pub(super) fn go_module_cache_directory(
+        &self,
+        home: Option<&Path>,
+        realize_default: bool,
+    ) -> Result<Option<PathBuf>, LocalCompilerHostError> {
+        let role = LocalHostPathRole::PackageRoot(PackageEcosystem::Golang);
+        if self
+            .environment
+            .value(LocalHostVariable::NudoxGoRoot)
+            .is_some()
+            || matches!(self.discovery,
+                LocalHostDiscovery::ExplicitOnly | LocalHostDiscovery::ClosedSnapshot)
+        {
+            return self.directory(LocalHostVariable::NudoxGoRoot, role, ArrayVec::new());
+        }
+        let candidates = self.package_root_candidates(home, PackageEcosystem::Golang);
+        if !realize_default {
+            return first_existing_directory(role, candidates);
+        }
+        let Some(selected) = candidates.into_iter().next() else {
+            return Ok(None);
+        };
+        create_directory(LocalHostDirectory::GoModuleCache, &selected)?;
+        canonicalize_existing(role, &selected).map(Some)
     }
 
     pub(super) fn file_or_directory(
@@ -3021,6 +3050,70 @@ mod tests {
         };
         environment.set(LocalHostVariable::Home, &home);
         (root, environment)
+    }
+
+    #[test]
+    fn cold_go_cache_capture_survives_ordinary_dependency_setup() {
+        let (root, mut environment) = installed_fixture("cold-go-cache", false);
+        environment.go_module_cache = None;
+        let cache = root.join("home/go/pkg/mod");
+        assert!(!cache.exists());
+        let selection = LocalCompilerHost::new(environment, LocalHostDiscovery::InstalledTools)
+            .capture_installed_selection()
+            .expect("capture installed Go before dependency setup");
+        assert_eq!(
+            selection.snapshot().path(LocalHostVariable::NudoxGoRoot),
+            Some(cache.canonicalize().unwrap().as_path())
+        );
+        // Normal dependency setup writes the public cache after this immutable
+        // host selection has already been handed to its owner.
+        fs::create_dir_all(cache.join("example.com/dependency@v1.0.0")).unwrap();
+        fs::write(
+            cache.join("example.com/dependency@v1.0.0/dependency.go"),
+            b"package dependency\nconst Value = 7\n",
+        ).unwrap();
+        let admitted = selection
+            .snapshot()
+            .path(LocalHostVariable::NudoxGoRoot)
+            .unwrap();
+        assert!(admitted.join("example.com/dependency@v1.0.0/dependency.go").is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn absent_gomodcache_keeps_precedence_over_an_existing_home_cache() {
+        let (root, mut environment) = installed_fixture("go-cache-precedence", false);
+        let selected = root.join("selected-cold-cache");
+        let fallback = root.join("home/go/pkg/mod");
+        fs::create_dir_all(&fallback).unwrap();
+        environment.go_module_cache = Some(selected.as_os_str().to_os_string());
+        let selection = LocalCompilerHost::new(environment, LocalHostDiscovery::InstalledTools)
+            .capture_installed_selection()
+            .unwrap();
+        assert_eq!(
+            selection.snapshot().path(LocalHostVariable::NudoxGoRoot),
+            Some(selected.canonicalize().unwrap().as_path())
+        );
+        assert_eq!(fs::read_dir(&fallback).unwrap().count(), 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn absent_first_gopath_cache_keeps_precedence_over_later_existing_roots() {
+        let (root, mut environment) = installed_fixture("go-path-precedence", false);
+        let first = root.join("first-gopath");
+        let second = root.join("second-gopath");
+        fs::create_dir_all(second.join("pkg/mod")).unwrap();
+        environment.go_module_cache = None;
+        environment.go_path = Some(std::env::join_paths([&first, &second]).unwrap());
+        let selection = LocalCompilerHost::new(environment, LocalHostDiscovery::InstalledTools)
+            .capture_installed_selection()
+            .unwrap();
+        assert_eq!(
+            selection.snapshot().path(LocalHostVariable::NudoxGoRoot),
+            Some(first.join("pkg/mod").canonicalize().unwrap().as_path())
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
