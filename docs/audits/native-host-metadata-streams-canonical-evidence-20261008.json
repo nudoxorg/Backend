@@ -1,0 +1,18 @@
+{
+  "schema": "nudox.root-canonical-source-correspondence.v1",
+  "base": "5f98459f36e81ed4b3abba40c0637c6ebfc042e7",
+  "tested_source": "db8fa883bce0ca1d63c89cd1fe2731cb24fd78ae",
+  "canonical_source_replay": "8891d576ad279b948ecd6c5973624b4e7be8dd84",
+  "exact_source_postimages": {
+    "tools/package/macos_managed_native_host.py": "100644 blob 324c46864f371175c2971feb16e80a040bd367cd",
+    "tools/package/test_macos_managed_native_host.py": "100644 blob 3da62faefff1124e28c8669d81ccba4a17ceda57"
+  },
+  "other_paths_unchanged": 17967,
+  "cargo_lock_unchanged": true,
+  "worker_ordinary_python_tests": 54,
+  "worker_receipt_sha256": "1a16d988b28ddbf203f4e5eed65c882d7c505344beeaf38aee1c605ceac139cb",
+  "all_three_worker_logs_rehashed": true,
+  "root_independent_new_tests": 3,
+  "root_test_log_sha256": "f7fb360967a5f2d9b3b1d0dd84d0f0daeda76d8ae92bc000a19bdaa9ef3525db",
+  "limits": "Ordinary Python orchestration fixtures only. No native release, current install, real app or GUI acceptance claim. Native four-binary release attempt02 is running on the remote Mac."
+}
