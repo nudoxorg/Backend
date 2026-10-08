@@ -1017,20 +1017,41 @@ fn view_for_workspace(
     generations: &mut SemanticGenerationResidence,
 ) -> Result<(ViewRoot, coverage::ActivatedProfiles, usize), BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
-    let sources = read_indexed_sources(&snapshot)?;
+    view_for_snapshot(
+        &snapshot,
+        compiler,
+        deployment,
+        filesystem_workspace,
+        image_rows,
+        generations,
+    )
+}
+
+/// Builds an immutable product view from one captured workspace head. This
+/// path never reselects mutable store HEAD and is usable by the sole writer's
+/// preparation worker before the candidate becomes admitted for serving.
+fn view_for_snapshot(
+    snapshot: &WorkspaceSnapshot,
+    compiler: &backend_engine::application::LocalCompilerClient,
+    deployment: SemanticDeployment,
+    filesystem_workspace: &std::path::Path,
+    image_rows: &mut view_build::ImageRowResidence,
+    generations: &mut SemanticGenerationResidence,
+) -> Result<(ViewRoot, coverage::ActivatedProfiles, usize), BuiltinModelError> {
+    let sources = read_indexed_sources(snapshot)?;
     let files = sources.files.len();
-    let (initial, _) = initial_view_for_workspace(&snapshot)?;
+    let (initial, _) = initial_view_for_workspace(snapshot)?;
     let projected = rows_for_indexed_sources(
         &initial,
         &sources,
-        &snapshot,
+        snapshot,
         compiler,
         filesystem_workspace,
         view_build::ForeignPublication::Reject,
         image_rows,
         generations,
     )?;
-    let coverage = view_coverage(&snapshot, &projected.activated, deployment)?;
+    let coverage = view_coverage(snapshot, &projected.activated, deployment)?;
     let _admitted_bytes = admitted_view_bytes(&projected.rows)?;
     let view = ViewRoot::new_checked(
         initial.recipe(),
@@ -1038,7 +1059,7 @@ fn view_for_workspace(
         initial.frontier(),
         projected.rows,
         coverage,
-        builtin_view_capability_for_workspace(&snapshot)?,
+        builtin_view_capability_for_workspace(snapshot)?,
     )
     .map_err(|error| BuiltinModelError(format!("{error:?}")))?;
     Ok((view, projected.activated, files))

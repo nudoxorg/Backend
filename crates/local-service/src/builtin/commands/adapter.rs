@@ -5204,16 +5204,27 @@ fn prepare_builtin_intent_at(
     cancellation: Arc<AtomicBool>,
 ) -> Result<PreparedBuiltinIntent, BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
+    prepare_builtin_intent_at_snapshot(&snapshot, intent, source_root, cancellation)
+}
+
+/// Stages the exact request against its captured admitted base, without a
+/// daemon reference or mutable store-head selection on the worker.
+fn prepare_builtin_intent_at_snapshot(
+    snapshot: &backend_engine::WorkspaceSnapshot,
+    intent: &BuiltinIntent,
+    source_root: Option<&Path>,
+    cancellation: Arc<AtomicBool>,
+) -> Result<PreparedBuiltinIntent, BuiltinModelError> {
     let intent = if intent.has_capture_changes() && intent.capture_basis().is_none() {
         intent
             .clone()
-            .with_capture_basis(capture_basis_for_snapshot(&snapshot)?)?
+            .with_capture_basis(capture_basis_for_snapshot(snapshot)?)?
     } else {
         intent.clone()
     };
     let request_identity = BuiltinModel.request_id(&intent);
     let intent =
-        super::super::staged_transport::stage(intent, &snapshot, source_root, cancellation)?;
+        super::super::staged_transport::stage(intent, snapshot, source_root, cancellation)?;
     Ok(PreparedBuiltinIntent {
         intent,
         request_identity,
