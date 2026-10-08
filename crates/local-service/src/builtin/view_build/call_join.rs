@@ -1489,6 +1489,8 @@ mod tsz_source_coordinate_tests {
         let root_authority = EntityAuthorityFacts {
             parentage: ParentageAuthority::Root,
             source: FactAvailability::Captured,
+            source_file: FactAvailability::Captured,
+            members: FactAvailability::Captured,
             visibility: FactAvailability::Captured,
             ..EntityAuthorityFacts::default()
         };
@@ -1545,6 +1547,7 @@ mod tsz_source_coordinate_tests {
             let method_authority = EntityAuthorityFacts {
                 parentage: ParentageAuthority::Bound(root_identity),
                 source: FactAvailability::Captured,
+                source_file: FactAvailability::Captured,
                 visibility: FactAvailability::Captured,
                 ..EntityAuthorityFacts::default()
             };
