@@ -340,6 +340,9 @@ pub(in crate::builtin) struct CommandAdapter {
     /// Commands that change state, waiting for that job: one writer at a
     /// time, in arrival order. Reads never wait here.
     waiting: std::collections::VecDeque<(u64, Vec<u8>)>,
+    /// A failed/busy durable admission probe is retried only after a finite
+    /// change or explicit refresh. A ready probe is never cached as authority.
+    queued_writer_blocked: Option<super::journal_readiness::RetryToken>,
     /// Tickets in `waiting` whose clients stopped waiting. Their commands
     /// remain admitted and will still run, but their eventual response is
     /// discarded without registering another waiter.
@@ -675,6 +678,7 @@ impl CommandAdapter {
             next_index_ticket: 1,
             index_owner_epoch,
             waiting: std::collections::VecDeque::new(),
+            queued_writer_blocked: None,
             abandoned_replies: BTreeSet::new(),
         })
     }
@@ -2651,15 +2655,24 @@ impl CommandAdapter {
                 ready.extend(self.complete_index_job(daemon, indexing, outcome, legacy_reply));
             }
         }
-        while self.indexing.is_none()
-            && !self.waiting.is_empty()
-            && !self.journal_readiness.prepared_hint()
+        while self.indexing.is_none() && !self.waiting.is_empty() {
+            let retry = self.journal_readiness.retry_token();
+            if self.journal_readiness.prepared_hint()
+                || self.queued_writer_blocked.as_ref() == Some(&retry)
+            {
+                break;
+            }
             // Notifications may arrive after a foreign commit. Only this
             // fresh durable read authorizes queued writer admission; cached
             // emptiness is never authority. Failure remains conservatively busy.
-            && !self.index_operations.has_prepared().unwrap_or(true)
-            && let Some((ticket, body)) = self.waiting.pop_front()
-        {
+            if self.index_operations.has_prepared().unwrap_or(true) {
+                self.queued_writer_blocked = Some(retry);
+                break;
+            }
+            self.queued_writer_blocked = None;
+            let Some((ticket, body)) = self.waiting.pop_front() else {
+                break;
+            };
             let abandoned = self.abandoned_replies.remove(&ticket);
             match self.execute_or_defer(daemon, &body, ticket) {
                 Ok(Executed::Reply(reply)) if !abandoned => ready.push((ticket, Ok(reply))),
@@ -6907,6 +6920,28 @@ mod tests {
         );
         assert_eq!(owner_cursor(daemon), before);
         assert!(project_is_admitted(daemon, package));
+        let reads = adapter.index_operations.read_query_count();
+        for _ in 0..1000 {
+            assert!(adapter.poll_deferred(daemon).is_empty());
+        }
+        assert_eq!(
+            adapter.index_operations.read_query_count(),
+            reads,
+            "a retained writer with unknown hints must not repeatedly probe Prepared"
+        );
+        foreign
+            .failed(
+                operation,
+                backend_library::IndexOperationFailureReason::WorkerFailed,
+                backend_library::ProductText::from_static("foreign retired"),
+            )
+            .expect("release durable slot");
+        adapter.journal_readiness.refresh();
+        let ready = adapter.poll_deferred(daemon);
+        assert_eq!(ready.len(), 1, "explicit retry admits the retained remove");
+        assert!(ready[0].1.is_ok());
+        assert!(adapter.waiting.is_empty());
+        assert!(!project_is_admitted(daemon, package));
     }
 
     #[test]
