@@ -1,0 +1,46 @@
+{
+  "schema": "nudox.root.mac-native-host-source-checkpoint.v1",
+  "recorded_utc": "2026-10-08T18:21:19.820139+00:00",
+  "canonical_base": "f4790c5560e7617857b59eab3840087f8f036aef",
+  "reviewed_source": "ab5f3cef2c85276ba4412a30295fd4c1889e2aaf",
+  "source_replay": "d81fdf496a1ba1a94fb7a63070c75a8b557e43e9",
+  "source_replay_tree": "75974f1ec2dc9dbd4aa820c4fda72a4122b37f03",
+  "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+  "exact_changed_paths": [
+    "tools/package/build-macos-investor-app.py",
+    "tools/package/macos-investor-bundle.py",
+    "tools/package/macos_managed_native_host.py",
+    "tools/package/macos_release.py",
+    "tools/package/test_macos_managed_native_host.py"
+  ],
+  "unrelated_base_entries_preserved": 17953,
+  "reviewed_postfiles_byte_identical": true,
+  "source_packet_files_rehashed": 12,
+  "manifest_sha256": "e63765d1362841869a78f38d0a287ba7cf73862f0b5ae00535bae9738445c324",
+  "fixture_validation": {
+    "command": [
+      "python3",
+      "-B",
+      "-m",
+      "unittest",
+      "test_macos_managed_native_host",
+      "test_macos_runner_contract",
+      "test_macos_release"
+    ],
+    "cwd": "/private/tmp/nudox-mac-native-host-closure-successor-20261008/tools/package",
+    "elapsed_seconds": 163.958,
+    "failed": 0,
+    "ignored": 0,
+    "owned_command_exit_code": 0,
+    "passed": 49,
+    "raw_log": "mac-native-host-review22-final-mode-fixtures-20261008.log",
+    "scope": "Ordinary Python fixture/source validation, including fake Cargo/tool receipts; no genuine Rust/release/sign/install QA.",
+    "source_head": "ab5f3cef2c85276ba4412a30295fd4c1889e2aaf"
+  },
+  "trust_boundary": "Build receipt and package manifest are trusted owner-produced metadata. External selected plan/source evidence and exact current four executable bytes/mode0755 are checked before signing. Coordinated malicious rewriting of owner-produced metadata is outside this workflow.",
+  "native_release_build": false,
+  "codesign": false,
+  "sdk_native_probes": false,
+  "fresh_installed_cli_mcp_gui": false,
+  "source_package_fixture_proof_only": true
+}

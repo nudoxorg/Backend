@@ -422,7 +422,7 @@ def cargo_provenance(
     previous_records: set[str],
     source_root: Path,
     source: dict[str, str],
-    target: str,
+    target: str | None,
     target_dir: Path,
 ) -> dict[str, object]:
     records = {path.name: path for path in provenance_dir.glob("*.json")}
@@ -454,7 +454,7 @@ def cargo_provenance(
         or toolchain.get("changed_during_build") is not False
         or not isinstance(wrapper, dict)
         or not isinstance(features, dict)
-        or features.get("targets") != [target]
+        or features.get("targets") != ([target] if target is not None else [])
     ):
         fail("Cargo provenance does not prove an unchanged, successful build from the pinned source/toolchain")
     if not isinstance(value.get("source_dirty_sha256"), str) or not re.fullmatch(
@@ -470,7 +470,7 @@ def cargo_provenance(
         "features": [],
         "all_features": False,
         "no_default_features": False,
-        "targets": [target],
+        "targets": [target] if target is not None else [],
     }:
         fail("Cargo provenance does not match the requested target-specific release build")
     wrapper_hashes = {
@@ -616,7 +616,8 @@ def _stop_owned_cargo_group(process: subprocess.Popen[bytes]) -> None:
 
 
 def _stream_direct_cargo(
-    command: list[str], cwd: Path, environment: dict[str, str], log_path: Path
+    command: list[str], cwd: Path, environment: dict[str, str], log_path: Path,
+    maximum_log_bytes: int | None = None,
 ) -> dict[str, object]:
     """Stream diagnostics while retaining Cargo's exact combined stdout/stderr bytes."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -649,7 +650,10 @@ def _stream_direct_cargo(
                 f"direct Cargo started: pid={process.pid} started={started_at} log={log_path}",
                 flush=True,
             )
-            for raw_line in iter(process.stdout.readline, b""):
+            read_line = process.stdout.readline if maximum_log_bytes is None else lambda: process.stdout.readline(maximum_log_bytes + 1)
+            for raw_line in iter(read_line, b""):
+                if maximum_log_bytes is not None and log.tell() + len(raw_line) > maximum_log_bytes:
+                    fail("Cargo raw output exceeded its finite log bound; partial log retained")
                 log.write(raw_line)
                 log.flush()
                 rendered, artifact = _parse_direct_cargo_line(raw_line)
@@ -678,6 +682,9 @@ def _stream_direct_cargo(
         if process is not None:
             _stop_owned_cargo_group(process)
         raise
+    finally:
+        if process is not None and process.stdout is not None:
+            process.stdout.close()
     if duplicate_artifacts:
         fail(f"Cargo emitted more than one executable artifact for {sorted(duplicate_artifacts)}")
     output_log = {
@@ -863,6 +870,8 @@ def main() -> int:
     parser.add_argument("--expected-runner-sha256", required=True, help="full operator-reviewed Cargo runner SHA-256")
     parser.add_argument("--target", choices=TARGETS, default="aarch64-apple-darwin")
     parser.add_argument("--output-dir", required=True, type=Path, help="new directory for copied binaries and receipt")
+    parser.add_argument("--managed-native-host-plan", type=Path, help="closed operator-pinned plan for a new managed native-host invocation")
+    parser.add_argument("--expected-managed-plan-sha256")
     args = parser.parse_args()
 
     if re.fullmatch(r"[0-9a-f]{40}", args.expected_revision) is None:
@@ -890,6 +899,15 @@ def main() -> int:
         pass
     else:
         fail("receipt output must be outside the pinned source checkout")
+
+    if args.managed_native_host_plan is not None:
+        import macos_managed_native_host as managed
+        try:
+            return managed.build(args, globals())
+        except Exception as error:
+            fail(str(error))
+    if args.expected_managed_plan_sha256 is not None:
+        fail("a managed plan hash requires its plan")
 
     source_before = source_manifest(source, args.expected_revision, args.expected_tree)
     runner = inspect_runner(args.cargo_runner, args.expected_runner_sha256)

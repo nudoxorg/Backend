@@ -1,5 +1,15 @@
 # Production readiness: what still needs attention
 
+### Mac packaging and four-language follow-through — 2026-10-08
+
+This checkpoint integrates the reviewed managed native-host Mac packaging chain. Root checked all five final packaging files against the reviewed source, preserved all unrelated canonical entries and the current lock, rehashed the sealed source packet and read its final **49-pass ordinary Python fixture log**. [The audit](../../audits/mac-native-host-checkpoint-20261008.md) states the exact source and trust boundary. No genuine release build, native SDK probe, signing, installation or current live GUI pass is claimed.
+
+The four-language gates remain explicit. TypeScript's trace-free member/enum/body-publication composition is entering native tests; the earlier failing original assertions remain preserved. Python's installed HTTPie result still belongs to historical c001 and diagnostic RAM-backed storage, not current canonical or normal-disk readiness. Go's helper eight-pass result did not compile the Rust engine test: coworker commits `05a3cbe4b8` and `f4790c5560` repaired its missing `tempfile` dev-dependency and locked graph. The dependency-correct native engine/loader cohort and Rust's eleven rustdoc controls remain separate queued gates.
+
+Prepared writer `2043` now has **13 actual native passes**, after correcting the new test's recovery expectation to match the store's existing durable-publication order; the preceding 12-pass/one-failure attempt is retained. The six ReadHead controls are running separately. Tantivy's new join still has no passing nine-control cohort: its duplicate-helper compilation failure and noncanonical-fixture `StaleRoot` failure are retained; the source/fixture successor is entering its unchanged tests. None is an end-to-end benchmark.
+
+The GUI's latest capture body produced **18 actual renderer frames**, including exact selected-result bounds before/after refused Enter at 100%/200% text and three widths. That does not erase two current native failures: extra Reader renders and missing actionable-refusal accessibility. Their tests remain strict. The ordinary current-release live GUI gate remains open. MCP cursor-guidance and passive-startup repairs also retain their own unrun native status; there is no all-tools current-release or production-readiness claim.
+
 ### Go compiler selection integrated — 2026-10-08, 15:56 UTC
 
 Go's native platform/external-test selection repair is now in the reviewed source checkpoint on canonical96d. Root checked all ten final files and all99 helper input hashes/Git objects, raw compiler/linker observations and actual **eight parent passes/four platform subcases**, with zero failures or skips. [The audit](../../audits/go-native-selection-checkpoint-20261008.md) retains the earlier six-pass/two-failure run and explains the narrow ownership and test-fixture repairs.
