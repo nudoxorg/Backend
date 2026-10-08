@@ -2931,6 +2931,16 @@ mod tests {
         manifest["typescript_sdk"]["node"]["packaged_elf"]["needed"] = serde_json::json!(["libgcc_s.so.1"]);
         resources.manifest = manifest;
         assert!(matches!(resources.admit_node(), Err(LocalCompilerHostError::BundleManifest { .. })));
+        // An oversized recorded closure is refused before opening any library, even
+        // when a manifest supplies a digest for a missing or sparse payload.
+        resources.manifest["libraries"]["libgcc_s.so.1"] = serde_json::json!({
+            "packaged_path":"lib/libgcc_s.so.1", "packaged_bytes":512u64 * 1024 * 1024 + 1,
+            "packaged_sha256":"0".repeat(64), "needed":[]
+        });
+        assert!(matches!(resources.admit_node(),
+            Err(LocalCompilerHostError::BundleManifest { message, .. })
+                if message.contains("aggregate byte bound")));
+        assert!(!root.join("lib/libgcc_s.so.1").exists());
         fs::remove_dir_all(root).unwrap();
     }
 
