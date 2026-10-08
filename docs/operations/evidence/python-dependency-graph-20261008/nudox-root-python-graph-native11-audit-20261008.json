@@ -1,0 +1,47 @@
+{
+  "source": "ea934be4f0f1d5d6f1e96d61a4e5bbd19fea4f8d",
+  "tree": "3d50c7a6dbb31112629dcdab85bab1651024b128",
+  "base": "1b46051a4bbc69440092bc7be41d80c918419282",
+  "base_tracked_source_entries_previously_verified": 17647,
+  "changed_paths_verified": [
+    "crates/engine/src/application/host/paths.rs",
+    "crates/engine/src/python_project.rs",
+    "crates/local-service/src/builtin/commands/adapter.rs"
+  ],
+  "integrated_source": "364849fe0d0368bb84013ed76acc522181d4aa48",
+  "canonical_preserved": "49bc00a8e77cc375d15426665bee92f204ea6d1e",
+  "passed": 21,
+  "failed": 0,
+  "ignored": 0,
+  "test_seconds": [
+    0.02,
+    4.7
+  ],
+  "total_seconds": 516.7462733139982,
+  "source_archive_scope": "Previously audited exact native09 archive plus all three native11 Git blob deltas.",
+  "image_seals": [
+    {
+      "path": "/root/codex-worktrees/sol61-journal-recovery-eb019-20261008/.local/journal-owned-build-role/.nudox-cargo/slot-0/debug/deps/backend_engine-fa86de2a6c48fb26",
+      "sha256": "d7c74a353cfbcfc9fffb35e3b528c1dabfda84336fc753ff2bd27ab7f5a4e307",
+      "sealed_path": "/root/sol61-journal-recovery-c68d-evidence-20261008/native-11-httpie-canonical-graph-fifo-api/images/backend_engine-fa86de2a6c48fb26",
+      "bytes": 320138584,
+      "mode": "0o444"
+    },
+    {
+      "path": "/root/codex-worktrees/sol61-journal-recovery-eb019-20261008/.local/journal-owned-build-role/.nudox-cargo/slot-0/debug/deps/backend_local_service-f23ac380133f3907",
+      "sha256": "2adb7fcd7f9cf1a3dde172ca356393a383923e210dff8cb28186c2d55c7c8765",
+      "sealed_path": "/root/sol61-journal-recovery-c68d-evidence-20261008/native-11-httpie-canonical-graph-fifo-api/images/backend_local_service-f23ac380133f3907",
+      "bytes": 523372872,
+      "mode": "0o444"
+    }
+  ],
+  "seal_sha256": "70c98866916a8f5e3f25e15d7b0b2e9081d56646b0a4b9024a3aa9ccc8aa30a9",
+  "receipt_sha256": "051f98b41f37a93006c9d51a06308066883a4526cf3b2507cccecbb8f5403414",
+  "log_sha256": "8bfa1c7ac6b846ff698b1a6e9041433484c684ccbd9cd5d5cdd9a82c497f88d9",
+  "limits": [
+    "Warm/cold six-route dependency graph controls use the actual service adapter and strict DTO admission, not installed CLI/MCP transport.",
+    "Full pinned HTTPie source is copied; the graph-only control correctly returns zero native search declarations.",
+    "Remote native image hashes are supervisor seals, not independent Root remote image rereads.",
+    "Combined canonical integration retains the separately tested typed-read repair; combined release/public replay is still pending."
+  ]
+}

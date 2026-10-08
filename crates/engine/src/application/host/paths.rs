@@ -3349,7 +3349,12 @@ mod tests {
         // fixture helper is bounded to this private path and its child is reaped.
         assert!(std::process::Command::new("/usr/bin/mkfifo").arg(&resource).status().unwrap().success());
         #[cfg(not(target_os = "macos"))]
-        rustix::fs::mkfifo(&resource, rustix::fs::Mode::from_raw_mode(0o600)).unwrap();
+        rustix::fs::mkfifoat(
+            rustix::fs::CWD,
+            &resource,
+            rustix::fs::Mode::from_raw_mode(0o600),
+        )
+        .unwrap();
         assert!(open_regular_resource(&resource, 1024, &before).is_err());
         assert!(read_bounded(&resource, 1024).is_err());
         assert!(sha256_file(&resource, 1024).is_err());

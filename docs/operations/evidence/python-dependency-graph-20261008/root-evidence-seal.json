@@ -1,0 +1,38 @@
+{
+  "audit-seal.json": {
+    "bytes": 2348,
+    "sha256": "70c98866916a8f5e3f25e15d7b0b2e9081d56646b0a4b9024a3aa9ccc8aa30a9"
+  },
+  "cargo.log": {
+    "bytes": 396685,
+    "sha256": "8bfa1c7ac6b846ff698b1a6e9041433484c684ccbd9cd5d5cdd9a82c497f88d9"
+  },
+  "graph-fifo-atomic-stack.bundle": {
+    "bytes": 6733,
+    "sha256": "5622ffba140c355c7a5aae7b3c6444bc457f438f02e8ce1394e1c2a7c0613fe8"
+  },
+  "graph-fifo-complete.diff": {
+    "bytes": 17931,
+    "sha256": "58b35fee626d62f12e8295d07453bf25e65cf1436e58e353b3abcf7526a59e24"
+  },
+  "launch.json": {
+    "bytes": 35308,
+    "sha256": "28aab93423f91a68d0870884536b3ff1fc1963517a233cf1dec20494ea7911b1"
+  },
+  "nudox-root-python-graph-native11-audit-20261008.json": {
+    "bytes": 2547,
+    "sha256": "164e822dc9af19dddbf4c302e7ac5cf4ebf54539549ea6df68162e066b36dcb9"
+  },
+  "nudox-root-python-graph-native11-audit-20261008.py": {
+    "bytes": 5823,
+    "sha256": "9405e5d024a0b093fcef60b694b5260f6d22703cad9c0517289f68caa9b541fa"
+  },
+  "receipt.json": {
+    "bytes": 37713,
+    "sha256": "051f98b41f37a93006c9d51a06308066883a4526cf3b2507cccecbb8f5403414"
+  },
+  "source-inputs.json": {
+    "bytes": 1861,
+    "sha256": "8fa624c0988f6e7e55e1775883d9d4d5242edb9aec0478d8575066a0c0646e45"
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "source": {
+    "commit": "ea934be4f0f1d5d6f1e96d61a4e5bbd19fea4f8d",
+    "tree": "3d50c7a6dbb31112629dcdab85bab1651024b128",
+    "clean": true,
+    "lock_sha256": "25651f3e24835305ea3d55dc0510c54ba2d083357e0503455d48ff86804a4594"
+  },
+  "test_results": [
+    "test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 878 filtered out; finished in 0.02s",
+    "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 1139 filtered out; finished in 4.70s"
+  ],
+  "images": [
+    {
+      "path": "/root/codex-worktrees/sol61-journal-recovery-eb019-20261008/.local/journal-owned-build-role/.nudox-cargo/slot-0/debug/deps/backend_engine-fa86de2a6c48fb26",
+      "sha256": "d7c74a353cfbcfc9fffb35e3b528c1dabfda84336fc753ff2bd27ab7f5a4e307",
+      "sealed_path": "/root/sol61-journal-recovery-c68d-evidence-20261008/native-11-httpie-canonical-graph-fifo-api/images/backend_engine-fa86de2a6c48fb26",
+      "bytes": 320138584,
+      "mode": "0o444"
+    },
+    {
+      "path": "/root/codex-worktrees/sol61-journal-recovery-eb019-20261008/.local/journal-owned-build-role/.nudox-cargo/slot-0/debug/deps/backend_local_service-f23ac380133f3907",
+      "sha256": "2adb7fcd7f9cf1a3dde172ca356393a383923e210dff8cb28186c2d55c7c8765",
+      "sealed_path": "/root/sol61-journal-recovery-c68d-evidence-20261008/native-11-httpie-canonical-graph-fifo-api/images/backend_local_service-f23ac380133f3907",
+      "bytes": 523372872,
+      "mode": "0o444"
+    }
+  ],
+  "retirement": "owned-child-kernel-wait",
+  "files": {
+    "graph-fifo-complete.diff": {
+      "bytes": 17931,
+      "sha256": "58b35fee626d62f12e8295d07453bf25e65cf1436e58e353b3abcf7526a59e24"
+    },
+    "cargo.log": {
+      "bytes": 396685,
+      "sha256": "8bfa1c7ac6b846ff698b1a6e9041433484c684ccbd9cd5d5cdd9a82c497f88d9"
+    },
+    "graph-fifo-atomic-stack.bundle": {
+      "bytes": 6733,
+      "sha256": "5622ffba140c355c7a5aae7b3c6444bc457f438f02e8ce1394e1c2a7c0613fe8"
+    },
+    "launch.json": {
+      "bytes": 35308,
+      "sha256": "28aab93423f91a68d0870884536b3ff1fc1963517a233cf1dec20494ea7911b1"
+    },
+    "source-inputs.json": {
+      "bytes": 1861,
+      "sha256": "8fa624c0988f6e7e55e1775883d9d4d5242edb9aec0478d8575066a0c0646e45"
+    },
+    "receipt.json": {
+      "bytes": 37713,
+      "sha256": "051f98b41f37a93006c9d51a06308066883a4526cf3b2507cccecbb8f5403414"
+    }
+  }
+}
