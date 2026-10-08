@@ -133,6 +133,7 @@ mod tests {
                 .expect("affine authentication");
         let case = case.to_owned();
         let server_path = path.clone();
+        let (release_peer, retain_peer) = std::sync::mpsc::channel();
         let server = std::thread::spawn(move || {
             let (mut peer, _) = listener.accept().expect("accept");
             let frame = read_body(&mut peer).expect("request frame");
@@ -192,11 +193,18 @@ mod tests {
                 .expect("terminal")
             };
             let _ = write_body(&mut peer, &terminal);
+            // Keep the owner and stream alive until the client consumes the
+            // terminal. On macOS, setting a read deadline after peer closure
+            // can report InvalidInput before buffered reply admission.
+            let _ = retain_peer.recv();
             drop(replacement);
+            drop(peer);
+            drop(listener);
         });
         let started = Instant::now();
         let result = client.request(request());
         let elapsed = started.elapsed();
+        let _ = release_peer.send(());
         drop(client);
         server.join().expect("owned server kernel wait");
         let _ = std::fs::remove_file(path);
@@ -258,6 +266,7 @@ mod tests {
     #[test]
     fn deferred_command_ack_unverified_stream_and_trickled_frame_cannot_renew() {
         let (mut raw, mut peer) = backend_replication::LocalStream::pair().expect("pair");
+        let (release_peer, retain_peer) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
             let original = read_body(&mut peer).expect("legacy raw request");
             assert!(
@@ -271,14 +280,16 @@ mod tests {
                 .expect("claim")
                 .encode(backend_library::DTO_VERSION);
             write_body(&mut peer, &ack).expect("untrusted ACK");
+            retain_peer.recv().expect("client consumed untrusted ACK");
         });
         raw.set_read_timeout(Some(Duration::from_millis(60)))
             .expect("initial lease");
         let mut transport = UnixCommandTransport::from_stream(raw);
         let unverified = transport.request(request());
+        release_peer.send(()).expect("release untrusted peer");
+        worker.join().expect("retire peer");
         assert!(matches!(unverified, Err(ClientError::Protocol(_))),
             "unverified stream returned: {unverified:?}");
-        worker.join().expect("retire peer");
 
         let (mut raw, mut peer) = backend_replication::LocalStream::pair().expect("trickle pair");
         let worker = std::thread::spawn(move || {
