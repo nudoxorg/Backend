@@ -449,7 +449,10 @@ fn run_public_index_operation_lifecycle(
         );
     };
     assert_eq!(members.len(), 1);
-    assert_eq!(members[0].name.as_str(), "pulse");
+    assert!(matches!(
+        &members[0].name,
+        backend_library::SemanticShapeMemberName::Named(name) if name.as_str() == "pulse"
+    ));
     assert!(matches!(
         &members[0].ty,
         SemanticTypeFact::Known(SemanticTypeExpr::Builtin(_))

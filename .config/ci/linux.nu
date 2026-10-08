@@ -187,14 +187,12 @@ def main [
     # the two fixture projects pin, plus the releases tests name directly.
     ci-step "linux" "warm the Cargo cache for registry tests" {|| warm-registry-cache } | ignore
     stop-if-superseded "linux"
-    let tests = (with-env $test_env {
-        ci-step "linux" "backend test pr" {|| run-bounded 75min "sh" "-c" "umask 077 && exec backend test pr" }
-    })
+    let tests = ci-step "linux" "backend test pr" {||
+        with-env $test_env { run-bounded 75min "sh" "-c" "umask 077 && exec backend test pr" }
+    }
     if not $tests { print-captured-failures }
 
     report-build-size
     reclaim-build-output
-    if not ($flake and $tests) {
-        error make {msg: "linux lane failed"}
-    }
+    finish-lane "linux" [$flake $tests]
 }

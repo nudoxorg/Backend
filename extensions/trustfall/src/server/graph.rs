@@ -1346,6 +1346,7 @@ mod tests {
         ];
         let items = [b"source".as_slice(), b"target".as_slice()].map(|name| TreeItemInput {
             name,
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: EntityAuthorityFacts {

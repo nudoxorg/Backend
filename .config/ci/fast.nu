@@ -42,7 +42,5 @@ def main []: nothing -> nothing {
         }
     }
     reclaim-build-output
-    if not ($checks and $compiles) {
-        error make {msg: "fast lane failed"}
-    }
+    finish-lane "fast" [$checks $compiles]
 }

@@ -207,6 +207,16 @@ let
   # into every cross run. `nushell` runs the standalone lane runner at
   # `.config/ci/cross-check.nu`; nothing here closes over the `backend` command.
   crossAttrs = {
+    # Fast CI checks use disposable checkouts. Incremental state for every
+    # workspace test wrote 11GB for Windows alone without surviving a run.
+    CARGO_INCREMENTAL = "0";
+    # Cargo's debug C builds use -O0. jemalloc's configure probes add -Werror,
+    # which turns glibc's "_FORTIFY_SOURCE requires optimization" into a
+    # failure. This compile/test shell does not configure release hardening.
+    hardeningDisable = [
+      "fortify"
+      "fortify3"
+    ];
     packages = [
       toolchains.cross
       pkgs.nushell
@@ -224,7 +234,14 @@ let
     # dlopen configuration of fontconfig-sys compiles without one.
     RUST_FONTCONFIG_DLOPEN = "on";
     CC_x86_64_pc_windows_gnu = "cc-x86_64-windows-gnu";
-    CC_x86_64_unknown_linux_gnu = "cc-x86_64-linux-gnu";
+    # Native build scripts (jemalloc's configure) execute C probes. The Nix
+    # compiler links the store loader; Zig uses generic /lib64, unavailable
+    # in our CI containers. Foreign targets retain the Zig cross compiler.
+    CC_x86_64_unknown_linux_gnu =
+      if pkgs.stdenv.hostPlatform.system == "x86_64-linux" then
+        "${pkgs.stdenv.cc}/bin/cc"
+      else
+        "cc-x86_64-linux-gnu";
     CC_aarch64_unknown_linux_gnu = "cc-aarch64-linux-gnu";
     AR_x86_64_pc_windows_gnu = "ar-zig";
     # `embed_resource` (gpui) identifies its compiler by probing it; llvm-rc

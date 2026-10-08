@@ -282,7 +282,14 @@ fn render_pass(ir: &backend_semantic::ir::Ir, profile: LanguageProfile) -> Rende
     for item in ir.items().take(ENTITIES_PER_PACKAGE) {
         counts.entities += 1;
         let kind = format!("{:?}", item.kind());
-        let name = String::from_utf8_lossy(item.name()).into_owned();
+        let name = match item.name() {
+            backend_semantic::ir::ItemNameView::Named(bytes) => {
+                String::from_utf8_lossy(bytes).into_owned()
+            }
+            backend_semantic::ir::ItemNameView::AnonymousCallable { .. } => {
+                "<anonymous callable>".to_owned()
+            }
+        };
         let signature = ir.signature(item.id()).map(|display| display.to_string());
         let mut markers = Vec::new();
         if let Some(ref text) = signature {

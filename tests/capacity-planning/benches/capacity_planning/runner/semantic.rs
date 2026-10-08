@@ -57,6 +57,7 @@ impl FrontendTree for SemanticCorpus<'_> {
     fn items(&self) -> impl ExactSizeIterator<Item = TreeItemInput<'_>> {
         (0..self.corpus.len).map(|index| TreeItemInput {
             name: self.corpus.name(index).unwrap_or(b"?"),
+            anonymous_callable_anchor: None,
             kind: ItemKind::Function,
             visibility: Visibility::Public,
             authority: EntityAuthorityFacts::default(),

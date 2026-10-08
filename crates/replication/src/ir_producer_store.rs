@@ -2884,10 +2884,10 @@ mod tests {
             .enumerate()
             .map(|(position, _)| TreeItemInput {
                 name: names[position].as_bytes(),
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority,
-                anonymous_callable_anchor: None,
                 parent: None,
                 semantic_type: None,
                 members: &[],
@@ -3358,10 +3358,10 @@ mod tests {
             .enumerate()
             .map(|(position, _)| TreeItemInput {
                 name: names[position].as_bytes(),
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority,
-                anonymous_callable_anchor: None,
                 parent: None,
                 semantic_type: Some(semantic_type),
                 members: &[],

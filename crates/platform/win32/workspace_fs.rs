@@ -2112,7 +2112,7 @@ fn ensure_user_data_handle(handle: *mut c_void) -> io::Result<()> {
         if allowed.Mask & writes == 0 {
             continue;
         }
-        let sid = (&raw const allowed.SidStart).cast_mut().cast();
+        let sid = (&raw const allowed.SidStart).cast_mut().cast::<c_void>();
         // SAFETY: the minimum ACE size above covers the eight-byte SID header.
         let count = unsafe { *sid.cast::<u8>().add(1) } as usize;
         let encoded_len = 8 + 4 * count;

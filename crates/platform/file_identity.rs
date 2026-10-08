@@ -19,6 +19,12 @@ pub struct FileIdentity {
 }
 
 impl FileIdentity {
+    /// Returns the volume and full object identifier without truncating Windows file ids.
+    #[must_use]
+    pub const fn parts(self) -> (u64, u128) {
+        (self.volume, self.object)
+    }
+
     /// Returns the stable platform-independent volume/object identity bytes.
     /// These bytes identify one filesystem instance, rather than its path.
     #[must_use]
@@ -99,6 +105,28 @@ impl FileIdentity {
     }
 }
 
+/// Returns how many directory entries name the object held by an open file.
+///
+/// # Errors
+/// Returns an OS error if the handle cannot be queried, or `Unsupported`
+/// on platforms without a link-count implementation.
+pub fn number_of_links(file: &File) -> io::Result<u64> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        Ok(file.metadata()?.nlink())
+    }
+    #[cfg(windows)]
+    {
+        crate::win32::file::number_of_links(file)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = file;
+        Err(unsupported())
+    }
+}
+
 #[cfg(not(any(unix, windows)))]
 fn unsupported() -> io::Error {
     io::Error::new(
@@ -157,7 +185,10 @@ mod tests {
         let original = directory.join("original");
         let alias = directory.join("alias");
         fs::write(&original, b"bytes").expect("write original");
+        let file = fs::File::open(&original).expect("open original");
+        assert_eq!(super::number_of_links(&file).expect("one name"), 1);
         fs::hard_link(&original, &alias).expect("create hard link");
+        assert_eq!(super::number_of_links(&file).expect("two names"), 2);
         assert_eq!(
             FileIdentity::of_path_nofollow(&original).expect("original identity"),
             FileIdentity::of_path_nofollow(&alias).expect("alias identity"),

@@ -2874,6 +2874,7 @@ mod authority_plane_tests {
         let items = [
             TreeItemInput {
                 name: b"Widget",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Record,
                 visibility: Visibility::Public,
                 authority: documented,
@@ -2887,6 +2888,7 @@ mod authority_plane_tests {
             },
             TreeItemInput {
                 name: b"make",
+                anonymous_callable_anchor: None,
                 kind: ItemKind::Function,
                 visibility: Visibility::Public,
                 authority: undocumented,

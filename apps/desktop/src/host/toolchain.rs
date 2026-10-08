@@ -19,9 +19,8 @@ use std::sync::{PoisonError, RwLock};
 
 // Installed Rust pair discovery is shared with CLI/MCP host capture.
 pub(crate) use backend_local_service::InstalledRustToolchain as Rust;
-use backend_local_service::{
-    InstalledRustInputs, InstalledToolPlace as Place,
-};
+use backend_local_service::InstalledRustInputs;
+pub(super) use backend_local_service::InstalledToolPlace as Place;
 
 #[cfg(test)]
 fn executable(tool: &str) -> String { format!("{tool}{}", std::env::consts::EXE_SUFFIX) }
@@ -29,7 +28,7 @@ fn home_variable(value: &dyn Fn(&str) -> Option<OsString>) -> Option<OsString> {
     value("HOME").or_else(|| if cfg!(windows) { value("USERPROFILE") } else { None })
 }
 
-fn find_rust(variable: &dyn Fn(&str) -> Option<OsString>, system: &[(PathBuf, Place)]) -> Rust {
+pub(super) fn find_rust(variable: &dyn Fn(&str) -> Option<OsString>, system: &[(PathBuf, Place)]) -> Rust {
     backend_local_service::find_installed_rust(&InstalledRustInputs {
         configured_rustc: variable("NUDOX_RUSTC"),
         home: home_variable(variable),

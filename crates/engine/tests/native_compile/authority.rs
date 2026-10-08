@@ -33,6 +33,7 @@ fn exact_toolchain_version_bytes_change_the_bound_recipe_authority() -> Result<(
 fn relative_toolchain_path_is_never_a_path_lookup_capability() -> Result<(), TestFailure> {
     match ResolvedToolchain::from_version(NativeTool::Rustc, Path::new("rustc"), b"fixture") {
         Err(ToolchainResolutionError::RelativeExecutable) => Ok(()),
+        Err(cause) => Err(TestFailure::Resolve(cause)),
         Ok(_toolchain) => Err(TestFailure::ResolutionUnexpectedlySucceeded),
     }
 }
