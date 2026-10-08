@@ -1,0 +1,77 @@
+{
+  "source_before": {
+    "commit": "5f2a97eb4c74c175e190ff9637373c6bcf9ae39e",
+    "tree": "08d334bdf7ae6bd87c4943b58f010d4554dcbb12",
+    "clean": true,
+    "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+  },
+  "source_after": {
+    "commit": "5f2a97eb4c74c175e190ff9637373c6bcf9ae39e",
+    "tree": "08d334bdf7ae6bd87c4943b58f010d4554dcbb12",
+    "clean": true,
+    "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+  },
+  "pid": 80399,
+  "argv": [
+    "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-managed-runner/cargo",
+    "build",
+    "--locked",
+    "--offline",
+    "-j2",
+    "-p",
+    "backend-cli",
+    "-p",
+    "backend-mcp",
+    "-p",
+    "backend-locald",
+    "--message-format=json-render-diagnostics"
+  ],
+  "runner_sha256": "12db87ac9dc0241064fa14042b9c2e28734aa53867e920f2519f0d824038b552",
+  "environment_sha256": "dfcbb9a52f71e4697efd7b036ba7413794d4ff7195e7d7f1de8375ac4e5b763a",
+  "supervisor_sha256": "8959df6fddc6faa6e2f47cd8d26d3895a737b329608b0602f71c740c18b611ca",
+  "toolchain": {
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)"
+  },
+  "memory_guard_scope": "destination",
+  "destination_memory_only_for_remote": true,
+  "started_utc": "2026-10-08T00:27:46.272988+00:00",
+  "ended_utc": "2026-10-08T00:31:23.483020+00:00",
+  "elapsed_seconds": 216.54363891598769,
+  "exit": 0,
+  "retirement": "owned-child-kernel-wait",
+  "manifest_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/native-mac-07-current-5f2/manifest.json",
+  "manifest_sha256": "163296ef6000159943cd43b8cfd48f08989c8132f06426481805266efe5444c8",
+  "images_root": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/native-mac-07-current-5f2/images",
+  "artifacts": {
+    "backend-mcp": {
+      "sha256": "29f86571fbbfd1faeaca22f5198545366b08c644e55bee4eb25c78780c611364",
+      "bytes": 160732144
+    },
+    "backend-cli": {
+      "sha256": "d91521d9a06596a893681626e883d285f2e3dae0f5dbc55439f96eeb50b638c5",
+      "bytes": 219714608
+    },
+    "backend-locald": {
+      "sha256": "12b9519ca675c3dfdae2f9e8bf30b422ad90c252f5126a86ca89a735a1e06af8",
+      "bytes": 685762976
+    }
+  },
+  "raw": {
+    "launch.json": {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/native-mac-07-current-5f2/launch.json",
+      "sha256": "f978a56ed16e79d15569e000e3f1924115bac881abfc7804e446b976626ba53a",
+      "bytes": 25579
+    },
+    "receipt.json": {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/native-mac-07-current-5f2/receipt.json",
+      "sha256": "61beadb4d411df478bb2467da9da0534cf65f2bd2276cd198a53bd55416d6d82",
+      "bytes": 29449
+    },
+    "cargo.log": {
+      "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/native-mac-07-current-5f2/cargo.log",
+      "sha256": "0caf106a21f4778b5baca9cd54b78def27b61e5287f991a6839e2f663369fd85",
+      "bytes": 1198445
+    }
+  }
+}

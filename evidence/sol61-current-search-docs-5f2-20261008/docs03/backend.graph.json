@@ -1,0 +1,168 @@
+{
+  "jsonrpc": "2.0",
+  "id": 10,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "~lanes exact\u27132 names\u27132 graph\u27132 semantic\u2717 unconfigured\nproject \u203a src/backend/core/api/utils.py:70 \u203a generate_s3_authorization_headers  \u00b7  function \u00b7 python\n`/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-real-applications-199b-20261007/docs/project::src/backend/core/api/utils.py:70::generate_s3_authorization_headers`  def generate_s3_authorization_headers(key):\n    \"\"\"\n    Generate authorization headers for an s3 object.\n    These headers can be used as an alternative to signed urls with many benefits:\n    - the urls of our files never expire and can be stored in our documents' content\n    - we don't leak authorized urls that could be shared (file access can only be done\n      with cookies)\n    - access control is truly realtime\n    - the object storage service does not need to be exposed on internet\n    \"\"\"\n    url = get_unsigned_s3_client().generate_presigned_url(\n        \"get_object\",\n        ExpiresIn=0,\n        Params=\nproject \u203a src/backend/core/utils/s3.py:45 \u203a get_s3_client  \u00b7  function \u00b7 python\n`/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-real-applications-199b-20261007/docs/project::src/backend/core/utils/s3.py:45::get_s3_client`  def get_s3_client():\n"
+      }
+    ],
+    "structuredContent": {
+      "query": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-real-applications-199b-20261007/docs/project::src/backend/core/api/utils.py:70::generate_s3_authorization_headers",
+      "coverage": [
+        {
+          "lane": "exact",
+          "state": "complete"
+        },
+        {
+          "lane": "names",
+          "state": "complete"
+        },
+        {
+          "lane": "graph",
+          "state": "complete"
+        },
+        {
+          "lane": "semantic",
+          "state": "unavailable",
+          "reason": "unconfigured"
+        }
+      ],
+      "readiness": "ready",
+      "records": [
+        {
+          "identity": {
+            "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-real-applications-199b-20261007/docs/project::src/backend/core/api/utils.py:70::generate_s3_authorization_headers",
+            "trail": "project \u203a src/backend/core/api/utils.py:70 \u203a generate_s3_authorization_headers",
+            "name": "generate_s3_authorization_headers",
+            "shape": "declaration",
+            "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-real-applications-199b-20261007/docs/project",
+            "path": "src/backend/core/api/utils.py",
+            "line": 70,
+            "segments": [
+              "generate_s3_authorization_headers"
+            ],
+            "key": "0e4702eb",
+            "semantic_data": {
+              "kind": "selected-symbol-id",
+              "value": [
+                14,
+                71,
+                2,
+                235,
+                135,
+                136,
+                244,
+                5,
+                61,
+                241,
+                216,
+                89,
+                107,
+                149,
+                65,
+                192,
+                106,
+                56,
+                85,
+                219,
+                204,
+                228,
+                92,
+                197,
+                96,
+                231,
+                30,
+                200,
+                135,
+                245,
+                217,
+                232
+              ]
+            }
+          },
+          "kind": "function",
+          "language": "python",
+          "state": "ready",
+          "summary": "Generate authorization headers for an s3 object."
+        },
+        {
+          "identity": {
+            "coordinate": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-real-applications-199b-20261007/docs/project::src/backend/core/utils/s3.py:45::get_s3_client",
+            "trail": "project \u203a src/backend/core/utils/s3.py:45 \u203a get_s3_client",
+            "name": "get_s3_client",
+            "shape": "declaration",
+            "project": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-real-applications-199b-20261007/docs/project",
+            "path": "src/backend/core/utils/s3.py",
+            "line": 45,
+            "segments": [
+              "get_s3_client"
+            ],
+            "key": "c43305b8",
+            "semantic_data": {
+              "kind": "selected-symbol-id",
+              "value": [
+                196,
+                51,
+                5,
+                184,
+                199,
+                240,
+                198,
+                223,
+                9,
+                93,
+                53,
+                52,
+                36,
+                74,
+                57,
+                47,
+                212,
+                45,
+                248,
+                107,
+                191,
+                136,
+                146,
+                122,
+                94,
+                2,
+                241,
+                226,
+                144,
+                92,
+                70,
+                51
+              ]
+            }
+          },
+          "kind": "function",
+          "language": "python",
+          "state": "ready",
+          "summary": "Return a process-global signed S3 client (thread-safe, built once)."
+        }
+      ],
+      "more": false,
+      "answer": "records",
+      "detail": "summary",
+      "budget": {
+        "bytes": 2183,
+        "estimatedTokens": 546,
+        "bytesPerToken": 4
+      }
+    },
+    "isError": false,
+    "_meta": {
+      "backend/wireBudget": {
+        "bytes": 3675,
+        "estimatedTokens": 919,
+        "bytesPerToken": 4,
+        "limitBytes": 49152,
+        "scope": "complete_jsonrpc_line"
+      }
+    }
+  },
+  "_acceptance_wire_bytes": 3675
+}

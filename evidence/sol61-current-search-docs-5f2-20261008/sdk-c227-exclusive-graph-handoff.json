@@ -1,0 +1,59 @@
+{
+  "authorization": "Root explicitly allocates released5f2 warm graph exclusively to /root/sol61_toolchain_setup_parity SDKc227 native validation; helperhelp postponed; lifecycle uses othergraph",
+  "handoff_utc": "2026-10-08T00:46:17.780203+00:00",
+  "previous_owner": "/root/sol61_nonblocking_index_search",
+  "next_exclusive_owner": "/root/sol61_toolchain_setup_parity",
+  "workspace_root": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007",
+  "source": {
+    "commit": "5f2a97eb4c74c175e190ff9637373c6bcf9ae39e",
+    "tree": "08d334bdf7ae6bd87c4943b58f010d4554dcbb12",
+    "clean": true,
+    "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+  },
+  "target": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/target",
+  "role_build_root": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role",
+  "actual_slot_target": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0",
+  "sccache": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/sccache",
+  "lifetime_lock": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-graph-lifetime.lock",
+  "managed_leases": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/leases",
+  "original_graph_stamps": {
+    "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/target/.nudox-worktree-root": {
+      "value": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007\n",
+      "sha256": "36b39ec192565e9ee64732ced9c15df937c954e9df8434414282a0078c414aef"
+    },
+    "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/.nudox-worktree-root": {
+      "value": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007\n",
+      "sha256": "36b39ec192565e9ee64732ced9c15df937c954e9df8434414282a0078c414aef"
+    }
+  },
+  "graph_lifetime_lock_acquired_exclusively": true,
+  "no_owned_active_native_processes": true,
+  "native_child": 80399,
+  "native_kernel_wait": 0,
+  "runtime_owner": 92828,
+  "runtime_kernel_wait": 0,
+  "immutable_images": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/native-mac-07-current-5f2/images",
+  "immutable_manifest": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/native-mac-07-current-5f2/manifest.json",
+  "currentproof_archive": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/current-5f2-native-docs-proof-v1.tar.gz",
+  "tools": {
+    "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-managed-runner/cargo": {
+      "sha256": "12db87ac9dc0241064fa14042b9c2e28734aa53867e920f2519f0d824038b552"
+    },
+    "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-managed-runner/rustc-cache.sh": {
+      "sha256": "add011a45751151c5b13914888026da2f57a4752f56012a30e951480491afb7a"
+    },
+    "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/native-environment.sh": {
+      "sha256": "dfcbb9a52f71e4697efd7b036ba7413794d4ff7195e7d7f1de8375ac4e5b763a"
+    }
+  },
+  "toolchain": {
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)"
+  },
+  "next_source_commit": "c2278b82a2d3fe8e3a2632d59079a6b64e70ec91",
+  "next_source_tree": "9bc552233890c582b6643a76ae18722335074834",
+  "next_cargo_jobs": 2,
+  "required_next_proof": "Explicit freshdestination-memory permit; unchangedworktree stamps; actualverbose rustc source binding aftergraphchange; CargoJSON fresh=false owncrate test artifact and imageSHA; cleanGit/tree/lock beforeafter and kernelretirement",
+  "new_target_copy": false,
+  "previous_owner_will_not_launch_or_mutate_this_graph": true
+}

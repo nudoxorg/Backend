@@ -1,0 +1,10 @@
+{
+  "archive_sha256": "451928e464c62c7db749242a97b57420ec187243f890e39bca593880529bb264",
+  "archive_bytes": 1572668,
+  "member_hashes_verified": 140,
+  "raw_files_verified": 139,
+  "all_pass": true,
+  "remote_archive": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/current-5f2-native-docs-proof-v2.tar.gz",
+  "superseded_v1_archive_sha256": "c18363de37b8dd924cd9fa14d283c1fccfc0f83bbb73cd2a12153ec0f2511157",
+  "supersession_scope": "correct semantic classification; preserve original v1 analysis and raw results; no runtime rerun"
+}

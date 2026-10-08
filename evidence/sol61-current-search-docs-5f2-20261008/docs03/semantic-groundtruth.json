@@ -1,0 +1,44 @@
+{
+  "source_commit": "6e5dee38e927fac86855d17dfb614fbb64b172b3",
+  "source_path": "src/backend/core/api/viewsets.py",
+  "blob": "2a7d929f35c4acb1403cf208ce313ec2fc09ded3",
+  "sha256": "4760bbe804351d3bb7bb3534eeca5a2c8ec63f95752621e7dc2952fe5a5f58e8",
+  "bytes": 128577,
+  "caller_line": 2167,
+  "caller_excerpt": [
+    {
+      "line": 2163,
+      "text": "        ):"
+    },
+    {
+      "line": 2164,
+      "text": "            raise drf.exceptions.PermissionDenied()"
+    },
+    {
+      "line": 2165,
+      "text": ""
+    },
+    {
+      "line": 2166,
+      "text": "        # Generate S3 authorization headers using the extracted URL parameters"
+    },
+    {
+      "line": 2167,
+      "text": "        request = utils.generate_s3_authorization_headers(key)"
+    },
+    {
+      "line": 2168,
+      "text": ""
+    },
+    {
+      "line": 2169,
+      "text": "        return drf.response.Response(\"authorized\", headers=request.headers, status=200)"
+    },
+    {
+      "line": 2170,
+      "text": ""
+    }
+  ],
+  "read_method": "git show exact pinned public source commit; no reindex or original-state launch",
+  "expected_reference_minimum": 1
+}

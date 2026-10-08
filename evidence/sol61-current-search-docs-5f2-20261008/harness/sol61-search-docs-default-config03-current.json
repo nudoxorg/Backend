@@ -1,0 +1,27 @@
+{
+  "destination": "h16001mac",
+  "coordination": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-coordination",
+  "manifest": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/native-mac-07-current-5f2/manifest.json",
+  "manifest_sha256": "163296ef6000159943cd43b8cfd48f08989c8132f06426481805266efe5444c8",
+  "compiled_source_commit": "5f2a97eb4c74c175e190ff9637373c6bcf9ae39e",
+  "images": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/native-mac-07-current-5f2/images",
+  "permit": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-owner.lock",
+  "root": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2",
+  "name": "docs-search-default-current",
+  "probe": {
+    "name": "generate_s3_authorization_headers",
+    "path": "src/backend/core/api/utils.py",
+    "line": 70
+  },
+  "edit": {
+    "path": "src/backend/core/api/utils.py",
+    "old": "        ExpiresIn=0,",
+    "new": "        ExpiresIn=1,"
+  },
+  "compiled_source_root": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007",
+  "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268",
+  "workspace_default": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/home/Library/Application Support/Nudox/projects/41b80b021523c4107e65f9b323f284266cb4a56e5cc0c4b1c260959db3b33d08",
+  "endpoint_default": "/tmp/backend-v2-9616202a2dce5515dfbac461.sock",
+  "platform_default_uid": 1893584017,
+  "compiled_source_tree": "08d334bdf7ae6bd87c4943b58f010d4554dcbb12"
+}
