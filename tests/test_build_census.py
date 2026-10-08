@@ -42,6 +42,22 @@ def process(
 
 
 class CargoCensusTests(unittest.TestCase):
+    @staticmethod
+    def snapshot(records: dict[int, census.ProcessRecord]) -> census.ProcessSnapshot:
+        return census.ProcessSnapshot(
+            records=records,
+            started_at_utc="2026-10-08T05:09:05+00:00",
+            finished_at_utc="2026-10-08T05:09:05.1+00:00",
+            complete=True,
+            issue_counts={},
+            race_counts={},
+            effective_uid=501,
+            visible_process_count=len(records),
+            captured_argv_bytes=0,
+            captured_argv_processes=0,
+            argv_budget_exhausted=False,
+        )
+
     def test_unreadable_same_uid_executable_is_retained_as_unknown_occupied_group(self) -> None:
         row = census._PsRow(11939, 1, 8800, 501, "Wed Oct 7 13:46:26 2026", "browser_crashpad")
 
@@ -136,6 +152,66 @@ class CargoCensusTests(unittest.TestCase):
         self.assertEqual(groups[0]["classification"], "runtime-owner")
         self.assertEqual(groups[1]["kind"], "runtime-owner")
         self.assertEqual(groups[1]["classification"], "unknown")
+        self.assertEqual(groups[0]["admission_slot_count"], 1)
+        self.assertEqual(groups[1]["admission_slot_count"], 1)
+
+    def test_sibling_cargo_processes_each_consume_a_slot_and_keep_aggregate_jobs(self) -> None:
+        first = process(810, ("cargo", "check", "--jobs=4"), ppid=800, pgid=800)
+        second = process(811, ("cargo", "check", "--jobs=4"), ppid=800, pgid=800)
+        snapshot = self.snapshot({first.pid: first, second.pid: second})
+
+        groups = census.compiler_groups(snapshot, census.cargo_entries(snapshot))
+
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["cargo_pids"], [810, 811])
+        self.assertEqual(groups[0]["requested_cargo_jobs"], 8)
+        self.assertEqual(groups[0]["admission_slot_count"], 2)
+        self.assertEqual(
+            groups[0]["admission_slot_provenance"]["cargo_root_pids"],
+            [810, 811],
+        )
+
+    def test_nested_cargo_process_still_consumes_its_own_slot(self) -> None:
+        parent = process(815, ("cargo", "check", "--jobs=4"), ppid=800, pgid=800)
+        child = process(816, ("cargo", "check", "--jobs=4"), ppid=815, pgid=800)
+        snapshot = self.snapshot({parent.pid: parent, child.pid: child})
+
+        group = census.compiler_groups(snapshot, census.cargo_entries(snapshot))[0]
+
+        self.assertEqual(group["cargo_pids"], [815, 816])
+        self.assertEqual(group["admission_slot_count"], 2)
+        self.assertEqual(group["requested_cargo_jobs"], 8)
+
+    def test_one_cargo_slot_covers_proven_rustc_descendants(self) -> None:
+        cargo = process(820, ("cargo", "check", "--jobs=4"), ppid=800, pgid=800)
+        rustcs = [
+            process(821 + offset, None, ppid=820, pgid=800, executable="/toolchain/bin/rustc")
+            for offset in range(4)
+        ]
+        records = {record.pid: record for record in [cargo, *rustcs]}
+        snapshot = self.snapshot(records)
+
+        group = census.compiler_groups(snapshot, census.cargo_entries(snapshot))[0]
+
+        self.assertEqual(group["rustc_process_count"], 4)
+        self.assertEqual(group["admission_slot_count"], 1)
+        self.assertEqual(group["admission_slot_provenance"]["residual_slot_count"], 0)
+        self.assertEqual(group["admission_slot_provenance"]["residual_member_pids"], [])
+
+    def test_unattributed_same_pgid_rustc_gets_a_residual_slot(self) -> None:
+        cargo = process(830, ("cargo", "check", "--jobs=4"), ppid=800, pgid=800)
+        rustc = process(831, None, ppid=99999, pgid=800, executable="/toolchain/bin/rustc")
+        snapshot = self.snapshot({cargo.pid: cargo, rustc.pid: rustc})
+
+        group = census.compiler_groups(snapshot, census.cargo_entries(snapshot))[0]
+
+        self.assertEqual(group["admission_slot_count"], 2)
+        self.assertEqual(group["admission_slot_provenance"]["residual_slot_count"], 1)
+        self.assertEqual(group["admission_slot_provenance"]["residual_member_pids"], [831])
+        self.assertEqual(
+            group["admission_slot_provenance"]["residual_reason"],
+            "unattributed-active-members",
+        )
 
     def test_host_process_rows_parse_darwin_and_linux_fixed_start_fields(self) -> None:
         rows = census._parse_ps_rows(

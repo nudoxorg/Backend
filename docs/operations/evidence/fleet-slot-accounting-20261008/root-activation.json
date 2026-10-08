@@ -1,0 +1,19 @@
+{
+  "schema": "nudox.root.fleet-slot-collector-activation.v1",
+  "at": "2026-10-08T11:02:16.935277+00:00",
+  "commit": "5ea92f232a2b114b3838f4a1c905d8c50ce3aae7",
+  "independent_tests": {
+    "main": 35,
+    "script_discovery": 11,
+    "script_direct": 11
+  },
+  "old_wrapper_sha256": "22ab2b103dccec217ed7e9336078fef2e457c98441c34a815036cfd8a7dbe139",
+  "archive": "/private/tmp/nudox-v5-wrapper-before-slot-accounting-20261008.py",
+  "new_wrapper_sha256": "8941ec3000591df64a05e564efd7362e8a74aa931acccfe89e283d016722568d",
+  "collector_sha256": "34d8e705421777be1a4e95a8a754a78b4984e02127cb9e74899c58ad5818d736",
+  "sampler_sha256": "8c421f98d973bd0ec2d97aeed5ee252270102ae7a2c67cbf8b82ef18c9517ce2",
+  "preactivation_report": "/private/tmp/nudox-root-slot-census-preactivation-20261008.json",
+  "preactivation_advisory_allowed": true,
+  "limits_unchanged": true,
+  "original_8809_tree_untouched": true
+}
