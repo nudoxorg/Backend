@@ -1617,11 +1617,12 @@ fn cold_posting_cover_counts_distinct_edges_across_case_and_field_duplicates() {
 
 #[test]
 fn cold_posting_edges_preserve_unicode_case_and_exact_field_names() {
-    let fields = vec![
+    let mut fields = vec![
         ("name".into(), "Alpha alpha Alpha É É é".into()),
         ("Name".into(), "alpha É".into()),
         ("signature".into(), "ALPHA alpha É".into()),
     ];
+    fields.sort();
     let state = state_for(vec![(document(23), fields)], [0x97; 32]);
     let fields = state.iter().next().expect("one source row").1.to_vec();
     let directory = std::env::temp_dir().join(format!(
