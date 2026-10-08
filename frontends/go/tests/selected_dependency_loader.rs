@@ -34,6 +34,160 @@ fn installed_go() -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn real_selected_loader_binds_inactive_platform_source_without_active_calls()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let project = root.path().join("project");
+    std::fs::create_dir(&project)?;
+    let project = project.canonicalize()?;
+    let (go, goroot) = installed_go()?;
+    let output = Command::new(&go)
+        .args(["env", "GOOS"])
+        .env_remove("GOOS")
+        .env("GOENV", "off")
+        .env("GOTOOLCHAIN", "local")
+        .output()?;
+    assert!(
+        output.status.success(),
+        "genuine Go target discovery failed"
+    );
+    let native_os = String::from_utf8(output.stdout)?.trim().to_owned();
+    assert!(!native_os.is_empty());
+    // These are fixture operands; only the actual Go compiler selects which
+    // source is active. Rust does not implement Go's filename matching law.
+    let other_os = if native_os == "windows" {
+        "darwin"
+    } else {
+        "windows"
+    };
+    let active = project.join(format!("listener_{native_os}.go"));
+    let inactive = project.join(format!("listener_{other_os}.go"));
+    let caller = project.join("caller.go");
+    std::fs::write(
+        project.join("go.mod"),
+        "module example.com/native-selection\n\ngo 1.23\n",
+    )?;
+    std::fs::write(
+        &active,
+        "package selection\n// Platform is active.\nfunc Platform() int { return 1 }\n",
+    )?;
+    let inactive_source =
+        b"package selection\n// Platform is dormant.\nfunc Platform() int { return 2 }\n";
+    std::fs::write(&inactive, inactive_source)?;
+    std::fs::write(
+        &caller,
+        "package selection\nfunc Caller() int { return Platform() }\nvar Inferred = Platform()\n",
+    )?;
+    let module_cache = root.path().join("modules");
+    std::fs::create_dir(&module_cache)?;
+    let environment = GoOracleChildEnvironment::new(
+        go.clone(),
+        goroot,
+        module_cache,
+        root.path().join("build-cache"),
+    )?;
+    let configured = || -> Result<ConfiguredGoOracle, Box<dyn std::error::Error>> {
+        Ok(GoOracle::default()
+            .with_configuration(GoOracleConfiguration::go_toolchain(go.clone())?)
+            .with_child_environment(environment.clone())?)
+    };
+    let owner = configured()?;
+    let cancelled = AtomicBool::new(false);
+    let witness = owner.package_authority_witness_cancellable(&project, Some(&cancelled))?;
+    assert!(witness.is_complete());
+    let active_bytes = owner.authority_image_for_package_with_authority_witness_cancellable(
+        &caller,
+        &project,
+        &witness,
+        Some(&cancelled),
+    )?;
+    let active_image = GoImage::open(&active_bytes)?;
+    assert!(active_image.declarations().any(|row| row.is_ok_and(
+        |row| row.name == b"Platform" && row.file == active.to_string_lossy().as_bytes()
+    )));
+    assert!(active_image.references().any(|row| row.is_ok_and(
+        |row| row.target == b"Platform" && row.file == caller.to_string_lossy().as_bytes()
+    )));
+    let inferred = active_image
+        .declarations()
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .find(|row| row.name == b"Inferred" && row.bound)
+        .ok_or("missing selected inferred variable")?;
+    let inferred_type =
+        active_image.type_row(inferred.type_root.ok_or("missing inferred type")? as usize)?;
+    assert_eq!(
+        inferred_type.kind,
+        backend_frontend_go::legacy::TypeRowKind::Basic
+    );
+    assert_eq!(inferred_type.name, b"int");
+    assert!(active_image.doc_count() > 0);
+    let inactive_bytes = owner.authority_image_for_package_with_authority_witness_cancellable(
+        &inactive,
+        &project,
+        &witness,
+        Some(&cancelled),
+    )?;
+    assert_inactive_image(&inactive_bytes, inactive_source, &inactive, &native_os)?;
+    drop(owner);
+    let reopened = configured()?;
+    let fresh = reopened.package_authority_witness_cancellable(&project, Some(&cancelled))?;
+    assert_eq!(witness.identity(), fresh.identity());
+    let cold_bytes = reopened.authority_image_for_package_with_authority_witness_cancellable(
+        &inactive,
+        &project,
+        &fresh,
+        Some(&cancelled),
+    )?;
+    assert_eq!(
+        inactive_bytes, cold_bytes,
+        "cold offline source selection changed"
+    );
+    assert_inactive_image(&cold_bytes, inactive_source, &inactive, &native_os)?;
+    assert_eq!(std::fs::read(&inactive)?, inactive_source);
+    Ok(())
+}
+
+fn assert_inactive_image(
+    bytes: &[u8],
+    source: &[u8],
+    path: &std::path::Path,
+    native_os: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use backend_frontend_go::legacy::parse_constraint_blob;
+    use sha2::{Digest as _, Sha256};
+    let image = GoImage::open(bytes)?;
+    assert_eq!(
+        image.source_digest(),
+        <[u8; 32]>::from(Sha256::digest(source))
+    );
+    assert_eq!(image.declaration_count(), 0);
+    assert_eq!(image.reference_count(), 0);
+    assert_eq!(image.doc_count(), 0);
+    assert_eq!(
+        image.constraint_count(),
+        1,
+        "inactive source must retain positive availability evidence"
+    );
+    let constraint = image.constraint(0)?;
+    assert_eq!(constraint.file, path.to_string_lossy().as_bytes());
+    let spelling = std::str::from_utf8(constraint.constraint)?;
+    assert!(spelling.contains(&format!("GOOS={native_os} ")));
+    assert!(spelling.contains("CGO_ENABLED=0"));
+    assert!(spelling.contains(&format!(
+            "example.com/native-selection/{}",
+            path.file_name()
+                .ok_or("missing filename")?
+                .to_string_lossy()
+        )));
+    let declarations = parse_constraint_blob(constraint.exported, constraint.exported_count)
+        .ok_or("invalid excluded declaration plane")?;
+    assert_eq!(declarations.len(), 1);
+    assert_eq!(declarations[0].name, b"Platform");
+    Ok(())
+}
+
+#[test]
 fn real_selected_loader_refreshes_missing_dependencies_without_owner_restart()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;

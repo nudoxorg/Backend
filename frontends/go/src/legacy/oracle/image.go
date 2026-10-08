@@ -1703,7 +1703,11 @@ func writeAuthorityImage(destination io.Writer, sourcePath string, output *Outpu
 	if err != nil {
 		return fmt.Errorf("read authority source %s: %w", sourcePath, err)
 	}
-	plan, err := buildAuthorityPlan(output, sourcePath)
+	selected, err := authorityOutputForSource(output, sourcePath)
+	if err != nil {
+		return err
+	}
+	plan, err := buildAuthorityPlan(selected, sourcePath)
 	if err != nil {
 		return err
 	}
@@ -1715,4 +1719,58 @@ func writeAuthorityImage(destination io.Writer, sourcePath string, output *Outpu
 		return fmt.Errorf("write Go authority image: %w", err)
 	}
 	return nil
+}
+
+// authorityOutputForSource keeps active package context for an active source.
+// An ignored source has no active declarations or calls: attaching its bytes to
+// the active package would give those calls an unrelated source extent. Its
+// image retains the compiler-selected file list and its own excluded facts.
+func authorityOutputForSource(output *Output, sourcePath string) (*Output, error) {
+	active := 0
+	var activePackage *Package
+	var excludedPackage *Package
+	var excluded *BuildConstraint
+	for _, pkg := range output.Packages {
+		if pkg == nil {
+			return nil, fmt.Errorf("Go authority contains a missing package")
+		}
+		for _, file := range pkg.Files {
+			if sameFile(file, sourcePath) {
+				active++
+				activePackage = pkg
+			}
+		}
+		for _, constraint := range pkg.BuildConstraints {
+			if constraint != nil && sameFile(constraint.File, sourcePath) {
+				if constraint.packageUnavailable {
+					return nil, fmt.Errorf("Go ignored source package ownership is unavailable: %s", sourcePath)
+				}
+				if excluded != nil {
+					return nil, fmt.Errorf("Go source has contradictory ignored owners: %s", sourcePath)
+				}
+				excludedPackage, excluded = pkg, constraint
+			}
+		}
+	}
+	if active > 1 || (active != 0 && excluded != nil) {
+		return nil, fmt.Errorf("Go source has contradictory active/ignored selection: %s", sourcePath)
+	}
+	if active == 1 {
+		return &Output{SchemaVersion: output.SchemaVersion, Module: output.Module, Packages: []*Package{activePackage}, Errors: output.Errors}, nil
+	}
+	if excluded == nil {
+		return nil, fmt.Errorf("Go compiler did not select or exclude authority source: %s", sourcePath)
+	}
+	pkg := &Package{
+		ImportPath:       excludedPackage.ImportPath,
+		Name:             excludedPackage.Name,
+		Files:            excludedPackage.Files,
+		BuildConstraints: []*BuildConstraint{excluded},
+	}
+	for _, file := range excludedPackage.CgoExcludedFiles {
+		if sameFile(file, sourcePath) {
+			pkg.CgoExcludedFiles = append(pkg.CgoExcludedFiles, file)
+		}
+	}
+	return &Output{SchemaVersion: output.SchemaVersion, Module: output.Module, Packages: []*Package{pkg}}, nil
 }

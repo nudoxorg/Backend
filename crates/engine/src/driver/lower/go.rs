@@ -3734,6 +3734,194 @@ mod tests {
     const PACKAGE: &[u8] = b"example.com/demo";
     const SPAN_END: u32 = 256;
 
+    #[test]
+    fn actual_go_ignored_platform_image_admits_without_active_package_spans() {
+        use backend_frontend_go::legacy::GoOracle;
+        use backend_frontend_go::legacy::oracle::{
+            GoOracleChildEnvironment, GoOracleConfiguration,
+        };
+
+        let go = std::env::var_os("COMPILER_GO_COMPILER")
+            .map(std::path::PathBuf::from)
+            .expect("COMPILER_GO_COMPILER must name a genuine installed Go compiler")
+            .canonicalize()
+            .expect("canonical genuine Go compiler");
+        let discovered = std::process::Command::new(&go)
+            .args(["env", "-json", "GOROOT", "GOOS"])
+            .env_remove("GOOS")
+            .env("GOENV", "off")
+            .env("GOTOOLCHAIN", "local")
+            .output()
+            .expect("actual selected Go discovery");
+        assert!(discovered.status.success());
+        let discovery: serde_json::Value =
+            serde_json::from_slice(&discovered.stdout).expect("actual Go discovery JSON");
+        let goroot = std::path::PathBuf::from(discovery["GOROOT"].as_str().expect("actual GOROOT"))
+            .canonicalize()
+            .expect("canonical GOROOT");
+        let native = discovery["GOOS"].as_str().expect("actual native GOOS");
+        assert!(!native.is_empty());
+        let other = if native == "windows" {
+            "darwin"
+        } else {
+            "windows"
+        };
+        let root = tempfile::tempdir().expect("owned Go projection fixture");
+        let project = root.path().join("project");
+        std::fs::create_dir(&project).expect("owned project directory");
+        let project = project.canonicalize().expect("canonical fixture");
+        let caller = project.join("caller.go");
+        let active = project.join(format!("listener_{native}.go"));
+        let inactive = project.join(format!("listener_{other}.go"));
+        std::fs::write(
+            project.join("go.mod"),
+            "module example.com/go-selection\n\ngo 1.23\n",
+        )
+        .expect("module fixture");
+        let caller_source = format!(
+            "package selection\nfunc Caller() int {{\n{}return Platform() }}\n",
+            "\n".repeat(512),
+        );
+        std::fs::write(&caller, &caller_source).expect("caller fixture");
+        std::fs::write(
+            &active,
+            "package selection\n// Platform is selected.\nfunc Platform() int { return 1 }\n",
+        )
+        .expect("active fixture");
+        let source =
+            b"package selection\n// Platform is dormant.\nfunc Platform() int { return 2 }\n";
+        assert!(
+            caller_source.find("Platform").expect("known caller") > source.len(),
+            "fixture must expose active call spans outside the inactive source bytes"
+        );
+        std::fs::write(&inactive, source).expect("implicit filename exclusion fixture");
+        let external = project.join("external_test.go");
+        let external_source = b"package selection_test\nimport selected \"example.com/go-selection\"\nfunc Platform() string { return \"external\" }\nfunc Caller() int { return selected.Platform() }\n";
+        std::fs::write(&external, external_source).expect("external test package fixture");
+        let modules = root.path().join("modules");
+        std::fs::create_dir(&modules).expect("empty offline module cache");
+        let environment = GoOracleChildEnvironment::new(
+            go.clone(),
+            goroot,
+            modules,
+            root.path().join("build-cache"),
+        )
+        .expect("genuine selected Go authority");
+        let toolchain_identity = environment.toolchain_identity();
+        let oracle = GoOracle::default()
+            .with_configuration(GoOracleConfiguration::go_toolchain(go).expect("Go command"))
+            .with_child_environment(environment)
+            .expect("closed Go environment");
+        let witness = oracle
+            .package_authority_witness_cancellable(&project, None)
+            .expect("selected package witness");
+        assert!(witness.is_complete());
+        let image = oracle
+            .authority_image_for_package_with_authority_witness_cancellable(
+                &inactive, &project, &witness, None,
+            )
+            .expect("actual compiler-ignored image");
+        let borrowed = GoImage::open(&image).expect("validated actual Go image");
+        assert_eq!(borrowed.declaration_count(), 0);
+        assert_eq!(borrowed.reference_count(), 0);
+        assert_eq!(borrowed.constraint_count(), 1);
+        let constraint = borrowed
+            .constraint(0)
+            .expect("positive inactive-file witness");
+        assert_eq!(constraint.file, inactive.to_string_lossy().as_bytes());
+        assert_eq!(constraint.exported_count, 1);
+        let mut facts = FactSet::new();
+        collect(source, &image, &mut facts)
+            .unwrap_or_else(|error| panic!("actual inactive Go projection failed: {error:?}"));
+        assert_eq!(
+            facts.len(),
+            1,
+            "only the compiler-proven dormant Platform fact is admitted"
+        );
+        let identity = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(source),
+            byte_len: u32::try_from(source.len()).expect("bounded source"),
+        };
+        let recipe = CompileRecipeFact::derive(
+            LanguageProfile::Go(backend_semantic::vocabulary::GoVersion::Go125),
+            Stage::LowerIr,
+            NativeTool::GoCompiler,
+            identity.identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(&toolchain_identity),
+        );
+        let mut output = vec![0xa5; 65_536];
+        let length =
+            crate::driver::lower::admit(&facts, identity, recipe, recipe.profile, &mut output)
+                .unwrap_or_else(|error| panic!("actual ignored-source admission failed: {error:?}"))
+                .len();
+        assert!(output[length..].iter().all(|byte| *byte == 0xa5));
+        FragmentView::validate(&output[..length]).expect("committed inactive-source fragment");
+
+        let image = oracle
+            .authority_image_for_package_with_authority_witness_cancellable(
+                &external, &project, &witness, None,
+            )
+            .expect("actual external test source image");
+        let borrowed = GoImage::open(&image).expect("validated external test image");
+        assert_eq!(borrowed.package_count(), 1);
+        assert_eq!(
+            borrowed.package(0).expect("external package").import_path,
+            b"example.com/go-selection_test"
+        );
+        let platform = borrowed
+            .declarations()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("external declarations")
+            .into_iter()
+            .filter(|row| row.name == b"Platform")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            platform.len(),
+            1,
+            "ordinary Platform must not conflate the external declaration"
+        );
+        let signature = borrowed
+            .type_row(platform[0].type_root.expect("external signature") as usize)
+            .expect("signature row");
+        let (result, _) = borrowed
+            .type_child(signature.children.0 as usize)
+            .expect("external result");
+        assert_eq!(
+            borrowed
+                .type_row(result as usize)
+                .expect("result type")
+                .name,
+            b"string"
+        );
+        assert!(
+            borrowed
+                .references()
+                .any(|row| row.is_ok_and(|row| row.target == b"Platform"
+                    && row.target_package == b"example.com/go-selection"
+                    && row.file == external.to_string_lossy().as_bytes()))
+        );
+        let mut facts = FactSet::new();
+        collect(external_source, &image, &mut facts)
+            .unwrap_or_else(|error| panic!("external package projection failed: {error:?}"));
+        assert!(facts.len() >= 2);
+        let identity = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(external_source),
+            byte_len: u32::try_from(external_source.len()).expect("external source bound"),
+        };
+        let recipe = CompileRecipeFact::derive(
+            recipe.profile,
+            Stage::LowerIr,
+            NativeTool::GoCompiler,
+            identity.identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(&toolchain_identity),
+        );
+        let length =
+            crate::driver::lower::admit(&facts, identity, recipe, recipe.profile, &mut output)
+                .unwrap_or_else(|error| panic!("external source admission failed: {error:?}"))
+                .len();
+        FragmentView::validate(&output[..length]).expect("committed external-test fragment");
+    }
+
     /// Fixture declaration-kind tags.
     const KIND_TYPE: u8 = 1;
     const KIND_ALIAS: u8 = 2;

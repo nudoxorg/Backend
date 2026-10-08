@@ -1,5 +1,11 @@
 # Production readiness: what still needs attention
 
+### Go compiler selection integrated — 2026-10-08, 15:56 UTC
+
+Go's native platform/external-test selection repair is now in the reviewed source checkpoint on canonical96d. Root checked all ten final files and all99 helper input hashes/Git objects, raw compiler/linker observations and actual **eight parent passes/four platform subcases**, with zero failures or skips. [The audit](../../audits/go-native-selection-checkpoint-20261008.md) retains the earlier six-pass/two-failure run and explains the narrow ownership and test-fixture repairs.
+
+The genuine Rust-side selected-loader/cold and engine lower/admit tests remain unrun and reserved. A dormant-only external-test namespace without an active compiler package still needs per-file availability handling. The combined current canonical tree, real installed Go applications and four-language product release are not certified by these helper results. TypeScript member/enum/body-publication repairs, normal-disk startup, current GUI release and remaining MCP ergonomics are still open; the preceding four-language table is a scoped historical checkpoint, not silently upgraded evidence.
+
 ### Four-language and MCP checkpoint — 2026-10-08, 15:55 UTC
 
 TypeScript, Python, Go and Rust retain equal priority. This source checkpoint repairs inferred JavaScript roots without enabling JavaScript checking or changing explicit tsconfig policy. Root read all three changed files, verified their exact correspondence to the tested source, checked all unrelated canonical entries, and independently audited the raw native and installed HTTPie responses. [The focused audit](../../audits/typescript-inferred-js-checkpoint-20261008.md) separates each source and acceptance boundary.
