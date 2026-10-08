@@ -722,14 +722,63 @@ NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$stale_log" \
   "$test_root/wrapper" build
 assert_file_lines "$stale_log" 1
 
+# A mixed host keeps legacy directory permits occupied and reuses persistent
+# flock files without changing their inode or bytes. Even a dead-looking
+# directory owner is not ours to recover.
+mixed_cache="$test_root/mixed-cache"
+mkdir -p "$mixed_cache/locks/slot-0.lock"
+printf '999999999\n' > "$mixed_cache/locks/slot-0.lock/pid"
+printf 'foreign legacy owner\n' > "$mixed_cache/locks/slot-0.lock/workspace"
+printf 'persistent host permit\n' > "$mixed_cache/locks/slot-1.lock"
+mixed_identity="$(python3 -c 'import os, sys; s=os.stat(sys.argv[1]); print(s.st_dev, s.st_ino)' "$mixed_cache/locks/slot-1.lock")"
+mixed_log="$test_root/mixed.log"
+NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$mixed_log" \
+  NUDOX_BUILD_CACHE_ROOT="$mixed_cache" NUDOX_CARGO_BUILD_SLOTS=2 \
+  NUDOX_CARGO_SLOT_WAIT_MS=0 SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+  "$test_root/wrapper" build
+assert_file_lines "$mixed_log" 1
+assert_eq '999999999' "$(cat "$mixed_cache/locks/slot-0.lock/pid")"
+assert_eq 'foreign legacy owner' "$(cat "$mixed_cache/locks/slot-0.lock/workspace")"
+assert_eq 'persistent host permit' "$(cat "$mixed_cache/locks/slot-1.lock")"
+assert_eq "$mixed_identity" "$(python3 -c 'import os, sys; s=os.stat(sys.argv[1]); print(s.st_dev, s.st_ino)' "$mixed_cache/locks/slot-1.lock")"
+
+# Non-regular permit paths must fail closed without starting Cargo or touching
+# their targets. These paths all belong to this test's temporary namespace.
+for invalid_permit in symlink fifo hardlink; do
+  invalid_cache="$test_root/invalid-permit-$invalid_permit"
+  mkdir -p "$invalid_cache/locks"
+  invalid_target="$invalid_cache/untouched"
+  printf 'untouched\n' > "$invalid_target"
+  case "$invalid_permit" in
+    symlink) ln -s "$invalid_target" "$invalid_cache/locks/slot-0.lock" ;;
+    fifo) mkfifo "$invalid_cache/locks/slot-0.lock" ;;
+    hardlink) ln "$invalid_target" "$invalid_cache/locks/slot-0.lock" ;;
+  esac
+  invalid_log="$invalid_cache/cargo.log"
+  invalid_status=0
+  NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$invalid_log" \
+    NUDOX_BUILD_CACHE_ROOT="$invalid_cache" NUDOX_CARGO_BUILD_SLOTS=1 \
+    NUDOX_CARGO_SLOT_WAIT_MS=0 SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+    "$test_root/wrapper" build 2> "$invalid_cache/stderr" || invalid_status="$?"
+  assert_eq 75 "$invalid_status"
+  [ ! -e "$invalid_log" ] || fail "invalid permit started Cargo"
+  assert_eq 'untouched' "$(cat "$invalid_target")"
+done
+
 # A cancelled compile forwards the signal to fake Cargo and releases both
-# the worktree and slot leases before the wrapper exits.
-signal_cache="$test_root/signal-cache"
-signal_log="$test_root/signal.log"
-signal_target="$test_root/signal-target"
-signal_build="$test_root/signal-build"
-signal_child_pid="$test_root/signal-child.pid"
-signal_child_done="$test_root/signal-child.done"
+# the worktree and slot leases before the wrapper exits. Exercise both legacy
+# directories and the persistent flock permit protocol.
+for signal_protocol in directory file; do
+signal_cache="$test_root/signal-cache-$signal_protocol"
+signal_log="$test_root/signal-$signal_protocol.log"
+signal_target="$test_root/signal-target-$signal_protocol"
+signal_build="$test_root/signal-build-$signal_protocol"
+signal_child_pid="$test_root/signal-child-$signal_protocol.pid"
+signal_child_done="$test_root/signal-child-$signal_protocol.done"
+if [ "$signal_protocol" = file ]; then
+  mkdir -p "$signal_cache/locks"
+  printf 'persistent permit\n' > "$signal_cache/locks/slot-0.lock"
+fi
 signal_sleep="${NUDOX_TEST_SIGNAL_SLEEP:-1}"
 NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$signal_log" \
   NUDOX_BUILD_CACHE_ROOT="$signal_cache" NUDOX_CARGO_BUILD_SLOTS=1 \
@@ -744,6 +793,27 @@ while [ "$signal_waited" -lt 80 ] && [ ! -f "$signal_child_pid" ]; do
   sleep 0.05
   signal_waited="$((signal_waited + 1))"
 done
+if [ "$signal_protocol" = file ]; then
+  # A separately opened descriptor must see the inherited lock held, even
+  # after the acquisition helper exited and while Cargo is running.
+  python3 - "$signal_cache/locks/slot-0.lock" <<'PY'
+import fcntl, sys
+with open(sys.argv[1], 'r+') as permit:
+    try:
+        fcntl.flock(permit, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        pass
+    else:
+        raise AssertionError('running Cargo lost its inherited host flock')
+PY
+  contender_status=0
+  NUDOX_TEST_WORKTREE="$test_root/roots/b" NUDOX_TEST_LOG="$signal_cache/contender.log" \
+    NUDOX_BUILD_CACHE_ROOT="$signal_cache" NUDOX_CARGO_BUILD_SLOTS=1 \
+    NUDOX_CARGO_SLOT_WAIT_MS=0 SCCACHE_SERVER_UDS="$test_root/sccache.sock" \
+    "$test_root/wrapper" build 2> "$signal_cache/contender.stderr" || contender_status="$?"
+  assert_eq 75 "$contender_status"
+  [ ! -e "$signal_cache/contender.log" ] || fail "held flock admitted a contender"
+fi
 kill -TERM "$signal_pid"
 signal_observed=0
 signal_waited=0
@@ -781,6 +851,15 @@ import sys
 value = json.loads(pathlib.Path(sys.argv[1]).read_text())
 assert value["cargo_exit_status"] == 143
 PY
+if [ "$signal_protocol" = file ]; then
+  assert_eq 'persistent permit' "$(cat "$signal_cache/locks/slot-0.lock")"
+  python3 - "$signal_cache/locks/slot-0.lock" <<'PY'
+import fcntl, sys
+with open(sys.argv[1], 'r+') as permit:
+    fcntl.flock(permit, fcntl.LOCK_EX | fcntl.LOCK_NB)
+PY
+fi
+done
 
 # Interrupting while waiting for a busy warm lane also releases the worktree
 # lease. Keep the synthetic slot owner alive for the duration of this check.
@@ -1107,4 +1186,4 @@ assert_eq "$protocol_socket_b|$protocol_cache/sccache" "$(sed -n '2p' "$endpoint
 [ "$protocol_socket_a" != "$protocol_socket_b" ] || fail "distinct providers share a daemon protocol socket"
 [ -S "$protocol_cache/sccache.sock" ] || fail "the legacy daemon socket was changed"
 
-echo "cargo-shared-cache: PASS (affinity, role-graph leases, isolation, hard ceiling, stamps, provenance, daemon protocol isolation, exit propagation, stale recovery)"
+echo "cargo-shared-cache: PASS (affinity, role-graph leases, isolation, hard ceiling, mixed host permits, stamps, provenance, daemon protocol isolation, exit propagation, stale worktree recovery)"
