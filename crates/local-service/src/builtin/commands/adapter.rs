@@ -304,6 +304,7 @@ pub(in crate::builtin) struct CommandAdapter {
     discovery: Option<crate::discovery::DiscoveryGateway>,
     product_state: super::super::ProductState,
     index_operations: IndexOperationJournal,
+    journal_readiness: super::journal_readiness::JournalReadiness,
     compiler: LocalCompilerClient,
     search_snapshots: super::super::query::SearchSnapshotOwner,
     search_lane: SearchLane,
@@ -591,15 +592,18 @@ impl CommandAdapter {
         >,
     ) -> Result<Self, BuiltinModelError> {
         let browse_lane = BrowseLane::start().map_err(BuiltinModelError)?;
-        let index_operations = IndexOperationJournal::open(
-            product_state
-                .workspace_path()
-                .map_err(BuiltinModelError)?
-                .join("index-operations-v1.turso"),
-        )
-        .map_err(|error| {
+        let journal_path = product_state
+            .workspace_path()
+            .map_err(BuiltinModelError)?
+            .join("index-operations-v1.turso");
+        let mut index_operations = IndexOperationJournal::open(&journal_path).map_err(|error| {
             BuiltinModelError(format!("open durable index-operation journal: {error}"))
         })?;
+        let index_owner_epoch = new_index_owner_epoch();
+        let journal_readiness =
+            super::journal_readiness::JournalReadiness::start(journal_path, index_owner_epoch)
+                .map_err(BuiltinModelError)?;
+        index_operations.observe_changes(journal_readiness.changed());
         Ok(Self {
             sql_projection,
             registry,
@@ -607,6 +611,7 @@ impl CommandAdapter {
             discovery,
             product_state,
             index_operations,
+            journal_readiness,
             compiler,
             search_snapshots,
             search_lane: SearchLane::default(),
@@ -631,7 +636,7 @@ impl CommandAdapter {
             index_progress: std::collections::VecDeque::new(),
             index_progress_latest: std::collections::VecDeque::new(),
             next_index_ticket: 1,
-            index_owner_epoch: new_index_owner_epoch(),
+            index_owner_epoch,
             waiting: std::collections::VecDeque::new(),
             abandoned_replies: BTreeSet::new(),
         })
@@ -1094,6 +1099,9 @@ impl CommandAdapter {
         operation_key: backend_library::IndexOperationKey,
         request_id: u64,
     ) -> Result<Executed, BuiltinModelError> {
+        // Explicit recovery/status is also a retry opportunity after a failed
+        // readiness observation. It keeps ordinary durable status semantics.
+        self.journal_readiness.refresh();
         let observation = self
             .resolve_index_operation(daemon, operation_key, None)
             .map_err(|error| {
@@ -1547,6 +1555,7 @@ impl CommandAdapter {
     }
 
     pub(in crate::builtin) fn close(&mut self) {
+        self.journal_readiness.close();
         self.search_lane.close();
         self.search_replies.clear();
         self.browse_lane.close();
@@ -2109,13 +2118,14 @@ impl CommandAdapter {
         // index publication; selected-marker reconciliation retries it later.
         let _ = self.semantic_authority.drain_native_history_completions();
         let mut ready = Vec::new();
-        // These indexed probes intentionally hit the journal on every owner
-        // poll: multiprocess WAL lets another process admit or prepare work,
-        // so a process-local hint could otherwise hide committed rows. An
-        // unavailable probe is treated as pending/prepared, never as empty.
+        self.journal_readiness.poll();
+        // Background recovery hints are bound to this owner epoch and change
+        // sequence. A stable Unresolved operation is examined once per cursor,
+        // while reads and health continue without a synchronous quiet SQL probe.
         if self.indexing.is_none()
-            && self.index_operations.has_pending().unwrap_or(true)
-            && let Ok(Some(operation_key)) = self.index_operations.first_pending_key()
+            && let Some(operation_key) = self
+                .journal_readiness
+                .recovery(daemon.engine().daemon().library().cursor())
         {
             let _ = self.resolve_index_operation(daemon, operation_key, None);
         }
@@ -2516,6 +2526,11 @@ impl CommandAdapter {
             }
         }
         while self.indexing.is_none()
+            && !self.waiting.is_empty()
+            && !self.journal_readiness.prepared_hint()
+            // Notifications may arrive after a foreign commit. Only this
+            // fresh durable read authorizes queued writer admission; cached
+            // emptiness is never authority. Failure remains conservatively busy.
             && !self.index_operations.has_prepared().unwrap_or(true)
             && let Some((ticket, body)) = self.waiting.pop_front()
         {
@@ -6405,6 +6420,48 @@ mod tests {
             classify_add_target("PKG:cargo/serde@1.0.0"),
             Ok(AddTarget::PackageUrl)
         ));
+    }
+
+    #[test]
+    fn quiet_owner_polls_do_not_query_the_operation_journal() {
+        let mut fixture = AdapterFixture::new();
+        let (adapter, daemon) = fixture.parts();
+        assert!(adapter.indexing.is_none());
+        assert!(adapter.waiting.is_empty());
+        let before = adapter.index_operations.read_query_count();
+        for _ in 0..1000 {
+            assert!(adapter.poll_deferred(daemon).is_empty());
+        }
+        assert_eq!(
+            adapter.index_operations.read_query_count(),
+            before,
+            "quiet polls must not execute synchronous journal SQL, including empty writer queues"
+        );
+    }
+
+    #[test]
+    fn queued_writer_does_not_treat_unknown_hint_as_durable_absence() {
+        let mut fixture = AdapterFixture::new();
+        let package = fixture.package;
+        let label = fixture.label.clone();
+        let (adapter, daemon) = fixture.parts();
+        install_transition_job(adapter);
+        assert!(matches!(adapter.execute_or_defer(daemon, &remove_body(1, package, &label), 701),
+            Ok(Executed::Deferred)));
+        adapter.indexing.take();
+        adapter.journal_readiness.close();
+        let path = adapter.product_state.workspace_path().expect("workspace")
+            .join("index-operations-v1.turso");
+        let mut foreign = super::IndexOperationJournal::open(path).expect("independent journal");
+        let operation = backend_library::IndexOperationKey::from_bytes([88; 32]).expect("key");
+        foreign.accept(operation, backend_library::PackageReference::parse(label).expect("package"),
+            CompileExecutionIntent::Interactive).expect("durable accept");
+        foreign.prepare(operation, Some([89; 32]), [90; 32], 1).expect("durable prepared");
+        let before = owner_cursor(daemon);
+        assert!(adapter.poll_deferred(daemon).is_empty());
+        assert_eq!(adapter.waiting.len(), 1, "fresh durable prepared state blocks the writer");
+        assert_eq!(owner_cursor(daemon), before);
+        assert!(project_is_admitted(daemon, package));
     }
 
     #[test]

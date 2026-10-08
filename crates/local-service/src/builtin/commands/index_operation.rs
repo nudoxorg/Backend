@@ -231,6 +231,9 @@ pub(super) struct IndexOperationJournal {
     _database_directory: backend_platform::DirectoryCapability,
     _database_file: File,
     connection: turso::Connection,
+    readiness: Option<super::journal_readiness::Changed>,
+    #[cfg(test)]
+    read_queries: std::cell::Cell<usize>,
 }
 
 impl IndexOperationJournal {
@@ -288,6 +291,95 @@ impl IndexOperationJournal {
             _database_directory: database_directory,
             _database_file: database_file,
             connection,
+            readiness: None,
+            #[cfg(test)]
+            read_queries: std::cell::Cell::new(0),
+        })
+    }
+
+    pub(super) fn observe_changes(&mut self, changed: super::journal_readiness::Changed) {
+        self.readiness = Some(changed);
+    }
+
+    fn changed(&self) {
+        if let Some(changed) = &self.readiness {
+            changed.invalidate();
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn read_query_count(&self) -> usize {
+        self.read_queries.get()
+    }
+
+    /// A bounded pending inventory and its counters from one WAL snapshot.
+    /// Notifications request this observation; they never prove row absence.
+    pub(super) fn pending_snapshot(
+        &mut self,
+    ) -> Result<super::journal_readiness::Pending, JournalError> {
+        #[cfg(test)]
+        self.read_queries.set(self.read_queries.get() + 1);
+        futures_executor::block_on(async {
+            let transaction = self
+                .connection
+                .transaction_with_behavior(turso::transaction::TransactionBehavior::Deferred)
+                .await
+                .map_err(database_error)?;
+            let result = async {
+                let meta = read_validated_cold_meta(&transaction).await?;
+                let mut rows = transaction
+                    .query(
+                        "SELECT operation_key, state, payload FROM backend_index_operations \
+                     WHERE state IN (1, 2) ORDER BY acceptance_sequence ASC LIMIT 33",
+                        (),
+                    )
+                    .await
+                    .map_err(database_error)?;
+                let mut first = None;
+                let mut first_payload = None;
+                let mut pending = 0_i64;
+                let mut prepared = 0_i64;
+                while let Some(row) = rows.next().await.map_err(database_error)? {
+                    pending += 1;
+                    let bytes: Vec<u8> = row.get(0).map_err(database_error)?;
+                    let key = IndexOperationKey::from_bytes(array32(bytes)?)
+                        .map_err(|error| JournalError::Corrupt(error.to_string()))?;
+                    if first.is_none() {
+                        let payload: Vec<u8> = row.get(2).map_err(database_error)?;
+                        if payload.len() > MAX_OPERATION_PAYLOAD_BYTES {
+                            return Err(JournalError::PayloadTooLarge);
+                        }
+                        first = Some(key);
+                        first_payload = Some(*blake3::hash(&payload).as_bytes());
+                    }
+                    match row.get::<i64>(1).map_err(database_error)? {
+                        STATE_ACCEPTED => {}
+                        STATE_PREPARED => prepared += 1,
+                        _ => return Err(JournalError::Corrupt("invalid pending state".to_owned())),
+                    }
+                }
+                if pending != meta.pending_count || prepared != meta.prepared_count {
+                    return Err(JournalError::Corrupt(
+                        "pending snapshot counters disagree".to_owned(),
+                    ));
+                }
+                Ok(super::journal_readiness::Pending {
+                    first,
+                    prepared: prepared != 0,
+                    first_payload,
+                })
+            }
+            .await;
+            match result {
+                Ok(snapshot) => {
+                    transaction.commit().await.map_err(database_error)?;
+                    Ok(snapshot)
+                }
+                Err(error) => {
+                    let _ = transaction.rollback().await;
+                    Err(error)
+                }
+            }
         })
     }
 
@@ -380,6 +472,9 @@ impl IndexOperationJournal {
                 }
             }
         });
+        if result.is_ok() {
+            self.changed();
+        }
         result
     }
 
@@ -647,6 +742,8 @@ impl IndexOperationJournal {
         &self,
         operation_key: IndexOperationKey,
     ) -> Result<Option<JournalEntry>, JournalError> {
+        #[cfg(test)]
+        self.read_queries.set(self.read_queries.get() + 1);
         futures_executor::block_on(async {
             let Some(row) = load_row_connection(&self.connection, operation_key).await? else {
                 return Ok(None);
@@ -664,6 +761,8 @@ impl IndexOperationJournal {
     }
 
     fn first_key(&self, predicate: &str) -> Result<Option<IndexOperationKey>, JournalError> {
+        #[cfg(test)]
+        self.read_queries.set(self.read_queries.get() + 1);
         futures_executor::block_on(async {
             let sql = format!(
                 "SELECT operation_key FROM backend_index_operations \
@@ -691,6 +790,8 @@ impl IndexOperationJournal {
     }
 
     fn has_state(&self, predicate: &str) -> Result<bool, JournalError> {
+        #[cfg(test)]
+        self.read_queries.set(self.read_queries.get() + 1);
         futures_executor::block_on(async {
             let sql = format!("SELECT 1 FROM backend_index_operations WHERE {predicate} LIMIT 1");
             let mut rows = self
@@ -863,6 +964,9 @@ impl IndexOperationJournal {
                 }
             }
         });
+        if result.is_ok() {
+            self.changed();
+        }
         result
     }
 }
