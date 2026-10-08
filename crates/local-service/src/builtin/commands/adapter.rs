@@ -392,7 +392,7 @@ enum IndexJobWork {
     /// durable Prepared slot. No candidate or Accepted receipt is discarded.
     Publishing {
         prepared: PreparedProductSelection,
-        blocked_sequence: Option<u64>,
+        blocked_sequence: super::journal_readiness::RetryToken,
     },
     Transition,
 }
@@ -2154,7 +2154,7 @@ impl CommandAdapter {
             Err(FinishAddError::PreparedBusy) => {
                 indexing.work = IndexJobWork::Publishing {
                     prepared,
-                    blocked_sequence: self.journal_readiness.event_sequence(),
+                    blocked_sequence: self.journal_readiness.retry_token(),
                 };
                 None
             }
@@ -2559,7 +2559,7 @@ impl CommandAdapter {
                 } => {
                     if indexing.cancelled.load(Ordering::Acquire) {
                         terminal = Some(backend_library::IndexJobOutcome::Cancelled);
-                    } else if blocked_sequence == self.journal_readiness.event_sequence() {
+                    } else if blocked_sequence == self.journal_readiness.retry_token() {
                         indexing.work = IndexJobWork::Publishing {
                             prepared,
                             blocked_sequence,
@@ -6737,6 +6737,18 @@ mod tests {
         ));
         adapter.indexing = Some(indexing);
         adapter.journal_readiness.close();
+        // A saturated event counter must still permit an explicit owner
+        // retry. Quiet polls below remain unable to retry the same candidate.
+        adapter.journal_readiness.exhaust_notifications();
+        if let Some(IndexJob {
+            work: IndexJobWork::Publishing {
+                blocked_sequence, ..
+            },
+            ..
+        }) = adapter.indexing.as_mut()
+        {
+            *blocked_sequence = adapter.journal_readiness.retry_token();
+        }
         let reads = adapter.index_operations.read_query_count();
         for _ in 0..1000 {
             assert!(adapter.poll_deferred(daemon).is_empty());

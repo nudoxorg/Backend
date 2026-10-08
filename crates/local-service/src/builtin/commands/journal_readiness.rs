@@ -23,8 +23,24 @@ pub(super) struct Pending {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Stamp {
     owner_epoch: [u8; 16],
-    event_sequence: u64,
+    event_sequence: Option<u64>,
 }
+
+/// Equality only schedules a finite retry. The allocation identity lets an
+/// explicit retry remain distinct after notification sequence exhaustion.
+#[derive(Clone)]
+pub(super) struct RetryToken {
+    event_sequence: Option<u64>,
+    explicit: Arc<()>,
+}
+
+impl PartialEq for RetryToken {
+    fn eq(&self, other: &Self) -> bool {
+        self.event_sequence == other.event_sequence && Arc::ptr_eq(&self.explicit, &other.explicit)
+    }
+}
+
+impl Eq for RetryToken {}
 
 enum Wake {
     Changed,
@@ -89,6 +105,7 @@ pub(super) struct JournalReadiness {
     worker: Option<JoinHandle<()>>,
     selected: Readiness,
     reconciled: Option<(Stamp, Pending, Cursor)>,
+    explicit_retry: Arc<()>,
 }
 
 impl JournalReadiness {
@@ -152,9 +169,7 @@ impl JournalReadiness {
             .spawn(move || {
                 let mut journal = IndexOperationJournal::open(path.clone());
                 while let Ok(Wake::Changed) = wakes.recv() {
-                    let Some(sequence) = worker_changed.sequence() else {
-                        continue;
-                    };
+                    let sequence = worker_changed.sequence();
                     // Failed opens are retried on an explicit change, never a
                     // hot timer. A failure receipt cannot be read as empty.
                     if journal.is_err() {
@@ -185,6 +200,7 @@ impl JournalReadiness {
             worker: Some(worker),
             selected: Readiness::Unknown(Unknown::AwaitingChange),
             reconciled: None,
+            explicit_retry: Arc::new(()),
         };
         lane.changed.invalidate();
         Ok(lane)
@@ -194,7 +210,8 @@ impl JournalReadiness {
         self.changed.clone()
     }
 
-    pub(super) fn refresh(&self) {
+    pub(super) fn refresh(&mut self) {
+        self.explicit_retry = Arc::new(());
         self.changed.invalidate();
     }
 
@@ -204,16 +221,19 @@ impl JournalReadiness {
         if let Some(observation) = self.observations.as_ref().and_then(|r| r.try_recv().ok()) {
             self.admit(observation);
         }
-        if self.changed.sequence.load(Ordering::Acquire) == u64::MAX {
-            self.selected = Readiness::Unknown(Unknown::EventSequenceExhausted);
-        } else if matches!(self.selected, Readiness::Observed(stamp, _) | Readiness::Degraded(stamp, _) if Some(stamp.event_sequence) != self.changed.sequence())
+        if matches!(self.selected, Readiness::Observed(stamp, _) | Readiness::Degraded(stamp, _) if stamp.event_sequence != self.changed.sequence())
         {
-            self.selected =
-                Readiness::Unknown(if self.changed.watch_healthy.load(Ordering::Acquire) {
-                    Unknown::AwaitingChange
-                } else {
-                    Unknown::WatchFailed
-                });
+            self.selected = Readiness::Unknown(if self.changed.sequence().is_none() {
+                Unknown::EventSequenceExhausted
+            } else if self.changed.watch_healthy.load(Ordering::Acquire) {
+                Unknown::AwaitingChange
+            } else {
+                Unknown::WatchFailed
+            });
+        } else if self.changed.sequence().is_none()
+            && !matches!(self.selected, Readiness::Degraded(_, _))
+        {
+            self.selected = Readiness::Unknown(Unknown::EventSequenceExhausted);
         } else if !self.changed.watch_healthy.load(Ordering::Acquire)
             && let Readiness::Observed(stamp, pending) = self.selected
         {
@@ -227,10 +247,20 @@ impl JournalReadiness {
 
     fn admit(&mut self, observation: Observation) {
         if observation.stamp.owner_epoch == self.epoch
-            && Some(observation.stamp.event_sequence) == self.changed.sequence()
+            && observation.stamp.event_sequence == self.changed.sequence()
         {
+            if observation.stamp.event_sequence.is_none() {
+                // Exhausted notifications cannot fence a snapshot. A receipt
+                // is still a positive recovery hint, consumed once, and can
+                // wake a retained candidate without hot owner-loop reads.
+                self.explicit_retry = Arc::new(());
+                self.reconciled = None;
+            }
             self.selected = match observation.pending {
-                Ok(pending) if self.changed.watch_healthy.load(Ordering::Acquire) => {
+                Ok(pending)
+                    if observation.stamp.event_sequence.is_some()
+                        && self.changed.watch_healthy.load(Ordering::Acquire) =>
+                {
                     Readiness::Observed(observation.stamp, pending)
                 }
                 Ok(pending) => Readiness::Degraded(observation.stamp, pending),
@@ -266,8 +296,16 @@ impl JournalReadiness {
 
     /// Scheduling token only; neither notification delivery nor its absence
     /// supplies durable writer authority.
-    pub(super) fn event_sequence(&self) -> Option<u64> {
-        self.changed.sequence()
+    pub(super) fn retry_token(&self) -> RetryToken {
+        RetryToken {
+            event_sequence: self.changed.sequence(),
+            explicit: Arc::clone(&self.explicit_retry),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn exhaust_notifications(&self) {
+        self.changed.sequence.store(u64::MAX, Ordering::Release);
     }
 
     pub(super) fn close(&mut self) {
@@ -505,6 +543,61 @@ mod tests {
     }
 
     #[test]
+    fn exhausted_notifications_still_allow_finite_positive_recovery_and_retry() {
+        let scratch = tempfile::tempdir().expect("journal scratch");
+        let path = scratch.path().join("workspace/operations.turso");
+        let mut foreign = IndexOperationJournal::open(&path).expect("foreign journal");
+        foreign
+            .accept(
+                key(),
+                PackageReference::parse("/workspace/docs").expect("package"),
+                CompileExecutionIntent::Interactive,
+            )
+            .expect("foreign accepted");
+        let mut lane =
+            JournalReadiness::start_with_watch(path, [1; 16], true).expect("one-shot observer");
+        lane.exhaust_notifications();
+        let before = lane.retry_token();
+        lane.refresh();
+        assert!(before != lane.retry_token());
+        let pending = foreign.pending_snapshot().expect("accepted snapshot");
+        wait_for(&mut lane, pending);
+        assert!(matches!(
+            lane.selected,
+            Readiness::Degraded(
+                Stamp {
+                    event_sequence: None,
+                    ..
+                },
+                _
+            )
+        ));
+        let cursor = Cursor::at(backend_library::view_state_root(&[]), 0);
+        assert_eq!(lane.recovery(cursor), Some(key()));
+        assert_eq!(lane.recovery(cursor), None);
+        // An explicit retry stays distinct after saturation without wrapping
+        // a sequence or introducing periodic database reads.
+        let token = lane.retry_token();
+        lane.refresh();
+        assert!(token != lane.retry_token());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut recovered = false;
+        while Instant::now() < deadline {
+            lane.poll();
+            if lane.recovery(cursor) == Some(key()) {
+                recovered = true;
+                break;
+            }
+            std::thread::yield_now();
+        }
+        assert!(
+            recovered,
+            "saturated explicit refresh must deliver another finite receipt"
+        );
+        lane.close();
+    }
+
+    #[test]
     fn changed_epoch_overflow_and_watch_failure_are_unknown_not_empty() {
         let scratch = tempfile::tempdir().expect("journal scratch");
         let path = scratch.path().join("workspace/operations.turso");
@@ -519,7 +612,7 @@ mod tests {
             },
         );
         lane.close();
-        let sequence = lane.changed.sequence.load(Ordering::Acquire);
+        let sequence = lane.changed.sequence();
         let stamp = Stamp {
             owner_epoch: lane.epoch,
             event_sequence: sequence,
@@ -612,7 +705,7 @@ mod tests {
             let receipt = || Observation {
                 stamp: Stamp {
                     owner_epoch: [1; 16],
-                    event_sequence: 1,
+                    event_sequence: Some(1),
                 },
                 pending: Ok(Pending {
                     first: None,
