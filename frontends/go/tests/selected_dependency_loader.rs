@@ -58,7 +58,7 @@ fn real_selected_loader_refreshes_missing_dependencies_without_owner_restart()
         GoOracleChildEnvironment::new(go.clone(), goroot, module_cache, build_cache.clone())?;
     let owner: ConfiguredGoOracle = GoOracle::default()
         .with_configuration(GoOracleConfiguration::go_toolchain(go.clone())?)
-        .with_child_environment(environment)?;
+        .with_child_environment(environment.clone())?;
     let cancelled = AtomicBool::new(false);
     let missing = owner.package_authority_witness_cancellable(&project, Some(&cancelled))?;
     assert!(!missing.is_complete());
@@ -153,6 +153,7 @@ fn real_selected_loader_refreshes_missing_dependencies_without_owner_restart()
             .all(|entry| !entry.path().join("manifest.txt").exists()),
         "cancelled helper cannot publish an admitted cache entry"
     );
+    let retry_started = std::time::Instant::now();
     let image = owner.authority_image_for_package_with_authority_witness_cancellable(
         &source,
         &project,
@@ -163,6 +164,35 @@ fn real_selected_loader_refreshes_missing_dependencies_without_owner_restart()
     assert!(image.packages().any(|package| {
         package.is_ok_and(|package| package.import_path == b"example.com/consumer")
     }));
+
+    assert_selected_call_and_type(
+        image,
+        &std::fs::read(&source)?,
+        "same-owner-after-setup",
+        retry_started.elapsed(),
+    )?;
+    // A fresh owner must reopen the same offline selected closure and retain
+    // the exact foreign call and result type, rather than only cached rows.
+    let reopen_started = std::time::Instant::now();
+    let reopened: ConfiguredGoOracle = GoOracle::default()
+        .with_configuration(GoOracleConfiguration::go_toolchain(go.clone())?)
+        .with_child_environment(environment)?;
+    let reopened_witness =
+        reopened.package_authority_witness_cancellable(&project, Some(&cancelled))?;
+    assert!(reopened_witness.is_complete());
+    assert_eq!(reopened_witness.identity(), fresh.identity());
+    let reopened_image = reopened.authority_image_for_package_with_authority_witness_cancellable(
+        &source,
+        &project,
+        &reopened_witness,
+        Some(&cancelled),
+    )?;
+    assert_selected_call_and_type(
+        GoImage::open(&reopened_image)?,
+        &std::fs::read(&source)?,
+        "cold-owner-offline",
+        reopen_started.elapsed(),
+    )?;
 
     std::fs::write(
         &dependency_source,
@@ -229,4 +259,78 @@ fn actual_helper_build_child(go: &std::path::Path, helper_cache: &std::path::Pat
                 std::path::Path::new(std::ffi::OsStr::from_bytes(arg)).starts_with(helper_cache)
             })
     })
+}
+
+fn assert_selected_call_and_type(
+    image: GoImage<'_>,
+    source: &[u8],
+    phase: &str,
+    elapsed: std::time::Duration,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use backend_frontend_go::legacy::{
+        DeclarationKind, ReferenceTargetClass, ReferenceUseKind, TypeRowKind,
+    };
+    let declarations = image.declarations().collect::<Result<Vec<_>, _>>()?;
+    let selected = declarations
+        .iter()
+        .enumerate()
+        .filter(|(_, declaration)| {
+            declaration.bound
+                && declaration.kind == DeclarationKind::Function
+                && declaration.name == b"Value"
+                && declaration.package == b"example.com/consumer"
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        selected.len(),
+        1,
+        "one exact bound consumer function is required"
+    );
+    let (owner, declaration) = selected[0];
+    let signature =
+        image.type_row(declaration.type_root.expect("checked Value signature") as usize)?;
+    assert_eq!(signature.kind, TypeRowKind::Func);
+    assert_eq!(signature.param_count, 0);
+    assert_eq!(
+        signature.children.1, 1,
+        "Value returns one compiler-resolved result"
+    );
+    let (result, _) = image.type_child(signature.children.0 as usize)?;
+    let result = image.type_row(result as usize)?;
+    assert_eq!(result.kind, TypeRowKind::Basic);
+    assert_eq!(result.name, b"int");
+    let references = image.references().collect::<Result<Vec<_>, _>>()?;
+    let selected = references
+        .iter()
+        .filter(|reference| {
+            reference.target == b"Value"
+                && reference.target_package == b"example.com/dependency"
+                && reference.file == declaration.file
+                && reference.use_kind == ReferenceUseKind::Call
+                && reference.target_class == ReferenceTargetClass::Func
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        selected.len(),
+        1,
+        "one exact foreign dependency function call is required"
+    );
+    let call = selected[0];
+    assert!(call.owner_is_declaration);
+    assert_eq!(call.owner_row as usize, owner);
+    assert_eq!(
+        &source[call.span.0 as usize..call.span.1 as usize],
+        b"Value"
+    );
+    let expected = source
+        .windows(b"dependency.Value()".len())
+        .position(|bytes| bytes == b"dependency.Value()")
+        .expect("known foreign call")
+        + b"dependency.".len();
+    assert_eq!(call.span, (expected as u32, expected as u32 + 5));
+    println!(
+        "{}",
+        serde_json::json!({"phase":phase,"elapsed_seconds":elapsed.as_secs_f64(),"declaration_count":declarations.len(),"reference_count":references.len(),"selected_owner":"example.com/consumer::Value","selected_target":"example.com/dependency::Value","known_call_span":call.span,"result_type":"int","exact_foreign_call_count":1})
+    );
+    Ok(())
 }
