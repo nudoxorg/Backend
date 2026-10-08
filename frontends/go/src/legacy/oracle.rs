@@ -3921,7 +3921,11 @@ if [ -f '{}' ]; then printf '%s\n' changed > "$GOROOT/VERSION"; fi
                 .any(|file| file.ends_with("cgo.go"))
         );
         assert!(package.build_constraints.iter().any(|file| {
-            file.file.ends_with("cgo.go") && file.excluded_reason == "cgo-disabled-import-C"
+            file.file.ends_with("cgo.go")
+                && file.excluded_reason.starts_with("go-build-selection GOOS=")
+                && file.excluded_reason.contains("CGO_ENABLED=0")
+                && file.excluded_reason.contains("example.com/cgo-selection/cgo.go")
+                && file.excluded_reason.ends_with(" cgo-disabled-import-C")
         }));
         assert!(!module_cache.join("golang.org/x/tools@v0.30.0").exists());
         assert!(

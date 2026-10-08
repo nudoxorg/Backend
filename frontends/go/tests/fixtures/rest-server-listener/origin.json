@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/restic/rest-server",
+  "version": "v0.14.0",
+  "commit": "ad130de02124c445300f149fa4f8e826dfdd0e3f",
+  "tree": "ab9668f3c986cea022c39ba4587f89c4fa964b3a",
+  "source_directory": "cmd/rest-server",
+  "files": {
+    "listener_windows.go": "8ce2009bb5082aa6b80572b8978799fe9aa5aee73bf2f7df0c8997abc2aea713",
+    "listener_unix.go": "fc3955e328899f592866ac710068fe02995f526234ac79e45dd381c09cdb66c8"
+  }
+}

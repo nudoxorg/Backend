@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"go/ast"
+	"go/build"
 	"go/build/constraint"
 	"go/parser"
 	"go/token"
@@ -240,9 +241,16 @@ func extractSelectedPackage(moduleDir, sourcePath string) (*Output, error) {
 
 // extractWithPattern loads one go/packages pattern under dir and serializes it.
 func extractWithPattern(dir, pattern string) (*Output, error) {
-	packageEnv, err := packagesAuthorityEnvironment()
+	selection, err := nativePackageSelection()
 	if err != nil {
 		return nil, err
+	}
+	return extractWithSelection(dir, pattern, selection)
+}
+
+func extractWithSelection(dir, pattern string, selection *packageSelection) (*Output, error) {
+	if selection == nil {
+		return nil, fmt.Errorf("missing explicit Go package selection")
 	}
 	cfg := &packages.Config{
 		Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles |
@@ -256,7 +264,8 @@ func extractWithPattern(dir, pattern string) (*Output, error) {
 		// The Rust parent launches this helper with a closed environment. Pass
 		// only that typed environment to go/packages and select the package-root
 		// workspace independently from the outer `go run` build.
-		Env: packageEnv,
+		Env:        selection.environment,
+		BuildFlags: selection.buildFlags(),
 	}
 
 	pkgs, err := packages.Load(cfg, pattern)
@@ -314,7 +323,11 @@ func extractWithPattern(dir, pattern string) (*Output, error) {
 		if isExternalTestPackage(pkg) {
 			continue
 		}
-		out.Packages = append(out.Packages, extractPackage(pkg, candidates))
+		serialized, err := extractPackage(pkg, candidates, selection.context)
+		if err != nil {
+			return nil, err
+		}
+		out.Packages = append(out.Packages, serialized)
 	}
 
 	sort.Slice(out.Packages, func(i, j int) bool {
@@ -327,7 +340,7 @@ func extractWithPattern(dir, pattern string) (*Output, error) {
 // nested `go list` processes. The private workspace value exists because the
 // outer `go run` must use GOWORK=off while the target package loader may need a
 // selected workspace rooted above the module.
-func packagesAuthorityEnvironment() ([]string, error) {
+func nativePackageSelection() (*packageSelection, error) {
 	workspace := os.Getenv("NUDOX_GO_AUTHORITY_GOWORK")
 	if workspace == "" {
 		return nil, fmt.Errorf("missing explicit Go package workspace selection")
@@ -343,6 +356,9 @@ func packagesAuthorityEnvironment() ([]string, error) {
 		"GOSUMDB",
 		"GOPACKAGESDRIVER",
 		"CGO_ENABLED",
+		"GOOS",
+		"GOARCH",
+		"GOFLAGS",
 		"SystemRoot",
 	}
 	env := make([]string, 0, len(allowed)+1)
@@ -355,7 +371,7 @@ func packagesAuthorityEnvironment() ([]string, error) {
 		}
 	}
 	env = append(env, "GOWORK="+workspace)
-	return env, nil
+	return nativeSelection(env)
 }
 
 // interfaceCandidate is one non-empty interface eligible for cross-package
@@ -485,7 +501,7 @@ func packageVariantKey(pkg *packages.Package) string {
 // module-wide interface list from collectInterfaceCandidates, threaded down
 // to extractObject so a concrete type declared in this package can be
 // checked against interfaces declared in ANY package the module loaded.
-func extractPackage(pkg *packages.Package, candidates []interfaceCandidate) *Package {
+func extractPackage(pkg *packages.Package, candidates []interfaceCandidate, selection build.Context) (*Package, error) {
 	docs := harvestDocs(pkg)
 
 	p := &Package{
@@ -494,7 +510,11 @@ func extractPackage(pkg *packages.Package, candidates []interfaceCandidate) *Pac
 		Doc:        docs.packageDoc,
 		Files:      pkg.GoFiles,
 	}
-	p.BuildConstraints = scanBuildConstraints(pkg)
+	var err error
+	p.BuildConstraints, err = scanBuildConstraints(pkg, selection)
+	if err != nil {
+		return nil, err
+	}
 	p.CgoExcludedFiles = scanCgoExcludedFiles(pkg)
 	p.References = extractReferences(pkg, docs)
 
@@ -513,7 +533,7 @@ func extractPackage(pkg *packages.Package, candidates []interfaceCandidate) *Pac
 		unresolved = append(unresolved, extra...)
 	}
 	p.UnresolvedCgo = dedupeSorted(unresolved)
-	return p
+	return p, nil
 }
 
 func dedupeSorted(names []string) []string {
@@ -906,74 +926,6 @@ func referenceOwner(pkg *packages.Package, fn *ast.FuncDecl) (owner *types.Func,
 	return obj, named.Obj().Name(), true
 }
 
-// scanBuildConstraints is the source-level fallback for declarations that
-// packages.Load deliberately omits from the active package. It scans the
-// package directory independently of go/types, so platform/build-tag-only
-// exported declarations remain visible as typed availability diagnostics.
-func scanBuildConstraints(pkg *packages.Package) []*BuildConstraint {
-	files := pkg.GoFiles
-	if len(files) == 0 {
-		files = pkg.CompiledGoFiles
-	}
-	if len(files) == 0 {
-		return nil
-	}
-	dir := filepath.Dir(files[0])
-	active := make(map[string]bool, len(pkg.CompiledGoFiles)+len(pkg.GoFiles))
-	for _, file := range append(append([]string{}, pkg.CompiledGoFiles...), pkg.GoFiles...) {
-		abs, err := filepath.Abs(file)
-		if err == nil {
-			active[filepath.Clean(abs)] = true
-		}
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-	var out []*BuildConstraint
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
-			continue
-		}
-		path := filepath.Join(dir, entry.Name())
-		abs, err := filepath.Abs(path)
-		if err != nil || active[filepath.Clean(abs)] {
-			continue
-		}
-		source, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		expr, err := parseConstraint(source)
-		if err != nil {
-			continue
-		}
-		importsCgo, err := fileImportsCgo(path)
-		if err != nil {
-			continue
-		}
-		if expr == nil && !importsCgo {
-			continue
-		}
-		constraints := []string(nil)
-		if expr != nil {
-			constraints = append(constraints, expr.String())
-		}
-		reason := ""
-		if importsCgo {
-			reason = "cgo-disabled-import-C"
-		}
-		out = append(out, &BuildConstraint{
-			File:           path,
-			Constraints:    constraints,
-			ExcludedReason: reason,
-			ExportedDecls:  exportedDecls(path),
-		})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].File < out[j].File })
-	return out
-}
-
 // scanCgoExcludedFiles returns only import-C files Go excluded from this
 // package under the explicit CGO_ENABLED=0 authority environment. Active
 // files are compiled and type-checked; cgo files are retained as excluded
@@ -1031,10 +983,10 @@ func parseConstraint(source []byte) (constraint.Expr, error) {
 	return nil, nil
 }
 
-func exportedDecls(path string) []*BuildDecl {
+func exportedDecls(path string) ([]*BuildDecl, error) {
 	file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ParseComments)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var out []*BuildDecl
 	for _, decl := range file.Decls {
@@ -1061,7 +1013,7 @@ func exportedDecls(path string) []*BuildDecl {
 			}
 		}
 	}
-	return out
+	return out, nil
 }
 
 // extractObject serializes one package-scope object into a Decl. candidates
