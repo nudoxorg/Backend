@@ -127,18 +127,21 @@ def finalize(config):
     if candidate.exists():
         raise ValueError("completed/partial candidate already exists; inspect it before retrying")
     app = package / "Nudox.app"
-    evidence = json.loads((app / "Contents/Resources/build-manifest.json").read_text())
-    if evidence["source"]["git_revision"] != config["expected_revision"] or evidence["source"]["git_tree"] != config["expected_tree"]:
-        raise ValueError("packaged source differs from selected release")
     sdk = None
     if sdk_only(config):
+        import finalize_macos_typescript_sdk as sdk
+        evidence = sdk.read_json(app / "Contents/Resources/build-manifest.json", "SDK assembly manifest")
+    else:
+        evidence = json.loads((app / "Contents/Resources/build-manifest.json").read_text())
+    if evidence["source"]["git_revision"] != config["expected_revision"] or evidence["source"]["git_tree"] != config["expected_tree"]:
+        raise ValueError("packaged source differs from selected release")
+    if sdk is not None:
         expected_source = {"git_revision": config["expected_revision"], "git_tree": config["expected_tree"],
                            "cargo_lock_sha256": sha256(source / "Cargo.lock"), "working_tree": "clean"}
         if (evidence["source"] != expected_source
                 or evidence["target"] != {"triple": "aarch64-apple-darwin", "architecture": "arm64"}
                 or evidence["bundle"]["minimum_macos"] != config["minimum_os"]):
             raise ValueError("SDK assembly source/target/minimum OS differs from selected release")
-        import finalize_macos_typescript_sdk as sdk
         try:
             precursor = sdk.admit(app, evidence, output)
         except sdk.bundle.PackageError as error:

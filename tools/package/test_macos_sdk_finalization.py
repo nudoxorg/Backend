@@ -153,5 +153,26 @@ class SdkFinalizationContracts(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'legacy helper'):release.sdk_only({'sdk_only':True,'dotnet_root':'/unit/dotnet'})
         self.assertEqual(release.release_inputs({}),release.INPUTS)
 
+    def test_sdk_release_bounds_manifest_before_json_parsing_or_signing(self):
+        app,evidence=self.assembly()
+        with (app/finalizer.MANIFEST).open('wb') as stream:stream.truncate(16*1024**2+1)
+        config={'source_root':str(self.root),'output_dir':str(self.output),'sdk_only':True}
+        with patch.object(release,'preflight',return_value={'ready':True}), patch.object(release.json,'loads') as parse, patch.object(release,'run') as run:
+            with self.assertRaisesRegex(ValueError,'regular file under its byte bound'):
+                release.finalize(config)
+            parse.assert_not_called();run.assert_not_called()
+
+    def test_native_probe_cannot_leave_stale_application_image_hashes(self):
+        app,evidence=self.assembly();precursor=finalizer.admit(app,evidence,self.output)
+        original=(app/finalizer.MANIFEST).read_bytes()
+        def probe(*args):
+            image=app/'Contents/MacOS/backend-cli'
+            image.write_bytes(image.read_bytes()+b'unit concurrent mutation')
+            return {'unit_probe':True}
+        with patch.object(finalizer.bundle,'inspect_macho_tree',side_effect=self.inspect), patch.object(finalizer.bundle,'verify_sdk_runtime',side_effect=probe):
+            with self.assertRaisesRegex(ValueError,'files changed during native probes'):
+                finalizer.refresh(app,evidence,precursor)
+        self.assertEqual((app/finalizer.MANIFEST).read_bytes(),original)
+
 
 if __name__=='__main__':unittest.main()

@@ -80,6 +80,10 @@ def refresh(app, evidence, precursor):
              if name not in allowed and not signature_record(name)}
     if before != after:
         raise ValueError("non-code SDK assembly bytes changed during signing/probes")
+    for image in images:
+        if observed.get(image["path"], {}).get("sha256") != image["sha256"]:
+            raise ValueError("signed Mach-O changed before native probes")
+    pre_probe_inventory = observed
     probes = bundle.verify_sdk_runtime(payload, receipt)
     receipt["runtime_probe_status"] = "passed post-sign Node and Compiler API probes"
     (app / RECEIPT).write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
@@ -89,6 +93,9 @@ def refresh(app, evidence, precursor):
              if name not in allowed and not signature_record(name)}
     if before != after:
         raise ValueError("non-code SDK assembly bytes changed during native probes")
+    if ({name: value for name, value in observed.items() if name != RECEIPT}
+            != {name: value for name, value in pre_probe_inventory.items() if name != RECEIPT}):
+        raise ValueError("signed application/SDK files changed during native probes")
     result = copy.deepcopy(evidence)
     result["compiler_helpers"].update(receipt_sha256=bundle.sha256(app / RECEIPT),
                                       files=receipt["files"], tools=receipt["tools"],
