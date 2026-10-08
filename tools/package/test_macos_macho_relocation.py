@@ -8,6 +8,7 @@ codesign, app-launch, or runtime behavior.
 from __future__ import annotations
 
 import importlib.util
+import base64
 import hashlib
 import json
 import sys
@@ -36,6 +37,42 @@ def load_module(filename: str, name: str) -> Any:
 
 relocation = load_module("macho_relocation.py", "macho_relocation")
 collector = load_module("collect-macos-macho-relocation.py", "collect_macos_macho_relocation")
+
+
+class PackageNoticeAssemblyTests(unittest.TestCase):
+    def test_admitted_package_notice_is_decoded_and_copied_exactly(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package = root / "package"
+            package.mkdir()
+            staging = root / "Nudox.app"
+            content = b"Authentic package copyright and license\n"
+            digest = hashlib.sha256(content).hexdigest()
+            plan = {"images": [], "loads": [], "packages": {"example": {
+                "root_tree_sha256": relocation.file_tree_sha256(relocation.file_tree_manifest(package)),
+                "notices": [{"name": "LICENSE.txt", "sha256": digest,
+                             "content_base64": base64.b64encode(content).decode("ascii")}],
+            }}}
+            result = collector.bundle.apply_macho_relocation(staging, plan, {"example": package})
+            relative = "Contents/Resources/Licenses/Third Party/example/LICENSE.txt"
+            self.assertEqual((staging / relative).read_bytes(), content)
+            self.assertEqual(result["notices"], [{"package_id": "example", "name": "LICENSE.txt",
+                                                "sha256": digest, "path": relative}])
+
+    def test_changed_notice_bytes_are_refused_before_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package = root / "package"
+            package.mkdir()
+            staging = root / "Nudox.app"
+            plan = {"images": [], "loads": [], "packages": {"example": {
+                "root_tree_sha256": relocation.file_tree_sha256(relocation.file_tree_manifest(package)),
+                "notices": [{"name": "LICENSE.txt", "sha256": hashlib.sha256(b"admitted").hexdigest(),
+                             "content_base64": base64.b64encode(b"changed").decode("ascii")}],
+            }}}
+            with self.assertRaisesRegex(collector.bundle.PackageError, "notice bytes changed"):
+                collector.bundle.apply_macho_relocation(staging, plan, {"example": package})
+            self.assertFalse(staging.exists())
 
 
 class DotnetRuntimeReceiptTests(unittest.TestCase):

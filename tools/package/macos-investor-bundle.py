@@ -9,6 +9,7 @@ revision and refuses unresolved non-system Mach-O dependencies.
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime
 import functools
 import hashlib
