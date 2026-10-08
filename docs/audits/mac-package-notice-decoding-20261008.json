@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "base": "41882d2c8ba29b2ba4000744740887852622379e",
+  "tested_source_commit": "0754af916e3078e05f53fdc2477a9cb219f8e5cf",
+  "tested_source_tree": "dd956b92a7ed44f593a1b063fb24d28518a6b73a",
+  "postimages": [
+    {
+      "path": "tools/package/macos-investor-bundle.py",
+      "sha256": "47644dbbd47b646b62f1d1ade1bf41929dd633784cd0b0fe0c0c7ba6a6fd2a9d"
+    },
+    {
+      "path": "tools/package/test_macos_macho_relocation.py",
+      "sha256": "9698851d066847ba984e43747ba7686aa6f24a8f8a3c7d04dcf660c8d5303ca7"
+    }
+  ],
+  "failure": "Actual stock bundle attempt01 raised NameError while decoding admitted package notices; original raw failure preserved.",
+  "ordinary_fixture_log": {
+    "path": "/private/tmp/current-mac-native-host-rustcvv-review-20261008/notices14.log",
+    "sha256": "0ccf82c61ba02e24cdd69ec37fe1a222ea2b59217674a5bb68f08b928b622b1e",
+    "passed": 14,
+    "failed": 0,
+    "seconds": 0.112,
+    "names": [
+      "test_relocator_requires_install_name_tool",
+      "test_absolute_rpath_is_matched_against_typed_input_root",
+      "test_current_image_rpath_precedes_inherited_parent_rpath",
+      "test_parent_loader_rpath_is_inherited_by_transitive_dependency",
+      "test_shared_image_with_conflicting_process_runpaths_is_refused",
+      "test_nix_runtime_pin_must_match_exact_store_output_path",
+      "test_receipt_binds_complete_runtime_root_archive_and_notices",
+      "test_receipt_rejects_changed_notice_or_unlisted_runtime_file",
+      "test_runtime_symlink_cannot_escape_admitted_root",
+      "test_concurrent_receipt_writers_have_exactly_one_winner",
+      "test_existing_regular_file_is_never_replaced",
+      "test_existing_symlink_is_never_followed_or_replaced",
+      "test_admitted_package_notice_is_decoded_and_copied_exactly",
+      "test_changed_notice_bytes_are_refused_before_copy"
+    ]
+  },
+  "independent_root_run": {
+    "passed": 14,
+    "failed": 0,
+    "seconds": 0.249
+  },
+  "scope": "Notice assembly and byte-digest refusal; no native app, signing, installed SDK or live GUI acceptance inferred."
+}
