@@ -1,0 +1,56 @@
+{
+  "source": "5f2a97eb4c74c175e190ff9637373c6bcf9ae39e",
+  "tree": "08d334bdf7ae6bd87c4943b58f010d4554dcbb12",
+  "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268",
+  "production_equivalent_canonical": "9fb56fad68fa0cc94bba046f988623dab44358f8",
+  "changed_paths": [
+    "docs/architecture/briefs/production-readiness.md",
+    "evidence/nonblocking-search-20261007/native-proof.tar.gz",
+    "evidence/nonblocking-search-20261007/root-audit.json",
+    "evidence/sol61-canonical-search-native-20261008/archive-verification.json",
+    "evidence/sol61-canonical-search-native-20261008/canonical-search-native-ffdc-6e3-proof-v2/canonical-6e3-ack-01/cargo.log.gz",
+    "evidence/sol61-canonical-search-native-20261008/canonical-search-native-ffdc-6e3-proof-v2/canonical-6e3-ack-01/launch.json",
+    "evidence/sol61-canonical-search-native-20261008/canonical-search-native-ffdc-6e3-proof-v2/canonical-6e3-ack-01/receipt.json",
+    "evidence/sol61-canonical-search-native-20261008/canonical-search-native-ffdc-6e3-proof-v2/canonical-6e3-ack-01/summary.json",
+    "evidence/sol61-canonical-search-native-20261008/canonical-search-native-ffdc-6e3-proof-v2/canonical-eb855-ack-01/cargo.log.gz",
+    "evidence/sol61-canonical-search-native-20261008/canonical-search-native-ffdc-6e3-proof-v2/canonical-eb855-ack-01/launch.json",
+    "evidence/sol61-canonical-search-native-20261008/canonical-search-native-ffdc-6e3-proof-v2/canonical-eb855-ack-01/receipt.json",
+    "evidence/sol61-canonical-search-native-20261008/canonical-search-native-ffdc-6e3-proof-v2/canonical-eb855-ack-01/summary.json",
+    "evidence/sol61-canonical-search-native-20261008/canonical-search-native-ffdc-6e3-proof-v2/canonical-ffdc-ack-01/cargo.log.gz",
+    "evidence/sol61-canonical-search-native-20261008/canonical-search-native-ffdc-6e3-proof-v2/canonical-ffdc-ack-01/launch.json",
+    "evidence/sol61-canonical-search-native-20261008/canonical-search-native-ffdc-6e3-proof-v2/canonical-ffdc-ack-01/receipt.json",
+    "evidence/sol61-canonical-search-native-20261008/canonical-search-native-ffdc-6e3-proof-v2/canonical-ffdc-ack-01/summary.json",
+    "evidence/sol61-canonical-search-native-20261008/canonical-search-native-ffdc-6e3-proof-v2/canonical-ffdc-listener-01/cargo.log.gz",
+    "evidence/sol61-canonical-search-native-20261008/canonical-search-native-ffdc-6e3-proof-v2/canonical-ffdc-listener-01/launch.json",
+    "evidence/sol61-canonical-search-native-20261008/canonical-search-native-ffdc-6e3-proof-v2/canonical-ffdc-listener-01/receipt.json",
+    "evidence/sol61-canonical-search-native-20261008/canonical-search-native-ffdc-6e3-proof-v2/canonical-ffdc-listener-01/summary.json",
+    "evidence/sol61-canonical-search-native-20261008/canonical-search-native-ffdc-6e3-proof-v2/canonical-ffdc-preparation-01/cargo.log.gz",
+    "evidence/sol61-canonical-search-native-20261008/canonical-search-native-ffdc-6e3-proof-v2/canonical-ffdc-preparation-01/launch.json",
+    "evidence/sol61-canonical-search-native-20261008/canonical-search-native-ffdc-6e3-proof-v2/canonical-ffdc-preparation-01/receipt.json",
+    "evidence/sol61-canonical-search-native-20261008/canonical-search-native-ffdc-6e3-proof-v2/canonical-ffdc-preparation-01/summary.json",
+    "evidence/sol61-canonical-search-native-20261008/canonical-search-native-ffdc-6e3-proof-v2/inventory.json",
+    "evidence/sol61-canonical-search-native-20261008/canonical-search-native-ffdc-6e3-proof-v2/member-index.json",
+    "evidence/sol61-canonical-search-native-20261008/canonical-search-native-ffdc-6e3-proof-v2/source-correspondence.json",
+    "evidence/sol61-canonical-search-native-20261008/root-audit.json"
+  ],
+  "production_changed_paths": [],
+  "verification": "git diff --name-only canonical source; all differences under docs or evidence",
+  "native_controls": {
+    "preparation": {
+      "source": "ffdc7c54b0f69c34a83080ac74b844498ffecb70",
+      "passed": 9,
+      "failed": 0
+    },
+    "listener": {
+      "source": "ffdc7c54b0f69c34a83080ac74b844498ffecb70",
+      "passed": 19,
+      "failed": 0
+    },
+    "ack": {
+      "source": "6e3dd18344f24e8c0099aa9a8047c0f2ab26ea89",
+      "passed": 5,
+      "failed": 0
+    },
+    "scope": "Native controls ran on named predecessor freezes; current5f2 trio was built and real retained Docs replay ran. Do not relabel predecessor controls as5f2 tests. Previous RED gates retained in canonical evidence."
+  }
+}

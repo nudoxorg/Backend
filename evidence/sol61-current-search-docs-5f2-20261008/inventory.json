@@ -1,0 +1,1114 @@
+{
+  "native-mac-07/compact-proof.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/native-mac-07-current-5f2/compact-proof.json",
+    "raw_sha256": "957b7c65d654749ab633f1c86f955ef99ed7adc98d21bdc88aff1ff790055a17",
+    "raw_bytes": 3096,
+    "stored_sha256": "957b7c65d654749ab633f1c86f955ef99ed7adc98d21bdc88aff1ff790055a17",
+    "stored_bytes": 3096,
+    "compressed": false
+  },
+  "native-mac-07/cargo.log.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/native-mac-07-current-5f2/cargo.log",
+    "raw_sha256": "0caf106a21f4778b5baca9cd54b78def27b61e5287f991a6839e2f663369fd85",
+    "raw_bytes": 1198445,
+    "stored_sha256": "83c5d66d24457651aec03f91fa07fc9706fa6de361757d1a6f4531e578b2997f",
+    "stored_bytes": 93668,
+    "compressed": true
+  },
+  "native-mac-07/manifest.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/native-mac-07-current-5f2/manifest.json",
+    "raw_sha256": "163296ef6000159943cd43b8cfd48f08989c8132f06426481805266efe5444c8",
+    "raw_bytes": 4314,
+    "stored_sha256": "163296ef6000159943cd43b8cfd48f08989c8132f06426481805266efe5444c8",
+    "stored_bytes": 4314,
+    "compressed": false
+  },
+  "native-mac-07/launch.json.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/native-mac-07-current-5f2/launch.json",
+    "raw_sha256": "f978a56ed16e79d15569e000e3f1924115bac881abfc7804e446b976626ba53a",
+    "raw_bytes": 25579,
+    "stored_sha256": "9a163f09125af74b6721ed79ad47e3fcf1bdbf51295805f1e949ff34af13e562",
+    "stored_bytes": 3718,
+    "compressed": true
+  },
+  "native-mac-07/receipt.json.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/native-mac-07-current-5f2/receipt.json",
+    "raw_sha256": "61beadb4d411df478bb2467da9da0534cf65f2bd2276cd198a53bd55416d6d82",
+    "raw_bytes": 29449,
+    "stored_sha256": "c331464f62b81c2c468bca7c0517500de4e478b873329efd1686899b00f47f71",
+    "stored_bytes": 4161,
+    "compressed": true
+  },
+  "docs03/analysis.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/analysis.json",
+    "raw_sha256": "f1a6a4c662bacece9887277f60eb7f6716053f0ff082a2f3789081b46b63e0ad",
+    "raw_bytes": 5058,
+    "stored_sha256": "f1a6a4c662bacece9887277f60eb7f6716053f0ff082a2f3789081b46b63e0ad",
+    "stored_bytes": 5058,
+    "compressed": false
+  },
+  "docs03/analysis.v1-transport-classification.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/analysis.v1-transport-classification.json",
+    "raw_sha256": "d9f48f27667d60bd3a35c528d84c0ec1c565fd10503d3743517e0ad481ed4b94",
+    "raw_bytes": 3635,
+    "stored_sha256": "d9f48f27667d60bd3a35c528d84c0ec1c565fd10503d3743517e0ad481ed4b94",
+    "stored_bytes": 3635,
+    "compressed": false
+  },
+  "docs03/backend.document.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/backend.document.json",
+    "raw_sha256": "ed262e7bda2f0da8929d3ba00e6d912e17d13481428370da43713e0de4bc0a79",
+    "raw_bytes": 12399,
+    "stored_sha256": "ed262e7bda2f0da8929d3ba00e6d912e17d13481428370da43713e0de4bc0a79",
+    "stored_bytes": 12399,
+    "compressed": false
+  },
+  "docs03/backend.graph.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/backend.graph.json",
+    "raw_sha256": "6cdaba3203b330d59946c7d0281d9213045fa69740cd1f37235e233baa100053",
+    "raw_bytes": 5931,
+    "stored_sha256": "6cdaba3203b330d59946c7d0281d9213045fa69740cd1f37235e233baa100053",
+    "stored_bytes": 5931,
+    "compressed": false
+  },
+  "docs03/backend.read.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/backend.read.json",
+    "raw_sha256": "8695d536877f77b7e5266898c0a6b122edd6748151a856a135a80401adea76ac",
+    "raw_bytes": 3459,
+    "stored_sha256": "8695d536877f77b7e5266898c0a6b122edd6748151a856a135a80401adea76ac",
+    "stored_bytes": 3459,
+    "compressed": false
+  },
+  "docs03/backend.references.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/backend.references.json",
+    "raw_sha256": "89e360f0f3335af05f5b605773837055703f894cdc1490328b1a7f0dc3feaae8",
+    "raw_bytes": 1030,
+    "stored_sha256": "89e360f0f3335af05f5b605773837055703f894cdc1490328b1a7f0dc3feaae8",
+    "stored_bytes": 1030,
+    "compressed": false
+  },
+  "docs03/backend.resolve.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/backend.resolve.json",
+    "raw_sha256": "22a58df27c58e44f9d50c379fd2c61c64cb84d6742c0f60dfa44c2e5caeeec83",
+    "raw_bytes": 3885,
+    "stored_sha256": "22a58df27c58e44f9d50c379fd2c61c64cb84d6742c0f60dfa44c2e5caeeec83",
+    "stored_bytes": 3885,
+    "compressed": false
+  },
+  "docs03/backend.search.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/backend.search.json",
+    "raw_sha256": "7456c6a4fb2223115b01a6a80ba8e98ea1e3d715e18900511000ea8ee632cf43",
+    "raw_bytes": 3928,
+    "stored_sha256": "7456c6a4fb2223115b01a6a80ba8e98ea1e3d715e18900511000ea8ee632cf43",
+    "stored_bytes": 3928,
+    "compressed": false
+  },
+  "docs03/backend.semantic_versions.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/backend.semantic_versions.json",
+    "raw_sha256": "774c73c33124bfd81f96e0a1d8a151c3acb18381d6520b183c5bf737e41d74dd",
+    "raw_bytes": 783,
+    "stored_sha256": "774c73c33124bfd81f96e0a1d8a151c3acb18381d6520b183c5bf737e41d74dd",
+    "stored_bytes": 783,
+    "compressed": false
+  },
+  "docs03/backend.source.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/backend.source.json",
+    "raw_sha256": "03c2890b31c39897e4353f992bfd82a7287c87d89bd1aad9fff0ce450f650848",
+    "raw_bytes": 10491,
+    "stored_sha256": "03c2890b31c39897e4353f992bfd82a7287c87d89bd1aad9fff0ce450f650848",
+    "stored_bytes": 10491,
+    "compressed": false
+  },
+  "docs03/backend.status.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/backend.status.json",
+    "raw_sha256": "c884028a214958b7412b0a7f6524981644fe48cf8fa1c0d9ae82418f1a912276",
+    "raw_bytes": 1855,
+    "stored_sha256": "c884028a214958b7412b0a7f6524981644fe48cf8fa1c0d9ae82418f1a912276",
+    "stored_bytes": 1855,
+    "compressed": false
+  },
+  "docs03/chosen-coordinate.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/chosen-coordinate.json",
+    "raw_sha256": "5267bbefa60463b945c05787b756959184489fa7ab178ad7ad66d47ff84a0bad",
+    "raw_bytes": 395,
+    "stored_sha256": "5267bbefa60463b945c05787b756959184489fa7ab178ad7ad66d47ff84a0bad",
+    "stored_bytes": 395,
+    "compressed": false
+  },
+  "docs03/cold-owner-0.sample.txt.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/cold-owner-0.sample.txt",
+    "raw_sha256": "63d6ae310f33251b28ae134b656098131e7816ef49dba8195858710316481006",
+    "raw_bytes": 148412,
+    "stored_sha256": "d877743062b1d0df520a80467056cc4ab43a4b7d9a2f5dbd257d23b1236e8c40",
+    "stored_bytes": 26012,
+    "compressed": true
+  },
+  "docs03/cold-owner-20.sample.txt.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/cold-owner-20.sample.txt",
+    "raw_sha256": "e86621f940fbbede470ebc096868a9c5429bce38752aef910089277be9173674",
+    "raw_bytes": 735688,
+    "stored_sha256": "49eb03d52767f9fe7b7fdae48d95413f8a7ded7581a50d2a4086cf744bdf0dae",
+    "stored_bytes": 75318,
+    "compressed": true
+  },
+  "docs03/cold-owner-5.sample.txt.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/cold-owner-5.sample.txt",
+    "raw_sha256": "2e3d158edc77c1f1c80ed3ebe607f712b00fc2a8890a00b26d7b4ac94b07746b",
+    "raw_bytes": 801223,
+    "stored_sha256": "4a0e52527611de4abe2a41bd33d224feeb49c491f7a3af1e1ed5ef343b76b467",
+    "stored_bytes": 87120,
+    "compressed": true
+  },
+  "docs03/cold-search.launch.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/cold-search.launch.json",
+    "raw_sha256": "0d6c8c33e7e880070b4493926be828ab067cfc3a64d694a436aa939d644a57f4",
+    "raw_bytes": 287,
+    "stored_sha256": "0d6c8c33e7e880070b4493926be828ab067cfc3a64d694a436aa939d644a57f4",
+    "stored_bytes": 287,
+    "compressed": false
+  },
+  "docs03/cold-search.retired.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/cold-search.retired.json",
+    "raw_sha256": "154eb76c1a21b99cbbe79256c72a4e24b511eed0df289ac02d4c841b4f0964e4",
+    "raw_bytes": 399,
+    "stored_sha256": "154eb76c1a21b99cbbe79256c72a4e24b511eed0df289ac02d4c841b4f0964e4",
+    "stored_bytes": 399,
+    "compressed": false
+  },
+  "docs03/cold-search.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/cold-search.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/cold-search.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/cold-search.stdout",
+    "raw_sha256": "cd07d00b64a8539eefc81fa44545fa5f66c085537e7096459dab8374c91770eb",
+    "raw_bytes": 1984,
+    "stored_sha256": "344ba9a1d60f629919b8ef6870456742a36127517847bf1aeaf6b5f097145394",
+    "stored_bytes": 905,
+    "compressed": true
+  },
+  "docs03/commands.json.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/commands.json",
+    "raw_sha256": "ae50ddd8c5b9bdceda0734fc2a92819152c6ff1befb4adfe3df4610cf119307f",
+    "raw_bytes": 75396,
+    "stored_sha256": "587180dcca3e0dd182ad2d2875b4eb6244838204d196887d02e84b0ed7994ac3",
+    "stored_bytes": 4249,
+    "compressed": true
+  },
+  "docs03/concurrent-health-0.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-0.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-0.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-0.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-1.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-1.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-1.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-1.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-10.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-10.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-10.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-10.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-11.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-11.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-11.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-11.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-12.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-12.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-12.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-12.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-13.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-13.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-13.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-13.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-14.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-14.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-14.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-14.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-15.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-15.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-15.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-15.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-16.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-16.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-16.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-16.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-17.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-17.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-17.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-17.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-18.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-18.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-18.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-18.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-19.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-19.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-19.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-19.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-2.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-2.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-2.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-2.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-20.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-20.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-20.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-20.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-21.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-21.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-21.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-21.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-22.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-22.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-22.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-22.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-23.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-23.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-23.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-23.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-24.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-24.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-24.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-24.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-25.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-25.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-25.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-25.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-26.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-26.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-26.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-26.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-27.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-27.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-27.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-27.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-28.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-28.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-28.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-28.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-29.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-29.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-29.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-29.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-3.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-3.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-3.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-3.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-30.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-30.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-30.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-30.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-4.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-4.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-4.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-4.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-5.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-5.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-5.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-5.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-6.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-6.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-6.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-6.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-7.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-7.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-7.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-7.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-8.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-8.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-8.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-8.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-health-9.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-9.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-health-9.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-health-9.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-revision-0.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-revision-0.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-revision-0.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-revision-0.stdout",
+    "raw_sha256": "310d6c5e3008dc99e9bb25d1abf4e6acc2de76843d31ad9b88e63b9116eef216",
+    "raw_bytes": 191,
+    "stored_sha256": "806fead39d037667a315efaebd21e98405cf410b94c7a20b35759056af0e8f79",
+    "stored_bytes": 158,
+    "compressed": true
+  },
+  "docs03/concurrent-revision-10.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-revision-10.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-revision-10.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-revision-10.stdout",
+    "raw_sha256": "310d6c5e3008dc99e9bb25d1abf4e6acc2de76843d31ad9b88e63b9116eef216",
+    "raw_bytes": 191,
+    "stored_sha256": "806fead39d037667a315efaebd21e98405cf410b94c7a20b35759056af0e8f79",
+    "stored_bytes": 158,
+    "compressed": true
+  },
+  "docs03/concurrent-revision-3.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-revision-3.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-revision-3.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-revision-3.stdout",
+    "raw_sha256": "310d6c5e3008dc99e9bb25d1abf4e6acc2de76843d31ad9b88e63b9116eef216",
+    "raw_bytes": 191,
+    "stored_sha256": "806fead39d037667a315efaebd21e98405cf410b94c7a20b35759056af0e8f79",
+    "stored_bytes": 158,
+    "compressed": true
+  },
+  "docs03/concurrent-status-0.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-status-0.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-status-0.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-status-0.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-status-10.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-status-10.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-status-10.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-status-10.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/concurrent-status-3.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-status-3.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/concurrent-status-3.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/concurrent-status-3.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/control-responsiveness.json.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/control-responsiveness.json",
+    "raw_sha256": "edc2260d1b9b477579c4a94a45f4a1796fbb2650d4e1ba20744799eff585527e",
+    "raw_bytes": 57340,
+    "stored_sha256": "76a340180d95fc6f82dafa541d02f1dac6015642fa6fb267e55c4fbb8611e72c",
+    "stored_bytes": 2311,
+    "compressed": true
+  },
+  "docs03/final-health.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/final-health.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/final-health.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/final-health.stdout",
+    "raw_sha256": "9d498c2b250a1ed44c683a5f95d8b6207512a1b0f361eee7902a872166405e33",
+    "raw_bytes": 696,
+    "stored_sha256": "90e1ca03fda1c365a157a8f6e22f40974106fbadfb078683fa34530c52f8ebb6",
+    "stored_bytes": 377,
+    "compressed": true
+  },
+  "docs03/fleet.json.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/fleet.json",
+    "raw_sha256": "3c0c5050975d0bfae4f9fe480abcfe741bf74fd2573ad8590df1952e2e2ae0cb",
+    "raw_bytes": 34133,
+    "stored_sha256": "f55d0095581f6d7885bea9acc983c9e2763f0c73c1b627bce82c31c01e5d06b9",
+    "stored_bytes": 3919,
+    "compressed": true
+  },
+  "docs03/locald.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/locald.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/locald.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/locald.stdout",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/mcp-calls.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/mcp-calls.json",
+    "raw_sha256": "d4ce436255844e668ba9bd7bbcfccf08d3f83e0570ffd7687424c903622e8ca4",
+    "raw_bytes": 3701,
+    "stored_sha256": "d4ce436255844e668ba9bd7bbcfccf08d3f83e0570ffd7687424c903622e8ca4",
+    "stored_bytes": 3701,
+    "compressed": false
+  },
+  "docs03/mcp.retired.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/mcp.retired.json",
+    "raw_sha256": "22f7ffb092f8054cd8e45cbbe5559f1ed5dcf234224e839f02e0098cceecba31",
+    "raw_bytes": 32,
+    "stored_sha256": "22f7ffb092f8054cd8e45cbbe5559f1ed5dcf234224e839f02e0098cceecba31",
+    "stored_bytes": 32,
+    "compressed": false
+  },
+  "docs03/mcp.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/mcp.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/mcp.tools.json.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/mcp.tools.json",
+    "raw_sha256": "bd84f6bf1c315aeea7291ee205540e2eaf5a550d85379b08cac04cd48c998a2e",
+    "raw_bytes": 39301,
+    "stored_sha256": "e6c780b386109f3bff9bec88ad57a7cd0a3b3b57b3d8103686bfd918d8c7a7cd",
+    "stored_bytes": 3563,
+    "compressed": true
+  },
+  "docs03/mcp.wire.jsonl.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/mcp.wire.jsonl",
+    "raw_sha256": "2bec5f0aabd2a8d8e00cc42c5b7d061f6fa01016a7daa0e3f6482c4291f7a7e8",
+    "raw_bytes": 56623,
+    "stored_sha256": "98a1c32bfe3c64159ba9b522637fc446c4314d12a9e56bc1073c848da2b9e53f",
+    "stored_bytes": 6885,
+    "compressed": true
+  },
+  "docs03/ordinary-graph.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/ordinary-graph.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/ordinary-graph.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/ordinary-graph.stdout",
+    "raw_sha256": "15eb7e2a0291273bdea509b664d3f8b9cec103cad511ff5cdb450a8ee11ef82a",
+    "raw_bytes": 2183,
+    "stored_sha256": "ec25f2b5a3487ae06838b5469b9ed9b65888ffa82baea1ee83e6042baeca0e99",
+    "stored_bytes": 770,
+    "compressed": true
+  },
+  "docs03/ordinary-resolve.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/ordinary-resolve.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/ordinary-resolve.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/ordinary-resolve.stdout",
+    "raw_sha256": "c9c84627f75a5abb708b393cf87303fc9d8bb9a078986d55137b145ec62e512e",
+    "raw_bytes": 1402,
+    "stored_sha256": "0916af351a4dd724484bc1a59db735cfa3571643bdc534538fcde92bbaf48ead",
+    "stored_bytes": 599,
+    "compressed": true
+  },
+  "docs03/ordinary-source.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/ordinary-source.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/ordinary-source.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/ordinary-source.stdout",
+    "raw_sha256": "a33065242c38a4e621d3cbba1d8b5e10bb7b0042bf5ecb984ca61a204acc55cb",
+    "raw_bytes": 4857,
+    "stored_sha256": "150450bc17fdc6c53b321a10a404eab66225d789bb44e7e5531872fa1b944b5a",
+    "stored_bytes": 1259,
+    "compressed": true
+  },
+  "docs03/owner.launch.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/owner.launch.json",
+    "raw_sha256": "d142182fa72e3a73214c82c5e9ac7304853aa3a1991ccbe6e1cfc125883cf4a6",
+    "raw_bytes": 2895,
+    "stored_sha256": "d142182fa72e3a73214c82c5e9ac7304853aa3a1991ccbe6e1cfc125883cf4a6",
+    "stored_bytes": 2895,
+    "compressed": false
+  },
+  "docs03/owner.retired.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/owner.retired.json",
+    "raw_sha256": "b33188cc8323c44f88d581515e46ed081e2c3447cb4ccc66dde7ff77b417d5bd",
+    "raw_bytes": 3022,
+    "stored_sha256": "b33188cc8323c44f88d581515e46ed081e2c3447cb4ccc66dde7ff77b417d5bd",
+    "stored_bytes": 3022,
+    "compressed": false
+  },
+  "docs03/sample-0.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/sample-0.stderr",
+    "raw_sha256": "0765e9b2636e15244c4326a52058e6db3a4c5a19bc1fe7ac8456809f0744d83e",
+    "raw_bytes": 345,
+    "stored_sha256": "e6ad27bf8c34661f80c23161b004d0c4d7a35070b84a54b293b30086b32d2b10",
+    "stored_bytes": 237,
+    "compressed": true
+  },
+  "docs03/sample-0.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/sample-0.stdout",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/sample-20.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/sample-20.stderr",
+    "raw_sha256": "f12fb4114b9f31331bbe2b80795fbe14154cfcb96967804f45d6fecae24ba13c",
+    "raw_bytes": 346,
+    "stored_sha256": "25ed25639b07328f867e665e6c5a4b6d757c69ba847f87b351871b1b3a7cc938",
+    "stored_bytes": 238,
+    "compressed": true
+  },
+  "docs03/sample-20.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/sample-20.stdout",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/sample-5.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/sample-5.stderr",
+    "raw_sha256": "7c6f3900042c73f9575628b7dfe9aecbc102920c84aae762b3fc6efdc188a5e1",
+    "raw_bytes": 345,
+    "stored_sha256": "2fc4fac9f452a54282a7c1e8ffe3c0eacb0db8d518c01d6565e73c8bcd4a3fa1",
+    "stored_bytes": 237,
+    "compressed": true
+  },
+  "docs03/sample-5.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/sample-5.stdout",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/semantic-groundtruth.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/semantic-groundtruth.json",
+    "raw_sha256": "ac9bc75d39929877652d38b0b9a82da52bcae3810a7843c21cfce807c0c27b92",
+    "raw_bytes": 1146,
+    "stored_sha256": "ac9bc75d39929877652d38b0b9a82da52bcae3810a7843c21cfce807c0c27b92",
+    "stored_bytes": 1146,
+    "compressed": false
+  },
+  "docs03/shared-abandoned-search.launch.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/shared-abandoned-search.launch.json",
+    "raw_sha256": "6616855655be0562d23040f2c419c7d4078f3bd8dd4662d206cc57561952e908",
+    "raw_bytes": 287,
+    "stored_sha256": "6616855655be0562d23040f2c419c7d4078f3bd8dd4662d206cc57561952e908",
+    "stored_bytes": 287,
+    "compressed": false
+  },
+  "docs03/shared-abandoned-search.retired.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/shared-abandoned-search.retired.json",
+    "raw_sha256": "419a0b28b0c3dbe5823e66aef21a941e47820ed62ab1c5ed8bf6e1ac45dd2c89",
+    "raw_bytes": 107,
+    "stored_sha256": "419a0b28b0c3dbe5823e66aef21a941e47820ed62ab1c5ed8bf6e1ac45dd2c89",
+    "stored_bytes": 107,
+    "compressed": false
+  },
+  "docs03/shared-abandoned-search.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/shared-abandoned-search.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/shared-abandoned-search.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/shared-abandoned-search.stdout",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/source-unchanged.json": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/source-unchanged.json",
+    "raw_sha256": "ee80f0bc48fbfb4ad879f53f6e777b8e5b0099702acbf1301c5ca15fc6b219c2",
+    "raw_bytes": 64,
+    "stored_sha256": "ee80f0bc48fbfb4ad879f53f6e777b8e5b0099702acbf1301c5ca15fc6b219c2",
+    "stored_bytes": 64,
+    "compressed": false
+  },
+  "docs03/versions-before-any-reindex.stderr.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/versions-before-any-reindex.stderr",
+    "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "raw_bytes": 0,
+    "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "stored_bytes": 20,
+    "compressed": true
+  },
+  "docs03/versions-before-any-reindex.stdout.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/cold-search-default-03-current/versions-before-any-reindex.stdout",
+    "raw_sha256": "310d6c5e3008dc99e9bb25d1abf4e6acc2de76843d31ad9b88e63b9116eef216",
+    "raw_bytes": 191,
+    "stored_sha256": "806fead39d037667a315efaebd21e98405cf410b94c7a20b35759056af0e8f79",
+    "stored_bytes": 158,
+    "compressed": true
+  },
+  "docs03-copy/owned-cow-receipt.json.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/owned-cow-receipt.json",
+    "raw_sha256": "73bd037e5355447bc786c34c61ae77d1a8261909ce1b555068c2f571a39348b6",
+    "raw_bytes": 3602779,
+    "stored_sha256": "521fef868f9f1215daa595f6739944d1522079cd24cac39fcad260c5b0f327c6",
+    "stored_bytes": 1044506,
+    "compressed": true
+  },
+  "docs03-copy/source-origin.json.gz": {
+    "raw_remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-nonblocking-search/docs-default-cold-03-current-5f2/evidence/source-origin.json",
+    "raw_sha256": "0c85dbbc863b3a877b2833b0f08eff19bcebd50944cf586eaf67c40fca3c47fe",
+    "raw_bytes": 617611,
+    "stored_sha256": "ed468779ef05e6afc5ac5dd66db188160abeab98a4057711b9eadf2e17e8d3a4",
+    "stored_bytes": 175682,
+    "compressed": true
+  },
+  "harness/sol61-search-mac-current-trio.py": {
+    "raw_remote_path": "/private/tmp/sol61-search-mac-current-trio.py",
+    "raw_sha256": "8959df6fddc6faa6e2f47cd8d26d3895a737b329608b0602f71c740c18b611ca",
+    "raw_bytes": 4891,
+    "stored_sha256": "8959df6fddc6faa6e2f47cd8d26d3895a737b329608b0602f71c740c18b611ca",
+    "stored_bytes": 4891,
+    "compressed": false
+  },
+  "harness/sol61-search-current-trio-destination-memory-plan.json": {
+    "raw_remote_path": "/private/tmp/sol61-search-current-trio-destination-memory-plan.json",
+    "raw_sha256": "56350157d5aa3b996ae7e27ed460e72b1aea3797ae0209810f0309342c4fec36",
+    "raw_bytes": 952,
+    "stored_sha256": "56350157d5aa3b996ae7e27ed460e72b1aea3797ae0209810f0309342c4fec36",
+    "stored_bytes": 952,
+    "compressed": false
+  },
+  "harness/sol61-search-docs-default-config03-current.json": {
+    "raw_remote_path": "/private/tmp/sol61-search-docs-default-config03-current.json",
+    "raw_sha256": "231989ceea8e4ab5c970259e7b780bfaa44ab08a3bb99ef905d90aa9823e46df",
+    "raw_bytes": 1679,
+    "stored_sha256": "231989ceea8e4ab5c970259e7b780bfaa44ab08a3bb99ef905d90aa9823e46df",
+    "stored_bytes": 1679,
+    "compressed": false
+  },
+  "harness/sol61-search-docs-default-observer03-current.py": {
+    "raw_remote_path": "/private/tmp/sol61-search-docs-default-observer03-current.py",
+    "raw_sha256": "65ebb78eee47aadcc911c747e47ec3281cc6ca3537b51760f71a871ccb3b949e",
+    "raw_bytes": 14456,
+    "stored_sha256": "65ebb78eee47aadcc911c747e47ec3281cc6ca3537b51760f71a871ccb3b949e",
+    "stored_bytes": 14456,
+    "compressed": false
+  },
+  "harness/sol61-search-docs-cow03-current.py": {
+    "raw_remote_path": "/private/tmp/sol61-search-docs-cow03-current.py",
+    "raw_sha256": "c9fb9085d69faef1ca79fc5e7c665f2896f30ce0beed6bf858db68a33469690e",
+    "raw_bytes": 2698,
+    "stored_sha256": "c9fb9085d69faef1ca79fc5e7c665f2896f30ce0beed6bf858db68a33469690e",
+    "stored_bytes": 2698,
+    "compressed": false
+  }
+}

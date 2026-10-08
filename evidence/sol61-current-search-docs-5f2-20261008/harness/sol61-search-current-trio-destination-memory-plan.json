@@ -1,0 +1,19 @@
+{
+  "source_commit": "5f2a97eb4c74c175e190ff9637373c6bcf9ae39e",
+  "source_tree": "08d334bdf7ae6bd87c4943b58f010d4554dcbb12",
+  "lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268",
+  "supervisor_sha256": "8959df6fddc6faa6e2f47cd8d26d3895a737b329608b0602f71c740c18b611ca",
+  "memory_guard_scope": "destination",
+  "destination_memory_only_for_remote": true,
+  "minimum_available_memory_bytes_each_host": null,
+  "minimum_available_memory_bytes_destination": 8589934592,
+  "all_hosts_samples_fresh_complete_numeric": true,
+  "destination": "h16001mac",
+  "minimum_destination_root_disk_bytes": 17179869184,
+  "fleet_limit": 16,
+  "remote_host_limit": 8,
+  "cargo_jobs": 2,
+  "owned_graph": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007",
+  "output": "native-mac-07-current-5f2",
+  "authorization": "Human explicitly authorized destination-only memory for remote workloads, relayed by Root 2026-10-08"
+}

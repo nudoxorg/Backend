@@ -1,0 +1,1 @@
+{"stage":"supervisor-before-source-or-child","exit":1,"failure":"copied output literal native-mac-06 existed; FileExistsError; no native child","prior_manifest_untouched":true,"fleet_receipt":"/private/tmp/sol61-search-fleet-current-5f2-trio04.json"}
