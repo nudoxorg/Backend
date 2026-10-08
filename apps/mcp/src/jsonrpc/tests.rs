@@ -1646,48 +1646,94 @@ fn index_progress_distinguishes_prior_owner_tickets_and_terminal_refusals() {
 #[test]
 fn dependency_refusal_marks_tool_failure_and_keeps_the_exact_requested_package() {
     let mut server = ready(Fake {
-        surface_reply: Some(SurfaceReply::Dependencies(backend_library::DependencyFacts::Unavailable(
-            backend_library::ProductText::from_static("package is not recorded")))),
+        surface_reply: Some(SurfaceReply::Dependencies(
+            backend_library::DependencyFacts::Unavailable(
+                backend_library::ProductText::from_static("package is not recorded"),
+            ),
+        )),
         ..Fake::default()
     });
-    let result = call(&mut server, "backend.dependencies", &json!({"package": "pkg:npm/react@19.1.0"}));
+    let result = call(
+        &mut server,
+        "backend.dependencies",
+        &json!({"package": "pkg:npm/react@19.1.0"}),
+    );
     assert_eq!(result["isError"], true);
     assert_eq!(result["structuredContent"]["answer"], "product");
-    assert_eq!(result["structuredContent"]["fault"]["operand"], "pkg:npm/react@19.1.0");
-    assert_eq!(result["structuredContent"]["fault"]["call"]["arguments"]["package"], "pkg:npm/react@19.1.0");
+    assert_eq!(
+        result["structuredContent"]["fault"]["operand"],
+        "pkg:npm/react@19.1.0"
+    );
+    assert_eq!(
+        result["structuredContent"]["fault"]["call"]["arguments"]["package"],
+        "pkg:npm/react@19.1.0"
+    );
     assert!(text_of(&result).contains("package is not recorded"));
 }
 
 #[test]
 fn copied_ticket_string_uses_the_object_decoder_and_preserves_the_owner_ticket() {
     let ticket = index_job_ticket();
-    let mut server = ready(Fake {
-        surface_reply: Some(SurfaceReply::IndexProgress(IndexJobObservation::Unknown {
-            ticket: ticket.clone(),
-            current_owner_epoch: [8; 16],
-        })),
-        ..Fake::default()
-    });
-    for value in [
-        ticket_value(&ticket),
-        json!(ticket_value(&ticket).to_string()),
+    let mut server = ready(Fake::default());
+    for (tool, reply, expected_command) in [
+        (
+            INDEX_PROGRESS_TOOL,
+            SurfaceReply::IndexProgress(IndexJobObservation::Unknown {
+                ticket: ticket.clone(),
+                current_owner_epoch: [8; 16],
+            }),
+            SurfaceCommand::IndexProgress {
+                ticket: ticket.clone(),
+                after_sequence: 17,
+            },
+        ),
+        (
+            INDEX_CANCEL_TOOL,
+            SurfaceReply::IndexCancellation(IndexCancelReceipt {
+                ticket: ticket.clone(),
+                status: IndexCancelStatus::Requested,
+            }),
+            SurfaceCommand::IndexCancel {
+                ticket: ticket.clone(),
+            },
+        ),
     ] {
-        let result = call(&mut server, INDEX_PROGRESS_TOOL, &json!({"ticket": value}));
-        assert_eq!(result["isError"], false);
-        assert_eq!(
-            result["structuredContent"]["surface"]["index_job"]["value"]["detail"]["ticket"],
-            ticket_value(&ticket)
+        for value in [
+            ticket_value(&ticket),
+            json!(ticket_value(&ticket).to_string()),
+        ] {
+            // Fake.surface consumes one supplied response per owner call.
+            server.product.surface_reply = Some(reply.clone());
+            let mut arguments = json!({"ticket": value});
+            if tool == INDEX_PROGRESS_TOOL {
+                arguments["after_sequence"] = json!(17);
+            }
+            let response = request(
+                &mut server,
+                "tools/call",
+                &json!({"name":tool, "arguments":arguments}),
+            );
+            let result = &response["result"];
+            assert_eq!(result["isError"], false, "{response}");
+            assert_eq!(
+                result["structuredContent"]["surface"]["index_job"]["value"],
+                serde_json::to_value(&reply).expect("same exact reply")["data"]
+            );
+            assert_eq!(
+                server.product.surface_commands.last(),
+                Some(&expected_command)
+            );
+        }
+        let bad = request(
+            &mut server,
+            "tools/call",
+            &json!({"name": tool, "arguments": {"ticket": "7"}}),
         );
+        assert_eq!(tool_failure(&bad, "usage")["operand"], "ticket");
     }
-    let bad = request(
-        &mut server,
-        "tools/call",
-        &json!({"name": INDEX_PROGRESS_TOOL, "arguments": {"ticket": "7"}}),
-    );
-    assert_eq!(tool_failure(&bad, "usage")["operand"], "ticket");
     assert_eq!(
         server.product.surface_commands.len(),
-        2,
+        4,
         "malformed tickets do not reach the owner"
     );
 }
@@ -3977,6 +4023,14 @@ fn direct_and_generic_graph_routes_preserve_typed_domain_and_protocol_failures()
         } else {
             "wrong-basis"
         };
+        let expected_operand = match &failure {
+            backend_library::CommandFailure::WrongBasis { expected, observed } => format!(
+                "{} (owner holds {})",
+                &encode_id(observed.as_bytes())[..8],
+                &encode_id(expected.as_bytes())[..8]
+            ),
+            _ => DECLARATION.to_owned(),
+        };
         let mut direct = ready(Fake {
             graph_failure: Some(failure.clone()),
             ..Fake::default()
@@ -3987,7 +4041,7 @@ fn direct_and_generic_graph_routes_preserve_typed_domain_and_protocol_failures()
             &json!({"name":"backend.graph", "arguments":{"coordinate":DECLARATION, "limit":1}}),
         );
         let fault = tool_failure(&response, expected);
-        assert_eq!(fault["operand"], DECLARATION);
+        assert_eq!(fault["operand"], expected_operand);
         if expected == "not-found" {
             assert_eq!(
                 fault["call"],
