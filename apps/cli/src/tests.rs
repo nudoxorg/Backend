@@ -983,18 +983,31 @@ fn a_fault_chooses_the_exit_code_a_script_can_branch_on() {
 
 #[test]
 fn an_admitted_dependency_refusal_keeps_json_evidence_and_a_nonzero_exit() {
-    let package = backend_library::PackageReference::parse("pkg:npm/react@19.1.0").expect("package");
+    let package =
+        backend_library::PackageReference::parse("pkg:npm/react@19.1.0").expect("package");
     let view = backend_present::product_view_for_command(
-        &backend_library::SurfaceCommand::Dependencies { package: package.clone() },
-        &backend_library::SurfaceReply::Dependencies(backend_library::DependencyFacts::Unavailable(
-            backend_library::ProductText::from_static("package is not recorded"))),
+        &backend_library::SurfaceCommand::Dependencies {
+            package: package.clone(),
+        },
+        &backend_library::SurfaceReply::Dependencies(
+            backend_library::DependencyFacts::Unavailable(
+                backend_library::ProductText::from_static("package is not recorded"),
+            ),
+        ),
     );
     let answer = Answer::Product(Box::new(view));
-    assert_eq!(render::answer_exit_code(&answer), ExitCode::from(render::EXIT_REFUSED));
-    let encoded: serde_json::Value = serde_json::from_str(&render::json(&answer)).expect("complete JSON");
+    assert_eq!(
+        render::answer_exit_code(&answer),
+        ExitCode::from(render::EXIT_REFUSED)
+    );
+    let encoded: serde_json::Value =
+        serde_json::from_str(&render::json(&answer)).expect("complete JSON");
     assert_eq!(encoded["answer"], "product");
     assert_eq!(encoded["fault"]["operand"], package.as_str());
-    assert_eq!(encoded["fault"]["call"]["arguments"]["package"], package.as_str());
+    assert_eq!(
+        encoded["fault"]["call"]["arguments"]["package"],
+        package.as_str()
+    );
 }
 
 #[test]
@@ -1068,7 +1081,7 @@ fn an_oversized_json_page_is_a_nonzero_typed_transport_refusal() {
     let rendered: serde_json::Value =
         serde_json::from_str(&render::answer(&answer, &options)).expect("bounded fault JSON");
     assert_eq!(rendered["answer"], "fault");
-    assert_eq!(rendered["cause"]["slug"], "oversized");
+    assert_eq!(rendered["cause"], "oversized");
 }
 
 #[test]
@@ -1112,12 +1125,85 @@ fn cli_named_versions_preserves_the_captured_semver_operand_at_every_detail() {
 
 #[cfg(any(unix, windows))]
 #[test]
-fn cli_keeps_bounded_graph_page_without_exporting_a_query_proof() {
+fn cli_exports_plain_graph_continuation_without_leaking_the_wire_proof() {
     use backend_library::{Coverage, Cursor, Library, Row, RowId, symbol_key, view_state_root};
     struct GraphTransport(Library);
     impl CommandTransport for GraphTransport {
         fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
-            let reply = self.0.execute_dto(request.clone());
+            let mut reply = self.0.execute_dto(request.clone());
+            if let (Command::GraphPage { symbol, .. }, CommandReply::ProjectionPage(page)) =
+                (&request.command, &reply.reply)
+            {
+                let recipe =
+                    backend_library::QueryPageRecipe::graph(self.0.revision_root(), *symbol);
+                let mut proof = self
+                    .0
+                    .execute_dto(CommandDto::new(1, Command::Revision))
+                    .certificate()
+                    .expect("owner scope")
+                    .clone();
+                // The selected graph operand and exact canonical predecessor
+                // come from this fixture producer's admitted request and page.
+                if let Some(request_proof) = request.certificate() {
+                    for claim in &request_proof.claims {
+                        proof = proof.with_claim_once(claim.clone());
+                    }
+                }
+                let root = &page.snapshot.root;
+                for claim in [
+                    WireClaim::KeyBytes {
+                        schema: WireSchema::ViewRecipe,
+                        id: encode_id(root.recipe().as_bytes()),
+                        value: recipe.canonical_preimage().into(),
+                    },
+                    WireClaim::Version {
+                        schema: WireSchema::ViewVersion,
+                        id: encode_id(root.version().as_bytes()),
+                        value: backend_library::view_version_preimage(
+                            root.recipe(),
+                            root.basis(),
+                            root.frontier(),
+                            root.root(),
+                            root.coverage(),
+                        )
+                        .into_boxed_slice(),
+                    },
+                    WireClaim::Root {
+                        schema: WireSchema::ViewRelation,
+                        id: encode_id(root.root().as_bytes()),
+                        canonical: root
+                            .canonical_relation_bytes()
+                            .expect("exact relation")
+                            .into_boxed_slice(),
+                    },
+                ] {
+                    proof = proof.with_claim_once(claim);
+                }
+                for row in root.rows() {
+                    if let RowId::Symbol(symbol) = row.id {
+                        proof = proof.with_claim_once(WireClaim::KeyCommitment {
+                            schema: WireSchema::Symbol,
+                            id: encode_id(symbol.as_bytes()),
+                        });
+                    }
+                    if let Some(package) = row.package {
+                        proof = proof.with_claim_once(WireClaim::KeyCommitment {
+                            schema: WireSchema::Package,
+                            id: encode_id(package.as_bytes()),
+                        });
+                    }
+                    if let Some(parent) = row.parent {
+                        proof = proof.with_claim_once(WireClaim::KeyCommitment {
+                            schema: WireSchema::Symbol,
+                            id: encode_id(parent.as_bytes()),
+                        });
+                    }
+                }
+                reply = reply.with_certificate(proof);
+            }
+            let bytes = serde_json::to_vec(&reply).expect("producer wire");
+            let reply = ReplyDto::decode_with_certificate(&bytes, self.0.view().capability())
+                .map_err(ClientError::Protocol)?;
             admit_reply(&request, reply)
         }
     }
@@ -1171,7 +1257,7 @@ fn cli_keeps_bounded_graph_page_without_exporting_a_query_proof() {
         &page.snapshot,
     )));
     assert!(answer.continuation().is_some());
-    assert!(!session.has_portable_query_continuation(
+    assert!(session.has_portable_query_continuation(
         backend_library::PageContinuation::from_cursor(continuation)
     ));
     let options = options::split(&["--json".to_owned()])
@@ -1182,8 +1268,30 @@ fn cli_keeps_bounded_graph_page_without_exporting_a_query_proof() {
     let payload: serde_json::Value = serde_json::from_str(&rendered).expect("rendered graph JSON");
     assert_eq!(payload["more"], true);
     assert_eq!(payload["records"].as_array().expect("records").len(), 2);
-    assert!(
-        payload.get("nextCursor").is_none(),
-        "do not invent a portable nonquery token"
+    let token = payload["nextCursor"]
+        .as_str()
+        .expect("portable graph cursor");
+    assert!(token.starts_with("pc3."));
+    assert!(payload.get("certificate").is_none());
+    assert!(payload.get("query_proof").is_none());
+    let owner =
+        Library::from_view(root.clone(), Cursor::for_view_root(&root)).expect("reopened owner");
+    let mut cold =
+        backend_client::Session::from_transport("/private/graph-owner.sock", GraphTransport(owner));
+    let next = cold
+        .decode_page_continuation(token)
+        .expect("strict cold graph token");
+    let reply = cold.continue_page(next).expect("exact second graph page");
+    let CommandReply::ProjectionPage(next) = reply.reply else {
+        panic!("graph page");
+    };
+    assert_eq!(
+        next.snapshot
+            .root
+            .rows()
+            .iter()
+            .map(|row| row.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["pkg::Child2", "pkg::Child3"]
     );
 }
