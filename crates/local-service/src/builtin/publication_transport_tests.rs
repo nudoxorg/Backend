@@ -550,3 +550,155 @@ fn publication_transport_cancel_partial_reset_then_reopen() {
         LocalSubscriptionOperation::Cancel { lease },
     );
 }
+
+#[test]
+fn prepared_product_view_private_patch_and_reset_match_actual_publication() {
+    for count in [1, backend_engine::MAX_VIEW_PATCH_ROWS + 1] {
+        let directory = tempfile::tempdir().expect("actual private owner directory");
+        let mut owner = owner(directory.path());
+        publish(&mut owner, 1);
+        let daemon = owner.daemon_mut();
+        let prior_cursor = daemon.engine().daemon().library().cursor();
+        let current = daemon.engine().daemon().library().view().clone();
+        let mut rows = current.row_refs().cloned().collect::<Vec<_>>();
+        rows.extend((0..count).map(|index| {
+            let label = format!("private::prepared{index:06}");
+            Row::new(
+                backend_engine::RowId::Symbol(backend_engine::symbol_key(&label)),
+                current.basis(),
+                label,
+            )
+        }));
+        let target = ViewRoot::new_checked(
+            current.recipe(),
+            current.basis(),
+            current.frontier(),
+            rows,
+            current.coverage().to_vec(),
+            current.capability().expect("actual admitted capability"),
+        )
+        .expect("checked private target");
+        let mut preparation = BuiltinViewPreparation {
+            snapshot: daemon.engine().daemon().owner().snapshot(),
+            current: current.clone(),
+            event: None,
+        };
+        let private = prepare_published_target(&mut preparation, current.clone(), target.clone())
+            .expect("same production planner without borrowing daemon");
+        assert_eq!(daemon.engine().daemon().library().view(), &current);
+        assert_eq!(daemon.engine().daemon().library().cursor(), prior_cursor);
+        assert_eq!(private.len(), 1);
+        assert_eq!(
+            private[0].is_compact_replayable(),
+            count <= backend_engine::MAX_VIEW_PATCH_ROWS
+        );
+        let actual = commit_published_target(daemon, current, target)
+            .expect("ordinary production publication");
+        assert_eq!(
+            daemon.engine().daemon().library().view(),
+            &preparation.current
+        );
+        assert_eq!(actual[0].id(), private[0].id());
+        assert_eq!(actual[0].base_root(), private[0].base_root());
+        assert_eq!(actual[0].target_root(), private[0].target_root());
+        assert!(
+            matches!(preparation.event, Some(backend_engine::CursorEvent::View { delta }) if delta.id() == actual[0].id())
+        );
+    }
+}
+
+#[test]
+fn prepared_product_view_noop_keeps_current_root_and_emits_no_event() {
+    let directory = tempfile::tempdir().expect("actual private owner directory");
+    let owner = owner(directory.path());
+    let daemon = owner.daemon();
+    let current = daemon.engine().daemon().library().view().clone();
+    let mut preparation = BuiltinViewPreparation {
+        snapshot: daemon.engine().daemon().owner().snapshot(),
+        current: current.clone(),
+        event: None,
+    };
+    let deltas = prepare_published_target(&mut preparation, current.clone(), current.clone())
+        .expect("exact retained view is a no-op");
+    assert!(deltas.is_empty());
+    assert!(preparation.event.is_none());
+    assert_eq!(preparation.current, current);
+}
+
+#[test]
+fn prepared_product_view_stale_snapshot_refuses_new_owner_root_without_relabeling() {
+    let directory = tempfile::tempdir().expect("actual private owner directory");
+    let mut owner = owner(directory.path());
+    publish(&mut owner, 1);
+    let daemon = owner.daemon_mut();
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let old_root = snapshot.root();
+    let current = daemon.engine().daemon().library().view().clone();
+    let old_cursor = daemon.engine().daemon().library().cursor();
+    let mut rows = current.row_refs().cloned().collect::<Vec<_>>();
+    let label = "private::stale_prepared";
+    rows.push(Row::new(
+        backend_engine::RowId::Symbol(backend_engine::symbol_key(label)),
+        current.basis(),
+        label,
+    ));
+    let target = ViewRoot::new_checked(
+        current.recipe(),
+        current.basis(),
+        current.frontier(),
+        rows,
+        current.coverage().to_vec(),
+        current.capability().expect("old admitted capability"),
+    )
+    .expect("old checked target");
+    let mut preparation = BuiltinViewPreparation {
+        snapshot: snapshot.clone(),
+        current: current.clone(),
+        event: None,
+    };
+    let deltas = prepare_published_target(&mut preparation, current.clone(), target)
+        .expect("old private transition");
+    let prepared = PreparedBuiltinView {
+        workspace_root: old_root,
+        view: preparation.current,
+        event: preparation.event,
+        outcome: view_publish::PublicationOutcome {
+            deltas,
+            roots: view_publish::PublishedRoots {
+                source: view_publish::source_root(&snapshot).expect("old source root"),
+                semantic: view_publish::semantic_root(&snapshot).expect("old semantic root"),
+                activated: Default::default(),
+            },
+            path: view_publish::PublicationPath::Reused,
+        },
+    };
+    let no_op = PreparedBuiltinView {
+        workspace_root: old_root,
+        view: current.clone(),
+        event: None,
+        outcome: view_publish::PublicationOutcome {
+            deltas: Vec::new(),
+            roots: view_publish::PublishedRoots {
+                source: view_publish::source_root(&snapshot).expect("old source root"),
+                semantic: view_publish::semantic_root(&snapshot).expect("old semantic root"),
+                activated: Default::default(),
+            },
+            path: view_publish::PublicationPath::Reused,
+        },
+    };
+    let label = "pkg:cargo/later-owner-head@1.0.0";
+    let intent = BuiltinIntent::add(backend_engine::package_key(label), label.to_owned())
+        .expect("later actual intent");
+    commands::commit_builtin_intent(daemon, 981, &intent).expect("later actual workspace commit");
+    assert_ne!(daemon.engine().daemon().owner().snapshot().root(), old_root);
+    assert!(
+        install_prepared_builtin_view(daemon, prepared).is_err(),
+        "old source capability cannot be relabeled as the current root"
+    );
+    assert!(
+        install_prepared_builtin_view(daemon, no_op).is_err(),
+        "even a no-op preparation must retain its original workspace authority"
+    );
+    assert_eq!(daemon.engine().daemon().library().view(), &current);
+    assert_eq!(daemon.engine().daemon().library().cursor(), old_cursor);
+}

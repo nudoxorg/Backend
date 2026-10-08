@@ -2398,7 +2398,7 @@ mod tests {
         )
         .expect("valid product selection key");
         let authority = SemanticAuthority::open(&directory).expect("open semantic authority");
-        let mut source = authority.owned_history_selection_source(key);
+        let mut source = authority.owned_history_selection_source(key).expect("native history writer capability");
 
         let error = source
             .current_selected_generation()

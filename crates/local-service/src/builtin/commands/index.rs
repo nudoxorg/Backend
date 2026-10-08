@@ -2416,7 +2416,7 @@ pub(super) fn finish_deferred_profile(
     )
 }
 
-fn finish_deferred_profile_for_snapshot(
+pub(super) fn finish_deferred_profile_for_snapshot(
     snapshot: &WorkspaceSnapshot,
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
     job: &mut DeferredIndex,

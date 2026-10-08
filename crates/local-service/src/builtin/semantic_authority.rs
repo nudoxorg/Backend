@@ -374,7 +374,7 @@ impl<'key> SelectedSemanticPublicationKey<'key> {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct SelectedClosureSnapshot {
     // Immutable proof inventory shared by captured reads. Remembering a new
     // selection uses copy-on-write and cannot change an admitted old reader.
@@ -382,9 +382,10 @@ pub(super) struct SelectedClosureSnapshot {
     /// The product workspace root is the serving marker. Turso may contain a
     /// newer candidate after a crash, but it is never served until this map is
     /// advanced after the corresponding `BuiltinIntent` commits.
-    by_product: BTreeMap<ProductSemanticPublicationKey, SemanticPublicationClaim>,
+    by_product: Arc<BTreeMap<ProductSemanticPublicationKey, SemanticPublicationClaim>>,
 }
 
+#[derive(Clone)]
 struct NativeHistoryStatusEntry {
     key: ProductSemanticPublicationKey,
     stamp: backend_replication::SelectedGenerationStamp,
@@ -393,7 +394,7 @@ struct NativeHistoryStatusEntry {
     retry_at: Option<Instant>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct NativeHistoryOwnerState {
     statuses: VecDeque<NativeHistoryStatusEntry>,
     in_flight: HashSet<[u8; 32]>,
@@ -468,10 +469,10 @@ impl ProductSelectionPublication<'_> {
             admitted,
         } = self;
         for key in removals {
-            selections.by_product.remove(&key);
+            Arc::make_mut(&mut selections.by_product).remove(&key);
         }
         for (key, claim, _) in &admitted {
-            selections.by_product.insert(key.clone(), *claim);
+            Arc::make_mut(&mut selections.by_product).insert(key.clone(), *claim);
         }
         admitted
             .into_iter()
@@ -825,13 +826,10 @@ impl SelectedClosureImageLoader {
         &self,
         key: ProductSemanticPublicationKey,
     ) -> Result<(), BuiltinModelError> {
-        self.selections
-            .write()
-            .map_err(|_| {
-                BuiltinModelError("semantic authority image snapshot is poisoned".to_owned())
-            })?
-            .by_product
-            .remove(&key);
+        let mut selections = self.selections.write().map_err(|_| {
+            BuiltinModelError("semantic authority image snapshot is poisoned".to_owned())
+        })?;
+        Arc::make_mut(&mut selections.by_product).remove(&key);
         Ok(())
     }
 }
@@ -956,6 +954,7 @@ fn load_selected_images(
     Ok(images.into_boxed_slice())
 }
 
+#[derive(Clone)]
 struct HistoryFact {
     selected: SelectedGeneration,
 }
@@ -1300,11 +1299,34 @@ impl ObservedLatestInput {
 }
 /// Process-local handle to the selected semantic authority and its CAS.
 ///
-/// The mutable Turso handle stays on the local owner thread. Read misses use a
-/// lock-protected snapshot of exact selected-generation rows and a cloned
-/// FileStore handle, allowing independent CAS reopens to proceed concurrently.
+/// The unique Turso handle may move to the existing index worker. During that
+/// transfer, serving reads use fixed admitted selection proofs and immutable
+/// CAS handles; they neither wait for nor schedule mutable history work.
+enum SemanticAuthorityRole {
+    Writer(TursoAuthority),
+    CapturedRead {
+        workspace: backend_version::WorkspaceRoot,
+        selections: Arc<SelectedClosureSnapshot>,
+    },
+}
+
+/// The unique Turso writer transferred through one actual index worker.
+/// Captured serving reads cannot mint this capability or open another writer.
+#[must_use = "return the same semantic writer after the owned worker retires"]
+pub(super) struct DetachedSemanticAuthority {
+    authority: SemanticAuthority,
+    workspace: backend_version::WorkspaceRoot,
+}
+
+impl DetachedSemanticAuthority {
+    pub(super) fn authority_mut(&mut self) -> &mut SemanticAuthority {
+        &mut self.authority
+    }
+}
+
 pub(crate) struct SemanticAuthority {
-    authority: TursoAuthority,
+    authority: SemanticAuthorityRole,
+    owner_identity: Arc<()>,
     store: FileStore,
     workspace: PathBuf,
     s3_publisher: Option<Arc<dyn SelectedClosurePublisher>>,
@@ -1313,14 +1335,14 @@ pub(crate) struct SemanticAuthority {
     verified_segments: Arc<super::versioned_planes::VerifiedSegmentCache>,
     selected_image_readers: Arc<super::selected_full_image::VerifiedLocalImageReaderCache>,
     selected_image_plans: Arc<super::selected_full_image::SelectedFullImagePlanCache>,
-    history: BTreeMap<HistoryKey, HistoryFact>,
-    retained_generations: BTreeMap<HistoryKey, u64>,
+    history: Arc<BTreeMap<HistoryKey, HistoryFact>>,
+    retained_generations: Arc<BTreeMap<HistoryKey, u64>>,
     /// Observations named by committed compiler selections. They describe the
     /// selected generation, never the latest captured input used by freshness.
-    committed_observations: BTreeMap<ProductSemanticPublicationKey, SourceObservationReceipt>,
+    committed_observations: Arc<BTreeMap<ProductSemanticPublicationKey, SourceObservationReceipt>>,
     native_history_state: NativeHistoryOwnerState,
     native_history_sender: SyncSender<NativeHistoryPublicationWork>,
-    native_history_completions: mpsc::Receiver<NativeHistoryCompletion>,
+    native_history_completions: Option<mpsc::Receiver<NativeHistoryCompletion>>,
 }
 
 impl SemanticAuthority {
@@ -1383,7 +1405,8 @@ impl SemanticAuthority {
             })
             .map_err(|error| BuiltinModelError(format!("start native history worker: {error}")))?;
         Ok(Self {
-            authority,
+            authority: SemanticAuthorityRole::Writer(authority),
+            owner_identity: Arc::new(()),
             store,
             workspace: workspace.to_path_buf(),
             s3_publisher,
@@ -1396,13 +1419,115 @@ impl SemanticAuthority {
             selected_image_plans: Arc::new(
                 super::selected_full_image::SelectedFullImagePlanCache::default(),
             ),
-            history: BTreeMap::new(),
-            retained_generations: BTreeMap::new(),
-            committed_observations: BTreeMap::new(),
+            history: Arc::new(BTreeMap::new()),
+            retained_generations: Arc::new(BTreeMap::new()),
+            committed_observations: Arc::new(BTreeMap::new()),
             native_history_state,
             native_history_sender,
-            native_history_completions,
+            native_history_completions: Some(native_history_completions),
         })
+    }
+
+    fn writer_authority(&self) -> Result<&TursoAuthority, BuiltinModelError> {
+        match &self.authority {
+            SemanticAuthorityRole::Writer(authority) => Ok(authority),
+            SemanticAuthorityRole::CapturedRead { .. } => Err(BuiltinModelError(
+                "the exact semantic writer belongs to the active index worker".to_owned(),
+            )),
+        }
+    }
+
+    fn writer_authority_mut(&mut self) -> Result<&mut TursoAuthority, BuiltinModelError> {
+        match &mut self.authority {
+            SemanticAuthorityRole::Writer(authority) => Ok(authority),
+            SemanticAuthorityRole::CapturedRead { .. } => Err(BuiltinModelError(
+                "the exact semantic writer belongs to the active index worker".to_owned(),
+            )),
+        }
+    }
+
+    fn read_selected_pair(
+        &self,
+        key: &ProductSemanticPublicationKey,
+    ) -> Result<(SemanticPublicationClaim, SelectedGeneration), BuiltinModelError> {
+        match &self.authority {
+            SemanticAuthorityRole::Writer(_) => self.image_loader.committed_pair(key),
+            SemanticAuthorityRole::CapturedRead { selections, .. } => {
+                SelectedClosureImageLoader::committed_pair_in(selections, key)
+            }
+        }
+    }
+
+    /// Leaves only immutable proofs for the already admitted workspace on the
+    /// actor. All unbounded maps share Arcs; native status is independently
+    /// bounded. The original connection and completion receiver move once.
+    pub(super) fn detach_index_writer(
+        &mut self,
+        workspace: backend_version::WorkspaceRoot,
+    ) -> Result<DetachedSemanticAuthority, BuiltinModelError> {
+        self.writer_authority()?;
+        let selections = Arc::new(
+            self.image_loader
+                .selections
+                .read()
+                .map_err(|_| {
+                    BuiltinModelError("semantic selection snapshot is poisoned".to_owned())
+                })?
+                .clone(),
+        );
+        let reader = Self {
+            authority: SemanticAuthorityRole::CapturedRead {
+                workspace,
+                selections,
+            },
+            owner_identity: Arc::clone(&self.owner_identity),
+            store: self.store.clone(),
+            workspace: self.workspace.clone(),
+            s3_publisher: self.s3_publisher.clone(),
+            compiler_trust_policy: self.compiler_trust_policy.clone(),
+            image_loader: Arc::clone(&self.image_loader),
+            verified_segments: Arc::clone(&self.verified_segments),
+            selected_image_readers: Arc::clone(&self.selected_image_readers),
+            selected_image_plans: Arc::clone(&self.selected_image_plans),
+            history: Arc::clone(&self.history),
+            retained_generations: Arc::clone(&self.retained_generations),
+            committed_observations: Arc::clone(&self.committed_observations),
+            native_history_state: self.native_history_state.clone(),
+            native_history_sender: self.native_history_sender.clone(),
+            native_history_completions: None,
+        };
+        Ok(DetachedSemanticAuthority {
+            authority: std::mem::replace(self, reader),
+            workspace,
+        })
+    }
+
+    /// A rejected route returns the whole capability. Neither a foreign owner
+    /// nor a changed admitted root may consume the sole writer.
+    pub(super) fn restore_index_writer(
+        &mut self,
+        current_workspace: backend_version::WorkspaceRoot,
+        writer: DetachedSemanticAuthority,
+    ) -> Result<(), (DetachedSemanticAuthority, BuiltinModelError)> {
+        let matches = matches!(&self.authority,
+            SemanticAuthorityRole::CapturedRead { workspace, .. }
+                if *workspace == current_workspace && *workspace == writer.workspace)
+            && Arc::ptr_eq(&self.owner_identity, &writer.authority.owner_identity)
+            && Arc::ptr_eq(&self.image_loader, &writer.authority.image_loader)
+            && matches!(
+                &writer.authority.authority,
+                SemanticAuthorityRole::Writer(_)
+            );
+        if !matches {
+            return Err((
+                writer,
+                BuiltinModelError(
+                    "semantic worker return differs from its exact admitted owner".to_owned(),
+                ),
+            ));
+        }
+        *self = writer.authority;
+        Ok(())
     }
 
     /// Clones the durable product CAS handle for the owner cluster transport.
@@ -1430,7 +1555,7 @@ impl SemanticAuthority {
         &self,
         key: &ProductSemanticPublicationKey,
     ) -> Result<super::versioned_planes::SelectedVersionedPlanePublication, BuiltinModelError> {
-        let (expected, selected) = self.image_loader.committed_pair(key)?;
+        let (expected, selected) = self.read_selected_pair(key)?;
         let reopened =
             reopen_selected_compiler_metadata(&self.store, &selected).map_err(|error| {
                 BuiltinModelError(format!("reopen committed semantic metadata: {error}"))
@@ -1455,11 +1580,15 @@ impl SemanticAuthority {
     pub(crate) fn owned_history_selection_source(
         &self,
         key: ProductSemanticPublicationKey,
-    ) -> super::versioned_planes::OwnedSemanticAuthoritySelectionSource {
-        super::versioned_planes::OwnedSemanticAuthoritySelectionSource::new(
-            Arc::clone(&self.image_loader),
-            self.store.clone(),
-            key,
+    ) -> Result<super::versioned_planes::OwnedSemanticAuthoritySelectionSource, BuiltinModelError>
+    {
+        self.writer_authority()?;
+        Ok(
+            super::versioned_planes::OwnedSemanticAuthoritySelectionSource::new(
+                Arc::clone(&self.image_loader),
+                self.store.clone(),
+                key,
+            ),
         )
     }
 
@@ -1491,7 +1620,7 @@ impl SemanticAuthority {
         claim: SemanticPublicationClaim,
     ) -> Result<backend_engine::SemanticHistoryPublicationStatus, BuiltinModelError> {
         self.drain_native_history_completions()?;
-        let (selected_claim, selected) = self.image_loader.committed_pair(key)?;
+        let (selected_claim, selected) = self.read_selected_pair(key)?;
         if selected_claim != claim {
             return Ok(backend_engine::SemanticHistoryPublicationStatus::NotSelected);
         }
@@ -1506,7 +1635,7 @@ impl SemanticAuthority {
             }
             _ => false,
         };
-        if retry {
+        if retry && matches!(&self.authority, SemanticAuthorityRole::Writer(_)) {
             // Status rows are bounded. If an exact selected marker has aged
             // out or was deferred/stale, re-enqueue from its immutable closure
             // rather than leaving it absent from derived history.
@@ -1608,8 +1737,20 @@ impl SemanticAuthority {
     /// bounded round-robin page of currently selected markers. The worker
     /// never mutates selection or status state directly.
     pub(crate) fn drain_native_history_completions(&mut self) -> Result<(), BuiltinModelError> {
+        if matches!(&self.authority, SemanticAuthorityRole::CapturedRead { .. }) {
+            return Ok(());
+        }
         loop {
-            let completion = match self.native_history_completions.try_recv() {
+            let completion = match self
+                .native_history_completions
+                .as_ref()
+                .ok_or_else(|| {
+                    BuiltinModelError(
+                        "semantic writer lost its native completion receiver".to_owned(),
+                    )
+                })?
+                .try_recv()
+            {
                 Ok(completion) => completion,
                 Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
             };
@@ -1652,7 +1793,7 @@ impl SemanticAuthority {
         };
         self.native_history_state.retry_after = Some(last_key.clone());
         for (key, claim) in rows {
-            let (selected_claim, selected) = match self.image_loader.committed_pair(&key) {
+            let (selected_claim, selected) = match self.read_selected_pair(&key) {
                 Ok(selection) => selection,
                 Err(_) => continue,
             };
@@ -1682,6 +1823,7 @@ impl SemanticAuthority {
         &self,
         key: &ProductSemanticPublicationKey,
     ) -> Result<CommittedSemanticSelectionLease<'_>, BuiltinModelError> {
+        self.writer_authority()?;
         let selections = self.image_loader.acquire_publication_read()?;
         let (claim, selected) = SelectedClosureImageLoader::committed_pair_in(&selections, key)?;
         Ok(CommittedSemanticSelectionLease {
@@ -1751,7 +1893,7 @@ impl SemanticAuthority {
         super::selected_full_image::SelectedFullImagePlan,
         super::selected_full_image::SelectedFullImageError,
     > {
-        let (claim, selected) = self.image_loader.committed_pair(key).map_err(|error| {
+        let (claim, selected) = self.read_selected_pair(key).map_err(|error| {
             super::selected_full_image::SelectedFullImageError::Authority(error.0)
         })?;
         let stamp = Self::selected_generation_stamp(key, &selected).map_err(|error| {
@@ -1774,7 +1916,7 @@ impl SemanticAuthority {
         key: &ProductSemanticPublicationKey,
         image: backend_semantic::ir::SemanticPlaneImageKey,
     ) -> Result<backend_semantic::ir::SemanticImageIdentity, BuiltinModelError> {
-        let (expected_claim, selected) = self.image_loader.committed_pair(key)?;
+        let (expected_claim, selected) = self.read_selected_pair(key)?;
         self.selected_native_image_identity_for(expected_claim, &selected, image)
     }
 
@@ -2082,7 +2224,7 @@ impl SemanticAuthority {
 
         let mut after_generation = None;
         loop {
-            let page = futures_executor::block_on(self.authority.selected_generations(
+            let page = futures_executor::block_on(self.writer_authority()?.selected_generations(
                 &namespace,
                 after_generation,
                 AUTHORITY_PAGE,
@@ -2124,11 +2266,13 @@ impl SemanticAuthority {
             }
         }
 
-        let proof = futures_executor::block_on(self.authority.superseded_attempt_proof_for_fence(
-            &namespace,
-            expected.epoch(),
-            *expected.fence(),
-        ))
+        let proof = futures_executor::block_on(
+            self.writer_authority()?.superseded_attempt_proof_for_fence(
+                &namespace,
+                expected.epoch(),
+                *expected.fence(),
+            ),
+        )
         .map_err(|error| {
             BuiltinModelError(format!("read Turso superseded-attempt proof: {error}"))
         })?
@@ -2157,16 +2301,23 @@ impl SemanticAuthority {
     pub(crate) fn capture_image_loader(
         &self,
     ) -> Result<Arc<dyn generation_residence::SelectedSemanticImageLoader>, BuiltinModelError> {
-        let by_binding = Arc::clone(
-            &self
-                .image_loader
-                .selections
-                .read()
-                .map_err(|_| {
-                    BuiltinModelError("semantic authority image snapshot is poisoned".to_owned())
-                })?
-                .by_binding,
-        );
+        let by_binding =
+            if let SemanticAuthorityRole::CapturedRead { selections, .. } = &self.authority {
+                Arc::clone(&selections.by_binding)
+            } else {
+                Arc::clone(
+                    &self
+                        .image_loader
+                        .selections
+                        .read()
+                        .map_err(|_| {
+                            BuiltinModelError(
+                                "semantic authority image snapshot is poisoned".to_owned(),
+                            )
+                        })?
+                        .by_binding,
+                )
+            };
         Ok(Arc::new(CapturedClosureImageLoader {
             store: self.store.clone(),
             by_binding,
@@ -2177,7 +2328,14 @@ impl SemanticAuthority {
         &self,
         residence: &mut generation_residence::SemanticGenerationResidence,
     ) {
-        residence.install_selected_loader(self.image_loader.clone());
+        if let SemanticAuthorityRole::CapturedRead { selections, .. } = &self.authority {
+            residence.install_selected_loader(Arc::new(CapturedClosureImageLoader {
+                store: self.store.clone(),
+                by_binding: Arc::clone(&selections.by_binding),
+            }));
+        } else {
+            residence.install_selected_loader(self.image_loader.clone());
+        }
     }
 
     /// Collects this product CAS using a fresh Turso history-root snapshot.
@@ -2199,7 +2357,7 @@ impl SemanticAuthority {
         allow_remote_segments: bool,
     ) -> Result<GcReport, BuiltinModelError> {
         let roots_store = self.store.clone();
-        let roots_authority = &self.authority;
+        let roots_authority = self.writer_authority()?;
         let s3_publisher = self.s3_publisher.as_deref();
         self.store
             .collect_garbage_resolving_roots(
@@ -2400,11 +2558,11 @@ impl SemanticAuthority {
         count: u64,
     ) -> Result<SourceObservationReceipt, BuiltinModelError> {
         let namespace = Self::namespace(key.package(), key.coordinate(), key.profile())?;
-        if let Some(latest) =
-            futures_executor::block_on(self.authority.latest_source_observation(&namespace))
-                .map_err(|error| {
-                    BuiltinModelError(format!("read prior semantic observation: {error}"))
-                })?
+        if let Some(latest) = futures_executor::block_on(
+            self.writer_authority()?
+                .latest_source_observation(&namespace),
+        )
+        .map_err(|error| BuiltinModelError(format!("read prior semantic observation: {error}")))?
             && latest.observation().revision() == Some(input_digest)
             && latest.observation().value() == &SourceObservationValue::KnownCount(count)
         {
@@ -2417,11 +2575,13 @@ impl SemanticAuthority {
             SourceObservationValue::KnownCount(count),
         )
         .map_err(|error| BuiltinModelError(format!("semantic source observation: {error}")))?;
-        let receipt =
-            futures_executor::block_on(self.authority.record_source_observation(observation))
-                .map_err(|error| {
-                    BuiltinModelError(format!("persist semantic source observation: {error}"))
-                })?;
+        let receipt = futures_executor::block_on(
+            self.writer_authority_mut()?
+                .record_source_observation(observation),
+        )
+        .map_err(|error| {
+            BuiltinModelError(format!("persist semantic source observation: {error}"))
+        })?;
         Ok(receipt)
     }
 
@@ -2442,7 +2602,7 @@ impl SemanticAuthority {
                 "semantic source observation belongs to a different namespace".to_owned(),
             ));
         }
-        futures_executor::block_on(self.authority.begin_attempt(
+        futures_executor::block_on(self.writer_authority_mut()?.begin_attempt(
             &namespace,
             input_digest,
             observation,
@@ -2458,9 +2618,10 @@ impl SemanticAuthority {
         attempt: &CandidateAttempt,
         reason: CandidateAttemptRetirementReason,
     ) -> Result<(), BuiltinModelError> {
-        futures_executor::block_on(self.authority.retire_attempt(attempt, reason)).map_err(
-            |error| BuiltinModelError(format!("retire semantic compiler attempt: {error}")),
-        )
+        futures_executor::block_on(self.writer_authority_mut()?.retire_attempt(attempt, reason))
+            .map_err(|error| {
+                BuiltinModelError(format!("retire semantic compiler attempt: {error}"))
+            })
     }
 
     /// Reopens the exact still-current Turso attempt named by a pending owner
@@ -2470,9 +2631,10 @@ impl SemanticAuthority {
         &self,
         claim: &CandidateAttemptRecoveryClaim,
     ) -> Result<CandidateAttempt, BuiltinModelError> {
-        futures_executor::block_on(self.authority.recover_candidate_attempt(claim)).map_err(
-            |error| BuiltinModelError(format!("recover semantic compiler attempt: {error}")),
-        )
+        futures_executor::block_on(self.writer_authority()?.recover_candidate_attempt(claim))
+            .map_err(|error| {
+                BuiltinModelError(format!("recover semantic compiler attempt: {error}"))
+            })
     }
 
     /// Proves that the exact persisted compiler attempt has been superseded.
@@ -2490,7 +2652,7 @@ impl SemanticAuthority {
         input_digest: AuthorityHash,
     ) -> Result<Option<SupersededAttemptProof>, BuiltinModelError> {
         let Some(proof) = futures_executor::block_on(
-            self.authority
+            self.writer_authority()?
                 .superseded_attempt_proof(namespace, attempt_id, epoch, fence),
         )
         .map_err(|error| {
@@ -2523,7 +2685,7 @@ impl SemanticAuthority {
         claim: &CandidateAttemptRecoveryClaim,
     ) -> Result<Option<AttemptInvalidatedByObservationProof>, BuiltinModelError> {
         let Some(proof) = futures_executor::block_on(
-            self.authority
+            self.writer_authority()?
                 .attempt_invalidated_by_observation_proof(claim),
         )
         .map_err(|error| {
@@ -2550,11 +2712,13 @@ impl SemanticAuthority {
         expected: &SourceObservationReceipt,
     ) -> Result<bool, BuiltinModelError> {
         let namespace = Self::namespace(key.package(), key.coordinate(), key.profile())?;
-        let current =
-            futures_executor::block_on(self.authority.latest_source_observation(&namespace))
-                .map_err(|error| {
-                    BuiltinModelError(format!("read current semantic source observation: {error}"))
-                })?;
+        let current = futures_executor::block_on(
+            self.writer_authority()?
+                .latest_source_observation(&namespace),
+        )
+        .map_err(|error| {
+            BuiltinModelError(format!("read current semantic source observation: {error}"))
+        })?;
         Ok(current.as_ref() == Some(expected))
     }
 
@@ -3253,7 +3417,7 @@ impl SemanticAuthority {
         })?;
         let receipt = verify_then_publish_selected_closure(
             || {
-                self.authority
+                self.writer_authority()?
                     .verify_compiler_publication(
                         &candidate,
                         &admitted_attempt,
@@ -3277,13 +3441,13 @@ impl SemanticAuthority {
             },
         )?;
         admit_before_select(&candidate)?;
-        let frontier =
-            futures_executor::block_on(self.authority.compare_and_select(candidate, receipt))
-                .map_err(|error| {
-                    BuiltinModelError(format!("select semantic publication: {error}"))
-                })?;
+        let frontier = futures_executor::block_on(
+            self.writer_authority_mut()?
+                .compare_and_select(candidate, receipt),
+        )
+        .map_err(|error| BuiltinModelError(format!("select semantic publication: {error}")))?;
         let selected = futures_executor::block_on(
-            self.authority
+            self.writer_authority()?
                 .selected_generation(&namespace, frontier.generation()),
         )
         .map_err(|error| {
@@ -3291,13 +3455,13 @@ impl SemanticAuthority {
         })?
         .ok_or_else(|| BuiltinModelError("selected semantic generation disappeared".to_owned()))?;
         self.remember_selection(key.clone(), claim, selected.clone())?;
-        self.history.insert(
+        Arc::make_mut(&mut self.history).insert(
             (key.clone(), *claim.binding().identity.as_ref()),
             HistoryFact {
                 selected: selected.clone(),
             },
         );
-        self.retained_generations.insert(
+        Arc::make_mut(&mut self.retained_generations).insert(
             (key.clone(), *claim.binding().identity.as_ref()),
             selected.generation(),
         );
@@ -3342,6 +3506,7 @@ impl SemanticAuthority {
         claim: SemanticPublicationClaim,
         selected: SelectedGeneration,
     ) -> Result<(), BuiltinModelError> {
+        self.writer_authority()?;
         self.image_loader.remember(key, claim, selected)
     }
 
@@ -3351,6 +3516,7 @@ impl SemanticAuthority {
         &self,
         entries: Vec<(ProductSemanticPublicationKey, SemanticPublicationClaim)>,
     ) -> Result<ProductSelectionPublication<'_>, BuiltinModelError> {
+        self.writer_authority()?;
         self.image_loader.prepare_product_selections(entries)
     }
 
@@ -3374,6 +3540,7 @@ impl SemanticAuthority {
         removals: Vec<ProductSemanticPublicationKey>,
         persist_marker: impl FnOnce() -> Result<T, BuiltinModelError>,
     ) -> Result<T, BuiltinModelError> {
+        self.writer_authority()?;
         let history_entries = entries.clone();
         let observation_removals = removals.clone();
         let publication = self
@@ -3383,7 +3550,7 @@ impl SemanticAuthority {
         let selected = publication.commit();
         self.remember_product_selection_observations(selected);
         for key in observation_removals {
-            self.committed_observations.remove(&key);
+            Arc::make_mut(&mut self.committed_observations).remove(&key);
         }
         for (key, claim) in history_entries {
             let _ = self.schedule_native_history(key, claim);
@@ -3397,13 +3564,21 @@ impl SemanticAuthority {
         &self,
         package: backend_engine::PackageKey,
     ) -> Result<Vec<ProductSemanticPublicationKey>, BuiltinModelError> {
-        let selections = self.image_loader.acquire_publication_read()?;
-        Ok(selections
-            .by_product
-            .keys()
-            .filter(|key| key.package_key() == package)
-            .cloned()
-            .collect())
+        let keys = |selections: &SelectedClosureSnapshot| {
+            selections
+                .by_product
+                .keys()
+                .filter(|key| key.package_key() == package)
+                .cloned()
+                .collect()
+        };
+        match &self.authority {
+            SemanticAuthorityRole::Writer(_) => {
+                let selections = self.image_loader.acquire_publication_read()?;
+                Ok(keys(&selections))
+            }
+            SemanticAuthorityRole::CapturedRead { selections, .. } => Ok(keys(selections)),
+        }
     }
 
     /// Queues bounded derived history work for one exact committed product
@@ -3414,7 +3589,8 @@ impl SemanticAuthority {
         key: ProductSemanticPublicationKey,
         claim: SemanticPublicationClaim,
     ) -> Result<(), BuiltinModelError> {
-        let (current_claim, selected) = self.image_loader.committed_pair(&key)?;
+        self.writer_authority()?;
+        let (current_claim, selected) = self.read_selected_pair(&key)?;
         if current_claim != claim {
             return Ok(());
         }
@@ -3489,7 +3665,7 @@ impl SemanticAuthority {
         selected: Vec<(ProductSemanticPublicationKey, SelectedGeneration)>,
     ) {
         for (key, selected) in selected {
-            self.committed_observations
+            Arc::make_mut(&mut self.committed_observations)
                 .insert(key, selected.observation().clone());
         }
     }
@@ -3569,16 +3745,18 @@ impl SemanticAuthority {
         let namespace = Self::namespace(key.package(), key.coordinate(), key.profile())?;
         let retained_generation = self.retained_generation(key, claim)?;
         let retained = futures_executor::block_on(
-            self.authority
+            self.writer_authority()?
                 .selected_generation(&namespace, retained_generation),
         )
         .map_err(|error| BuiltinModelError(format!("read retained semantic generation: {error}")))?
         .ok_or_else(|| BuiltinModelError("semantic generation is no longer retained".to_owned()))?;
-        let latest =
-            futures_executor::block_on(self.authority.latest_source_observation(&namespace))
-                .map_err(|error| {
-                    BuiltinModelError(format!("read latest semantic source observation: {error}"))
-                })?;
+        let latest = futures_executor::block_on(
+            self.writer_authority()?
+                .latest_source_observation(&namespace),
+        )
+        .map_err(|error| {
+            BuiltinModelError(format!("read latest semantic source observation: {error}"))
+        })?;
         let intent = latest.as_ref().map_or(
             ExistingGenerationSelection::AcknowledgeHistorical,
             |latest| {
@@ -3591,35 +3769,39 @@ impl SemanticAuthority {
                 }
             },
         );
-        let expected = futures_executor::block_on(self.authority.selected_frontier(&namespace))
-            .map_err(|error| {
-                BuiltinModelError(format!("read selected semantic frontier: {error}"))
-            })?;
-        let frontier =
-            futures_executor::block_on(self.authority.select_existing_compiler_generation(
-                &namespace,
-                expected.as_ref(),
-                retained_generation,
-                intent,
-                &self.store,
-            ))
-            .map_err(|error| {
-                BuiltinModelError(format!("select retained semantic generation: {error}"))
-            })?;
+        let expected =
+            futures_executor::block_on(self.writer_authority()?.selected_frontier(&namespace))
+                .map_err(|error| {
+                    BuiltinModelError(format!("read selected semantic frontier: {error}"))
+                })?;
+        let store = self.store.clone();
+        let frontier = futures_executor::block_on(
+            self.writer_authority_mut()?
+                .select_existing_compiler_generation(
+                    &namespace,
+                    expected.as_ref(),
+                    retained_generation,
+                    intent,
+                    &store,
+                ),
+        )
+        .map_err(|error| {
+            BuiltinModelError(format!("select retained semantic generation: {error}"))
+        })?;
         let selected = futures_executor::block_on(
-            self.authority
+            self.writer_authority()?
                 .selected_generation(&namespace, frontier.generation()),
         )
         .map_err(|error| BuiltinModelError(format!("read selected semantic rollback: {error}")))?
         .ok_or_else(|| BuiltinModelError("selected semantic rollback disappeared".to_owned()))?;
         self.remember_selection(key.clone(), claim, selected.clone())?;
-        self.history.insert(
+        Arc::make_mut(&mut self.history).insert(
             (key.clone(), *claim.binding().identity.as_ref()),
             HistoryFact {
                 selected: selected.clone(),
             },
         );
-        self.retained_generations.insert(
+        Arc::make_mut(&mut self.retained_generations).insert(
             (key.clone(), *claim.binding().identity.as_ref()),
             selected.generation(),
         );
@@ -3636,6 +3818,7 @@ impl SemanticAuthority {
         &mut self,
         daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     ) -> Result<(), BuiltinModelError> {
+        self.writer_authority()?;
         #[cfg(feature = "cluster-process-journey-hooks")]
         let journey_trace = std::env::var_os("BACKEND_JOURNEY_REMOTE_SEGMENT_GC")
             .is_some_and(|value| value.to_str() == Some("1"));
@@ -3724,7 +3907,7 @@ impl SemanticAuthority {
         let mut after: Option<AuthorityNamespace> = None;
         loop {
             let page = futures_executor::block_on(
-                self.authority
+                self.writer_authority()?
                     .selected_frontiers(after.as_ref(), AUTHORITY_PAGE),
             )
             .map_err(|error| {
@@ -3742,7 +3925,7 @@ impl SemanticAuthority {
                 let mut generation_after = None;
                 loop {
                     let generations = futures_executor::block_on(
-                        self.authority.selected_generations(
+                        self.writer_authority()?.selected_generations(
                             frontier.namespace(),
                             generation_after,
                             AUTHORITY_PAGE,
@@ -3791,13 +3974,13 @@ impl SemanticAuthority {
                             }
                         }
                         self.remember_selection(key.clone(), claim, selected.clone())?;
-                        self.history.insert(
+                        Arc::make_mut(&mut self.history).insert(
                             history_key.clone(),
                             HistoryFact {
                                 selected: selected.clone(),
                             },
                         );
-                        self.retained_generations
+                        Arc::make_mut(&mut self.retained_generations)
                             .insert(history_key, selected.generation());
                     }
                     if generations.len() < AUTHORITY_PAGE {
@@ -3808,7 +3991,7 @@ impl SemanticAuthority {
                 // the durable workspace marker. Reopen it into the history
                 // cache, but never use it to synthesize a product selection.
                 let head = futures_executor::block_on(
-                    self.authority
+                    self.writer_authority()?
                         .selected_generation(frontier.namespace(), frontier.generation()),
                 )
                 .map_err(|error| {
@@ -3820,9 +4003,9 @@ impl SemanticAuthority {
                 let (claim, _) = reopen_record(&self.store, &head)?;
                 let history_key = (key.clone(), *claim.binding().identity.as_ref());
                 self.remember_selection(key.clone(), claim, head.clone())?;
-                self.history
+                Arc::make_mut(&mut self.history)
                     .insert(history_key.clone(), HistoryFact { selected: head });
-                self.retained_generations
+                Arc::make_mut(&mut self.retained_generations)
                     .insert(history_key, frontier.generation());
             }
             if page.len() < AUTHORITY_PAGE {
@@ -3863,7 +4046,7 @@ impl SemanticAuthority {
             match record {
                 ProductSemanticPublicationRecord::Unavailable(_) => {
                     self.image_loader.clear_product_selection(key.clone())?;
-                    self.committed_observations.remove(&key);
+                    Arc::make_mut(&mut self.committed_observations).remove(&key);
                 }
                 ProductSemanticPublicationRecord::Published { coverage, claim } => {
                     let identity = *claim.binding().identity.as_ref();
@@ -3892,19 +4075,20 @@ impl SemanticAuthority {
 
                     let namespace =
                         Self::namespace(key.package(), key.coordinate(), key.profile())?;
-                    let frontier =
-                        futures_executor::block_on(self.authority.selected_frontier(&namespace))
-                            .map_err(|error| {
-                                BuiltinModelError(format!("read semantic projection head: {error}"))
-                            })?
-                            .ok_or_else(|| {
-                                BuiltinModelError(
-                                    "committed semantic selection has no retained authority head"
-                                        .to_owned(),
-                                )
-                            })?;
+                    let frontier = futures_executor::block_on(
+                        self.writer_authority()?.selected_frontier(&namespace),
+                    )
+                    .map_err(|error| {
+                        BuiltinModelError(format!("read semantic projection head: {error}"))
+                    })?
+                    .ok_or_else(|| {
+                        BuiltinModelError(
+                            "committed semantic selection has no retained authority head"
+                                .to_owned(),
+                        )
+                    })?;
                     let head = futures_executor::block_on(
-                        self.authority
+                        self.writer_authority()?
                             .selected_generation(&namespace, frontier.generation()),
                     )
                     .map_err(|error| {
@@ -3937,7 +4121,7 @@ impl SemanticAuthority {
                     }
                     self.image_loader
                         .commit_product_selection(key.clone(), claim)?;
-                    self.committed_observations
+                    Arc::make_mut(&mut self.committed_observations)
                         .insert(key.clone(), selected.observation().clone());
                     let _ = self.schedule_native_history(key, claim);
                 }
@@ -3964,10 +4148,11 @@ impl SemanticAuthority {
     }
 
     pub(crate) fn mark_projections_current(&mut self) -> Result<(), BuiltinModelError> {
+        self.writer_authority()?;
         let mut after: Option<AuthorityNamespace> = None;
         loop {
             let page = futures_executor::block_on(
-                self.authority
+                self.writer_authority()?
                     .selected_frontiers(after.as_ref(), AUTHORITY_PAGE),
             )
             .map_err(|error| {
@@ -3986,12 +4171,14 @@ impl SemanticAuthority {
                     ProjectionKind::Graph,
                     ProjectionKind::Lexical,
                 ] {
-                    futures_executor::block_on(self.authority.mark_projection_current(
-                        frontier.namespace(),
-                        projector,
-                        frontier.generation(),
-                        *frontier.target_root(),
-                    ))
+                    futures_executor::block_on(
+                        self.writer_authority_mut()?.mark_projection_current(
+                            frontier.namespace(),
+                            projector,
+                            frontier.generation(),
+                            *frontier.target_root(),
+                        ),
+                    )
                     .map_err(|error| {
                         BuiltinModelError(format!("advance semantic projection watermark: {error}"))
                     })?;
@@ -4168,6 +4355,118 @@ mod tests {
 
     static NEXT_WORKSPACE: AtomicU64 = AtomicU64::new(0);
 
+    fn worker_test_key() -> ProductSemanticPublicationKey {
+        let coordinate = PackageUrl::parse("pkg:cargo/worker-return@1.0.0".to_owned())
+            .expect("real admitted coordinate");
+        ProductSemanticPublicationKey::new(
+            backend_engine::PackageReference::Purl(coordinate.clone()),
+            coordinate,
+            LanguageProfile::Rust(RustEdition::Rust2021),
+        )
+        .expect("admitted key")
+    }
+
+    #[test]
+    fn detached_semantic_writer_returns_same_connection_after_caught_worker_unwind() {
+        let workspace = ScratchWorkspace::new();
+        let mut authority = SemanticAuthority::open(&workspace.0).expect("actual Turso writer");
+        let root = super::super::genesis()
+            .expect("checked product genesis")
+            .root();
+        let key = worker_test_key();
+        let first = authority
+            .observe(&key, [1; 32], 1)
+            .expect("first durable observation");
+        let mut writer = authority
+            .detach_index_writer(root)
+            .expect("unique transfer");
+        assert!(
+            authority.detach_index_writer(root).is_err(),
+            "cannot mint a second writer"
+        );
+        assert!(
+            authority.observe(&key, [2; 32], 2).is_err(),
+            "read facet has no Turso writer"
+        );
+        let returned = std::thread::spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                writer
+                    .authority_mut()
+                    .observe(&key, [2; 32], 2)
+                    .expect("same writer in worker");
+                panic!("worker callback unwinds before product publication");
+            }));
+            assert!(result.is_err());
+            writer
+        })
+        .join()
+        .expect("actual worker retired");
+        authority
+            .restore_index_writer(root, returned)
+            .unwrap_or_else(|(_, error)| panic!("same writer return: {error}"));
+        let next = authority
+            .observe(&worker_test_key(), [3; 32], 3)
+            .expect("original connection remains usable");
+        assert!(next.sequence() > first.sequence());
+    }
+
+    #[test]
+    fn detached_semantic_writer_foreign_return_retains_both_owner_capabilities() {
+        let first = ScratchWorkspace::new();
+        let second = ScratchWorkspace::new();
+        let mut a = SemanticAuthority::open(&first.0).expect("owner A");
+        let mut b = SemanticAuthority::open(&second.0).expect("owner B");
+        let root = super::super::genesis().expect("checked root").root();
+        let writer_a = a.detach_index_writer(root).expect("A writer");
+        let writer_b = b.detach_index_writer(root).expect("B writer");
+        let writer_b = match a.restore_index_writer(root, writer_b) {
+            Err((writer, _)) => writer,
+            Ok(()) => panic!("foreign writer must not install even with identical genesis roots"),
+        };
+        a.restore_index_writer(root, writer_a)
+            .unwrap_or_else(|(_, e)| panic!("A: {e}"));
+        b.restore_index_writer(root, writer_b)
+            .unwrap_or_else(|(_, e)| panic!("B: {e}"));
+        a.observe(&worker_test_key(), [4; 32], 1)
+            .expect("A next durable write");
+        b.observe(&worker_test_key(), [5; 32], 1)
+            .expect("B next durable write");
+    }
+
+    #[test]
+    fn detached_semantic_read_facet_never_enters_mutable_selection_fence() {
+        let workspace = ScratchWorkspace::new();
+        let mut authority = SemanticAuthority::open(&workspace.0).expect("actual authority");
+        let root = super::super::genesis().expect("checked root").root();
+        let writer = authority
+            .detach_index_writer(root)
+            .expect("worker authority");
+        let loader = Arc::clone(&authority.image_loader);
+        let fence = loader
+            .selections
+            .write()
+            .expect("actual writer/native-history fence");
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        let reader = std::thread::spawn(move || {
+            let keys = authority.selected_product_keys_for_package(worker_test_key().package_key());
+            let captured = authority.capture_image_loader();
+            let drain = authority.drain_native_history_completions();
+            send.send((keys.map(|keys| keys.len()), captured.is_ok(), drain.is_ok()))
+                .expect("return retained read facts");
+            authority
+        });
+        let observed = receive.recv_timeout(Duration::from_secs(2));
+        drop(fence); // release even on failure before joining the reader
+        let mut authority = reader.join().expect("bounded reader retired");
+        let (keys, captured, drained) = observed.expect("read did not wait for the mutable fence");
+        assert_eq!(keys.expect("captured selected keys"), 0);
+        assert!(captured && drained);
+        assert!(authority.native_history_completions.is_none());
+        authority
+            .restore_index_writer(root, writer)
+            .unwrap_or_else(|(_, e)| panic!("return: {e}"));
+    }
+
     #[test]
     fn freshness_key_rejects_immutable_generation_rows() {
         use backend_engine::publication::binding::CompilationBindingIdentity;
@@ -4199,8 +4498,8 @@ mod tests {
         use backend_engine::application::{
             LocalCompilerClient, LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths,
             LocalCompilerScratch, LocalCompilerTimeout, LocalRuntimePackageAuthority,
-            LocalRuntimeRustAuthority, LocalRuntimeRustToolchainSelection,
-            LocalRuntimeToolchain, OwnedPackageSource, OwnedPackageSourceSet,
+            LocalRuntimeRustAuthority, LocalRuntimeRustToolchainSelection, LocalRuntimeToolchain,
+            OwnedPackageSource, OwnedPackageSourceSet,
         };
         use backend_frontend_rust::legacy::{
             RustCargoMetadataPolicy, RustToolchain, SourceByteLimit,
@@ -4724,9 +5023,14 @@ mod tests {
         );
         let namespace = attempt.namespace().clone();
         assert!(
-            futures_executor::block_on(authority.authority.selected_frontier(&namespace))
-                .expect("read local selected frontier")
-                .is_none(),
+            futures_executor::block_on(
+                authority
+                    .writer_authority()
+                    .expect("writer authority")
+                    .selected_frontier(&namespace)
+            )
+            .expect("read local selected frontier")
+            .is_none(),
             "the selected head cannot advance when S3 has no exact receipt"
         );
     }
@@ -4755,10 +5059,14 @@ mod tests {
         let reopened = SemanticAuthority::open(&workspace.0).expect("cold reopen authority");
         let namespace = SemanticAuthority::namespace(key.package(), key.coordinate(), profile)
             .expect("valid semantic authority namespace");
-        let latest =
-            futures_executor::block_on(reopened.authority.latest_source_observation(&namespace))
-                .expect("read reopened source observation")
-                .expect("source observation survived process restart");
+        let latest = futures_executor::block_on(
+            reopened
+                .writer_authority()
+                .expect("reopened writer")
+                .latest_source_observation(&namespace),
+        )
+        .expect("read reopened source observation")
+        .expect("source observation survived process restart");
         assert_eq!(latest.sequence(), observed.sequence());
         assert_eq!(latest.observation().revision(), Some(expected_digest));
         assert_eq!(
@@ -4766,9 +5074,14 @@ mod tests {
             &SourceObservationValue::KnownCount(1)
         );
         assert!(
-            futures_executor::block_on(reopened.authority.selected_frontier(&namespace))
-                .expect("read reopened selected frontier")
-                .is_none(),
+            futures_executor::block_on(
+                reopened
+                    .writer_authority()
+                    .expect("reopened writer")
+                    .selected_frontier(&namespace)
+            )
+            .expect("read reopened selected frontier")
+            .is_none(),
             "an observation alone must not create or advance a selected head"
         );
     }

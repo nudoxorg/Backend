@@ -310,7 +310,7 @@ struct DeferredReply {
 
 /// A single-owner bounded Unix listener.
 #[cfg(any(unix, windows))]
-pub struct UnixListenerService<O> {
+pub struct UnixListenerService<O: OwnerService> {
     listener: backend_engine::LocalListener,
     service: LocaldService<O>,
     path: PathBuf,
@@ -335,10 +335,12 @@ pub struct UnixListenerService<O> {
     next_connection_id: AtomicUsize,
     report: RunReport,
     telemetry: backend_engine::Telemetry,
+    #[cfg(test)]
+    next_accept_error: Option<io::ErrorKind>,
 }
 
 #[cfg(any(unix, windows))]
-impl<O: OwnerService + 'static> fmt::Debug for UnixListenerService<O>
+impl<O: OwnerService> fmt::Debug for UnixListenerService<O>
 where
     O: fmt::Debug,
 {
@@ -354,7 +356,7 @@ where
 }
 
 #[cfg(any(unix, windows))]
-impl<O: OwnerService + 'static> UnixListenerService<O> {
+impl<O: OwnerService> UnixListenerService<O> {
     /// Binds a private Unix endpoint around one owner service.
     ///
     /// # Errors
@@ -425,6 +427,8 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
             next_connection_id: AtomicUsize::new(1),
             report: RunReport::default(),
             telemetry: backend_engine::Telemetry::disabled(),
+            #[cfg(test)]
+            next_accept_error: None,
         })
     }
 
@@ -489,35 +493,40 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
     /// connected and no owner work has progressed for that window.
     pub fn run(&mut self) -> Result<RunReport, ListenerError> {
         let mut last_progress = Instant::now();
-        while !self.is_shutdown() {
-            self.accept_available()?;
-            let made_progress = self.drain_owner_once();
-            let active = self.active.load(Ordering::Acquire);
-            if made_progress || active != 0 {
-                last_progress = Instant::now();
+        let result = (|| {
+            while !self.is_shutdown() {
+                self.accept_available()?;
+                let made_progress = self.drain_owner_once();
+                let active = self.active.load(Ordering::Acquire);
+                if made_progress || active != 0 {
+                    last_progress = Instant::now();
+                }
+                if active == 0 && self.idle_window_elapsed(last_progress) {
+                    // Nothing has been connected and no owner work has progressed
+                    // for the whole window. A detached daemon has no parent to
+                    // reap it, so this branch is the only thing between one
+                    // abandoned surface and a socket per workspace that lives
+                    // until the machine restarts. Setting the stop flag rather
+                    // than only breaking means a host holding a
+                    // `ListenerShutdown` observes the retirement instead of
+                    // waiting on a loop that already ended.
+                    self.stop.store(true, Ordering::Release);
+                    break;
+                }
+                // Keep a connected but idle client alive without hot-spinning the
+                // embedded owner poll. Real owner/request progress immediately
+                // drains again, so this wait is never inserted after a frame.
+                if !made_progress {
+                    thread::sleep(self.config.poll_interval);
+                }
             }
-            if active == 0 && self.idle_window_elapsed(last_progress) {
-                // Nothing has been connected and no owner work has progressed
-                // for the whole window. A detached daemon has no parent to
-                // reap it, so this branch is the only thing between one
-                // abandoned surface and a socket per workspace that lives
-                // until the machine restarts. Setting the stop flag rather
-                // than only breaking means a host holding a
-                // `ListenerShutdown` observes the retirement instead of
-                // waiting on a loop that already ended.
-                self.stop.store(true, Ordering::Release);
-                break;
-            }
-            // Keep a connected but idle client alive without hot-spinning the
-            // embedded owner poll. Real owner/request progress immediately
-            // drains again, so this wait is never inserted after a frame.
-            if !made_progress {
-                thread::sleep(self.config.poll_interval);
-            }
-        }
+            Ok(self.report)
+        })();
+        // An accept refusal is terminal too. Always join the owned product
+        // worker before returning ownership to the host or embedded thread.
         self.finish_workers();
         self.service.close();
-        Ok(self.report)
+        result
     }
 
     /// Reports whether the configured idle window has passed with no client
@@ -536,14 +545,29 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
     /// Returns an error when accepting or servicing a connection fails.
     pub fn run_once(&mut self) -> Result<bool, ListenerError> {
         if self.is_shutdown() {
+            self.finish_workers();
+            self.service.close();
             return Ok(false);
         }
-        self.accept_available()?;
+        if let Err(error) = self.accept_available() {
+            self.finish_workers();
+            self.service.close();
+            return Err(error);
+        }
         let handled = self.drain_owner_once();
         Ok(handled || self.active.load(Ordering::Acquire) != 0)
     }
 
+    #[cfg(test)]
+    pub(crate) fn fail_next_accept_for_test(&mut self, kind: io::ErrorKind) {
+        self.next_accept_error = Some(kind);
+    }
+
     fn accept_available(&mut self) -> Result<(), ListenerError> {
+        #[cfg(test)]
+        if let Some(kind) = self.next_accept_error.take() {
+            return Err(ListenerError::Io(kind));
+        }
         self.report.failures = self
             .report
             .failures
@@ -800,9 +824,14 @@ fn reap_finished_workers(workers: &mut Vec<JoinHandle<()>>) -> usize {
 }
 
 #[cfg(any(unix, windows))]
-impl<O> Drop for UnixListenerService<O> {
+impl<O: OwnerService> Drop for UnixListenerService<O> {
     fn drop(&mut self) {
+        // A host can drop without calling run, or unwind out of owner work.
+        // Do not pump that owner again while unwinding. Abandon its waiters,
+        // cancel/join the product worker, then retire the socket workers.
         self.stop.store(true, Ordering::Release);
+        self.close_deferred_replies();
+        self.service.close(); // idempotent after run/run_once cleanup
         if let Ok(streams) = self.streams.lock() {
             for stream in streams.values() {
                 let _ = stream.shutdown(std::net::Shutdown::Both);
@@ -1111,6 +1140,33 @@ mod tests {
                 let _ = worker.join();
             }
         }
+    }
+
+    #[test]
+    fn listener_accepts_borrowed_owner_and_closes_it_on_drop() {
+        struct BorrowedOwner<'a>(&'a AtomicBool);
+        impl OwnerService for BorrowedOwner<'_> {
+            fn command(&mut self, body: &[u8]) -> Result<Vec<u8>, ProtocolError> {
+                Ok(body.to_vec())
+            }
+            fn engine(&mut self, _: u64, _: EngineRequest) -> Result<EngineStatus, ProtocolError> {
+                Ok(EngineStatus::Accepted)
+            }
+            fn serve_one(&mut self) -> bool {
+                false
+            }
+            fn close(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let closed = AtomicBool::new(false);
+        let config = ListenerConfig::new(socket_path("borrowed-owner-drop"));
+        let service = LocaldService::new(BorrowedOwner(&closed), config.limits)
+            .expect("borrowed owner service");
+        let listener =
+            UnixListenerService::bind(service, config).expect("stack listener borrows its owner");
+        drop(listener);
+        assert!(closed.load(Ordering::Acquire));
     }
 
     #[derive(Debug, Default)]
