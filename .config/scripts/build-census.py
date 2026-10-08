@@ -83,6 +83,7 @@ class ProcessRecord:
     comm_candidate: bool = False
     compiler_candidate: bool = False
     runtime_owner_candidate: bool = False
+    unknown_executable_candidate: bool = False
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -357,14 +358,14 @@ def cargo_entries(snapshot: ProcessSnapshot) -> list[CargoEntry]:
 
 
 def compiler_groups(snapshot: ProcessSnapshot, entries: Iterable[CargoEntry]) -> list[dict[str, Any]]:
-    """Group compiler and known runtime-owner processes by OS process group."""
+    """Group compiler, unresolved, and known runtime-owner processes by OS process group."""
     by_pgid: dict[int, dict[str, Any]] = {}
     for entry in entries:
         if entry.classification not in {"build", "unknown"}:
             continue
         group = by_pgid.setdefault(
             entry.record.pgid,
-            {"pgid": entry.record.pgid, "cargo": [], "rustc": [], "unknown_rustc": [], "runtime": [], "unknown_runtime": []},
+            {"pgid": entry.record.pgid, "cargo": [], "rustc": [], "unknown_rustc": [], "runtime": [], "unknown_runtime": [], "unknown_executable": []},
         )
         group["cargo"].append(entry)
     for record in snapshot.records.values():
@@ -373,22 +374,27 @@ def compiler_groups(snapshot: ProcessSnapshot, entries: Iterable[CargoEntry]) ->
         if record.executable is not None and _is_rustc_executable(record.executable):
             by_pgid.setdefault(
                 record.pgid,
-                {"pgid": record.pgid, "cargo": [], "rustc": [], "unknown_rustc": [], "runtime": [], "unknown_runtime": []},
+                {"pgid": record.pgid, "cargo": [], "rustc": [], "unknown_rustc": [], "runtime": [], "unknown_runtime": [], "unknown_executable": []},
             )["rustc"].append(record)
+        elif record.unknown_executable_candidate:
+            by_pgid.setdefault(
+                record.pgid,
+                {"pgid": record.pgid, "cargo": [], "rustc": [], "unknown_rustc": [], "runtime": [], "unknown_runtime": [], "unknown_executable": []},
+            )["unknown_executable"].append(record)
         elif record.compiler_candidate:
             by_pgid.setdefault(
                 record.pgid,
-                {"pgid": record.pgid, "cargo": [], "rustc": [], "unknown_rustc": [], "runtime": [], "unknown_runtime": []},
+                {"pgid": record.pgid, "cargo": [], "rustc": [], "unknown_rustc": [], "runtime": [], "unknown_runtime": [], "unknown_executable": []},
             )["unknown_rustc"].append(record)
         elif record.executable is not None and _is_runtime_owner_executable(record.executable):
             by_pgid.setdefault(
                 record.pgid,
-                {"pgid": record.pgid, "cargo": [], "rustc": [], "unknown_rustc": [], "runtime": [], "unknown_runtime": []},
+                {"pgid": record.pgid, "cargo": [], "rustc": [], "unknown_rustc": [], "runtime": [], "unknown_runtime": [], "unknown_executable": []},
             )["runtime"].append(record)
         elif record.runtime_owner_candidate:
             by_pgid.setdefault(
                 record.pgid,
-                {"pgid": record.pgid, "cargo": [], "rustc": [], "unknown_rustc": [], "runtime": [], "unknown_runtime": []},
+                {"pgid": record.pgid, "cargo": [], "rustc": [], "unknown_rustc": [], "runtime": [], "unknown_runtime": [], "unknown_executable": []},
             )["unknown_runtime"].append(record)
 
     result: list[dict[str, Any]] = []
@@ -398,10 +404,11 @@ def compiler_groups(snapshot: ProcessSnapshot, entries: Iterable[CargoEntry]) ->
         unknown_rustc: list[ProcessRecord] = group["unknown_rustc"]
         runtime: list[ProcessRecord] = group["runtime"]
         unknown_runtime: list[ProcessRecord] = group["unknown_runtime"]
-        if not cargo and not rustc and not unknown_rustc and not runtime and not unknown_runtime:
+        unknown_executable: list[ProcessRecord] = group["unknown_executable"]
+        if not cargo and not rustc and not unknown_rustc and not runtime and not unknown_runtime and not unknown_executable:
             continue
         if cargo:
-            unknown = any(entry.classification == "unknown" for entry in cargo) or bool(unknown_rustc or unknown_runtime)
+            unknown = any(entry.classification == "unknown" for entry in cargo) or bool(unknown_rustc or unknown_runtime or unknown_executable)
             jobs = [entry.requested_jobs for entry in cargo]
             requested_jobs = sum(jobs) if jobs and all(value is not None for value in jobs) else None
             result.append(
@@ -415,6 +422,7 @@ def compiler_groups(snapshot: ProcessSnapshot, entries: Iterable[CargoEntry]) ->
                         + [record.pid for record in unknown_rustc]
                         + [record.pid for record in runtime]
                         + [record.pid for record in unknown_runtime]
+                        + [record.pid for record in unknown_executable]
                     ),
                     "cargo_pids": sorted(entry.record.pid for entry in cargo),
                     "runtime_owner_pids": sorted(record.pid for record in [*runtime, *unknown_runtime]),
@@ -428,11 +436,25 @@ def compiler_groups(snapshot: ProcessSnapshot, entries: Iterable[CargoEntry]) ->
                 {
                     "pgid": pgid,
                     "kind": "orphan-rustc",
-                    "classification": "unknown" if unknown_rustc or unknown_runtime else "orphan-rustc",
-                    "pids": sorted(record.pid for record in [*rustc, *unknown_rustc, *runtime, *unknown_runtime]),
+                    "classification": "unknown" if unknown_rustc or unknown_runtime or unknown_executable else "orphan-rustc",
+                    "pids": sorted(record.pid for record in [*rustc, *unknown_rustc, *runtime, *unknown_runtime, *unknown_executable]),
                     "cargo_pids": [],
                     "runtime_owner_pids": sorted(record.pid for record in [*runtime, *unknown_runtime]),
                     "rustc_process_count": len(rustc) + len(unknown_rustc),
+                    "requested_cargo_jobs": None,
+                    "job_limit_known": False,
+                }
+            )
+        elif runtime or unknown_runtime:
+            result.append(
+                {
+                    "pgid": pgid,
+                    "kind": "runtime-owner",
+                    "classification": "unknown" if unknown_runtime or unknown_executable else "runtime-owner",
+                    "pids": sorted(record.pid for record in [*runtime, *unknown_runtime, *unknown_executable]),
+                    "cargo_pids": [],
+                    "runtime_owner_pids": sorted(record.pid for record in [*runtime, *unknown_runtime]),
+                    "rustc_process_count": 0,
                     "requested_cargo_jobs": None,
                     "job_limit_known": False,
                 }
@@ -441,11 +463,11 @@ def compiler_groups(snapshot: ProcessSnapshot, entries: Iterable[CargoEntry]) ->
             result.append(
                 {
                     "pgid": pgid,
-                    "kind": "runtime-owner",
-                    "classification": "unknown" if unknown_runtime else "runtime-owner",
-                    "pids": sorted(record.pid for record in [*runtime, *unknown_runtime]),
+                    "kind": "unknown",
+                    "classification": "unknown",
+                    "pids": sorted(record.pid for record in unknown_executable),
                     "cargo_pids": [],
-                    "runtime_owner_pids": sorted(record.pid for record in [*runtime, *unknown_runtime]),
+                    "runtime_owner_pids": [],
                     "rustc_process_count": 0,
                     "requested_cargo_jobs": None,
                     "job_limit_known": False,
@@ -461,7 +483,7 @@ def decide_capacity(
     total_build_capacity: int = 4,
     reserved_remote_builds: int = 1,
 ) -> dict[str, Any]:
-    """Evaluate a snapshot; unknown Cargo occupies a slot but is never killed."""
+    """Evaluate a snapshot; unknown Cargo and process groups occupy a slot."""
     if total_build_capacity < 1 or reserved_remote_builds < 0 or reserved_remote_builds >= total_build_capacity:
         raise ValueError("capacity must leave at least one local build slot")
     counts = {"build": 0, "introspection": 0, "unknown": 0, "exited": 0}
@@ -793,6 +815,22 @@ def _unknown_compiler_candidate(row: _PsRow) -> ProcessRecord:
     )
 
 
+def _unknown_executable_candidate(row: _PsRow, info: _ProcBsdInfo) -> ProcessRecord:
+    """Keep a validated process group occupied when Darwin hides its executable path."""
+    return ProcessRecord(
+        pid=row.pid,
+        ppid=int(info.ppid),
+        pgid=int(info.pgid),
+        start_token=f"darwin:{int(info.start_sec)}:{int(info.start_usec):06d}",
+        executable=None,
+        argv=None,
+        argv_error="executable-unavailable",
+        state="Z" if info.status == 5 else str(info.status),
+        identity_validated=True,
+        unknown_executable_candidate=True,
+    )
+
+
 def _unknown_runtime_owner_candidate(row: _PsRow) -> ProcessRecord:
     return ProcessRecord(
         pid=row.pid,
@@ -1029,7 +1067,11 @@ def _darwin_processes(
                     elif runtime_hint:
                         records[pid] = _unknown_runtime_owner_candidate(row)
                     else:
-                        issues["same-uid-executable-unreadable"] = issues.get("same-uid-executable-unreadable", 0) + 1
+                        # PID, UID, start time, parent, and process group are
+                        # already validated. Keep the group as unknown occupancy
+                        # so an unavailable/deleted executable cannot appear as
+                        # free capacity or invalidate the entire census.
+                        records[pid] = _unknown_executable_candidate(row, info)
             elif cargo_hint:
                 records[pid] = _unknown_cargo_candidate(row)
             elif compiler_hint:
@@ -1235,7 +1277,7 @@ def main(argv: list[str] | None = None) -> int:
         "captured_argv_bytes": snapshot.captured_argv_bytes,
         "captured_argv_processes": snapshot.captured_argv_processes,
         "argv_budget_exhausted": snapshot.argv_budget_exhausted,
-        "scope_note": "Foreign Cargo, rustc, and locald/backend-locald/backend-desktop-looking rows are inspected; inaccessible candidates count as occupied unknown process groups. Same-UID process executable paths are inspected. Cargo argv is read through native process APIs and redacted. Other foreign rows and processes hidden by OS namespaces or permissions are not validated, so this advisory cannot guarantee whole-machine capacity.",
+        "scope_note": "Foreign Cargo, rustc, and locald/backend-locald/backend-desktop-looking rows are inspected; inaccessible candidates count as occupied unknown process groups. Same-UID process executable paths are inspected, and paths that remain unavailable count as unknown occupied process groups. Cargo argv is read through native process APIs and redacted. Other foreign rows and processes hidden by OS namespaces or permissions are not validated, so this advisory cannot guarantee whole-machine capacity.",
         "sample_started_at_utc": snapshot.started_at_utc,
         "sample_finished_at_utc": snapshot.finished_at_utc,
         "snapshot_atomic": False,

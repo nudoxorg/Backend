@@ -1,0 +1,23 @@
+{
+  "repository": "https://github.com/httpie/cli",
+  "commit": "5b604c37c6c67e18e7c3e9aee6c88a8c22b98345",
+  "tree": "ce66abc6fa4078b0d549dd0e4a3b512d9f1ee90e",
+  "scope": "Three unchanged packaging/literal-source files for parser controls; not an application/native proof",
+  "files": [
+    {
+      "path": "setup.cfg",
+      "sha256": "42231fbc2916bd3fa5f21262d6c1fcbd432990d5de659bc6808b4fd6d538f029",
+      "bytes": 2627
+    },
+    {
+      "path": "setup.py",
+      "sha256": "843ac26c38a41abae578250bc0f9419194b320a0f67327d941037a4268f6cfe7",
+      "bytes": 38
+    },
+    {
+      "path": "httpie/__init__.py",
+      "sha256": "ae83d2da25dfb8a3617a3999fe7c69513074bd29bd5d114c1cd76fa6dbdf4929",
+      "bytes": 178
+    }
+  ]
+}

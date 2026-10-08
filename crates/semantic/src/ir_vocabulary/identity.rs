@@ -1102,16 +1102,54 @@ pub enum ForeignOrigin<'bytes> {
 /// or a name-only universe reference.
 pub const TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM: &str = "typescript-tsz-source-v1";
 
-/// One exact TypeScript declaration-name coordinate in a compiled source
-/// file. The coordinate is a byte offset in the admitted UTF-8 source, not a
-/// line number, node ordinal, symbol name, or guessed module target.
+/// Exact declaration coordinate proven by native Python in one selected source frontier.
+pub const PYTHON_NATIVE_SOURCE_ECOSYSTEM: &str = "python-native-source-v1";
+
+/// Native Python definition evidence reuses the admitted source-coordinate cells.
+/// It carries a distinct producer grammar and never resolves by module/name guessing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TypeScriptSourceCoordinate<'source> {
+pub struct PythonSourceCoordinate<'source>(pub SourceDeclarationCoordinate<'source>);
+
+impl<'source> PythonSourceCoordinate<'source> {
+    const PREFIX: &'static str = "python-native-source-coordinate-v1:";
+
+    /// Encodes only canonical relative selected-source paths and admitted extents.
+    #[must_use]
+    pub fn encode(self) -> Option<String> {
+        if !python_source_path(self.0.path) {
+            return None;
+        }
+        self.0.encode_with_prefix(Self::PREFIX)
+    }
+
+    /// Decodes the closed Python producer grammar without a TSZ authority promotion.
+    #[must_use]
+    pub fn decode(encoded: &'source str) -> Option<Self> {
+        let coordinate = TypeScriptSourceCoordinate::decode_with_prefix(encoded, Self::PREFIX)?;
+        let result = Self(coordinate);
+        (python_source_path(coordinate.path) && result.encode().as_deref() == Some(encoded))
+            .then_some(result)
+    }
+}
+
+fn python_source_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= 4096
+        && !path.contains(['\\', '\0'])
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+/// Shared exact declaration source-coordinate cells. Producer-specific codecs
+/// retain their own authority discriminator; these cells alone imply no authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SourceDeclarationCoordinate<'source> {
     /// Deterministic identity of the complete admitted project source set.
     pub program: [u8; 32],
     /// Content identity of the target source file in that project.
     pub source: [u8; 32],
-    /// Stable project-relative source path supplied to the TSZ project.
+    /// Stable project-relative source path supplied to the native producer.
     pub path: &'source str,
     /// Start of the exact target declaration span in UTF-8 bytes.
     pub declaration_start: u32,
@@ -1120,6 +1158,9 @@ pub struct TypeScriptSourceCoordinate<'source> {
     /// Byte offset of the declaration name token in that exact file.
     pub name_start: u32,
 }
+
+/// Existing TSZ source-coordinate API and codec remain byte-compatible.
+pub type TypeScriptSourceCoordinate<'source> = SourceDeclarationCoordinate<'source>;
 
 /// Authenticated current source site of one anonymous TypeScript callable.
 /// The program and source digests prove where the producer observed the site;
@@ -1215,14 +1256,18 @@ impl<'source> TypeScriptCallableSourceCoordinate<'source> {
     }
 }
 
-impl<'source> TypeScriptSourceCoordinate<'source> {
+impl<'source> SourceDeclarationCoordinate<'source> {
     const PREFIX: &'static str = "tsz-source-coordinate-v2:";
 
-    /// Encodes a coordinate into the existing validated foreign-key path
-    /// cell. A byte-length prefix keeps paths containing colons or Unicode
+    /// Encodes the existing TSZ producer grammar into the validated foreign-key path
+    /// cell. Other producers use their distinct wrapper codec. A byte-length prefix keeps paths containing colons or Unicode
     /// unambiguous without introducing a second persisted operand.
     #[must_use]
     pub fn encode(self) -> Option<String> {
+        self.encode_with_prefix(Self::PREFIX)
+    }
+
+    fn encode_with_prefix(self, prefix: &str) -> Option<String> {
         if self.path.is_empty()
             || self.path.contains('\\')
             || self.path.contains('\0')
@@ -1234,7 +1279,7 @@ impl<'source> TypeScriptSourceCoordinate<'source> {
         }
         Some(format!(
             "{}{}:{}:{}:{}:{}:{}:{}",
-            Self::PREFIX,
+            prefix,
             hex_digest(&self.program),
             hex_digest(&self.source),
             self.path.len(),
@@ -1245,10 +1290,14 @@ impl<'source> TypeScriptSourceCoordinate<'source> {
         ))
     }
 
-    /// Decodes only this closed versioned source-coordinate grammar.
+    /// Decodes only the existing closed TSZ source-coordinate grammar.
     #[must_use]
     pub fn decode(encoded: &'source str) -> Option<Self> {
-        let rest = encoded.strip_prefix(Self::PREFIX)?;
+        Self::decode_with_prefix(encoded, Self::PREFIX)
+    }
+
+    fn decode_with_prefix(encoded: &'source str, prefix: &str) -> Option<Self> {
+        let rest = encoded.strip_prefix(prefix)?;
         let (program, rest) = rest.split_once(':')?;
         let program = parse_hex_digest(program)?;
         let (source, rest) = rest.split_once(':')?;
@@ -1286,6 +1335,19 @@ impl<'source> TypeScriptSourceCoordinate<'source> {
 /// decide which program a cross-file reference names.
 #[must_use]
 pub fn typescript_program_identity(sources: &[(String, [u8; 32])]) -> Option<[u8; 32]> {
+    source_manifest_identity(b"typescript-tsz-program-source-manifest-v1\0", sources)
+}
+
+/// Binds native Python targets to the exact selected source frontier.
+#[must_use]
+pub fn python_program_identity(sources: &[(String, [u8; 32])]) -> Option<[u8; 32]> {
+    if sources.iter().any(|(path, _)| !python_source_path(path)) {
+        return None;
+    }
+    source_manifest_identity(b"python-native-program-source-manifest-v1\0", sources)
+}
+
+fn source_manifest_identity(domain: &[u8], sources: &[(String, [u8; 32])]) -> Option<[u8; 32]> {
     if sources.is_empty() {
         return None;
     }
@@ -1295,7 +1357,7 @@ pub fn typescript_program_identity(sources: &[(String, [u8; 32])]) -> Option<[u8
         return None;
     }
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"typescript-tsz-program-source-manifest-v1\0");
+    hasher.update(domain);
     for (path, source) in ordered {
         let length = u32::try_from(path.len()).ok()?;
         hasher.update(&length.to_le_bytes());
@@ -1666,5 +1728,72 @@ mod typescript_source_coordinate_tests {
             ])
             .is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod python_source_coordinate_tests {
+    use super::{
+        PythonSourceCoordinate, SourceDeclarationCoordinate, TypeScriptSourceCoordinate,
+        python_program_identity, typescript_program_identity,
+    };
+
+    #[test]
+    fn python_coordinate_producer_and_source_frontier_are_distinct_and_canonical()
+    -> Result<(), &'static str> {
+        let sources = [
+            ("core/api/utils.py".to_owned(), [7; 32]),
+            ("core/api/viewsets.py".to_owned(), [8; 32]),
+        ];
+        let program = python_program_identity(&sources).ok_or("source manifest")?;
+        assert_eq!(
+            Some(program),
+            python_program_identity(&[sources[1].clone(), sources[0].clone()])
+        );
+        assert_ne!(Some(program), typescript_program_identity(&sources));
+        assert_eq!(
+            python_program_identity(&[sources[0].clone(), sources[0].clone()]),
+            None
+        );
+        assert_eq!(
+            python_program_identity(&[("../utils.py".to_owned(), [7; 32])]),
+            None
+        );
+        let cells = SourceDeclarationCoordinate {
+            program,
+            source: [7; 32],
+            path: "core/api/utils.py",
+            declaration_start: 70,
+            declaration_end: 100,
+            name_start: 74,
+        };
+        let encoded = PythonSourceCoordinate(cells).encode().ok_or("coordinate")?;
+        assert_eq!(
+            PythonSourceCoordinate::decode(&encoded),
+            Some(PythonSourceCoordinate(cells))
+        );
+        assert_eq!(TypeScriptSourceCoordinate::decode(&encoded), None);
+        let tsz = cells.encode().ok_or("existing TSZ coordinate")?;
+        assert!(tsz.starts_with("tsz-source-coordinate-v2:"));
+        assert_eq!(PythonSourceCoordinate::decode(&tsz), None);
+        let noncanonical = encoded.replace(":70:100:74", ":070:100:74");
+        assert_eq!(PythonSourceCoordinate::decode(&noncanonical), None);
+        for path in [
+            "/utils.py",
+            "core//utils.py",
+            "core/./utils.py",
+            "core/../utils.py",
+            "C:\\utils.py",
+        ] {
+            assert_eq!(
+                PythonSourceCoordinate(SourceDeclarationCoordinate { path, ..cells }).encode(),
+                None
+            );
+        }
+        assert_ne!(
+            Some(program),
+            python_program_identity(&[(sources[0].0.clone(), [9; 32]), sources[1].clone()])
+        );
+        Ok(())
     }
 }

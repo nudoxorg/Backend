@@ -11,22 +11,25 @@
 //! be added, named with its reason.
 
 use crate::core::LocalProjectId;
-use crate::model::{AppSnapshot, Note, ProjectPhase, WorkspaceProject};
+use crate::model::{AppSnapshot, Note, ProjectLifecycle, ProjectPhase, WorkspaceProject};
+use crate::navigation::{BrowseRoute, Intent, OrbitRoute, Route};
 use crate::runtime::acquire::{NOT_CARGO, Origin, ProjectPackages, Stage as Adding};
 use crate::runtime::offload::Asker;
-use crate::navigation::{BrowseRoute, Intent, OrbitRoute, Route};
 use crate::shell::bodies::{Ctx, Leaf};
 use crate::shell::focus::{Act, Target};
 use crate::shell::kit::{quiet, text};
 use crate::shell::reader::Reader;
+use facet::Space;
 use facet::controls::{Glyph, KbdVoice, button, kbd};
 use facet::data::{Door, Stage, StageState, gem_progress, seam};
-use facet::overlay::tooltip::{TipText, content};
 use facet::icons::Kind;
+use facet::overlay::tooltip::{TipText, content};
 use facet::tokens::fluid::EMPTY_GEM;
 use facet::tokens::ty;
-use facet::Space;
-use gpui::{AnyElement, Context, Global, InteractiveElement as _, IntoElement as _, ParentElement, SharedString, Styled, Task, div, px};
+use gpui::{
+    AnyElement, Context, Global, InteractiveElement as _, IntoElement as _, ParentElement,
+    SharedString, Styled, Task, div, px,
+};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -40,85 +43,96 @@ const TICK: Duration = Duration::from_secs(60);
 /// owner (it asked, and no answer has come), and the answer is what makes a
 /// project ready. The middle step is the one the owner reports nothing of,
 /// so it is drawn as running with no fraction, never as a percentage.
-pub(crate) fn stages(phase: ProjectPhase) -> Option<[Stage; 3]> {
-    let middle = match phase {
-        ProjectPhase::Indexing => StageState::Now,
-        ProjectPhase::Cancelling | ProjectPhase::Cancelled | ProjectPhase::Unconfirmed => StageState::Stall,
-        ProjectPhase::Failed => StageState::Bad,
-        ProjectPhase::Ready | ProjectPhase::Missing => return None,
+pub(crate) fn stages(lifecycle: ProjectLifecycle) -> Option<[Stage; 3]> {
+    let middle = match lifecycle {
+        ProjectLifecycle::Queued => StageState::Todo,
+        ProjectLifecycle::CheckingFolder
+        | ProjectLifecycle::AwaitingReceipt
+        | ProjectLifecycle::Accepted
+        | ProjectLifecycle::Active(_) => StageState::Now,
+        ProjectLifecycle::Cancelling
+        | ProjectLifecycle::Paused
+        | ProjectLifecycle::CheckingOutcome
+        | ProjectLifecycle::UnknownOutcome
+        | ProjectLifecycle::OutsideReceiptWindow
+        | ProjectLifecycle::Unresolved => StageState::Stall,
+        ProjectLifecycle::Failed(_) | ProjectLifecycle::CompilerRefused(_) => StageState::Bad,
+        ProjectLifecycle::Published | ProjectLifecycle::PartiallyPublished | ProjectLifecycle::Available | ProjectLifecycle::Missing => {
+            return None;
+        }
     };
     Some([
         Stage::new("admitted", StageState::Done),
-        Stage::new("indexing", middle),
-        Stage::new("ready", StageState::Todo),
+        Stage::new(lifecycle.label(), middle),
+        Stage::new("published", StageState::Todo),
     ])
 }
 
 /// An admitted folder is not an owner operation until the runtime submits it.
 /// Its seam stays at the completed local admission while the owner is absent.
 fn project_stages(project: &WorkspaceProject) -> Option<[Stage; 3]> {
-    let mut steps = stages(project.phase)?;
-    if project.phase == ProjectPhase::Indexing && project.request.is_none() && project.operation.is_none() {
-        steps[1] = Stage::new("indexing", StageState::Todo);
-    }
-    Some(steps)
+    stages(project.lifecycle())
 }
 
 fn project_door(project: &WorkspaceProject) -> Door {
-    if let Some(operation) = project.operation.as_ref() {
-        let words = project.index_status_text().unwrap_or_else(|| operation.status_text());
-        return Door::tip(move |step, measure, window, cx| {
-            let (title, body) = if step == 0 { ("Folder added", "It is on your shelf.") }
-                else if step == 1 { ("Index operation", words) }
-                else { ("Ready to browse", "Readiness follows the owner's publication receipt.") };
-            content(TipText { title: Some(title.into()), body: body.into(), chord: Vec::new() })(measure, window, cx)
-        });
-    }
-    if project.phase == ProjectPhase::Indexing && project.request.is_none() && project.operation.is_none() {
-        Door::tip(|step, measure, window, cx| {
-            let (title, body) = if step == 0 { ("Folder added", "It is on your shelf.") }
-                else { ("Waiting for the index", "Starts once the owner answers.") };
-            content(TipText { title: Some(title.into()), body: body.into(), chord: Vec::new() })(measure, window, cx)
-        })
-    } else { door(project.phase) }
-}
-
-/// What resting on each step says. A tip is one short line: it does not wrap.
-fn tip(phase: ProjectPhase, step: usize) -> TipText {
-    let (title, body) = match (step, phase) {
-        (0, _) => ("Folder added", "It is on your shelf."),
-        (1, ProjectPhase::Failed) => ("Stopped", "Why is written below."),
-        (1, ProjectPhase::Cancelling | ProjectPhase::Cancelled) => ("Paused", "Resume it from the project."),
-        (1, ProjectPhase::Unconfirmed) => ("Awaiting the owner", "Its index outcome must be checked."),
-        (1, _) => ("Compiling", "One pass; no finer step is reported."),
-        _ => ("Ready to browse", "Pages open when the pass ends."),
-    };
-    TipText { title: Some(title.into()), body: body.into(), chord: Vec::new() }
-}
-
-/// The door each step opens: its tip.
-fn door(phase: ProjectPhase) -> Door {
-    Door::tip(move |step, measure, window, cx| content(tip(phase, step))(measure, window, cx))
+    let lifecycle = project.lifecycle();
+    Door::tip(move |step, measure, window, cx| {
+        let (title, body) = if step == 0 {
+            ("Folder added", "It is on your shelf.")
+        } else if step == 1 {
+            (lifecycle.label(), lifecycle.detail())
+        } else {
+            (
+                "Publication",
+                "An exact owner receipt confirms publication.",
+            )
+        };
+        content(TipText {
+            title: Some(title.into()),
+            body: body.into(),
+            chord: Vec::new(),
+        })(measure, window, cx)
+    })
 }
 
 /// A project's stone: the kind's own gem, filling by step while its index
 /// runs (working), amber if it was paused, cracked coral if it stopped; the
 /// plain stone when there is nothing running to show.
-pub(crate) fn tile_gem(project: &WorkspaceProject, edge: f32, active: bool, ctx: &Ctx<'_>) -> AnyElement {
+pub(crate) fn tile_gem(
+    project: &WorkspaceProject,
+    edge: f32,
+    active: bool,
+    ctx: &Ctx<'_>,
+) -> AnyElement {
     let opacity = if active { 1.0 } else { 0.8 };
-    let plain = || facet::paint::gem(Kind::Module).size(edge).opacity(opacity).into_any_element();
-    let Some(stages) = project_stages(project) else { return plain() };
+    let plain = || {
+        facet::paint::gem(Kind::Module)
+            .size(edge)
+            .opacity(opacity)
+            .into_any_element()
+    };
+    let Some(stages) = project_stages(project) else {
+        return plain();
+    };
     let id = SharedString::from(format!("project-gem-{}", project.path));
     div()
         .opacity(opacity)
-        .child(gem_progress(id, Kind::Module, stages.to_vec(), &ctx.measure).size(edge / ctx.measure.scale()).door(project_door(project)))
+        .child(
+            gem_progress(id, Kind::Module, stages.to_vec(), &ctx.measure)
+                .size(edge / ctx.measure.scale())
+                .door(project_door(project)),
+        )
         .into_any_element()
 }
 
 /// What the window has to say about this launch, once, at the top of the
 /// Library: a session it could not read, an index it set aside. Each is
 /// dismissed by the person, and none is written to disk.
-pub(crate) fn notes(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Vec<Leaf> {
+pub(crate) fn notes(
+    snapshot: &AppSnapshot,
+    ctx: &mut Ctx<'_>,
+    cx: &mut Context<Reader>,
+) -> Vec<Leaf> {
     let measure = ctx.measure;
     let palette = ctx.palette;
     let mut leaves = Vec::new();
@@ -126,7 +140,8 @@ pub(crate) fn notes(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Context<
         let (headline, detail) = match note {
             Note::CargoSourceAddressUnread => (
                 "Your saved Cargo source address could not be reopened.".to_owned(),
-                "Open the release from its Library project tree to browse current files.".to_owned(),
+                "Open the release from its Library project tree to browse current files."
+                    .to_owned(),
             ),
             Note::StateKept { backup, why } => (
                 "Your saved layout could not be read, so this launch started fresh.".to_owned(),
@@ -138,7 +153,9 @@ pub(crate) fn notes(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Context<
             ),
             Note::StateNotSaved { why } => (
                 "Saving your latest changes could not be confirmed.".to_owned(),
-                format!("{why} Keep this window open and check local storage access before trying again."),
+                format!(
+                    "{why} Keep this window open and check local storage access before trying again."
+                ),
             ),
             Note::LibraryRebuilding { kept_at } => (
                 "Your library was built by an earlier version and is being rebuilt.".to_owned(),
@@ -153,11 +170,26 @@ pub(crate) fn notes(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Context<
         let act: Act = Rc::new(move |_, cx| links.dispatch(Intent::DismissNote(held.clone()), cx));
         let target_action = ctx.target_local_action(act, cx);
         let act = target_action.callback();
-        ctx.targets.push(Target { id: id.clone().into(), label: "Got it".into(), action: target_action.clone(), peek: None, source: None });
+        ctx.targets.push(Target {
+            id: id.clone().into(),
+            label: "Got it".into(),
+            action: target_action.clone(),
+            peek: None,
+            source: None,
+        });
         let focus = ctx.native_handle(&SharedString::from(id.clone()), cx);
-        let mut control = button(SharedString::from(id.clone()), "Got it", &measure).ghost().on_click(move |window, cx| act(window, cx));
-        if let Some(focus) = focus { control = control.focus_handle(focus); }
-        let dismiss = ctx.targets.track(id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control));
+        let mut control = button(SharedString::from(id.clone()), "Got it", &measure)
+            .ghost()
+            .on_click(move |window, cx| act(window, cx));
+        if let Some(focus) = focus {
+            control = control.focus_handle(focus);
+        }
+        let dismiss = ctx.targets.track(
+            id,
+            div()
+                .key_context(crate::shell::keys::NATIVE_CONTROL)
+                .child(control),
+        );
         leaves.push(Leaf::new(
             div()
                 .flex()
@@ -190,13 +222,14 @@ pub(crate) fn empty(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
     let how = ctx.say("Add a project folder. Nudox compiles it and every package it uses, then keeps them together here, ready to browse.");
     let find_how = ctx.say("Find searches indexed declarations and registry releases. Inspect an exact version and its recorded standing before adding it.");
     let private = ctx.say("Your source stays on this machine.");
-    // Which Rust the index compiles with, found where people install it (a
-    // Finder launch names none): said before anything is added, so a missing
-    // one is not first met as every package refused.
+    // The Rust selection is language-specific; it does not describe the
+    // availability or publication outcome of other selected profiles.
     let rust = crate::host::toolchain::report().map(|rust| {
         let missing = matches!(rust, crate::host::toolchain::Rust::Missing { .. });
         let words = match &rust {
-            crate::host::toolchain::Rust::Found { .. } => format!("Compiles with {}.", rust.words()),
+            crate::host::toolchain::Rust::Found { .. } => {
+                format!("Selected Rust toolchain: {}.", rust.words())
+            }
             crate::host::toolchain::Rust::Missing { .. } => rust.words(),
         };
         (ctx.say(words), missing)
@@ -216,9 +249,18 @@ pub(crate) fn empty(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
         source: None,
     });
     let focus = ctx.native_handle(&SharedString::from("add-folder"), cx);
-    let mut control = button("add-folder", "Add a folder", &measure).primary().on_click(move |window, cx| act(window, cx));
-    if let Some(focus) = focus { control = control.focus_handle(focus); }
-    let add = ctx.targets.track("add-folder", div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control));
+    let mut control = button("add-folder", "Add a folder", &measure)
+        .primary()
+        .on_click(move |window, cx| act(window, cx));
+    if let Some(focus) = focus {
+        control = control.focus_handle(focus);
+    }
+    let add = ctx.targets.track(
+        "add-folder",
+        div()
+            .key_context(crate::shell::keys::NATIVE_CONTROL)
+            .child(control),
+    );
     let find = find_packages(ctx, cx);
     Leaf::new(
         div()
@@ -227,9 +269,21 @@ pub(crate) fn empty(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
             .items_center()
             .gap(measure.space(Space::Gutter))
             .py(measure.space(Space::Chapter))
-            .child(facet::paint::gem(Kind::Module).size(f32::from(EMPTY_GEM.at(ctx.wide.fluid_room()))).opacity(0.5))
-            .child(text(ty::LEDE, &measure, palette.ink0).text_center().child(lede))
-            .child(text(ty::ROW, &measure, palette.ink2).text_center().child(how))
+            .child(
+                facet::paint::gem(Kind::Module)
+                    .size(f32::from(EMPTY_GEM.at(ctx.wide.fluid_room())))
+                    .opacity(0.5),
+            )
+            .child(
+                text(ty::LEDE, &measure, palette.ink0)
+                    .text_center()
+                    .child(lede),
+            )
+            .child(
+                text(ty::ROW, &measure, palette.ink2)
+                    .text_center()
+                    .child(how),
+            )
             .child(
                 div()
                     .flex()
@@ -242,13 +296,24 @@ pub(crate) fn empty(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
                     .child(kbd("⌘O", &measure).voice(KbdVoice::Quiet)),
             )
             .child(find)
-            .child(quiet(find_how, &measure, palette).text_center().min_w(px(0.0)))
+            .child(
+                quiet(find_how, &measure, palette)
+                    .text_center()
+                    .min_w(px(0.0)),
+            )
             .child(quiet(private, &measure, palette))
             .children(rust.map(|(words, missing)| {
                 if missing {
-                    text(ty::ROW, &measure, palette.ink1).text_center().min_w(px(0.0)).child(words).into_any_element()
+                    text(ty::ROW, &measure, palette.ink1)
+                        .text_center()
+                        .min_w(px(0.0))
+                        .child(words)
+                        .into_any_element()
                 } else {
-                    quiet(words, &measure, palette).text_center().min_w(px(0.0)).into_any_element()
+                    quiet(words, &measure, palette)
+                        .text_center()
+                        .min_w(px(0.0))
+                        .into_any_element()
                 }
             })),
     )
@@ -275,16 +340,27 @@ impl Arrival {
     /// What arrived, said so that a project whose dependencies did not arrive
     /// does not look complete.
     pub(crate) fn says(&self) -> Vec<String> {
-        let counts = format!("{} declarations from {} of {} files", self.declarations, self.files_indexed, self.files_discovered);
+        let counts = format!(
+            "{} declarations from {} of {} files",
+            self.declarations, self.files_indexed, self.files_discovered
+        );
         if self.ready_projects == 0 {
             return vec![counts];
         }
-        let plural = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+        let plural =
+            |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
         let depended = self.packages.saturating_sub(self.yours);
         if depended == 0 {
-            let whose = if self.ready_projects == 1 { "your folder is" } else { "your folders are" };
+            let whose = if self.ready_projects == 1 {
+                "your folder is"
+            } else {
+                "your folders are"
+            };
             vec![
-                format!("Only {whose} in the library so far: {}, {counts}.", plural(self.packages, "package", "packages")),
+                format!(
+                    "Only {whose} in the library so far: {}, {counts}.",
+                    plural(self.packages, "package", "packages")
+                ),
                 "The packages it uses appear here once they are indexed.".to_owned(),
             ]
         } else {
@@ -307,11 +383,27 @@ pub(crate) fn add_another(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
     let act: Act = Rc::new(move |_, cx| links.dispatch(Intent::OpenAddProject, cx));
     let target_action = ctx.target_local_action(act, cx);
     let act = target_action.callback();
-    ctx.targets.push(Target { id: "add-folder".into(), label: "Add a folder".into(), action: target_action.clone(), peek: None, source: None });
+    ctx.targets.push(Target {
+        id: "add-folder".into(),
+        label: "Add a folder".into(),
+        action: target_action.clone(),
+        peek: None,
+        source: None,
+    });
     let focus = ctx.native_handle(&SharedString::from("add-folder"), cx);
-    let mut control = button("add-folder", "Add a folder", &measure).ghost().glyph(Glyph::Plus).on_click(move |window, cx| act(window, cx));
-    if let Some(focus) = focus { control = control.focus_handle(focus); }
-    let add = ctx.targets.track("add-folder", div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control));
+    let mut control = button("add-folder", "Add a folder", &measure)
+        .ghost()
+        .glyph(Glyph::Plus)
+        .on_click(move |window, cx| act(window, cx));
+    if let Some(focus) = focus {
+        control = control.focus_handle(focus);
+    }
+    let add = ctx.targets.track(
+        "add-folder",
+        div()
+            .key_context(crate::shell::keys::NATIVE_CONTROL)
+            .child(control),
+    );
     let find = find_packages(ctx, cx);
     Leaf::new(
         div()
@@ -331,42 +423,71 @@ pub(crate) fn add_another(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
 /// Add actions. It never claims that a catalog result is already indexed.
 fn find_packages(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> AnyElement {
     let links = ctx.links.clone();
-    let act: Act = Rc::new(move |_, cx| links.dispatch(
-        Intent::Navigate(Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome))), cx,
-    ));
+    let act: Act = Rc::new(move |_, cx| {
+        links.dispatch(
+            Intent::Navigate(Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome))),
+            cx,
+        )
+    });
     let target_action = ctx.target_local_action(act, cx);
     let act = target_action.callback();
     ctx.targets.push(Target {
-        id: "find-packages".into(), label: "Add package".into(),
-        action: target_action, peek: None, source: None,
+        id: "find-packages".into(),
+        label: "Add package".into(),
+        action: target_action,
+        peek: None,
+        source: None,
     });
     let focus = ctx.native_handle(&SharedString::from("find-packages"), cx);
     let mut control = button("find-packages", "Add package", &ctx.measure)
-        .ghost().glyph(Glyph::Plus).on_click(move |window, cx| act(window, cx));
-    if let Some(focus) = focus { control = control.focus_handle(focus); }
-    ctx.targets.track("find-packages", div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control)).into_any_element()
+        .ghost()
+        .glyph(Glyph::Plus)
+        .on_click(move |window, cx| act(window, cx));
+    if let Some(focus) = focus {
+        control = control.focus_handle(focus);
+    }
+    ctx.targets
+        .track(
+            "find-packages",
+            div()
+                .key_context(crate::shell::keys::NATIVE_CONTROL)
+                .child(control),
+        )
+        .into_any_element()
 }
 
 /// What each running index is doing, under the projects it belongs to, and
 /// how adding the packages each answered project builds with is going.
-pub(crate) fn indexing(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Option<Leaf> {
+pub(crate) fn indexing(
+    snapshot: &AppSnapshot,
+    ctx: &mut Ctx<'_>,
+    cx: &mut Context<Reader>,
+) -> Option<Leaf> {
     let running: Vec<_> = snapshot
         .workspace()
         .projects
         .iter()
-        .filter(|project| project.phase == ProjectPhase::Indexing)
+        .filter(|project| project.lifecycle().pending())
         .collect();
-    let ids: Vec<LocalProjectId> = running.iter().filter(|project| project.request.is_some() || project.operation.is_some()).map(|project| project.id.clone()).collect();
+    let ids: Vec<LocalProjectId> = running
+        .iter()
+        .filter(|project| project.request.is_some() || project.operation.is_some())
+        .map(|project| project.id.clone())
+        .collect();
     let ages = Ages::observe(&ids, cx);
     let view = cx.entity_id();
     let additions = snapshot
         .workspace()
         .projects
         .iter()
-        .filter(|project| project.phase != ProjectPhase::Indexing)
+        .filter(|project| !project.lifecycle().pending())
         .filter_map(|project| {
-            let packages = crate::runtime::acquire::project_packages(&project.id, Asker::View(view), cx)?;
-            Some((project.path.clone(), PackageWords::of(&project.label, &packages)))
+            let packages =
+                crate::runtime::acquire::project_packages(&project.id, Asker::View(view), cx)?;
+            Some((
+                project.path.clone(),
+                PackageWords::of(&project.label, &packages),
+            ))
         })
         .collect::<Vec<_>>();
     if running.is_empty() && additions.is_empty() {
@@ -374,20 +495,23 @@ pub(crate) fn indexing(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Conte
     }
     let measure = ctx.measure;
     let palette = ctx.palette;
-    let mut block = div().flex().flex_col().items_center().gap(measure.space(Space::Roomy)).py(measure.space(Space::Wide));
+    let mut block = div()
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(measure.space(Space::Roomy))
+        .py(measure.space(Space::Wide));
     for (path, words) in additions {
         block = block.child(package_block(&path, &words, ctx));
     }
     for project in running {
-        let submitted = project.request.is_some() || project.operation.is_some();
-        let headline = ctx.say(project.operation.as_ref().map_or_else(
-            || if submitted { format!("Waiting for {}'s index receipt.", project.label) } else { format!("{} is on your shelf.", project.label) },
-            |operation| format!("{}: {}.", project.label, operation.status_text()),
-        ));
+        let lifecycle = project.lifecycle();
+        let headline = ctx.say(format!("{}: {}.", project.label, lifecycle.label()));
         let native_status = headline.clone();
-        let promise = ctx.say(if submitted { "The owner reports its operation stage. This project is ready after its exact publication receipt arrives." }
-            else { "Waiting for the local index to answer. Your folder will start once it is available." });
-        let since = submitted.then(|| ctx.say(format!("started {}", ago(ages.of(&project.id)))));
+        let promise = ctx.say(lifecycle.detail());
+        let since = lifecycle
+            .started()
+            .then(|| ctx.say(format!("waiting {}", ago(ages.of(&project.id)))));
         // The seam is the strip under the thing being worked on: as wide as
         // its words, never wider than the room.
         let strip = measure.within(px(360.0 * measure.scale()).min(measure.width()));
@@ -398,10 +522,29 @@ pub(crate) fn indexing(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Conte
                 .flex_col()
                 .items_center()
                 .gap(measure.space(Space::Snug))
-                .child(text(ty::ROW, &measure, palette.ink0).role(gpui::Role::Status).aria_label(native_status).text_center().child(headline))
-                .child(seam(seam_id, project_stages(project).map_or_else(Vec::new, |steps| steps.to_vec()), &strip).door(project_door(project)))
-                .child(text(ty::SMALL, &measure, palette.ink2).text_center().child(promise))
-                .children(since.map(|since| text(ty::MONO_SMALL, &measure, palette.ink3).child(since))),
+                .child(
+                    text(ty::ROW, &measure, palette.ink0)
+                        .role(gpui::Role::Status)
+                        .aria_label(native_status)
+                        .text_center()
+                        .child(headline),
+                )
+                .child(
+                    seam(
+                        seam_id,
+                        project_stages(project).map_or_else(Vec::new, |steps| steps.to_vec()),
+                        &strip,
+                    )
+                    .door(project_door(project)),
+                )
+                .child(
+                    text(ty::SMALL, &measure, palette.ink2)
+                        .text_center()
+                        .child(promise),
+                )
+                .children(
+                    since.map(|since| text(ty::MONO_SMALL, &measure, palette.ink3).child(since)),
+                ),
         );
     }
     Some(Leaf::new(block))
@@ -432,20 +575,36 @@ const REASON: usize = 160;
 impl PackageWords {
     /// The words for `packages`, the packages of the project named `label`.
     pub(crate) fn of(label: &str, packages: &ProjectPackages) -> Self {
-        let plain = |headline: String| Self { headline, now: None, steps: Vec::new(), refused: Vec::new(), thin: Vec::new() };
+        let plain = |headline: String| Self {
+            headline,
+            now: None,
+            steps: Vec::new(),
+            refused: Vec::new(),
+            thin: Vec::new(),
+        };
         let found = match packages {
-            ProjectPackages::Reading => return plain(format!("Reading the packages {label} uses.")),
-            ProjectPackages::Refused(words) if words.as_ref() == NOT_CARGO => {
-                return plain(format!("Only a Rust project's packages are added for now, and {label} has no Cargo.toml."));
+            ProjectPackages::Reading => {
+                return plain(format!("Reading the packages {label} uses."));
             }
-            ProjectPackages::Refused(words) => return plain(format!("The packages {label} uses could not be read: {words}")),
+            ProjectPackages::Refused(words) if words.as_ref() == NOT_CARGO => {
+                return plain(format!(
+                    "Only a Rust project's packages are added for now, and {label} has no Cargo.toml."
+                ));
+            }
+            ProjectPackages::Refused(words) => {
+                return plain(format!(
+                    "The packages {label} uses could not be read: {words}"
+                ));
+            }
             ProjectPackages::Read(found) => found,
         };
         let total = found.len();
         if total == 0 {
             return plain(format!("{label} uses no registry packages."));
         }
-        let Some(progress) = packages.progress() else { return plain(format!("Reading the packages {label} uses.")) };
+        let Some(progress) = packages.progress() else {
+            return plain(format!("Reading the packages {label} uses."));
+        };
         let added = progress.landed;
         let now = progress.now.as_ref().map(|(release, stage, at)| {
             let doing = match stage {
@@ -464,18 +623,27 @@ impl PackageWords {
                     refused.push(format!("{release}: {why}"));
                     (StageState::Bad, why.to_string())
                 }
-                (Origin::Registry(_), Some(Adding::Added(_))) => (StageState::Done, "In the library.".to_owned()),
+                (Origin::Registry(_), Some(Adding::Added(_))) => {
+                    (StageState::Done, "In the library.".to_owned())
+                }
                 (Origin::Registry(_), Some(Adding::Partial { words, .. })) => {
-                    let why = super::failure::Cause::of(words).says().into_iter().next().unwrap_or_default();
-                    let why = lowercase_first(why.trim_end_matches('.'));
-                    thin.push(format!("{release}: {why}, so its names come from its source alone."));
-                    (StageState::Stall, format!("In the library from its source alone: {why}."))
+                    thin.push(format!("{release}: source rows are available; semantic indexing did not complete: {}", clip(words)));
+                    (
+                        StageState::Stall,
+                        format!(
+                            "Source rows are available; semantic indexing did not complete: {}",
+                            clip(words)
+                        ),
+                    )
                 }
                 (Origin::Registry(_), Some(Adding::Failed(why))) => {
                     refused.push(format!("{release}: {}", clip(why)));
                     (StageState::Bad, why.to_string())
                 }
-                (Origin::Registry(_), Some(working @ (Adding::Resolving | Adding::Unpacking | Adding::Indexing))) => {
+                (
+                    Origin::Registry(_),
+                    Some(working @ (Adding::Resolving | Adding::Unpacking | Adding::Indexing)),
+                ) => {
                     let doing = match working {
                         Adding::Resolving => "finding",
                         Adding::Unpacking => "unpacking",
@@ -483,28 +651,63 @@ impl PackageWords {
                     };
                     (StageState::Now, format!("{} now.", capitalized(doing)))
                 }
-                (Origin::Registry(_), Some(Adding::Queued) | None) => (StageState::Todo, "Waiting its turn.".to_owned()),
+                (Origin::Registry(_), Some(Adding::Queued) | None) => {
+                    (StageState::Todo, "Waiting its turn.".to_owned())
+                }
             };
             steps.push((release, state, tip));
         }
         let working = !progress.done;
-        let packages = |n: usize| if n == 1 { "package".to_owned() } else { format!("{n} packages") };
+        let packages = |n: usize| {
+            if n == 1 {
+                "package".to_owned()
+            } else {
+                format!("{n} packages")
+            }
+        };
         let headline = if working {
             match &now {
-                Some(now) => format!("Adding the {} {label} uses: {added} in the library, {now}.", packages(total)),
-                None => format!("Adding the {} {label} uses: {added} in the library so far.", packages(total)),
+                Some(now) => format!(
+                    "Adding the {} {label} uses: {added} in the library, {now}.",
+                    packages(total)
+                ),
+                None => format!(
+                    "Adding the {} {label} uses: {added} in the library so far.",
+                    packages(total)
+                ),
             }
         } else if !refused.is_empty() {
-            format!("{added} of the {} {label} uses are in the library; {} could not be added:", packages(total), refused.len())
+            format!(
+                "{added} of the {} {label} uses are in the library; {} could not be added:",
+                packages(total),
+                refused.len()
+            )
         } else if !thin.is_empty() {
-            let all = if total == 1 { format!("The package {label} uses is in the library") } else { format!("All {total} packages {label} uses are in the library") };
-            format!("{all}; the compiler could not finish {}:", if thin.len() == 1 { "one".to_owned() } else { thin.len().to_string() })
+            let all = if total == 1 {
+                format!("The package {label} uses is in the library")
+            } else {
+                format!("All {total} packages {label} uses are in the library")
+            };
+            format!(
+                "{all}; the compiler could not finish {}:",
+                if thin.len() == 1 {
+                    "one".to_owned()
+                } else {
+                    thin.len().to_string()
+                }
+            )
         } else if total == 1 {
             format!("The package {label} uses is in the library.")
         } else {
             format!("All {total} packages {label} uses are in the library.")
         };
-        Self { headline, now, steps, refused, thin }
+        Self {
+            headline,
+            now,
+            steps,
+            refused,
+            thin,
+        }
     }
 }
 
@@ -519,14 +722,12 @@ fn clip(why: &str) -> String {
     clipped
 }
 
-fn lowercase_first(words: &str) -> String {
-    let mut chars = words.chars();
-    chars.next().map(|first| first.to_lowercase().chain(chars).collect()).unwrap_or_default()
-}
-
 fn capitalized(word: &str) -> String {
     let mut chars = word.chars();
-    chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 /// One project's packages: the headline, a seam with one step per package
@@ -541,20 +742,60 @@ fn package_block(path: &str, words: &PackageWords, ctx: &mut Ctx<'_>) -> AnyElem
         .flex_col()
         .items_center()
         .gap(measure.space(Space::Snug))
-        .child(text(ty::ROW, &measure, palette.ink0).text_center().min_w(px(0.0)).child(headline));
-    if !words.steps.is_empty() && (words.now.is_some() || words.steps.iter().any(|(_, state, _)| *state == StageState::Todo)) {
+        .child(
+            text(ty::ROW, &measure, palette.ink0)
+                .text_center()
+                .min_w(px(0.0))
+                .child(headline),
+        );
+    if !words.steps.is_empty()
+        && (words.now.is_some()
+            || words
+                .steps
+                .iter()
+                .any(|(_, state, _)| *state == StageState::Todo))
+    {
         let strip = measure.within(px(360.0 * measure.scale()).min(measure.width()));
-        let stages = words.steps.iter().map(|(name, state, _)| Stage::new(name.clone(), *state)).collect::<Vec<_>>();
-        let tips = words.steps.iter().map(|(name, _, tip)| (SharedString::from(name.clone()), SharedString::from(tip.clone()))).collect::<Rc<[_]>>();
+        let stages = words
+            .steps
+            .iter()
+            .map(|(name, state, _)| Stage::new(name.clone(), *state))
+            .collect::<Vec<_>>();
+        let tips = words
+            .steps
+            .iter()
+            .map(|(name, _, tip)| {
+                (
+                    SharedString::from(name.clone()),
+                    SharedString::from(tip.clone()),
+                )
+            })
+            .collect::<Rc<[_]>>();
         let door = Door::tip(move |step, measure, window, cx| {
             let (title, body) = tips.get(step).cloned().unwrap_or_default();
-            content(TipText { title: Some(title), body, chord: Vec::new() })(measure, window, cx)
+            content(TipText {
+                title: Some(title),
+                body,
+                chord: Vec::new(),
+            })(measure, window, cx)
         });
-        block = block.child(seam(SharedString::from(format!("package-seam-{path}")), stages, &strip).door(door));
+        block = block.child(
+            seam(
+                SharedString::from(format!("package-seam-{path}")),
+                stages,
+                &strip,
+            )
+            .door(door),
+        );
     }
     for line in words.refused.iter().chain(&words.thin) {
         let line = ctx.say(line.clone());
-        block = block.child(text(ty::SMALL, &measure, palette.ink2).text_center().min_w(px(0.0)).child(line));
+        block = block.child(
+            text(ty::SMALL, &measure, palette.ink2)
+                .text_center()
+                .min_w(px(0.0))
+                .child(line),
+        );
     }
     block.into_any_element()
 }
@@ -598,7 +839,11 @@ impl Ages {
                 ages.first_seen.entry(id.clone()).or_insert(now);
             }
             let elapsed = Elapsed {
-                ages: ages.first_seen.iter().map(|(id, seen)| (id.clone(), now.saturating_duration_since(*seen))).collect(),
+                ages: ages
+                    .first_seen
+                    .iter()
+                    .map(|(id, seen)| (id.clone(), now.saturating_duration_since(*seen)))
+                    .collect(),
             };
             let arm = ages.tick.is_none().then(|| elapsed.next_minute()).flatten();
             (elapsed, arm)
@@ -623,7 +868,10 @@ struct Elapsed {
 impl Elapsed {
     /// How long until the youngest running index turns a minute older.
     fn next_minute(&self) -> Option<Duration> {
-        self.ages.values().map(|age| TICK - Duration::from_secs(age.as_secs() % TICK.as_secs())).min()
+        self.ages
+            .values()
+            .map(|age| TICK - Duration::from_secs(age.as_secs() % TICK.as_secs()))
+            .min()
     }
 
     fn of(&self, id: &LocalProjectId) -> Duration {
@@ -639,7 +887,14 @@ mod tests {
 
     #[test]
     fn what_arrived_is_said_so_a_project_without_its_dependencies_does_not_look_complete() {
-        let arrival = |ready_projects, packages, yours| Arrival { ready_projects, packages, yours, declarations: 25, files_indexed: 1, files_discovered: 1 };
+        let arrival = |ready_projects, packages, yours| Arrival {
+            ready_projects,
+            packages,
+            yours,
+            declarations: 25,
+            files_indexed: 1,
+            files_discovered: 1,
+        };
         assert_eq!(
             arrival(1, 1, 1).says(),
             [
@@ -654,10 +909,16 @@ mod tests {
         );
         assert_eq!(
             arrival(1, 12, 1).says(),
-            ["12 packages in the library: 1 yours, 11 from what they use. 25 declarations from 1 of 1 files."],
+            [
+                "12 packages in the library: 1 yours, 11 from what they use. 25 declarations from 1 of 1 files."
+            ],
             "with its dependencies there is nothing to warn about"
         );
-        assert_eq!(arrival(0, 3, 0).says(), ["25 declarations from 1 of 1 files"], "nothing of yours answered: just the counts");
+        assert_eq!(
+            arrival(0, 3, 0).says(),
+            ["25 declarations from 1 of 1 files"],
+            "nothing of yours answered: just the counts"
+        );
     }
 
     #[test]
@@ -665,31 +926,73 @@ mod tests {
         let mut project = WorkspaceProject::indexing("/fixture/queued").expect("local folder");
         let steps = project_stages(&project).expect("queued stages");
         assert_eq!(steps[0].state, StageState::Done);
-        assert_eq!(steps[1].state, StageState::Todo, "no owner request has been submitted");
+        assert_eq!(
+            steps[1].state,
+            StageState::Todo,
+            "no owner request has been submitted"
+        );
         project.request = Some(crate::navigation::RequestId::new(7));
-        assert_eq!(project_stages(&project).expect("submitted stages")[1].state, StageState::Now);
+        assert_eq!(
+            project_stages(&project).expect("submitted stages")[1].state,
+            StageState::Now
+        );
     }
 
     #[test]
     fn the_steps_of_an_index_follow_what_the_owner_answered() {
-        let middle = |phase| stages(phase).map(|steps| (steps[0].state, steps[1].state, steps[2].state));
-        assert_eq!(middle(ProjectPhase::Indexing), Some((StageState::Done, StageState::Now, StageState::Todo)), "asked, no answer yet: running, no fraction");
-        assert_eq!(middle(ProjectPhase::Failed), Some((StageState::Done, StageState::Bad, StageState::Todo)), "the owner refused: the step it stopped on is bad");
-        assert_eq!(middle(ProjectPhase::Cancelled), Some((StageState::Done, StageState::Stall, StageState::Todo)), "stopped by the person: waiting, not failed");
-        assert_eq!(middle(ProjectPhase::Unconfirmed), Some((StageState::Done, StageState::Stall, StageState::Todo)), "lost receipt never claims a failed or completed job");
-        assert_eq!(middle(ProjectPhase::Ready), None, "an answered index has no steps left to show");
+        let middle = |lifecycle| {
+            stages(lifecycle).map(|steps| (steps[0].state, steps[1].state, steps[2].state))
+        };
+        assert_eq!(
+            middle(ProjectLifecycle::Queued),
+            Some((StageState::Done, StageState::Todo, StageState::Todo)),
+            "local shelf admission is not producer work"
+        );
+        assert_eq!(
+            middle(ProjectLifecycle::AwaitingReceipt),
+            Some((StageState::Done, StageState::Now, StageState::Todo)),
+            "the exact request is awaiting an owner answer, without inventing a compile"
+        );
+        assert_eq!(
+            middle(ProjectLifecycle::Failed(None)),
+            Some((StageState::Done, StageState::Bad, StageState::Todo)),
+            "the latest attempt failed"
+        );
+        assert_eq!(
+            middle(ProjectLifecycle::Paused),
+            Some((StageState::Done, StageState::Stall, StageState::Todo)),
+            "stopped by the person: waiting, not failed"
+        );
+        assert_eq!(
+            middle(ProjectLifecycle::CheckingOutcome),
+            Some((StageState::Done, StageState::Stall, StageState::Todo)),
+            "lost receipt never claims a failed or completed job"
+        );
+        assert_eq!(
+            middle(ProjectLifecycle::Published),
+            None,
+            "an admitted publication has no pending steps"
+        );
         assert!(
-            stages(ProjectPhase::Indexing).is_some_and(|steps| steps.iter().all(|step| step.done <= 1.0 && (step.state == StageState::Done || step.done == 0.0))),
+            stages(ProjectLifecycle::AwaitingReceipt).is_some_and(|steps| steps.iter().all(
+                |step| step.done <= 1.0 && (step.state == StageState::Done || step.done == 0.0)
+            )),
             "no step claims a fraction of work the owner never reported"
         );
     }
 
     fn dependency(name: &str, version: &str, origin: Origin) -> Dependency {
-        Dependency { release: crate::model::release::Release::new(name, version).expect("release"), direct: false, origin }
+        Dependency {
+            release: crate::model::release::Release::new(name, version).expect("release"),
+            direct: false,
+            origin,
+        }
     }
 
     fn cached() -> Origin {
-        Origin::Registry(crate::model::release::Availability::Unpacked(std::path::PathBuf::from("/cache")))
+        Origin::Registry(crate::model::release::Availability::Unpacked(
+            std::path::PathBuf::from("/cache"),
+        ))
     }
 
     #[test]
@@ -698,11 +1001,38 @@ mod tests {
         let reading = PackageWords::of("toml_pin", &ProjectPackages::Reading);
         assert_eq!(reading.headline, "Reading the packages toml_pin uses.");
         let found = vec![
-            (dependency("toml", "0.8.23", cached()), Some(Adding::Added(page.clone()))),
-            (dependency("toml_edit", "0.22.27", cached()), Some(Adding::Indexing)),
-            (dependency("winnow", "0.7.15", cached()), Some(Adding::Queued)),
-            (dependency("hashbrown", "0.17.1", Origin::Registry(crate::model::release::Availability::Download)), Some(Adding::Failed(Arc::from("hashbrown 0.17.1 is not on this machine; reading it needs a download")))),
-            (dependency("forked", "0.1.0", Origin::Elsewhere(Arc::from("from git (https://example.test/forked): only registry releases are added"))), None),
+            (
+                dependency("toml", "0.8.23", cached()),
+                Some(Adding::Added(page.clone())),
+            ),
+            (
+                dependency("toml_edit", "0.22.27", cached()),
+                Some(Adding::Indexing),
+            ),
+            (
+                dependency("winnow", "0.7.15", cached()),
+                Some(Adding::Queued),
+            ),
+            (
+                dependency(
+                    "hashbrown",
+                    "0.17.1",
+                    Origin::Registry(crate::model::release::Availability::Download),
+                ),
+                Some(Adding::Failed(Arc::from(
+                    "hashbrown 0.17.1 is not on this machine; reading it needs a download",
+                ))),
+            ),
+            (
+                dependency(
+                    "forked",
+                    "0.1.0",
+                    Origin::Elsewhere(Arc::from(
+                        "from git (https://example.test/forked): only registry releases are added",
+                    )),
+                ),
+                None,
+            ),
         ];
         let working = PackageWords::of("toml_pin", &ProjectPackages::Read(found.clone()));
         assert_eq!(
@@ -710,9 +1040,17 @@ mod tests {
             "Adding the 5 packages toml_pin uses: 1 in the library, indexing toml_edit 0.22.27 (2 of 5).",
             "one line says how many there are, how many are in, and which is being indexed"
         );
-        assert_eq!(working.now.as_deref(), Some("indexing toml_edit 0.22.27 (2 of 5)"), "the one being indexed, and which of how many");
         assert_eq!(
-            working.steps.iter().map(|(name, state, _)| (name.as_str(), *state)).collect::<Vec<_>>(),
+            working.now.as_deref(),
+            Some("indexing toml_edit 0.22.27 (2 of 5)"),
+            "the one being indexed, and which of how many"
+        );
+        assert_eq!(
+            working
+                .steps
+                .iter()
+                .map(|(name, state, _)| (name.as_str(), *state))
+                .collect::<Vec<_>>(),
             [
                 ("toml 0.8.23", StageState::Done),
                 ("toml_edit 0.22.27", StageState::Now),
@@ -734,24 +1072,44 @@ mod tests {
         settled[1].1 = Some(Adding::Added(page.clone()));
         settled[2].1 = Some(Adding::Added(page.clone()));
         let done = PackageWords::of("toml_pin", &ProjectPackages::Read(settled.clone()));
-        assert_eq!(done.headline, "3 of the 5 packages toml_pin uses are in the library; 2 could not be added:");
+        assert_eq!(
+            done.headline,
+            "3 of the 5 packages toml_pin uses are in the library; 2 could not be added:"
+        );
         assert_eq!(done.now, None);
         let all = PackageWords::of("toml_pin", &ProjectPackages::Read(settled[..3].to_vec()));
-        assert_eq!(all.headline, "All 3 packages toml_pin uses are in the library.");
+        assert_eq!(
+            all.headline,
+            "All 3 packages toml_pin uses are in the library."
+        );
         assert!(all.refused.is_empty());
         // A compile the owner could not finish is in the library, on its
         // source's names, and says why in a person's words.
         let mut thin = settled[..3].to_vec();
         thin[1].1 = Some(Adding::Partial {
             page: page.clone(),
-            words: Arc::from("protocol: command execution failed: local semantic compilation failed; prior selected semantic generation was preserved: package semantic compilation failed for src/alloc.rs: Compile { attempted: …, cause: Fragment(Prepare) }"),
+            words: Arc::from(
+                "protocol: command execution failed: local semantic compilation failed; prior selected semantic generation was preserved: package semantic compilation failed for src/alloc.rs: Compile { attempted: …, cause: Fragment(Prepare) }",
+            ),
         });
         let thin = PackageWords::of("toml_pin", &ProjectPackages::Read(thin));
-        assert_eq!(thin.headline, "All 3 packages toml_pin uses are in the library; the compiler could not finish one:");
-        assert_eq!(thin.thin, ["toml_edit 0.22.27: the compiler could not finish reading src/alloc.rs, so its names come from its source alone."]);
+        assert_eq!(
+            thin.headline,
+            "All 3 packages toml_pin uses are in the library; the compiler could not finish one:"
+        );
+        assert!(thin.thin[0].starts_with(
+            "toml_edit 0.22.27: source rows are available; semantic indexing did not complete:"
+        ));
+        assert!(
+            !thin.thin[0].contains("the compiler could not finish reading src/alloc.rs"),
+            "raw detail cannot invent a structured compiler cause"
+        );
         assert_eq!(thin.steps[1].1, StageState::Stall);
         let not_cargo = PackageWords::of("site", &ProjectPackages::Refused(Arc::from(NOT_CARGO)));
-        assert_eq!(not_cargo.headline, "Only a Rust project's packages are added for now, and site has no Cargo.toml.");
+        assert_eq!(
+            not_cargo.headline,
+            "Only a Rust project's packages are added for now, and site has no Cargo.toml."
+        );
     }
 
     #[test]

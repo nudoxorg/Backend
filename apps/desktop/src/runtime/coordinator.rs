@@ -512,7 +512,7 @@ impl DesktopRuntime {
             {
                 let terminal = matches!(&event.result, Ok(super::actor::EngineDto::IndexOperation {
                     observation: backend_library::IndexOperationObservation::Known(status), .. })
-                    if matches!(status.state, backend_library::IndexOperationState::Published(_)
+                    if matches!(status.state, backend_library::IndexOperationState::Published(_) | backend_library::IndexOperationState::PartiallyPublished { .. }
                         | backend_library::IndexOperationState::Failed { .. }));
                 if !terminal {
                     if let Some(project) = &inflight.index_project {
@@ -576,7 +576,7 @@ impl DesktopRuntime {
                     ..
                 }) if matches!(
                     status.state,
-                    backend_library::IndexOperationState::Published(_)
+                    backend_library::IndexOperationState::Published(_) | backend_library::IndexOperationState::PartiallyPublished { .. }
                 ) && self.snapshot.workspace().projects.iter().any(|row| {
                     row.id == *project
                         && row.request == Some(event.request)

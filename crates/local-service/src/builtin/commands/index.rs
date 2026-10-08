@@ -633,7 +633,14 @@ pub(super) fn finish_index_scan(
     // read set, so its source/configuration digest cannot authorize reuse.
     // Every live semantic profile rebuilds until the authority can prove its
     // complete input closure.
-    let (semantic_changes, selected, cargo_alias_observations, capture_changes) = {
+    let (
+        semantic_changes,
+        selected,
+        cargo_alias_observations,
+        capture_changes,
+        profile_refusals,
+        partial_plan,
+    ) = {
         let fresh_profiles = scan
             .compiler_sources
             .iter()
@@ -670,7 +677,14 @@ pub(super) fn finish_index_scan(
             &dirty,
         );
         if dirty.is_empty() {
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new())
+            (
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Box::new([]) as Box<[backend_library::IndexOperationProfileRefusal]>,
+                None,
+            )
         } else {
             // Admit the exact structural source frontier together with a
             // per-profile Pending marker before entering any compiler path.
@@ -827,6 +841,14 @@ pub(super) fn finish_index_scan(
                 &compiled.admitted,
             )?;
             compiled.changes.extend(completed.retained_publications);
+            let mut capture_changes = completed.captures;
+            let (profile_refusals, partial_plan) = prepare_terminal_profile_partition(
+                daemon,
+                &captures,
+                &mut capture_changes,
+                &compiled.refused_profiles,
+                !compiled.admitted.is_empty(),
+            )?;
             let selected = compiled
                 .admitted
                 .iter()
@@ -836,7 +858,9 @@ pub(super) fn finish_index_scan(
                 compiled.changes,
                 selected,
                 compiled.cargo_alias_observations,
-                completed.captures,
+                capture_changes,
+                profile_refusals,
+                partial_plan,
             )
         }
     };
@@ -906,6 +930,8 @@ pub(super) fn finish_index_scan(
         intent,
         selected,
         revision_fence: Some(final_revision_fence),
+        profile_refusals,
+        partial_plan,
     }))
 }
 
@@ -1282,6 +1308,33 @@ pub(in crate::builtin) fn source_capture_receipt_for_root(
     operation_key: backend_library::IndexOperationKey,
     expected_request_identity: Option<[u8; 32]>,
 ) -> Result<Option<backend_library::IndexOperationSourceCaptureReceipt>, BuiltinModelError> {
+    source_capture_summary_for_root(
+        daemon,
+        package,
+        Some(operation_key),
+        expected_request_identity,
+    )?
+    .map(|summary| {
+        backend_library::IndexOperationSourceCaptureReceipt::from_checked_parts(
+            operation_key,
+            summary.commit_identity,
+            summary.workspace_root,
+            summary.workspace_sequence,
+            summary.profiles,
+        )
+        .map_err(|error| BuiltinModelError(error.to_string()))
+    })
+    .transpose()
+}
+
+/// Reads only selected markers in the exact producer namespace and request.
+/// Legacy operations remain explicitly unkeyed rather than inventing a key.
+pub(in crate::builtin) fn source_capture_summary_for_root(
+    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    package: &backend_engine::PackageReference,
+    operation_key: Option<backend_library::IndexOperationKey>,
+    expected_request_identity: Option<[u8; 32]>,
+) -> Result<Option<backend_library::IndexSourceCaptureSummary>, BuiltinModelError> {
     let owner = daemon.engine().daemon().owner();
     let snapshot = owner.snapshot();
     let Some(relation) = semantic_capture_relation(&snapshot).map_err(|error| {
@@ -1290,7 +1343,7 @@ pub(in crate::builtin) fn source_capture_receipt_for_root(
     else {
         return Ok(None);
     };
-    let operation_key = operation_key.to_bytes();
+    let operation_key = operation_key.map(|key| key.to_bytes());
     let mut profiles = Vec::new();
     let mut capture_basis = None;
     let mut after = None;
@@ -1304,7 +1357,7 @@ pub(in crate::builtin) fn source_capture_receipt_for_root(
             if key.package() != package || !key.is_selected() {
                 continue;
             }
-            if record.operation_key() != Some(&operation_key)
+            if record.operation_key() != operation_key.as_ref()
                 || expected_request_identity
                     .is_some_and(|expected| record.request_identity() != &expected)
             {
@@ -1365,21 +1418,24 @@ pub(in crate::builtin) fn source_capture_receipt_for_root(
     if profiles.is_empty() {
         return Ok(None);
     }
-    let Some((commit_identity, workspace_root, workspace_sequence, _)) = capture_basis else {
+    let Some((commit_identity, workspace_root, workspace_sequence, request_identity)) =
+        capture_basis
+    else {
         return Ok(None);
     };
-    let receipt = backend_library::IndexOperationSourceCaptureReceipt::from_checked_parts(
-        backend_library::IndexOperationKey::from_bytes(operation_key)
+    let summary = backend_library::IndexSourceCaptureSummary {
+        producer_package: backend_library::PackageReference::parse(package.as_str())
             .map_err(|error| BuiltinModelError(error.to_string()))?,
+        request_identity,
         commit_identity,
         workspace_root,
         workspace_sequence,
-        profiles.into_boxed_slice(),
-    )
-    .map_err(|error| {
-        BuiltinModelError(format!("admit selected source-capture receipt: {error}"))
-    })?;
-    Ok(Some(receipt))
+        profiles: profiles.into_boxed_slice(),
+    };
+    summary
+        .admit()
+        .map_err(|error| BuiltinModelError(error.to_string()))?;
+    Ok(Some(summary))
 }
 
 fn index_operation_prior_semantic(
@@ -1388,6 +1444,28 @@ fn index_operation_prior_semantic(
     backend_library::IndexOperationPriorSemantic {
         generation: *version.claim().binding().identity.as_ref(),
         coverage: index_operation_coverage(version.coverage()),
+    }
+}
+
+fn index_operation_capture_outcome(
+    outcome: ProductSemanticCaptureOutcome,
+) -> backend_library::IndexOperationSemanticProfileState {
+    use backend_library::IndexOperationSemanticProfileState as State;
+    match outcome {
+        ProductSemanticCaptureOutcome::Pending { prior } => State::Pending {
+            prior: prior.map(index_operation_prior_semantic),
+        },
+        ProductSemanticCaptureOutcome::Unavailable { reason } => State::Unavailable {
+            reason: index_operation_unavailable_reason(reason),
+        },
+        ProductSemanticCaptureOutcome::Failed { prior, reason } => State::Failed {
+            prior: index_operation_prior_semantic(prior),
+            reason: index_operation_unavailable_reason(reason),
+        },
+        ProductSemanticCaptureOutcome::Published { coverage, claim } => State::Published {
+            generation: *claim.binding().identity.as_ref(),
+            coverage: index_operation_coverage(coverage),
+        },
     }
 }
 
@@ -1754,6 +1832,11 @@ pub(super) struct PreparedProductSelection {
     /// Source/configuration frontier validated immediately before the one
     /// durable product marker commit.
     pub(super) revision_fence: Option<ingest::CompilerRevisionFence>,
+    /// Every compiler-refused profile, retained independently of the useful
+    /// admitted generations in this same exact source selection.
+    pub(super) profile_refusals: Box<[backend_library::IndexOperationProfileRefusal]>,
+    /// Exact planned outcomes persisted before a mixed keyed commit.
+    pub(super) partial_plan: Option<super::index_operation::PartialPublicationPlan>,
 }
 
 impl PreparedProductSelection {
@@ -1792,6 +1875,7 @@ pub(super) struct DeferredIndex {
     semantic_changes: Vec<BuiltinSemanticChange>,
     capture_publications: Vec<AdmittedCapturePublication>,
     cargo_alias_observations: BTreeMap<LanguageProfile, CargoPackageAliasEvidenceV1>,
+    refused_profiles: BTreeMap<LanguageProfile, PackageCompilerFailure>,
 }
 
 /// Compact witness for the exact source-file rows selected by one prior
@@ -2024,6 +2108,25 @@ impl DeferredProfileTicket {
 }
 
 impl DeferredIndex {
+    /// Records an explicit compiler refusal and keeps the independent profile
+    /// candidates available. Admission/storage failures are never converted
+    /// into profile capability gaps by this path.
+    pub(super) fn record_compiler_refusal(
+        &mut self,
+        profile: LanguageProfile,
+        failure: PackageCompilerFailure,
+    ) -> Result<(), BuiltinModelError> {
+        if self.completed_profiles >= self.expected_profiles
+            || self.refused_profiles.contains_key(&profile)
+        {
+            return Err(BuiltinModelError(
+                "deferred compiler refused a duplicate or unexpected profile".to_owned(),
+            ));
+        }
+        self.refused_profiles.insert(profile, failure);
+        self.completed_profiles += 1;
+        Ok(())
+    }
     /// Takes one profile so its staged output can be admitted and dropped
     /// before the next profile consumes compiler output credits.
     pub(super) fn take_next_work(
@@ -2194,6 +2297,7 @@ fn prepare_deferred_compile(
         semantic_changes: Vec::with_capacity(expected_profiles.saturating_mul(2)),
         capture_publications: Vec::with_capacity(expected_profiles),
         cargo_alias_observations: BTreeMap::new(),
+        refused_profiles: BTreeMap::new(),
     })
 }
 
@@ -2255,7 +2359,7 @@ fn typed_package_compiler_failure(
 
 /// Admits exactly one profile candidate on the owner loop and then drops its
 /// staged output, releasing the package compiler's bounded output credits.
-/// The serving selector remains untouched until every profile has succeeded.
+/// The serving selector remains untouched until every profile has a terminal outcome.
 pub(super) fn finish_deferred_profile(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
@@ -2350,6 +2454,116 @@ pub(super) fn finish_deferred_profile(
 /// Builds the final source-plus-semantic intent after all profile candidates
 /// have been admitted. The caller commits this one intent before advancing
 /// the process-local serving selector.
+fn prepare_terminal_profile_partition(
+    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    captures: &BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
+    capture_changes: &mut [BuiltinCaptureChange],
+    refused_profiles: &BTreeMap<LanguageProfile, PackageCompilerFailure>,
+    has_publications: bool,
+) -> Result<
+    (
+        Box<[backend_library::IndexOperationProfileRefusal]>,
+        Option<super::index_operation::PartialPublicationPlan>,
+    ),
+    BuiltinModelError,
+> {
+    let mut matched_refusals = 0;
+    for change in capture_changes.iter_mut() {
+        if let Some(failure) = refused_profiles.get(&change.key.profile()) {
+            if matches!(
+                change.outcome,
+                ProductSemanticCaptureOutcome::Published { .. }
+            ) {
+                return Err(BuiltinModelError(
+                    "compiler-refused profile received a publication completion".to_owned(),
+                ));
+            }
+            matched_refusals += 1;
+            change.compiler_failure = Some(failure.clone());
+        }
+    }
+    if matched_refusals != refused_profiles.len()
+        || capture_changes.iter().any(|change| {
+            matches!(
+                change.outcome,
+                ProductSemanticCaptureOutcome::Pending { .. }
+            )
+        })
+    {
+        return Err(BuiltinModelError(
+            "profile partition omitted a refused profile or retained pending work".to_owned(),
+        ));
+    }
+    let mut profile_refusals = capture_changes
+        .iter()
+        .filter_map(|change| {
+            let reason = match change.outcome {
+                ProductSemanticCaptureOutcome::Unavailable { reason }
+                | ProductSemanticCaptureOutcome::Failed { reason, .. } => reason,
+                ProductSemanticCaptureOutcome::Published { .. } => return None,
+                ProductSemanticCaptureOutcome::Pending { .. } => return None,
+            };
+            Some(backend_library::IndexOperationProfileRefusal {
+                profile: backend_library::SemanticLanguageProfile::new(change.key.profile()),
+                reason: index_operation_unavailable_reason(reason),
+                compiler_failure: change.compiler_failure.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    profile_refusals.sort_by_key(|refusal| refusal.profile);
+    let partial_plan = if !profile_refusals.is_empty() && has_publications {
+        match captures
+            .values()
+            .next()
+            .and_then(|capture| capture.operation_key().copied())
+        {
+            Some(operation_key) => {
+                let operation_key = backend_library::IndexOperationKey::from_bytes(operation_key)
+                    .map_err(|error| BuiltinModelError(error.to_string()))?;
+                let package = captures
+                    .keys()
+                    .next()
+                    .ok_or_else(|| {
+                        BuiltinModelError("partial selection lost its capture scope".to_owned())
+                    })?
+                    .package();
+                let mut capture =
+                    source_capture_receipt_for_root(daemon, package, operation_key, None)?
+                        .ok_or_else(|| {
+                            BuiltinModelError(
+                                "partial selection lost its keyed source receipt".to_owned(),
+                            )
+                        })?;
+                for profile in capture.profiles.iter_mut() {
+                    let change = capture_changes
+                        .iter()
+                        .find(|change| {
+                            backend_library::SemanticLanguageProfile::new(change.key.profile())
+                                == profile.profile
+                        })
+                        .ok_or_else(|| {
+                            BuiltinModelError(
+                                "partial selection omitted a captured profile".to_owned(),
+                            )
+                        })?;
+                    profile.state = index_operation_capture_outcome(change.outcome);
+                }
+                capture
+                    .admit_partial_refusals(&profile_refusals)
+                    .map_err(|error| BuiltinModelError(error.to_string()))?;
+                Some(super::index_operation::PartialPublicationPlan {
+                    source_capture: capture,
+                    refused_profiles: profile_refusals.clone().into_boxed_slice(),
+                })
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+    Ok((profile_refusals.into_boxed_slice(), partial_plan))
+}
+
 pub(super) fn finish_deferred_index(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     mut job: DeferredIndex,
@@ -2367,7 +2581,14 @@ pub(super) fn finish_deferred_index(
         &job.capture_publications,
     )?;
     job.semantic_changes.extend(completed.retained_publications);
-    let capture_changes = completed.captures;
+    let mut capture_changes = completed.captures;
+    let (profile_refusals, partial_plan) = prepare_terminal_profile_partition(
+        daemon,
+        &job.captures,
+        &mut capture_changes,
+        &job.refused_profiles,
+        !job.capture_publications.is_empty(),
+    )?;
     let owner = daemon.engine().daemon().owner();
     let relation = owner
         .snapshot()
@@ -2462,6 +2683,8 @@ pub(super) fn finish_deferred_index(
             .map(AdmittedCapturePublication::selected_claim)
             .collect(),
         revision_fence: Some(job.revision_fence),
+        profile_refusals,
+        partial_plan,
     })
 }
 
@@ -2696,6 +2919,7 @@ impl<'request> SemanticCompilationContext<'request> {
 /// Compilation deltas and the one admitted publication collection from which
 /// terminal capture proof and the serving selector are both derived.
 struct CompiledSemanticPublications {
+    refused_profiles: BTreeMap<LanguageProfile, PackageCompilerFailure>,
     changes: Vec<BuiltinSemanticChange>,
     admitted: Vec<AdmittedCapturePublication>,
     cargo_alias_observations: Vec<CargoPackageAliasEvidenceV1>,
@@ -2735,6 +2959,7 @@ fn compile_semantic_publications(
         .map_err(|error| BuiltinModelError(format!("open semantic publications: {error}")))?;
     let mut changes = Vec::with_capacity(by_profile.len().saturating_mul(2));
     let mut completions = Vec::with_capacity(by_profile.len());
+    let mut refused_profiles = BTreeMap::new();
     let mut cargo_alias_observations = Vec::new();
     for (profile, sources) in by_profile {
         let expected_artifacts = u32::try_from(sources.len())
@@ -3317,10 +3542,23 @@ fn compile_semantic_publications(
                 .map_err(|error| BuiltinModelError(error.to_string()))?
                 .with_input_claim(local_input_claim);
                 let local_compile_started = Instant::now();
-                let (staged, publication_coverage) = admit_local_compile(
-                    context.compiler.compile_package_sources_staged(source_set),
-                    expected_artifacts,
-                )?;
+                let compiled = context.compiler.compile_package_sources_staged(source_set);
+                let compiler_failure = typed_package_compiler_failure(&compiled)?;
+                let (staged, publication_coverage) =
+                    match admit_local_compile(compiled, expected_artifacts) {
+                        Ok(admitted) => admitted,
+                        Err(error) => {
+                            semantic_authority.retire_candidate_attempt(
+                                &local_attempt,
+                                backend_extension_turso::CandidateAttemptRetirementReason::Refused,
+                            )?;
+                            if let Some(failure) = compiler_failure {
+                                refused_profiles.insert(profile, failure);
+                                continue;
+                            }
+                            return Err(error);
+                        }
+                    };
                 let cargo_alias_evidence = match staged_cargo_alias_evidence(
                     profile,
                     scan_input_digest,
@@ -3396,6 +3634,7 @@ fn compile_semantic_publications(
         let _ = selected;
     }
     Ok(CompiledSemanticPublications {
+        refused_profiles,
         changes,
         admitted: completions,
         cargo_alias_observations,
@@ -4083,8 +4322,8 @@ mod admitted_capture_publication_tests {
             .lookup(&key)
             .expect("pending lookup")
             .expect("pending row");
-        let unchanged_semantic_root = crate::builtin::view_publish::semantic_root(&snapshot)
-            .expect("selected semantic root");
+        let unchanged_semantic_root =
+            crate::builtin::view_publish::semantic_root(&snapshot).expect("selected semantic root");
         let mut no_delta = Vec::new();
         let completion = record_semantic_publication(
             &relation,
@@ -5853,14 +6092,39 @@ pub(super) fn remove_project_intent(
             })
         },
     )?;
-    let file_rows = relation
-        .lookup_many_sorted(&files)
-        .map_err(|error| BuiltinModelError(format!("read indexed source files: {error}")))?;
-    for (key, file) in files.iter().copied().zip(file_rows) {
-        let file = file.ok_or_else(|| {
-            BuiltinModelError("project frontier refers to a missing source file".to_owned())
-        })?;
-        super::super::profile::validate_project_file(package.to_bytes(), key, &file)?;
+    // Removal only needs to validate this exact membership frontier. Borrow
+    // each authenticated file while walking the tree instead of retaining a
+    // second owned copy of every source row until the whole package is read.
+    let mut validated_files = 0;
+    match relation
+        .visit_many_sorted(&files, |key, file| {
+            if files.get(validated_files) != Some(key) {
+                return std::ops::ControlFlow::Break(BuiltinModelError(
+                    "authenticated removal visitor omitted, duplicated, or reordered a membership key".to_owned(),
+                ));
+            }
+            let checked = file
+                .ok_or_else(|| {
+                    BuiltinModelError("project frontier refers to a missing source file".to_owned())
+                })
+                .and_then(|file| {
+                    super::super::profile::validate_project_file(package.to_bytes(), *key, file)
+                });
+            match checked {
+                Ok(()) => {
+                    validated_files += 1;
+                    std::ops::ControlFlow::Continue(())
+                },
+                Err(error) => std::ops::ControlFlow::Break(error),
+            }
+        })
+        .map_err(|error| BuiltinModelError(format!("read indexed source files: {error}")))?
+    {
+        std::ops::ControlFlow::Continue(()) if validated_files == files.len() => {}
+        std::ops::ControlFlow::Continue(()) => return Err(BuiltinModelError(
+            "authenticated removal visitor did not cover the exact membership frontier".to_owned(),
+        )),
+        std::ops::ControlFlow::Break(error) => return Err(error),
     }
     let membership_pages = project_fields.files.page_keys().to_vec();
     let semantic = snapshot
@@ -6491,7 +6755,8 @@ pub(super) fn semantic_versions(
                             &selected_key,
                         )
                         .map_err(|error| BuiltinModelError(error.to_owned()))?;
-                    let freshness = semantic_authority.freshness(&snapshot, freshness_key, claim)?;
+                    let freshness =
+                        semantic_authority.freshness(&snapshot, freshness_key, claim)?;
                     generations.push((
                         target,
                         selected_key,

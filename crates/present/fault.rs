@@ -39,6 +39,8 @@ pub enum FaultSlug {
     InvalidQuery,
     /// A closed compiler failure refused one package source member.
     CompilerRefused,
+    /// Useful language profiles committed while others were explicitly refused.
+    PartiallyPublished,
     /// A continuation cursor belongs to another recipe or revision.
     CursorMismatch,
     /// The retained view could not satisfy an invariant.
@@ -78,6 +80,7 @@ impl FaultSlug {
             Self::WrongBasis => "wrong-basis",
             Self::InvalidQuery => "invalid-query",
             Self::CompilerRefused => "compiler-refused",
+            Self::PartiallyPublished => "partially-published",
             Self::CursorMismatch => "cursor-mismatch",
             Self::IncoherentView => "incoherent-view",
             Self::SequenceOverflow => "sequence-overflow",
@@ -354,6 +357,7 @@ pub struct Fault {
     cause: Cause,
     affordance: Affordance,
     compiler_failure: Option<PackageCompilerFailure>,
+    partial_publication: Option<backend_library::IndexJobPartialPublication>,
 }
 
 impl Fault {
@@ -371,6 +375,7 @@ impl Fault {
             cause,
             affordance,
             compiler_failure: None,
+            partial_publication: None,
         }
     }
 
@@ -402,6 +407,70 @@ impl Fault {
     #[must_use]
     pub const fn compiler_failure(&self) -> Option<&PackageCompilerFailure> {
         self.compiler_failure.as_ref()
+    }
+
+    /// Returns the complete checked partial publication, including every refused profile.
+    #[must_use]
+    pub fn partial_publication_receipt(
+        &self,
+    ) -> Option<&backend_library::IndexJobPartialPublication> {
+        self.partial_publication.as_ref()
+    }
+
+    pub(crate) fn partial_publication(
+        partial: &backend_library::IndexJobPartialPublication,
+        operand: Operand,
+    ) -> Self {
+        use backend_library::IndexOperationSemanticProfileState as State;
+        let mut facts = Vec::new();
+        for profile in partial.source_capture.profiles.iter() {
+            let language = profile.profile.name().unwrap_or("unknown profile");
+            match profile.state {
+                State::Published { coverage, .. } => facts.push(format!(
+                    "{language}: published {} source files with {coverage:?} coverage",
+                    profile.source_count
+                )),
+                State::Unavailable { reason } | State::Failed { reason, .. } => {
+                    let prior = if matches!(profile.state, State::Failed { .. }) {
+                        "; prior selected generation remains stale"
+                    } else {
+                        ""
+                    };
+                    let detail = partial
+                        .refused_profiles
+                        .iter()
+                        .find(|refusal| refusal.profile == profile.profile)
+                        .and_then(|refusal| refusal.compiler_failure.as_ref())
+                        .map(|failure| {
+                            Self::compiler_refusal(failure, operand.clone())
+                                .cause()
+                                .sentence()
+                                .to_owned()
+                        })
+                        .unwrap_or_else(|| format!("{reason:?}"));
+                    facts.push(format!("{language}: unavailable; {detail}{prior}"));
+                }
+                State::Pending { .. } => {
+                    facts.push(format!("{language}: invalid pending partial outcome"))
+                }
+            }
+        }
+        let mut fault = Self::new(
+            FaultSlug::PartiallyPublished,
+            operand,
+            Cause::new(
+                CauseSlug::Refused,
+                format!(
+                    "Partially published {} at workspace sequence {}. {}. Source and published language profiles are available; refused profiles do not have current semantic coverage",
+                    partial.package.as_str(),
+                    partial.receipt.workspace_sequence(),
+                    facts.join("; "),
+                ),
+            ),
+            Affordance::None,
+        );
+        fault.partial_publication = Some(partial.clone());
+        fault
     }
 
     /// Returns a fault with a different affordance, keeping its identity.
@@ -542,6 +611,9 @@ impl Fault {
                 detail.clone(),
                 Affordance::None,
             ),
+            CommandFailure::PartiallyPublished(partial) => {
+                return Self::partial_publication(partial, operand);
+            }
             CommandFailure::CompilerRefused { failure, .. } => {
                 return Self::compiler_refusal(failure, operand);
             }

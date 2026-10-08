@@ -26,11 +26,12 @@ pub use self::identity::{
     DeclarationFamilyId, DeclarationIdentity, DeclarationKey, DeclarationKeyFault, DeclarationName,
     DeclarationPathFault, ExternalDeclarationIdentity, ForeignDeclarationId, ForeignKey,
     ForeignKeyFault, ForeignOrigin, MAX_ANONYMOUS_CALLABLE_ANCHOR_BYTES,
-    MAX_ANONYMOUS_CALLABLE_ROUTE_STEPS, Occurrence, OccurrenceTarget, PackageLineage,
-    PackageLineageFault, PackageLineageView, PreimageOverflow, Resolution, StableRef,
+    MAX_ANONYMOUS_CALLABLE_ROUTE_STEPS, Occurrence, OccurrenceTarget,
+    PYTHON_NATIVE_SOURCE_ECOSYSTEM, PackageLineage, PackageLineageFault, PackageLineageView,
+    PreimageOverflow, PythonSourceCoordinate, Resolution, SourceDeclarationCoordinate, StableRef,
     TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM, TypeScriptCallableCoordinateFault,
     TypeScriptCallableSourceCoordinate, TypeScriptSourceCoordinate, TypedDeclarationKey,
-    TypedDeclarationKeyFault, VariantAvailability, VariantFingerprint,
+    TypedDeclarationKeyFault, VariantAvailability, VariantFingerprint, python_program_identity,
 };
 pub use self::occurrence::{
     Confidence, ConfidenceCodeError, ReferenceKind, ReferenceKindCodeError, RelSpan, RelSpanFault,

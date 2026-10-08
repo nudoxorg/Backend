@@ -820,7 +820,13 @@ mod tests {
                 std::process::id(),
                 NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ));
-            std::fs::create_dir(&directory).unwrap();
+            let mut builder = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt as _;
+                builder.mode(0o700);
+            }
+            builder.create(&directory).unwrap();
             Self(directory)
         }
         fn path(&self) -> &std::path::Path {

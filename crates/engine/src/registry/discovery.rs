@@ -1979,9 +1979,17 @@ fn optional_license_facet(
     }
 }
 
-fn valid_pypi_name(value: &str) -> bool {
+pub(crate) fn valid_pypi_name(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 256
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        && value
+            .as_bytes()
+            .last()
+            .is_some_and(u8::is_ascii_alphanumeric)
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))

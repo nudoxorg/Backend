@@ -55,6 +55,7 @@ impl EventDto {
     /// Returns an error for malformed, unsupported, unknown-field, or changed
     /// wire payloads.
     pub fn decode_against(bytes: &[u8], expected: &Self) -> Result<Self, String> {
+        super::codec::check_live_version(bytes, "event")?;
         let envelope: EventEnvelopeWire =
             serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
         ensure_version(envelope.version, "event")?;

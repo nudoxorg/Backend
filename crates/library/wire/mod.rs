@@ -67,8 +67,11 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current transport DTO version. Version 22 keeps a copied document locator
-/// separate from the actual native row key and certifies that exact selection
-/// under the complete source basis. Version 21 peers require the locator hash
-/// as the document identity and cannot admit this native-key reply contract.
-pub const DTO_VERSION: u16 = 22;
+/// Current transport DTO version. Version 24 composes the exact partial
+/// publication terminal and TypeScript authority failures with evidenced
+/// Python source metadata, incomplete dependency declarations, and typed
+/// local declarations in search/explore replies. Separate
+/// version-23 producer cohorts do not share this closed operation/forge/profile/
+/// compiler grammar. Live clients and services must use version 24 together;
+/// the explicitly maintained journal grammar is a separate persisted domain.
+pub const DTO_VERSION: u16 = 24;

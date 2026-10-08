@@ -85,7 +85,19 @@ pub(super) struct StoredOperation {
     /// that merely happens to retain the same package rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) source_capture_base: Option<SourceCaptureBase>,
+    /// Exact terminal profile partition persisted before a mixed selection
+    /// crosses the workspace commit boundary. No publication is inferred
+    /// from this plan until the prepared request and selected root agree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) planned_partial: Option<PartialPublicationPlan>,
     pub(super) state: StoredOperationState,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PartialPublicationPlan {
+    pub(super) source_capture: IndexOperationSourceCaptureReceipt,
+    pub(super) refused_profiles: Box<[backend_library::IndexOperationProfileRefusal]>,
 }
 
 impl StoredOperation {
@@ -115,6 +127,13 @@ pub(super) enum StoredOperationState {
     },
     /// The selected workspace commit and its exact published view are durable.
     Published {
+        receipt: IndexOperationPublicationReceipt,
+        request_identity: Option<[u8; 32]>,
+        base_workspace_root: [u8; 32],
+        base_workspace_sequence: u64,
+    },
+    /// A checked commit selected useful profiles and refused the remainder.
+    PartiallyPublished {
         receipt: IndexOperationPublicationReceipt,
         request_identity: Option<[u8; 32]>,
         base_workspace_root: [u8; 32],
@@ -312,6 +331,7 @@ impl IndexOperationJournal {
                         execution_intent,
                         source_capture: None,
                         source_capture_base: None,
+                        planned_partial: None,
                         state: StoredOperationState::Accepted,
                     };
                     validate_entry(&entry)?;
@@ -370,6 +390,23 @@ impl IndexOperationJournal {
         base_workspace_root: [u8; 32],
         base_workspace_sequence: u64,
     ) -> Result<(), JournalError> {
+        self.prepare_with_partial(
+            operation_key,
+            request_identity,
+            base_workspace_root,
+            base_workspace_sequence,
+            None,
+        )
+    }
+
+    pub(super) fn prepare_with_partial(
+        &mut self,
+        operation_key: IndexOperationKey,
+        request_identity: Option<[u8; 32]>,
+        base_workspace_root: [u8; 32],
+        base_workspace_sequence: u64,
+        partial: Option<PartialPublicationPlan>,
+    ) -> Result<(), JournalError> {
         if request_identity.is_some_and(|identity| identity.iter().all(|byte| *byte == 0))
             || base_workspace_root.iter().all(|byte| *byte == 0)
         {
@@ -379,6 +416,26 @@ impl IndexOperationJournal {
             if !matches!(entry.state, StoredOperationState::Accepted) {
                 return Err(JournalError::InvalidTransition);
             }
+            if let Some(plan) = &partial {
+                let capture = entry
+                    .source_capture
+                    .as_ref()
+                    .ok_or(JournalError::InvalidTransition)?;
+                if request_identity.is_none()
+                    || !same_source_capture_basis(capture, &plan.source_capture)
+                    || !source_capture_states_advance(
+                        capture.profiles(),
+                        plan.source_capture.profiles(),
+                    )
+                    || plan
+                        .source_capture
+                        .admit_partial_refusals(&plan.refused_profiles)
+                        .is_err()
+                {
+                    return Err(JournalError::InvalidTransition);
+                }
+            }
+            entry.planned_partial = partial;
             entry.state = StoredOperationState::Prepared {
                 request_identity,
                 base_workspace_root,
@@ -527,11 +584,24 @@ impl IndexOperationJournal {
             ) {
                 return Err(JournalError::InvalidTransition);
             }
-            entry.state = StoredOperationState::Published {
-                receipt,
-                request_identity,
-                base_workspace_root,
-                base_workspace_sequence,
+            entry.state = match &entry.planned_partial {
+                Some(plan) => {
+                    if entry.source_capture.as_ref() != Some(&plan.source_capture) {
+                        return Err(JournalError::InvalidTransition);
+                    }
+                    StoredOperationState::PartiallyPublished {
+                        receipt,
+                        request_identity,
+                        base_workspace_root,
+                        base_workspace_sequence,
+                    }
+                }
+                None => StoredOperationState::Published {
+                    receipt,
+                    request_identity,
+                    base_workspace_root,
+                    base_workspace_sequence,
+                },
             };
             Ok(entry)
         })
@@ -565,6 +635,10 @@ impl IndexOperationJournal {
                 detail,
                 compiler_failure,
             };
+            // This terminal proves no partial selection committed. Retaining
+            // the uncommitted candidate partition would contradict its capture
+            // failure outcomes and must not be replayed after restart.
+            entry.planned_partial = None;
             Ok(entry)
         })
     }
@@ -655,6 +729,17 @@ impl IndexOperationJournal {
                     StoredOperationState::Prepared { .. } => return Ok(None),
                     StoredOperationState::Published { receipt, .. } => {
                         IndexOperationState::Published(receipt.clone())
+                    }
+                    StoredOperationState::PartiallyPublished { receipt, .. } => {
+                        let plan = entry.planned_partial.as_ref().ok_or_else(|| {
+                            JournalError::Corrupt(
+                                "partial publication lost its prepared profile plan".to_owned(),
+                            )
+                        })?;
+                        IndexOperationState::PartiallyPublished {
+                            receipt: receipt.clone(),
+                            refused_profiles: plan.refused_profiles.clone(),
+                        }
                     }
                     StoredOperationState::Failed {
                         reason,
@@ -1254,7 +1339,11 @@ fn stored_state_code(state: &StoredOperationState) -> Option<i64> {
     match state {
         StoredOperationState::Accepted => Some(STATE_ACCEPTED),
         StoredOperationState::Prepared { .. } => Some(STATE_PREPARED),
-        StoredOperationState::Published { .. } => Some(STATE_PUBLISHED),
+        // Both are bounded terminal publication rows. The closed serialized
+        // state is decoded and fully admitted before any query uses the row.
+        // Older readers reject the new variant/plan instead of reporting success.
+        StoredOperationState::Published { .. }
+        | StoredOperationState::PartiallyPublished { .. } => Some(STATE_PUBLISHED),
         StoredOperationState::Failed { .. } => Some(STATE_FAILED),
         StoredOperationState::Unresolved { .. } => None,
     }
@@ -1292,6 +1381,31 @@ fn validate_entry(entry: &StoredOperation) -> Result<(), JournalError> {
         .with_source_capture(Some(source_capture.clone()));
         SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(status))
             .admit(backend_library::CommandId::IndexProgress)
+            .map_err(|error| JournalError::Corrupt(error.to_string()))?;
+    }
+    if let Some(plan) = &entry.planned_partial {
+        let capture = entry.source_capture.as_ref().ok_or_else(|| {
+            JournalError::Corrupt("partial publication plan has no source capture".to_owned())
+        })?;
+        if !same_source_capture_basis(capture, &plan.source_capture)
+            || !source_capture_states_advance(capture.profiles(), plan.source_capture.profiles())
+            || !matches!(
+                entry.state,
+                StoredOperationState::Prepared {
+                    request_identity: Some(_),
+                    ..
+                } | StoredOperationState::PartiallyPublished {
+                    request_identity: Some(_),
+                    ..
+                }
+            )
+        {
+            return Err(JournalError::Corrupt(
+                "partial publication plan differs from its captured input or request".to_owned(),
+            ));
+        }
+        plan.source_capture
+            .admit_partial_refusals(&plan.refused_profiles)
             .map_err(|error| JournalError::Corrupt(error.to_string()))?;
     }
     if let StoredOperationState::Failed {
@@ -1332,6 +1446,12 @@ fn validate_entry(entry: &StoredOperation) -> Result<(), JournalError> {
         request_identity,
         base_workspace_root,
         base_workspace_sequence,
+    }
+    | StoredOperationState::PartiallyPublished {
+        receipt,
+        request_identity,
+        base_workspace_root,
+        base_workspace_sequence,
     } = &entry.state
     {
         if base_workspace_root.iter().all(|byte| *byte == 0)
@@ -1347,11 +1467,37 @@ fn validate_entry(entry: &StoredOperation) -> Result<(), JournalError> {
                 "published receipt does not match its prepared workspace request".to_owned(),
             ));
         }
+        let state = match &entry.state {
+            StoredOperationState::PartiallyPublished { .. } => {
+                let plan = entry.planned_partial.as_ref().ok_or_else(|| {
+                    JournalError::Corrupt(
+                        "partial publication lost its prepared profile plan".to_owned(),
+                    )
+                })?;
+                if entry.source_capture.as_ref() != Some(&plan.source_capture) {
+                    return Err(JournalError::Corrupt(
+                        "selected partial outcomes differ from their prepared plan".to_owned(),
+                    ));
+                }
+                IndexOperationState::PartiallyPublished {
+                    receipt: receipt.clone(),
+                    refused_profiles: plan.refused_profiles.clone(),
+                }
+            }
+            _ => {
+                if entry.planned_partial.is_some() {
+                    return Err(JournalError::Corrupt(
+                        "full publication retained a partial plan".to_owned(),
+                    ));
+                }
+                IndexOperationState::Published(receipt.clone())
+            }
+        };
         let status = IndexOperationStatus::new(
             entry.operation_key,
             entry.package.clone(),
             entry.execution_intent,
-            IndexOperationState::Published(receipt.clone()),
+            state,
         )
         .with_source_capture(entry.source_capture.clone());
         let reply = SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(status));
@@ -1575,36 +1721,66 @@ mod tests {
             .map_err(|error| format!("different producer package: {error:?}"))?;
         let digest = index_operation_request_digest(&caller, CompileExecutionIntent::Interactive);
         let mut journal = IndexOperationJournal::open(&path).map_err(|error| error.to_string())?;
-        journal.accept(operation, caller.clone(), CompileExecutionIntent::Interactive)
+        journal
+            .accept(
+                operation,
+                caller.clone(),
+                CompileExecutionIntent::Interactive,
+            )
             .map_err(|error| format!("accept exact caller request: {error}"))?;
-        journal.bind_producer_package(operation, producer.clone())
+        journal
+            .bind_producer_package(operation, producer.clone())
             .map_err(|error| format!("bind producer before work: {error}"))?;
-        journal.bind_producer_package(operation, producer.clone())
+        journal
+            .bind_producer_package(operation, producer.clone())
             .map_err(|error| format!("repeat identical producer binding: {error}"))?;
-        assert_eq!(journal.bind_producer_package(operation, other), Err(JournalError::InvalidTransition));
+        assert_eq!(
+            journal.bind_producer_package(operation, other),
+            Err(JournalError::InvalidTransition)
+        );
         drop(journal);
 
         let mut journal = IndexOperationJournal::open(&path).map_err(|error| error.to_string())?;
-        let Some(JournalEntry::Retained(entry)) = journal.entry(operation)
-            .map_err(|error| format!("read cold producer binding: {error}"))? else {
-                return Err("cold operation lost its exact producer binding".to_owned());
-            };
+        let Some(JournalEntry::Retained(entry)) = journal
+            .entry(operation)
+            .map_err(|error| format!("read cold producer binding: {error}"))?
+        else {
+            return Err("cold operation lost its exact producer binding".to_owned());
+        };
         assert_eq!(entry.package, caller);
         assert_eq!(entry.request_digest, digest);
         assert_eq!(entry.source_package(), &producer);
         let mut legacy = serde_json::to_value(&entry)
             .map_err(|error| format!("encode retained operation: {error}"))?;
-        legacy.as_object_mut().ok_or("operation encoding is not an object")?
+        legacy
+            .as_object_mut()
+            .ok_or("operation encoding is not an object")?
             .remove("producer_package");
         let legacy: StoredOperation = serde_json::from_value(legacy)
             .map_err(|error| format!("read pre-binding operation format: {error}"))?;
         assert_eq!(legacy.source_package(), &entry.package);
         assert_eq!(legacy.request_digest, digest);
-        assert_eq!(journal.accept(operation, producer.clone(), CompileExecutionIntent::Interactive), Err(JournalError::KeyConflict));
-        assert_eq!(journal.accept(operation, caller, CompileExecutionIntent::Interactive).map_err(|error| error.to_string())?, Acceptance::Existing);
-        journal.prepare(operation, Some([4; 32]), [5; 32], 9)
+        assert_eq!(
+            journal.accept(
+                operation,
+                producer.clone(),
+                CompileExecutionIntent::Interactive
+            ),
+            Err(JournalError::KeyConflict)
+        );
+        assert_eq!(
+            journal
+                .accept(operation, caller, CompileExecutionIntent::Interactive)
+                .map_err(|error| error.to_string())?,
+            Acceptance::Existing
+        );
+        journal
+            .prepare(operation, Some([4; 32]), [5; 32], 9)
             .map_err(|error| format!("prepare exact mutation: {error}"))?;
-        assert_eq!(journal.bind_producer_package(operation, producer), Err(JournalError::InvalidTransition));
+        assert_eq!(
+            journal.bind_producer_package(operation, producer),
+            Err(JournalError::InvalidTransition)
+        );
         drop(journal);
         cleanup(&path);
         Ok(())
@@ -1903,6 +2079,152 @@ mod tests {
         };
         assert_eq!(status.source_capture, Some(terminal));
         assert!(matches!(status.state, IndexOperationState::Accepted));
+        drop(journal);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn partial_prepared_partition_reopens_and_only_the_exact_terminal_plan_publishes() {
+        use backend_library::{
+            IndexOperationSemanticCoverage as Coverage,
+            IndexOperationSemanticProfileState as State,
+            IndexOperationSemanticUnavailableReason as Reason,
+        };
+        let path = path();
+        let operation = key(61);
+        let prior = backend_library::IndexOperationPriorSemantic {
+            generation: [45; 32],
+            coverage: Coverage::Complete,
+        };
+        let mut capture =
+            source_capture_receipt(operation, State::Pending { prior: Some(prior) }, 10);
+        let python = backend_library::SemanticLanguageProfile::from_name("python").expect("Python");
+        let mut profiles = capture.profiles.to_vec();
+        profiles.push(backend_library::IndexOperationSourceProfile {
+            profile: python,
+            source_version: [23; 32],
+            input_digest: [26; 32],
+            observation_sequence: 27,
+            source_count: 2,
+            state: State::Pending { prior: None },
+        });
+        profiles.sort_by_key(|profile| profile.profile);
+        capture.profiles = profiles.into_boxed_slice();
+        let mut terminal = capture.clone();
+        for profile in terminal.profiles.iter_mut() {
+            profile.state = if profile.profile == python {
+                State::Published {
+                    generation: [46; 32],
+                    coverage: Coverage::Complete,
+                }
+            } else {
+                State::Failed {
+                    prior,
+                    reason: Reason::Toolchain,
+                }
+            };
+        }
+        let refused = terminal
+            .profiles
+            .iter()
+            .find(|profile| profile.profile != python)
+            .expect("refused")
+            .profile;
+        let plan = PartialPublicationPlan {
+            source_capture: terminal.clone(),
+            refused_profiles: vec![backend_library::IndexOperationProfileRefusal {
+                profile: refused,
+                reason: Reason::Toolchain,
+                compiler_failure: None,
+            }]
+            .into_boxed_slice(),
+        };
+        let mut journal = open(&path);
+        journal
+            .accept(operation, package(), CompileExecutionIntent::Interactive)
+            .expect("accept");
+        journal
+            .bind_source_capture_base(operation, [20; 32], 9)
+            .expect("base");
+        journal
+            .source_captured(operation, capture.clone())
+            .expect("capture");
+        let mut foreign = plan.clone();
+        foreign.source_capture.profiles[0].input_digest = [33; 32];
+        assert_eq!(
+            journal.prepare_with_partial(operation, Some([4; 32]), [22; 32], 10, Some(foreign)),
+            Err(JournalError::InvalidTransition)
+        );
+        journal
+            .prepare_with_partial(operation, Some([4; 32]), [22; 32], 10, Some(plan.clone()))
+            .expect("prepare exact partial partition");
+        drop(journal);
+        let mut journal = open(&path);
+        let Some(JournalEntry::Retained(entry)) = journal.entry(operation).expect("cold prepared")
+        else {
+            panic!("prepared retained")
+        };
+        assert_eq!(entry.planned_partial, Some(plan.clone()));
+        assert_eq!(entry.source_capture, Some(capture));
+        assert!(journal.has_prepared().expect("indexed prepared"));
+        assert!(
+            journal
+                .observation(operation, None)
+                .expect("prepared has no invented terminal")
+                .is_none()
+        );
+        let publication = receipt(Some([4; 32]), [31; 32], 11);
+        assert_eq!(
+            journal.published(operation, publication.clone()),
+            Err(JournalError::InvalidTransition)
+        );
+        let mut substituted = terminal.clone();
+        substituted
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.profile == python)
+            .expect("Python")
+            .state = State::Published {
+            generation: [47; 32],
+            coverage: Coverage::Complete,
+        };
+        assert!(
+            journal
+                .source_capture_updated(operation, substituted)
+                .is_err()
+        );
+        journal
+            .source_capture_updated(operation, terminal.clone())
+            .expect("exact selected outcomes");
+        journal
+            .published(operation, publication.clone())
+            .expect("publish exact partial receipt");
+        assert!(!journal.has_prepared().expect("terminal not prepared"));
+        assert!(!journal.has_pending().expect("terminal not pending"));
+        drop(journal);
+        let mut journal = open(&path);
+        assert_eq!(
+            journal
+                .accept(operation, package(), CompileExecutionIntent::Interactive)
+                .expect("same key cold retry"),
+            Acceptance::Existing
+        );
+        let Some(IndexOperationObservation::Known(status)) =
+            journal.observation(operation, None).expect("cold terminal")
+        else {
+            panic!("known")
+        };
+        assert_eq!(status.source_capture, Some(terminal));
+        assert_eq!(
+            status.state,
+            IndexOperationState::PartiallyPublished {
+                receipt: publication,
+                refused_profiles: plan.refused_profiles,
+            }
+        );
+        SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(status))
+            .admit(backend_library::CommandId::IndexProgress)
+            .expect("canonical cold receipt");
         drop(journal);
         cleanup(&path);
     }

@@ -28,6 +28,30 @@ pub(super) fn parse_reply_body<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, S
     if bytes.len() > MAX_REPLY_BODY {
         return Err(format!("reply body exceeds {MAX_REPLY_BODY} bytes"));
     }
+    // Inspect only the bounded envelope version before allocating strict nested
+    // payloads. A different protocol can add fields our reader does not know;
+    // the useful refusal is the version mismatch, before those shape errors.
+    check_live_version(bytes, "reply")?;
+    serde_json::from_slice(bytes).map_err(|error| error.to_string())
+}
+
+// This header supplies no authority and never replaces the original bytes.
+// Duplicate versions remain a parse error; current payloads are subsequently
+// decoded through their closed, certificate-aware grammar.
+pub(super) fn check_live_version(bytes: &[u8], kind: &str) -> Result<(), String> {
+    #[derive(serde::Deserialize)]
+    struct VersionHeader {
+        version: u16,
+    }
+    let header: VersionHeader = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    super::ensure_version(header.version, kind)
+}
+
+pub(super) fn parse_command_body<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, String> {
+    if bytes.len() > MAX_COMMAND_BODY {
+        return Err(format!("command body exceeds {MAX_COMMAND_BODY} bytes"));
+    }
+    check_live_version(bytes, "command")?;
     serde_json::from_slice(bytes).map_err(|error| error.to_string())
 }
 
@@ -57,10 +81,7 @@ pub fn command_request_id(bytes: &[u8]) -> Option<u64> {
 /// Returns an error for malformed JSON, unknown fields, unsupported versions,
 /// or missing canonical claims for identity-bearing commands.
 pub fn decode_command_body(bytes: &[u8]) -> Result<CommandDto, String> {
-    if bytes.len() > MAX_COMMAND_BODY {
-        return Err(format!("command body exceeds {MAX_COMMAND_BODY} bytes"));
-    }
-    let request: CommandDto = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    let request: CommandDto = parse_command_body(bytes)?;
     crate::admit_request(&request).map_err(|error| error.to_string())?;
     Ok(request)
 }
@@ -237,6 +258,149 @@ mod tests {
         let mut padded = bytes.to_vec();
         padded.resize(limit + 1, b' ');
         padded
+    }
+
+    #[test]
+    fn protocol_mismatch_precedes_unknown_strict_python_payload_fields() {
+        let verifier = CountingVerifier::new();
+        for version in [crate::DTO_VERSION - 1, crate::DTO_VERSION + 1] {
+            let bytes = serde_json::to_vec(&serde_json::json!({
+                "version": version,
+                "request_id": 41,
+                "certificate": {"future_producer_contract": true},
+                "reply": {"kind": "surface", "data": {
+                    "result": "package-profile", "data": {"future_python_metadata": true}
+                }}
+            }))
+            .expect("future protocol payload");
+            let error = decode_reply_body(&bytes).expect_err("explicit protocol refusal");
+            assert!(error.contains(&format!("reply DTO version {version}")));
+            assert!(error.contains(&format!("this build supports {}", crate::DTO_VERSION)));
+            assert!(!error.contains("unknown field"));
+            let error = decode_reply_body_with_verifier(&bytes, &verifier)
+                .expect_err("refuse before producer verification");
+            assert!(error.contains("same build"));
+        }
+        assert_eq!(verifier.calls(), 0);
+        let current = serde_json::to_vec(&serde_json::json!({
+            "version": crate::DTO_VERSION,
+            "request_id": 41,
+            "certificate": null,
+            "reply": {"kind": "error", "data": {"message": "failure", "future_field": true}}
+        }))
+        .expect("unknown current field");
+        assert!(
+            decode_reply_body(&current).is_err(),
+            "same-version grammar stays closed"
+        );
+    }
+
+    #[test]
+    fn joined_local_declaration_reply_roundtrips_only_under_current_protocol() {
+        let record = crate::LocalDeclarationSearchRecord {
+            coordinate: crate::ProductText::new("/project::src/react.tsx:17::react")
+                .expect("declaration coordinate"),
+            name: crate::ProductText::new("react").expect("declaration name"),
+            source: crate::LocalDeclarationSource::Captured {
+                path: crate::ProductText::new("src/react.tsx").expect("captured path"),
+                line: std::num::NonZeroU32::new(17).expect("captured line"),
+            },
+        };
+        for surface in [
+            crate::SurfaceReply::ExploredDeclarations(Box::new([record.clone()])),
+            crate::SurfaceReply::IndexSearchWithDiscovery(Box::new([
+                crate::RegistrySearchHit::LocalDeclaration(record),
+            ])),
+        ] {
+            surface
+                .admit(surface.id())
+                .expect("bounded current surface");
+            let expected = ReplyDto::new(41, crate::CommandReply::Surface(surface));
+            let bytes = serde_json::to_vec(&expected).expect("actual encoded reply");
+            assert_eq!(
+                decode_reply_body(&bytes).expect("current closed reply"),
+                expected
+            );
+            let mut old: serde_json::Value =
+                serde_json::from_slice(&bytes).expect("reply envelope");
+            old["version"] = serde_json::json!(23);
+            let error = decode_reply_body(&serde_json::to_vec(&old).expect("old envelope"))
+                .expect_err("old producer cohort");
+            assert!(error.contains("reply DTO version 23"));
+        }
+    }
+
+    #[test]
+    fn old_live_view_subscription_and_page_headers_refuse_before_nested_fields() {
+        let reply = certified_health_reply();
+        let cursor = reply.health_cursor().expect("certified health cursor");
+        let crate::CommandReply::Health(root) = reply.reply else {
+            panic!("certified health fixture");
+        };
+        let bytes = br#"{"version":23,"kind":"future","future_nested_contract":{"python_metadata":true,"partial_terminal":true}}"#;
+        for (kind, error) in [
+            (
+                "view",
+                crate::ViewDto::decode_with_certificate(bytes, None).expect_err("old view"),
+            ),
+            (
+                "event",
+                crate::EventDto::decode_with_certificate(bytes, None).expect_err("old event"),
+            ),
+            (
+                "compact view event",
+                crate::decode_compact_view_event(bytes, cursor, &root)
+                    .expect_err("old compact event"),
+            ),
+            (
+                "subscription",
+                crate::SubscriptionDto::decode_against_root(bytes, cursor, &root, None)
+                    .expect_err("old subscription"),
+            ),
+            (
+                "snapshot page",
+                crate::SnapshotPageDto::decode_against(bytes, cursor, &root.descriptor())
+                    .expect_err("old snapshot page"),
+            ),
+        ] {
+            assert!(error.contains(&format!("{kind} DTO version 23")));
+            assert!(!error.contains("unknown field"));
+        }
+    }
+
+    #[test]
+    fn live_command_version_refusal_precedes_unknown_nested_contracts() {
+        let expected = crate::CommandDto::new(41, crate::Command::Health);
+        for version in [23, crate::DTO_VERSION + 1] {
+            // Version is last: checking only an initial prefix cannot pass.
+            let bytes = format!(
+                r#"{{"request_id":41,"command":{{"kind":"surface","data":{{"future_partial_contract":true}}}},"certificate":{{"future_python_contract":true}},"version":{version}}}"#
+            ).into_bytes();
+            for error in [
+                crate::decode_command_body(&bytes).expect_err("old command protocol"),
+                crate::decode_command_body_for_owner(&bytes, Cursor::new())
+                    .expect_err("old owner-scoped command protocol"),
+                crate::CommandDto::decode_against(&bytes, &expected)
+                    .expect_err("old expected command protocol"),
+            ] {
+                assert!(error.contains(&format!("command DTO version {version}")));
+                assert!(!error.contains("unknown field"));
+            }
+        }
+        let current = format!(
+            r#"{{"version":{},"request_id":41,"command":{{"kind":"health","data":{{"future_field":true}}}}}}"#,
+            crate::DTO_VERSION
+        );
+        assert!(crate::decode_command_body(current.as_bytes()).is_err());
+        let duplicate = format!(
+            r#"{{"version":23,"version":{},"request_id":41,"command":{{"kind":"health"}}}}"#,
+            crate::DTO_VERSION
+        );
+        assert!(
+            crate::decode_command_body(duplicate.as_bytes())
+                .expect_err("ambiguous version")
+                .contains("duplicate field")
+        );
     }
 
     #[test]

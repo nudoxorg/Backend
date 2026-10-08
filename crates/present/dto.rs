@@ -292,6 +292,9 @@ pub struct FaultDto {
     /// Native setup requirement projected from the same closed compiler cause.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compiler_tool_requirement: Option<CompilerToolRequirementDto>,
+    /// Exact partial publication basis and the full typed terminal profile partition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial_publication: Option<backend_library::IndexJobPartialPublication>,
 }
 
 /// Machine-actionable setup facts derived from a producer's native tool requirement.
@@ -321,6 +324,7 @@ impl FaultDto {
             shell: fault.affordance().shell(),
             call: fault.affordance().tool_call(),
             compiler_failure: fault.compiler_failure().cloned(),
+            partial_publication: fault.partial_publication_receipt().cloned(),
             compiler_tool_requirement: fault.compiler_failure().and_then(|failure| {
                 failure
                     .required_native_tool()
@@ -863,6 +867,9 @@ pub struct ProductRecordDto {
     /// Typed native registry facts when this row came from a package release.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_metadata: Option<RegistryNativeMetadata>,
+    /// Static Python source declarations, independent of registry metadata authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_metadata: Option<backend_library::PythonProjectMetadata>,
     /// Exact bounded forge commit, manifest, and repository metadata facts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub forge: Option<backend_library::ForgePackageRecord>,
@@ -875,6 +882,9 @@ pub struct ProductRecordDto {
     /// Source-scoped, version-specific lineage group for index search.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub package_group: Option<backend_library::RegistryPackageSearchGroup>,
+    /// Exact local declaration source identity; absent for registry packages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_declaration: Option<backend_library::LocalDeclarationSearchRecord>,
     /// Concise typed derived-history state for the readable generation row.
     /// The complete immutable proof remains in `semantic_data`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -898,10 +908,12 @@ impl ProductDto {
                     operand: record.operand().map(ToOwned::to_owned),
                     tags: record.tags().to_vec(),
                     native_metadata: record.native_metadata().cloned(),
+                    source_metadata: record.source_metadata().cloned(),
                     forge: record.forge_details().cloned(),
                     forge_package_detail: record.forge_package_detail().cloned(),
                     discovery: record.discovery_details().cloned(),
                     package_group: record.package_group().cloned(),
+                    local_declaration: record.local_declaration().cloned(),
                     history_status: record.history_status().cloned(),
                     compiler_profile: record.compiler_profile(),
                 })

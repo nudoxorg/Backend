@@ -67,6 +67,8 @@ mod graph_tests;
 mod hand_tests;
 #[cfg(test)]
 mod jump_tests;
+#[cfg(all(test, feature = "visual-harness"))]
+mod lifecycle_capture_tests;
 #[cfg(test)]
 mod motion_tests;
 #[cfg(test)]

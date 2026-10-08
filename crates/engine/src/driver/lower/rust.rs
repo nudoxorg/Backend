@@ -4728,7 +4728,7 @@ mod tests {
         let guard = FixtureRoot(root.clone());
         fs::write(
             root.join("Cargo.toml"),
-            "[package]\nname = \"lane_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+            "[package]\nname = \"lane_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[workspace]\n",
         )
         .map_err(|source| TestError::Io {
             operation: "write manifest",

@@ -255,7 +255,7 @@ def evaluate_fleet(
             pgid = group.get("pgid")
             kind = group.get("kind")
             classification = group.get("classification")
-            if type(pgid) is not int or pgid <= 0 or pgid in seen_pgids or kind not in {"cargo", "orphan-rustc", "runtime-owner"}:
+            if type(pgid) is not int or pgid <= 0 or pgid in seen_pgids or kind not in {"cargo", "orphan-rustc", "runtime-owner", "unknown"}:
                 reasons.append(f"{name}:compiler-group-identity-invalid")
                 continue
             seen_pgids.add(pgid)

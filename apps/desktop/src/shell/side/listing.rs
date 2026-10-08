@@ -225,18 +225,20 @@ fn narrowed_by_name(mut listing: Listing, query: &str) -> Listing {
 // ---------------------------------------------------------------- settings
 
 fn settings(inputs: &Inputs<'_>, current: SettingsPage) -> Listing {
-    let rows = SettingsPage::ALL.into_iter().map(|page| {
-        let mut item = Item::new(
-            RowId::Setting(page),
-            0,
-            Mark::Icon(settings_icon(page)),
-            page.menu_label(),
-            Do::Settings(page),
-        );
-        item.current = page == current;
-        Row::Item(item)
-    })
-    .collect();
+    let rows = SettingsPage::ALL
+        .into_iter()
+        .map(|page| {
+            let mut item = Item::new(
+                RowId::Setting(page),
+                0,
+                Mark::Icon(settings_icon(page)),
+                page.menu_label(),
+                Do::Settings(page),
+            );
+            item.current = page == current;
+            Row::Item(item)
+        })
+        .collect();
     Listing {
         head: Head {
             step_out: Some(StepOut {
@@ -341,10 +343,18 @@ fn admission_note<T>(reading: &ResourceAdmission<'_, T>) -> Option<SharedString>
         ResourceAdmission::Retained { reason, .. } => (Some(*reason), true),
         ResourceAdmission::Failed { terminal, retained } => {
             let words = match terminal {
-                ResourceTerminal::Fault(error) => format!("The current reading failed. {}", error.message()),
-                ResourceTerminal::Unavailable(crate::core::UnavailableReason::Unsupported) => "The index does not provide this reading.".to_owned(),
-                ResourceTerminal::Unavailable(crate::core::UnavailableReason::OutOfScope) => "This reading is outside the selected scope.".to_owned(),
-                ResourceTerminal::Complete | ResourceTerminal::Partial => "The current reading is unavailable.".to_owned(),
+                ResourceTerminal::Fault(error) => {
+                    format!("The current reading failed. {}", error.message())
+                }
+                ResourceTerminal::Unavailable(crate::core::UnavailableReason::Unsupported) => {
+                    "The index does not provide this reading.".to_owned()
+                }
+                ResourceTerminal::Unavailable(crate::core::UnavailableReason::OutOfScope) => {
+                    "This reading is outside the selected scope.".to_owned()
+                }
+                ResourceTerminal::Complete | ResourceTerminal::Partial => {
+                    "The current reading is unavailable.".to_owned()
+                }
             };
             return Some(format!("{words}{}", if retained.is_some() { " An earlier reading is retained; it does not establish current relationships." } else { "" }).into());
         }
@@ -352,9 +362,21 @@ fn admission_note<T>(reading: &ResourceAdmission<'_, T>) -> Option<SharedString>
     let words = match reason.expect("pending or retained reason") {
         ReadHoldReason::OwnerUnavailable => "The index owner is not serving this reading.",
         ReadHoldReason::AuthorityChanged => "Waiting for a reading from the current index.",
-        ReadHoldReason::Reading | ReadHoldReason::NotReady => "The current reading is not complete yet.",
+        ReadHoldReason::Reading | ReadHoldReason::NotReady => {
+            "The current reading is not complete yet."
+        }
     };
-    Some(format!("{words}{}", if retained { " An earlier reading is retained; it does not establish current relationships." } else { "" }).into())
+    Some(
+        format!(
+            "{words}{}",
+            if retained {
+                " An earlier reading is retained; it does not establish current relationships."
+            } else {
+                ""
+            }
+        )
+        .into(),
+    )
 }
 
 fn library(inputs: &Inputs<'_>) -> Listing {
@@ -376,8 +398,24 @@ fn library(inputs: &Inputs<'_>) -> Listing {
             if projects == 1 { "" } else { "s" },
             if packages == 1 { "" } else { "s" }
         ),
-        None if matches!(inputs.orbit, ResourceAdmission::Pending(ReadHoldReason::Reading | ReadHoldReason::NotReady) | ResourceAdmission::Retained { reason: ReadHoldReason::Reading | ReadHoldReason::NotReady, .. }) => format!("{projects} project{} · packages reading", if projects == 1 { "" } else { "s" }),
-        None => format!("{projects} project{} · packages unavailable", if projects == 1 { "" } else { "s" }),
+        None if matches!(
+            inputs.orbit,
+            ResourceAdmission::Pending(ReadHoldReason::Reading | ReadHoldReason::NotReady)
+                | ResourceAdmission::Retained {
+                    reason: ReadHoldReason::Reading | ReadHoldReason::NotReady,
+                    ..
+                }
+        ) =>
+        {
+            format!(
+                "{projects} project{} · packages reading",
+                if projects == 1 { "" } else { "s" }
+            )
+        }
+        None => format!(
+            "{projects} project{} · packages unavailable",
+            if projects == 1 { "" } else { "s" }
+        ),
     };
     // The count is what the list shows: your projects and the packages beside them.
     let counts = Counts {
@@ -404,7 +442,7 @@ fn library(inputs: &Inputs<'_>) -> Listing {
             );
             item.current = workspace.active.as_ref() == Some(&project.id);
             if project.phase != crate::model::ProjectPhase::Ready {
-                item.trailing = Trailing::Words(project.phase.label().into());
+                item.trailing = Trailing::Words(project.lifecycle().label().into());
             }
             let mut rows = vec![Row::Item(item)];
             if project.phase != crate::model::ProjectPhase::Missing {
@@ -468,15 +506,25 @@ fn library(inputs: &Inputs<'_>) -> Listing {
                         rows.push(Row::Item(item));
                     }
                 }
-                None => rows.push(Row::Note(admission_note(&inputs.orbit).unwrap_or_else(|| match orbit.and_then(|orbit| orbit.indexed.gap()) {
-                    Some(gap) => format!("The library's packages are unavailable. {}", gap_words(gap)).into(),
-                    None => "The library's packages are still being read.".into(),
-                }))),
+                None => rows.push(Row::Note(admission_note(&inputs.orbit).unwrap_or_else(
+                    || {
+                        match orbit.and_then(|orbit| orbit.indexed.gap()) {
+                            Some(gap) => format!(
+                                "The library's packages are unavailable. {}",
+                                gap_words(gap)
+                            )
+                            .into(),
+                            None => "The library's packages are still being read.".into(),
+                        }
+                    },
+                ))),
             }
         }
         Lens::UsedBy => {
             rows.push(Row::Note("Library usage relationships are not indexed. Open a saved project's dependency tree to inspect its packages.".into()));
-            if let Some(note) = admission_note(&inputs.orbit) { rows.push(Row::Note(note)); }
+            if let Some(note) = admission_note(&inputs.orbit) {
+                rows.push(Row::Note(note));
+            }
             if projects == 0 {
                 rows.push(Row::Note("There are no saved projects.".into()));
             } else {
@@ -489,7 +537,9 @@ fn library(inputs: &Inputs<'_>) -> Listing {
         )),
         Lens::RestsOn => {
             rows.push(Row::Note("Library dependency relationships are not indexed. Choose a package to read its dependencies.".into()));
-            if let Some(note) = admission_note(&inputs.orbit) { rows.push(Row::Note(note)); }
+            if let Some(note) = admission_note(&inputs.orbit) {
+                rows.push(Row::Note(note));
+            }
         }
     }
     Listing {
@@ -583,7 +633,10 @@ fn up_label(inputs: &Inputs<'_>, tree: Option<&OutlineTree>) -> Option<StepOut> 
 }
 
 fn package_scope(inputs: &Inputs<'_>, package: &PackageRef) -> Listing {
-    let dossier = inputs.dossier.as_ref().and_then(ResourceAdmission::current_value);
+    let dossier = inputs
+        .dossier
+        .as_ref()
+        .and_then(ResourceAdmission::current_value);
     let tree = dossier.and_then(|dossier| dossier.outline.known());
     let version = dossier
         .and_then(|dossier| dossier.record.known())
@@ -601,17 +654,25 @@ fn package_scope(inputs: &Inputs<'_>, package: &PackageRef) -> Listing {
     };
     let mut matched = None;
     let rows = if dossier.is_none() {
-        vec![Row::Note(inputs.dossier.as_ref().and_then(admission_note).unwrap_or_else(|| "The package has not been read yet.".into()))]
-    } else { match inputs.lens {
-        Lens::Contents => {
-            let (rows, narrowed) = contents(inputs, package, dossier);
-            matched = narrowed;
-            rows
+        vec![Row::Note(
+            inputs
+                .dossier
+                .as_ref()
+                .and_then(admission_note)
+                .unwrap_or_else(|| "The package has not been read yet.".into()),
+        )]
+    } else {
+        match inputs.lens {
+            Lens::Contents => {
+                let (rows, narrowed) = contents(inputs, package, dossier);
+                matched = narrowed;
+                rows
+            }
+            Lens::Versions => dossier.map_or_else(Vec::new, |dossier| versions(inputs, dossier)),
+            Lens::RestsOn => dossier.map_or_else(Vec::new, rests_on),
+            Lens::UsedBy => dossier.map_or_else(Vec::new, |dossier| used_by(inputs, dossier)),
         }
-        Lens::Versions => dossier.map_or_else(Vec::new, |dossier| versions(inputs, dossier)),
-        Lens::RestsOn => dossier.map_or_else(Vec::new, rests_on),
-        Lens::UsedBy => dossier.map_or_else(Vec::new, |dossier| used_by(inputs, dossier)),
-    }};
+    };
     Listing {
         head,
         rows,
@@ -871,10 +932,7 @@ fn used_by(inputs: &Inputs<'_>, dossier: &PackageDossier) -> Vec<Row> {
     let crates = inputs.book.crates();
     let gap = dossier.dependents.gap();
     let observed = if dossier.observed_dependents.is_empty() {
-        dossier
-            .dependents
-            .known()
-            .map_or(&[][..], AsRef::as_ref)
+        dossier.dependents.known().map_or(&[][..], AsRef::as_ref)
     } else {
         dossier.observed_dependents.as_ref()
     };
@@ -918,9 +976,13 @@ fn used_by(inputs: &Inputs<'_>, dossier: &PackageDossier) -> Vec<Row> {
         rows.extend(others.iter().map(|record| dependent_row(record)));
     }
     if let Some(gap) = gap {
-        rows.push(Row::Note(if gap.reason == crate::model::pages::GapReason::Unknown {
-            format!("Partial coverage: {}", gap.detail).into()
-        } else { gap_words(gap) }));
+        rows.push(Row::Note(
+            if gap.reason == crate::model::pages::GapReason::Unknown {
+                format!("Partial coverage: {}", gap.detail).into()
+            } else {
+                gap_words(gap)
+            },
+        ));
     }
     if rows.is_empty() {
         rows.push(Row::Note("Nothing here uses it yet".into()));
@@ -962,7 +1024,10 @@ fn node_scope(inputs: &Inputs<'_>, symbol: &SymbolRef) -> Listing {
             matched: None,
         };
     };
-    let dossier = inputs.dossier.as_ref().and_then(ResourceAdmission::current_value);
+    let dossier = inputs
+        .dossier
+        .as_ref()
+        .and_then(ResourceAdmission::current_value);
     let tree = dossier.and_then(|dossier| dossier.outline.known());
     let found = tree.and_then(|tree| locate(tree, symbol));
     let Some(Located { node, ancestors }) = found else {
@@ -971,7 +1036,11 @@ fn node_scope(inputs: &Inputs<'_>, symbol: &SymbolRef) -> Listing {
         } else if let Some(gap) = dossier.and_then(|dossier| dossier.outline.gap()) {
             gap_words(gap)
         } else {
-            inputs.dossier.as_ref().and_then(admission_note).unwrap_or_else(|| "The package has not been read yet.".into())
+            inputs
+                .dossier
+                .as_ref()
+                .and_then(admission_note)
+                .unwrap_or_else(|| "The package has not been read yet.".into())
         };
         let rows = vec![Row::Note(words)];
         return Listing {
@@ -1097,25 +1166,49 @@ mod tests {
         node: bool,
         query: &str,
     ) -> Listing {
-        let route = if dossier.is_some() { crate::shell::tests::page_route("Identity") } else { Route::Orbit(OrbitRoute::Home) };
+        let route = if dossier.is_some() {
+            crate::shell::tests::page_route("Identity")
+        } else {
+            Route::Orbit(OrbitRoute::Home)
+        };
         let snapshot = AppSnapshot::empty(current);
         let mut crumbs = Crumbs::following(&route);
-        if node { crumbs.hoist(Scope::Node(crate::shell::tests::symbol("Identity"))); }
+        if node {
+            crumbs.hoist(Scope::Node(crate::shell::tests::symbol("Identity")));
+        }
         build(&Inputs {
-            snapshot: &snapshot, route: &route, crumbs: &crumbs, lens,
-            folds: &Folds::default(), filter: Filter { query, via: None }, book: &StateBook::none(),
-            dossier: dossier.map(|resource| crate::core::admit_resource(resource, current, serving)),
+            snapshot: &snapshot,
+            route: &route,
+            crumbs: &crumbs,
+            lens,
+            folds: &Folds::default(),
+            filter: Filter { query, via: None },
+            book: &StateBook::none(),
+            dossier: dossier
+                .map(|resource| crate::core::admit_resource(resource, current, serving)),
             orbit: crate::core::admit_resource(orbit, current, serving),
-            current: None, diffs: None, settings: None, held: Vec::new(), trail: Vec::new(),
+            current: None,
+            diffs: None,
+            settings: None,
+            held: Vec::new(),
+            trail: Vec::new(),
         })
     }
 
     fn fact_root(epoch: u64) -> crate::core::VersionedRoot {
-        crate::core::VersionedRoot::synthetic(backend_library::view_state_root(&[("shelf-facts".into(), "fixture".into())]), epoch)
+        crate::core::VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("shelf-facts".into(), "fixture".into())]),
+            epoch,
+        )
     }
 
     fn empty_orbit() -> OrbitModel {
-        OrbitModel { indexed: Known::Known(std::sync::Arc::from([])), projects: Known::Known(std::sync::Arc::from([])), explore: Known::Known(std::sync::Arc::from([])), tree: Known::Known(std::sync::Arc::from([])) }
+        OrbitModel {
+            indexed: Known::Known(std::sync::Arc::from([])),
+            projects: Known::Known(std::sync::Arc::from([])),
+            explore: Known::Known(std::sync::Arc::from([])),
+            tree: Known::Known(std::sync::Arc::from([])),
+        }
     }
 
     #[test]
@@ -1126,26 +1219,59 @@ mod tests {
         let mut package = crate::shell::tests::dossier();
         package.dependents = Known::Known(std::sync::Arc::from([]));
         let read = Resource::loaded_at(package, root);
-        for (lens, empty) in [(Lens::RestsOn, "Rests on nothing"), (Lens::UsedBy, "Nothing here uses it yet")] {
-            let ready = fact_listing(Some(&read), &orbit, root.observed_at(999), true, lens, false, "");
+        for (lens, empty) in [
+            (Lens::RestsOn, "Rests on nothing"),
+            (Lens::UsedBy, "Nothing here uses it yet"),
+        ] {
+            let ready = fact_listing(
+                Some(&read),
+                &orbit,
+                root.observed_at(999),
+                true,
+                lens,
+                false,
+                "",
+            );
             assert_eq!(ready.head.counts.expect("counts").of(lens), Some(0));
             assert!(words(&ready).iter().any(|words| words == empty));
             for (resource, authority, serving, note) in [
                 (Resource::not_yet(), root, true, "not complete"),
-                (Resource::error(FaultCode::Transport, "shelf read failed"), root, true, "shelf read failed"),
-                (read.clone().mark_error(FaultCode::Transport, "retained read failed"), root, true, "earlier reading is retained"),
+                (
+                    Resource::error(FaultCode::Transport, "shelf read failed"),
+                    root,
+                    true,
+                    "shelf read failed",
+                ),
+                (
+                    read.clone()
+                        .mark_error(FaultCode::Transport, "retained read failed"),
+                    root,
+                    true,
+                    "earlier reading is retained",
+                ),
                 (read.clone(), fact_root(2), true, "current index"),
                 (read.clone(), root, false, "not serving"),
                 (read.clone().working(), root, true, "not complete"),
             ] {
                 // Narrowing must not erase a gap or turn it into an empty claim.
                 for query in ["", "unmatched"] {
-                    let held = fact_listing(Some(&resource), &orbit, authority, serving, lens, false, query);
+                    let held = fact_listing(
+                        Some(&resource),
+                        &orbit,
+                        authority,
+                        serving,
+                        lens,
+                        false,
+                        query,
+                    );
                     assert_eq!(held.head.counts.expect("counts").of(lens), None);
                     let said = words(&held);
                     assert!(!said.iter().any(|words| words == empty), "{said:?}");
                     assert!(said.iter().any(|words| words.contains(note)), "{said:?}");
-                    assert_eq!(held.matched, None, "unknown note-only scopes cannot expose a zero total");
+                    assert_eq!(
+                        held.matched, None,
+                        "unknown note-only scopes cannot expose a zero total"
+                    );
                 }
             }
         }
@@ -1155,14 +1281,24 @@ mod tests {
     fn library_inventory_never_fabricates_aggregate_relationships() {
         use crate::core::{FaultCode, Resource};
         let root = fact_root(1);
-        for resource in [Resource::loaded_at(empty_orbit(), root), Resource::not_yet(), Resource::error(FaultCode::Transport, "offline index")] {
+        for resource in [
+            Resource::loaded_at(empty_orbit(), root),
+            Resource::not_yet(),
+            Resource::error(FaultCode::Transport, "offline index"),
+        ] {
             for lens in [Lens::RestsOn, Lens::UsedBy] {
                 let listed = fact_listing(None, &resource, root, true, lens, false, "");
                 assert_eq!(listed.head.counts.expect("counts").of(lens), None);
                 let said = words(&listed);
-                assert!(said.iter().any(|words| words.contains("relationships are not indexed")));
-                assert!(!said.iter().any(|words| words.contains("rests on nothing") || words.contains("uses the library yet")));
-                if matches!(resource.terminal(), ResourceTerminal::Fault(_)) { assert!(said.iter().any(|words| words.contains("offline index"))); }
+                assert!(
+                    said.iter()
+                        .any(|words| words.contains("relationships are not indexed"))
+                );
+                assert!(!said.iter().any(|words| words.contains("rests on nothing")
+                    || words.contains("uses the library yet")));
+                if matches!(resource.terminal(), ResourceTerminal::Fault(_)) {
+                    assert!(said.iter().any(|words| words.contains("offline index")));
+                }
             }
         }
     }
@@ -1173,20 +1309,43 @@ mod tests {
         use crate::model::pages::{Gap, GapReason};
         let root = fact_root(1);
         let orbit = Resource::loaded_at(empty_orbit(), root);
-        for reason in [GapReason::Unknown, GapReason::ReadFailed, GapReason::Unconfigured, GapReason::NotServed] {
+        for reason in [
+            GapReason::Unknown,
+            GapReason::ReadFailed,
+            GapReason::Unconfigured,
+            GapReason::NotServed,
+        ] {
             let mut package = crate::shell::tests::dossier();
-            let gap = Gap { reason, detail: "relationships were not fully read".into() };
+            let gap = Gap {
+                reason,
+                detail: "relationships were not fully read".into(),
+            };
             package.dependencies = Known::Unknown(gap.clone());
             package.dependents = Known::Unknown(gap);
-            package.observed_dependents = std::sync::Arc::from([package.record.known().cloned().expect("observed fixture record")]);
+            package.observed_dependents = std::sync::Arc::from([package
+                .record
+                .known()
+                .cloned()
+                .expect("observed fixture record")]);
             let read = Resource::loaded_at(package, root);
             for lens in [Lens::RestsOn, Lens::UsedBy] {
                 let listed = fact_listing(Some(&read), &orbit, root, true, lens, false, "");
                 assert_eq!(listed.head.counts.expect("counts").of(lens), None);
                 let said = words(&listed);
-                assert!(said.iter().any(|words| words.contains("relationships were not fully read")), "{said:?}");
-                assert!(!said.iter().any(|words| words == "Rests on nothing" || words == "Nothing here uses it yet"));
-                if lens == Lens::UsedBy { assert!(listed.rows.iter().any(|row| row.item().is_some()), "observed uses survive alongside the coverage gap"); }
+                assert!(
+                    said.iter()
+                        .any(|words| words.contains("relationships were not fully read")),
+                    "{said:?}"
+                );
+                assert!(!said.iter().any(
+                    |words| words == "Rests on nothing" || words == "Nothing here uses it yet"
+                ));
+                if lens == Lens::UsedBy {
+                    assert!(
+                        listed.rows.iter().any(|row| row.item().is_some()),
+                        "observed uses survive alongside the coverage gap"
+                    );
+                }
             }
         }
     }
@@ -1197,12 +1356,22 @@ mod tests {
         let root = fact_root(1);
         let orbit = Resource::loaded_at(empty_orbit(), root);
         let mut package = crate::shell::tests::dossier();
-        package.outline = Known::Unknown(crate::model::pages::Gap { reason: crate::model::pages::GapReason::ReadFailed, detail: "outline unavailable".into() });
+        package.outline = Known::Unknown(crate::model::pages::Gap {
+            reason: crate::model::pages::GapReason::ReadFailed,
+            detail: "outline unavailable".into(),
+        });
         let read = Resource::loaded_at(package, root);
         let listed = fact_listing(Some(&read), &orbit, root, true, Lens::Contents, true, "");
         let said = words(&listed);
-        assert!(said.iter().any(|words| words.contains("outline unavailable")));
-        assert!(!said.iter().any(|words| words.contains("not in this release")));
+        assert!(
+            said.iter()
+                .any(|words| words.contains("outline unavailable"))
+        );
+        assert!(
+            !said
+                .iter()
+                .any(|words| words.contains("not in this release"))
+        );
     }
 
     fn dependency(name: &str) -> Row {

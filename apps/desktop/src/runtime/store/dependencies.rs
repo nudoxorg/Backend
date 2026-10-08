@@ -320,6 +320,11 @@ impl RouteDependencies {
         if matches!(route, Route::CargoSource(source) if source.browse.context().is_none()) {
             return Vec::new();
         }
+        // An invalid declaration address cannot borrow its pinned package's
+        // chrome reads. Validate the coordinate before any release rebasing.
+        if matches!(route, Route::Symbol(_)) && route_symbol(route).is_none() {
+            return Vec::new();
+        }
         route_symbol(route)
             .map(PageKey::Symbol)
             .into_iter()
@@ -329,6 +334,9 @@ impl RouteDependencies {
 
     pub(crate) fn keys(&self) -> &[PageKey] {
         &self.keys
+    }
+    pub(crate) fn content_keys(&self) -> &[PageKey] {
+        &self.content
     }
     pub(crate) fn into_keys(self) -> Vec<PageKey> {
         self.keys

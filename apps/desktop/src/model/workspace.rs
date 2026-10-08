@@ -13,7 +13,8 @@ use crate::navigation::RequestId;
 /// The lifecycle of a local project admitted to the shelf.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProjectPhase {
-    /// The project has been admitted and its index is current.
+    /// An admitted project has a usable publication or retained legacy availability.
+    /// Exact semantic completeness comes from its operation receipt.
     Ready,
     /// The local service is indexing the project.
     Indexing,
@@ -121,11 +122,7 @@ impl WorkspaceProject {
     /// the new owner is still working. Terminal/unknown evidence says itself.
     #[must_use]
     pub fn index_status_text(&self) -> Option<&'static str> {
-        self.operation.as_ref().map(|operation| {
-            if self.phase == ProjectPhase::Unconfirmed && operation.needs_observation() {
-                "Checking the saved index operation"
-            } else { operation.status_text() }
-        })
+        self.operation.as_ref().map(|_| self.lifecycle().detail())
     }
 
     /// Returns a bounded display-safe failure row.
@@ -314,7 +311,9 @@ impl ZoomPreference {
             .iter()
             .enumerate()
             .min_by_key(|(_, step)| step.abs_diff(percent))
-            .map_or(Self::HOME, |(index, _)| i8::try_from(index).unwrap_or(Self::HOME));
+            .map_or(Self::HOME, |(index, _)| {
+                i8::try_from(index).unwrap_or(Self::HOME)
+            });
         self.with(display, index - Self::HOME)
     }
 

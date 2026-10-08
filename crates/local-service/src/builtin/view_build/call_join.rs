@@ -5,8 +5,9 @@ use backend_engine::PackageKey;
 use backend_engine::application::DocumentationSession;
 use backend_semantic::ir::{
     DeclarationIdentity, ExternalId, ExternalTarget, ForeignTargetOrigin, ImageProvenance,
-    ItemKind, SemanticCoreReader, SemanticImageView, SemanticReader,
-    TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM, TypeScriptSourceCoordinate, typescript_program_identity,
+    ItemKind, PYTHON_NATIVE_SOURCE_ECOSYSTEM, PythonSourceCoordinate, SemanticCoreReader,
+    SemanticImageView, SemanticReader, TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM, TypeScriptSourceCoordinate,
+    python_program_identity, typescript_program_identity,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -42,6 +43,7 @@ pub(crate) struct ProjectCallableIndex {
     tsz_source_coordinates:
         BTreeMap<(String, [u8; 32], u32, u32, ItemKind), Vec<DeclarationIdentity>>,
     tsz_program_identity: Option<[u8; 32]>,
+    python_program_identity: Option<[u8; 32]>,
 }
 
 impl ProjectCallableIndex {
@@ -70,19 +72,33 @@ impl ProjectCallableIndex {
         let mut tsz_source_coordinates =
             BTreeMap::<(String, [u8; 32], u32, u32, ItemKind), Vec<DeclarationIdentity>>::new();
         let mut source_manifest = Vec::with_capacity(images.len());
+        let mut python_source_manifest = Vec::new();
         let mut manifest_complete = true;
+        let mut python_manifest_complete = true;
         for image in images {
             let image = *image;
             let path = compiled_source_path(image)?;
             let source = match image.image_facts().provenance {
-                ImageProvenance::Captured { source, .. } => *source.identity,
+                ImageProvenance::Captured { source, recipe, .. } => {
+                    if matches!(
+                        recipe.profile,
+                        backend_semantic::vocabulary::LanguageProfile::Python(_)
+                    ) {
+                        python_source_manifest.push((path.clone(), *source.identity));
+                    }
+                    *source.identity
+                }
                 ImageProvenance::Unavailable => {
                     manifest_complete = false;
+                    python_manifest_complete = false;
                     continue;
                 }
             };
             source_manifest.push((path, source));
         }
+        let python_program_identity = python_manifest_complete
+            .then(|| python_program_identity(&python_source_manifest))
+            .flatten();
         let tsz_program_identity = manifest_complete
             .then(|| typescript_program_identity(&source_manifest))
             .flatten();
@@ -203,6 +219,7 @@ impl ProjectCallableIndex {
             value_by_owner_name_kind,
             tsz_source_coordinates,
             tsz_program_identity,
+            python_program_identity,
         })
     }
 
@@ -255,7 +272,16 @@ impl ProjectCallableIndex {
         coordinate: TypeScriptSourceCoordinate<'_>,
         kind: ItemKind,
     ) -> Option<DeclarationIdentity> {
-        if self.tsz_program_identity != Some(coordinate.program) {
+        self.resolve_source_coordinate(coordinate, kind, self.tsz_program_identity)
+    }
+
+    fn resolve_source_coordinate(
+        &self,
+        coordinate: TypeScriptSourceCoordinate<'_>,
+        kind: ItemKind,
+        program: Option<[u8; 32]>,
+    ) -> Option<DeclarationIdentity> {
+        if program != Some(coordinate.program) {
             return None;
         }
         let matches = self.tsz_source_coordinates.get(&(
@@ -558,11 +584,11 @@ pub(crate) fn foreign_dotted_module_specifier<'a>(
     Some(path)
 }
 
-/// Joins a native TSZ target only when its typed coordinate names one unique
+/// Joins a native target only when its producer-specific coordinate names one unique
 /// declaration span inside the same complete source manifest. The universe
 /// discriminator is deliberately separate from npm/package and namespace
 /// resolution; this path never falls back to a display-name match.
-fn foreign_tsz_source_retarget(
+fn foreign_native_source_retarget(
     image: &SemanticImageView<'_>,
     external: ExternalId,
     expected_kind: ItemKind,
@@ -580,7 +606,9 @@ fn foreign_tsz_source_retarget(
     let ecosystem = image
         .atom(ecosystem)
         .ok_or_else(|| BuiltinModelError("semantic graph ecosystem atom is missing".to_owned()))?;
-    if ecosystem != TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM.as_bytes() {
+    if ecosystem != TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM.as_bytes()
+        && ecosystem != PYTHON_NATIVE_SOURCE_ECOSYSTEM.as_bytes()
+    {
         return Ok(None);
     }
     let path = image
@@ -588,10 +616,23 @@ fn foreign_tsz_source_retarget(
         .ok_or_else(|| BuiltinModelError("semantic graph path atom is missing".to_owned()))?;
     let path = std::str::from_utf8(path)
         .map_err(|_| BuiltinModelError("semantic graph path is not UTF-8".to_owned()))?;
-    let Some(coordinate) = TypeScriptSourceCoordinate::decode(path) else {
-        return Ok(None);
-    };
-    Ok(callable_index.resolve_tsz_source_coordinate(coordinate, expected_kind))
+    if ecosystem == TYPESCRIPT_TSZ_SOURCE_ECOSYSTEM.as_bytes() {
+        let Some(coordinate) = TypeScriptSourceCoordinate::decode(path) else {
+            return Ok(None);
+        };
+        Ok(callable_index.resolve_tsz_source_coordinate(coordinate, expected_kind))
+    } else if ecosystem == PYTHON_NATIVE_SOURCE_ECOSYSTEM.as_bytes() {
+        let Some(coordinate) = PythonSourceCoordinate::decode(path) else {
+            return Ok(None);
+        };
+        Ok(callable_index.resolve_source_coordinate(
+            coordinate.0,
+            expected_kind,
+            callable_index.python_program_identity,
+        ))
+    } else {
+        Ok(None)
+    }
 }
 
 pub(crate) fn foreign_package_call_retarget(
@@ -602,9 +643,21 @@ pub(crate) fn foreign_package_call_retarget(
     callable_index: &ProjectCallableIndex,
 ) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
     if let Some(identity) =
-        foreign_tsz_source_retarget(image, external, ItemKind::Function, callable_index)?
+        foreign_native_source_retarget(image, external, ItemKind::Function, callable_index)?
     {
         return Ok(Some(identity));
+    }
+    if let Some(identity) =
+        foreign_native_source_retarget(image, external, ItemKind::Record, callable_index)?
+    {
+        return Ok(Some(identity));
+    }
+    if matches!(image.image_facts().provenance,
+        ImageProvenance::Captured { recipe, .. }
+            if matches!(recipe.profile, backend_semantic::vocabulary::LanguageProfile::Python(_)))
+    {
+        // Unresolved/external Python imports cannot borrow same-named local declarations.
+        return Ok(None);
     }
     let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
         return Ok(None);
@@ -1003,12 +1056,15 @@ pub(crate) fn join_project_field(
     if !matches!(link_kind, backend_semantic::ir::LinkKind::Reads) {
         return Ok(None);
     }
+    if !native_python_coordinate_selected(image, external, project_paths)? {
+        return Ok(None);
+    }
     let identity = if let Some(identity) =
-        foreign_tsz_source_retarget(image, external, ItemKind::Field, index)?
+        foreign_native_source_retarget(image, external, ItemKind::Field, index)?
     {
         Some(identity)
     } else if let Some(identity) =
-        foreign_tsz_source_retarget(image, external, ItemKind::Function, index)?
+        foreign_native_source_retarget(image, external, ItemKind::Function, index)?
     {
         Some(identity)
     } else if let Some(identity) =
@@ -1158,7 +1214,18 @@ pub(crate) fn join_project_value(
     if !matches!(link_kind, backend_semantic::ir::LinkKind::Reads) {
         return Ok(None);
     }
+    if !native_python_coordinate_selected(image, external, project_paths)? {
+        return Ok(None);
+    }
     let identity = if let Some(identity) =
+        foreign_native_source_retarget(image, external, ItemKind::Static, index)?
+    {
+        Some(identity)
+    } else if let Some(identity) =
+        foreign_native_source_retarget(image, external, ItemKind::Function, index)?
+    {
+        Some(identity)
+    } else if let Some(identity) =
         foreign_package_value_retarget(image, external, caller_path, project_paths, index)?
     {
         Some(identity)
@@ -1168,6 +1235,28 @@ pub(crate) fn join_project_value(
         foreign_package_function_value_retarget(image, external, caller_path, project_paths, index)?
     };
     Ok(identity.filter(|candidate| published.contains(candidate)))
+}
+
+fn native_python_coordinate_selected(
+    image: &SemanticImageView<'_>,
+    external: ExternalId,
+    project_paths: &BTreeSet<String>,
+) -> Result<bool, BuiltinModelError> {
+    let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
+        return Ok(true);
+    };
+    let ForeignTargetOrigin::Universe { ecosystem } = foreign.origin else {
+        return Ok(true);
+    };
+    if image.atom(ecosystem) != Some(PYTHON_NATIVE_SOURCE_ECOSYSTEM.as_bytes()) {
+        return Ok(true);
+    }
+    let encoded = image
+        .atom(foreign.path)
+        .and_then(|path| std::str::from_utf8(path).ok());
+    Ok(encoded
+        .and_then(PythonSourceCoordinate::decode)
+        .is_some_and(|coordinate| project_paths.contains(coordinate.0.path)))
 }
 
 pub(crate) fn join_project_call(
@@ -1185,13 +1274,16 @@ pub(crate) fn join_project_call(
     ) {
         return Ok(None);
     }
-    // Native TSZ calls carry a program- and declaration-bound source
+    if !native_python_coordinate_selected(image, external, project_paths)? {
+        return Ok(None);
+    }
+    // Native TSZ/Python calls carry a program- and declaration-bound source
     // coordinate, so admit that proof before the package/namespace retargets.
-    // A malformed or stale TSZ coordinate deliberately does not fall back to
+    // A malformed or stale native coordinate deliberately does not fall back to
     // display-name matching: neither of the other retargeters accepts its
     // `Universe` origin.
     let identity = if let Some(identity) =
-        foreign_tsz_source_retarget(image, external, ItemKind::Function, index)?
+        foreign_native_source_retarget(image, external, ItemKind::Function, index)?
     {
         Some(identity)
     } else if let Some(identity) =
@@ -1276,6 +1368,7 @@ mod tsz_source_coordinate_tests {
                 vec![target],
             )]),
             tsz_program_identity: Some(program),
+            python_program_identity: None,
         }
     }
 
@@ -1301,6 +1394,16 @@ mod tsz_source_coordinate_tests {
         identity_byte: u8,
         target: Option<(String, u32, u32, u32, [u8; 32], [u8; 32], u32, u32)>,
     ) -> Result<(Vec<u8>, DeclarationIdentity), String> {
+        source_image_with_capture(path, source, identity_byte, target, true)
+    }
+
+    pub(super) fn source_image_with_capture(
+        path: &str,
+        source: &str,
+        identity_byte: u8,
+        target: Option<(String, u32, u32, u32, [u8; 32], [u8; 32], u32, u32)>,
+        captured: bool,
+    ) -> Result<(Vec<u8>, DeclarationIdentity), String> {
         let source_identity =
             ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes());
         let source_facts = SourceIdentity {
@@ -1317,9 +1420,11 @@ mod tsz_source_coordinate_tests {
         let package = PackageUrl::parse("pkg:npm/fixture@1.0.0".to_owned())
             .map_err(|error| format!("fixture package coordinate: {error:?}"))?;
         let mut builder = IrBuilder::new();
-        builder
-            .set_image_provenance_for_package(source_facts, recipe, &package, path)
-            .map_err(|error| error.to_string())?;
+        if captured {
+            builder
+                .set_image_provenance_for_package(source_facts, recipe, &package, path)
+                .map_err(|error| error.to_string())?;
+        }
         let path_atom = builder
             .intern_atom(path.as_bytes())
             .map_err(|error| error.to_string())?;
@@ -1383,6 +1488,9 @@ mod tsz_source_coordinate_tests {
         let root_identity = fixture_version(identity_byte).identity();
         let root_authority = EntityAuthorityFacts {
             parentage: ParentageAuthority::Root,
+            source: FactAvailability::Captured,
+            source_file: FactAvailability::Captured,
+            members: FactAvailability::Captured,
             visibility: FactAvailability::Captured,
             ..EntityAuthorityFacts::default()
         };
@@ -1400,10 +1508,11 @@ mod tsz_source_coordinate_tests {
             )
             .map_err(|error| error.to_string())?;
             let end = u32::try_from(
-                source
-                    .find("getHello(): string { return ''; }")
-                    .ok_or_else(|| "service fixture is missing its method end".to_owned())?
-                    + "getHello(): string { return ''; }".len(),
+                usize::try_from(start).map_err(|error| error.to_string())?
+                    + source[usize::try_from(start).map_err(|error| error.to_string())?..]
+                        .find('}')
+                        .ok_or_else(|| "service fixture is missing its method end".to_owned())?
+                    + 1,
             )
             .map_err(|error| error.to_string())?;
             SourceSpan::new(path_atom, start, end)
@@ -1437,6 +1546,8 @@ mod tsz_source_coordinate_tests {
         } else {
             let method_authority = EntityAuthorityFacts {
                 parentage: ParentageAuthority::Bound(root_identity),
+                source: FactAvailability::Captured,
+                source_file: FactAvailability::Captured,
                 visibility: FactAvailability::Captured,
                 ..EntityAuthorityFacts::default()
             };
@@ -1906,10 +2017,15 @@ mod python_native_call_tests {
             if link.kind != LinkKind::Calls || foreign.kind != Some(ItemKind::Record) {
                 continue;
             }
-            assert_eq!(
-                caller.atom(foreign.path),
-                Some(b"requests.models.Request".as_slice())
-            );
+            let coordinate = caller
+                .atom(foreign.path)
+                .and_then(|value| std::str::from_utf8(value).ok())
+                .and_then(PythonSourceCoordinate::decode)
+                .expect("native selected-source coordinate");
+            assert_eq!(coordinate.0.path, "src/requests/models.py");
+            assert!(matches!(foreign.origin,
+                ForeignTargetOrigin::Universe { ecosystem }
+                    if caller.atom(ecosystem) == Some(PYTHON_NATIVE_SOURCE_ECOSYSTEM.as_bytes())));
             assert_eq!(caller.atom(foreign.display), Some(b"Request".as_slice()));
             assert_eq!(link.confidence, Confidence::Compiler);
             let source = link.source.expect("compiler-observed call byte range");
@@ -1937,5 +2053,197 @@ mod python_native_call_tests {
             observed_calls += 1;
         }
         assert_eq!(observed_calls, 1, "native class binding must be present");
+    }
+
+    #[test]
+    fn native_python_relative_function_calls_join_exact_sources_and_reject_unproven_targets()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let package_root = root.path().join("project");
+        fs::create_dir_all(package_root.join("core/api"))?;
+        let modules = [
+            ("core/__init__.py", ""),
+            ("core/api/__init__.py", ""),
+            (
+                "core/utils.py",
+                "def generate_s3_authorization_headers(key):\n    return 'other module'\n",
+            ),
+            (
+                "core/api/utils.py",
+                "# UTF-8: 🐍\ndef generate_s3_authorization_headers(key):\n    return key\n",
+            ),
+            (
+                "core/api/viewsets.py",
+                "from . import utils as helper\nfrom .utils import generate_s3_authorization_headers as generate\nfrom external import generate_s3_authorization_headers as external\n\ndef generate_s3_authorization_headers(key):\n    return 'same name in caller'\n\ndef qualified(key):\n    return helper.generate_s3_authorization_headers(key)\n\ndef direct(key):\n    return generate(key)\n\ndef shadowed(helper, key):\n    return helper.generate_s3_authorization_headers(key)\n\ndef shadowed_local(generate_s3_authorization_headers, key):\n    return generate_s3_authorization_headers(key)\n\ndef unselected(key):\n    return external(key)\n",
+            ),
+        ];
+        for (path, source) in modules {
+            fs::write(package_root.join(path), source)?;
+        }
+        let client = LocalCompilerHost::new(
+            NativePythonEnvironment(root.path().join("compiler")),
+            LocalHostDiscovery::ExplicitOnly,
+        )
+        .open()?;
+        let request = PackageCompileRequest::new(
+            GenerateTarget {
+                correlation: CorrelationId(99),
+                profile: LanguageProfile::Python(PythonVersion::Python314),
+                stage: Stage::LowerIr,
+            },
+            PackageUrl::try_from("pkg:pypi/docs@1.0.0".to_owned())
+                .map_err(|error| format!("fixture package coordinate rejected: {error:?}"))?,
+        )
+        .map_err(|error| format!("fixture package profile rejected: {error:?}"))?;
+        let mut ordered_modules = modules.iter().collect::<Vec<_>>();
+        ordered_modules.sort_by_key(|(path, _)| *path);
+        let sources = ordered_modules
+            .into_iter()
+            .map(|(path, source)| OwnedPackageSource::new(path, source))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_boxed_slice();
+        let staged = client.compile_package_sources_staged(OwnedPackageSourceSet::new(
+            request,
+            package_root,
+            sources,
+        )?)?;
+        let images = (0..staged.artifacts().len())
+            .map(|ordinal| {
+                let bytes = staged
+                    .semantic_output_object(ordinal)
+                    .ok_or("missing semantic output")?
+                    .bytes();
+                Ok(SemanticImageView::reopen(bytes)?)
+            })
+            .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+        let views = images.iter().collect::<Vec<_>>();
+        let python_only = ProjectCallableIndex::build_from_views(&views)?;
+        // A captured unrelated language may have partial declaration authority;
+        // its recipe still proves that it is outside the Python source frontier.
+        let ts_source = "class AppService { getHello(): string { return ''; } }";
+        let (ts_bytes, _) = super::tsz_source_coordinate_tests::source_image_with_capture(
+            "src/service.ts",
+            ts_source,
+            71,
+            None,
+            true,
+        )?;
+        let ts_image = SemanticImageView::reopen(&ts_bytes)?;
+        let mut mixed = views.clone();
+        mixed.push(&ts_image);
+        let index = ProjectCallableIndex::build_from_views(&mixed)?;
+        assert_eq!(
+            index.python_program_identity,
+            python_only.python_program_identity
+        );
+        assert!(index.python_program_identity.is_some());
+        // Unavailable provenance has neither a source path nor a language
+        // recipe. The index must refuse it rather than guess from a suffix.
+        let (unavailable_bytes, _) = super::tsz_source_coordinate_tests::source_image_with_capture(
+            "src/service.ts",
+            ts_source,
+            72,
+            None,
+            false,
+        )?;
+        let unavailable_image = SemanticImageView::reopen(&unavailable_bytes)?;
+        let mut unproven = views.clone();
+        unproven.push(&unavailable_image);
+        assert!(ProjectCallableIndex::build_from_views(&unproven).is_err());
+        let paths = modules
+            .iter()
+            .map(|(path, _)| (*path).to_owned())
+            .collect::<BTreeSet<_>>();
+        let exact_path = BTreeSet::from(["core/api/utils.py".to_owned()]);
+        let target = index
+            .resolve(&exact_path, "generate_s3_authorization_headers")
+            .ok_or("target absent")?;
+        let other = index
+            .resolve(
+                &BTreeSet::from(["core/utils.py".to_owned()]),
+                "generate_s3_authorization_headers",
+            )
+            .ok_or("same-name control absent")?;
+        assert_ne!(target, other);
+        let published = BTreeSet::from([target, other]);
+        let caller = images
+            .iter()
+            .find(|image| {
+                compiled_source_path(image).ok().as_deref() == Some("core/api/viewsets.py")
+            })
+            .ok_or("caller absent")?;
+        let shadow_start = modules[4].1.find("def shadowed").ok_or("shadow control")? as u32;
+        let mut joined = 0;
+        let mut unresolved = 0;
+        let mut stale = ProjectCallableIndex::build_from_views(&views)?;
+        stale.python_program_identity = Some([0; 32]);
+        for (_, link) in caller.canonical_links() {
+            if !matches!(link.kind, LinkKind::Calls | LinkKind::MethodCall) {
+                continue;
+            }
+            let LinkTarget::External(external) = link.target else {
+                return Err("native unresolved call borrowed a local identity".into());
+            };
+            let source = link.source.ok_or("call source absence")?;
+            let result = join_project_call(
+                caller,
+                link.kind,
+                external,
+                "core/api/viewsets.py",
+                &paths,
+                &index,
+                &published,
+            )?;
+            if source.start() < shadow_start {
+                assert_eq!(result, Some(target));
+                assert_eq!(link.confidence, Confidence::Compiler);
+                assert_eq!(
+                    join_project_call(
+                        caller,
+                        link.kind,
+                        external,
+                        "core/api/viewsets.py",
+                        &BTreeSet::new(),
+                        &index,
+                        &published
+                    )?,
+                    None
+                );
+                assert_eq!(
+                    join_project_call(
+                        caller,
+                        link.kind,
+                        external,
+                        "core/api/viewsets.py",
+                        &paths,
+                        &stale,
+                        &published
+                    )?,
+                    None
+                );
+                assert_eq!(
+                    join_project_call(
+                        caller,
+                        link.kind,
+                        external,
+                        "core/api/viewsets.py",
+                        &paths,
+                        &index,
+                        &BTreeSet::from([other])
+                    )?,
+                    None
+                );
+                joined += 1;
+            } else {
+                assert_eq!(
+                    result, None,
+                    "shadowed and unselected external targets cannot borrow same-name local authority"
+                );
+                unresolved += 1;
+            }
+        }
+        assert_eq!(joined, 2);
+        assert_eq!(unresolved, 3);
+        Ok(())
     }
 }

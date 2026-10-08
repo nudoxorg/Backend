@@ -119,6 +119,7 @@ impl SnapshotPageClaim {
         expected_source_root: Option<crate::ViewStateRoot>,
         admission: &impl CoverageAdmission,
     ) -> Result<Self, String> {
+        super::codec::check_live_version(bytes, "snapshot page")?;
         let wire: SnapshotPageWire =
             serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
         ensure_version(wire.version, "snapshot page")?;
@@ -532,6 +533,7 @@ impl SnapshotPageDto {
         previous: Cursor,
         expected: &ViewRootDescriptor,
     ) -> Result<Self, String> {
+        super::codec::check_live_version(bytes, "snapshot page")?;
         let wire: SnapshotPageWire =
             serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
         ensure_version(wire.version, "snapshot page")?;

@@ -6,6 +6,9 @@ use backend_compile::{GrammarVariant, SourceLanguage, SyntaxError, SyntaxFronten
 #[path = "src/legacy/mod.rs"]
 pub mod legacy;
 
+/// Static packaging declarations using the shared Ruff parser.
+pub mod metadata;
+
 /// Builds the zero-toolchain local Python syntax frontend.
 ///
 /// This structural baseline never claims native semantic authority.

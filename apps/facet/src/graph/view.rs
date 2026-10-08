@@ -553,7 +553,9 @@ impl GraphView {
     }
 
     /// Passive native failure evidence; this never changes focus or admission.
-    #[cfg(debug_assertions)]
+    // Desktop release-profile tests enable this existing test-only fixture
+    // feature on their dependency; dependencies do not inherit cfg(test).
+    #[cfg(any(debug_assertions, feature = "release-fixture"))]
     pub fn native_focus_diagnostic(&self, window: &Window, cx: &App) -> String {
         let order = self.native_focus_order(window, cx).map(|handles| handles.into_iter()
             .map(|handle| format!("{handle:?}: focused={}, tab_stop={}", handle.is_focused(window), handle.tab_stop)).collect::<Vec<_>>());

@@ -20,6 +20,7 @@ use backend_library::{
     AdvisoryPackageDto, CommandMutation, DeclarationRecord, DependencyFacts, DependentSources,
     ForgeDiscoveryCandidate, ForgeManifestRecord, ForgeRepositoryMetadataRecord, Fragment,
     IndexSearchCursor, IndexSearchPage, IndexSearchResultCount, IndexedCheckedPackageGraph,
+    LocalDeclarationSearchRecord, LocalDeclarationSource,
     PackageCoordinate as ProductPackageCoordinate, PackageDependencyLookup,
     PackageDependencyRecord, PackageGraphSourceAuthority, PackageGraphSourceKey, PackageReference,
     ProductText, ProjectId, ProjectName, ProjectRecord, ProjectSelector,
@@ -294,16 +295,26 @@ impl ProductState {
             SurfaceCommand::References { .. } => {
                 return Err("references require compiler publication authority".to_owned());
             }
-            SurfaceCommand::Explore { query, limit } => (
-                SurfaceReply::Explored(explore_page(
-                    view,
-                    catalog,
-                    catalog_index,
-                    query.as_ref(),
-                    limit,
-                )?),
-                false,
-            ),
+            SurfaceCommand::Explore { query, limit } => {
+                let reply = if let Some(query_text) = &query
+                    && let Some(project_root) = indexed_project_for_query(view, query_text.as_str())
+                {
+                    SurfaceReply::ExploredDeclarations(indexed_explore_page(
+                        view,
+                        &project_root,
+                        query_text.as_str(),
+                        limit,
+                    )?)
+                } else {
+                    SurfaceReply::Explored(catalog_page(
+                        catalog,
+                        catalog_index,
+                        query.as_ref(),
+                        limit,
+                    )?)
+                };
+                (reply, false)
+            }
             SurfaceCommand::IndexSearch {
                 query,
                 limit,
@@ -911,30 +922,6 @@ fn owner_page(
     Ok(RegistryMetadata::Recorded(records.into_boxed_slice()))
 }
 
-fn explore_page(
-    view: &ViewRoot,
-    catalog: &[RegistryPackageRecord],
-    catalog_index: &CatalogLookupIndex,
-    query: Option<&ProductText>,
-    limit: u16,
-) -> Result<Box<[RegistryPackageRecord]>, String> {
-    if let Some(query_text) = query
-        && let Some(project_root) = indexed_project_for_query(view, query_text.as_str())
-    {
-        return indexed_explore_page(view, &project_root, query_text.as_str(), limit);
-    }
-    let registry = catalog_page(catalog, catalog_index, query, limit)?;
-    if !registry.is_empty() {
-        return Ok(registry);
-    }
-    if let Some(query_text) = query
-        && let Some(project_root) = indexed_project_for_query(view, query_text.as_str())
-    {
-        return indexed_explore_page(view, &project_root, query_text.as_str(), limit);
-    }
-    Ok(registry)
-}
-
 fn package_label(view: &ViewRoot, label: &str) -> Option<String> {
     match view.row_by_label(label) {
         Some(row) if matches!(row.id, RowId::Package(_)) => Some(row.label.clone()),
@@ -971,7 +958,7 @@ fn indexed_explore_page(
     project_root: &str,
     query: &str,
     limit: u16,
-) -> Result<Box<[RegistryPackageRecord]>, String> {
+) -> Result<Box<[LocalDeclarationSearchRecord]>, String> {
     let prefix = format!("{project_root}::");
     let filter = query.to_ascii_lowercase();
     let mut records = Vec::new();
@@ -989,7 +976,7 @@ fn indexed_explore_page(
         {
             continue;
         }
-        records.push(declaration_explore_record(row)?);
+        records.push(declaration_search_record(row)?);
         if records.len() >= usize::from(limit) {
             break;
         }
@@ -1022,32 +1009,25 @@ fn declaration_identity(row: &Row) -> Result<(String, String), String> {
     Ok((name.to_owned(), path))
 }
 
-fn declaration_explore_record(row: &Row) -> Result<RegistryPackageRecord, String> {
-    let (name, path) = declaration_identity(row)?;
-    Ok(RegistryPackageRecord {
-        coordinate: PackageReference::Local(
-            ProductText::new(row.label.clone()).map_err(|error| error.to_string())?,
-        ),
-        ecosystem: RegistryEcosystem::Cargo,
+fn declaration_search_record(row: &Row) -> Result<LocalDeclarationSearchRecord, String> {
+    let name = row
+        .label
+        .rsplit("::")
+        .next()
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| format!("declaration {} has no name", row.label))?;
+    let source = match row.source.captured() {
+        Some(location) => LocalDeclarationSource::Captured {
+            path: ProductText::new(location.path()).map_err(|error| error.to_string())?,
+            line: std::num::NonZeroU32::new(location.start_line())
+                .ok_or_else(|| "captured declaration line is zero".to_owned())?,
+        },
+        None => LocalDeclarationSource::NotCaptured,
+    };
+    Ok(LocalDeclarationSearchRecord {
+        coordinate: ProductText::new(row.label.clone()).map_err(|error| error.to_string())?,
         name: ProductText::new(name).map_err(|error| error.to_string())?,
-        version: ProductText::new(path).map_err(|error| error.to_string())?,
-        bytes: 0,
-        standing: RegistryReleaseStanding::Available,
-        downloads: RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unsupported),
-        facts_version: [0; 32],
-        authority: None,
-        native_metadata_version: RegistryNativeMetadata::unavailable(
-            RegistryEcosystem::Cargo,
-            "indexed declaration",
-        )
-        .identity()
-        .map_err(|error| error.to_string())?,
-        native_metadata: RegistryNativeMetadata::unavailable(
-            RegistryEcosystem::Cargo,
-            "indexed declaration",
-        ),
-        forge_sources: Box::new([]),
-        advisory: AdvisoryPackageDto::unknown(),
+        source,
     })
 }
 
@@ -1074,27 +1054,6 @@ fn resolve_tree_subject(
             title.unwrap_or_else(|| subject_title(&other)),
         )),
     }
-}
-
-fn index_search_page(
-    view: &ViewRoot,
-    catalog: &[RegistryPackageRecord],
-    catalog_index: &CatalogLookupIndex,
-    query: Option<&ProductText>,
-    limit: u16,
-) -> Result<Box<[RegistryPackageRecord]>, String> {
-    let mut records = catalog_page(catalog, catalog_index, query, limit)?.into_vec();
-    let needle = query.map_or("", ProductText::as_str);
-    for row in view.row_refs() {
-        if !matches!(row.id, RowId::Symbol(_)) || !row_matches_index_query(row, needle) {
-            continue;
-        }
-        records.push(declaration_explore_record(row)?);
-        if records.len() >= usize::from(limit) {
-            break;
-        }
-    }
-    Ok(records.into_boxed_slice())
 }
 
 fn index_search_page_with_discovery(
@@ -1488,7 +1447,7 @@ fn index_search_page_with_discovery_measured_snapshot(
         ranked.push(MergedPageSearchCandidate {
             candidate: PageSearchCandidate {
                 evidence: search_hit.evidence,
-                hit: RegistrySearchHit::LocalDeclaration(declaration_explore_record(row)?),
+                hit: RegistrySearchHit::LocalDeclaration(declaration_search_record(row)?),
                 plane: SearchPlane::LocalDeclaration,
             },
             page_order: format!(
@@ -1782,6 +1741,7 @@ fn product_forge_package_detail(
         name: fact(&detail.manifest.name, |value| Ok(value.clone()))?,
         version: fact(&detail.manifest.version, |value| Ok(value.clone()))?,
         dependencies: detail.manifest.dependencies.clone(),
+        python_metadata: detail.manifest.python_metadata.clone(),
     };
     let metadata = backend_library::ForgeRepositoryMetadataRecord {
         owner: fact(&detail.repository_metadata.owner, |value| Ok(value.clone()))?,
@@ -1959,7 +1919,7 @@ fn index_search_with_discovery(
             ranked_hits.push(RankedRegistrySearchHit {
                 evidence: search_hit.evidence,
                 tie: SearchStableTie::local(row_id, row.label.as_str()),
-                hit: RegistrySearchHit::LocalDeclaration(declaration_explore_record(row)?),
+                hit: RegistrySearchHit::LocalDeclaration(declaration_search_record(row)?),
             });
         }
     }
@@ -2358,6 +2318,7 @@ fn forge_discovery_candidate(
         name: Some(ProductText::new(name).map_err(|error| error.to_string())?),
         version: Some(ProductText::new(&version).map_err(|error| error.to_string())?),
         dependencies: manifest.dependencies.clone(),
+        python_metadata: manifest.python_metadata.clone(),
     };
     let commit = ProductText::new(&record.resolution.commit.as_hex())
         .map(backend_library::ForgeFact::Recorded)
@@ -2539,7 +2500,7 @@ fn indexed_package_records(
             let manifest = match super::local_manifest::read_local_manifest(project_root) {
                 Ok(Some(manifest)) => manifest,
                 Ok(None) => {
-                    if requested {
+                    if requested && !super::local_manifest::has_python_manifest(project_root) {
                         return Err(format!(
                             "indexed project {} has no supported manifest",
                             project_root.display()
@@ -2554,7 +2515,7 @@ fn indexed_package_records(
                     continue;
                 }
             };
-            if package_matches(package, &manifest.record) {
+            if requested || package_matches(package, &manifest.record) {
                 records.push(manifest.record);
             }
             continue;
@@ -2584,14 +2545,23 @@ fn registry_project_root(
             continue;
         }
         if let Some(location) = row.source.captured() {
-            let mut dir = Path::new(location.path());
-            while let Some(parent) = dir.parent() {
-                if let Some(manifest) = super::local_manifest::read_local_manifest(dir)? {
-                    if package_reference_matches(&expected, &manifest.record.coordinate) {
-                        return Ok(dir.to_path_buf());
-                    }
+            let file = Path::new(location.path());
+            // A package-relative path is not authority to inspect the client's
+            // working directory. Its source root is the authenticated stage.
+            if !file.is_absolute() {
+                continue;
+            }
+            // Captured locations identify files. Manifest lookup starts at
+            // their parent, never by treating a source file as a directory.
+            let mut directory = file.parent();
+            while let Some(dir) = directory {
+                if dir.is_dir()
+                    && let Some(manifest) = super::local_manifest::read_local_manifest(dir)?
+                    && package_reference_matches(&expected, &manifest.record.coordinate)
+                {
+                    return Ok(dir.to_path_buf());
                 }
-                dir = parent;
+                directory = dir.parent();
             }
         }
     }
@@ -3249,6 +3219,23 @@ fn package_versions(
     package: &PackageReference,
     workspace: Option<&Path>,
 ) -> Result<OrderedRegistryVersions, String> {
+    // Registry releases retain the selected catalog's source authority,
+    // native metadata and conflicts. A captured declaration path must not
+    // replace those facts with a local manifest projection.
+    if matches!(package, PackageReference::Purl(_)) {
+        let mut rows = catalog_index
+            .records_for(catalog, package, true)?
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        if !rows.is_empty() {
+            let order = sort_registry_versions(&mut rows);
+            return Ok(OrderedRegistryVersions {
+                rows: rows.into_boxed_slice(),
+                order,
+            });
+        }
+    }
     let indexed = indexed_package_records(view, package, workspace)?;
     let mut rows = if !indexed.is_empty() {
         indexed
@@ -3282,11 +3269,80 @@ fn profile(
         .as_ref()
         .and_then(|row| row.authority)
         .or_else(|| withheld_candidate_authority(&ordered));
+    let source_metadata = local_profile_source_metadata(view, package, &ordered.rows, workspace)?;
     Ok(SurfaceReply::PackageProfile {
         latest,
         versions: ordered.rows.len() as u64,
         candidate_authority,
+        source_metadata,
     })
+}
+
+fn local_profile_source_metadata(
+    view: &ViewRoot,
+    package: &PackageReference,
+    local_records: &[RegistryPackageRecord],
+    workspace: Option<&Path>,
+) -> Result<Option<backend_library::PythonProjectMetadata>, String> {
+    // Optional Python enrichment cannot turn an authoritative registry
+    // profile into a filesystem query. A PURL needs both Python relevance
+    // and a local version-record witness before any source-root lookup.
+    if let PackageReference::Purl(coordinate) = package
+        && (coordinate.package_type().registry() != Some(RegistryEcosystem::Pypi)
+            || !local_records.iter().any(|record| {
+                record.authority.is_none() && record.ecosystem == RegistryEcosystem::Pypi
+            }))
+    {
+        return Ok(None);
+    }
+    let mut matching = None;
+    for row in view
+        .row_refs()
+        .filter(|row| matches!(row.id, RowId::Package(_)))
+    {
+        let root = if Path::new(&row.label).is_dir() {
+            PathBuf::from(&row.label)
+        } else if row.label.starts_with("pkg:")
+            && package_reference_matches(
+                package,
+                &PackageReference::parse(&row.label).map_err(|error| error.to_string())?,
+            )
+        {
+            registry_project_root(view, &row.label, workspace)?
+        } else {
+            continue;
+        };
+        let requested = matches!(package, PackageReference::Local(label) if label.as_str() == row.label.as_str());
+        if matches!(package, PackageReference::Local(_)) && !requested {
+            continue;
+        }
+        if !super::local_manifest::has_python_manifest(&root) {
+            continue;
+        }
+        let metadata = match super::local_manifest::read_python_metadata(&root) {
+            Ok(Some(metadata)) => metadata,
+            Ok(None) => continue,
+            Err(error) if requested => return Err(error),
+            Err(_) => continue,
+        };
+        if requested {
+            return Ok(Some(metadata));
+        }
+        if local_records.iter().any(|record| {
+            record.authority.is_none()
+                && record.ecosystem == RegistryEcosystem::Pypi
+                && metadata.name.recorded().map(String::as_str) == Some(record.name.as_str())
+                && metadata.version.recorded().map(String::as_str) == Some(record.version.as_str())
+                && metadata.digest() == record.facts_version
+        }) {
+            if matching.is_some() {
+                // A PURL does not select one of multiple local source roots.
+                return Ok(None);
+            }
+            matching = Some(metadata);
+        }
+    }
+    Ok(matching)
 }
 
 fn latest_available_version(ordered: &OrderedRegistryVersions) -> Option<RegistryPackageRecord> {
@@ -3683,6 +3739,210 @@ mod tests {
             native_metadata,
             forge_sources: Box::new([]),
             advisory: AdvisoryPackageDto::unknown(),
+        }
+    }
+
+    #[test]
+    fn local_declaration_exploration_does_not_promote_coordinate_text_to_source_capture() {
+        let label = "/project::src/react.tsx:17::react";
+        let (view, _) = super::super::initial_view().expect("view");
+        let row = Row::new(
+            RowId::Symbol(backend_engine::symbol_key(label)),
+            view.basis(),
+            label,
+        );
+        let prepared = view
+            .prepare(
+                backend_engine::ViewDelta::Upsert { row },
+                super::super::test_builtin_view_capability().expect("capability"),
+            )
+            .expect("prepare");
+        let (view, _) = view.commit(prepared).expect("commit");
+        let records = indexed_explore_page(&view, "/project", "/project", 8).expect("explore");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].source, LocalDeclarationSource::NotCaptured);
+        let reply = SurfaceReply::ExploredDeclarations(records);
+        reply.admit(reply.id()).expect("reply");
+        let value = serde_json::to_value(&reply).expect("encode");
+        assert_eq!(value["result"], "explored-declarations");
+        assert_eq!(value["data"][0]["source"]["state"], "not-captured");
+        assert!(value["data"][0]["source"].get("path").is_none());
+        assert!(value["data"][0].get("ecosystem").is_none());
+    }
+
+    fn registry_source_view(package: &str, source: &str) -> ViewRoot {
+        let (view, _) = super::super::initial_view().expect("initial view");
+        let label = format!("{package}::{source}:1::exported");
+        let rows = vec![
+            Row::new(
+                RowId::Package(backend_engine::package_key(package)),
+                view.basis(),
+                package,
+            ),
+            Row::new(
+                RowId::Symbol(backend_engine::symbol_key(&label)),
+                view.basis(),
+                label,
+            )
+            .with_source(backend_library::SourceLocation::new(source, 1).expect("location")),
+        ];
+        ViewRoot::new_incomplete(
+            backend_engine::view_key(b"registry source root tests"),
+            view.basis(),
+            backend_engine::Frontier::new(
+                view.basis().branch,
+                view.basis().log,
+                view.basis().schema,
+                view.basis().root,
+                0,
+            ),
+            rows,
+            Vec::new(),
+        )
+        .expect("registry source view")
+    }
+
+    #[test]
+    fn registry_package_versions_preserve_catalog_authorities_over_relative_source_paths() {
+        let package = PackageReference::parse("pkg:npm/react@19.3.0").expect("package");
+        let view = registry_source_view(package.as_str(), "cjs/react.development.js");
+        let mut first = registry_row(package.as_str(), "react");
+        let mut second = first.clone();
+        let mut first_authority = current_test_authority(&first);
+        first_authority.source = [0x11; 32];
+        first.authority = Some(first_authority);
+        let mut second_authority = current_test_authority(&second);
+        second_authority.source = [0x22; 32];
+        second.authority = Some(second_authority);
+        let catalog = vec![first, second];
+        let index = CatalogLookupIndex::from_catalog(&catalog);
+        let versions =
+            package_versions(&view, &catalog, &index, &package, None).expect("catalog versions");
+        assert_eq!(versions.rows.len(), 2);
+        assert_eq!(versions.rows[0].native_metadata, catalog[0].native_metadata);
+        assert_ne!(versions.rows[0].authority, versions.rows[1].authority);
+        assert!(
+            latest_available_version(&versions).is_none(),
+            "conflicting registry sources stay ambiguous"
+        );
+        assert!(matches!(
+            profile(&view, &catalog, &index, &package, None).expect("profile"),
+            SurfaceReply::PackageProfile {
+                latest: None,
+                versions: 2,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn registry_catalog_python_profile_needs_local_metadata_witness_before_source_resolution() {
+        let package = PackageReference::parse("pkg:pypi/example@1.0.0").expect("package");
+        let view = registry_source_view(package.as_str(), "example/__init__.py");
+        let mut record = registry_row(package.as_str(), "example");
+        record.authority = Some(current_test_authority(&record));
+        let catalog = vec![record];
+        let index = CatalogLookupIndex::from_catalog(&catalog);
+        let reply = profile(&view, &catalog, &index, &package, None).expect("catalog-only profile");
+        assert!(matches!(
+            reply,
+            SurfaceReply::PackageProfile {
+                versions: 1,
+                source_metadata: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn optional_registry_metadata_guard_preserves_exact_local_manifest_errors() {
+        let root = fixture("optional-local-python-error");
+        fs::write(root.join("pyproject.toml"), "[project]\nname = ")
+            .expect("malformed Python manifest");
+        let label = root.to_str().expect("fixture path");
+        let package = PackageReference::parse(label).expect("local package");
+        let view = registry_source_view(label, "example.py");
+        assert!(
+            local_profile_source_metadata(&view, &package, &[], None).is_err(),
+            "an exact local request must retain its malformed manifest error"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn registry_source_roots_resolve_relative_files_from_stage_and_absolute_file_parents() {
+        let workspace = fixture("registry-source-parent");
+        let root = workspace.join("registry-staging/archive/package");
+        fs::create_dir_all(root.join("cjs")).expect("source directories");
+        fs::write(
+            root.join("package.json"),
+            r#"{"name":"react","version":"19.3.0"}"#,
+        )
+        .expect("manifest");
+        fs::write(root.join("cjs/react.development.js"), "export const x = 1;").expect("source");
+        let package = "pkg:npm/react@19.3.0";
+        let relative = registry_source_view(package, "cjs/react.development.js");
+        assert_eq!(
+            registry_project_root(&relative, package, Some(&workspace)).expect("staged root"),
+            root
+        );
+        let absolute = registry_source_view(
+            package,
+            root.join("cjs/react.development.js")
+                .to_str()
+                .expect("absolute source"),
+        );
+        assert_eq!(
+            registry_project_root(&absolute, package, None).expect("parent root"),
+            root
+        );
+        assert!(
+            registry_project_root(&relative, package, None).is_err(),
+            "relative paths cannot borrow the working directory"
+        );
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn local_declaration_search_keeps_typescript_and_python_source_identity() {
+        let (view, _) = super::super::initial_view().expect("initial view");
+        for (path, line) in [
+            ("frontend/components/react.tsx", 17),
+            ("mealie/routes/react.py", 43),
+        ] {
+            let label = format!("/captured/project::{path}:{line}::react");
+            let row = Row::new(
+                RowId::Symbol(backend_engine::symbol_key(&label)),
+                view.basis(),
+                &label,
+            )
+            .with_source(backend_library::SourceLocation::new(path, line).expect("location"));
+            let record = declaration_search_record(&row).expect("source-backed declaration");
+            assert_eq!(record.coordinate.as_str(), label);
+            assert_eq!(
+                record.source,
+                LocalDeclarationSource::Captured {
+                    path: ProductText::new(path).expect("path"),
+                    line: std::num::NonZeroU32::new(line).expect("line"),
+                }
+            );
+            let encoded =
+                serde_json::to_value(RegistrySearchHit::LocalDeclaration(record)).expect("encode");
+            assert_eq!(encoded["state"], "local-declaration");
+            assert_eq!(encoded["value"]["name"], "react");
+            for field in [
+                "ecosystem",
+                "version",
+                "bytes",
+                "standing",
+                "downloads",
+                "native_metadata",
+            ] {
+                assert!(
+                    encoded["value"].get(field).is_none(),
+                    "declaration cannot claim {field}"
+                );
+            }
         }
     }
 
@@ -5385,6 +5645,7 @@ mod tests {
                     name: ForgeFact::Recorded(ProductText::new("widget").expect("package name")),
                     version: ForgeFact::Recorded(ProductText::new("1.0.0").expect("version")),
                     dependencies: DependencyFacts::Known(vec![dependency].into_boxed_slice()),
+                    python_metadata: None,
                 },
                 backend_engine::ForgePackageManifest {
                     path: "examples/source-pin/Cargo.toml".into(),
@@ -5396,6 +5657,7 @@ mod tests {
                         backend_engine::ForgeUnavailableReason::AuthorityOmitted,
                     ),
                     dependencies: DependencyFacts::Known(Box::default()),
+                    python_metadata: None,
                 },
             ]
             .into_boxed_slice(),
@@ -5850,6 +6112,168 @@ edition = \"2021\"
             reused_ns[reused_ns.len() / 2]
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn python_local_profile_exposes_static_source_metadata_and_dynamic_absence() {
+        let root = fixture("python-profile");
+        fs::write(root.join("setup.cfg"), "[metadata]\nname=httpie\nversion=attr: httpie.__version__\ndescription=HTTP client\nproject_urls=\n Documentation=https://example.test/docs\n GitHub=https://example.test/repo\n[options]\ninstall_requires=requests[socks]>=2,<3\n").expect("manifest");
+        fs::create_dir(root.join("httpie")).expect("package");
+        fs::write(root.join("httpie/__init__.py"), "__version__='3.2.4'\n")
+            .expect("literal source");
+        let view = package_view(b"python-profile", &[root.as_path()]);
+        let package = PackageReference::parse(root.display().to_string()).expect("local path");
+        let reply = profile(
+            &view,
+            &[],
+            &CatalogLookupIndex::from_catalog(&[]),
+            &package,
+            None,
+        )
+        .expect("profile");
+        reply
+            .admit(backend_library::CommandId::PackageProfile)
+            .expect("bounded source evidence");
+        let SurfaceReply::PackageProfile {
+            latest: None,
+            versions: 1,
+            source_metadata: Some(metadata),
+            ..
+        } = reply
+        else {
+            panic!("local source metadata is independent of authoritative latest");
+        };
+        assert_eq!(metadata.name.recorded().map(String::as_str), Some("httpie"));
+        assert_eq!(
+            metadata.version.recorded().map(String::as_str),
+            Some("3.2.4")
+        );
+        assert_eq!(
+            metadata.documentation.recorded().map(String::as_str),
+            Some("https://example.test/docs")
+        );
+        fs::write(root.join("httpie/__init__.py"), "__version__=dynamic()\n")
+            .expect("dynamic source");
+        let reply = profile(
+            &view,
+            &[],
+            &CatalogLookupIndex::from_catalog(&[]),
+            &package,
+            None,
+        )
+        .expect("dynamic profile");
+        let SurfaceReply::PackageProfile {
+            latest: None,
+            source_metadata: Some(metadata),
+            ..
+        } = reply
+        else {
+            panic!("explicit unavailable version profile");
+        };
+        assert!(matches!(
+            metadata.version,
+            backend_library::PythonMetadataFact::Dynamic { .. }
+        ));
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn duplicate_purl_sources_withhold_unqualified_metadata_but_local_paths_select_it() {
+        let first = fixture("python-profile-duplicate-first");
+        let second = fixture("python-profile-duplicate-second");
+        for (root, description) in [(&first, "first source"), (&second, "second source")] {
+            fs::write(
+                root.join("pyproject.toml"),
+                format!("[project]\nname='sample'\nversion='1'\ndescription='{description}'\n"),
+            )
+            .expect("manifest");
+        }
+        let purl = PackageReference::parse("pkg:pypi/sample@1").expect("PURL");
+        for roots in [
+            [first.as_path(), second.as_path()],
+            [second.as_path(), first.as_path()],
+        ] {
+            let view = package_view(b"duplicate-python-source-profile", &roots);
+            let reply = profile(
+                &view,
+                &[],
+                &CatalogLookupIndex::from_catalog(&[]),
+                &purl,
+                None,
+            )
+            .expect("PURL profile");
+            assert!(
+                matches!(
+                    reply,
+                    SurfaceReply::PackageProfile {
+                        source_metadata: None,
+                        ..
+                    }
+                ),
+                "PURL cannot select among multiple source roots"
+            );
+            for (root, description) in [(&first, "first source"), (&second, "second source")] {
+                let local =
+                    PackageReference::parse(root.to_str().expect("path")).expect("local operand");
+                let reply = profile(
+                    &view,
+                    &[],
+                    &CatalogLookupIndex::from_catalog(&[]),
+                    &local,
+                    None,
+                )
+                .expect("local profile");
+                let SurfaceReply::PackageProfile {
+                    source_metadata: Some(metadata),
+                    ..
+                } = reply
+                else {
+                    panic!("exact local source");
+                };
+                assert_eq!(
+                    metadata.description.recorded().map(String::as_str),
+                    Some(description)
+                );
+            }
+        }
+        // Identical declarations in different roots still need the exact path
+        // operand; matching content digests alone must not hide that selection.
+        fs::copy(second.join("pyproject.toml"), first.join("pyproject.toml"))
+            .expect("identical source declarations");
+        let view = package_view(b"identical-python-source-profile", &[&second, &first]);
+        for root in [&first, &second] {
+            let local = PackageReference::parse(root.to_str().expect("path")).expect("local");
+            assert!(matches!(
+                profile(
+                    &view,
+                    &[],
+                    &CatalogLookupIndex::from_catalog(&[]),
+                    &local,
+                    None
+                )
+                .expect("exact local profile"),
+                SurfaceReply::PackageProfile {
+                    source_metadata: Some(_),
+                    ..
+                }
+            ));
+        }
+        assert!(matches!(
+            profile(
+                &view,
+                &[],
+                &CatalogLookupIndex::from_catalog(&[]),
+                &purl,
+                None
+            )
+            .expect("ambiguous PURL"),
+            SurfaceReply::PackageProfile {
+                source_metadata: None,
+                ..
+            }
+        ));
+        fs::remove_dir_all(first).expect("remove first");
+        fs::remove_dir_all(second).expect("remove second");
     }
 
     /// Builds a view whose `RowId::Package` rows are indexed local directories,

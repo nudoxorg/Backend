@@ -17,7 +17,7 @@ use serde::{
 };
 use std::collections::BTreeSet;
 use std::io::{self, Write};
-use std::num::NonZeroU64;
+use std::num::{NonZeroU32, NonZeroU64};
 use std::{fmt, str::FromStr};
 
 #[path = "surface/package_compiler_failure.rs"]
@@ -1215,24 +1215,7 @@ impl IndexOperationSourceCaptureReceipt {
         workspace_sequence: u64,
         profiles: Box<[IndexOperationSourceProfile]>,
     ) -> Result<Self, ProductAdmissionError> {
-        if [commit_identity, workspace_root]
-            .iter()
-            .any(|identity| identity.iter().all(|byte| *byte == 0))
-            || workspace_sequence == 0
-            || profiles.is_empty()
-            || profiles.len() > 16
-            || profiles
-                .windows(2)
-                .any(|window| window[0].profile >= window[1].profile)
-            || profiles.iter().any(|profile| {
-                profile.source_version.iter().all(|byte| *byte == 0)
-                    || profile.input_digest.iter().all(|byte| *byte == 0)
-                    || profile.observation_sequence == 0
-                    || !valid_index_operation_profile_state(profile.state)
-            })
-        {
-            return Err(ProductAdmissionError::IndexOperationShape);
-        }
+        admit_source_capture_parts(commit_identity, workspace_root, workspace_sequence, &profiles)?;
         Ok(Self {
             operation_key,
             commit_identity,
@@ -1285,6 +1268,133 @@ impl IndexOperationSourceCaptureReceipt {
         )
         .map(|_| ())
     }
+
+    /// Admits the complete terminal partition planned before a partial commit.
+    ///
+    /// # Errors
+    /// Rejects missing, duplicate, foreign, pending or contradictory outcomes.
+    /// The receipt retains every exact source/input/observation tuple; this
+    /// check establishes profile shape, never workspace publication authority.
+    pub fn admit_partial_refusals(
+        &self,
+        refused_profiles: &[IndexOperationProfileRefusal],
+    ) -> Result<(), ProductAdmissionError> {
+        self.admit(self.operation_key)?;
+        admit_terminal_profile_partition(self.profiles(), refused_profiles)
+    }
+}
+
+fn admit_source_capture_parts(
+    commit_identity: [u8; 32],
+    workspace_root: [u8; 32],
+    workspace_sequence: u64,
+    profiles: &[IndexOperationSourceProfile],
+) -> Result<(), ProductAdmissionError> {
+    if [commit_identity, workspace_root]
+        .iter()
+        .any(|identity| identity.iter().all(|byte| *byte == 0))
+        || workspace_sequence == 0
+        || profiles.is_empty()
+        || profiles.len() > 16
+        || profiles
+            .windows(2)
+            .any(|window| window[0].profile >= window[1].profile)
+        || profiles.iter().any(|profile| {
+            profile.profile.profile().is_err()
+                || profile.source_version.iter().all(|byte| *byte == 0)
+                || profile.input_digest.iter().all(|byte| *byte == 0)
+                || profile.observation_sequence == 0
+                || !valid_index_operation_profile_state(profile.state)
+        })
+    {
+        return Err(ProductAdmissionError::IndexOperationShape);
+    }
+    Ok(())
+}
+
+fn admit_terminal_profile_partition(
+    profiles: &[IndexOperationSourceProfile],
+    refused_profiles: &[IndexOperationProfileRefusal],
+) -> Result<(), ProductAdmissionError> {
+    let published = profiles
+        .iter()
+        .filter(|profile| {
+            matches!(
+                profile.state,
+                IndexOperationSemanticProfileState::Published { .. }
+            )
+        })
+        .count();
+    if published == 0
+        || published == profiles.len()
+        || refused_profiles.len() != profiles.len() - published
+        || refused_profiles
+            .windows(2)
+            .any(|pair| pair[0].profile >= pair[1].profile)
+    {
+        return Err(ProductAdmissionError::IndexOperationShape);
+    }
+    for profile in profiles {
+        let expected_reason = match profile.state {
+            IndexOperationSemanticProfileState::Published { .. } => continue,
+            IndexOperationSemanticProfileState::Unavailable { reason }
+            | IndexOperationSemanticProfileState::Failed { reason, .. } => reason,
+            IndexOperationSemanticProfileState::Pending { .. } => {
+                return Err(ProductAdmissionError::IndexOperationShape);
+            }
+        };
+        let refusal = refused_profiles
+            .iter()
+            .find(|refusal| refusal.profile == profile.profile)
+            .ok_or(ProductAdmissionError::IndexOperationShape)?;
+        if refusal.reason != expected_reason
+            || refusal.reason == IndexOperationSemanticUnavailableReason::Cancelled
+        {
+            return Err(ProductAdmissionError::IndexOperationShape);
+        }
+        if let Some(failure) = &refusal.compiler_failure {
+            if refusal.reason != IndexOperationSemanticUnavailableReason::Rejected {
+                return Err(ProductAdmissionError::IndexOperationShape);
+            }
+            failure.encode_bounded_json()?;
+            if let PackageCompilerFailureCause::Authority {
+                diagnostic: Some(facts),
+                ..
+            } = failure.cause()
+            {
+                let language = profile.profile.profile()?.language();
+                if (facts.python_failure.is_some()
+                    && language != backend_semantic::vocabulary::Language::Python)
+                    || (facts.typescript_failure.is_some()
+                        && language != backend_semantic::vocabulary::Language::TypeScript)
+                    || matches!(
+                        facts.python_failure,
+                        Some(crate::interface::PythonAuthorityFailureKind::Cancelled)
+                    )
+                    || facts
+                        .typescript_failure
+                        .is_some_and(|failure| failure.is_cancelled())
+                {
+                    return Err(ProductAdmissionError::IndexOperationShape);
+                }
+            }
+            if let PackageCompilerFailureCause::Toolchain {
+                language, stage, ..
+            }
+            | PackageCompilerFailureCause::ToolingUnavailable {
+                language, stage, ..
+            }
+            | PackageCompilerFailureCause::RequiredTool {
+                language, stage, ..
+            } = failure.cause()
+                && (*language != CompilerLanguageFact::from(profile.profile.profile()?.language())
+                    || *stage != CompilerStageFact::LowerIr)
+            {
+                return Err(ProductAdmissionError::IndexOperationShape);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn valid_index_operation_profile_state(state: IndexOperationSemanticProfileState) -> bool {
@@ -1316,6 +1426,19 @@ fn valid_index_operation_profile_state(state: IndexOperationSemanticProfileState
     }
 }
 
+/// One unavailable profile retained in an exact partial publication receipt.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexOperationProfileRefusal {
+    /// Closed profile identity from the committed source capture.
+    pub profile: SemanticLanguageProfile,
+    /// Closed reason this profile did not publish a refreshed generation.
+    pub reason: IndexOperationSemanticUnavailableReason,
+    /// Source-bound compiler refusal when the compiler supplied one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiler_failure: Option<PackageCompilerFailure>,
+}
+
 /// Durable state retained for one caller-owned index operation key.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", content = "detail", rename_all = "kebab-case")]
@@ -1331,6 +1454,15 @@ pub enum IndexOperationState {
     },
     /// The admitted workspace intent and its derived product view were durably published.
     Published(IndexOperationPublicationReceipt),
+    /// The exact workspace/view commit selected useful profile generations
+    /// and explicitly refused other captured profiles. This is terminal but
+    /// never establishes complete semantic coverage of the application.
+    PartiallyPublished {
+        /// Exact committed workspace and derived view receipt.
+        receipt: IndexOperationPublicationReceipt,
+        /// Every failed/unavailable captured profile, in canonical order.
+        refused_profiles: Box<[IndexOperationProfileRefusal]>,
+    },
     /// The operation ended without publishing its requested mutation.
     Failed {
         /// Stable terminal failure category.
@@ -1487,6 +1619,22 @@ impl IndexOperationObservation {
                         _ => {}
                     }
                 }
+                if let IndexOperationState::PartiallyPublished {
+                    receipt,
+                    refused_profiles,
+                } = &status.state
+                {
+                    let capture = status
+                        .source_capture
+                        .as_ref()
+                        .ok_or(ProductAdmissionError::IndexOperationShape)?;
+                    capture.admit_partial_refusals(refused_profiles)?;
+                    if receipt.workspace_sequence() <= capture.workspace_sequence()
+                        || receipt.request_identity().is_none()
+                    {
+                        return Err(ProductAdmissionError::IndexOperationShape);
+                    }
+                }
                 if let IndexOperationState::Failed {
                     reason,
                     compiler_failure: Some(failure),
@@ -1505,6 +1653,7 @@ impl IndexOperationObservation {
                         return Err(ProductAdmissionError::IndexOperationShape);
                     }
                     IndexOperationState::Published(receipt)
+                    | IndexOperationState::PartiallyPublished { receipt, .. }
                         if IndexOperationPublicationReceipt::from_checked_parts(
                             receipt.request_identity().copied(),
                             *receipt.commit_identity(),
@@ -2325,6 +2474,17 @@ fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, boo
     {
         return sanitize_package_compiler_detail(failure.detail(), false);
     }
+    if let PackageCompilerFailureCause::Authority {
+        diagnostic:
+            Some(CompilerAuthorityDiagnosticFacts {
+                typescript_failure: Some(failure),
+                ..
+            }),
+        ..
+    } = cause
+    {
+        return sanitize_package_compiler_detail(failure.detail(), false);
+    }
     let prefix = match cause {
         PackageCompilerFailureCause::Fragment(_) => "compact fragment fault",
         PackageCompilerFailureCause::Toolchain {
@@ -2415,8 +2575,14 @@ fn package_cause_is_valid(cause: &PackageCompilerFailureCause) -> bool {
         } => configured.is_none_or(|configured| *selected != configured),
         PackageCompilerFailureCause::ToolingUnavailable { .. }
         | PackageCompilerFailureCause::RequiredTool { .. }
-        | PackageCompilerFailureCause::Lowering(_)
-        | PackageCompilerFailureCause::Authority { .. } => true,
+        | PackageCompilerFailureCause::Lowering(_) => true,
+        PackageCompilerFailureCause::Authority {
+            diagnostic: Some(facts),
+            ..
+        } => !(facts.python_failure.is_some() && facts.typescript_failure.is_some()),
+        PackageCompilerFailureCause::Authority {
+            diagnostic: None, ..
+        } => true,
     }
 }
 
@@ -2543,6 +2709,110 @@ fn lower_hex_nibble(value: u8) -> Option<u8> {
     }
 }
 
+/// Exact selected source-capture basis of a process-local index result.
+/// This summary does not manufacture a caller-owned durable operation key.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexSourceCaptureSummary {
+    /// Immutable producer namespace whose selected profile markers were read.
+    pub producer_package: PackageReference,
+    /// Source intent identity retained in each selected profile marker.
+    #[serde(with = "hex_32")]
+    pub request_identity: [u8; 32],
+    /// Exact source-capture commit.
+    #[serde(with = "hex_32")]
+    pub commit_identity: [u8; 32],
+    /// Exact workspace root containing that capture.
+    #[serde(with = "hex_32")]
+    pub workspace_root: [u8; 32],
+    /// Sequence selecting that capture.
+    pub workspace_sequence: u64,
+    /// Complete canonical profile source/input/observation and semantic outcomes.
+    pub profiles: Box<[IndexOperationSourceProfile]>,
+}
+
+impl IndexSourceCaptureSummary {
+    /// Checks the exact source basis and canonical bounded profile tuples.
+    /// This is structural admission; authority comes from selected owner rows.
+    pub fn admit(&self) -> Result<(), ProductAdmissionError> {
+        if self.request_identity.iter().all(|byte| *byte == 0) {
+            return Err(ProductAdmissionError::IndexOperationShape);
+        }
+        admit_source_capture_parts(
+            self.commit_identity,
+            self.workspace_root,
+            self.workspace_sequence,
+            &self.profiles,
+        )
+    }
+}
+
+/// Useful committed language profiles alongside every typed refused profile.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexJobPartialPublication {
+    /// Exact requested package; the producer namespace is retained separately.
+    pub package: PackageReference,
+    /// Exact committed workspace and derived product view.
+    pub receipt: IndexOperationPublicationReceipt,
+    /// Exact source basis with every terminal profile outcome.
+    pub source_capture: IndexSourceCaptureSummary,
+    /// All failed or unavailable profiles in canonical order.
+    pub refused_profiles: Box<[IndexOperationProfileRefusal]>,
+}
+
+impl<'de> Deserialize<'de> for IndexJobPartialPublication {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            package: PackageReference,
+            receipt: IndexOperationPublicationReceipt,
+            source_capture: IndexSourceCaptureSummary,
+            refused_profiles: Box<[IndexOperationProfileRefusal]>,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        let partial = Self {
+            package: wire.package,
+            receipt: wire.receipt,
+            source_capture: wire.source_capture,
+            refused_profiles: wire.refused_profiles,
+        };
+        partial.admit().map_err(D::Error::custom)?;
+        Ok(partial)
+    }
+}
+
+impl IndexJobPartialPublication {
+    /// Counts this closed payload without allocating a serialized copy.
+    pub(crate) fn encoded_size_bound(&self) -> usize {
+        serialized_json_size(self)
+    }
+
+    /// Rejects incomplete, pending, cancelled, foreign or malformed partitions.
+    pub fn admit(&self) -> Result<(), ProductAdmissionError> {
+        self.source_capture.admit()?;
+        admit_terminal_profile_partition(&self.source_capture.profiles, &self.refused_profiles)?;
+        let receipt = &self.receipt;
+        IndexOperationPublicationReceipt::from_checked_parts(
+            receipt.request_identity().copied(),
+            *receipt.commit_identity(),
+            *receipt.workspace_root(),
+            receipt.workspace_sequence(),
+            *receipt.view_root(),
+            *receipt.view_version(),
+            *receipt.view_recipe(),
+            receipt.revision_cursor().into(),
+        )?;
+        if receipt.request_identity().is_none()
+            || receipt.workspace_sequence() <= self.source_capture.workspace_sequence
+        {
+            return Err(ProductAdmissionError::IndexOperationShape);
+        }
+        Ok(())
+    }
+}
+
 /// Terminal effect of one index job.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(
@@ -2554,6 +2824,8 @@ fn lower_hex_nibble(value: u8) -> Option<u8> {
 pub enum IndexJobOutcome {
     /// Semantic admission and the owner publication completed.
     Published,
+    /// Useful profiles were published with an exact terminal refusal partition.
+    PartiallyPublished(IndexJobPartialPublication),
     /// The candidate was refused and did not replace the prior publication.
     Refused(ProductText),
     /// A package compiler refusal with a typed, source-bound cause.
@@ -2571,6 +2843,9 @@ pub enum IndexJobOutcome {
 
 impl IndexJobOutcome {
     fn admit(&self) -> Result<(), ProductAdmissionError> {
+        if let Self::PartiallyPublished(partial) = self {
+            partial.admit()?;
+        }
         if let Self::RefusedWithCompilerFailure { failure, .. } = self {
             failure.validate()?;
         }
@@ -2580,7 +2855,13 @@ impl IndexJobOutcome {
 
 impl IndexJobTerminal {
     fn admit(&self) -> Result<(), ProductAdmissionError> {
-        self.outcome.admit()
+        self.outcome.admit()?;
+        if let IndexJobOutcome::PartiallyPublished(partial) = &self.outcome
+            && &partial.package != self.ticket.package()
+        {
+            return Err(ProductAdmissionError::IndexOperationShape);
+        }
+        Ok(())
     }
 }
 
@@ -3838,6 +4119,9 @@ pub struct ForgeDiscoveryCandidate {
 impl ForgeDiscoveryCandidate {
     /// Checks that the source coordinate and package identity remain bound.
     pub fn admit(&self) -> Result<(), ProductAdmissionError> {
+        if let Some(metadata) = &self.manifest.python_metadata {
+            metadata.admit()?;
+        }
         let source = ForgeCoordinate::parse(self.forge_coordinate.as_str().to_owned())
             .map_err(|_| ProductAdmissionError::ForgeSearchShape)?;
         let parsed = PackageCoordinate::parse(self.coordinate.as_str().to_owned())
@@ -3887,6 +4171,9 @@ impl ForgePackageDetailRecord {
             || self.manifest.path.as_str().is_empty()
         {
             return Err(ProductAdmissionError::ForgePackageDetailShape);
+        }
+        if let Some(metadata) = &self.manifest.python_metadata {
+            metadata.admit()?;
         }
         match (&self.pin, &self.package_coordinate) {
             (ForgePackagePin::PackageVersion { coordinate }, Some(package_coordinate))
@@ -3938,6 +4225,9 @@ pub struct ForgePackageManifestDetail {
     pub version: ForgeFact<ProductText>,
     /// Dependency facts admitted from the manifest.
     pub dependencies: DependencyFacts<Box<[PackageDependencyRecord]>>,
+    /// Static Python declarations with source evidence, independent of registry authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub python_metadata: Option<crate::PythonProjectMetadata>,
 }
 
 /// Registry-only evidence attached to a forge manifest.
@@ -3972,6 +4262,63 @@ fn forge_manifest_coordinate(manifest: &ForgePackageManifestDetail) -> Option<Pa
     .ok()
 }
 
+/// Source capture supplied by the selected declaration producer.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum LocalDeclarationSource {
+    /// Exact producer-captured file location.
+    Captured {
+        /// Captured source path.
+        path: ProductText,
+        /// One-based captured start line.
+        line: NonZeroU32,
+    },
+    /// The declaration producer did not capture a source location.
+    NotCaptured,
+}
+
+/// One declaration in combined search, backed by the selected source view.
+/// Its source capture is independent of registry ecosystems and releases.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalDeclarationSearchRecord {
+    /// Exact declaration coordinate accepted by document and source reads.
+    pub coordinate: ProductText,
+    /// Name supplied by the selected declaration row.
+    pub name: ProductText,
+    /// Explicit capture availability; coordinate text never establishes capture.
+    pub source: LocalDeclarationSource,
+}
+
+impl LocalDeclarationSearchRecord {
+    fn admit(&self) -> Result<(), ProductAdmissionError> {
+        let Some((location, name)) = self.coordinate.as_str().rsplit_once("::") else {
+            return Err(ProductAdmissionError::LocalDeclarationSearchShape);
+        };
+        if location.is_empty() || name != self.name.as_str() {
+            return Err(ProductAdmissionError::LocalDeclarationSearchShape);
+        }
+        if let LocalDeclarationSource::Captured { path, line } = &self.source
+            && let Some((scope, native_location)) = location.rsplit_once("::")
+            && let Some((native_path, native_line)) = native_location.rsplit_once(':')
+            && let Ok(native_line) = native_line.parse::<NonZeroU32>()
+        {
+            let captured = std::path::Path::new(path.as_str());
+            let native = std::path::Path::new(native_path);
+            let scope = std::path::Path::new(scope);
+            // Absolute registry stage locations cannot be reconstructed from
+            // a PURL scope. Their physical root is checked by the source owner.
+            let comparable = !captured.is_absolute() || native.is_absolute() || scope.is_absolute();
+            let path_matches = captured == native
+                || (!native.is_absolute() && scope.is_absolute() && scope.join(native) == captured);
+            if native_line != *line || (comparable && !path_matches) {
+                return Err(ProductAdmissionError::LocalDeclarationSearchShape);
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Ranked catalog-search item, with acquisition and discovery kept as
 /// different variants and source conflicts kept as separate candidates.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -3986,7 +4333,7 @@ pub enum RegistrySearchHit {
     /// A code-forge source pin whose manifest does not establish a package version.
     ForgeSourcePin(ForgePackageDetailRecord),
     /// A local indexed declaration returned by the combined search surface.
-    LocalDeclaration(RegistryPackageRecord),
+    LocalDeclaration(LocalDeclarationSearchRecord),
     /// One source-scoped canonical package lineage with bounded release facets.
     PackageGroup(RegistryPackageSearchGroup),
 }
@@ -4181,6 +4528,9 @@ pub struct ForgeManifestRecord {
     /// Dependency facts admitted from this source manifest. Unknown and
     /// unavailable facts remain distinct from a known empty edge set.
     pub dependencies: DependencyFacts<Box<[PackageDependencyRecord]>>,
+    /// Static Python declarations with source evidence, independent of registry authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub python_metadata: Option<crate::PythonProjectMetadata>,
 }
 
 /// Product DTO for a source acquired from GitHub, GitLab, Codeberg, or generic HTTPS Git.
@@ -4364,6 +4714,8 @@ pub enum SurfaceReply {
     Diff(Box<[DiffRecord]>),
     /// Bounded catalog page.
     Explored(Box<[RegistryPackageRecord]>),
+    /// Declarations explored within one selected local project.
+    ExploredDeclarations(Box<[LocalDeclarationSearchRecord]>),
     /// Exact package records.
     Package(Box<[RegistryPackageRecord]>),
     /// Exact source metadata, kept separate from acquired package authority.
@@ -4431,6 +4783,9 @@ pub enum SurfaceReply {
         /// This remains populated when `latest` is withheld as historical.
         #[serde(default)]
         candidate_authority: Option<RegistryPackageFactAuthority>,
+        /// Source packaging declarations from the selected local project; no registry authority implied.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_metadata: Option<crate::PythonProjectMetadata>,
     },
     /// Subscription after mutation.
     Subscribed(SubscriptionRecord),
@@ -4481,7 +4836,7 @@ impl SurfaceReply {
             Self::Read(_) => CommandId::Read,
             Self::References { .. } => CommandId::References,
             Self::Diff(_) => CommandId::Diff,
-            Self::Explored(_) => CommandId::Explore,
+            Self::Explored(_) | Self::ExploredDeclarations(_) => CommandId::Explore,
             Self::Package(_) => CommandId::Package,
             Self::PackageDiscovery { .. } => CommandId::Package,
             Self::PackageDetails { .. } => CommandId::Package,
@@ -4558,6 +4913,7 @@ impl SurfaceReply {
                     .checked_add(row.links.len())
                     .ok_or(ProductAdmissionError::RowBound)
             })?,
+            Self::ExploredDeclarations(v) => v.len(),
             Self::Explored(v)
             | Self::Package(v)
             | Self::IndexSearch(v)
@@ -4688,13 +5044,16 @@ impl SurfaceReply {
                         admit_registry_record(row)?;
                     }
                 }
+                Self::ExploredDeclarations(records) => {
+                    for record in records {
+                        record.admit()?;
+                    }
+                }
                 Self::IndexSearchWithDiscovery(hits) => {
                     for hit in hits {
                         match hit {
-                            RegistrySearchHit::Acquired(record)
-                            | RegistrySearchHit::LocalDeclaration(record) => {
-                                admit_registry_record(record)?;
-                            }
+                            RegistrySearchHit::Acquired(record) => admit_registry_record(record)?,
+                            RegistrySearchHit::LocalDeclaration(record) => record.admit()?,
                             RegistrySearchHit::Discovered(candidate) => candidate.admit()?,
                             RegistrySearchHit::ForgeDiscovered(candidate) => candidate.admit()?,
                             RegistrySearchHit::ForgeSourcePin(candidate) => candidate.admit()?,
@@ -4731,10 +5090,8 @@ impl SurfaceReply {
                     }
                     for hit in page.hits.iter() {
                         match hit {
-                            RegistrySearchHit::Acquired(record)
-                            | RegistrySearchHit::LocalDeclaration(record) => {
-                                admit_registry_record(record)?;
-                            }
+                            RegistrySearchHit::Acquired(record) => admit_registry_record(record)?,
+                            RegistrySearchHit::LocalDeclaration(record) => record.admit()?,
                             RegistrySearchHit::Discovered(candidate) => candidate.admit()?,
                             RegistrySearchHit::ForgeDiscovered(candidate) => candidate.admit()?,
                             RegistrySearchHit::ForgeSourcePin(candidate) => candidate.admit()?,
@@ -4758,14 +5115,38 @@ impl SurfaceReply {
                         row.admit()?;
                     }
                 }
+                Self::ForgePackageAdded(record) | Self::ForgePackageReferenced(record) => {
+                    for manifest in &record.manifests {
+                        if let Some(metadata) = &manifest.python_metadata {
+                            metadata.admit()?;
+                        }
+                    }
+                }
                 Self::PackageProfile {
-                    latest: Some(row),
+                    latest,
                     candidate_authority,
+                    source_metadata,
                     ..
                 } => {
-                    admit_registry_record(row)?;
-                    if candidate_authority != &row.authority {
-                        return Err(ProductAdmissionError::RegistryAuthority);
+                    if let Some(row) = latest {
+                        admit_registry_record(row)?;
+                        if candidate_authority != &row.authority {
+                            return Err(ProductAdmissionError::RegistryAuthority);
+                        }
+                    }
+                    if let Some(metadata) = source_metadata {
+                        metadata.admit()?;
+                        if latest.as_ref().is_some_and(|row| {
+                            row.authority.is_none()
+                                && row.ecosystem == RegistryEcosystem::Pypi
+                                && (metadata.name.recorded().map(String::as_str)
+                                    != Some(row.name.as_str())
+                                    || metadata.version.recorded().map(String::as_str)
+                                        != Some(row.version.as_str())
+                                    || metadata.digest() != row.facts_version)
+                        }) {
+                            return Err(ProductAdmissionError::PythonMetadata);
+                        }
                     }
                 }
                 _ => {}
@@ -4804,12 +5185,13 @@ impl SurfaceReply {
             | Self::Owner(RegistryMetadata::Partial { value, reason }) => {
                 registry_records_bound(value).saturating_add(text_bound(reason))
             }
+            Self::ExploredDeclarations(records) => fixed_record_bound()
+                .saturating_add(serde_json::to_vec(records).map_or(0, |bytes| bytes.len())),
             Self::IndexSearchWithDiscovery(hits) => hits.iter().fold(0_usize, |bound, hit| {
                 bound.saturating_add(match hit {
-                    RegistrySearchHit::Acquired(record)
-                    | RegistrySearchHit::LocalDeclaration(record) => {
-                        registry_package_record_bound(record)
-                    }
+                    RegistrySearchHit::Acquired(record) => registry_package_record_bound(record),
+                    RegistrySearchHit::LocalDeclaration(record) => fixed_record_bound()
+                        .saturating_add(serde_json::to_vec(record).map_or(0, |bytes| bytes.len())),
                     RegistrySearchHit::Discovered(candidate) => {
                         fixed_record_bound().saturating_add(candidate.coordinate.as_str().len())
                     }
@@ -4890,13 +5272,15 @@ impl SurfaceReply {
             Self::PackageProfile {
                 latest,
                 candidate_authority,
+                source_metadata,
                 ..
             } => latest
                 .as_ref()
                 .map_or(64, registry_package_record_bound)
                 .saturating_add(
                     serde_json::to_vec(candidate_authority).map_or(0, |bytes| bytes.len()),
-                ),
+                )
+                .saturating_add(serde_json::to_vec(source_metadata).map_or(0, |bytes| bytes.len())),
             Self::Subscribed(record) => subscription_record_bound(record),
             Self::Unsubscribed(_) | Self::ProjectDeleted(_) | Self::TreeClosed(_) => 64,
             Self::Subscriptions(records) => records.iter().fold(0_usize, |bound, record| {
@@ -5141,6 +5525,8 @@ pub enum ProductAdmissionError {
     SemanticVersionShape,
     /// A dependency row has a stale or duplicated content identity.
     DependencyShape,
+    /// Static Python declarations have malformed bounds or detached source evidence.
+    PythonMetadata,
     /// Native registry metadata is malformed, oversized, or has a stale identity.
     NativeMetadata,
     /// Registry fact authority is inconsistent with the selected package facts.
@@ -5149,6 +5535,8 @@ pub enum ProductAdmissionError {
     RegistryDiscoveryFreshness,
     /// A registry discovery metadata facet is outside the product bounds.
     RegistryDiscoveryMetadata,
+    /// A local search hit has no declaration scope or contradicts its source name.
+    LocalDeclarationSearchShape,
     /// An index-search continuation is malformed or exceeds its byte bound.
     IndexSearchCursor,
     /// A forge search hit is not bound to its source or manifest coordinate.
@@ -5188,6 +5576,7 @@ impl core::fmt::Display for ProductAdmissionError {
             Self::DiffShape => "semantic diff has inconsistent identities or evidence",
             Self::SemanticVersionShape => "semantic version selection is inconsistent",
             Self::DependencyShape => "dependency fact has an invalid or duplicate identity",
+            Self::PythonMetadata => "Python metadata has invalid source evidence or bounds",
             Self::NativeMetadata => "native registry metadata is invalid or has a stale identity",
             Self::RegistryAuthority => {
                 "registry fact authority is inconsistent with selected package facts"
@@ -5197,6 +5586,9 @@ impl core::fmt::Display for ProductAdmissionError {
             }
             Self::RegistryDiscoveryMetadata => {
                 "registry discovery metadata exceeds its evidence bounds"
+            }
+            Self::LocalDeclarationSearchShape => {
+                "local search declaration identity is inconsistent"
             }
             Self::IndexSearchCursor => "index-search cursor is malformed or too large",
             Self::ForgeSearchShape => "forge search candidate is not bound to its source manifest",
@@ -5768,6 +6160,85 @@ mod tests {
     }
 
     #[test]
+    fn typescript_authority_failure_preserves_exact_cause_without_native_text() {
+        use crate::interface::{
+            AuthorityDiagnosticClass, AuthorityPhase, CompilerAttempt, CompilerCause,
+            CompilerDiagnostic, CompilerTerminal, SourceAuthority,
+            TypeScriptAuthorityFailureKind as F,
+        };
+        for kind in [
+            F::HostCompilerApiBridge,
+            F::HostCompilerIoClosureMismatch,
+            F::CheckerPackageSourceMissing,
+            F::CheckerExit,
+            F::NativeProjectCheckDeadline,
+            F::NativeProjectCheckWorkBudgetExhausted,
+        ] {
+            let private = b"private absolute path /home/user/app/node_modules; native stderr";
+            let terminal = CompilerTerminal::Compile {
+                attempted: CompilerAttempt {
+                    source: SourceAuthority {
+                        identity: ContentId::<SourceFactDomain>::from_canonical_bytes(
+                            b"export const x = 1",
+                        ),
+                        byte_len: 18,
+                    },
+                    recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(
+                        b"actual-typed-ts-cause-control",
+                    ),
+                },
+                cause: CompilerCause::Authority {
+                    phase: AuthorityPhase::TypeCheck,
+                    class: AuthorityDiagnosticClass::Authority,
+                    diagnostic: CompilerDiagnostic::from_native(private, private.len(), false)
+                        .map(|value| value.with_typescript_failure(kind)),
+                },
+            };
+            let failure =
+                PackageCompilerFailure::from_package_terminal("eslint.config.mjs", &terminal)
+                    .expect("closed projection")
+                    .expect("authority refusal");
+            assert_eq!(failure.kind_tag(), kind.kind_tag());
+            assert_eq!(failure.detail(), kind.detail());
+            assert!(!failure.cause().requires_tool_configuration());
+            assert_eq!(
+                failure.retained_diagnostic_for_local_debug(),
+                Some(private.as_slice())
+            );
+            let encoded = failure
+                .encode_bounded_json()
+                .expect("bounded typed public refusal");
+            assert!(!String::from_utf8_lossy(&encoded).contains("/home/user"));
+            assert!(!String::from_utf8_lossy(&encoded).contains("native stderr"));
+            let reopened = PackageCompilerFailure::decode_bounded_json(&encoded)
+                .expect("strict cold wire refusal");
+            assert_eq!(reopened, failure);
+            assert!(reopened.retained_diagnostic_for_local_debug().is_none());
+            let mut json: serde_json::Value =
+                serde_json::from_slice(&encoded).expect("control JSON");
+            json["cause"]["fault"]["diagnostic"]["python_failure"] =
+                serde_json::json!("project_panic");
+            assert!(
+                PackageCompilerFailure::decode_bounded_json(
+                    &serde_json::to_vec(&json).expect("mutant")
+                )
+                .is_err(),
+                "contradictory language markers refused"
+            );
+            json["cause"]["fault"]["diagnostic"]["python_failure"] = serde_json::Value::Null;
+            json["cause"]["fault"]["diagnostic"]["typescript_failure"] =
+                serde_json::json!("invented_cause");
+            assert!(
+                PackageCompilerFailure::decode_bounded_json(
+                    &serde_json::to_vec(&json).expect("mutant")
+                )
+                .is_err(),
+                "unknown closed TS causes refused"
+            );
+        }
+    }
+
+    #[test]
     fn package_reference_kind_preserves_explicit_local_identity() {
         let text = "pkg:cargo/widget@1.0.0";
         let purl = PackageReference::from_kind(PackageReferenceKind::Purl, text)
@@ -6185,6 +6656,314 @@ mod tests {
             )
             .expect("operation status request decode"),
             lookup
+        );
+    }
+
+    #[test]
+    fn partial_operation_requires_exact_terminal_profile_partition_and_receipt() {
+        let key = IndexOperationKey::from_bytes([0x61; 32]).expect("operation key");
+        let mut profiles = vec![
+            IndexOperationSourceProfile {
+                profile: SemanticLanguageProfile::from_name("python").expect("Python profile"),
+                source_version: [5; 32],
+                input_digest: [6; 32],
+                observation_sequence: 7,
+                source_count: 2,
+                state: IndexOperationSemanticProfileState::Published {
+                    generation: [8; 32],
+                    coverage: IndexOperationSemanticCoverage::Complete,
+                },
+            },
+            IndexOperationSourceProfile {
+                profile: SemanticLanguageProfile::from_name("typescript")
+                    .expect("TypeScript profile"),
+                source_version: [5; 32],
+                input_digest: [9; 32],
+                observation_sequence: 10,
+                source_count: 3,
+                state: IndexOperationSemanticProfileState::Unavailable {
+                    reason: IndexOperationSemanticUnavailableReason::Rejected,
+                },
+            },
+        ];
+        profiles.sort_by_key(|profile| profile.profile);
+        let refused_profile = profiles
+            .iter()
+            .find(|profile| {
+                matches!(
+                    profile.state,
+                    IndexOperationSemanticProfileState::Unavailable { .. }
+                )
+            })
+            .expect("refused profile")
+            .profile;
+        let capture = IndexOperationSourceCaptureReceipt::from_checked_parts(
+            key,
+            [2; 32],
+            [3; 32],
+            8,
+            profiles.into_boxed_slice(),
+        )
+        .expect("source receipt");
+        let view = operation_receipt_view();
+        let receipt = IndexOperationPublicationReceipt::from_published_view(
+            Some([1; 32]),
+            [11; 32],
+            [12; 32],
+            9,
+            &view,
+            crate::Cursor::for_view_root(&view),
+        )
+        .expect("publication receipt");
+        let status = IndexOperationStatus::new(
+            key,
+            PackageReference::parse("/workspace/demo").expect("package"),
+            crate::CompileExecutionIntent::Interactive,
+            IndexOperationState::PartiallyPublished {
+                receipt,
+                refused_profiles: vec![IndexOperationProfileRefusal {
+                    profile: refused_profile,
+                    reason: IndexOperationSemanticUnavailableReason::Rejected,
+                    compiler_failure: Some(compiler_failure("src/recovery.ts")),
+                }]
+                .into_boxed_slice(),
+            },
+        )
+        .with_source_capture(Some(capture));
+        let admit = |status| {
+            SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(status))
+                .admit(CommandId::IndexProgress)
+        };
+        assert_eq!(admit(status.clone()), Ok(()));
+        let IndexOperationState::PartiallyPublished { receipt, refused_profiles } = &status.state else { unreachable!() };
+        let captured = status.source_capture.as_ref().expect("source capture");
+        let partial = IndexJobPartialPublication {
+            package: status.package.clone(), receipt: receipt.clone(),
+            source_capture: IndexSourceCaptureSummary {
+                producer_package: status.package.clone(), request_identity: [21; 32],
+                commit_identity: *captured.commit_identity(), workspace_root: *captured.workspace_root(),
+                workspace_sequence: captured.workspace_sequence(), profiles: captured.profiles.clone(),
+            },
+            refused_profiles: refused_profiles.clone(),
+        };
+        partial.admit().expect("unkeyed partial retains exact checked partition");
+        let mut foreign_profile = serde_json::to_value(&partial).expect("partial fixture");
+        let published_index = partial.source_capture.profiles.iter().position(|profile|
+            matches!(profile.state, IndexOperationSemanticProfileState::Published { .. })).expect("published profile");
+        foreign_profile["source_capture"]["profiles"][published_index]["profile"] = serde_json::json!([255, 255]);
+        assert!(serde_json::from_value::<IndexJobPartialPublication>(foreign_profile).is_err(),
+            "a published outcome cannot smuggle an unknown compiler profile past refusal validation");
+
+        let reply = crate::ReplyDto::new(42, crate::CommandReply::Failed(crate::CommandFailure::PartiallyPublished(partial.clone())));
+        let requested = crate::CommandDto::new(42, crate::Command::Add {
+            package: crate::package_key(partial.package.as_str()), execution_intent: crate::CompileExecutionIntent::Interactive });
+        crate::admit_reply(&requested, &reply).expect("exact legacy Add caller binding");
+        let encoded_reply = serde_json::to_vec(&reply).expect("full wire partial");
+        let decoded_reply = crate::wire::decode_reply_body(&encoded_reply).expect("strict partial wire decode");
+        crate::admit_reply(&requested, &decoded_reply).expect("decoded exact Add");
+        assert!(crate::reply_memory_bound(&reply) >= encoded_reply.len(), "partial bound includes every profile and compiler refusal");
+        for command in [crate::Command::Health,
+            crate::Command::Remove { package: crate::package_key(partial.package.as_str()) },
+            crate::Command::Add { package: crate::package_key("/workspace/foreign"), execution_intent: crate::CompileExecutionIntent::Interactive }] {
+            assert!(crate::admit_reply(&crate::CommandDto::new(42, command), &decoded_reply).is_err(),
+                "generic Failed arm cannot authorize a partial publication for another request");
+        }
+
+        let terminal = IndexJobTerminal {
+            ticket: IndexJobTicket::new(NonZeroU64::new(42).expect("ticket"), [9; 16], status.package.clone()),
+            outcome: IndexJobOutcome::PartiallyPublished(partial.clone()),
+        };
+        terminal.admit().expect("exact requested package");
+        let encoded = serde_json::to_value(&terminal).expect("closed partial terminal");
+        assert!(encoded["outcome"]["detail"]["source_capture"].get("operation_key").is_none());
+        assert_eq!(serde_json::from_value::<IndexJobTerminal>(encoded).expect("typed round trip"), terminal);
+        let mut foreign = terminal.clone();
+        foreign.ticket = IndexJobTicket::new(NonZeroU64::new(42).expect("ticket"), [9; 16],
+            PackageReference::parse("/workspace/foreign").expect("foreign package"));
+        assert_eq!(foreign.admit(), Err(ProductAdmissionError::IndexOperationShape));
+        for mutation in 0..6 {
+            let mut invalid = partial.clone();
+            match mutation {
+                0 => invalid.refused_profiles = Box::new([]),
+                1 => invalid.source_capture.request_identity = [0; 32],
+                2 => invalid.source_capture.workspace_sequence = invalid.receipt.workspace_sequence(),
+                3 => invalid.source_capture.profiles[0].state = IndexOperationSemanticProfileState::Pending { prior: None },
+                4 => {
+                    let profile = invalid.source_capture.profiles.iter_mut().find(|p| p.profile == refused_profile).expect("refused profile");
+                    profile.state = IndexOperationSemanticProfileState::Unavailable { reason: IndexOperationSemanticUnavailableReason::Cancelled };
+                    invalid.refused_profiles[0].reason = IndexOperationSemanticUnavailableReason::Cancelled;
+                }
+                _ => invalid.source_capture.profiles[0].input_digest = [0; 32],
+            }
+            assert_eq!(invalid.admit(), Err(ProductAdmissionError::IndexOperationShape), "mutation {mutation}");
+        }
+        for (language, stage, expected) in [
+            (
+                backend_semantic::vocabulary::Language::TypeScript,
+                backend_semantic::vocabulary::Stage::LowerIr,
+                Ok(()),
+            ),
+            (
+                backend_semantic::vocabulary::Language::Python,
+                backend_semantic::vocabulary::Stage::LowerIr,
+                Err(ProductAdmissionError::IndexOperationShape),
+            ),
+            (
+                backend_semantic::vocabulary::Language::TypeScript,
+                backend_semantic::vocabulary::Stage::Parse,
+                Err(ProductAdmissionError::IndexOperationShape),
+            ),
+        ] {
+            let terminal = crate::interface::CompilerTerminal::ToolingUnavailable {
+                source: crate::interface::SourceAuthority {
+                    identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"source bytes"),
+                    byte_len: 12,
+                },
+                language,
+                stage,
+                tool: if language == backend_semantic::vocabulary::Language::Python {
+                    backend_semantic::vocabulary::NativeTool::Python
+                } else {
+                    backend_semantic::vocabulary::NativeTool::TypeScriptCompiler
+                },
+            };
+            let mut setup = status.clone();
+            let IndexOperationState::PartiallyPublished {
+                refused_profiles, ..
+            } = &mut setup.state
+            else {
+                unreachable!()
+            };
+            refused_profiles[0].compiler_failure =
+                PackageCompilerFailure::from_package_terminal("src/recovery.ts", &terminal)
+                    .expect("bounded typed setup failure");
+            assert_eq!(admit(setup), expected);
+        }
+        let mut cancelled_partition = status.clone();
+        let mut cancelled_profiles = cancelled_partition
+            .source_capture
+            .as_ref()
+            .expect("capture")
+            .profiles()
+            .to_vec();
+        cancelled_profiles
+            .iter_mut()
+            .find(|profile| profile.profile == refused_profile)
+            .expect("refused")
+            .state = IndexOperationSemanticProfileState::Unavailable {
+            reason: IndexOperationSemanticUnavailableReason::Cancelled,
+        };
+        cancelled_partition.source_capture = Some(
+            IndexOperationSourceCaptureReceipt::from_checked_parts(
+                key,
+                [2; 32],
+                [3; 32],
+                8,
+                cancelled_profiles.into_boxed_slice(),
+            )
+            .expect("typed cancelled capture"),
+        );
+        let IndexOperationState::PartiallyPublished {
+            refused_profiles, ..
+        } = &mut cancelled_partition.state
+        else {
+            unreachable!()
+        };
+        refused_profiles[0].reason = IndexOperationSemanticUnavailableReason::Cancelled;
+        refused_profiles[0].compiler_failure = None;
+        assert_eq!(
+            admit(cancelled_partition),
+            Err(ProductAdmissionError::IndexOperationShape),
+            "caller cancellation cannot be represented as partial publication"
+        );
+        let encoded = serde_json::to_vec(&IndexOperationObservation::Known(status.clone()))
+            .expect("partial wire");
+        assert_eq!(
+            serde_json::from_slice::<IndexOperationObservation>(&encoded).expect("partial decode"),
+            IndexOperationObservation::Known(status.clone())
+        );
+        assert_eq!(
+            crate::DTO_VERSION,
+            24,
+            "partial publication uses the joined closed wire-24 cohort"
+        );
+        let command = crate::CommandDto::new(
+            61,
+            crate::Command::Surface(SurfaceCommand::IndexOperationStatus { operation_key: key }),
+        );
+        let reply = crate::ReplyDto::new(
+            61,
+            crate::CommandReply::Surface(SurfaceReply::IndexOperationStatus(
+                IndexOperationObservation::Known(status.clone()),
+            )),
+        );
+        let encoded_reply = serde_json::to_vec(&reply).expect("partial reply envelope");
+        let decoded_reply =
+            crate::decode_reply_body(&encoded_reply).expect("wire-24 partial reply");
+        crate::admit_reply(&command, &decoded_reply).expect("admit exact partial status route");
+        assert_eq!(decoded_reply, reply);
+        let mut old_peer: serde_json::Value =
+            serde_json::from_slice(&encoded_reply).expect("encoded reply fields");
+        for old_version in [22, 23] {
+            old_peer["version"] = serde_json::json!(old_version);
+            let old_bytes = serde_json::to_vec(&old_peer).expect("old peer version header");
+            let error = crate::decode_reply_body(&old_bytes).expect_err("old partial peer refused");
+            assert!(error.contains(&format!("reply DTO version {old_version}")));
+            assert!(error.contains("this build supports 24"));
+            assert!(error.contains("same build"));
+        }
+        let mut missing = status.clone();
+        missing.source_capture = None;
+        assert_eq!(
+            admit(missing),
+            Err(ProductAdmissionError::IndexOperationShape)
+        );
+        for state in [
+            IndexOperationSemanticProfileState::Pending { prior: None },
+            IndexOperationSemanticProfileState::Published {
+                generation: [8; 32],
+                coverage: IndexOperationSemanticCoverage::Complete,
+            },
+        ] {
+            let mut malformed = status.clone();
+            malformed
+                .source_capture
+                .as_mut()
+                .expect("capture")
+                .profiles
+                .iter_mut()
+                .find(|profile| profile.profile == refused_profile)
+                .expect("refusal")
+                .state = state;
+            assert_eq!(
+                admit(malformed),
+                Err(ProductAdmissionError::IndexOperationShape)
+            );
+        }
+        let mut mismatch = status.clone();
+        let IndexOperationState::PartiallyPublished {
+            refused_profiles, ..
+        } = &mut mismatch.state
+        else {
+            unreachable!()
+        };
+        refused_profiles[0].reason = IndexOperationSemanticUnavailableReason::Toolchain;
+        assert_eq!(
+            admit(mismatch),
+            Err(ProductAdmissionError::IndexOperationShape)
+        );
+        let mut duplicated = status.clone();
+        let IndexOperationState::PartiallyPublished {
+            refused_profiles, ..
+        } = &mut duplicated.state
+        else {
+            unreachable!()
+        };
+        *refused_profiles =
+            vec![refused_profiles[0].clone(), refused_profiles[0].clone()].into_boxed_slice();
+        assert_eq!(
+            admit(duplicated),
+            Err(ProductAdmissionError::IndexOperationShape)
         );
     }
 

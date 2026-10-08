@@ -17,9 +17,10 @@ use crate::fault::{Fault, Operand};
 use backend_library::{
     AcquisitionDecision, AdvisoryPackageDto, DeclarationChange, DeclarationRecord, DependencyFacts,
     DiffRecord, ForgeFact, ForgePackageDetailRecord, ForgePackagePin, ForgePackageRecord,
-    IndexSearchCursor, IndexSearchPage, IndexSearchResultCount, PackageDependencyRecord,
-    PackageReference, ProjectRecord, RegistryDiscoveryCandidate, RegistryEvidenceFacet,
-    RegistryMetadata, RegistryNativeAvailability, RegistryNativeDetails, RegistryNativeMetadata,
+    IndexSearchCursor, IndexSearchPage, IndexSearchResultCount, LocalDeclarationSearchRecord,
+    LocalDeclarationSource, PackageDependencyRecord, PackageReference, ProjectRecord,
+    RegistryDiscoveryCandidate, RegistryEvidenceFacet, RegistryMetadata,
+    RegistryNativeAvailability, RegistryNativeDetails, RegistryNativeMetadata,
     RegistryPackageFactAuthority, RegistryPackageFactFreshness, RegistryPackageRecord,
     RegistryPackageSearchGroup, RegistryReleaseMatchScope, RegistrySearchGroupKind,
     RegistrySearchHit, RegistrySearchRelease, ReleaseRecord, SelectedProjectSourceFrontier,
@@ -42,10 +43,12 @@ pub struct ProductRecord {
     operand: Option<String>,
     tags: Box<[String]>,
     native_metadata: Option<RegistryNativeMetadata>,
+    source_metadata: Option<backend_library::PythonProjectMetadata>,
     forge_details: Option<ForgePackageRecord>,
     forge_package_detail: Option<ForgePackageDetailRecord>,
     discovery_details: Option<RegistryDiscoveryCandidate>,
     package_group: Option<RegistryPackageSearchGroup>,
+    local_declaration: Option<LocalDeclarationSearchRecord>,
     history_status: Option<ProductSemanticHistoryStatus>,
     compiler_profile: Option<SemanticLanguageProfile>,
 }
@@ -59,10 +62,12 @@ impl ProductRecord {
             operand,
             tags: tags.into_boxed_slice(),
             native_metadata: None,
+            source_metadata: None,
             forge_details: None,
             forge_package_detail: None,
             discovery_details: None,
             package_group: None,
+            local_declaration: None,
             history_status: None,
             compiler_profile: None,
         }
@@ -73,6 +78,35 @@ impl ProductRecord {
     pub fn with_native_metadata(mut self, metadata: RegistryNativeMetadata) -> Self {
         self.native_metadata = Some(metadata);
         self
+    }
+
+    /// Attaches bounded source declarations separately from native registry authority.
+    #[must_use]
+    pub fn with_source_metadata(
+        mut self,
+        metadata: backend_library::PythonProjectMetadata,
+    ) -> Self {
+        let mut tags = self.tags.into_vec();
+        tags.extend(python_metadata_tags(&metadata));
+        self.tags = tags.into_boxed_slice();
+        self.source_metadata = Some(metadata);
+        self
+    }
+
+    fn with_optional_source_metadata(
+        self,
+        metadata: Option<&backend_library::PythonProjectMetadata>,
+    ) -> Self {
+        match metadata {
+            Some(metadata) => self.with_source_metadata(metadata.clone()),
+            None => self,
+        }
+    }
+
+    /// Returns the packaging declarations and their source evidence.
+    #[must_use]
+    pub fn source_metadata(&self) -> Option<&backend_library::PythonProjectMetadata> {
+        self.source_metadata.as_ref()
     }
 
     /// Attaches the bounded typed forge facts carried by one forge row.
@@ -93,6 +127,13 @@ impl ProductRecord {
     #[must_use]
     pub fn with_discovery_details(mut self, candidate: RegistryDiscoveryCandidate) -> Self {
         self.discovery_details = Some(candidate);
+        self
+    }
+
+    /// Attaches exact local source provenance, independently of registry metadata.
+    #[must_use]
+    pub fn with_local_declaration(mut self, record: LocalDeclarationSearchRecord) -> Self {
+        self.local_declaration = Some(record);
         self
     }
 
@@ -158,6 +199,12 @@ impl ProductRecord {
     #[must_use]
     pub fn discovery_details(&self) -> Option<&RegistryDiscoveryCandidate> {
         self.discovery_details.as_ref()
+    }
+
+    /// Returns the selected local declaration and its exact source location.
+    #[must_use]
+    pub fn local_declaration(&self) -> Option<&LocalDeclarationSearchRecord> {
+        self.local_declaration.as_ref()
     }
 
     /// Returns the source-scoped version group for this package result.
@@ -724,6 +771,10 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
             ProductView::rows("diff", records.iter().map(diff_row).collect())
         }
         SurfaceReply::Explored(records) => ProductView::rows("explore", registry_rows(records)),
+        SurfaceReply::ExploredDeclarations(records) => ProductView::rows(
+            "explore",
+            records.iter().map(local_declaration_search_row).collect(),
+        ),
         SurfaceReply::Package(records) => ProductView::rows("package", registry_rows(records)),
         SurfaceReply::PackageDiscovery {
             package,
@@ -947,6 +998,15 @@ fn index_operation_view(observation: &backend_library::IndexOperationObservation
                     let _published_root = receipt.view_root();
                     "published".to_owned()
                 }
+                backend_library::IndexOperationState::PartiallyPublished {
+                    refused_profiles,
+                    ..
+                } => {
+                    format!(
+                        "partially published; {} language profiles unavailable; inspect package-profile for toolchain guidance",
+                        refused_profiles.len()
+                    )
+                }
                 backend_library::IndexOperationState::Failed {
                     detail,
                     compiler_failure,
@@ -1047,6 +1107,7 @@ fn index_start_view(result: &IndexStartResult) -> ProductView {
 fn index_terminal_view(terminal: &IndexJobTerminal) -> ProductView {
     let (state, detail) = match &terminal.outcome {
         IndexJobOutcome::Published => ("published", None),
+        IndexJobOutcome::PartiallyPublished(_) => ("partially-published", None),
         IndexJobOutcome::Refused(reason) => ("refused", Some(reason.as_str())),
         IndexJobOutcome::RefusedWithCompilerFailure { .. } => ("refused", None),
         IndexJobOutcome::Cancelled => ("cancelled", None),
@@ -1055,6 +1116,10 @@ fn index_terminal_view(terminal: &IndexJobTerminal) -> ProductView {
     let mut tags = vec![format!("outcome {state}")];
     if let Some(detail) = detail {
         tags.push(detail.to_owned());
+    }
+    if let IndexJobOutcome::PartiallyPublished(partial) = &terminal.outcome {
+        tags.push(Fault::partial_publication(partial, Operand::Text(index_ticket_json(&terminal.ticket)))
+            .cause().sentence().to_owned());
     }
     if let IndexJobOutcome::RefusedWithCompilerFailure { failure, .. } = &terminal.outcome {
         let fault =
@@ -1247,11 +1312,23 @@ fn discovery_row(candidate: &backend_library::RegistryDiscoveryCandidate) -> Pro
     .with_discovery_details(candidate.clone())
 }
 
+fn local_declaration_search_row(record: &LocalDeclarationSearchRecord) -> ProductRecord {
+    let source = match &record.source {
+        LocalDeclarationSource::Captured { path, line } => format!("{}:{line}", path.as_str()),
+        LocalDeclarationSource::NotCaptured => "source not captured".to_owned(),
+    };
+    ProductRecord::new(
+        record.name.as_str(),
+        Some(record.coordinate.as_str().to_owned()),
+        vec!["local declaration".to_owned(), source],
+    )
+    .with_local_declaration(record.clone())
+}
+
 fn registry_search_hit_row(hit: &RegistrySearchHit) -> ProductRecord {
     match hit {
-        RegistrySearchHit::Acquired(record) | RegistrySearchHit::LocalDeclaration(record) => {
-            registry_row(record)
-        }
+        RegistrySearchHit::Acquired(record) => registry_row(record),
+        RegistrySearchHit::LocalDeclaration(record) => local_declaration_search_row(record),
         RegistrySearchHit::Discovered(candidate) => discovery_row(candidate),
         RegistrySearchHit::ForgeDiscovered(candidate) => forge_discovery_row(candidate),
         RegistrySearchHit::ForgeSourcePin(candidate) => forge_package_detail_row(candidate),
@@ -1274,7 +1351,7 @@ fn forge_package_detail_row(detail: &ForgePackageDetailRecord) -> ProductRecord 
         ),
         ForgePackagePin::PinnedRevision { .. } => (
             match &detail.manifest.name {
-                ForgeFact::Recorded(name) => format!("{} · source pin", name.as_str()),
+                ForgeFact::Recorded(name) => format!("{} · source pin", single_line(name.as_str())),
                 ForgeFact::Unavailable(_) => {
                     format!("{} · source pin", detail.source.repository_url())
                 }
@@ -1323,13 +1400,14 @@ fn forge_package_detail_row(detail: &ForgePackageDetailRecord) -> ProductRecord 
             format!("forge source {source}"),
             format!("repository revision: {}", detail.source.canonical()),
             format!("resolved commit: {}", detail.resolved_commit.as_hex()),
-            format!("manifest: {}", detail.manifest.path.as_str()),
+            format!("manifest: {}", single_line(detail.manifest.path.as_str())),
             yanked.to_owned(),
             downloads,
             advisory,
         ],
     )
     .with_forge_package_detail(detail.clone())
+    .with_optional_source_metadata(detail.manifest.python_metadata.as_ref())
 }
 
 fn registry_search_group_row(group: &RegistryPackageSearchGroup) -> ProductRecord {
@@ -1437,7 +1515,10 @@ fn forge_discovery_row(candidate: &backend_library::ForgeDiscoveryCandidate) -> 
             ),
             format!("resolved commit: {commit}"),
             format!("language: {}", candidate.manifest.ecosystem.as_str()),
-            format!("manifest: {}", candidate.manifest.path.as_str()),
+            format!(
+                "manifest: {}",
+                single_line(candidate.manifest.path.as_str())
+            ),
             format!("license: {license}"),
             format!("readme: {readme}"),
             format!("dependencies: {dependencies}"),
@@ -1452,25 +1533,36 @@ fn home_view(reply: &SurfaceReply) -> Option<ProductView> {
             latest,
             versions,
             candidate_authority,
+            source_metadata,
         } => ProductView::rows(
             "package-profile",
             match latest {
                 Some(record) => {
                     let mut row = registry_row(record);
                     row.tags = append(&row.tags, format!("{versions} version(s)"));
+                    if let Some(metadata) = source_metadata {
+                        row = row.with_source_metadata(metadata.clone());
+                    }
                     vec![row]
                 }
                 None if *versions == 0 => {
-                    vec![ProductRecord::new("no version recorded", None, Vec::new())]
+                    let mut row = ProductRecord::new("no version recorded", None, Vec::new());
+                    if let Some(metadata) = source_metadata {
+                        row = row.with_source_metadata(metadata.clone());
+                    }
+                    vec![row]
                 }
-                None => vec![ProductRecord::new(
-                    "latest release is not confirmed",
-                    None,
-                    vec![
-                        format!("{versions} recorded version(s)"),
-                        registry_authority_tag(*candidate_authority),
-                    ],
-                )],
+                None => vec![
+                    ProductRecord::new(
+                        "latest release is not confirmed",
+                        None,
+                        vec![
+                            format!("{versions} recorded version(s)"),
+                            registry_authority_tag(*candidate_authority),
+                        ],
+                    )
+                    .with_optional_source_metadata(source_metadata.as_ref()),
+                ],
             },
         ),
         SurfaceReply::Subscribed(record) => {
@@ -1941,9 +2033,9 @@ fn package_graph_page_view(page: &backend_library::PackageGraphPage) -> ProductV
                     format!(
                         "{} / {}{resolved}",
                         edge.target.ecosystem.as_str(),
-                        edge.target.name.as_str()
+                        single_line(edge.target.name.as_str())
                     ),
-                    Some(edge.target.name.as_str().to_owned()),
+                    Some(single_line(edge.target.name.as_str())),
                 )
             }
             PackageGraphDirection::Dependents => (
@@ -1954,7 +2046,10 @@ fn package_graph_page_view(page: &backend_library::PackageGraphPage) -> ProductV
         let authority = edge.source_authority.selector();
         let mut tags = vec![
             format!("source authority: {authority}"),
-            format!("requirement: {}", edge.target.requirement.as_str()),
+            format!(
+                "requirement: {}",
+                single_line(edge.target.requirement.as_str())
+            ),
             format!("scope: {}", format!("{:?}", edge.scope).to_lowercase()),
             format!("evidence: {:?}", edge.evidence.authority),
             format!("frontier: {}", lower_hex(&edge.evidence.frontier)),
@@ -1993,8 +2088,8 @@ fn dependency_row(record: &PackageDependencyRecord) -> ProductRecord {
     ProductRecord::new(
         format!(
             "{} {}",
-            record.target.name.as_str(),
-            record.target.requirement.as_str()
+            single_line(record.target.name.as_str()),
+            single_line(record.target.requirement.as_str())
         ),
         record
             .target
@@ -2032,6 +2127,81 @@ fn registry_row(record: &RegistryPackageRecord) -> ProductRecord {
         ],
     )
     .with_native_metadata(record.native_metadata.clone())
+}
+
+fn python_metadata_tags(metadata: &backend_library::PythonProjectMetadata) -> Vec<String> {
+    use backend_library::{DependencyScope, PythonMetadataFact};
+    let mut tags = vec![format!(
+        "Python source metadata: {}",
+        single_line(&metadata.manifest_path)
+    )];
+    for (label, fact) in [
+        ("declared package", &metadata.name),
+        ("description", &metadata.description),
+        ("homepage", &metadata.homepage),
+        ("docs", &metadata.documentation),
+        ("repository", &metadata.repository),
+        ("requires Python", &metadata.requires_python),
+    ] {
+        match fact {
+            PythonMetadataFact::Recorded { value, .. } => {
+                tags.push(format!("{label}: {}", single_line(value)))
+            }
+            PythonMetadataFact::Dynamic { reason, .. }
+            | PythonMetadataFact::Partial { reason, .. } => {
+                tags.push(format!("{label}: unavailable ({})", single_line(reason)))
+            }
+            PythonMetadataFact::Omitted { .. } => {}
+        }
+    }
+    match &metadata.version {
+        PythonMetadataFact::Dynamic { reason, .. } | PythonMetadataFact::Partial { reason, .. } => {
+            tags.push(format!(
+                "package version: unavailable ({})",
+                single_line(reason)
+            ))
+        }
+        PythonMetadataFact::Omitted { .. } => tags.push("package version: not declared".to_owned()),
+        PythonMetadataFact::Recorded { value, .. } => {
+            tags.push(format!("declared package version: {}", single_line(value)))
+        }
+    }
+    match &metadata.dependencies {
+        PythonMetadataFact::Recorded { value, .. } | PythonMetadataFact::Partial { value, .. } => {
+            tags.push(format!(
+                "declared dependencies: {} runtime, {} optional, {} build/test",
+                value
+                    .iter()
+                    .filter(|dep| dep.scope == DependencyScope::Runtime)
+                    .count(),
+                value
+                    .iter()
+                    .filter(|dep| dep.scope == DependencyScope::Optional)
+                    .count(),
+                value
+                    .iter()
+                    .filter(|dep| matches!(
+                        dep.scope,
+                        DependencyScope::Build | DependencyScope::Development
+                    ))
+                    .count()
+            ));
+            if let PythonMetadataFact::Partial { reason, .. } = &metadata.dependencies {
+                tags.push(format!(
+                    "dependency completeness: unavailable ({})",
+                    single_line(reason)
+                ));
+            }
+        }
+        PythonMetadataFact::Dynamic { reason, .. } => tags.push(format!(
+            "declared dependencies: unavailable ({})",
+            single_line(reason)
+        )),
+        PythonMetadataFact::Omitted { .. } => {
+            tags.push("declared dependencies: not recorded".to_owned())
+        }
+    }
+    tags
 }
 
 fn registry_authority_tag(authority: Option<RegistryPackageFactAuthority>) -> String {
@@ -2112,24 +2282,31 @@ fn forge_row(record: &ForgePackageRecord) -> ProductRecord {
         ),
     ];
     for manifest in record.manifests.iter().take(8) {
-        tags.push(format!("manifest: {}", manifest.path.as_str()));
+        tags.push(format!("manifest: {}", single_line(manifest.path.as_str())));
+        if let Some(metadata) = &manifest.python_metadata {
+            tags.extend(python_metadata_tags(metadata));
+        }
     }
     if record.manifests.len() > 8 {
         tags.push(format!("and {} more manifests", record.manifests.len() - 8));
     }
     ProductRecord::new(
-        format!("{} / {}", record.owner.as_str(), record.repository.as_str()),
+        single_line(&format!(
+            "{} / {}",
+            record.owner.as_str(),
+            record.repository.as_str()
+        )),
         Some(record.coordinate.as_str().to_owned()),
-        tags,
+        tags.into_iter().map(|tag| single_line(&tag)).collect(),
     )
     .with_forge_details(record.clone())
 }
 
 fn brief_forge_fact<T>(fact: &ForgeFact<T>, recorded: impl FnOnce(&T) -> String) -> String {
-    let value = match fact {
+    let value = single_line(&match fact {
         ForgeFact::Recorded(value) => recorded(value),
         ForgeFact::Unavailable(reason) => reason.as_str().to_owned(),
-    };
+    });
     if value.chars().count() <= 160 {
         return value;
     }
@@ -2418,7 +2595,9 @@ fn single_line(value: &str) -> String {
     value
         .chars()
         .map(|character| {
-            if character.is_control() {
+            if character.is_control()
+                || matches!(character, '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+            {
                 ' '
             } else {
                 character
@@ -2564,6 +2743,253 @@ mod tests {
         RegistryReleaseMatchScope, RegistryReleaseStanding, RegistrySearchGroupKind,
         SemanticGenerationId, SemanticLanguageProfile, SemanticVersionFreshness,
     };
+
+    #[test]
+    fn python_profile_source_metadata_survives_readable_and_typed_projection() {
+        use backend_library::{PythonMetadataEvidence, PythonMetadataFact, PythonProjectMetadata};
+        let evidence = PythonMetadataEvidence {
+            path: "pyproject.toml".to_owned(),
+            digest: [7; 32],
+            bytes: 128,
+        };
+        let omitted = PythonMetadataFact::Omitted {
+            evidence: vec![evidence.clone()],
+        };
+        let metadata = PythonProjectMetadata {
+            manifest_path: "pyproject.toml".to_owned(),
+            evidence: vec![evidence.clone()],
+            name: PythonMetadataFact::Recorded {
+                value: "dynamic-app".to_owned(),
+                evidence: vec![evidence.clone()],
+            },
+            version: PythonMetadataFact::Dynamic {
+                reason: "hatch version\n\u{1b}[31mrequires unsupported interpretation".to_owned(),
+                evidence: vec![evidence.clone()],
+            },
+            description: PythonMetadataFact::Recorded {
+                value: "An HTTP client\nforged row\u{1b}[31m\r\t".to_owned(),
+                evidence: vec![evidence.clone()],
+            },
+            documentation: PythonMetadataFact::Recorded {
+                value: "https://example.test/docs".to_owned(),
+                evidence: vec![evidence.clone()],
+            },
+            homepage: omitted.clone(),
+            repository: omitted.clone(),
+            requires_python: omitted,
+            dependencies: PythonMetadataFact::Dynamic {
+                reason: "dependency hook is dynamic".to_owned(),
+                evidence: vec![evidence],
+            },
+        };
+        let reply = SurfaceReply::PackageProfile {
+            latest: None,
+            versions: 1,
+            candidate_authority: None,
+            source_metadata: Some(metadata.clone()),
+        };
+        reply
+            .admit(backend_library::CommandId::PackageProfile)
+            .expect("bounded source declaration");
+        let view = product_view(&reply);
+        assert_eq!(view.records()[0].source_metadata(), Some(&metadata));
+        for tag in view.records()[0].tags() {
+            assert!(
+                !tag.chars().any(char::is_control),
+                "unsafe display tag: {tag:?}"
+            );
+        }
+        let plain = crate::text::product(&view, crate::Theme::plain());
+        assert!(!plain.contains('\u{1b}'));
+        assert!(!plain.contains("client\nforged"));
+        let text = crate::markdown::product(&view);
+        assert!(text.contains("An HTTP client"));
+        assert!(text.contains("https://example.test/docs"));
+        assert!(text.contains("package version: unavailable"));
+        assert!(text.contains("declared dependencies: unavailable"));
+        assert!(!text.contains("0.0.0"));
+        assert!(!text.contains('\u{1b}'));
+        assert!(!text.contains("client\nforged"));
+        let value =
+            serde_json::to_value(crate::dto::ProductDto::new(&view)).expect("typed product JSON");
+        assert_eq!(
+            value["records"][0]["source_metadata"]["version"]["state"],
+            "dynamic"
+        );
+        assert_eq!(
+            value["records"][0]["source_metadata"]["evidence"][0]["path"],
+            "pyproject.toml"
+        );
+        assert_eq!(
+            value["records"][0]["source_metadata"]["evidence"][0]["digest"][0],
+            7
+        );
+        assert!(value["records"][0].get("native_metadata").is_none());
+        assert_eq!(
+            value["records"][0]["source_metadata"]["description"]["value"],
+            "An HTTP client\nforged row\u{1b}[31m\r\t"
+        );
+        assert!(
+            value["records"][0]["tags"]
+                .as_array()
+                .expect("display tags")
+                .iter()
+                .all(|tag| !tag.as_str().expect("tag").chars().any(char::is_control))
+        );
+    }
+
+    #[test]
+    fn dependency_declaration_controls_cannot_inject_readable_rows() {
+        use backend_library::{
+            DependencyAuthority, DependencyEvidence, DependencyScope, PACKAGE_GRAPH_PAGE_SCHEMA,
+            PackageDependencyTarget, PackageGraphDirection, PackageGraphKnowledge,
+            PackageGraphPage, PackageGraphPageTerminal, PackageGraphSourceAuthority,
+            PackageGraphSourceKey,
+        };
+        let requirement =
+            "requests>=2; platform_machine == 'literal\nforged\u{1b}[31m\u{2028}\u{202e}'";
+        let source = PackageReference::parse("pkg:pypi/sample@1").expect("source");
+        let authority = PackageGraphSourceAuthority::Local([7; 32]);
+        let record = PackageDependencyRecord::new_with_source_authority(
+            source.clone(),
+            authority,
+            PackageDependencyTarget::new(RegistryEcosystem::Pypi, "requests", requirement, None)
+                .expect("bounded source spelling"),
+            DependencyScope::Runtime,
+            false,
+            DependencyEvidence {
+                authority: DependencyAuthority::LocalManifest,
+                frontier: [7; 32],
+                provenance: [8; 32],
+            },
+        );
+        let page = PackageGraphPage {
+            schema: PACKAGE_GRAPH_PAGE_SCHEMA,
+            view_root: [9; 32],
+            facts_witness: [10; 32],
+            catalog_snapshot: None,
+            package: source.clone(),
+            direction: PackageGraphDirection::Dependencies,
+            source: Some(PackageGraphSourceKey::new(source, authority)),
+            knowledge: PackageGraphKnowledge::Known,
+            rows: Box::new([record.clone()]),
+            terminal: PackageGraphPageTerminal::Complete,
+        };
+        page.admit().expect("bounded typed graph page");
+        for reply in [
+            SurfaceReply::Dependencies(DependencyFacts::Known(Box::new([record]))),
+            SurfaceReply::PackageGraphPage(page),
+        ] {
+            let view = product_view(&reply);
+            for row in view.records() {
+                assert!(!row.title().chars().any(char::is_control));
+                assert!(
+                    row.tags()
+                        .iter()
+                        .all(|tag| !tag.chars().any(char::is_control))
+                );
+            }
+            for text in [
+                crate::text::product(&view, crate::Theme::plain()),
+                crate::markdown::product(&view),
+            ] {
+                assert!(!text.contains("literal\nforged"));
+                assert!(!text.contains(['\u{1b}', '\u{2028}', '\u{202e}']));
+                assert!(text.contains("requests"));
+            }
+            let original = serde_json::to_value(&reply).expect("source facts");
+            assert!(original.to_string().contains("literal\\nforged"));
+        }
+    }
+
+    #[test]
+    fn local_declaration_search_preserves_source_provenance_in_cli_and_mcp() {
+        let coordinate = backend_library::ProductText::new("/project::src/react.tsx:17::react")
+            .expect("coordinate");
+        let record = LocalDeclarationSearchRecord {
+            coordinate: coordinate.clone(),
+            name: backend_library::ProductText::new("react").expect("name"),
+            source: LocalDeclarationSource::Captured {
+                path: backend_library::ProductText::new("src/react.tsx").expect("path"),
+                line: std::num::NonZeroU32::new(17).expect("line"),
+            },
+        };
+        let reply = SurfaceReply::IndexSearchWithDiscovery(Box::new([
+            RegistrySearchHit::LocalDeclaration(record.clone()),
+        ]));
+        reply.admit(reply.id()).expect("local search reply");
+        let view = product_view(&reply);
+        assert_eq!(view.records()[0].operand(), Some(coordinate.as_str()));
+        for rendered in [
+            crate::markdown::product(&view),
+            crate::text::product(&view, crate::Theme::plain()),
+        ] {
+            assert!(rendered.contains("local declaration"));
+            assert!(rendered.contains("src/react.tsx:17"));
+            for fiction in [
+                "cargo",
+                "byte(s)",
+                "release:",
+                "downloads:",
+                "registry facts:",
+            ] {
+                assert!(
+                    !rendered.contains(fiction),
+                    "local declaration cannot claim {fiction}"
+                );
+            }
+        }
+        let dto = crate::dto::ProductDto::new(&view);
+        assert_eq!(dto.records[0].local_declaration.as_ref(), Some(&record));
+        assert!(dto.records[0].native_metadata.is_none());
+        assert!(dto.records[0].package_group.is_none());
+        let explored = SurfaceReply::ExploredDeclarations(Box::new([record.clone()]));
+        explored
+            .admit(explored.id())
+            .expect("typed local exploration");
+        assert_eq!(
+            crate::dto::ProductDto::new(&product_view(&explored)).records[0]
+                .local_declaration
+                .as_ref(),
+            Some(&record)
+        );
+        let mut mismatched = record.clone();
+        mismatched.source = LocalDeclarationSource::Captured {
+            path: backend_library::ProductText::new("src/other.tsx").expect("path"),
+            line: std::num::NonZeroU32::new(17).expect("line"),
+        };
+        let mismatched = SurfaceReply::ExploredDeclarations(Box::new([mismatched]));
+        assert!(mismatched.admit(mismatched.id()).is_err());
+        let mut wrong_line = record.clone();
+        wrong_line.source = LocalDeclarationSource::Captured {
+            path: backend_library::ProductText::new("src/react.tsx").expect("path"),
+            line: std::num::NonZeroU32::new(18).expect("line"),
+        };
+        let wrong_line = SurfaceReply::ExploredDeclarations(Box::new([wrong_line]));
+        assert!(wrong_line.admit(wrong_line.id()).is_err());
+        let mut uncaptured = record.clone();
+        uncaptured.source = LocalDeclarationSource::NotCaptured;
+        let uncaptured = local_declaration_search_row(&uncaptured);
+        assert!(
+            uncaptured
+                .tags()
+                .iter()
+                .any(|tag| tag == "source not captured")
+        );
+        assert!(
+            !uncaptured
+                .tags()
+                .iter()
+                .any(|tag| tag.contains("src/react.tsx"))
+        );
+        let mut invalid = record;
+        invalid.coordinate =
+            backend_library::ProductText::new("pkg:npm/react@19.2.0").expect("purl");
+        let invalid = SurfaceReply::IndexSearchWithDiscovery(Box::new([
+            RegistrySearchHit::LocalDeclaration(invalid),
+        ]));
+        assert!(invalid.admit(invalid.id()).is_err());
+    }
 
     #[test]
     fn aged_operation_receipt_keeps_consumed_identity_without_claiming_publication() {
@@ -3490,6 +3916,7 @@ mod tests {
                 ),
                 version: unavailable(),
                 dependencies: backend_library::DependencyFacts::Known(Box::default()),
+                python_metadata: None,
             },
             metadata: backend_library::ForgeRepositoryMetadataRecord {
                 owner: unavailable(),
@@ -3507,6 +3934,72 @@ mod tests {
             },
         };
         detail.admit().expect("valid source-pin details");
+        let mut unsafe_path = detail.clone();
+        unsafe_path.manifest.path =
+            backend_library::ProductText::new("nested\n\u{1b}[31m/setup.py".to_owned())
+                .expect("bounded raw source path");
+        unsafe_path.manifest.name = ForgeFact::Recorded(
+            backend_library::ProductText::new("unsafe\n\u{1b}[31m/name").expect("declared name"),
+        );
+        unsafe_path.metadata.description = ForgeFact::Recorded(
+            backend_library::ProductText::new("description\n\u{1b}[31m injected")
+                .expect("description"),
+        );
+        unsafe_path.admit().expect("relative source path");
+        let unsafe_view = product_view(&SurfaceReply::IndexSearchWithDiscovery(Box::new([
+            RegistrySearchHit::ForgeSourcePin(unsafe_path.clone()),
+        ])));
+        assert!(
+            unsafe_view.records()[0]
+                .tags()
+                .iter()
+                .all(|tag| !tag.chars().any(char::is_control))
+        );
+        assert!(
+            !unsafe_view.records()[0]
+                .title()
+                .chars()
+                .any(char::is_control)
+        );
+        assert!(!crate::text::product(&unsafe_view, crate::Theme::plain()).contains('\u{1b}'));
+        assert!(!crate::markdown::product(&unsafe_view).contains("nested\n"));
+        let acquired = ForgePackageRecord {
+            coordinate: backend_library::ProductText::new(source.canonical()).expect("coordinate"),
+            provider: backend_library::ProductText::new("github").expect("provider"),
+            owner: backend_library::ProductText::new("owner").expect("owner"),
+            repository: backend_library::ProductText::new("repository").expect("repository"),
+            revision: backend_library::ProductText::new("main").expect("revision"),
+            subdir: None,
+            commit: unavailable(),
+            tree: unavailable(),
+            metadata: unsafe_path.metadata.clone(),
+            manifests: Box::new([backend_library::ForgeManifestRecord {
+                path: unsafe_path.manifest.path.clone(),
+                ecosystem: backend_library::ProductText::new("pypi").expect("ecosystem"),
+                name: None,
+                version: None,
+                dependencies: backend_library::DependencyFacts::Unknown(
+                    backend_library::ProductText::new("not parsed").expect("reason"),
+                ),
+                python_metadata: None,
+            }]),
+            source: unavailable(),
+        };
+        let acquired_view = ProductView::rows("forge", vec![forge_row(&acquired)]);
+        assert!(
+            acquired_view.records()[0]
+                .tags()
+                .iter()
+                .all(|tag| !tag.chars().any(char::is_control))
+        );
+        assert!(!crate::text::product(&acquired_view, crate::Theme::plain()).contains('\u{1b}'));
+        assert!(!crate::markdown::product(&acquired_view).contains("nested\n"));
+        let unsafe_json =
+            serde_json::to_value(crate::dto::ProductDto::new(&unsafe_view)).expect("typed source");
+        assert_eq!(
+            unsafe_json["records"][0]["forge_package_detail"]["manifest"]["path"],
+            unsafe_path.manifest.path.as_str()
+        );
 
         let view = product_view(&SurfaceReply::IndexSearchWithDiscovery(Box::new([
             RegistrySearchHit::ForgeSourcePin(detail.clone()),
@@ -3557,7 +4050,9 @@ mod tests {
                 observation: observation.clone(),
             };
             assert_eq!(reply.id(), backend_library::CommandId::Package);
-            reply.admit(backend_library::CommandId::Package).expect("admitted metadata reply");
+            reply
+                .admit(backend_library::CommandId::Package)
+                .expect("admitted metadata reply");
             let view = product_view(&reply);
             let dto = crate::dto::ProductDto::new(&view);
             let encoded = serde_json::to_value(&dto).expect("shared JSON");

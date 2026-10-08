@@ -6,27 +6,89 @@ pub(super) fn discover_manifests(
     subdir: Option<&str>,
 ) -> Result<Vec<ForgePackageManifest>, ForgeRejectReason> {
     let mut results = Vec::new();
+    let mut selected = BTreeMap::new();
     for file in files {
-        if file.bytes_len > MAX_MANIFEST_BYTES {
-            return Err(ForgeRejectReason::Bounds);
-        }
         let path = match subdir {
             Some(prefix) => {
                 let prefix = prefix.trim_end_matches('/');
-                let Some(path) = file.path.strip_prefix(prefix) else {
-                    continue;
-                };
-                let Some(path) = path.strip_prefix('/') else {
+                let Some(path) = file
+                    .path
+                    .strip_prefix(prefix)
+                    .and_then(|path| path.strip_prefix('/'))
+                else {
                     continue;
                 };
                 path
             }
             None => file.path.as_ref(),
         };
+        selected.insert(path, file);
+    }
+    let mut python_roots = std::collections::BTreeSet::new();
+    for (path, file) in &selected {
+        let filename = path.rsplit('/').next().unwrap_or(path);
+        if crate::python_project::is_python_manifest(filename) {
+            if file.bytes_len > MAX_MANIFEST_BYTES {
+                return Err(ForgeRejectReason::Bounds);
+            }
+            python_roots.insert(path.rsplit_once('/').map_or("", |(parent, _)| parent));
+            continue;
+        }
         let Some(kind) = manifest_kind(path) else {
             continue;
         };
+        if file.bytes_len > MAX_MANIFEST_BYTES {
+            return Err(ForgeRejectReason::Bounds);
+        }
         results.push(parse_manifest(kind, path, &file.bytes)?);
+    }
+    for root in python_roots {
+        let metadata = crate::python_project::extract_python_project(|relative| {
+            let path = if root.is_empty() {
+                relative.to_owned()
+            } else {
+                format!("{root}/{relative}")
+            };
+            Ok(selected.get(path.as_str()).map(|file| file.bytes.clone()))
+        })
+        .map_err(|_| ForgeRejectReason::Manifest)?;
+        let Some(metadata) = metadata else {
+            continue;
+        };
+        let name = metadata.name.recorded().map(String::as_str);
+        let version = metadata.version.recorded().map(String::as_str);
+        let source = name.zip(version).and_then(|(name, version)| {
+            PackageReference::parse(format!("pkg:pypi/{name}@{version}")).ok()
+        });
+        let dependencies = source.map_or_else(
+            || {
+                DependencyFacts::Unavailable(ProductText::from_static(
+                    "Python manifest has no statically evidenced immutable package version",
+                ))
+            },
+            |source| {
+                crate::python_project::python_dependency_facts(
+                    &metadata,
+                    &source,
+                    backend_library::PackageGraphSourceAuthority::Unattributed,
+                    DependencyAuthority::ForgeManifest,
+                    [0; 32],
+                )
+            },
+        );
+        let path = if root.is_empty() {
+            metadata.manifest_path.clone()
+        } else {
+            format!("{root}/{}", metadata.manifest_path)
+        };
+        results.push(ForgePackageManifest {
+            path: Arc::from(path),
+            ecosystem: RegistryEcosystem::Pypi,
+            name: product(name),
+            version: product(version),
+            dependencies,
+            python_metadata: Some(metadata),
+        });
     }
     results.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(results)
@@ -36,8 +98,6 @@ pub(super) fn discover_manifests(
 enum ManifestKind {
     Cargo,
     Npm,
-    Pypi,
-    SetupCfg,
     Golang,
     Maven,
 }
@@ -46,8 +106,6 @@ fn manifest_kind(path: &str) -> Option<ManifestKind> {
     match path.rsplit('/').next()? {
         "Cargo.toml" => Some(ManifestKind::Cargo),
         "package.json" => Some(ManifestKind::Npm),
-        "pyproject.toml" => Some(ManifestKind::Pypi),
-        "setup.cfg" => Some(ManifestKind::SetupCfg),
         "go.mod" => Some(ManifestKind::Golang),
         "pom.xml" => Some(ManifestKind::Maven),
         _ => None,
@@ -62,8 +120,6 @@ fn parse_manifest(
     let name_and_version = match kind {
         ManifestKind::Cargo => parse_cargo(bytes),
         ManifestKind::Npm => parse_npm(bytes),
-        ManifestKind::Pypi => parse_pyproject(bytes),
-        ManifestKind::SetupCfg => parse_setup_cfg(bytes),
         ManifestKind::Golang => parse_go(bytes),
         ManifestKind::Maven => parse_pom(bytes),
     }?;
@@ -73,6 +129,7 @@ fn parse_manifest(
         name: name_and_version.1,
         version: name_and_version.2,
         dependencies: name_and_version.3,
+        python_metadata: None,
     })
 }
 
@@ -252,238 +309,6 @@ fn parse_npm(bytes: &[u8]) -> Result<ManifestParts, ForgeRejectReason> {
     ))
 }
 
-fn parse_pyproject(bytes: &[u8]) -> Result<ManifestParts, ForgeRejectReason> {
-    let root = parse_toml(bytes)?;
-    let project = root.get("project").and_then(toml::Value::as_table);
-    let name = project
-        .and_then(|table| table.get("name"))
-        .and_then(toml::Value::as_str);
-    let version = project
-        .and_then(|table| table.get("version"))
-        .and_then(toml::Value::as_str);
-    let source = name.zip(version).and_then(|(name, version)| {
-        PackageReference::parse(format!("pkg:pypi/{name}@{version}")).ok()
-    });
-    let mut rows = Vec::new();
-    if let (Some(source), Some(requirements)) = (
-        source.clone(),
-        project
-            .and_then(|table| table.get("dependencies"))
-            .and_then(toml::Value::as_array),
-    ) {
-        for requirement in requirements.iter().filter_map(toml::Value::as_str) {
-            let name = requirement
-                .split(['=', '<', '>', '!', '~', ';'])
-                .next()
-                .unwrap_or(requirement)
-                .trim();
-            if let Ok(target) =
-                PackageDependencyTarget::new(RegistryEcosystem::Pypi, name, requirement, None)
-            {
-                rows.push(PackageDependencyRecord::new(
-                    source.clone(),
-                    target,
-                    DependencyScope::Runtime,
-                    false,
-                    DependencyEvidence {
-                        authority: DependencyAuthority::ForgeManifest,
-                        frontier: [0; 32],
-                        provenance: *blake3::hash(bytes).as_bytes(),
-                    },
-                ));
-            }
-        }
-    }
-    let facts = source.map_or_else(
-        || {
-            DependencyFacts::Unavailable(ProductText::from_static(
-                "manifest has no immutable package version",
-            ))
-        },
-        |_| {
-            backend_library::admit_dependency_rows(
-                crate::registry::coalesce_runtime_development_dependency_rows(rows),
-            )
-            .map_or_else(
-                |_| {
-                    DependencyFacts::Unavailable(ProductText::from_static(
-                        "manifest dependency rows exceed bounds",
-                    ))
-                },
-                DependencyFacts::Known,
-            )
-        },
-    );
-    Ok((
-        RegistryEcosystem::Pypi,
-        product(name),
-        product(version),
-        facts,
-    ))
-}
-
-fn parse_setup_cfg(bytes: &[u8]) -> Result<ManifestParts, ForgeRejectReason> {
-    let input = std::str::from_utf8(bytes).map_err(|_| ForgeRejectReason::Manifest)?;
-    let mut section = String::new();
-    let mut pending: Option<(String, String, String)> = None;
-    let mut name = None;
-    let mut version = None;
-    let mut install_requires = None;
-    let mut unsupported_dependency_declaration = false;
-
-    for line in input.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') {
-            continue;
-        }
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            apply_setup_cfg_option(
-                pending.take(),
-                &mut name,
-                &mut version,
-                &mut install_requires,
-                &mut unsupported_dependency_declaration,
-            );
-            let next_section = trimmed[1..trimmed.len() - 1].trim();
-            if next_section.is_empty() || next_section.contains('[') || next_section.contains(']') {
-                return Err(ForgeRejectReason::Manifest);
-            }
-            section = next_section.to_ascii_lowercase();
-            continue;
-        }
-        if line.starts_with(' ') || line.starts_with('\t') {
-            let Some((_, _, value)) = pending.as_mut() else {
-                return Err(ForgeRejectReason::Manifest);
-            };
-            if !value.is_empty() {
-                value.push('\n');
-            }
-            value.push_str(trimmed);
-            continue;
-        }
-        apply_setup_cfg_option(
-            pending.take(),
-            &mut name,
-            &mut version,
-            &mut install_requires,
-            &mut unsupported_dependency_declaration,
-        );
-        if section.is_empty() {
-            return Err(ForgeRejectReason::Manifest);
-        }
-        let (key, value) = line
-            .split_once('=')
-            .or_else(|| line.split_once(':'))
-            .ok_or(ForgeRejectReason::Manifest)?;
-        let key = key.trim();
-        if key.is_empty() || key.chars().any(char::is_whitespace) {
-            return Err(ForgeRejectReason::Manifest);
-        }
-        pending = Some((
-            section.clone(),
-            key.replace('-', "_").to_ascii_lowercase(),
-            value.trim().to_owned(),
-        ));
-    }
-    apply_setup_cfg_option(
-        pending,
-        &mut name,
-        &mut version,
-        &mut install_requires,
-        &mut unsupported_dependency_declaration,
-    );
-
-    let source = name
-        .as_deref()
-        .zip(version.as_deref())
-        .and_then(|(name, version)| {
-            PackageReference::parse(format!("pkg:pypi/{name}@{version}")).ok()
-        });
-    let facts = match (source, install_requires) {
-        (None, _) => DependencyFacts::Unavailable(ProductText::from_static(
-            "manifest has no immutable package version",
-        )),
-        (Some(_), _) if unsupported_dependency_declaration => DependencyFacts::Unknown(
-            ProductText::from_static("setup.cfg contains dependency declarations not projected"),
-        ),
-        (Some(_), None) => DependencyFacts::Unknown(ProductText::from_static(
-            "setup.cfg does not declare install_requires",
-        )),
-        (Some(source), Some(requirements)) => {
-            let mut rows = Vec::new();
-            let mut unsupported_requirement = false;
-            for requirement in requirements
-                .split([',', '\n'])
-                .map(str::trim)
-                .filter(|requirement| !requirement.is_empty())
-            {
-                let name = requirement
-                    .split(['[', '=', '<', '>', '!', '~', ';', ' '])
-                    .next()
-                    .unwrap_or_default();
-                match PackageDependencyTarget::new(RegistryEcosystem::Pypi, name, requirement, None)
-                {
-                    Ok(target) => rows.push(PackageDependencyRecord::new(
-                        source.clone(),
-                        target,
-                        DependencyScope::Runtime,
-                        false,
-                        DependencyEvidence {
-                            authority: DependencyAuthority::ForgeManifest,
-                            frontier: [0; 32],
-                            provenance: *blake3::hash(bytes).as_bytes(),
-                        },
-                    )),
-                    Err(_) => unsupported_requirement = true,
-                }
-            }
-            if unsupported_requirement {
-                DependencyFacts::Unknown(ProductText::from_static(
-                    "setup.cfg contains an unsupported dependency requirement",
-                ))
-            } else {
-                backend_library::admit_dependency_rows(
-                    crate::registry::coalesce_runtime_development_dependency_rows(rows),
-                )
-                .map_or_else(
-                    |_| {
-                        DependencyFacts::Unavailable(ProductText::from_static(
-                            "manifest dependency rows exceed bounds",
-                        ))
-                    },
-                    DependencyFacts::Known,
-                )
-            }
-        }
-    };
-    Ok((
-        RegistryEcosystem::Pypi,
-        product(name.as_deref()),
-        product(version.as_deref()),
-        facts,
-    ))
-}
-
-fn apply_setup_cfg_option(
-    pending: Option<(String, String, String)>,
-    name: &mut Option<String>,
-    version: &mut Option<String>,
-    install_requires: &mut Option<String>,
-    unsupported_dependency_declaration: &mut bool,
-) {
-    let Some((section, key, value)) = pending else {
-        return;
-    };
-    match (section.as_str(), key.as_str()) {
-        ("metadata", "name") => *name = Some(value),
-        ("metadata", "version") => *version = Some(value),
-        ("options", "install_requires") => *install_requires = Some(value),
-        ("options", "extras_require" | "setup_requires" | "tests_require")
-        | ("options.extras_require", _) => *unsupported_dependency_declaration = true,
-        _ => {}
-    }
-}
-
 fn parse_go(bytes: &[u8]) -> Result<ManifestParts, ForgeRejectReason> {
     let text = std::str::from_utf8(bytes).map_err(|_| ForgeRejectReason::Manifest)?;
     let module = text
@@ -540,8 +365,8 @@ fn parse_pom(bytes: &[u8]) -> Result<ManifestParts, ForgeRejectReason> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_MANIFEST_BYTES, discover_manifests, parse_cargo, parse_npm};
-    use backend_library::{DependencyFacts, DependencyScope};
+    use super::{ArchiveFile, ForgeFact, MAX_MANIFEST_BYTES, discover_manifests, parse_cargo, parse_npm};
+    use backend_library::{DependencyFacts, DependencyScope, ProductText};
     use std::sync::Arc;
 
     #[test]
@@ -622,7 +447,8 @@ mod tests {
     }
 
     #[test]
-    fn forge_setup_cfg_is_parsed_as_ini_and_retains_runtime_requirements() {
+    fn forge_setup_cfg_is_parsed_as_ini_and_retains_runtime_requirements()
+    -> Result<(), &'static str> {
         let manifest = br#"[metadata]
 name = legacy-demo
 version = 2.1.0
@@ -655,12 +481,98 @@ install_requires =
                 backend_library::ProductText::new("2.1.0").expect("version")
             )
         );
-        let DependencyFacts::Known(rows) = &manifests[0].dependencies else {
-            panic!("expected known setup.cfg dependencies");
+        let rows = match &manifests[0].dependencies {
+            DependencyFacts::Known(rows) => rows,
+            _ => return Err("valid setup.cfg PEP 508 requirement should produce graph facts"),
         };
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].target.name.as_str(), "requests");
-        assert_eq!(rows[0].scope, DependencyScope::Runtime);
+        assert_eq!(rows[0].target.requirement.as_str(), "requests>=2.31");
+        let declarations = manifests[0]
+            .python_metadata
+            .as_ref()
+            .expect("source metadata")
+            .dependencies
+            .recorded()
+            .expect("original declarations");
+        assert_eq!(declarations.len(), 1);
+        assert_eq!(declarations[0].requirement, "requests>=2.31");
+        assert_eq!(declarations[0].scope, DependencyScope::Runtime);
+        Ok(())
+    }
+
+    #[test]
+    fn forge_httpie_cfg_setup_and_literal_attribute_use_one_metadata_path()
+    -> Result<(), &'static str> {
+        let files = [
+            (
+                "setup.cfg",
+                include_bytes!("../../tests/fixtures/httpie-5b604c37/setup.cfg").as_slice(),
+            ),
+            (
+                "setup.py",
+                include_bytes!("../../tests/fixtures/httpie-5b604c37/setup.py").as_slice(),
+            ),
+            (
+                "httpie/__init__.py",
+                include_bytes!("../../tests/fixtures/httpie-5b604c37/httpie/__init__.py")
+                    .as_slice(),
+            ),
+        ]
+        .into_iter()
+        .map(|(path, bytes)| ArchiveFile {
+            path: Arc::from(path),
+            bytes: bytes.to_vec(),
+            bytes_len: bytes.len() as u64,
+            mode: 0,
+        })
+        .collect::<Vec<_>>();
+        let manifests = discover_manifests(&files, None).expect("static HTTPie metadata");
+        assert_eq!(
+            manifests.len(),
+            1,
+            "setup.py and setup.cfg are one package declaration"
+        );
+        assert_eq!(manifests[0].path.as_ref(), "setup.cfg");
+        assert_eq!(
+            manifests[0].version,
+            ForgeFact::Recorded(ProductText::new("3.2.4").expect("version"))
+        );
+        assert!(
+            manifests[0]
+                .python_metadata
+                .as_ref()
+                .expect("typed metadata")
+                .documentation
+                .recorded()
+                .is_some()
+        );
+        let declarations = manifests[0]
+            .python_metadata
+            .as_ref()
+            .expect("source metadata")
+            .dependencies
+            .recorded()
+            .expect("original declarations");
+        assert_eq!(
+            declarations
+                .iter()
+                .filter(|row| row.scope == DependencyScope::Runtime)
+                .count(),
+            11
+        );
+        let rows = match &manifests[0].dependencies {
+            DependencyFacts::Known(rows) => rows,
+            _ => return Err("valid HTTPie requirements should produce graph facts"),
+        };
+        assert_eq!(rows.len(), declarations.len());
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.scope == DependencyScope::Runtime)
+                .count(),
+            11
+        );
+        Ok(())
     }
 
     #[test]

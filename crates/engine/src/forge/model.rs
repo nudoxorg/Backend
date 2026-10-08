@@ -51,6 +51,9 @@ pub struct ForgePackageManifest {
     pub version: ForgeFact<ProductText>,
     /// Dependency graph facts emitted by the manifest parser.
     pub dependencies: DependencyFacts<Box<[PackageDependencyRecord]>>,
+    /// Static Python declarations with source evidence, independent of registry authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub python_metadata: Option<backend_library::PythonProjectMetadata>,
 }
 
 /// Immutable forge result consumed by package pages and compiler adapters.
@@ -217,6 +220,7 @@ impl ForgeAcquisitionResult {
                     name,
                     version,
                     dependencies: manifest.dependencies.clone(),
+                    python_metadata: manifest.python_metadata.clone(),
                 })
             })
             .collect::<Result<Vec<_>, ForgeProtocolError>>()?

@@ -770,6 +770,13 @@ impl Titlebar {
         let height = px(32.0 * measure.scale());
         div()
             .id("ask-typing")
+            // The input emits PressEnter for Ask, then propagates its action.
+            // Own that submission here so Enter cannot also reach text input
+            // and emit a second Change event for the unchanged query.
+            .on_action(|_: &gpui_component::input::Enter, window, cx| {
+                window.prevent_default();
+                cx.stop_propagation();
+            })
             .relative()
             .min_w(px(0.0))
             .flex_1()

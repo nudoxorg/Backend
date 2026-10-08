@@ -35,7 +35,7 @@ use super::{
     CheckerError, CheckerReport, ImportResolution, Inference, InferenceSite, InferredType,
     NativePythonTypeConstructor, SymbolOutcome, SymbolResolution,
 };
-use crate::legacy::{AnnotationPosition, DeclarationKind, ModuleFacts, Span};
+use crate::legacy::{AnnotationPosition, DeclarationKind, ModuleFacts, OccurrenceKind, Span};
 
 pub(super) struct NativeProjectResult {
     pub(super) modules: BTreeMap<Box<str>, CheckerReport>,
@@ -57,6 +57,26 @@ pub(super) fn analyze(
     control: PythonProjectControl<'_>,
 ) -> Result<NativeProjectResult, CheckerError> {
     checkpoint(control)?;
+    let source_manifest = sources
+        .iter()
+        .map(|source| {
+            let identity =
+                backend_semantic::ir::SourceIdentity::from_bytes(source.source.as_bytes())
+                    .ok_or_else(|| {
+                        project_error(
+                            source.relative_path,
+                            "selected source extent exceeds IR bounds",
+                        )
+                    })?;
+            Ok((source.relative_path.to_owned(), *identity.identity))
+        })
+        .collect::<Result<Vec<_>, CheckerError>>()?;
+    let program_identity = backend_semantic::ir::python_program_identity(&source_manifest)
+        .ok_or_else(|| project_error("", "invalid native selected source manifest"))?;
+    let source_identities = source_manifest
+        .iter()
+        .map(|(path, identity)| (path.as_str(), *identity))
+        .collect::<BTreeMap<_, _>>();
     let minor = super::profile_tag(profile)
         .split('.')
         .nth(1)
@@ -472,6 +492,19 @@ pub(super) fn analyze(
                 let [target] = matches.as_slice() else {
                     continue;
                 };
+                // The native IDE query falls back to the local import binding
+                // when its imported declaration is unavailable. That location
+                // proves the binding spelling, not a resolved callable target.
+                if matches!(
+                    occurrence.kind,
+                    OccurrenceKind::FunctionCall | OccurrenceKind::MethodCall
+                ) && target.kind == DeclarationKind::Alias
+                    && imports[path]
+                        .iter()
+                        .any(|import| import.binding_span == target.name_span)
+                {
+                    continue;
+                }
                 let mut enclosing = syntax[path]
                     .declarations
                     .iter()
@@ -492,8 +525,26 @@ pub(super) fn analyze(
                     .map(|candidate| candidate.name.as_str())
                     .collect::<Vec<_>>();
                 scopes.push(target.name.as_str());
+                let source_identity = source_identities.get(path).ok_or_else(|| {
+                    project_error(path, "native target is outside selected source identities")
+                })?;
+                let source_coordinate = backend_semantic::ir::PythonSourceCoordinate(
+                    backend_semantic::ir::SourceDeclarationCoordinate {
+                        program: program_identity,
+                        source: *source_identity,
+                        path,
+                        declaration_start: target.span.start,
+                        declaration_end: target.span.end,
+                        name_start: target.name_span.start,
+                    },
+                )
+                .encode()
+                .ok_or_else(|| {
+                    project_error(path, "native target source coordinate is inadmissible")
+                })?;
                 let target = DefinitionTarget {
                     relative_path: path.into(),
+                    source_coordinate: source_coordinate.into_boxed_str(),
                     package: package.into(),
                     name_span: span,
                     qualified_name: if is_binding {

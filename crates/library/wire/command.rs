@@ -96,8 +96,7 @@ impl CommandDto {
     /// Returns an error when the envelope is malformed, has an unsupported
     /// version or unknown field, or differs from `expected` in any field.
     pub fn decode_against(bytes: &[u8], expected: &Self) -> Result<Self, String> {
-        let envelope: CommandEnvelope =
-            serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+        let envelope: CommandEnvelope = super::codec::parse_command_body(bytes)?;
         ensure_version(envelope.version, "command")?;
         let observed = serde_json::to_value(&envelope).map_err(|error| error.to_string())?;
         let accepted = serde_json::to_value(expected).map_err(|error| error.to_string())?;
@@ -118,8 +117,7 @@ impl CommandDto {
     /// Returns an error when the envelope, certificate, or continuation does
     /// not match the supplied owner cursor.
     pub fn decode_for_owner(bytes: &[u8], owner: Cursor) -> Result<Self, String> {
-        let envelope: CommandEnvelope =
-            serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+        let envelope: CommandEnvelope = super::codec::parse_command_body(bytes)?;
         ensure_version(envelope.version, "command")?;
         let certificate = envelope.certificate.as_ref();
         let command = match envelope.command {
@@ -471,6 +469,7 @@ impl ViewDto {
     /// Returns an error for malformed, unsupported, unknown-field, or changed
     /// wire payloads.
     pub fn decode_against(bytes: &[u8], expected: &Self) -> Result<Self, String> {
+        super::codec::check_live_version(bytes, "view")?;
         let envelope: ViewEnvelopeWire =
             serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
         ensure_version(envelope.version, "view")?;
@@ -493,6 +492,7 @@ impl ViewDto {
         bytes: &[u8],
         capability: Option<CoverageCapability>,
     ) -> Result<Self, String> {
+        super::codec::check_live_version(bytes, "view")?;
         let envelope: ViewEnvelopeWire =
             serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
         ensure_version(envelope.version, "view")?;

@@ -263,3 +263,125 @@ fn compiler_index_receipt_uses_shared_human_sentence_and_keeps_exact_machine_fac
         }
     }
 }
+
+#[test]
+fn partial_publication_keeps_useful_languages_all_refusals_and_exact_machine_basis() {
+    use backend_library::{
+        IndexJobOutcome, IndexJobPartialPublication, IndexJobTerminal, IndexJobTicket,
+        IndexOperationProfileRefusal, IndexOperationPublicationReceipt,
+        IndexOperationSemanticCoverage, IndexOperationSemanticProfileState,
+        IndexOperationSemanticUnavailableReason, IndexOperationSourceProfile,
+        IndexSourceCaptureSummary, PackageReference, SemanticLanguageProfile,
+    };
+    let package = PackageReference::parse("/abs/mixed-docs").expect("package");
+    let py = SemanticLanguageProfile::from_name("python").expect("Python");
+    let ts = SemanticLanguageProfile::from_name("typescript").expect("TypeScript");
+    let mut profiles = vec![
+        IndexOperationSourceProfile {
+            profile: py,
+            source_version: [4; 32],
+            input_digest: [5; 32],
+            observation_sequence: 2,
+            source_count: 236,
+            state: IndexOperationSemanticProfileState::Published {
+                generation: [6; 32],
+                coverage: IndexOperationSemanticCoverage::Complete,
+            },
+        },
+        IndexOperationSourceProfile {
+            profile: ts,
+            source_version: [4; 32],
+            input_digest: [7; 32],
+            observation_sequence: 3,
+            source_count: 626,
+            state: IndexOperationSemanticProfileState::Unavailable {
+                reason: IndexOperationSemanticUnavailableReason::Rejected,
+            },
+        },
+    ];
+    profiles.sort_by_key(|profile| profile.profile);
+    let root = backend_library::view_state_root(&[]);
+    let basis =
+        backend_library::Basis::new(root, backend_library::object_version(b"partial-source"));
+    let view = backend_library::ViewRoot::new_incomplete(
+        backend_library::view_key(b"partial-view"),
+        basis,
+        backend_library::Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("view");
+    let partial = IndexJobPartialPublication {
+        package: package.clone(),
+        receipt: IndexOperationPublicationReceipt::from_published_view(
+            Some([8; 32]),
+            [9; 32],
+            [10; 32],
+            3,
+            &view,
+            backend_library::Cursor::for_view_root(&view),
+        )
+        .expect("receipt"),
+        source_capture: IndexSourceCaptureSummary {
+            producer_package: package.clone(),
+            request_identity: [1; 32],
+            commit_identity: [2; 32],
+            workspace_root: [3; 32],
+            workspace_sequence: 2,
+            profiles: profiles.into_boxed_slice(),
+        },
+        refused_profiles: vec![IndexOperationProfileRefusal {
+            profile: ts,
+            reason: IndexOperationSemanticUnavailableReason::Rejected,
+            compiler_failure: Some(setup_failure("src/frontend/.prettierrc.js", None)),
+        }]
+        .into_boxed_slice(),
+    };
+    partial.admit().expect("checked partial fixture");
+    let fault = Fault::from_command_failure(
+        &CommandFailure::PartiallyPublished(partial.clone()),
+        Operand::Path("/abs/mixed-docs".to_owned()),
+    );
+    assert_eq!(fault.slug().as_str(), "partially-published");
+    let sentence = fault.cause().sentence();
+    assert!(sentence.contains("python: published 236 source files with Complete coverage"));
+    assert!(sentence.contains("typescript: unavailable"));
+    assert!(sentence.contains("requires tsc"));
+    assert!(sentence.contains("Set NUDOX_TSC"));
+    assert!(sentence.contains("refused profiles do not have current semantic coverage"));
+    assert!(
+        fault.compiler_failure().is_none(),
+        "do not substitute the first refusal for the whole partition"
+    );
+    let json = serde_json::to_value(FaultDto::new(&fault)).expect("CLI/MCP structured fact");
+    assert_eq!(
+        json["partial_publication"],
+        serde_json::to_value(&partial).expect("exact basis")
+    );
+    assert!(
+        json["partial_publication"]["source_capture"]
+            .get("operation_key")
+            .is_none()
+    );
+    let mut forged = json.clone();
+    forged["partial_publication"]["refused_profiles"] = serde_json::json!([]);
+    assert!(serde_json::from_value::<FaultDto>(forged).is_err());
+    let terminal = IndexJobTerminal {
+        ticket: IndexJobTicket::new(
+            std::num::NonZeroU64::new(1).expect("ticket"),
+            [11; 16],
+            package,
+        ),
+        outcome: IndexJobOutcome::PartiallyPublished(partial),
+    };
+    let dto = ProductDto::new(&product_view(
+        &backend_library::SurfaceReply::IndexTerminal(terminal),
+    ));
+    assert!(dto.records[0].tags.join(" ").contains(sentence));
+    assert!(
+        dto.records[0]
+            .tags
+            .iter()
+            .any(|tag| tag == "outcome partially-published")
+    );
+}

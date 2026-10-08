@@ -203,6 +203,14 @@ impl PackageCompilerFailureCause {
                     }),
                 ..
             } => failure.kind_tag(),
+            Self::Authority {
+                diagnostic:
+                    Some(CompilerAuthorityDiagnosticFacts {
+                        typescript_failure: Some(failure),
+                        ..
+                    }),
+                ..
+            } => failure.kind_tag(),
             Self::Authority { class, .. } => match class {
                 AuthorityClassFact::Syntax => "authority_syntax",
                 AuthorityClassFact::Binding => "authority_binding",
@@ -371,6 +379,9 @@ pub struct CompilerAuthorityDiagnosticFacts {
     /// paths remain local-only and are not serialized into this summary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub python_failure: Option<PythonAuthorityFailureKind>,
+    /// Exact closed TypeScript cause; transcript, paths and solver text remain local.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typescript_failure: Option<crate::interface::TypeScriptAuthorityFailureKind>,
 }
 
 /// Closed compact-lowering cause, with exact TypeScript projection operands
@@ -1766,6 +1777,7 @@ pub(crate) fn package_failure_from_terminal(
                         observed_bytes: u64::try_from(diagnostic.observed).unwrap_or(u64::MAX),
                         truncated: diagnostic.truncated,
                         python_failure: diagnostic.python_failure,
+                        typescript_failure: diagnostic.typescript_failure,
                     }
                 }),
             },

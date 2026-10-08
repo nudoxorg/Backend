@@ -106,6 +106,7 @@ fn capture_terminalization_failed(
 ) -> backend_library::IndexJobOutcome {
     let primary = match &outcome {
         backend_library::IndexJobOutcome::Published => "semantic publication completed".to_owned(),
+        backend_library::IndexJobOutcome::PartiallyPublished(_) => "available profiles were partially published".to_owned(),
         backend_library::IndexJobOutcome::Refused(detail)
         | backend_library::IndexJobOutcome::Failed(detail) => detail.as_str().to_owned(),
         backend_library::IndexJobOutcome::RefusedWithCompilerFailure { detail, .. } => {
@@ -147,6 +148,9 @@ fn deferred_profile_refused_outcome(
 fn legacy_add_compiler_failure(
     outcome: &backend_library::IndexJobOutcome,
 ) -> Option<backend_library::CommandFailure> {
+    if let backend_library::IndexJobOutcome::PartiallyPublished(partial) = outcome {
+        return Some(backend_library::CommandFailure::PartiallyPublished(partial.clone()));
+    }
     let backend_library::IndexJobOutcome::RefusedWithCompilerFailure { detail, failure } = outcome
     else {
         return None;
@@ -187,7 +191,7 @@ fn index_operation_failure(
             detail.clone(),
             None,
         ),
-        Some(backend_library::IndexJobOutcome::Published) => (
+        Some(backend_library::IndexJobOutcome::Published | backend_library::IndexJobOutcome::PartiallyPublished(_)) => (
             backend_library::IndexOperationFailureReason::WorkerFailed,
             backend_library::ProductText::from_static(
                 "semantic publication was reported while a captured profile remains Pending",
@@ -240,7 +244,13 @@ fn index_operation_published_observation(
             operation_key,
             entry.package.clone(),
             entry.execution_intent,
-            backend_library::IndexOperationState::Published(receipt),
+            match &entry.planned_partial {
+                Some(plan) => backend_library::IndexOperationState::PartiallyPublished {
+                    receipt,
+                    refused_profiles: plan.refused_profiles.clone(),
+                },
+                None => backend_library::IndexOperationState::Published(receipt),
+            },
         )
         .with_source_capture(entry.source_capture.clone()),
     );
@@ -255,7 +265,7 @@ fn index_attempt_retirement_reason(
 ) -> Option<backend_extension_turso::CandidateAttemptRetirementReason> {
     use backend_extension_turso::CandidateAttemptRetirementReason as R;
     match outcome {
-        backend_library::IndexJobOutcome::Published => None,
+        backend_library::IndexJobOutcome::Published | backend_library::IndexJobOutcome::PartiallyPublished(_) => None,
         backend_library::IndexJobOutcome::Refused(_)
         | backend_library::IndexJobOutcome::RefusedWithCompilerFailure { .. } => Some(R::Refused),
         backend_library::IndexJobOutcome::Cancelled => Some(R::Cancelled),
@@ -1046,6 +1056,7 @@ impl CommandAdapter {
                     execution_intent,
                     source_capture: None,
                     source_capture_base: None,
+                    planned_partial: None,
                     state: StoredOperationState::Accepted,
                 },
                 backend_library::IndexOperationUnresolvedReason::ReceiptPersistenceFailed,
@@ -1421,6 +1432,7 @@ impl CommandAdapter {
                 }
             }
             StoredOperationState::Published { .. }
+            | StoredOperationState::PartiallyPublished { .. }
             | StoredOperationState::Failed { .. }
             | StoredOperationState::Unresolved { .. } => Ok(self
                 .index_operations
@@ -1959,15 +1971,89 @@ impl CommandAdapter {
         legacy_reply: &mut Option<Result<Vec<u8>, BuiltinModelError>>,
     ) -> backend_library::IndexJobOutcome {
         self.set_index_progress_stage(indexing, backend_library::IndexJobStage::Publishing);
+        let refusal_outcome = prepared.profile_refusals.first().map(|_| {
+            refused_index_outcome(
+                "available language profiles were published; other profiles were explicitly refused; inspect package-profile for the retained outcomes",
+                prepared.profile_refusals.iter().find_map(|profile| profile.compiler_failure.clone()),
+            )
+        });
+        if refusal_outcome.is_some() && prepared.selected.is_empty() {
+            // All profiles were refused. Commit their independent typed
+            // terminal captures without manufacturing a publication receipt.
+            // The accepted keyed operation will resolve to ordinary Failed.
+            let result = (|| {
+                if let Some(fence) = prepared.revision_fence.as_ref()
+                    && !super::super::ingest::compiler_revision_is_current_with_cancellation(
+                        fence,
+                        Some(indexing.cancelled.as_ref()),
+                    )
+                    .map_err(BuiltinModelError)?
+                {
+                    return Err(BuiltinModelError(
+                        "captured source changed before refusal outcomes committed".to_owned(),
+                    ));
+                }
+                let intent = prepared.intent.ok_or_else(|| {
+                    BuiltinModelError("profile refusals lost their capture intent".to_owned())
+                })?;
+                let intent = match indexing.operation_key {
+                    Some(key) => intent.with_operation_key(key)?,
+                    None => intent,
+                };
+                let committed = prepare_builtin_intent_at(
+                    daemon,
+                    &intent,
+                    prepared
+                        .revision_fence
+                        .as_ref()
+                        .map(|fence| fence.canonical_root()),
+                    Arc::clone(&indexing.cancelled),
+                )?;
+                commit_prepared_builtin_intent(daemon, indexing.request_id, committed)?;
+                self.publish_view(daemon, Some(&intent))
+            })();
+            return match result {
+                Ok(()) => {
+                    indexing.captures.clear();
+                    // No available generation was claimed in this branch.
+                    match refusal_outcome.expect("refused outcome was checked") {
+                        backend_library::IndexJobOutcome::RefusedWithCompilerFailure {
+                            failure,
+                            ..
+                        } => refused_index_outcome(
+                            "every language profile was refused; inspect package-profile for the retained outcomes",
+                            Some(failure),
+                        ),
+                        _ => refused_index_outcome(
+                            "every language profile was refused; inspect package-profile for the retained outcomes",
+                            None,
+                        ),
+                    }
+                }
+                Err(error) => backend_library::IndexJobOutcome::Failed(bounded_index_detail(error)),
+            };
+        }
         match self.finish_add(
             daemon,
             prepared,
             indexing.request_id,
             indexing.requested_package,
+            indexing.owner_ticket.package().clone(),
             indexing.operation_key,
             Arc::clone(&indexing.cancelled),
         ) {
-            Ok(reply) => {
+            Ok((reply, partial)) => {
+                if let Some(partial) = partial {
+                    indexing.captures.clear();
+                    return backend_library::IndexJobOutcome::PartiallyPublished(partial);
+                }
+                if let Some(refusal) = refusal_outcome {
+                    // The final intent already terminalized every capture and
+                    // selected only admitted profiles. Do not reject them all
+                    // again when exposing the truthful legacy refusal outcome.
+                    indexing.captures.clear();
+                    return refusal;
+                }
                 if indexing.legacy_add.is_some() {
                     *legacy_reply = Some(Self::encode(daemon, indexing.request_id, reply, None));
                 }
@@ -2292,13 +2378,59 @@ impl CommandAdapter {
                                     }
                                 }
                                 Err(refusal) => {
-                                    let mut attempts = vec![current_attempt];
-                                    attempts.extend(job.pending_attempts());
-                                    terminal_attempts = Some(attempts);
-                                    if refusal.compiler_failure.is_some() {
-                                        terminal_compiler_profile = Some(current_profile);
+                                    if let Some(failure) = refusal.compiler_failure.clone() {
+                                        match job.record_compiler_refusal(current_profile, failure)
+                                        {
+                                            Ok(()) if job.has_pending_profiles() => {
+                                                match self
+                                                    .spawn_next_index_profile(&mut indexing, job)
+                                                {
+                                                    Ok(()) => {
+                                                        self.indexing = Some(indexing);
+                                                        return self.finish_deferred_poll(
+                                                            daemon, ready,
+                                                        );
+                                                    }
+                                                    Err(error) => {
+                                                        terminal = Some(backend_library::IndexJobOutcome::Failed(bounded_index_detail(error)));
+                                                    }
+                                                }
+                                            }
+                                            Ok(()) => match finish_deferred_index(daemon, job) {
+                                                Ok(prepared) => {
+                                                    terminal =
+                                                        Some(self.finish_prepared_index_selection(
+                                                            daemon,
+                                                            &mut indexing,
+                                                            prepared,
+                                                            &mut legacy_reply,
+                                                        ))
+                                                }
+                                                Err(error) => {
+                                                    terminal = Some(
+                                                        backend_library::IndexJobOutcome::Failed(
+                                                            bounded_index_detail(error),
+                                                        ),
+                                                    )
+                                                }
+                                            },
+                                            Err(error) => {
+                                                terminal =
+                                                    Some(backend_library::IndexJobOutcome::Failed(
+                                                        bounded_index_detail(error),
+                                                    ))
+                                            }
+                                        }
+                                        // The refused attempt was retired by
+                                        // finish_deferred_profile. Remaining
+                                        // candidates either advanced above or
+                                        // were retired by worker admission.
+                                    } else {
+                                        let mut attempts = vec![current_attempt];
+                                        attempts.extend(job.pending_attempts());
+                                        terminal_attempts = Some(attempts);
+                                        terminal = Some(deferred_profile_refused_outcome(refusal));
                                     }
-                                    terminal = Some(deferred_profile_refused_outcome(refusal));
                                 }
                             }
                         }
@@ -2313,7 +2445,7 @@ impl CommandAdapter {
                 }
             }
             if let Some(mut outcome) = terminal {
-                if !matches!(outcome, backend_library::IndexJobOutcome::Published)
+                if !matches!(outcome, backend_library::IndexJobOutcome::Published | backend_library::IndexJobOutcome::PartiallyPublished(_))
                     && !indexing.captures.is_empty()
                 {
                     let compiler_failure = match &outcome {
@@ -2581,7 +2713,9 @@ impl CommandAdapter {
             self.index_operations
                 .bind_producer_package(operation_key, producer_package)
                 .map_err(|error| {
-                    BuiltinModelError(format!("persist index producer package before work: {error}"))
+                    BuiltinModelError(format!(
+                        "persist index producer package before work: {error}"
+                    ))
                 })?;
         }
         self.recover_orphaned_package_label(daemon, &label, request_id)?;
@@ -2719,14 +2853,57 @@ impl CommandAdapter {
         prepared: PreparedProductSelection,
         request_id: u64,
         requested_package: backend_engine::PackageKey,
+        requested_reference: backend_library::PackageReference,
         operation_key: Option<backend_library::IndexOperationKey>,
         cancellation: Arc<AtomicBool>,
-    ) -> Result<AdmittedReply, BuiltinModelError> {
+    ) -> Result<
+        (
+            AdmittedReply,
+            Option<backend_library::IndexJobPartialPublication>,
+        ),
+        BuiltinModelError,
+    > {
         let PreparedProductSelection {
             intent: prepared_intent,
             selected,
             revision_fence,
+            profile_refusals,
+            partial_plan,
         } = prepared;
+        let partial_basis = if !profile_refusals.is_empty() && !selected.is_empty() {
+            let producer = selected
+                .first()
+                .expect("selected profile exists")
+                .0
+                .package();
+            if selected.iter().any(|(key, _)| key.package() != producer) {
+                return Err(BuiltinModelError("partial candidates span foreign producer namespaces".to_owned()));
+            }
+            Some(
+                super::index::source_capture_summary_for_root(
+                    daemon,
+                    producer,
+                    operation_key,
+                    None,
+                )?
+                .ok_or_else(|| {
+                    BuiltinModelError(
+                        "partial publication lost its selected source basis".to_owned(),
+                    )
+                })?,
+            )
+        } else {
+            None
+        };
+        let expected_selected = selected
+            .iter()
+            .map(|(key, claim)| {
+                (
+                    backend_library::SemanticLanguageProfile::new(key.profile()),
+                    *claim.binding().identity.as_ref(),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
         let intent = match (prepared_intent, operation_key) {
             (Some(intent), Some(operation_key)) => Some(intent.with_operation_key(operation_key)?),
             (intent, _) => intent,
@@ -2778,11 +2955,12 @@ impl CommandAdapter {
                     }
                     if let Some(operation_key) = operation_key {
                         index_operations
-                            .prepare(
+                            .prepare_with_partial(
                                 operation_key,
                                 request_identity,
                                 base_workspace_root,
                                 base_workspace_sequence,
+                                partial_plan.clone(),
                             )
                             .map_err(|error| {
                                 BuiltinModelError(format!(
@@ -2806,6 +2984,86 @@ impl CommandAdapter {
                 },
         )?;
         self.publish_view(daemon, committed.as_ref())?;
+        let partial = partial_basis
+            .map(|basis| {
+                let producer = backend_engine::PackageReference::parse(
+                    basis.producer_package.as_str().to_owned(),
+                )
+                .map_err(|error| {
+                    BuiltinModelError(format!("partial producer identity: {error}"))
+                })?;
+                let selected_capture = super::index::source_capture_summary_for_root(
+                    daemon,
+                    &producer,
+                    operation_key,
+                    Some(basis.request_identity),
+                )?
+                .ok_or_else(|| {
+                    BuiltinModelError(
+                        "committed partial publication lost its exact source capture".to_owned(),
+                    )
+                })?;
+                if selected_capture.commit_identity != basis.commit_identity
+                    || selected_capture.workspace_root != basis.workspace_root
+                    || selected_capture.workspace_sequence != basis.workspace_sequence
+                    || selected_capture.profiles.len() != basis.profiles.len()
+                    || selected_capture
+                        .profiles
+                        .iter()
+                        .zip(basis.profiles.iter())
+                        .any(|(selected, captured)| {
+                            selected.profile != captured.profile
+                                || selected.source_version != captured.source_version
+                                || selected.input_digest != captured.input_digest
+                                || selected.observation_sequence != captured.observation_sequence
+                                || selected.source_count != captured.source_count
+                        })
+                {
+                    return Err(BuiltinModelError(
+                        "partial publication selected a foreign source basis".to_owned(),
+                    ));
+                }
+                let published = selected_capture
+                    .profiles
+                    .iter()
+                    .filter_map(|profile| match profile.state {
+                        backend_library::IndexOperationSemanticProfileState::Published {
+                            generation,
+                            ..
+                        } => Some((profile.profile, generation)),
+                        _ => None,
+                    })
+                    .collect::<std::collections::BTreeMap<_, _>>();
+                if published != expected_selected {
+                    return Err(BuiltinModelError(
+                        "partial publication receipt differs from selected compiler candidates"
+                            .to_owned(),
+                    ));
+                }
+                let receipt = self
+                    .current_index_operation_receipt(
+                        daemon,
+                        request_identity,
+                        base_workspace_root,
+                        base_workspace_sequence,
+                    )
+                    .ok_or_else(|| {
+                        BuiltinModelError(
+                            "partial publication lacks one exact workspace/view receipt".to_owned(),
+                        )
+                    })?;
+                let partial = backend_library::IndexJobPartialPublication {
+                    package: requested_reference,
+                    receipt,
+                    source_capture: selected_capture,
+                    refused_profiles: profile_refusals,
+                };
+                partial
+                    .admit()
+                    .map_err(|error| BuiltinModelError(error.to_string()))?;
+                Ok(partial)
+            })
+            .transpose()?;
         if let Some(operation_key) = operation_key {
             if let Ok(Some(JournalEntry::Retained(entry))) =
                 self.index_operations.entry(operation_key)
@@ -2841,7 +3099,7 @@ impl CommandAdapter {
             // place so status can reconstruct the same checked receipt.
             let _ = self.index_operations.published(operation_key, receipt);
         }
-        Ok(added_reply(requested_package))
+        Ok((added_reply(requested_package), partial))
     }
 
     pub(in crate::builtin) fn execute(
@@ -3274,6 +3532,8 @@ impl CommandAdapter {
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let label = certified_package_label(certificate, package)?;
         let requested_package = package;
+        let requested_reference = backend_library::PackageReference::parse(label.clone())
+            .map_err(|error| BuiltinModelError(error.to_string()))?;
         let (package, label) = canonical_local_package(package, label)?;
         self.recover_orphaned_package_label(daemon, &label, request_id)?;
         let prepared = match classify_add_target(&label)? {
@@ -3292,6 +3552,8 @@ impl CommandAdapter {
                     intent: None,
                     selected: Vec::new(),
                     revision_fence: None,
+                    profile_refusals: Box::new([]),
+                    partial_plan: None,
                 }),
                 Err(refusal) => return Err(refusal),
             },
@@ -3301,44 +3563,30 @@ impl CommandAdapter {
                     intent: None,
                     selected: Vec::new(),
                     revision_fence: None,
+                    profile_refusals: Box::new([]),
+                    partial_plan: None,
                 }),
         };
-        let PreparedProductSelection {
-            intent,
-            selected,
-            revision_fence,
-        } = prepared;
-        let removals = intent
-            .as_ref()
-            .map(selected_semantic_removals)
-            .unwrap_or_default();
-        let committed =
-            self.semantic_authority
-                .commit_product_selection_changes(selected, removals, || {
-                    if let Some(revision_fence) = revision_fence.as_ref()
-                        && !super::super::ingest::compiler_revision_is_current(revision_fence)
-                            .map_err(BuiltinModelError)?
-                    {
-                        return Err(BuiltinModelError(
-                            "compiler source or configuration revision changed before product selection; retry indexing"
-                                .to_owned(),
-                        ));
-                    }
-                    intent
-                        .map(|intent| {
-                            commit_builtin_intent(daemon, request_id, &intent).map_err(
-                                |error| {
-                                    BuiltinModelError(format!(
-                                        "commit product source intent: {error}"
-                                    ))
-                                },
-                            )?;
-                            Ok(intent)
-                        })
-                        .transpose()
-                })?;
-        self.publish_view(daemon, committed.as_ref())?;
-        Ok(added_reply(requested_package))
+        let profile_refusals = prepared.profile_refusals.clone();
+        let (reply, partial) = self.finish_add(daemon, prepared, request_id, requested_package,
+            requested_reference, None, Arc::new(AtomicBool::new(false)))?;
+        if let Some(partial) = partial {
+            return Ok((CommandReply::Failed(backend_library::CommandFailure::PartiallyPublished(partial)), None));
+        }
+        if !profile_refusals.is_empty() {
+            let detail = "language profiles reached independent terminal outcomes; unavailable profiles were refused; inspect package-profile for the retained outcomes".to_owned();
+            let failure = match profile_refusals
+                .iter()
+                .find_map(|profile| profile.compiler_failure.clone())
+            {
+                Some(failure) => {
+                    backend_library::CommandFailure::CompilerRefused { detail, failure }
+                }
+                None => backend_library::CommandFailure::InvalidQuery(detail),
+            };
+            return Ok((CommandReply::Failed(failure), None));
+        }
+        Ok(reply)
     }
 
     fn registry_intent(
@@ -3367,6 +3615,8 @@ impl CommandAdapter {
                     intent: Some(intent),
                     selected: Vec::new(),
                     revision_fence: None,
+                    profile_refusals: Box::new([]),
+                    partial_plan: None,
                 })
             });
         };
@@ -4696,11 +4946,11 @@ fn map_semantic_authority_error(
 mod tests {
     use super::{
         ADD_TARGET_REQUIRED, AddTarget, CommandAdapter, Executed, GraphProjectionStamp, IndexJob,
-        IndexJobWork, JournalEntry, MAX_WAITING_COMMANDS, ProductDaemon,
-        ProductSemanticPublicationKey, ResidentCatalog, ResidentDependencies, StoredOperationState,
-        admitted_project_source_root, capture_terminalization_failed, classify_add_target,
-        index_operation_failure, index_operation_published_observation, legacy_add_compiler_failure,
-        pending_capture_unresolved, IndexOperationJournalError,
+        IndexJobWork, IndexOperationJournalError, JournalEntry, MAX_WAITING_COMMANDS,
+        ProductDaemon, ProductSemanticPublicationKey, ResidentCatalog, ResidentDependencies,
+        StoredOperationState, admitted_project_source_root, capture_terminalization_failed,
+        classify_add_target, index_operation_failure, index_operation_published_observation,
+        legacy_add_compiler_failure, pending_capture_unresolved,
     };
     use crate::builtin::{
         BuiltinIntent, BuiltinModel, BuiltinProfile, BuiltinSemanticRelation,
@@ -5123,6 +5373,12 @@ mod tests {
             let mut image_rows = super::super::super::view_build::ImageRowResidence::default();
             let mut generations = super::super::super::SemanticGenerationResidence::default();
             authority.install_image_loader(&mut generations);
+            // Match production cold startup: retained exact closures must be
+            // reconciled into the authority projection before a view can read
+            // their selected markers. An empty fixture never exercised this.
+            authority
+                .reconcile_workspace(&mut daemon)
+                .expect("reconcile retained semantic authority before fixture publication");
             let remote = super::super::super::query::RemoteSemantic::Unconfigured;
             let publication = publish_builtin_view(
                 &mut daemon,
@@ -5210,6 +5466,429 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct MixedNativeEnvironment(std::path::PathBuf);
+
+    impl backend_engine::application::LocalHostEnvironment for MixedNativeEnvironment {
+        fn value(
+            &self,
+            variable: backend_engine::application::LocalHostVariable,
+        ) -> Option<std::ffi::OsString> {
+            (variable == backend_engine::application::LocalHostVariable::NudoxDataRoot)
+                .then(|| self.0.clone().into_os_string())
+        }
+        fn search_path(&self) -> Option<std::ffi::OsString> {
+            Some(std::ffi::OsString::new())
+        }
+    }
+
+    fn install_mixed_native_compiler(fixture: &mut AdapterFixture) {
+        let compiler = backend_engine::application::LocalCompilerHost::new(
+            MixedNativeEnvironment(fixture.root.0.join("compiler-native")),
+            backend_engine::application::LocalHostDiscovery::ExplicitOnly,
+        )
+        .open()
+        .expect("compiled native Python producer and explicitly absent TypeScript SDK");
+        fixture.adapter.as_mut().expect("adapter").compiler = compiler;
+    }
+
+    fn run_mixed_native_operation(
+        fixture: &mut AdapterFixture,
+        label: &str,
+        seed: u8,
+    ) -> backend_library::IndexOperationStatus {
+        let operation =
+            backend_library::IndexOperationKey::from_bytes([seed; 32]).expect("operation");
+        let reference =
+            backend_library::PackageReference::parse(label.to_owned()).expect("package");
+        let started = std::time::Instant::now();
+        let deadline = started + Duration::from_secs(30);
+        let (adapter, daemon) = fixture.parts();
+        assert!(matches!(
+            adapter.start_index_operation(
+                daemon,
+                operation,
+                reference,
+                CompileExecutionIntent::Interactive,
+                u64::from(seed)
+            ),
+            Ok(Executed::Reply(_))
+        ));
+        while adapter.indexing.is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "native mixed operation exceeded its control deadline"
+            );
+            adapter.poll_deferred(daemon);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let observation = adapter
+            .resolve_index_operation(daemon, operation, None)
+            .expect("checked terminal operation");
+        backend_library::SurfaceReply::IndexOperationStatus(observation.clone())
+            .admit(backend_library::CommandId::IndexProgress)
+            .expect("strict terminal reply admission");
+        let backend_library::IndexOperationObservation::Known(status) = observation else {
+            panic!("known operation")
+        };
+        eprintln!(
+            "mixed native operation {} completed in {:.3}s: {:?}",
+            seed,
+            started.elapsed().as_secs_f64(),
+            status.state
+        );
+        status
+    }
+
+    #[test]
+    fn legacy_add_and_cold_retry_expose_exact_native_partial_publication() {
+        let mut fixture = AdapterFixture::new();
+        let (package, label) = fixture.add_target();
+        fs::write(
+            Path::new(&label).join("pyproject.toml"),
+            "[project]\nname=\"legacy_mixed\"\nversion=\"1.0.0\"\n",
+        )
+        .expect("manifest");
+        fs::write(
+            Path::new(&label).join("useful.py"),
+            "def useful_name():\n    return 7\n",
+        )
+        .expect("Python source");
+        fs::write(
+            Path::new(&label).join("panel.ts"),
+            "export function refused_name(): number { return 7; }\n",
+        )
+        .expect("TypeScript source");
+        for attempt in 0..2 {
+            install_mixed_native_compiler(&mut fixture);
+            let (adapter, daemon) = fixture.parts();
+            let request = 0x181 + attempt;
+            let transport = 0x1181 + attempt;
+            assert!(matches!(
+                adapter.execute_or_defer(daemon, &add_body(request, package, &label), transport),
+                Ok(Executed::Deferred)
+            ));
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            let mut replies = Vec::new();
+            while adapter.indexing.is_some() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "legacy native partial completes"
+                );
+                replies.extend(adapter.poll_deferred(daemon));
+                std::thread::yield_now();
+            }
+            let bytes = replies
+                .into_iter()
+                .find(|(ticket, _)| *ticket == transport)
+                .expect("legacy reply")
+                .1
+                .expect("encoded legacy reply");
+            let wire: serde_json::Value = serde_json::from_slice(&bytes).expect("actual wire");
+            assert_eq!(
+                wire["reply"]["kind"], "failed",
+                "partial preserves a non-success legacy result"
+            );
+            assert_eq!(
+                wire["reply"]["data"]["kind"], "partially_published",
+                "{wire}"
+            );
+            let partial: backend_library::IndexJobPartialPublication =
+                serde_json::from_value(wire["reply"]["data"]["data"].clone())
+                    .expect("typed full partition");
+            partial.admit().expect("strict public partial");
+            assert_eq!(partial.package.as_str(), label);
+            assert_eq!(partial.source_capture.producer_package.as_str(), label);
+            assert_eq!(partial.source_capture.profiles.len(), 2);
+            assert_eq!(partial.refused_profiles.len(), 1);
+            assert_eq!(
+                partial.refused_profiles[0]
+                    .profile
+                    .name()
+                    .expect("language"),
+                "typescript"
+            );
+            assert!(
+                partial.refused_profiles[0]
+                    .compiler_failure
+                    .as_ref()
+                    .expect("actual TS refusal")
+                    .requires_tool_configuration()
+            );
+            let source = crate::builtin::commands::index::source_capture_summary_for_root(
+                daemon,
+                &backend_engine::PackageReference::parse(label.clone()).expect("producer"),
+                None,
+                Some(partial.source_capture.request_identity),
+            )
+            .expect("selected source relation")
+            .expect("source basis");
+            assert_eq!(partial.source_capture, source);
+            assert!(
+                source
+                    .profiles
+                    .iter()
+                    .any(
+                        |profile| profile.profile.name().expect("profile") == "python"
+                            && matches!(
+                                profile.state,
+                                backend_library::IndexOperationSemanticProfileState::Published {
+                                    coverage:
+                                        backend_library::IndexOperationSemanticCoverage::Complete,
+                                    ..
+                                }
+                            )
+                    )
+            );
+            assert_eq!(
+                partial.receipt.workspace_root(),
+                daemon.engine().daemon().owner().head().root().as_bytes()
+            );
+            assert_eq!(
+                partial.receipt.workspace_sequence(),
+                daemon.engine().daemon().owner().head().sequence()
+            );
+            assert_eq!(
+                partial.receipt.view_root(),
+                daemon.engine().daemon().library().view().root().as_bytes()
+            );
+            assert_eq!(
+                legacy_add_compiler_failure(&backend_library::IndexJobOutcome::PartiallyPublished(
+                    partial.clone()
+                )),
+                Some(backend_library::CommandFailure::PartiallyPublished(partial))
+            );
+            fixture = fixture.reopen();
+        }
+    }
+
+    #[test]
+    fn native_python_publication_survives_missing_typescript_sdk_and_cold_refusal_retry() {
+        use backend_library::{
+            IndexOperationSemanticProfileState as ProfileState, IndexOperationState as State,
+        };
+        let mut fixture = AdapterFixture::new();
+        let (_, label) = fixture.add_target();
+        fs::write(
+            Path::new(&label).join("pyproject.toml"),
+            "[project]\nname=\"mixed_native\"\nversion=\"1.0.0\"\n",
+        )
+        .expect("Python manifest");
+        fs::write(
+            Path::new(&label).join("useful.py"),
+            "def useful_name():\n    return 7\n",
+        )
+        .expect("Python source");
+        fs::write(
+            Path::new(&label).join("panel.ts"),
+            "export function unavailable_name(): number { return 7; }\n",
+        )
+        .expect("TypeScript source");
+        install_mixed_native_compiler(&mut fixture);
+        let terminal = run_mixed_native_operation(&mut fixture, &label, 0x71);
+        let State::PartiallyPublished {
+            refused_profiles, ..
+        } = &terminal.state
+        else {
+            panic!("typed partial publication: {:?}", terminal.state)
+        };
+        assert_eq!(refused_profiles.len(), 1);
+        let ts =
+            backend_library::SemanticLanguageProfile::from_name("typescript").expect("TypeScript");
+        let py = backend_library::SemanticLanguageProfile::from_name("python").expect("Python");
+        assert_eq!(refused_profiles[0].profile, ts);
+        let failure = refused_profiles[0]
+            .compiler_failure
+            .as_ref()
+            .expect("closed missing SDK refusal");
+        assert_eq!(
+            failure.cause().required_native_tool(),
+            Some(backend_library::CompilerNativeToolFact::TypeScriptCompiler)
+        );
+        assert!(failure.cause().requires_tool_configuration());
+        let capture = terminal
+            .source_capture
+            .as_ref()
+            .expect("exact captured source basis");
+        assert_eq!(capture.profiles().len(), 2);
+        let prior = match capture
+            .profiles()
+            .iter()
+            .find(|profile| profile.profile == py)
+            .expect("Python profile")
+            .state
+        {
+            ProfileState::Published {
+                generation,
+                coverage,
+            } => backend_library::IndexOperationPriorSemantic {
+                generation,
+                coverage,
+            },
+            state => panic!("native Python must be independently published: {state:?}"),
+        };
+        assert!(matches!(
+            capture
+                .profiles()
+                .iter()
+                .find(|profile| profile.profile == ts)
+                .expect("TS profile")
+                .state,
+            ProfileState::Unavailable { .. }
+        ));
+        fixture = fixture.reopen();
+        {
+            let (adapter, daemon) = fixture.parts();
+            assert_eq!(
+                adapter
+                    .resolve_index_operation(daemon, terminal.operation_key, None)
+                    .expect("cold partial proof"),
+                backend_library::IndexOperationObservation::Known(terminal.clone())
+            );
+        }
+        install_mixed_native_compiler(&mut fixture);
+        let selected_before_cancel = {
+            let (_, daemon) = fixture.parts();
+            let relation = daemon
+                .engine()
+                .daemon()
+                .owner()
+                .snapshot()
+                .relation::<BuiltinSemanticRelation>()
+                .expect("prior selectors");
+            relation
+                .page(None, backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+                .expect("prior page")
+                .entries()
+                .iter()
+                .filter(|(key, _)| key.is_selected())
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        fs::write(
+            Path::new(&label).join("useful.py"),
+            "def changed_candidate():\n    return 9\n",
+        )
+        .expect("new real candidate source");
+        let cancelled_operation =
+            backend_library::IndexOperationKey::from_bytes([0x74; 32]).expect("cancel operation");
+        {
+            let (adapter, daemon) = fixture.parts();
+            assert!(matches!(
+                adapter.start_index_operation(
+                    daemon,
+                    cancelled_operation,
+                    backend_library::PackageReference::parse(label.clone()).expect("package"),
+                    CompileExecutionIntent::Interactive,
+                    0x174
+                ),
+                Ok(Executed::Reply(_))
+            ));
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            loop {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "real candidate did not reach cancellable compiler phase"
+                );
+                adapter.poll_deferred(daemon);
+                let job = adapter
+                    .indexing
+                    .as_ref()
+                    .expect("candidate remains active before cancellation");
+                if matches!(job.work, IndexJobWork::Compiling { .. }) {
+                    job.cancelled.store(true, Ordering::Release);
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            while adapter.indexing.is_some() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "cancelled native candidate did not retire"
+                );
+                adapter.poll_deferred(daemon);
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            let backend_library::IndexOperationObservation::Known(cancelled) = adapter
+                .resolve_index_operation(daemon, cancelled_operation, None)
+                .expect("checked cancellation")
+            else {
+                panic!("known cancellation")
+            };
+            assert!(
+                matches!(
+                    cancelled.state,
+                    State::Failed {
+                        reason: backend_library::IndexOperationFailureReason::Cancelled,
+                        ..
+                    }
+                ),
+                "cancelled request cannot publish a partial terminal: {:?}",
+                cancelled.state
+            );
+            backend_library::SurfaceReply::IndexOperationStatus(
+                backend_library::IndexOperationObservation::Known(cancelled),
+            )
+            .admit(backend_library::CommandId::IndexProgress)
+            .expect("strict cancelled reply");
+            let relation = daemon
+                .engine()
+                .daemon()
+                .owner()
+                .snapshot()
+                .relation::<BuiltinSemanticRelation>()
+                .expect("selectors after cancellation");
+            let selected_after_cancel = relation
+                .page(None, backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+                .expect("current page")
+                .entries()
+                .iter()
+                .filter(|(key, _)| key.is_selected())
+                .cloned()
+                .collect::<Vec<_>>();
+            assert_eq!(
+                selected_after_cancel, selected_before_cancel,
+                "cancellation before final commit preserves every selected prior claim"
+            );
+        }
+        fs::write(Path::new(&label).join("useful.py"), "def useful_name(:\n")
+            .expect("explicit current Python syntax refusal");
+        let failed = run_mixed_native_operation(&mut fixture, &label, 0x72);
+        assert!(
+            matches!(failed.state, State::Failed { .. }),
+            "no available current profile: {:?}",
+            failed.state
+        );
+        assert!(
+            matches!(failed.source_capture.as_ref().expect("refused current capture").profiles().iter()
+            .find(|profile| profile.profile == py).expect("Python profile").state,
+            ProfileState::Failed { prior: retained, .. } if retained == prior)
+        );
+        let (adapter, daemon) = fixture.parts();
+        let publications = daemon
+            .engine()
+            .daemon()
+            .owner()
+            .snapshot()
+            .relation::<BuiltinSemanticRelation>()
+            .expect("selected semantic relation");
+        let records = publications
+            .page(None, backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+            .expect("selected publication page");
+        assert!(records.entries().iter().any(|(key, record)| key.profile() == py.profile().expect("admitted Python profile") && key.is_selected()
+            && matches!(record, backend_engine::builtin::ProductSemanticPublicationRecord::Published { claim, .. }
+                if claim.binding().identity.as_ref() == &prior.generation)), "prior valid Python selector remains available");
+        let package = backend_engine::package_key(&label);
+        assert!(
+            matches!(
+                adapter.execute_or_defer(daemon, &remove_body(0x73, package, &label), 0x173),
+                Ok(Executed::Reply(_))
+            ),
+            "validated positive source membership removal completes through the real adapter"
+        );
+        assert!(!project_is_admitted(daemon, package));
+    }
+
     #[test]
     fn reconstructed_publication_rejects_pending_capture_before_encoding() -> Result<(), String> {
         use backend_library::{IndexOperationSemanticProfileState, IndexOperationSourceProfile};
@@ -5218,35 +5897,54 @@ mod tests {
             .map_err(|error| format!("caller fixture package: {error:?}"))?;
         let (adapter, daemon) = fixture.parts();
         let head = daemon.engine().daemon().owner().head();
-        let receipt = adapter.current_index_operation_receipt(
-            daemon, None, *head.root().as_bytes(), head.sequence(),
-        ).ok_or("fixture has no checked workspace/view receipt")?;
+        let receipt = adapter
+            .current_index_operation_receipt(daemon, None, *head.root().as_bytes(), head.sequence())
+            .ok_or("fixture has no checked workspace/view receipt")?;
         let operation_key = backend_library::IndexOperationKey::from_bytes([74; 32])
             .map_err(|error| format!("test operation key: {error:?}"))?;
-        adapter.index_operations.accept(operation_key, caller, CompileExecutionIntent::Interactive)
+        adapter
+            .index_operations
+            .accept(operation_key, caller, CompileExecutionIntent::Interactive)
             .map_err(|error| format!("accept caller in actual journal: {error}"))?;
-        let Some(JournalEntry::Retained(mut entry)) = adapter.index_operations.entry(operation_key)
-            .map_err(|error| format!("read accepted journal row: {error}"))? else {
-                return Err("accepted operation is absent from its journal".to_owned());
-            };
+        let Some(JournalEntry::Retained(mut entry)) = adapter
+            .index_operations
+            .entry(operation_key)
+            .map_err(|error| format!("read accepted journal row: {error}"))?
+        else {
+            return Err("accepted operation is absent from its journal".to_owned());
+        };
         let profile = IndexOperationSourceProfile {
             profile: backend_library::SemanticLanguageProfile::from_name("rust")
                 .ok_or("Rust semantic profile is unavailable")?,
-            source_version: [23; 32], input_digest: [24; 32],
-            observation_sequence: 1, source_count: 0,
+            source_version: [23; 32],
+            input_digest: [24; 32],
+            observation_sequence: 1,
+            source_count: 0,
             state: IndexOperationSemanticProfileState::Pending { prior: None },
         };
-        let capture = |profile| backend_library::IndexOperationSourceCaptureReceipt::from_checked_parts(
-            operation_key, [21; 32], [22; 32], 1, vec![profile].into_boxed_slice(),
-        ).map_err(|error| format!("checked source capture: {error:?}"));
+        let capture = |profile| {
+            backend_library::IndexOperationSourceCaptureReceipt::from_checked_parts(
+                operation_key,
+                [21; 32],
+                [22; 32],
+                1,
+                vec![profile].into_boxed_slice(),
+            )
+            .map_err(|error| format!("checked source capture: {error:?}"))
+        };
         entry.source_capture = Some(capture(profile)?);
-        assert!(matches!(index_operation_published_observation(&entry, operation_key, receipt.clone()),
-            Err(IndexOperationJournalError::InvalidTransition)),
-            "checked view alone must not erase the exact Pending capture");
+        assert!(
+            matches!(
+                index_operation_published_observation(&entry, operation_key, receipt.clone()),
+                Err(IndexOperationJournalError::InvalidTransition)
+            ),
+            "checked view alone must not erase the exact Pending capture"
+        );
         entry.source_capture = Some(capture(IndexOperationSourceProfile {
             state: IndexOperationSemanticProfileState::Unavailable {
                 reason: backend_library::IndexOperationSemanticUnavailableReason::Toolchain,
-            }, ..profile
+            },
+            ..profile
         })?);
         let terminal = index_operation_published_observation(&entry, operation_key, receipt)
             .map_err(|error| format!("terminal capture admits checked receipt: {error}"))?;

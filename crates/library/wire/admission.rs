@@ -464,6 +464,9 @@ pub fn reply_memory_bound(reply: &ReplyDto) -> usize {
         CommandReply::Error(message) => {
             add_bound(&mut bound, 512usize.saturating_add(message.len()));
         }
+        CommandReply::Failed(crate::CommandFailure::PartiallyPublished(partial)) => {
+            add_bound(&mut bound, 512usize.saturating_add(partial.encoded_size_bound()));
+        }
         CommandReply::Failed(failure) => {
             add_bound(
                 &mut bound,
@@ -630,6 +633,16 @@ fn add_claim_bound(bound: &mut usize, claim: &WireClaim) {
 
 fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), ReplyAdmissionError> {
     let valid = match (command, reply) {
+        (Command::Add { package, .. }, CommandReply::Failed(crate::CommandFailure::PartiallyPublished(partial))) => {
+            partial.admit().map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
+            if crate::package_key(partial.package.as_str()) != *package {
+                return Err(ReplyAdmissionError::Protocol("partial add reply does not match the requested package".to_owned()));
+            }
+            true
+        }
+        (_, CommandReply::Failed(crate::CommandFailure::PartiallyPublished(_))) => {
+            return Err(ReplyAdmissionError::Protocol("partial add publication does not match this command".to_owned()));
+        }
         (_, CommandReply::Error(_) | CommandReply::Failed(_))
         | (Command::Packages, CommandReply::Packages(_))
         | (Command::Name(_), CommandReply::Names(_))
@@ -647,6 +660,7 @@ fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), Repl
             reply
                 .admit(command.id())
                 .map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
+            admit_index_ticket_reply(command, reply)?;
             if let (
                 crate::SurfaceCommand::ProjectTree { root },
                 crate::SurfaceReply::ProjectTree(tree),
@@ -743,6 +757,49 @@ fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), Repl
             "reply kind does not match the command".to_owned(),
         ))
     }
+}
+
+/// Internal consistency cannot authorize a receipt for a different caller's job.
+/// Keep the reply family exact too: durable operation status shares the progress ID.
+fn admit_index_ticket_reply(
+    command: &crate::SurfaceCommand,
+    reply: &crate::SurfaceReply,
+) -> Result<(), ReplyAdmissionError> {
+    use crate::{IndexJobObservation, SurfaceCommand, SurfaceReply};
+
+    let (requested, observed) = match (command, reply) {
+        (SurfaceCommand::IndexAwait { ticket }, SurfaceReply::IndexTerminal(terminal)) => {
+            (ticket, &terminal.ticket)
+        }
+        (SurfaceCommand::IndexProgress { ticket, .. }, SurfaceReply::IndexProgress(observation)) => {
+            let observed = match observation {
+                IndexJobObservation::Pending(page) => &page.ticket,
+                IndexJobObservation::Terminal(terminal) => &terminal.ticket,
+                IndexJobObservation::Unknown { ticket, .. } => ticket,
+            };
+            (ticket, observed)
+        }
+        (SurfaceCommand::IndexCancel { ticket }, SurfaceReply::IndexCancellation(receipt)) => {
+            (ticket, &receipt.ticket)
+        }
+        (
+            SurfaceCommand::IndexAwait { .. }
+            | SurfaceCommand::IndexProgress { .. }
+            | SurfaceCommand::IndexCancel { .. },
+            _,
+        ) => {
+            return Err(ReplyAdmissionError::Protocol(
+                "index ticket reply family does not match the command".to_owned(),
+            ));
+        }
+        _ => return Ok(()),
+    };
+    if requested != observed {
+        return Err(ReplyAdmissionError::Protocol(
+            "index reply does not match the exact requested ticket".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn command_basis(command: &Command) -> Option<ViewRevision> {

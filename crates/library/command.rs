@@ -1193,6 +1193,8 @@ pub enum CommandFailure {
     },
     /// The query failed bounded semantic validation.
     InvalidQuery(String),
+    /// Useful profiles committed, with all unavailable profiles explicitly retained.
+    PartiallyPublished(crate::IndexJobPartialPublication),
     /// Adding a package reached an exact compact-fragment compiler refusal.
     CompilerRefused {
         /// Existing human-readable refusal retained for compatibility.
@@ -1234,6 +1236,9 @@ impl core::fmt::Display for CommandFailure {
                 formatter.write_str("query basis does not match the view revision")
             }
             Self::InvalidQuery(message) => write!(formatter, "invalid query: {message}"),
+            Self::PartiallyPublished(partial) => write!(formatter,
+                "partially published {}: {} profiles remain unavailable at workspace sequence {}",
+                partial.package.as_str(), partial.refused_profiles.len(), partial.receipt.workspace_sequence()),
             Self::CompilerRefused { detail, failure } => {
                 write!(
                     formatter,

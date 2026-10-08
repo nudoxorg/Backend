@@ -23,6 +23,7 @@ type InventoryGate = Arc<(Mutex<bool>, Condvar)>;
 struct ScheduledReader {
     inventory_gate: InventoryGate,
     file_reads: Arc<AtomicUsize>,
+    inventory_reads: Arc<AtomicUsize>,
 }
 
 impl PageReader for ScheduledReader {
@@ -47,6 +48,7 @@ impl PageReader for ScheduledReader {
                 }))
             }
             ReadRequest::Browse(BrowseKey::CargoSourceInventory(key)) => {
+                self.inventory_reads.fetch_add(1, Ordering::SeqCst);
                 let (lock, released) = &*self.inventory_gate;
                 let mut open = lock.lock().unwrap_or_else(PoisonError::into_inner);
                 while !*open {
@@ -82,6 +84,7 @@ struct CargoRig {
     store: Entity<DataStore>,
     inventory_gate: InventoryGate,
     file_reads: Arc<AtomicUsize>,
+    inventory_reads: Arc<AtomicUsize>,
     notifications: Rc<RefCell<Vec<PageKey>>>,
     dependencies: RouteDependencies,
     _events: Subscription,
@@ -120,11 +123,14 @@ fn rig(cx: &mut TestAppContext, gate: Option<OwnerGate>, inventory_ready: bool) 
     cx.executor().allow_parking();
     let inventory_gate = Arc::new((Mutex::new(inventory_ready), Condvar::new()));
     let file_reads = Arc::new(AtomicUsize::new(0));
+    let inventory_reads = Arc::new(AtomicUsize::new(0));
     let workers_gate = Arc::clone(&inventory_gate);
     let workers_reads = Arc::clone(&file_reads);
+    let workers_inventory_reads = Arc::clone(&inventory_reads);
     let pool = ReadPool::start(2, move |_| ScheduledReader {
         inventory_gate: Arc::clone(&workers_gate),
         file_reads: Arc::clone(&workers_reads),
+        inventory_reads: Arc::clone(&workers_inventory_reads),
     })
     .expect("read pool");
     let mut snapshot = AppSnapshot::empty(root());
@@ -151,6 +157,7 @@ fn rig(cx: &mut TestAppContext, gate: Option<OwnerGate>, inventory_ready: bool) 
         store,
         inventory_gate,
         file_reads,
+        inventory_reads,
         notifications,
         dependencies,
         _events: events,
@@ -243,6 +250,9 @@ fn inventory_arriving_after_idle_file_wakes_the_same_reading_plan_and_stays_resi
         rig.store.read_with(cx, |store, _| rig.both_current(store)),
         "unrelated browse reads cannot evict the visible inventory"
     );
+    assert_eq!(rig.file_reads.load(Ordering::SeqCst), 1);
+    assert_eq!(rig.inventory_reads.load(Ordering::SeqCst), 1,
+        "residency retains the independently admitted inventory without another read");
 }
 
 #[gpui::test]
@@ -388,6 +398,10 @@ fn an_unserved_placeholder_cannot_admit_loaded_cargo_bytes() {
 fn closing_settings_reenters_the_same_source_pair_with_a_fresh_owner_read(cx: &mut TestAppContext) {
     let rig = rig(cx, None, true);
     rig.until(cx, |store| rig.both_current(store));
+    let first_digest = rig.store.read_with(cx, |store, _| {
+        store.cargo_source(&rig.dependencies.cargo().expect("source pair").file)
+            .loaded_value().expect("first owner read").content_digest
+    });
     rig.store.update(cx, |store, cx| {
         let snapshot = store.snapshot();
         let mut session = snapshot.session().clone();
@@ -396,8 +410,17 @@ fn closing_settings_reenters_the_same_source_pair_with_a_fresh_owner_read(cx: &m
     });
     assert_eq!(
         rig.store.read_with(cx, |store, _| store.focused().clone()),
-        BTreeSet::from([PageKey::Health])
+        BTreeSet::from([
+            PageKey::Health,
+            PageKey::Package(route_package(&route()).expect("visible package header")),
+        ])
     );
+    rig.store.read_with(cx, |store, _| {
+        assert!(!store.focused().contains(&rig.file_key()));
+        assert!(!store.focused().contains(&rig.inventory_key()));
+        assert!(!store.is_loading(&rig.file_key()));
+        assert!(!store.is_loading(&rig.inventory_key()));
+    });
     rig.store.update(cx, |store, cx| {
         let snapshot = store.snapshot();
         let mut session = snapshot.session().clone();
@@ -406,6 +429,13 @@ fn closing_settings_reenters_the_same_source_pair_with_a_fresh_owner_read(cx: &m
     });
     rig.until(cx, |store| rig.both_current(store));
     assert_eq!(rig.file_reads.load(Ordering::SeqCst), 2);
+    assert_eq!(rig.inventory_reads.load(Ordering::SeqCst), 2,
+        "the same source pair independently revalidates both resources");
+    rig.store.read_with(cx, |store, _| {
+        assert_eq!(store.focused(), &BTreeSet::from_iter(rig.dependencies.keys().iter().cloned()));
+        assert_ne!(store.cargo_source(&rig.dependencies.cargo().expect("source pair").file)
+            .loaded_value().expect("replacement owner read").content_digest, first_digest);
+    });
 }
 
 #[test]

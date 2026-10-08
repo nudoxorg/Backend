@@ -460,7 +460,7 @@ fn rig_with_engine_gate_at_root(
     gate: Option<OwnerGate>,
     initial_root: VersionedRoot,
 ) -> Rig {
-    rig_with_engine_gate_at_root_keep(cx, route, width, height, pool, engine, gate, initial_root, None, RigProjection::Fixture)
+    rig_with_engine_gate_at_root_keep(cx, route, width, height, pool, engine, gate, initial_root, None, None, RigProjection::Fixture)
 }
 
 #[derive(Clone, Copy)]
@@ -472,7 +472,7 @@ pub(crate) fn rig_with_production_owner(cx: &mut TestAppContext, pool: ReadPool,
     engine: impl EngineClient, gate: OwnerGate, root: VersionedRoot) -> Rig
 {
     rig_with_engine_gate_at_root_keep(cx, None, 1440.0, 900.0,
-        pool, engine, Some(gate), root, None, RigProjection::IndexedOwner)
+        pool, engine, Some(gate), root, None, None, RigProjection::IndexedOwner)
 }
 
 /// Mounts a real Reader from an already decoded private cold snapshot.
@@ -485,7 +485,7 @@ pub(crate) fn rig_with_cold_keep(
     rig_with_engine_gate_at_root_keep(
         cx, Some(route), 1440.0, 900.0,
         ReadPool::start(2, |_| Fixture).expect("pool"), RootOnly,
-        Some(gate), VersionedRoot::unserved(), Some(keep), RigProjection::Fixture,
+        Some(gate), VersionedRoot::unserved(), Some(keep), None, RigProjection::Fixture,
     )
 }
 
@@ -499,6 +499,7 @@ fn rig_with_engine_gate_at_root_keep(
     gate: Option<OwnerGate>,
     initial_root: VersionedRoot,
     keep: Option<crate::runtime::snapshot::Keep>,
+    initial_project: Option<crate::model::WorkspaceProject>,
     projection: RigProjection,
 ) -> Rig {
     let cold = keep.is_some();
@@ -513,6 +514,10 @@ fn rig_with_engine_gate_at_root_keep(
     let _ = std::fs::create_dir_all(&folder);
     let mut workspace = snapshot.workspace().clone();
     workspace.host = LocalProjectId::from_path(&folder).ok();
+    if let Some(project) = initial_project {
+        workspace.active = Some(project.id.clone());
+        workspace.projects = Arc::from([project]);
+    }
     snapshot = snapshot.with_workspace(workspace);
     snapshot = snapshot.with_session(SessionState::default());
     if cold {
@@ -3396,3 +3401,220 @@ fn unavailable_library_project_opens_local_tree_without_semantic_authority(cx: &
 }
 
 mod publication;
+
+/// The durable Indexing phase is also the local queue. Paint and native
+/// navigation must not promote it to producer work while its owner is absent.
+#[gpui::test]
+fn lifecycle_native_unsent_queue_paints_consistently_and_keeps_its_tree_address(
+    cx: &mut TestAppContext,
+) {
+    let gate = OwnerGate::starting();
+    let mut rig = rig_with_engine_gate_at_root(
+        cx, None, 1440.0, 900.0, ReadPool::start(2, |_| Fixture).expect("pool"),
+        RootOnly, Some(gate.clone()), VersionedRoot::unserved(),
+    );
+    rig.cx.update(|window, cx| {
+        cx.set_global(gpui::TextTrace);
+        window.set_a11y_forced(true);
+    });
+    gate.publish(OwnerState::Failed(OwnerFault::Host(Arc::from("owner unavailable"))));
+    rig.draw();
+    let project = LocalProjectId::new("/fixture/unsent-lifecycle").expect("local project");
+    rig.graph.root.update(rig.cx, |root, cx| root.dispatch(
+        Intent::AddProject { project: project.clone() }, cx,
+    ));
+    rig.draw();
+    rig.repaint();
+    let paint = rig.cx.update(|window, _| window.painted_texts().iter()
+        .map(|text| text.text.to_string()).collect::<Vec<_>>());
+    assert!(paint.iter().filter(|text| text.as_str() == "Queued").count() >= 2,
+        "the native shelf and project tile agree: {paint:?}");
+    assert!(paint.iter().all(|text| !text.contains("Indexing") && !text.contains("Compiling")),
+        "an unsent admission has no producer work to describe: {paint:?}");
+    let before = rig.graph.root.read_with(rig.cx, |root, _| root.snapshot());
+    let row = &before.workspace().projects[0];
+    assert_eq!(row.phase, crate::model::ProjectPhase::Indexing);
+    assert_eq!(row.lifecycle(), crate::model::ProjectLifecycle::Queued);
+    assert_eq!(row.request, None);
+    assert_eq!(row.operation, None);
+
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let tree = format!("orbit-tree-{}", project.as_str());
+    assert!(rig.cx.update(|window, cx| targets.focus_native(&tree, window, cx)));
+    rig.native_press("enter");
+    rig.draw();
+    assert_eq!(rig.route(), Route::Orbit(crate::navigation::OrbitRoute::Browse(
+        crate::navigation::BrowseRoute::Tree(project.clone()),
+    )));
+    rig.keys("secondary-[");
+    assert_eq!(rig.route(), Route::Orbit(crate::navigation::OrbitRoute::Home));
+    let after = rig.graph.root.read_with(rig.cx, |root, _| root.snapshot());
+    assert_eq!(after.workspace().projects[0].request, None);
+    assert_eq!(after.workspace().projects[0].operation, None);
+    assert_eq!(after.workspace().projects[0].lifecycle(), crate::model::ProjectLifecycle::Queued);
+}
+
+/// A controlled typed receipt drives the mounted failure card. Diagnostic
+/// words resembling a compiler error cannot become a cause through rendering.
+#[gpui::test]
+fn lifecycle_native_refusal_discloses_raw_detail_without_changing_its_cause(
+    cx: &mut TestAppContext,
+) {
+    let gate = OwnerGate::starting();
+    let mut rig = rig_with_engine_gate_at_root(
+        cx, None, 1440.0, 900.0, ReadPool::start(2, |_| Fixture).expect("pool"),
+        RootOnly, Some(gate.clone()), VersionedRoot::unserved(),
+    );
+    rig.cx.update(|window, cx| {
+        cx.set_global(gpui::TextTrace);
+        window.set_a11y_forced(true);
+    });
+    gate.publish(OwnerState::Failed(OwnerFault::Host(Arc::from("owner unavailable"))));
+    rig.draw();
+    let project = LocalProjectId::new("/fixture/typed-refusal").expect("project");
+    let mut row = crate::model::WorkspaceProject::indexing_with_id(project.clone());
+    let detail = "connection semantic compilation failed; prior selected semantic generation was preserved";
+    let mut operation = crate::model::index_operation::tests::claim(&project, 0x79);
+    operation.observation = Some(crate::model::index_operation::tests::observation(
+        &operation, backend_library::IndexOperationState::Failed {
+            reason: backend_library::IndexOperationFailureReason::Refused,
+            detail: backend_library::ProductText::from_static(detail),
+            compiler_failure: None,
+        },
+    ));
+    row.phase = crate::model::ProjectPhase::Failed;
+    row.files_indexed = Some(478);
+    row.operation = Some(operation);
+    row.error = Some(detail.into());
+    let snapshot = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let mut workspace = snapshot.workspace().clone();
+    workspace.projects = Arc::from([row.clone()]);
+    workspace.active = Some(project.clone());
+    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(
+        Arc::new(snapshot.with_workspace(workspace)), cx,
+    ));
+    rig.draw();
+    rig.repaint();
+    let words = rig.said();
+    assert!(words.iter().any(|word| word == "typed-refusal: Index refused."), "{words:?}");
+    assert!(!words.iter().any(|word| word == detail || word.contains("Compilation refused")), "{words:?}");
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let disclosure = format!("owner-words-{}", project.as_str());
+    assert!(rig.cx.update(|window, cx| targets.focus_native(&disclosure, window, cx)));
+    rig.native_press("enter");
+    rig.draw();
+    assert!(rig.said().iter().any(|word| word == detail));
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().workspace().projects[0].clone()), row,
+        "native disclosure changes neither retained rows nor the exact operation evidence");
+}
+
+/// Controlled admitted mixed receipt: useful publication stays navigable and
+/// unavailable profile wording is disclosed without promoting full coverage.
+#[gpui::test]
+fn lifecycle_native_partial_receipt_discloses_profiles_and_preserves_navigation(
+    cx: &mut TestAppContext,
+) {
+    let project = LocalProjectId::new("/fixture/mixed-lifecycle").expect("controlled project");
+    let mut row = crate::model::WorkspaceProject::indexing_with_id(project.clone());
+    let mut operation = crate::model::index_operation::tests::claim(&project, 0x85);
+    operation.observation = Some(
+        crate::model::index_operation::tests::partially_published(&operation)
+            .expect("checked controlled mixed profile receipt"),
+    );
+    row.phase = crate::model::ProjectPhase::Ready;
+    row.operation = Some(operation);
+    let gate = OwnerGate::starting();
+    let mut rig = rig_with_engine_gate_at_root_keep(
+        cx,
+        None,
+        1440.0,
+        900.0,
+        ReadPool::start(2, |_| Fixture).expect("controlled read pool"),
+        RootOnly,
+        Some(gate.clone()),
+        VersionedRoot::unserved(),
+        None,
+        Some(row.clone()),
+        RigProjection::Fixture,
+    );
+    rig.cx.update(|window, cx| {
+        cx.set_global(gpui::TextTrace);
+        window.set_a11y_forced(true);
+    });
+    gate.publish(OwnerState::Failed(OwnerFault::Host(Arc::from(
+        "owner unavailable",
+    ))));
+    rig.draw();
+    let runtime_snapshot = rig.graph.root.read_with(rig.cx, |root, _| root.snapshot());
+    let store_snapshot = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    assert_eq!(runtime_snapshot.workspace(), store_snapshot.workspace(), "navigation and presentation share the admitted fixture");
+    assert_eq!(runtime_snapshot.workspace().projects.as_ref(), &[row.clone()]);
+    rig.draw();
+    rig.repaint();
+    let words = rig.said();
+    assert!(
+        words
+            .iter()
+            .any(|word| word == "mixed-lifecycle: Partially published."),
+        "{words:?}"
+    );
+    assert!(
+        !words
+            .iter()
+            .any(|word| word == "Index published" || word.contains("typescript: the compiler")),
+        "{words:?}"
+    );
+    let targets = rig
+        .shell
+        .read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let disclosure = format!("owner-words-{}", project.as_str());
+    assert!(
+        rig.cx
+            .update(|window, cx| targets.focus_native(&disclosure, window, cx))
+    );
+    rig.native_press("enter");
+    rig.draw();
+    assert!(
+        rig.said()
+            .iter()
+            .any(|word| word == "typescript: the compiler is unavailable.")
+    );
+    assert_eq!(
+        rig.graph
+            .store
+            .read_with(rig.cx, |store, _| store.snapshot().workspace().projects[0]
+                .clone()),
+        row
+    );
+    let targets = rig
+        .shell
+        .read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let tree = format!("orbit-tree-{}", project.as_str());
+    assert!(
+        rig.cx
+            .update(|window, cx| targets.focus_native(&tree, window, cx))
+    );
+    rig.native_press("enter");
+    rig.draw();
+    assert_eq!(
+        rig.route(),
+        Route::Orbit(crate::navigation::OrbitRoute::Browse(
+            crate::navigation::BrowseRoute::Tree(project.clone())
+        ))
+    );
+    rig.keys("secondary-[");
+    assert_eq!(
+        rig.route(),
+        Route::Orbit(crate::navigation::OrbitRoute::Home)
+    );
+    let runtime_snapshot = rig.graph.root.read_with(rig.cx, |root, _| root.snapshot());
+    let store_snapshot = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    assert_eq!(runtime_snapshot.workspace(), store_snapshot.workspace(), "Back preserves the same admitted runtime and presentation fixture");
+    assert_eq!(
+        rig.graph
+            .store
+            .read_with(rig.cx, |store, _| store.snapshot().workspace().projects[0]
+                .clone()),
+        row
+    );
+}

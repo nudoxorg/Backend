@@ -90,6 +90,10 @@ impl ProjectCommand {
     /// A recovery read needs both the exact saved claim and a serving owner.
     pub(crate) fn for_project(project: &crate::model::WorkspaceProject, active: bool, owner_serving: bool) -> Vec<Self> {
         let mut commands = Self::for_phase(project.phase, active);
+        if owner_serving && project.request.is_none()
+            && project.lifecycle() == crate::model::ProjectLifecycle::PartiallyPublished
+            && project.operation.as_ref().is_some_and(crate::model::IndexOperationClaim::has_terminal_observation)
+        { commands.insert(0, Self::Retry); }
         if owner_serving && project.phase == ProjectPhase::Unconfirmed && project.request.is_none()
             && project.operation.as_ref().is_some_and(|operation| operation.belongs_to(&project.id))
         { commands.insert(0, if project.operation.as_ref().is_some_and(crate::model::IndexOperationClaim::permits_new_attempt) {

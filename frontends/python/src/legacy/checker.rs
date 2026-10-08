@@ -74,8 +74,7 @@ const REVEAL_HEADER: &[u8] = b"from typing import reveal_type\n";
 /// The `reveal_type(` call spelling prefix.
 const REVEAL_CALL: &[u8] = b"reveal_type(";
 /// Versioned identity of package-scoped Pyrefly env and working-directory policy.
-pub const PYTHON_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1: &str =
-    "pyrefly-native-project-state-30b5ca52.classdef-declaration+constructor-callee.mirror-only.v5";
+pub const PYTHON_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1: &str = "pyrefly-native-project-state-30b5ca52.classdef-declaration+constructor-callee.exact-source-coordinate.no-import-call-fallback.mirror-only.v7";
 
 /// Exact upstream revision of the compiled native Python State authority.
 pub const PYTHON_NATIVE_PROJECT_SOURCE_REVISION: &str = "30b5ca5250db9f2d9264d5e889662cf1224a75b7";

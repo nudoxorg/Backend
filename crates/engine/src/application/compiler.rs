@@ -4028,6 +4028,17 @@ fn package_authority_terminal(
     toolchain: ToolchainSelection<'_>,
     cause: PackageAuthorityError,
 ) -> CompilerTerminal {
+    if matches!(
+        &cause,
+        PackageAuthorityError::PythonPyrefly(PythonCheckerError::Cancelled { .. })
+    ) || super::compiler_typescript_failure::failure_kind(&cause)
+        .is_some_and(|failure| failure.is_cancelled())
+    {
+        return CompilerTerminal::PackageCancelled {
+            target,
+            phase: PackageCompilePhase::Authority,
+        };
+    }
     match cause {
         PackageAuthorityError::Cancelled { .. } => CompilerTerminal::PackageCancelled {
             target,
@@ -4084,6 +4095,7 @@ fn package_authority_terminal(
         }
         cause => {
             let (phase, class) = package_authority_projection(&cause);
+            let typescript_failure = super::compiler_typescript_failure::failure_kind(&cause);
             let python_failure = match &cause {
                 PackageAuthorityError::NativePythonToolchainIdentityMismatch { .. } => {
                     Some(PythonAuthorityFailureKind::ProducerIdentityMismatch)
@@ -4103,7 +4115,10 @@ fn package_authority_terminal(
             )
             .map(|diagnostic| match python_failure {
                 Some(failure) => diagnostic.with_python_failure(failure),
-                None => diagnostic,
+                None => match typescript_failure {
+                    Some(failure) => diagnostic.with_typescript_failure(failure),
+                    None => diagnostic,
+                },
             });
             compiler_attempt_terminal(
                 request,
@@ -4570,6 +4585,142 @@ mod tests {
         let file_detail = bounded_error_chain(&file_error);
         assert!(file_detail.text.contains("/tmp/nudox-go-oracle/main.go"));
         assert!(file_detail.text.contains("private source write denied"));
+    }
+
+    #[test]
+    fn typescript_real_native_authority_stop_preserves_typed_cause_and_terminal() {
+        use backend_frontend_typescript::{
+            TszAuthorityError, TszCheckerOptions, TszEnvironmentFingerprint, TszFileInput,
+            TszProjectAuthority, TszProjectExecutionBudget, TszProjectOptions,
+            TszProjectSemanticOptions,
+        };
+        use backend_library::interface::TypeScriptAuthorityFailureKind as F;
+        let profile =
+            LanguageProfile::TypeScript(backend_semantic::vocabulary::TypeScriptSource::TypeScript);
+        let request = super::ApplicationCompilerRequest {
+            profile,
+            stage: Stage::LowerIr,
+            source: "export const x = 1;",
+        };
+        let source = request_source(request).expect("source authority");
+        let target = ContentId::<backend_version::CompilationTargetDomain>::from_canonical_bytes(
+            b"native-stop-control",
+        );
+        let toolchain = ResolvedToolchain::from_version(
+            NativeTool::TypeScriptCompiler,
+            host_path("/toolchain/bin/tsc"),
+            b"Version 5.9.0",
+        )
+        .expect("resolved control toolchain");
+        for cancelled in [false, true] {
+            let flag = std::sync::atomic::AtomicBool::new(cancelled);
+            let deadline = std::time::Instant::now() - std::time::Duration::from_millis(1);
+            let budget = TszProjectExecutionBudget::new(deadline, &flag, 1_000_000);
+            let mut authority = TszProjectAuthority::new();
+            let error = authority
+                .update_with_execution_checkpoint(
+                    vec![TszFileInput {
+                        path: "entry.ts".into(),
+                        source: request.source.into(),
+                    }],
+                    TszProjectOptions {
+                        checker: TszCheckerOptions::default(),
+                        semantic_options: TszProjectSemanticOptions::structural(),
+                        module_resolutions: Vec::new(),
+                        environment: TszEnvironmentFingerprint::from_sha256([7; 32]),
+                    },
+                    &[],
+                    &budget,
+                )
+                .expect_err("real authority checkpoint refuses before publication");
+            assert!(authority.project().is_none());
+            let terminal = package_authority_terminal(
+                target,
+                request,
+                source,
+                ToolchainSelection::ResolvedNative(toolchain),
+                PackageAuthorityError::TypeScriptTsz(error),
+            );
+            if cancelled {
+                assert!(matches!(
+                    terminal,
+                    CompilerTerminal::PackageCancelled { .. }
+                ));
+            } else {
+                let failure = backend_library::PackageCompilerFailure::from_package_terminal(
+                    "entry.ts", &terminal,
+                )
+                .expect("projection")
+                .expect("deadline refusal");
+                assert_eq!(failure.kind_tag(), F::NativeUpdateDeadline.kind_tag());
+                assert!(!failure.cause().requires_tool_configuration());
+                assert!(failure.detail().contains("admitted deadline"));
+            }
+        }
+        // The historical reported Next call site stays distinct from a real update stop.
+        let error = TszAuthorityError::ProjectCheck(
+            backend_frontend_typescript::TszProjectProgramCheckError::ExecutionStopped(
+                backend_frontend_typescript::TszProjectExecutionStop::Deadline,
+            ),
+        );
+        let terminal = package_authority_terminal(
+            target,
+            request,
+            source,
+            ToolchainSelection::ResolvedNative(toolchain),
+            PackageAuthorityError::TypeScriptTsz(error),
+        );
+        let failure =
+            backend_library::PackageCompilerFailure::from_package_terminal("entry.ts", &terminal)
+                .expect("projection")
+                .expect("project-check deadline");
+        assert_eq!(failure.kind_tag(), F::NativeProjectCheckDeadline.kind_tag());
+    }
+
+    #[test]
+    fn typescript_nested_cancellation_is_a_package_cancelled_terminal() {
+        use backend_frontend_typescript::{
+            TszAuthorityError as E, TszProjectExecutionStop as S, TszProjectProgramCheckError as P,
+            TszProjectQuerySessionError as Q,
+        };
+        let profile =
+            LanguageProfile::TypeScript(backend_semantic::vocabulary::TypeScriptSource::TypeScript);
+        let source_bytes = "export const x = 1;";
+        let request = backend_library::interface::CompilerRequest {
+            profile,
+            stage: Stage::LowerIr,
+            source: source_bytes,
+        };
+        let source = request_source(request).expect("source authority");
+        // No compiler is entered: authority has already reported an exact cooperative stop.
+        let toolchain = ToolchainSelection::ExplicitlyUnavailable {
+            tool: NativeTool::TypeScriptCompiler,
+        };
+        let target = backend_version::ContentId::<backend_version::CompilationTargetDomain>::from_canonical_bytes(b"cancelled-ts-target");
+        for error in [
+            E::ExecutionStopped(S::Cancelled),
+            E::ProjectCheck(P::ExecutionStopped(S::Cancelled)),
+            E::ProjectCheckerSession(Q::ExecutionStopped(S::Cancelled)),
+        ] {
+            let terminal = package_authority_terminal(
+                target,
+                request,
+                source,
+                toolchain,
+                PackageAuthorityError::TypeScriptTsz(error),
+            );
+            assert!(
+                matches!(terminal, CompilerTerminal::PackageCancelled { target: actual, phase: backend_library::interface::PackageCompilePhase::Authority } if actual == target)
+            );
+            assert!(
+                backend_library::PackageCompilerFailure::from_package_terminal(
+                    "entry.ts", &terminal
+                )
+                .expect("terminal projection")
+                .is_none(),
+                "cancelled authority cannot become a profile refusal"
+            );
+        }
     }
 
     #[test]

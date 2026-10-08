@@ -124,6 +124,7 @@ pub(crate) fn collect_with_project_checker<'source>(
     checker: &'source CheckerReport,
 ) -> Result<(), PythonCollectError> {
     let mut emitter = Emitter::new(source, module, facts, Some(checker));
+    emitter.project_authority = true;
     emitter.project_definitions = checker
         .symbols
         .iter()
@@ -240,6 +241,8 @@ struct Emitter<'a, 'source> {
     /// Native definitions whose owned target text is borrowed through admission.
     project_definitions:
         HashMap<(u32, u32), &'source backend_frontend_python::legacy::checker::DefinitionTarget>,
+    /// Native project report owns definition absence; name-only fallback cannot override it.
+    project_authority: bool,
     /// Reserved owner while the first structural class is being lowered.
     reserved_anchor: Option<u32>,
 }
@@ -346,6 +349,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
             child_rows: Vec::new(),
             checker: checker.map(CheckerIndex::build),
             project_definitions: HashMap::new(),
+            project_authority: false,
             reserved_anchor: None,
         }
     }
@@ -1955,15 +1959,15 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 DeclarationKind::Class => EntityKind::Record,
                 DeclarationKind::Function => EntityKind::Function,
                 DeclarationKind::Field => EntityKind::Field,
-                DeclarationKind::Constant => EntityKind::Constant,
+                DeclarationKind::Constant => EntityKind::Static,
                 DeclarationKind::Alias => EntityKind::Alias,
                 DeclarationKind::Module => return Ok(None),
             };
-            let lineage = PackageLineage::new("pypi", &target.package)
-                .map_err(|cause| lineage_fault(cause, occurrence.span))?;
             let key = ForeignKey::new(
-                ForeignOrigin::Package(lineage),
-                &target.qualified_name,
+                ForeignOrigin::Universe {
+                    ecosystem: backend_semantic::ir::PYTHON_NATIVE_SOURCE_ECOSYSTEM,
+                },
+                &target.source_coordinate,
                 &target.name,
                 Some(kind),
             )
@@ -1977,6 +1981,16 @@ impl<'a, 'source> Emitter<'a, 'source> {
             .checker
             .as_ref()
             .and_then(|report| report.symbol_at(occurrence.span));
+        if self.project_authority && matches!(checked, Some(SymbolOutcome::Unresolved)) {
+            // Native absence is not evidence that a same-spelled module declaration is the target.
+            return Ok(Some((
+                foreign_universe(
+                    self.slice(target_spelling_span(occurrence))?,
+                    occurrence.span,
+                )?,
+                OccurrenceConfidence::Index,
+            )));
+        }
         match &occurrence.receiver {
             OccurrenceReceiver::None | OccurrenceReceiver::Module => {
                 if let Some(class_name) = self.class_name_from_qualified_span(occurrence)? {

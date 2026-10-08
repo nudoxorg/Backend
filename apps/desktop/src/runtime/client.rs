@@ -591,19 +591,34 @@ fn owner_change_result(
         return result;
     }
     match (request, result) {
-            (EngineRequest::IndexProject { .. }, Err(error @ EngineFault::IndexNotSent { .. })) => Err(error),
-            (EngineRequest::IndexProject { .. } | EngineRequest::IndexOperationStatus { .. }, Ok(dto @ EngineDto::IndexOperation { .. }))
-                if matches!(&dto, EngineDto::IndexOperation { observation: backend_library::IndexOperationObservation::Known(status), .. }
-                    if matches!(status.state, backend_library::IndexOperationState::Published(_) | backend_library::IndexOperationState::Failed { .. })) => Ok(dto),
-            (EngineRequest::IndexOperationStatus { project, .. }, _) =>
-                Err(EngineFault::IndexUnconfirmed { project: project.clone() }),
-            (EngineRequest::IndexProject { .. }, Err(EngineFault::IndexCancelled { project })) =>
-                Err(EngineFault::IndexCancelled { project }),
-            (EngineRequest::IndexProject { project, .. }, _) =>
-                Err(EngineFault::IndexUnconfirmed { project: project.clone() }),
-            (EngineRequest::Surface { command, .. }, Ok(dto)) if !super::reads::read_only(command) => Ok(dto),
-            (EngineRequest::Surface { command, .. }, _) if !super::reads::read_only(command) =>
-                Err(EngineFault::MutationUnconfirmed),
+        (EngineRequest::IndexProject { .. }, Err(error @ EngineFault::IndexNotSent { .. })) => {
+            Err(error)
+        }
+        (
+            EngineRequest::IndexProject { .. } | EngineRequest::IndexOperationStatus { .. },
+            Ok(dto @ EngineDto::IndexOperation { .. }),
+        ) if matches!(&dto, EngineDto::IndexOperation { observation: backend_library::IndexOperationObservation::Known(status), .. }
+                    if matches!(status.state, backend_library::IndexOperationState::Published(_) | backend_library::IndexOperationState::PartiallyPublished { .. } | backend_library::IndexOperationState::Failed { .. })) =>
+        {
+            Ok(dto)
+        }
+        (EngineRequest::IndexOperationStatus { project, .. }, _) => {
+            Err(EngineFault::IndexUnconfirmed {
+                project: project.clone(),
+            })
+        }
+        (EngineRequest::IndexProject { .. }, Err(EngineFault::IndexCancelled { project })) => {
+            Err(EngineFault::IndexCancelled { project })
+        }
+        (EngineRequest::IndexProject { project, .. }, _) => Err(EngineFault::IndexUnconfirmed {
+            project: project.clone(),
+        }),
+        (EngineRequest::Surface { command, .. }, Ok(dto)) if !super::reads::read_only(command) => {
+            Ok(dto)
+        }
+        (EngineRequest::Surface { command, .. }, _) if !super::reads::read_only(command) => {
+            Err(EngineFault::MutationUnconfirmed)
+        }
         _ => Err(EngineFault::Superseded),
     }
 }
