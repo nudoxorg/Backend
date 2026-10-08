@@ -84,6 +84,7 @@ fn owner_with_labels(context: u8, count: usize, sequence: u64, labels: &[&str]) 
 struct Transport {
     owner: Arc<Mutex<Library>>,
     requests: Arc<Mutex<Vec<Command>>>,
+    graph_ids: Option<(SymbolKey, Vec<RowId>)>,
 }
 impl CommandTransport for Transport {
     fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
@@ -92,6 +93,16 @@ impl CommandTransport for Transport {
             .expect("requests")
             .push(request.command.clone());
         let library = self.owner.lock().expect("owner");
+        if matches!(&request.command, Command::GraphPage { .. }) {
+            let bytes =
+                backend_library::encode_command_body(&request).map_err(ClientError::Protocol)?;
+            let admitted =
+                backend_library::decode_command_body(&bytes).map_err(ClientError::Protocol)?;
+            assert_eq!(
+                admitted, request,
+                "plain graph strict standalone command admission"
+            );
+        }
         let mut reply = if let Command::GraphQuery(query) = &request.command {
             let bytes =
                 backend_library::encode_command_body(&request).map_err(ClientError::Protocol)?;
@@ -138,17 +149,29 @@ impl CommandTransport for Transport {
                 }),
             )
             .with_certificate(request.certificate().expect("owner proof").clone())
+        } else if let (Command::GraphPage { symbol, page }, Some((selected, ids))) =
+            (&request.command, &self.graph_ids)
+        {
+            let reply = library
+                .graph_page_from_ids(*selected, *symbol, *page, ids)
+                .map(CommandReply::ProjectionPage)
+                .unwrap_or_else(|error| CommandReply::Failed(error.into()));
+            ReplyDto::new(request.request_id, reply)
         } else {
             library.execute_dto(request.clone())
         };
         let snapshot = match &reply.reply {
             CommandReply::Search(page) | CommandReply::Names(page) => Some(page),
+            CommandReply::ProjectionPage(page) => Some(&page.snapshot),
             _ => None,
         };
         if let Some(page) = snapshot {
             let recipe = match &request.command {
                 Command::Search(query) => QueryPageRecipe::search(library.revision_root(), query),
                 Command::Name(query) => QueryPageRecipe::names(library.revision_root(), query),
+                Command::GraphPage { symbol, .. } => {
+                    QueryPageRecipe::graph(library.revision_root(), *symbol)
+                }
                 _ => unreachable!("query reply"),
             };
             let mut proof = library
@@ -156,6 +179,13 @@ impl CommandTransport for Transport {
                 .certificate()
                 .expect("revision certificate")
                 .clone();
+            if let Some(request_proof) = request.certificate() {
+                for claim in &request_proof.claims {
+                    if graph_address_claim(&request.command, claim) {
+                        proof = proof.with_claim_once(claim.clone());
+                    }
+                }
+            }
             let root = &page.root;
             for claim in [
                 WireClaim::KeyBytes {
@@ -187,10 +217,31 @@ impl CommandTransport for Transport {
                 proof = proof.with_claim_once(claim);
             }
             for row in root.rows() {
+                // The fixture acts as the producer here. Carry every typed
+                // key referenced by the selected rows, including packages
+                // and structural parents outside this bounded page.
+                if let RowId::Package(package) = row.id {
+                    proof = proof.with_claim_once(WireClaim::KeyCommitment {
+                        schema: WireSchema::Package,
+                        id: encode_id(package.as_bytes()),
+                    });
+                }
                 if let RowId::Symbol(symbol) = row.id {
                     proof = proof.with_claim_once(WireClaim::KeyCommitment {
                         schema: WireSchema::Symbol,
                         id: encode_id(symbol.as_bytes()),
+                    });
+                }
+                if let Some(package) = row.package {
+                    proof = proof.with_claim_once(WireClaim::KeyCommitment {
+                        schema: WireSchema::Package,
+                        id: encode_id(package.as_bytes()),
+                    });
+                }
+                if let Some(parent) = row.parent {
+                    proof = proof.with_claim_once(WireClaim::KeyCommitment {
+                        schema: WireSchema::Symbol,
+                        id: encode_id(parent.as_bytes()),
                     });
                 }
             }
@@ -216,6 +267,7 @@ fn session(owner: &Arc<Mutex<Library>>, requests: &Arc<Mutex<Vec<Command>>>) -> 
         Transport {
             owner: owner.clone(),
             requests: requests.clone(),
+            graph_ids: None,
         },
     )
 }
@@ -594,7 +646,11 @@ fn portable_query_terminal_reply_cannot_bypass_a_scope_rebind_between_rpcs() {
         .expect("bounded proof");
     let mut fresh = Session::from_transport(
         "/private/test-owner.sock",
-        RebindingTransport(Transport { owner, requests }),
+        RebindingTransport(Transport {
+            owner,
+            requests,
+            graph_ids: None,
+        }),
     );
     let cursor = fresh
         .decode_page_continuation(&token)
@@ -922,4 +978,328 @@ fn graph_query_portable_continuation_reopens_in_fresh_session() {
             .is_err(),
         "changed current view"
     );
+}
+
+fn graph_fixture(selected_neighbors: bool, context: u8, sequence: u64) -> Library {
+    let prototype = owner(context, 1, sequence);
+    let view = prototype.view();
+    let basis = view.basis();
+    let package = backend_library::package_key("graph-package");
+    let source = symbol_key("graph::source");
+    let mut rows = vec![
+        Row::new(RowId::Package(package), basis, "graph-package"),
+        Row::in_package(RowId::Symbol(source), basis, package, "graph::source"),
+    ];
+    rows.extend((0..6).map(|i| {
+        let row = Row::in_package(
+            RowId::Symbol(symbol_key(&format!("graph::neighbor{i}"))),
+            basis,
+            package,
+            format!("graph::neighbor{i}"),
+        );
+        if selected_neighbors {
+            row
+        } else {
+            row.with_parent(source)
+        }
+    }));
+    let root = ViewRoot::new_checked(
+        view.recipe(),
+        basis,
+        Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+        rows,
+        vec![Coverage::Complete],
+        view.capability().expect("owned scope"),
+    )
+    .expect("graph fixture root");
+    Library::from_view(root.clone(), Cursor::for_view_root_at(&root, sequence))
+        .expect("graph owner")
+}
+
+fn graph_session(
+    owner: &Arc<Mutex<Library>>,
+    requests: &Arc<Mutex<Vec<Command>>>,
+    selected_neighbors: bool,
+) -> Session {
+    let graph_ids = selected_neighbors.then(|| {
+        let library = owner.lock().expect("owner");
+        let mut ids = library
+            .view()
+            .row_refs()
+            .filter_map(|row| matches!(row.id, RowId::Symbol(_)).then_some(row.id))
+            .collect::<Vec<_>>();
+        ids.sort();
+        (symbol_key("graph::source"), ids)
+    });
+    Session::from_transport(
+        "/private/fresh-graph-owner.sock",
+        Transport {
+            owner: owner.clone(),
+            requests: requests.clone(),
+            graph_ids,
+        },
+    )
+}
+
+fn graph_page(reply: &ReplyDto) -> &backend_library::ProjectionPage {
+    let CommandReply::ProjectionPage(page) = &reply.reply else {
+        panic!("plain graph page")
+    };
+    page
+}
+
+#[test]
+fn plain_graph_portable_continuation_reopens_exact_page_in_fresh_owner() {
+    for selected_neighbors in [false, true] {
+        // In the selected case the canonical copied coordinate differs from the
+        // producer key, and neighbors have no structural parent relationship.
+        let coordinate = if selected_neighbors {
+            "copied::semantic::source"
+        } else {
+            "graph::source"
+        };
+        let owner = Arc::new(Mutex::new(graph_fixture(selected_neighbors, 1, 7)));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let mut issuing = graph_session(&owner, &requests, selected_neighbors);
+        let first = issuing
+            .graph_page(coordinate, 2, None)
+            .expect("first graph page");
+        let PageTerminal::More(next) = graph_page(&first).terminal else {
+            panic!("next")
+        };
+        assert!(issuing.has_portable_query_continuation(next));
+        let token = issuing
+            .encode_query_continuation(next)
+            .expect("portable graph");
+        assert!(token.starts_with("pc3-"));
+        backend_library::decode_command_body(&decode_portable_body(&token).expect("bytes"))
+            .expect("strict canonical graph proof");
+        // Existing pc1 remains valid in the compatible issuing active session.
+        let legacy = issuing.encode_page_continuation(next);
+        assert_eq!(
+            issuing
+                .decode_page_continuation(&legacy)
+                .expect("active legacy"),
+            next
+        );
+        let expected = issuing
+            .graph_page(coordinate, 2, Some(next))
+            .expect("warm second");
+        drop(issuing);
+        // Reconstruct the producer itself with identical immutable view/scope.
+        *owner.lock().expect("owner") = graph_fixture(selected_neighbors, 1, 7);
+        let mut fresh = graph_session(&owner, &requests, selected_neighbors);
+        assert!(fresh.continuations.is_empty());
+        assert!(fresh.decode_page_continuation(&legacy).is_err());
+        let before = requests.lock().expect("requests").len();
+        let imported = fresh
+            .decode_page_continuation(&token)
+            .expect("cold graph proof");
+        let actual = fresh
+            .graph_page(coordinate, 2, Some(imported))
+            .expect("cold exact second");
+        assert_eq!(graph_page(&actual), graph_page(&expected));
+        assert_eq!(
+            requests.lock().expect("requests").len() - before,
+            2,
+            "one fresh authority read and one exact page, no full graph materialization"
+        );
+        assert!(graph_page(&actual).snapshot.root.rows().len() <= 2);
+        let mut ids = graph_page(&first)
+            .snapshot
+            .root
+            .rows()
+            .iter()
+            .map(|row| row.id)
+            .collect::<Vec<_>>();
+        ids.extend(
+            graph_page(&actual)
+                .snapshot
+                .root
+                .rows()
+                .iter()
+                .map(|row| row.id),
+        );
+        let mut reply = actual;
+        while let PageTerminal::More(next) = graph_page(&reply).terminal {
+            let token = fresh.encode_query_continuation(next).expect("successor");
+            fresh = graph_session(&owner, &requests, selected_neighbors);
+            let continuation = fresh
+                .decode_page_continuation(&token)
+                .expect("fresh successor");
+            reply = fresh
+                .graph_page(coordinate, 2, Some(continuation))
+                .expect("next bounded page");
+            ids.extend(
+                graph_page(&reply)
+                    .snapshot
+                    .root
+                    .rows()
+                    .iter()
+                    .map(|row| row.id),
+            );
+        }
+        let unique = ids
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(ids.len(), 7);
+        assert_eq!(
+            unique.len(),
+            7,
+            "stable neighborhood ordering without duplication"
+        );
+    }
+}
+
+#[test]
+fn plain_graph_portable_continuation_refuses_foreign_contract_view_and_forgery() {
+    let owner = Arc::new(Mutex::new(graph_fixture(false, 1, 0)));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let mut issuing = graph_session(&owner, &requests, false);
+    let first = issuing.graph_page("graph::source", 2, None).expect("first");
+    let PageTerminal::More(next) = graph_page(&first).terminal else {
+        panic!("next")
+    };
+    let good = issuing.encode_query_continuation(next).expect("token");
+    for (coordinate, limit) in [
+        ("foreign::source", 2),
+        ("graph::source", 1),
+        ("graph::source", 3),
+    ] {
+        let mut fresh = graph_session(&owner, &requests, false);
+        let next = fresh.decode_page_continuation(&good).expect("proof");
+        let before = requests.lock().expect("requests").len();
+        assert!(fresh.graph_page(coordinate, limit, Some(next)).is_err());
+        assert_eq!(requests.lock().expect("requests").len(), before);
+    }
+    let mut fresh = graph_session(&owner, &requests, false);
+    let next = fresh.decode_page_continuation(&good).expect("proof");
+    let before = requests.lock().expect("requests").len();
+    assert!(fresh.search_page("graph::source", 2, Some(next)).is_err());
+    assert_eq!(requests.lock().expect("requests").len(), before);
+    for replacement in [graph_fixture(false, 2, 0), graph_fixture(true, 1, 0)] {
+        *owner.lock().expect("owner") = replacement;
+        assert!(
+            graph_session(&owner, &requests, false)
+                .decode_page_continuation(&good)
+                .is_err()
+        );
+    }
+    *owner.lock().expect("owner") = graph_fixture(false, 1, 9);
+    let mut progressed = graph_session(&owner, &requests, false);
+    let next = progressed
+        .decode_page_continuation(&good)
+        .expect("intent-only sequence advance");
+    assert!(
+        progressed
+            .graph_page("graph::source", 2, Some(next))
+            .is_ok()
+    );
+    *owner.lock().expect("owner") = graph_fixture(false, 1, 0);
+    let original = token_value(&good);
+    for field in ["root", "version", "recipe"] {
+        let mut forged = original.clone();
+        forged["command"]["data"]["page"]["continuation"][field] =
+            serde_json::json!("00".repeat(32));
+        assert!(
+            graph_session(&owner, &requests, false)
+                .decode_page_continuation(&token(&forged))
+                .is_err()
+        );
+    }
+    let mut forged = original.clone();
+    forged["command"]["data"]["symbol"]["id"] = serde_json::json!("00".repeat(32));
+    assert!(
+        graph_session(&owner, &requests, false)
+            .decode_page_continuation(&token(&forged))
+            .is_err()
+    );
+    let mut forged = original.clone();
+    forged["command"]["data"]["page"]["continuation"]["query_offset"] = serde_json::json!(0);
+    assert!(
+        graph_session(&owner, &requests, false)
+            .decode_page_continuation(&token(&forged))
+            .is_err()
+    );
+    // Offset and page credit are not authority merely because their JSON is
+    // well formed. The producer must reconstruct the exact canonical previous
+    // page before returning a successor.
+    for (field, value) in [("query_offset", 3), ("query_offset", 4)] {
+        let mut forged = original.clone();
+        forged["command"]["data"]["page"]["continuation"][field] = serde_json::json!(value);
+        let mut fresh = graph_session(&owner, &requests, false);
+        let continuation = fresh
+            .decode_page_continuation(&token(&forged))
+            .expect("canonical but untrusted offset");
+        assert!(
+            fresh
+                .graph_page("graph::source", 2, Some(continuation))
+                .is_err()
+        );
+    }
+    let mut forged = original.clone();
+    forged["command"]["data"]["page"]["limit"] = serde_json::json!(1);
+    let mut fresh = graph_session(&owner, &requests, false);
+    let continuation = fresh
+        .decode_page_continuation(&token(&forged))
+        .expect("canonical but changed credit");
+    assert!(
+        fresh
+            .graph_page("graph::source", 1, Some(continuation))
+            .is_err()
+    );
+    for field in ["scope", "observed", "producer", "context"] {
+        let mut forged = original.clone();
+        let coverage = forged["certificate"]["claims"]
+            .as_array_mut()
+            .expect("claims")
+            .iter_mut()
+            .find(|claim| claim["kind"] == "coverage")
+            .expect("scope");
+        coverage["data"][field] = serde_json::json!("00".repeat(32));
+        assert!(
+            graph_session(&owner, &requests, false)
+                .decode_page_continuation(&token(&forged))
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn plain_graph_selected_address_is_portable_without_becoming_a_canonical_key() {
+    let owner = Arc::new(Mutex::new(graph_fixture(true, 1, 0)));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let source = symbol_key("graph::source");
+    let mut issuing = graph_session(&owner, &requests, true);
+    let first = issuing
+        .graph_page_symbol(source, 1, None)
+        .expect("selected first");
+    let PageTerminal::More(next) = graph_page(&first).terminal else {
+        panic!("next")
+    };
+    let token = issuing
+        .encode_query_continuation(next)
+        .expect("selected portable proof");
+    let mut fresh = graph_session(&owner, &requests, true);
+    let continuation = fresh
+        .decode_page_continuation(&token)
+        .expect("selected import");
+    assert!(
+        fresh
+            .graph_page_symbol(source, 1, Some(continuation))
+            .is_ok()
+    );
+    let mut fresh = graph_session(&owner, &requests, true);
+    let continuation = fresh
+        .decode_page_continuation(&token)
+        .expect("selected import");
+    let before = requests.lock().expect("requests").len();
+    assert!(
+        fresh
+            .graph_page("graph::source", 1, Some(continuation))
+            .is_err(),
+        "canonical and opaque selected addresses are distinct caller contracts"
+    );
+    assert_eq!(requests.lock().expect("requests").len(), before);
 }

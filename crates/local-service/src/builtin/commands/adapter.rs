@@ -4064,7 +4064,13 @@ impl CommandAdapter {
         let library = daemon.engine().daemon().library();
         let selected =
             Self::claimed_graph_symbol(daemon, symbol, page.basis(), certificate.as_ref());
-        let reply = if let Some(resolved) = selected.resolve(library.view()) {
+        // A canonical address resolves to its key even when no selected row
+        // exists. Check membership before opening semantic graph residence so
+        // an absent source keeps the library's typed read refusal.
+        let resolved = selected.resolve(library.view()).filter(|symbol| {
+            library.view().row_ref(backend_engine::RowId::Symbol(*symbol)).is_some()
+        });
+        let reply = if let Some(resolved) = resolved {
             let query =
                 backend_engine::GraphNeighborhoodQuery::new(resolved, library.revision_root());
             // A stale page must be refused before executing against a newer graph.
@@ -4082,11 +4088,11 @@ impl CommandAdapter {
                 library.graph_page_for_address(resolved, symbol, page)
             }
             .map(CommandReply::ProjectionPage)
-            .unwrap_or_else(|error| CommandReply::Error(error.to_string()))
+            .unwrap_or_else(|error| CommandReply::Failed(error.into()))
         } else {
             library
                 .execute(command.clone())
-                .unwrap_or_else(|error| CommandReply::Error(error.to_string()))
+                .unwrap_or_else(|error| CommandReply::Failed(error.into()))
         };
         Self::certify(daemon, &command, reply, certificate)
     }
@@ -4617,13 +4623,13 @@ impl CommandAdapter {
                     || daemon.engine().daemon().library().execute(command.clone()),
                     |document| Ok(CommandReply::Document(document)),
                 )
-                .unwrap_or_else(|error| CommandReply::Error(error.to_string())),
+                .unwrap_or_else(|error| CommandReply::Failed(error.into())),
             _ => daemon
                 .engine()
                 .daemon()
                 .library()
                 .execute(command.clone())
-                .unwrap_or_else(|error| CommandReply::Error(error.to_string())),
+                .unwrap_or_else(|error| CommandReply::Failed(error.into())),
         };
         let reply = semantic_readiness(reply, daemon, &self.remote_semantic, &self.compiler)?;
         Self::certify(daemon, command, reply, certificate)
@@ -5464,6 +5470,67 @@ mod tests {
             }
             let _ = fs::remove_dir_all(&self.root.0);
         }
+    }
+
+    #[test]
+    fn absent_catalog_reads_keep_typed_failure_through_the_real_adapter_and_wire() {
+        use backend_library::CommandReply;
+
+        let mut fixture = AdapterFixture::new();
+        let (adapter, daemon) = fixture.parts();
+        let root = daemon.engine().daemon().library().revision_root();
+        let before = owner_cursor(daemon);
+        let package = backend_library::package_key("/workspace/not-published");
+        let symbol = backend_library::symbol_key("/workspace/not-published::absent");
+        let document = backend_library::DocumentQuery::new(symbol, root);
+        let page = backend_library::PageRequest::new(root, backend_library::QueryLimit::default());
+        for (index, command) in [
+            Command::Outline(backend_library::OutlineQuery::new(package, root)),
+            Command::OutlinePage { package, page },
+            Command::Document(document),
+            Command::Source(document),
+            Command::GraphPage {
+                symbol: backend_library::SymbolAddress::canonical(symbol),
+                page,
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let admitted = match command {
+                Command::GraphPage { symbol, page } => adapter.graph_page(daemon, symbol, page, None),
+                _ => adapter.standard(daemon, &command, None),
+            }
+            .expect("actual read dispatch");
+            assert_eq!(
+                admitted.0,
+                CommandReply::Failed(backend_library::CommandFailure::NotFound)
+            );
+            let id = 900 + index as u64;
+            let bytes = CommandAdapter::encode(daemon, id, admitted, None)
+                .expect("strict failure envelope");
+            let decoded = backend_library::decode_reply_body(&bytes).expect("genuine wire decode");
+            backend_library::admit_reply(&backend_library::CommandDto::new(id, command), &decoded)
+                .expect("caller admission");
+            assert_eq!(
+                decoded.reply,
+                CommandReply::Failed(backend_library::CommandFailure::NotFound)
+            );
+        }
+        let stale = backend_library::view_state_root(&[("fixture".to_owned(), "foreign-outline-view".to_owned())]);
+        let command = Command::Outline(backend_library::OutlineQuery::new(package, stale));
+        assert!(matches!(
+            adapter
+                .standard(daemon, &command, None)
+                .expect("typed stale failure")
+                .0,
+            CommandReply::Failed(backend_library::CommandFailure::WrongBasis { .. })
+        ));
+        assert_eq!(
+            owner_cursor(daemon),
+            before,
+            "failed reads do not admit source or work"
+        );
     }
 
     #[derive(Clone)]

@@ -472,7 +472,9 @@ pub fn status(status: &Status, theme: Theme) -> String {
         _ => Style::Working,
     };
     lines.push(format!(
-        "{} {}",
+        "owner {} · publication {} · lanes {} {}",
+        status.availability(),
+        status.publication_state().name(),
         theme.paint(style, readiness),
         theme.paint(
             Style::Dim,
@@ -504,7 +506,10 @@ pub fn product(view: &ProductView, theme: Theme) -> String {
     lines.push(theme.paint(Style::Heading, view.heading()));
     if let Some(reason) = view.fault() {
         lines.push(fault(reason, theme));
-        return lines.finish();
+        if view.records().is_empty() {
+            index_job_footer(view, &mut lines, theme);
+            return lines.finish();
+        }
     }
     if let Some(note) = view.note() {
         lines.push(format!("  {note}"));
@@ -554,6 +559,13 @@ fn index_job_footer(view: &ProductView, lines: &mut Lines, theme: Theme) {
     let Some(job) = view.index_job() else {
         return;
     };
+    if let Some(next) = job.poll_affordance().and_then(|step| step.shell()) {
+        if matches!(job, IndexJobProjection::Cancellation(_)) && let Some(ticket) = job.ticket_json() {
+            lines.push(format!("  cancellation was requested; cancellation ticket: {ticket}"));
+        }
+        lines.push(theme.paint(Style::Dim, &format!("  Operation in flight; {next}")));
+        return;
+    }
     let guidance = match job {
         IndexJobProjection::Started(backend_library::IndexStartResult::Started { .. }) => {
             "poll backend.index_progress with the exact ticket shown above (after_sequence 0)"

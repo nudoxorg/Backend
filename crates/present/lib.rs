@@ -56,6 +56,8 @@ mod budget;
 mod call;
 #[cfg(test)]
 mod compiler_fault_tests;
+#[cfg(test)]
+mod readiness_tests;
 mod coverage;
 mod drive;
 mod dto;
@@ -72,6 +74,7 @@ mod render;
 mod sections;
 mod shelf;
 mod signature;
+mod shell;
 mod status;
 
 pub use assemble::{
@@ -88,13 +91,13 @@ pub use budget::{
     encode_answer, encode_serializable, encode_value, estimate_tokens, oversized_fault,
 };
 pub use call::{
-    DEFAULT_LIMIT, Invocation, Request, SURFACE_VERB, lower, lower_surface_json, row_for,
+    DEFAULT_LIMIT, Invocation, Request, SURFACE_VERB, decode_index_job_ticket, lower, lower_surface_json, row_for,
 };
 pub use coverage::{
     CoverageLine, LaneCoverage, LaneShards, LaneState, RowCount as CoverageRows, lane_name,
     reason_name,
 };
-pub use drive::{Answer, ContinuationCursor, Engine, Probe, answer, answer_paged};
+pub use drive::{Answer, ContinuationCursor, Engine, Probe, answer, answer_paged, probe_fault};
 pub use dto::{
     CapabilitiesDto, CompilerToolRequirementDto, CoverageDto, FaultDto, IdentityDto,
     IdentitySemanticData, LanguageCountDto, MemberGroupDto, OutlineDto, OutlineNodeDto, PageDto,
@@ -121,7 +124,7 @@ pub use page::{
 pub use product::{
     CursorProjection, CursorTarget, IndexJobProjection, IndexSearchPageInfo, ProductRecord,
     ProductSemanticData, ProductSemanticHistoryProofSummary, ProductSemanticHistoryStatus,
-    ProductView, product_view,
+    ProductView, product_view, product_view_for_command,
 };
 pub use record::{Record, RecordList, RecordState, Score};
 pub use render::{Colour, Style, Theme, Width, display_width, markdown, text};
@@ -130,7 +133,7 @@ pub use shelf::{LanguageCount, Readiness, RowCount, Shelf, ShelfEntry};
 pub use signature::{Resolved, Signature, Target, Token, TokenKind};
 pub use status::{
     CapabilitySummary, EmbeddingState, FamilyRollup, PublishedRows, ReasonRollup, Sequence,
-    SlotCount, Status, unavailable_name,
+    SlotCount, Status, VisiblePublicationState, unavailable_name,
 };
 
 /// Widest human rendering used when no terminal width is known.

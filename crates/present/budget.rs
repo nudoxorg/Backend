@@ -251,6 +251,8 @@ pub fn encode_answer(
                     detail,
                     next_cursor,
                     SummaryStatusDto {
+                        availability: status.availability,
+                        publication: status.publication,
                         readiness: status.readiness,
                         revision: status.revision,
                         revision_tag: status.revision_tag,
@@ -563,6 +565,8 @@ struct SummaryOutlineDto {
 
 #[derive(Serialize)]
 struct SummaryStatusDto {
+    availability: String,
+    publication: String,
     readiness: String,
     revision: String,
     revision_tag: String,
@@ -746,16 +750,34 @@ mod tests {
         let worst_answer = Answer::Records(Box::new(worst.clone()));
         let worst = encode_answer(&worst_answer, Detail::Full, None, 256 * 1024)
             .expect("worst typed page fits hard cap");
-        assert_eq!(worst.bytes.len(), 100_025);
-        assert_eq!(worst.budget.estimated_tokens, 25_007);
+        assert_eq!(worst.bytes.len(), 134_052);
+        assert_eq!(worst.budget.estimated_tokens, 33_513);
         assert_eq!(
             worst.bytes.as_ref(),
-            include_bytes!("fixtures/worst-200-full-records.json")
+            include_bytes!("fixtures/worst-200-full-records-selected-id.json")
         );
+        let current: serde_json::Value = serde_json::from_slice(&worst.bytes).expect("actual native JSON");
+        assert_eq!(serde_json::to_vec(&current).expect("Value serializer").len(), worst.bytes.len(),
+            "stream and Value encoders measure the same complete JSON");
+        let historical: serde_json::Value = serde_json::from_slice(
+            include_bytes!("fixtures/worst-200-full-records.json"))
+            .expect("retained prior golden bytes");
+        let mut without_selected_ids = current;
+        for (index, record) in without_selected_ids["records"].as_array_mut().expect("records").iter_mut().enumerate() {
+            let selected = record["identity"].as_object_mut().expect("identity")
+                .remove("semantic_data").expect("exact selected symbol identity");
+            assert_eq!(selected, serde_json::json!({
+                "kind": "selected-symbol-id",
+                "value": backend_library::symbol_key(&format!("typed-budget-{index}")).to_bytes(),
+            }));
+        }
+        without_selected_ids["budget"] = historical["budget"].clone();
+        assert_eq!(without_selected_ids, historical,
+            "only exact selected IDs and derived budget metadata changed");
         let refused = encode_answer(&worst_answer, Detail::Full, None, 48 * 1024)
             .expect_err("an oversized complete page is refused before allocation");
         assert_eq!(refused.budget, 48 * 1024);
-        assert_eq!(refused.bytes, 100_025);
+        assert_eq!(refused.bytes, 134_052);
     }
 
     #[test]
@@ -1044,7 +1066,7 @@ mod tests {
                         .expect("typed worst fixture fits"),
                 );
             });
-            assert_eq!(result.expect("encoded result").bytes.len(), 100_025);
+            assert_eq!(result.expect("encoded result").bytes.len(), 134_052);
             timings.push(start.elapsed().as_nanos());
             allocations.push(info.bytes_total);
         }

@@ -397,6 +397,18 @@ pub enum IndexJobProjection {
 }
 
 impl IndexJobProjection {
+    /// Exact next observation for accepted work, never inferred from an empty lane.
+    #[must_use]
+    pub fn poll_affordance(&self) -> Option<crate::Affordance> {
+        let (ticket, after_sequence) = match self {
+            Self::Started(IndexStartResult::Started { ticket, .. }) => (ticket, 0),
+            Self::Progress(IndexJobObservation::Pending(page)) => (&page.ticket, page.next_sequence),
+            Self::Cancellation(IndexCancelReceipt { ticket, status: IndexCancelStatus::Requested }) => (ticket, 0),
+            _ => return None,
+        };
+        Some(crate::Affordance::PollIndex { ticket: ticket.clone(), after_sequence })
+    }
+
     /// Returns the exact ticket carried by this job result, when available.
     #[must_use]
     pub fn ticket(&self) -> Option<&backend_library::IndexJobTicket> {
@@ -633,6 +645,29 @@ impl ProductView {
     }
 
     fn with_index_job(mut self, index_job: IndexJobProjection) -> Self {
+        let terminal = match &index_job {
+            IndexJobProjection::Started(IndexStartResult::Terminal(terminal))
+            | IndexJobProjection::Terminal(terminal)
+            | IndexJobProjection::Progress(IndexJobObservation::Terminal(terminal)) => Some(terminal),
+            IndexJobProjection::Cancellation(receipt) => match &receipt.status {
+                IndexCancelStatus::Terminal(terminal) => Some(terminal),
+                IndexCancelStatus::Requested | IndexCancelStatus::Unknown => None,
+            },
+            _ => None,
+        };
+        if let Some(terminal) = terminal {
+            let operand = Operand::Text(index_ticket_json(&terminal.ticket));
+            self.fault = match &terminal.outcome {
+                IndexJobOutcome::PartiallyPublished(partial) => Some(Fault::partial_publication(partial, operand)),
+                IndexJobOutcome::RefusedWithCompilerFailure { failure, .. } => Some(Fault::compiler_refusal(failure, operand)),
+                IndexJobOutcome::Refused(detail) | IndexJobOutcome::Failed(detail) => Some(Fault::new(
+                    crate::FaultSlug::Rejected, operand,
+                    crate::Cause::new(crate::CauseSlug::Refused, detail.as_str()),
+                    crate::Affordance::None,
+                )),
+                IndexJobOutcome::Published | IndexJobOutcome::Cancelled => None,
+            };
+        }
         self.index_job = Some(index_job);
         self
     }
@@ -755,6 +790,22 @@ pub fn product_view(reply: &SurfaceReply) -> ProductView {
     registry_view(reply)
         .or_else(|| home_view(reply))
         .unwrap_or_else(|| session_view(reply))
+}
+
+/// Attaches the caller's package to metadata failures without inventing SDK causes.
+#[must_use]
+pub fn product_view_for_command(command: &backend_library::SurfaceCommand, reply: &SurfaceReply) -> ProductView {
+    let mut view = product_view(reply);
+    if let backend_library::SurfaceCommand::Dependencies { package }
+        | backend_library::SurfaceCommand::Dependents { package } = command
+        && let Some(fault) = view.fault.take()
+    {
+        view.fault = Some(fault.about(Operand::Coordinate(crate::Coordinate::new(package.as_str())))
+            .with_affordance(crate::Affordance::UseCommand {
+                name: "package", args: Box::new([package.as_str().to_owned()]),
+            }));
+    }
+    view
 }
 
 /// Registry, library, and semantic-generation answers.
@@ -1235,7 +1286,7 @@ fn index_stage(stage: IndexJobStage) -> &'static str {
     }
 }
 
-fn index_ticket_json(ticket: &backend_library::IndexJobTicket) -> String {
+pub(crate) fn index_ticket_json(ticket: &backend_library::IndexJobTicket) -> String {
     serde_json::json!({
         "id": ticket.id(),
         "owner_epoch": ticket.owner_epoch(),
@@ -1945,7 +1996,7 @@ fn dependency_view(
                     crate::fault::FaultSlug::LaneUnavailable,
                     crate::fault::Operand::Text(heading.to_owned()),
                     crate::fault::Cause::new(
-                        crate::fault::CauseSlug::Unconfigured,
+                        crate::fault::CauseSlug::NotCaptured,
                         reason.as_str().to_owned(),
                     ),
                     crate::fault::Affordance::None,
@@ -3791,7 +3842,15 @@ mod tests {
         let view = product_view(&reply);
         let job = view.index_job().expect("typed job projection");
         assert_eq!(job.ticket(), Some(&ticket));
-        assert!(crate::markdown::product(&view).contains("after_sequence 5"));
+        let markdown = crate::markdown::product(&view);
+        let action = markdown.split("poll with `").nth(1).expect("executable poll")
+            .split('`').next().expect("complete action");
+        let action: serde_json::Value = serde_json::from_str(action).expect("actual poll JSON");
+        assert_eq!(action, job.poll_affordance().expect("poll").tool_call().expect("tool"));
+        assert_eq!(action["arguments"]["after_sequence"], 5);
+        let roundtrip: backend_library::IndexJobTicket = serde_json::from_value(
+            action["arguments"]["ticket"].clone()).expect("exact owner ticket");
+        assert_eq!(roundtrip, ticket);
         assert!(crate::markdown::product(&view).contains(&job.ticket_json().expect("ticket")));
 
         let dto = crate::dto::ProductDto::new(&view);

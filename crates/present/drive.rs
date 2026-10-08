@@ -32,7 +32,7 @@ use crate::fault::{Affordance, Fault, Operand};
 use crate::identity::{Coordinate, Identity, KeyTag};
 use crate::outline::OutlineTree;
 use crate::page::Page;
-use crate::product::{ProductRecord, ProductView, product_view};
+use crate::product::{ProductRecord, ProductView};
 use crate::record::RecordList;
 use crate::shelf::Shelf;
 use crate::status::Status;
@@ -142,7 +142,9 @@ pub trait Engine {
     /// Returns the transport or admission failure the endpoint produced.
     fn revision(&mut self) -> Result<ViewStateRoot, ClientError>;
 
-    /// Reads the bounded readiness report.
+    /// Reads the bounded readiness report after owner, request correlation and
+    /// health proof admission. Implementations must reject malformed or
+    /// unadmitted reports instead of returning a successful health response.
     ///
     /// # Errors
     ///
@@ -210,6 +212,16 @@ pub enum Answer {
 }
 
 impl Answer {
+    /// Returns the shared failure carried by an otherwise admitted answer.
+    /// The full answer remains available, including exact owner receipts.
+    #[must_use]
+    pub fn fault(&self) -> Option<&Fault> {
+        match self {
+            Self::Product(product) => product.fault(),
+            _ => None,
+        }
+    }
+
     /// Returns the stable lowercase tag naming which answer this is.
     #[must_use]
     pub const fn kind(&self) -> &'static str {
@@ -400,7 +412,7 @@ fn status(engine: &mut dyn Engine) -> Result<Answer, Fault> {
     let report = engine
         .health()
         .map_err(|error| Fault::from_client_error(&error, Operand::Whole))?;
-    Ok(Answer::Status(Box::new(Status::from_report(&report, None))))
+    Ok(Answer::Status(Box::new(Status::from_health_reply(&report, None))))
 }
 
 fn intent(
@@ -511,7 +523,7 @@ fn surface(engine: &mut dyn Engine, command: &SurfaceCommand) -> Result<Answer, 
     let reply = engine
         .surface(command.clone())
         .map_err(|error| Fault::from_client_error(&error, Operand::Whole))?;
-    Ok(Answer::Product(Box::new(product_view(&reply))))
+    Ok(Answer::Product(Box::new(crate::product_view_for_command(command, &reply))))
 }
 
 fn snapshot(engine: &mut dyn Engine, probe: Probe<'_>, what: &str) -> Result<ViewSnapshot, Fault> {
@@ -551,18 +563,23 @@ fn read_page(
     probe: Probe<'_>,
     continuation: Option<PageContinuation>,
 ) -> Result<ReplyDto, Fault> {
-    let operand = probe.operand();
     engine
         .probe_page(probe, continuation)
-        .map_err(|error| Fault::from_client_error(&error, operand))
+        .map_err(|error| probe_fault(&error, probe))
 }
 
 fn read(engine: &mut dyn Engine, probe: Probe<'_>) -> Result<ReplyDto, Fault> {
-    let operand = probe.operand();
     engine
         .probe(probe)
-        .map_err(|error| Fault::from_client_error(&error, operand))
-        .map_err(|fault| next_step(fault, probe))
+        .map_err(|error| probe_fault(&error, probe))
+}
+
+/// Preserves a typed client failure and its requested operand, adding only
+/// the actionable next step justified by that exact probe and failure class.
+/// Every surface, including direct graph-page adapters, shares this lowering.
+#[must_use]
+pub fn probe_fault(error: &ClientError, probe: Probe<'_>) -> Fault {
+    next_step(Fault::from_client_error(error, probe.operand()), probe)
 }
 
 /// Offers the step a reader can actually take after an address missed.
@@ -575,6 +592,11 @@ fn read(engine: &mut dyn Engine, probe: Probe<'_>) -> Result<ReplyDto, Fault> {
 /// the coordinate they supplied, so this suggests their own word back to them
 /// rather than inventing a query.
 fn next_step(fault: Fault, probe: Probe<'_>) -> Fault {
+    if let Probe::Outline(path) | Probe::OutlinePage { path, .. } = probe
+        && fault.slug() == crate::FaultSlug::NotFound
+    {
+        return Fault::unpublished_outline(path);
+    }
     let (Probe::Document(at) | Probe::Source(at) | Probe::Related(at) | Probe::Graph(at)) = probe
     else {
         return fault;
@@ -672,4 +694,69 @@ fn shape(what: &str) -> Fault {
         &ClientError::Protocol(format!("the {what} reply changed shape")),
         Operand::Text(what.to_owned()),
     )
+}
+
+#[cfg(test)]
+mod readiness_controls {
+    #![allow(clippy::expect_used)]
+    use super::*;
+    use backend_library::{
+        Command, CommandFailure, Library, OutlineQuery, PageRequest, QueryLimit, package_key,
+    };
+
+    #[test]
+    fn an_actual_absent_outline_retains_not_found_and_an_exact_reindex_action() {
+        let library = Library::new();
+        let path = "/workspace/not-yet-published";
+        let query = OutlineQuery::new(package_key(path), library.revision_root());
+        let error = library
+            .execute(Command::Outline(query))
+            .expect_err("package is absent in the actual catalog");
+        let failure = CommandFailure::from(error);
+        assert_eq!(failure, CommandFailure::NotFound);
+        let fault = next_step(
+            Fault::from_client_error(
+                &ClientError::CommandFailed(failure),
+                Operand::Path(path.to_owned()),
+            ),
+            Probe::Outline(path),
+        );
+        assert_eq!(fault.slug(), crate::FaultSlug::NotFound);
+        assert_eq!(fault.cause().slug(), crate::CauseSlug::Absent);
+        assert_eq!(fault.operand().render(), path);
+        assert_eq!(
+            fault.affordance().tool_call().expect("index action"),
+            serde_json::json!({"name":"backend.index", "arguments":{"path":path}})
+        );
+        assert!(fault.cause().sentence().contains("no outline is published"));
+        let page_error = library
+            .outline_page(
+                package_key(path),
+                PageRequest::new(library.revision_root(), QueryLimit::default()),
+            )
+            .expect_err("flat page has the same real absence");
+        assert_eq!(CommandFailure::from(page_error), CommandFailure::NotFound);
+    }
+
+    #[test]
+    fn a_corrupt_or_stale_outline_is_never_relabelled_as_missing_publication() {
+        let path = "/workspace/project";
+        for failure in [
+            CommandFailure::IncoherentView("retained relation proof is corrupt".to_owned()),
+            CommandFailure::CursorMismatch,
+        ] {
+            let fault = Fault::from_client_error(
+                &ClientError::CommandFailed(failure),
+                Operand::Path(path.to_owned()),
+            );
+            for probe in [
+                Probe::Outline(path),
+                Probe::OutlinePage { path, limit: 200 },
+            ] {
+                let observed = next_step(fault.clone(), probe);
+                assert_eq!(observed, fault);
+                assert!(!matches!(observed.affordance(), Affordance::Reindex { .. }));
+            }
+        }
+    }
 }

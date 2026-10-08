@@ -1,0 +1,289 @@
+{
+  "baseline_head": "146c430f842df6042d62dc82c3eea4e9d77cf006",
+  "baseline_tree": "7e3d620396af8d05919150f5696622614da18f91",
+  "real_base": "e42bfc4e7c719f7fab60d02fded3342cfd62e6b6",
+  "raw_archive": {
+    "path": "/private/tmp/sol61-baseline-native-raw-review-146c-20261008.tar.gz",
+    "sha256": "78dd79f65e382dc40843048419810a0736eb5717fcad363b884f49a3ae65d0bc",
+    "bytes": 675409
+  },
+  "gates": [
+    {
+      "gate": "client",
+      "tested_source": {
+        "commit": "6d0d5be127d57c1b5c85d354f0da104fa5c314ba",
+        "tree": "8cc3dbb92fe713b2b83ce0dd1e0ab66998bd1338",
+        "clean": true,
+        "lock_sha256": "5d0b0b75a5acb9fd95db98d160ede1e3c780069cdc9989561491fe2cb5ba3da0"
+      },
+      "exit_code": 0,
+      "elapsed_seconds": 18.907,
+      "retirement": "owned-child-kernel-wait",
+      "test_summary": [
+        "test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 91 filtered out; finished in 0.47s"
+      ],
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-wrapped-nix6",
+        "test",
+        "--locked",
+        "--offline",
+        "-j2",
+        "--message-format=json",
+        "-p",
+        "backend-client",
+        "--lib",
+        "query_continuation::tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "files": [
+        {
+          "path": "/private/tmp/sol61-baseline-native-raw-review-146c-20261008/client/receipt.json",
+          "sha256": "f979fbb360cdd9baa6d1d8e6cc7e0db919d394b0b0197b9ce13386b136256ff4",
+          "bytes": 33403
+        },
+        {
+          "path": "/private/tmp/sol61-baseline-native-raw-review-146c-20261008/client/cargo.stdout",
+          "sha256": "fbfc46de2fb94f181c0eb182271724f74e3ab0e84b2a2c2c195588dd547314a4",
+          "bytes": 1993313
+        },
+        {
+          "path": "/private/tmp/sol61-baseline-native-raw-review-146c-20261008/client/cargo.stderr",
+          "sha256": "eb0b951bc57c5cb2966c394592779da14347002b23eaad76c31a22d8491aebbe",
+          "bytes": 584
+        },
+        {
+          "path": "/private/tmp/sol61-baseline-native-raw-review-146c-20261008/client/test-summary.txt",
+          "sha256": "29d37e9f3b4d89639a11191bfc4dbf024feafd7ecc70e31ecd7f093a9def80dc",
+          "bytes": 96
+        }
+      ],
+      "gate_scope": [
+        "crates/client"
+      ],
+      "gate_scope_changed_paths_since_tested_source": []
+    },
+    {
+      "gate": "present",
+      "tested_source": {
+        "commit": "ae3d47d7a266c419a68f2d5f6f0a143cbb8e22a3",
+        "tree": "2b7b463117b398019631a2c843991dd4c35c9ca7",
+        "clean": true,
+        "lock_sha256": "5d0b0b75a5acb9fd95db98d160ede1e3c780069cdc9989561491fe2cb5ba3da0"
+      },
+      "exit_code": 0,
+      "elapsed_seconds": 144.767,
+      "retirement": "owned-child-kernel-wait",
+      "test_summary": [
+        "test result: ok. 109 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.73s"
+      ],
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-wrapped-nix6",
+        "test",
+        "--locked",
+        "--offline",
+        "-j2",
+        "--message-format=json",
+        "-p",
+        "backend-present",
+        "--lib",
+        "--",
+        "--test-threads=1"
+      ],
+      "files": [
+        {
+          "path": "/private/tmp/sol61-baseline-native-raw-review-146c-20261008/present/receipt.json",
+          "sha256": "ef85a40f399d44ebbab4f7a8ca1b327be8f1c7158ddf7dd4ab76bd34ea7bdcc2",
+          "bytes": 34929
+        },
+        {
+          "path": "/private/tmp/sol61-baseline-native-raw-review-146c-20261008/present/cargo.stdout",
+          "sha256": "e798b388913c0aa2ae71650869a7e8ac8e13890a2d151c06f3db978b7d890aca",
+          "bytes": 2079182
+        },
+        {
+          "path": "/private/tmp/sol61-baseline-native-raw-review-146c-20261008/present/cargo.stderr",
+          "sha256": "ae28d2df18e0cf89b16d9fb08e13cd2e13d96fa2191beee766315895dda95a37",
+          "bytes": 583
+        },
+        {
+          "path": "/private/tmp/sol61-baseline-native-raw-review-146c-20261008/present/test-summary.txt",
+          "sha256": "c0f2ce98f67c4649875e3e609fca6c4f78682703f2f5694df6df8b9aa3b1ea2f",
+          "bytes": 96
+        }
+      ],
+      "gate_scope": [
+        "crates/present"
+      ],
+      "gate_scope_changed_paths_since_tested_source": []
+    },
+    {
+      "gate": "cli",
+      "tested_source": {
+        "commit": "d00c6cb8056a870d7f25aedc42f76b11d306259c",
+        "tree": "ee860c78ef46f8feb237d160fd2779712e211341",
+        "clean": true,
+        "lock_sha256": "5d0b0b75a5acb9fd95db98d160ede1e3c780069cdc9989561491fe2cb5ba3da0"
+      },
+      "exit_code": 0,
+      "elapsed_seconds": 367.771,
+      "retirement": "owned-child-kernel-wait",
+      "test_summary": [
+        "test result: ok. 45 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s"
+      ],
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-wrapped-nix6",
+        "test",
+        "--locked",
+        "--offline",
+        "-j2",
+        "--message-format=json",
+        "-p",
+        "backend-cli",
+        "--lib",
+        "--",
+        "--test-threads=1"
+      ],
+      "files": [
+        {
+          "path": "/private/tmp/sol61-baseline-native-raw-review-146c-20261008/cli/receipt.json",
+          "sha256": "9123665eaa75eba2148c8b31a9926ff26c8780679e4fa4a207b855dfa7ee409b",
+          "bytes": 29429
+        },
+        {
+          "path": "/private/tmp/sol61-baseline-native-raw-review-146c-20261008/cli/cargo.stdout",
+          "sha256": "c6899d8ad45a35ddb4e2eec506772419313d50000935f275df1e051b21bc902e",
+          "bytes": 2383396
+        },
+        {
+          "path": "/private/tmp/sol61-baseline-native-raw-review-146c-20261008/cli/cargo.stderr",
+          "sha256": "5c43e33b8418b320d6b71f0ddb31c5e7061d073b4518240fa5ef3c2b21f8c841",
+          "bytes": 573
+        },
+        {
+          "path": "/private/tmp/sol61-baseline-native-raw-review-146c-20261008/cli/test-summary.txt",
+          "sha256": "e113dc0794118214e4ef53cdd6834c38cb5250a583a19f993572f34b4d449982",
+          "bytes": 95
+        }
+      ],
+      "gate_scope": [
+        "apps/cli"
+      ],
+      "gate_scope_changed_paths_since_tested_source": []
+    },
+    {
+      "gate": "mcp",
+      "tested_source": {
+        "commit": "e3991e5b1eb8830dd2a92c53c02094496e8d8758",
+        "tree": "edfecc40236443acf566b52db8cb37cdc5e53473",
+        "clean": true,
+        "lock_sha256": "5d0b0b75a5acb9fd95db98d160ede1e3c780069cdc9989561491fe2cb5ba3da0"
+      },
+      "exit_code": 0,
+      "elapsed_seconds": 17.508,
+      "retirement": "owned-child-kernel-wait",
+      "test_summary": [
+        "test result: ok. 118 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.94s"
+      ],
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-j2",
+        "--message-format=json",
+        "-p",
+        "backend-mcp",
+        "--lib",
+        "--",
+        "--test-threads=1"
+      ],
+      "files": [
+        {
+          "path": "/private/tmp/sol61-baseline-native-raw-review-146c-20261008/mcp/receipt.json",
+          "sha256": "f478d6b8d4a4ad43c051aab1cb261bbf27aa2bac13a67e8d59a7fc11820ef82d",
+          "bytes": 43871
+        },
+        {
+          "path": "/private/tmp/sol61-baseline-native-raw-review-146c-20261008/mcp/cargo.stdout",
+          "sha256": "38c9c9a43fd10782edf9e7f6575375867b995d0b3fbeb37ab6e9f181aa84da17",
+          "bytes": 2083083
+        },
+        {
+          "path": "/private/tmp/sol61-baseline-native-raw-review-146c-20261008/mcp/cargo.stderr",
+          "sha256": "84d35a9319c9d11a35f0581c29a1dd92b042ca55dcc2f4200d32fca2289f79e0",
+          "bytes": 573
+        },
+        {
+          "path": "/private/tmp/sol61-baseline-native-raw-review-146c-20261008/mcp/test-summary.txt",
+          "sha256": "13fbb8e7cf3ed9bd3aec3518a5db1fd83562ad8abe88dc4cf10a5f9bf339c16e",
+          "bytes": 96
+        }
+      ],
+      "gate_scope": [
+        "apps/mcp"
+      ],
+      "gate_scope_changed_paths_since_tested_source": []
+    },
+    {
+      "gate": "absent",
+      "tested_source": {
+        "commit": "146c430f842df6042d62dc82c3eea4e9d77cf006",
+        "tree": "7e3d620396af8d05919150f5696622614da18f91",
+        "clean": true,
+        "lock_sha256": "5d0b0b75a5acb9fd95db98d160ede1e3c780069cdc9989561491fe2cb5ba3da0"
+      },
+      "exit_code": 0,
+      "elapsed_seconds": 286.586,
+      "retirement": "owned-child-kernel-wait",
+      "test_summary": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1117 filtered out; finished in 0.91s"
+      ],
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-j2",
+        "--message-format=json",
+        "-p",
+        "backend-local-service",
+        "--lib",
+        "absent_catalog_reads_keep_typed_failure_through_the_real_adapter_and_wire",
+        "--",
+        "--test-threads=1"
+      ],
+      "files": [
+        {
+          "path": "/private/tmp/sol61-baseline-native-raw-review-146c-20261008/absent/receipt.json",
+          "sha256": "90d0c98ebb4535c42a463de3dac2d44c52e72c3500fa810177010708ffd9f137",
+          "bytes": 43023
+        },
+        {
+          "path": "/private/tmp/sol61-baseline-native-raw-review-146c-20261008/absent/cargo.stdout",
+          "sha256": "367515d6a194b3d56f1d7f8de6bfa26cdbb11ac1b88ee43a29d22399bd3c5e23",
+          "bytes": 2660010
+        },
+        {
+          "path": "/private/tmp/sol61-baseline-native-raw-review-146c-20261008/absent/cargo.stderr",
+          "sha256": "e31ec52a2a303d6cbd11b86d836e06fd6d9dbce91fa849d6d48f00ca1b3f5bd2",
+          "bytes": 605
+        },
+        {
+          "path": "/private/tmp/sol61-baseline-native-raw-review-146c-20261008/absent/test-summary.txt",
+          "sha256": "f2ec0fbc53b34507fa5871271bc5270438616300463edbef1374c01dc0f5b493",
+          "bytes": 97
+        }
+      ],
+      "gate_scope": [
+        "crates/local-service/src/builtin/commands/adapter.rs"
+      ],
+      "gate_scope_changed_paths_since_tested_source": []
+    }
+  ],
+  "limits": [
+    "Exact source and native child kernel retirement are preserved per gate.",
+    "Successive commits were tested; this is not a same-final-head full-suite claim.",
+    "Public matched-trio graph restart and intervening-query proof is pending."
+  ]
+}

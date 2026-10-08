@@ -38,12 +38,18 @@ struct Fake {
     offline: bool,
     /// Optional graph rows used to exercise the complete-page admission cap.
     graph_rows: Option<Box<[GraphQueryRow]>>,
+    /// Identity-free typed failed reply from the direct graph-page route.
+    graph_failure: Option<backend_library::CommandFailure>,
+    /// Typed failure from the generic graph query route.
+    graph_query_error: Option<ClientError>,
     /// Make the graph fixture return one authenticated continuation page.
     graph_continue: bool,
     /// Owner-issued continuation retained by the fixture encoder.
     next_continuation: Option<PageContinuation>,
     /// Make an otherwise valid owner cursor stale at decode time.
     stale_cursor: bool,
+    /// Inject a typed decode failure only after an actual catalog cursor was issued.
+    continuation_error: Option<ClientError>,
     /// Optional product reply used by the high-fanout surface budget case.
     surface_reply: Option<SurfaceReply>,
     /// Typed client failure returned by the surface boundary.
@@ -398,6 +404,10 @@ impl Product for Fake {
         limit: u16,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
+        if let Some(failure) = &self.graph_failure {
+            return Ok(ReplyDto::new(1, CommandReply::Failed(failure.clone())));
+        }
+
         self.adapter_boundary = Some("graph_page");
         if let Some(error) = self.adapter_error.take() {
             return Err(error);
@@ -434,6 +444,9 @@ impl Product for Fake {
         &mut self,
         token: &str,
     ) -> Result<backend_library::PageContinuation, ClientError> {
+        if let Some(error) = &self.continuation_error {
+            return Err(error.clone());
+        }
         if let Some(catalog) = &self.page_catalog {
             let (cursor, root) = self
                 .catalog_cursors
@@ -461,6 +474,10 @@ impl Product for Fake {
         _: u16,
         continuation: Option<backend_library::PageContinuation>,
     ) -> Result<GraphQueryPage, ClientError> {
+        if let Some(error) = &self.graph_query_error {
+            return Err(error.clone());
+        }
+
         self.graph_query_calls += 1;
         if let Some(rows) = &self.graph_rows {
             return Ok(GraphQueryPage {
@@ -498,7 +515,6 @@ impl Product for Fake {
 // ---------------------------------------------------------------------------
 // driving the server
 // ---------------------------------------------------------------------------
-
 fn ready(product: Fake) -> Server<Fake> {
     let mut server = Server::with_authority(product, PROJECT.to_owned(), [9; 32]);
     server
@@ -966,8 +982,9 @@ fn default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapsho
             "tools/call",
             &json!({"name": tool, "arguments": arguments}),
         );
-        assert_eq!(stale["error"]["code"], -32010);
-        assert_eq!(stale["error"]["data"]["kind"], "stale_cursor");
+        let fault = tool_failure(&stale, "cursor-mismatch");
+        assert_eq!(fault["cause"], "moved");
+        assert!(text_of(&stale["result"]).contains("restart the query"));
     }
 }
 
@@ -1017,6 +1034,18 @@ fn setup_compiler_failure() -> backend_library::PackageCompilerFailure {
     .expect("setup refusal projects")
 }
 
+fn tool_failure<'a>(response: &'a Value, slug: &str) -> &'a Value {
+    assert!(
+        response.get("error").is_none(),
+        "known tool failure is a result: {response}"
+    );
+    assert_eq!(response["result"]["isError"], true, "{response}");
+    let structured = &response["result"]["structuredContent"];
+    assert_eq!(structured["answer"], "fault", "{response}");
+    assert_eq!(structured["slug"], slug, "{response}");
+    assert_context_bounded(response);
+    structured
+}
 fn compiler_error_routes() -> Vec<(&'static str, Value, &'static str)> {
     let command = SurfaceCommand::IndexStart {
         package: PackageReference::parse(PROJECT).expect("project reference"),
@@ -1086,10 +1115,20 @@ fn adapter_errors_preserve_typed_compiler_facts_at_exact_boundaries() {
             ..Fake::default()
         });
         let response = request(&mut server, method, &params);
-        let data = &response["error"]["data"];
-        let structured = &data["structuredContent"];
+        let (structured, detail) = if method == "tools/call" {
+            (
+                tool_failure(&response, "compiler-refused"),
+                text_of(&response["result"]),
+            )
+        } else {
+            let data = &response["error"]["data"];
+            assert_eq!(data["kind"], "compiler-refused", "{boundary}: {response}");
+            (
+                &data["structuredContent"],
+                data["detail"].as_str().expect("RPC explanation").to_owned(),
+            )
+        };
         assert_eq!(server.product.adapter_boundary, Some(boundary));
-        assert_eq!(data["kind"], "compiler-refused", "{boundary}: {response}");
         assert_eq!(
             structured["compiler_failure"],
             serde_json::to_value(&failure).expect("exact facts")
@@ -1099,7 +1138,6 @@ fn adapter_errors_preserve_typed_compiler_facts_at_exact_boundaries() {
             structured["compiler_tool_requirement"]["configuration_variable"],
             "NUDOX_TSC"
         );
-        let detail = data["detail"].as_str().expect("human detail");
         assert!(detail.contains("src/main.ts: setup/toolchain_configuration_mismatch"));
         assert!(!detail.contains("RAW SOURCE DIAGNOSTIC"));
         assert!(!detail.contains("content:"));
@@ -1155,11 +1193,9 @@ fn adapter_errors_keep_continuation_transport_refusal_separate_from_compiler_fac
         ..Fake::default()
     });
     let response = request(&mut server, method, &params);
-    let data = &response["error"]["data"];
-    let structured = &data["structuredContent"];
+    let structured = tool_failure(&response, "transport");
     assert_eq!(server.product.adapter_boundary, Some(boundary));
     assert_eq!(server.product.graph_query_calls, 1);
-    assert_eq!(data["kind"], "transport");
     assert_eq!(structured["cause"], "oversized");
     assert_eq!(structured["operand"], operand);
     assert!(structured.get("compiler_failure").is_none());
@@ -1180,9 +1216,7 @@ fn surface_errors_preserve_typed_compiler_facts_across_all_job_routes() {
             "tools/call",
             &json!({"name": tool, "arguments": arguments}),
         );
-        let data = &response["error"]["data"];
-        let structured = &data["structuredContent"];
-        assert_eq!(data["kind"], "compiler-refused", "{tool}: {response}");
+        let structured = tool_failure(&response, "compiler-refused");
         assert_eq!(
             structured["compiler_failure"],
             serde_json::to_value(&failure).expect("exact facts")
@@ -1197,7 +1231,7 @@ fn surface_errors_preserve_typed_compiler_facts_across_all_job_routes() {
             structured["compiler_tool_requirement"]["configuration_required"],
             true
         );
-        let detail = data["detail"].as_str().expect("human detail");
+        let detail = text_of(&response["result"]);
         assert!(detail.contains("src/main.ts: setup/toolchain_configuration_mismatch"));
         assert!(detail.contains("Set NUDOX_TSC to an absolute path"));
         assert!(!detail.contains("RAW SOURCE DIAGNOSTIC"));
@@ -1372,7 +1406,7 @@ fn owner_index_job_tools_advertise_exact_tickets_and_immediate_progress() {
     let progress = tool_named(tools, INDEX_PROGRESS_TOOL);
     assert_eq!(progress["inputSchema"]["required"], json!(["ticket"]));
     assert_eq!(
-        progress["inputSchema"]["properties"]["ticket"]["properties"]["owner_epoch"]["minItems"],
+        progress["inputSchema"]["properties"]["ticket"]["oneOf"][0]["properties"]["owner_epoch"]["minItems"],
         16
     );
     assert_eq!(
@@ -1507,7 +1541,7 @@ fn index_progress_returns_bounded_events_and_the_exact_next_sequence() {
     let text = text_of(&result);
     assert!(text.contains("older progress events aged out"), "{text}");
     assert!(text.contains("rust profile started"), "{text}");
-    assert!(text.contains("after_sequence 3"), "{text}");
+    assert!(text.contains("\"after_sequence\":3"), "{text}");
     assert!(text.contains(&ticket_value(&ticket).to_string()), "{text}");
     assert_context_bounded(&result);
     assert!(matches!(
@@ -1557,7 +1591,7 @@ fn index_progress_maximum_owner_page_fits_the_combined_mcp_result_budget() {
     assert_context_bounded(&result);
     let text = text_of(&result);
     assert!(text.contains("more events available"), "{text}");
-    assert!(text.contains("after_sequence 16"), "{text}");
+    assert!(text.contains("\"after_sequence\":16"), "{text}");
 }
 
 #[test]
@@ -1597,7 +1631,7 @@ fn index_progress_distinguishes_prior_owner_tickets_and_terminal_refusals() {
         INDEX_PROGRESS_TOOL,
         &json!({ "ticket": ticket_value(&ticket), "after_sequence": 3 }),
     );
-    assert_eq!(result["isError"], false);
+    assert_eq!(result["isError"], true);
     let wire = serde_json::to_value(&terminal).expect("terminal observation");
     assert_eq!(result["structuredContent"]["surface"]["data"], wire["data"]);
     assert_eq!(
@@ -1607,6 +1641,114 @@ fn index_progress_distinguishes_prior_owner_tickets_and_terminal_refusals() {
     let text = text_of(&result);
     assert!(text.contains("outcome refused"), "{text}");
     assert!(text.contains("compiler input was refused"), "{text}");
+}
+
+#[test]
+fn dependency_refusal_marks_tool_failure_and_keeps_the_exact_requested_package() {
+    let mut server = ready(Fake {
+        surface_reply: Some(SurfaceReply::Dependencies(
+            backend_library::DependencyFacts::Unavailable(
+                backend_library::ProductText::from_static("package is not recorded"),
+            ),
+        )),
+        ..Fake::default()
+    });
+    let result = call(
+        &mut server,
+        "backend.dependencies",
+        &json!({"package": "pkg:npm/react@19.1.0"}),
+    );
+    assert_eq!(result["isError"], true);
+    assert_eq!(result["structuredContent"]["answer"], "product");
+    assert_eq!(
+        result["structuredContent"]["fault"]["operand"],
+        "pkg:npm/react@19.1.0"
+    );
+    assert_eq!(
+        result["structuredContent"]["fault"]["call"]["arguments"]["package"],
+        "pkg:npm/react@19.1.0"
+    );
+    assert!(text_of(&result).contains("package is not recorded"));
+}
+
+#[test]
+fn copied_ticket_string_uses_the_object_decoder_and_preserves_the_owner_ticket() {
+    let ticket = index_job_ticket();
+    let mut server = ready(Fake::default());
+    for (tool, reply, expected_command) in [
+        (
+            INDEX_PROGRESS_TOOL,
+            SurfaceReply::IndexProgress(IndexJobObservation::Unknown {
+                ticket: ticket.clone(),
+                current_owner_epoch: [8; 16],
+            }),
+            SurfaceCommand::IndexProgress {
+                ticket: ticket.clone(),
+                after_sequence: 17,
+            },
+        ),
+        (
+            INDEX_CANCEL_TOOL,
+            SurfaceReply::IndexCancellation(IndexCancelReceipt {
+                ticket: ticket.clone(),
+                status: IndexCancelStatus::Requested,
+            }),
+            SurfaceCommand::IndexCancel {
+                ticket: ticket.clone(),
+            },
+        ),
+    ] {
+        for value in [
+            ticket_value(&ticket),
+            json!(ticket_value(&ticket).to_string()),
+        ] {
+            // Fake.surface consumes one supplied response per owner call.
+            server.product.surface_reply = Some(reply.clone());
+            let mut arguments = json!({"ticket": value});
+            if tool == INDEX_PROGRESS_TOOL {
+                arguments["after_sequence"] = json!(17);
+            }
+            let response = request(
+                &mut server,
+                "tools/call",
+                &json!({"name":tool, "arguments":arguments}),
+            );
+            let result = &response["result"];
+            assert_eq!(result["isError"], false, "{response}");
+            assert_eq!(
+                result["structuredContent"]["surface"]["index_job"]["value"],
+                serde_json::to_value(&reply).expect("same exact reply")["data"]
+            );
+            assert_eq!(
+                server.product.surface_commands.last(),
+                Some(&expected_command)
+            );
+        }
+        let bad = request(
+            &mut server,
+            "tools/call",
+            &json!({"name": tool, "arguments": {"ticket": "7"}}),
+        );
+        assert_eq!(tool_failure(&bad, "usage")["operand"], "ticket");
+    }
+    assert_eq!(
+        server.product.surface_commands.len(),
+        4,
+        "malformed tickets do not reach the owner"
+    );
+}
+
+#[test]
+fn missing_index_path_returns_actionable_structured_usage_before_owner_work() {
+    let mut server = ready(Fake::default());
+    let response = request(
+        &mut server,
+        "tools/call",
+        &json!({"name": "backend.index", "arguments": {}}),
+    );
+    assert_eq!(tool_failure(&response, "usage")["operand"], "path");
+    assert!(text_of(&response["result"]).contains("absolute path"));
+    assert_eq!(server.product.probe_calls, 0);
 }
 
 #[test]
@@ -1676,7 +1818,7 @@ fn index_cancel_preserves_terminal_races_and_rejects_fabricated_tickets() {
             }
         }),
     );
-    assert_eq!(malformed["error"]["code"], -32602);
+    assert_eq!(tool_failure(&malformed, "usage")["operand"], "ticket");
     assert_eq!(server.product.surface_commands.len(), 2);
 }
 
@@ -1728,10 +1870,9 @@ fn blocking_owner_await_is_not_exposed_over_mcp() {
             "arguments": { "ticket": ticket_value(&index_job_ticket()) }
         }),
     );
-    assert_eq!(response["error"]["code"], -32602);
-    assert_eq!(
-        response["error"]["message"],
-        "Use backend.index_progress for bounded polling"
+    tool_failure(&response, "usage");
+    assert!(
+        text_of(&response["result"]).contains("Use backend.index_progress for bounded polling")
     );
 
     let command = SurfaceCommand::IndexAwait {
@@ -1745,9 +1886,9 @@ fn blocking_owner_await_is_not_exposed_over_mcp() {
             "arguments": { "command": serde_json::to_value(command).expect("await command") }
         }),
     );
-    assert_eq!(generic["error"]["code"], -32602);
+    tool_failure(&generic, "usage");
     assert!(
-        generic["error"]["data"]["detail"]
+        generic["result"]["structuredContent"]["detail"]
             .as_str()
             .is_some_and(|detail| detail.contains("immediate bounded polling"))
     );
@@ -1899,7 +2040,6 @@ fn index_requires_its_advertised_path_before_owner_admission() {
 
     for params in [
         json!({ "name": "backend.index" }),
-        json!({ "name": "backend.index", "arguments": null }),
         json!({ "name": "backend.index", "arguments": {} }),
         json!({ "name": "backend.index", "arguments": { "detail": "full" } }),
         json!({ "name": "backend.index", "arguments": { "path": null } }),
@@ -1909,12 +2049,21 @@ fn index_requires_its_advertised_path_before_owner_admission() {
     ] {
         let response = request(&mut server, "tools/call", &params);
         assert_eq!(response["id"], 9);
-        assert_eq!(response["error"]["code"], -32602, "{params}: {response}");
-        assert_eq!(response["error"]["message"], "Invalid params");
-        assert_eq!(response["error"]["data"]["kind"], "invalid_params");
-        assert_eq!(
-            response["error"]["data"]["detail"],
-            "path must be a non-empty string"
+        let fault = tool_failure(&response, "usage");
+        assert_eq!(fault["slug"], "usage");
+        assert_eq!(fault["operand"], "path");
+        assert_eq!(fault["cause"], "malformed");
+        assert!(
+            fault["detail"]
+                .as_str()
+                .expect("typed path guidance")
+                .contains("backend.index requires arguments.path")
+        );
+        assert!(
+            response["result"]["structuredContent"]["detail"]
+                .as_str()
+                .expect("shared path guidance")
+                .contains("absolute path")
         );
         assert!(server.product.index_paths.is_empty(), "{params}");
         assert!(server.product.surface_commands.is_empty(), "{params}");
@@ -2338,9 +2487,9 @@ fn a_refused_surface_operation_reports_its_typed_cause() {
             .expect("encode the diff command") }
         }),
     );
-    assert_eq!(response["error"]["code"], -32603);
+    tool_failure(&response, "invalid-query");
     assert!(
-        response["error"]["data"]["detail"]
+        response["result"]["structuredContent"]["detail"]
             .as_str()
             .is_some_and(|detail| detail.contains("package is not indexed")),
         "{response}"
@@ -2373,9 +2522,9 @@ fn graph_query_limits_are_rejected_before_the_product_boundary() {
             }
         }),
     );
-    assert_eq!(oversized_query["error"]["code"], -32602);
+    tool_failure(&oversized_query, "usage");
     assert!(
-        oversized_query["error"]["data"]["detail"]
+        oversized_query["result"]["structuredContent"]["detail"]
             .as_str()
             .is_some_and(|message| message.contains("query exceeds"))
     );
@@ -2396,9 +2545,9 @@ fn graph_query_limits_are_rejected_before_the_product_boundary() {
             }
         }),
     );
-    assert_eq!(too_many_variables["error"]["code"], -32602);
+    tool_failure(&too_many_variables, "usage");
     assert!(
-        too_many_variables["error"]["data"]["detail"]
+        too_many_variables["result"]["structuredContent"]["detail"]
             .as_str()
             .is_some_and(|message| message.contains("field-count bound"))
     );
@@ -2419,9 +2568,9 @@ fn graph_query_limits_are_rejected_before_the_product_boundary() {
             }
         }),
     );
-    assert_eq!(too_deep["error"]["code"], -32602);
+    tool_failure(&too_deep, "usage");
     assert!(
-        too_deep["error"]["data"]["detail"]
+        too_deep["result"]["structuredContent"]["detail"]
             .as_str()
             .is_some_and(|message| message.contains("nesting bound"))
     );
@@ -2438,9 +2587,9 @@ fn graph_query_limits_are_rejected_before_the_product_boundary() {
             }
         }),
     );
-    assert_eq!(too_large["error"]["code"], -32602);
+    tool_failure(&too_large, "usage");
     assert!(
-        too_large["error"]["data"]["detail"]
+        too_large["result"]["structuredContent"]["detail"]
             .as_str()
             .is_some_and(|message| message.contains("byte bound"))
     );
@@ -3277,9 +3426,9 @@ fn index_search_cursor_round_trips_between_servers_with_the_same_workspace_autho
                 }
             }),
         );
-        assert_eq!(response["error"]["code"], -32602, "mismatch={mismatch}");
+        tool_failure(&response, "usage");
         assert_eq!(
-            response["error"]["data"]["detail"],
+            response["result"]["structuredContent"]["detail"],
             "cursor is unknown, expired, or belongs to another workspace authority"
         );
         assert!(other.product.surface_index_search_seen.is_empty());
@@ -3377,7 +3526,7 @@ fn index_search_tool_cursor_rejects_context_changes_and_raw_owner_tokens() {
             "tools/call",
             &json!({"name":"backend.index_search","arguments":arguments}),
         );
-        assert_eq!(response["error"]["code"], -32602, "mutation={mutation}");
+        tool_failure(&response, "usage");
         assert_eq!(server.product.surface_index_search_seen.len(), 1);
     }
 }
@@ -3412,7 +3561,7 @@ fn index_search_cursor_cannot_cross_between_named_and_generic_mcp_tools() {
             }
         }),
     );
-    assert_eq!(generic_replay["error"]["code"], -32602);
+    tool_failure(&generic_replay, "usage");
     assert_eq!(named.product.surface_index_search_seen.len(), 1);
 
     let mut generic = ready(Fake {
@@ -3436,7 +3585,7 @@ fn index_search_cursor_cannot_cross_between_named_and_generic_mcp_tools() {
             "arguments": {"query":"maven","limit":1,"cursor":generic_cursor}
         }),
     );
-    assert_eq!(named_replay["error"]["code"], -32602);
+    tool_failure(&named_replay, "usage");
     assert_eq!(generic.product.surface_index_search_seen.len(), 1);
 }
 
@@ -3548,7 +3697,7 @@ fn surface_index_search_cursor_binds_query_limit_project_and_detail() {
                 "arguments": {"command": command, "detail": detail}
             }),
         );
-        assert_eq!(response["error"]["code"], -32602, "mutation={mutation}");
+        tool_failure(&response, "usage");
         assert_eq!(server.product.surface_index_search_seen.len(), 1);
     }
 }
@@ -3594,8 +3743,9 @@ fn stale_surface_index_search_cursor_is_reported_as_restartable() {
             }
         }),
     );
-    assert_eq!(response["error"]["code"], -32010);
-    assert_eq!(response["error"]["data"]["kind"], "stale_cursor");
+    let fault = tool_failure(&response, "cursor-mismatch");
+    assert_eq!(fault["cause"], "moved");
+    assert!(text_of(&response["result"]).contains("restart the query"));
 }
 
 #[test]
@@ -3626,8 +3776,9 @@ fn stale_graph_roots_are_reported_as_a_restartable_cursor_error() {
             }
         }),
     );
-    assert_eq!(response["error"]["code"], -32010);
-    assert_eq!(response["error"]["data"]["kind"], "stale_cursor");
+    let fault = tool_failure(&response, "cursor-mismatch");
+    assert_eq!(fault["cause"], "moved");
+    assert!(text_of(&response["result"]).contains("restart the query"));
 }
 
 #[test]
@@ -3706,4 +3857,355 @@ fn high_fanout_graph_and_surface_pages_refuse_atomically() {
     assert_context_bounded(&surface);
     assert_eq!(surface["isError"], true);
     assert_eq!(surface["structuredContent"]["cause"], "oversized");
+}
+
+#[test]
+fn recognized_tools_share_typed_missing_input_results_before_any_owner_call() {
+    let mut server = ready(Fake::default());
+    let listed = request(&mut server, "tools/list", &json!({}));
+    let mut required_tools = listed["result"]["tools"]
+        .as_array()
+        .expect("tool catalog")
+        .iter()
+        .filter(|tool| {
+            tool["inputSchema"]["required"]
+                .as_array()
+                .is_some_and(|required| !required.is_empty())
+        })
+        .map(|tool| tool["name"].as_str().expect("tool name").to_owned())
+        .collect::<Vec<_>>();
+    required_tools.extend([QUERY_TOOL.to_owned(), SURFACE_TOOL.to_owned()]);
+    assert!(
+        required_tools.len() >= 8,
+        "exercise advertised and catalog-only required operands"
+    );
+    for name in required_tools {
+        let response = request(
+            &mut server,
+            "tools/call",
+            &json!({"name":name, "arguments":{}}),
+        );
+        let fault = tool_failure(&response, "usage");
+        assert_eq!(fault["cause"], "malformed", "{name}: {response}");
+        assert!(
+            !fault["detail"]
+                .as_str()
+                .expect("required input guidance")
+                .is_empty()
+        );
+        assert_eq!(server.product.probe_calls, 0, "{name}");
+        assert_eq!(server.product.graph_query_calls, 0, "{name}");
+        assert!(server.product.index_paths.is_empty(), "{name}");
+        assert!(server.product.surface_commands.is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn malformed_call_tool_envelopes_and_unknown_routes_remain_rpc_errors() {
+    let mut server = ready(Fake::default());
+    for params in [
+        json!([]),
+        json!({}),
+        json!({"name":7}),
+        json!({"name":"backend.index", "arguments":null}),
+        json!({"name":"backend.index", "arguments":[]}),
+        json!({"name":"backend.index", "arguments":"bad envelope"}),
+        json!({"name":"backend.not-a-tool", "arguments":{}}),
+    ] {
+        let response = request(&mut server, "tools/call", &params);
+        assert_eq!(response["error"]["code"], -32602, "{params}: {response}");
+        assert!(response.get("result").is_none(), "{params}: {response}");
+        assert_eq!(response["id"], 9);
+        assert_eq!(server.product.probe_calls, 0);
+        assert!(server.product.surface_commands.is_empty());
+    }
+}
+
+#[test]
+fn authenticated_continuation_decode_preserves_domain_and_server_fault_distinctions() {
+    for (error, slug, protocol) in [
+        (ClientError::StaleCursor, "cursor-mismatch", false),
+        (ClientError::CursorMismatch, "cursor-mismatch", false),
+        (
+            ClientError::Transport(backend_replication::ReplicationError::MessageTooLarge),
+            "transport",
+            false,
+        ),
+        (
+            ClientError::Protocol("retained owner proof is corrupt".to_owned()),
+            "protocol",
+            true,
+        ),
+        (
+            ClientError::RequestMismatch {
+                expected: 1,
+                observed: 2,
+            },
+            "request-mismatch",
+            true,
+        ),
+        (ClientError::FreshnessMismatch, "freshness", true),
+        (ClientError::IncoherentView, "incoherent-view", true),
+    ] {
+        let mut server = ready(Fake {
+            page_catalog: Some(paging_catalog(3)),
+            ..Fake::default()
+        });
+        let first = call(
+            &mut server,
+            "backend.search",
+            &json!({"query":"Session", "limit":1}),
+        );
+        let cursor = first["structuredContent"]["nextCursor"]
+            .as_str()
+            .expect("actual catalog continuation")
+            .to_owned();
+        server.product.continuation_error = Some(error);
+        let response = request(
+            &mut server,
+            "tools/call",
+            &json!({"name":"backend.search", "arguments":{"query":"Session", "limit":1, "cursor":cursor}}),
+        );
+        if protocol {
+            assert_eq!(response["error"]["code"], -32603, "{response}");
+            assert_eq!(response["error"]["data"]["structuredContent"]["slug"], slug);
+            assert!(response.get("result").is_none());
+        } else {
+            tool_failure(&response, slug);
+        }
+        assert_eq!(
+            server.product.page_limits,
+            [1],
+            "a refused cursor never executes another page"
+        );
+    }
+}
+
+#[test]
+fn generic_surface_dependency_refusal_keeps_exact_package_action_and_typed_fault() {
+    let package = PackageReference::parse("pkg:npm/react@19.1.0").expect("package");
+    let command = SurfaceCommand::Dependencies {
+        package: package.clone(),
+    };
+    let mut server = ready(Fake {
+        surface_reply: Some(SurfaceReply::Dependencies(
+            backend_library::DependencyFacts::Unavailable(
+                backend_library::ProductText::from_static("dependency evidence was not captured"),
+            ),
+        )),
+        ..Fake::default()
+    });
+    let result = call(&mut server, SURFACE_TOOL, &json!({"command":command}));
+    assert_eq!(result["isError"], true);
+    let fault = &result["structuredContent"]["fault"];
+    assert_eq!(fault["slug"], "lane-unavailable");
+    assert_eq!(fault["cause"], "not-captured");
+    assert_eq!(fault["operand"], package.as_str());
+    assert_eq!(
+        fault["call"],
+        json!({"name":"backend.package", "arguments":{"package":package.as_str()}})
+    );
+    assert!(text_of(&result).contains(package.as_str()));
+    assert_eq!(server.product.surface_commands, [command]);
+}
+
+#[test]
+fn direct_and_generic_graph_routes_preserve_typed_domain_and_protocol_failures() {
+    for failure in [
+        backend_library::CommandFailure::NotFound,
+        backend_library::CommandFailure::WrongBasis {
+            expected: view_state_root(&[("fixture".to_owned(), "current-view".to_owned())]).into(),
+            observed: view_state_root(&[("fixture".to_owned(), "stale-view".to_owned())]).into(),
+        },
+    ] {
+        let expected = if matches!(failure, backend_library::CommandFailure::NotFound) {
+            "not-found"
+        } else {
+            "wrong-basis"
+        };
+        let expected_operand = match &failure {
+            backend_library::CommandFailure::WrongBasis { expected, observed } => format!(
+                "{} (owner holds {})",
+                &encode_id(observed.as_bytes())[..8],
+                &encode_id(expected.as_bytes())[..8]
+            ),
+            _ => DECLARATION.to_owned(),
+        };
+        let mut direct = ready(Fake {
+            graph_failure: Some(failure.clone()),
+            ..Fake::default()
+        });
+        let response = request(
+            &mut direct,
+            "tools/call",
+            &json!({"name":"backend.graph", "arguments":{"coordinate":DECLARATION, "limit":1}}),
+        );
+        let fault = tool_failure(&response, expected);
+        assert_eq!(fault["operand"], expected_operand);
+        if expected == "not-found" {
+            assert_eq!(
+                fault["call"],
+                json!({"name":"backend.search", "arguments":{"query":"ferris"}})
+            );
+        }
+        let mut generic = ready(Fake {
+            graph_query_error: Some(ClientError::CommandFailed(failure)),
+            ..Fake::default()
+        });
+        let response = request(
+            &mut generic,
+            "tools/call",
+            &json!({"name":QUERY_TOOL, "arguments":{"query":"{ Declaration { coordinate @output } }"}}),
+        );
+        tool_failure(&response, expected);
+    }
+    let mut corrupt = ready(Fake {
+        graph_failure: Some(backend_library::CommandFailure::IncoherentView(
+            "corrupt selected relation".to_owned(),
+        )),
+        ..Fake::default()
+    });
+    let response = request(
+        &mut corrupt,
+        "tools/call",
+        &json!({"name":"backend.graph", "arguments":{"coordinate":DECLARATION}}),
+    );
+    assert_eq!(response["error"]["code"], -32603);
+    assert_eq!(
+        response["error"]["data"]["structuredContent"]["slug"],
+        "incoherent-view"
+    );
+    assert!(response.get("result").is_none());
+}
+
+#[test]
+fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_same_mcp_wire_result()
+ {
+    use backend_library::{
+        IndexJobOutcome, IndexJobPartialPublication, IndexOperationProfileRefusal,
+        IndexOperationPublicationReceipt, IndexOperationSemanticCoverage,
+        IndexOperationSemanticProfileState, IndexOperationSemanticUnavailableReason,
+        IndexOperationSourceProfile, IndexSourceCaptureSummary, SemanticLanguageProfile,
+    };
+    // This tests closed serialization and caller admission, not an actual
+    // compiler generation. The view carries no complete-coverage authority.
+    let package = PackageReference::parse("/abs/mixed-docs").expect("package");
+    let ticket = IndexJobTicket::new(
+        std::num::NonZeroU64::new(31).expect("ticket"),
+        [19; 16],
+        package.clone(),
+    );
+    let py = SemanticLanguageProfile::from_name("python").expect("Python");
+    let ts = SemanticLanguageProfile::from_name("typescript").expect("TypeScript");
+    let mut profiles = vec![
+        IndexOperationSourceProfile {
+            profile: py,
+            source_version: [4; 32],
+            input_digest: [5; 32],
+            observation_sequence: 2,
+            source_count: 236,
+            state: IndexOperationSemanticProfileState::Published {
+                generation: [6; 32],
+                coverage: IndexOperationSemanticCoverage::Complete,
+            },
+        },
+        IndexOperationSourceProfile {
+            profile: ts,
+            source_version: [4; 32],
+            input_digest: [7; 32],
+            observation_sequence: 3,
+            source_count: 626,
+            state: IndexOperationSemanticProfileState::Unavailable {
+                reason: IndexOperationSemanticUnavailableReason::Rejected,
+            },
+        },
+    ];
+    profiles.sort_by_key(|profile| profile.profile);
+    let view = root(Vec::new());
+    let partial = IndexJobPartialPublication {
+        package: package.clone(),
+        receipt: IndexOperationPublicationReceipt::from_published_view(
+            Some([8; 32]),
+            [9; 32],
+            [10; 32],
+            3,
+            &view,
+            backend_library::Cursor::for_view_root(&view),
+        )
+        .expect("structurally admitted receipt"),
+        source_capture: IndexSourceCaptureSummary {
+            producer_package: package,
+            request_identity: [1; 32],
+            commit_identity: [2; 32],
+            workspace_root: [3; 32],
+            workspace_sequence: 2,
+            profiles: profiles.into_boxed_slice(),
+        },
+        refused_profiles: vec![IndexOperationProfileRefusal {
+            profile: ts,
+            reason: IndexOperationSemanticUnavailableReason::Rejected,
+            compiler_failure: Some(setup_compiler_failure()),
+        }]
+        .into_boxed_slice(),
+    };
+    partial.admit().expect("complete typed partition");
+    let observation = IndexJobObservation::Terminal(IndexJobTerminal {
+        ticket: ticket.clone(),
+        outcome: IndexJobOutcome::PartiallyPublished(partial.clone()),
+    });
+    let reply = SurfaceReply::IndexProgress(observation.clone());
+    let command = SurfaceCommand::IndexProgress {
+        ticket: ticket.clone(),
+        after_sequence: 0,
+    };
+    let dto = ReplyDto::new(701, CommandReply::Surface(reply.clone()));
+    let bytes = serde_json::to_vec(&dto).expect("closed backend DTO");
+    let decoded =
+        backend_library::decode_reply_body(&bytes).expect("genuine closed backend wire decode");
+    backend_library::admit_reply(
+        &backend_library::CommandDto::new(701, backend_library::Command::Surface(command)),
+        &decoded,
+    )
+    .expect("exact caller ticket and partial payload admission");
+    for detail in ["summary", "full"] {
+        let mut server = ready(Fake {
+            surface_reply: Some(reply.clone()),
+            ..Fake::default()
+        });
+        let wire = request(
+            &mut server,
+            "tools/call",
+            &json!({"name":INDEX_PROGRESS_TOOL, "arguments":{"ticket":ticket, "after_sequence":0, "detail":detail}}),
+        );
+        assert!(wire.get("error").is_none(), "{wire}");
+        assert_eq!(wire["result"]["isError"], true);
+        let content = &wire["result"]["structuredContent"];
+        assert_eq!(
+            content["surface"]["data"],
+            serde_json::to_value(&observation).expect("exact observation")
+        );
+        assert_eq!(
+            content["surface"]["index_job"],
+            serde_json::to_value(backend_present::IndexJobProjection::Progress(
+                observation.clone()
+            ))
+            .expect("exact job projection")
+        );
+        assert_eq!(content["fault"]["slug"], "partially-published");
+        assert_eq!(
+            content["fault"]["partial_publication"],
+            serde_json::to_value(&partial)
+                .expect("exact receipt, partition, refusals and source tuple")
+        );
+        assert_eq!(
+            content["fault"]["partial_publication"]["receipt"],
+            serde_json::to_value(&partial.receipt).expect("receipt")
+        );
+        let text = text_of(&wire["result"]);
+        assert!(text.contains("python: published 236 source files with Complete coverage"));
+        assert!(text.contains("typescript: unavailable"));
+        assert!(text.contains("NUDOX_TSC"));
+        assert_context_bounded(&wire);
+        assert_eq!(server.product.surface_commands.len(), 1);
+    }
 }

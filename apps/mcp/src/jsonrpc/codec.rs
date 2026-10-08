@@ -48,7 +48,7 @@ pub(super) fn string<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'
         .get(key)
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| RpcError::invalid(format!("{key} must be a non-empty string")))
+        .ok_or_else(|| RpcError::invalid_argument(key, format!("{key} must be a non-empty string")))
 }
 
 pub(super) fn limit(arguments: &Map<String, Value>) -> Result<u16, RpcError> {

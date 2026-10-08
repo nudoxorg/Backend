@@ -1,0 +1,112 @@
+{
+  "source": "146c430f842df6042d62dc82c3eea4e9d77cf006",
+  "raw_archive_sha256": "78dd79f65e382dc40843048419810a0736eb5717fcad363b884f49a3ae65d0bc",
+  "gates": [
+    {
+      "gate": "client",
+      "source": "6d0d5be127d57c1b5c85d354f0da104fa5c314ba",
+      "passed": 18,
+      "failed": 0,
+      "ignored": 0,
+      "elapsed_seconds": 18.907,
+      "scope_identical_at_final_head": [
+        "crates/client"
+      ],
+      "artifacts": [
+        {
+          "target": "backend_client",
+          "executable": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_client-3fc7d7addf44c7a5",
+          "fresh": false,
+          "source": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/crates/client/src/lib.rs"
+        }
+      ]
+    },
+    {
+      "gate": "present",
+      "source": "ae3d47d7a266c419a68f2d5f6f0a143cbb8e22a3",
+      "passed": 109,
+      "failed": 0,
+      "ignored": 0,
+      "elapsed_seconds": 144.767,
+      "scope_identical_at_final_head": [
+        "crates/present"
+      ],
+      "artifacts": [
+        {
+          "target": "backend_present",
+          "executable": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_present-05b6c07c9bc43044",
+          "fresh": false,
+          "source": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/crates/present/lib.rs"
+        }
+      ]
+    },
+    {
+      "gate": "cli",
+      "source": "d00c6cb8056a870d7f25aedc42f76b11d306259c",
+      "passed": 45,
+      "failed": 0,
+      "ignored": 0,
+      "elapsed_seconds": 367.771,
+      "scope_identical_at_final_head": [
+        "apps/cli"
+      ],
+      "artifacts": [
+        {
+          "target": "backend_cli",
+          "executable": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_cli-632625343650732c",
+          "fresh": false,
+          "source": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/apps/cli/src/lib.rs"
+        }
+      ]
+    },
+    {
+      "gate": "mcp",
+      "source": "e3991e5b1eb8830dd2a92c53c02094496e8d8758",
+      "passed": 118,
+      "failed": 0,
+      "ignored": 0,
+      "elapsed_seconds": 17.508,
+      "scope_identical_at_final_head": [
+        "apps/mcp"
+      ],
+      "artifacts": [
+        {
+          "target": "backend_mcp",
+          "executable": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_mcp-5de55973319cb62b",
+          "fresh": false,
+          "source": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/apps/mcp/src/lib.rs"
+        }
+      ]
+    },
+    {
+      "gate": "absent",
+      "source": "146c430f842df6042d62dc82c3eea4e9d77cf006",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "elapsed_seconds": 286.586,
+      "scope_identical_at_final_head": [
+        "crates/local-service/src/builtin/commands/adapter.rs"
+      ],
+      "artifacts": [
+        {
+          "target": "backend_local_service",
+          "executable": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_local_service-3218c82d4b0ed9ff",
+          "fresh": false,
+          "source": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/crates/local-service/src/lib.rs"
+        }
+      ]
+    }
+  ],
+  "total_test_passes": 291,
+  "golden": {
+    "bytes": 134052,
+    "records": 200,
+    "historical_fields_preserved": true
+  },
+  "limits": [
+    "Successive source cohorts, not a final combined native run.",
+    "Artifact records and kernel-wait receipts audited; remote images not independently rehashed here.",
+    "Real installed CLI/MCP restart/interleaving replay remains pending."
+  ]
+}

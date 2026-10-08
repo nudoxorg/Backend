@@ -259,6 +259,13 @@ pub enum Affordance {
     },
     /// Wait for the current index to reach readiness.
     WaitForReadiness,
+    /// Observe one actual owner job without mistaking accepted work for failure.
+    PollIndex {
+        /// Exact issued job identity.
+        ticket: backend_library::IndexJobTicket,
+        /// Last observed event sequence.
+        after_sequence: u64,
+    },
     /// Nothing the reader can do changes the outcome.
     None,
 }
@@ -287,19 +294,23 @@ impl Affordance {
     pub fn shell(&self) -> Option<String> {
         match self {
             Self::Retry => Some("re-run the same command".to_owned()),
-            Self::Reindex { path } => Some(format!("backend index {}", quote(path))),
-            Self::OpenFolder { path } => Some(format!("open {}", quote(path))),
+            Self::Reindex { path } => Some(format!("backend index {}", crate::shell::quote_argument(path))),
+            Self::OpenFolder { path } => Some(format!("open {}", crate::shell::quote_argument(path))),
             Self::UseCommand { name, args } => {
                 let mut line = format!("backend {name}");
                 for argument in args {
                     line.push(' ');
-                    line.push_str(&quote(argument));
+                    line.push_str(&crate::shell::quote_argument(argument));
                 }
                 Some(line)
             }
             Self::WaitForReadiness => {
                 Some("backend health  (wait for ~lanes to read ready)".to_owned())
             }
+            Self::PollIndex { ticket, after_sequence } => Some(format!(
+                "backend index_progress {} --after-sequence {after_sequence}",
+                crate::shell::quote_argument(&crate::product::index_ticket_json(ticket)),
+            )),
             Self::None => None,
         }
     }
@@ -325,6 +336,10 @@ impl Affordance {
                 "name": "backend.status",
                 "arguments": {}
             })),
+            Self::PollIndex { ticket, after_sequence } => Some(serde_json::json!({
+                "name": "backend.index_progress",
+                "arguments": { "ticket": ticket, "after_sequence": after_sequence }
+            })),
         }
     }
 }
@@ -333,6 +348,7 @@ fn tool_arguments(name: &str, args: &[String]) -> serde_json::Value {
     let field = match name {
         "search" | "index-search" | "resolve" => "query",
         "outline" | "packages" | "add" | "remove" => "path",
+        "package" => "package",
         _ => "coordinate",
     };
     args.first().map_or_else(
@@ -341,13 +357,7 @@ fn tool_arguments(name: &str, args: &[String]) -> serde_json::Value {
     )
 }
 
-fn quote(value: &str) -> String {
-    if value.is_empty() || value.bytes().any(|byte| byte.is_ascii_whitespace()) {
-        format!("'{}'", value.replace('\'', "'\\''"))
-    } else {
-        value.to_owned()
-    }
-}
+
 
 /// One typed failure, complete enough to render on any surface.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -498,11 +508,27 @@ impl Fault {
         )
     }
 
+    /// Explains a typed absent outline without claiming that the package has
+    /// never been indexed: an indexed package may contain no declarations.
+    #[must_use]
+    pub fn unpublished_outline(path: &str) -> Self {
+        Self::new(
+            FaultSlug::NotFound,
+            Operand::Path(path.to_owned()),
+            Cause::new(
+                CauseSlug::Absent,
+                "no outline is published for this package at this revision",
+            ),
+            Affordance::Reindex { path: path.to_owned() },
+        )
+    }
+
     /// Builds the fault for a lane that produced no authoritative result.
     #[must_use]
     pub fn lane(lane: Lane, reason: Reason) -> Self {
         let affordance = match reason {
-            Reason::NoIndex | Reason::Incomplete => Affordance::WaitForReadiness,
+            Reason::NoIndex => Affordance::UseCommand { name: "packages", args: Box::new([]) },
+            Reason::Incomplete => Affordance::WaitForReadiness,
             Reason::Unconfigured => Affordance::None,
             Reason::Offline | Reason::Cancelled => Affordance::Retry,
         };

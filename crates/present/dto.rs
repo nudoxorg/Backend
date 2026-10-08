@@ -712,6 +712,12 @@ impl OutlineDto {
 /// The engine's whole state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StatusDto {
+    /// Owner availability proven by the admitted health reply.
+    #[serde(default = "unknown_status_facet")]
+    pub availability: String,
+    /// Exact visible view cardinality facet; not a claim about pending work.
+    #[serde(default = "unknown_status_facet")]
+    pub publication: String,
     /// The single-word readiness summary.
     pub readiness: String,
     /// The exact current view revision, as canonical hexadecimal.
@@ -737,6 +743,10 @@ pub struct StatusDto {
     pub coverage: Vec<CoverageDto>,
     /// The rolled-up capability inventory.
     pub capabilities: CapabilitiesDto,
+}
+
+fn unknown_status_facet() -> String {
+    "unknown".to_owned()
 }
 
 /// The rolled-up capability inventory.
@@ -773,6 +783,8 @@ impl StatusDto {
     pub fn new(status: &Status) -> Self {
         let capabilities = status.capabilities();
         Self {
+            availability: status.availability().to_owned(),
+            publication: status.publication_state().name().to_owned(),
             readiness: status.readiness().to_owned(),
             revision: status.revision_id(),
             revision_tag: status.revision().to_string(),

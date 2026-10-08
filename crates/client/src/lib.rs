@@ -1110,6 +1110,13 @@ impl Session {
         limit: u16,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
+        if self.prepared_query.is_some() {
+            return self.resume_prepared_graph(
+                SymbolAddress::canonical(symbol_key(coordinate)),
+                limit,
+                continuation,
+            );
+        }
         let revision = self.revision()?;
         let symbol = symbol_key(coordinate);
         let certificate = revision.certificate.with_claim_once(WireClaim::Key {
@@ -1138,6 +1145,9 @@ impl Session {
         limit: u16,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
+        if self.prepared_query.is_some() {
+            return self.resume_prepared_graph(SymbolAddress::selected(symbol), limit, continuation);
+        }
         let revision = self.revision()?;
         let certificate = selected_symbol_certificate(revision.certificate, symbol);
         let page = page_request(revision.root, limit, continuation)?;
@@ -1575,7 +1585,7 @@ impl Session {
     ) -> Result<ReplyDto, ClientError> {
         let portable = matches!(
             &command,
-            Command::Search(_) | Command::Name(_) | Command::GraphQuery(_)
+            Command::Search(_) | Command::Name(_) | Command::GraphQuery(_) | Command::GraphPage { .. }
         )
         .then(|| (command.clone(), certificate.clone()));
         let reply = require_command_success(self.send(command, certificate)?)?;

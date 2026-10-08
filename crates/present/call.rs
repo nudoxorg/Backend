@@ -541,12 +541,31 @@ fn compile_execution_intent(invocation: &Invocation) -> Result<CompileExecutionI
 
 fn index_job_ticket(invocation: &Invocation, index: usize) -> Result<IndexJobTicket, Fault> {
     let value = invocation.require(index)?;
-    serde_json::from_str(value).map_err(|error| {
-        Fault::usage(
-            "ticket",
-            format!("pass the exact owner-issued ticket as JSON: {error}"),
-        )
-    })
+    decode_index_job_ticket(&serde_json::Value::String(value.to_owned()))
+}
+
+/// Admits an exact owner ticket copied as an object or a single JSON string.
+/// This changes input spelling only; counters, epochs and package identities
+/// still cross the library's closed ticket deserializer unchanged.
+///
+/// # Errors
+/// Returns shared usage guidance for malformed or oversized input.
+pub fn decode_index_job_ticket(value: &serde_json::Value) -> Result<IndexJobTicket, Fault> {
+    use serde::Deserialize as _;
+    let decode = match value {
+        serde_json::Value::Object(_) => IndexJobTicket::deserialize(value),
+        serde_json::Value::String(encoded) if encoded.len() <= backend_library::MAX_COMMAND_TEXT => {
+            serde_json::from_str(encoded)
+        }
+        _ => return Err(index_ticket_usage("expected an object or its JSON string within the argument byte bound")),
+    };
+    decode.map_err(|error| index_ticket_usage(&error.to_string()))
+}
+
+fn index_ticket_usage(detail: &str) -> Fault {
+    Fault::usage("ticket", format!(
+        "pass the exact ticket returned by index_start as an object or its JSON string; keep id, owner_epoch and package unchanged: {detail}"
+    ))
 }
 
 fn progress_sequence(invocation: &Invocation) -> Result<u64, Fault> {
