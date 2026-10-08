@@ -1,0 +1,24 @@
+{
+  "source": "1b46051a4bbc69440092bc7be41d80c918419282",
+  "tree": "248880a7e3e77203b23da485f8a1efac6a0b43ae",
+  "tracked_source_entries_verified": 17647,
+  "changed_source_paths_verified": 6,
+  "passed": 50,
+  "failed": 0,
+  "ignored": 0,
+  "test_seconds": 47.61,
+  "total_seconds": 276.5259177390253,
+  "native_test_image": {
+    "path": "/root/sol61-journal-recovery-c68d-evidence-20261008/native-09-selected-refusal-reconciliation/images/backend_local_service-cd1e7a9a47dbce01",
+    "bytes": 523343184,
+    "sha256": "402f453f816c9b7f782a93b41b98f027bfe9331bf06da57a13037192acb47703"
+  },
+  "source_archive_sha256": "0ec975be39a7726eaf0442d85396354b2e974efe2fa014419cc1967b0ce64d23",
+  "receipt_sha256": "f12023788f8dc91668d0c64fefdc0ac8abfc3b19dfbd2a03ac5e5c6920adfa1d",
+  "log_sha256": "de034a95ba26335ed25c30519086dc58eb7e9e45fc01136ff09f33507ae35254",
+  "limits": [
+    "Focused source-bound native journal controls; not installed public product acceptance.",
+    "Remote native image hash is sealed by the supervisor, not independently reread by Root here.",
+    "Later Python dependency-graph and FIFO correction gates are separate and not credited."
+  ]
+}

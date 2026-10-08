@@ -164,9 +164,11 @@ pub(super) enum Acceptance {
 #[derive(Debug, Eq, PartialEq)]
 pub(super) enum JournalError {
     Database(String),
+    DatabaseBusy,
     Corrupt(String),
     KeyspaceFull,
     PendingLimit,
+    PreparedBusy,
     KeyConflict,
     Missing,
     InvalidTransition,
@@ -178,6 +180,7 @@ impl std::fmt::Display for JournalError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Database(error) => write!(formatter, "index-operation database: {error}"),
+            Self::DatabaseBusy => formatter.write_str("index-operation database is temporarily busy; retry after its writer releases the transaction"),
             Self::Corrupt(error) => {
                 write!(formatter, "index-operation database is corrupt: {error}")
             }
@@ -187,6 +190,7 @@ impl std::fmt::Display for JournalError {
             Self::PendingLimit => formatter.write_str(
                 "durable index-operation pending limit is full; the request was not accepted",
             ),
+            Self::PreparedBusy => formatter.write_str("another durable index operation is prepared; retry after its publication is reconciled"),
             Self::KeyConflict => {
                 formatter.write_str("index-operation key was reused with another request")
             }
@@ -229,8 +233,31 @@ struct JournalMeta {
 pub(super) struct IndexOperationJournal {
     _database: turso::Database,
     _database_directory: backend_platform::DirectoryCapability,
-    _database_file: File,
+    database_file: File,
     connection: turso::Connection,
+    readiness: Option<super::journal_readiness::Changed>,
+    last_hint: Option<PostCommitHint>,
+    #[cfg(test)]
+    hint_time: Option<std::time::SystemTime>,
+    #[cfg(test)]
+    read_queries: std::cell::Cell<usize>,
+}
+
+/// Notification evidence is separate from the SQL transaction's result.
+/// A failed hint never changes or rolls back an already committed operation.
+#[derive(Debug)]
+pub(super) enum PostCommitHint {
+    Native {
+        local: Option<super::journal_readiness::WakeDelivery>,
+    },
+    LocalOnly {
+        error: std::io::Error,
+        local: super::journal_readiness::WakeDelivery,
+    },
+    Unavailable {
+        error: std::io::Error,
+        local: Option<super::journal_readiness::WakeDelivery>,
+    },
 }
 
 impl IndexOperationJournal {
@@ -286,8 +313,151 @@ impl IndexOperationJournal {
         Ok(Self {
             _database: database,
             _database_directory: database_directory,
-            _database_file: database_file,
+            database_file,
             connection,
+            readiness: None,
+            last_hint: None,
+            #[cfg(test)]
+            hint_time: None,
+            #[cfg(test)]
+            read_queries: std::cell::Cell::new(0),
+        })
+    }
+
+    pub(super) fn observe_changes(&mut self, changed: super::journal_readiness::Changed) {
+        self.readiness = Some(changed);
+    }
+
+    fn changed(&mut self) {
+        // Called only after successful SQL commit. A metadata event through
+        // the verified held file cannot precede that commit's visibility and
+        // does not alter database bytes or supply durable writer authority.
+        let time = std::time::SystemTime::now();
+        #[cfg(test)]
+        let time = self.hint_time.unwrap_or(time);
+        let native = self.database_file.set_modified(time);
+        let local = self.readiness.as_ref().map(|changed| {
+            if native.is_err() {
+                changed.native_hint_failed();
+            }
+            changed.invalidate()
+        });
+        self.last_hint = Some(match (native, local) {
+            (Ok(()), local) => PostCommitHint::Native { local },
+            (
+                Err(error),
+                Some(
+                    local @ (super::journal_readiness::WakeDelivery::Queued
+                    | super::journal_readiness::WakeDelivery::Coalesced),
+                ),
+            ) => {
+                eprintln!(
+                    "index operation committed; native wake failed, local wake {local:?} and coverage degraded: {error}"
+                );
+                PostCommitHint::LocalOnly { error, local }
+            }
+            (Err(error), local) => {
+                eprintln!(
+                    "index operation committed without an available wake; explicit status or mutation retry is required: {error}"
+                );
+                PostCommitHint::Unavailable { error, local }
+            }
+        });
+    }
+
+    #[cfg(test)]
+    pub(super) fn fix_hint_time_for_test(&mut self, time: std::time::SystemTime) {
+        self.hint_time = Some(time);
+    }
+
+    #[cfg(test)]
+    pub(super) fn replace_hint_file_for_test(&mut self, file: File) {
+        self.database_file = file;
+    }
+
+    #[cfg(test)]
+    pub(super) fn last_hint_for_test(&self) -> Option<&PostCommitHint> {
+        self.last_hint.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(super) fn read_query_count(&self) -> usize {
+        self.read_queries.get()
+    }
+
+    #[cfg(test)]
+    pub(super) fn connection_for_test(&self) -> turso::Connection {
+        self.connection.clone()
+    }
+
+    /// A bounded pending inventory and its counters from one WAL snapshot.
+    /// Notifications request this observation; they never prove row absence.
+    pub(super) fn pending_snapshot(
+        &mut self,
+    ) -> Result<super::journal_readiness::Pending, JournalError> {
+        #[cfg(test)]
+        self.read_queries.set(self.read_queries.get() + 1);
+        futures_executor::block_on(async {
+            let transaction = self
+                .connection
+                .transaction_with_behavior(turso::transaction::TransactionBehavior::Deferred)
+                .await
+                .map_err(database_error)?;
+            let result = async {
+                let meta = read_validated_cold_meta(&transaction).await?;
+                let mut rows = transaction
+                    .query(
+                        "SELECT operation_key, state, payload FROM backend_index_operations \
+                     WHERE state IN (1, 2) ORDER BY state DESC, acceptance_sequence ASC LIMIT 33",
+                        (),
+                    )
+                    .await
+                    .map_err(database_error)?;
+                let mut first = None;
+                let mut first_payload = None;
+                let mut pending = 0_i64;
+                let mut prepared = 0_i64;
+                while let Some(row) = rows.next().await.map_err(database_error)? {
+                    pending += 1;
+                    let bytes: Vec<u8> = row.get(0).map_err(database_error)?;
+                    let key = IndexOperationKey::from_bytes(array32(bytes)?)
+                        .map_err(|error| JournalError::Corrupt(error.to_string()))?;
+                    if first.is_none() {
+                        let payload: Vec<u8> = row.get(2).map_err(database_error)?;
+                        if payload.len() > MAX_OPERATION_PAYLOAD_BYTES {
+                            return Err(JournalError::PayloadTooLarge);
+                        }
+                        first = Some(key);
+                        first_payload = Some(*blake3::hash(&payload).as_bytes());
+                    }
+                    match row.get::<i64>(1).map_err(database_error)? {
+                        STATE_ACCEPTED => {}
+                        STATE_PREPARED => prepared += 1,
+                        _ => return Err(JournalError::Corrupt("invalid pending state".to_owned())),
+                    }
+                }
+                if pending != meta.pending_count || prepared != meta.prepared_count {
+                    return Err(JournalError::Corrupt(
+                        "pending snapshot counters disagree".to_owned(),
+                    ));
+                }
+                Ok(super::journal_readiness::Pending {
+                    first,
+                    prepared: prepared != 0,
+                    first_payload,
+                })
+            }
+            .await;
+            match result {
+                Ok(snapshot) => {
+                    transaction.commit().await.map_err(database_error)?;
+                    Ok(snapshot)
+                }
+                Err(error) => {
+                    let _ = transaction.rollback().await;
+                    Err(error)
+                }
+            }
         })
     }
 
@@ -380,6 +550,15 @@ impl IndexOperationJournal {
                 }
             }
         });
+        if matches!(result, Ok(Acceptance::New)) {
+            self.changed();
+        } else if result.is_ok()
+            && let Some(changed) = &self.readiness
+        {
+            // An exact replay rolled back its read-only transaction. It may
+            // request a local refresh, but cannot claim a new committed hint.
+            changed.invalidate();
+        }
         result
     }
 
@@ -413,6 +592,21 @@ impl IndexOperationJournal {
             return Err(JournalError::InvalidTransition);
         }
         self.transition(operation_key, |mut entry| {
+            if let StoredOperationState::Prepared {
+                request_identity: previous,
+                base_workspace_root: root,
+                base_workspace_sequence: sequence,
+            } = &entry.state
+            {
+                return if *previous == request_identity
+                    && *root == base_workspace_root
+                    && *sequence == base_workspace_sequence
+                {
+                    Ok(entry)
+                } else {
+                    Err(JournalError::InvalidTransition)
+                };
+            }
             if !matches!(entry.state, StoredOperationState::Accepted) {
                 return Err(JournalError::InvalidTransition);
             }
@@ -647,6 +841,8 @@ impl IndexOperationJournal {
         &self,
         operation_key: IndexOperationKey,
     ) -> Result<Option<JournalEntry>, JournalError> {
+        #[cfg(test)]
+        self.read_queries.set(self.read_queries.get() + 1);
         futures_executor::block_on(async {
             let Some(row) = load_row_connection(&self.connection, operation_key).await? else {
                 return Ok(None);
@@ -664,6 +860,8 @@ impl IndexOperationJournal {
     }
 
     fn first_key(&self, predicate: &str) -> Result<Option<IndexOperationKey>, JournalError> {
+        #[cfg(test)]
+        self.read_queries.set(self.read_queries.get() + 1);
         futures_executor::block_on(async {
             let sql = format!(
                 "SELECT operation_key FROM backend_index_operations \
@@ -691,6 +889,8 @@ impl IndexOperationJournal {
     }
 
     fn has_state(&self, predicate: &str) -> Result<bool, JournalError> {
+        #[cfg(test)]
+        self.read_queries.set(self.read_queries.get() + 1);
         futures_executor::block_on(async {
             let sql = format!("SELECT 1 FROM backend_index_operations WHERE {predicate} LIMIT 1");
             let mut rows = self
@@ -800,6 +1000,28 @@ impl IndexOperationJournal {
                 validate_entry(&updated)?;
                 let new_state =
                     stored_state_code(&updated.state).ok_or(JournalError::InvalidTransition)?;
+                if previous_state == STATE_ACCEPTED && new_state == STATE_PREPARED {
+                    // The Immediate write transaction serializes competing
+                    // connections. A separate admission read is only an
+                    // avoid-work hint and cannot enforce this invariant.
+                    let meta = read_meta_transaction(&transaction).await?;
+                    validate_meta(&meta)?;
+                    if meta.prepared_count != 0 {
+                        return Err(JournalError::PreparedBusy);
+                    }
+                    let mut rows = transaction
+                        .query(
+                            "SELECT 1 FROM backend_index_operations WHERE state=2 LIMIT 1",
+                            (),
+                        )
+                        .await
+                        .map_err(database_error)?;
+                    if rows.next().await.map_err(database_error)?.is_some() {
+                        return Err(JournalError::Corrupt(
+                            "prepared count disagrees with retained rows".to_owned(),
+                        ));
+                    }
+                }
                 let payload = encode_entry(&updated)?;
                 let is_terminal = matches!(new_state, STATE_PUBLISHED | STATE_FAILED);
                 let terminal_sequence = if is_terminal {
@@ -863,6 +1085,9 @@ impl IndexOperationJournal {
                 }
             }
         });
+        if result.is_ok() {
+            self.changed();
+        }
         result
     }
 }
@@ -1579,7 +1804,10 @@ fn array32(bytes: Vec<u8>) -> Result<[u8; 32], JournalError> {
 }
 
 fn database_error(error: turso::Error) -> JournalError {
-    JournalError::Database(error.to_string())
+    match error {
+        turso::Error::Busy(_) | turso::Error::BusySnapshot(_) => JournalError::DatabaseBusy,
+        error => JournalError::Database(error.to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -2523,6 +2751,101 @@ mod tests {
         ));
         assert!(journal.has_prepared().expect("prepared state probe"));
         drop(journal);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn competing_connections_prepare_only_one_and_preserve_accepted_retry() {
+        let path = path();
+        let mut owner = open(&path);
+        for value in [80, 81] {
+            owner
+                .accept(key(value), package(), CompileExecutionIntent::Interactive)
+                .expect("accept");
+        }
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let (ready, readiness) = std::sync::mpsc::sync_channel(2);
+        let mut releases = Vec::new();
+        let workers: Vec<_> = [80, 81]
+            .into_iter()
+            .map(|value| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                let ready = ready.clone();
+                let (release, released) = std::sync::mpsc::sync_channel(1);
+                releases.push(release);
+                std::thread::spawn(move || {
+                    let opened = IndexOperationJournal::open(&path);
+                    let _ = ready.send(opened.is_ok());
+                    let mut journal = match opened {
+                        Ok(journal) => journal,
+                        Err(error) => return (value, Err(error)),
+                    };
+                    if released.recv_timeout(Duration::from_secs(10)) != Ok(true) {
+                        return (
+                            value,
+                            Err(JournalError::Database(
+                                "test prepare rendezvous unavailable".to_owned(),
+                            )),
+                        );
+                    }
+                    barrier.wait();
+                    (
+                        value,
+                        journal.prepare(key(value), Some([4; 32]), [5; 32], 9),
+                    )
+                })
+            })
+            .collect();
+        let all_opened = (0..2)
+            .map(|_| readiness.recv_timeout(Duration::from_secs(10)))
+            .all(|result| result == Ok(true));
+        for release in releases {
+            let _ = release.send(all_opened);
+        }
+        let results: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("prepare thread"))
+            .collect();
+        assert!(
+            all_opened,
+            "both independent connections must open before the concurrent prepare attempt: {results:?}"
+        );
+        assert_eq!(results.iter().filter(|(_, r)| r.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|(_, r)| *r == Err(JournalError::PreparedBusy))
+                .count(),
+            1
+        );
+        let winner = results.iter().find(|(_, r)| r.is_ok()).expect("winner").0;
+        let loser = results.iter().find(|(_, r)| r.is_err()).expect("loser").0;
+        assert!(matches!(
+            owner.entry(key(loser)).expect("loser row"),
+            Some(JournalEntry::Retained(StoredOperation {
+                state: StoredOperationState::Accepted,
+                ..
+            }))
+        ));
+        owner
+            .prepare(key(winner), Some([4; 32]), [5; 32], 9)
+            .expect("exact same-key retry is idempotent");
+        assert_eq!(
+            owner.prepare(key(winner), Some([6; 32]), [5; 32], 9),
+            Err(JournalError::InvalidTransition)
+        );
+        owner
+            .failed(
+                key(winner),
+                IndexOperationFailureReason::WorkerFailed,
+                ProductText::from_static("winner retired"),
+            )
+            .expect("retire winner");
+        owner
+            .prepare(key(loser), Some([4; 32]), [5; 32], 9)
+            .expect("accepted loser retries after slot retires");
+        drop(owner);
         cleanup(&path);
     }
 

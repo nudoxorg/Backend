@@ -1,0 +1,29 @@
+{
+  "canonical_base": "f92d4d0ff05bcb721ba69fc2d2ed43fc7ecff750",
+  "source": "d5935b14a80c1a50f4bd45d0ac10bd24ec66d73b",
+  "tree": "503c0e625799daeee69c2d62a0d4c0689622ad2f",
+  "reviewed_native_source": "1b46051a4bbc69440092bc7be41d80c918419282",
+  "identical_paths": [
+    "crates/local-service/Cargo.toml",
+    "crates/local-service/src/builtin/commands/index_operation.rs",
+    "crates/local-service/src/builtin/commands/journal_readiness.rs",
+    "crates/local-service/src/builtin/commands/mod.rs"
+  ],
+  "adapter_delta": "Only the previously reviewed PR67 typed-absent graph and adapter control changes differ from native09; Root inspected entire integration delta.",
+  "lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+  "dependency_change": "Existing notify 7.0.0 edge only; canonical allocation-counter edge preserved.",
+  "files": {
+    "native09-raw.tar.gz": {
+      "sha256": "d2d9d227a591f7372696f0ea4ca0e7536f26414599142f4cfbcdc90d7ac1d489",
+      "bytes": 57037
+    },
+    "root-audit.py": {
+      "sha256": "98051de8088b6a0d882da3d5bba57db878f3535978a5f6b112c4bfc1e9cb742d",
+      "bytes": 4819
+    },
+    "root-audit.json": {
+      "sha256": "abcff523f5f44cb98876a55f57a84fa661838bc03018e002fc0b717e779cbb42",
+      "bytes": 1168
+    }
+  }
+}

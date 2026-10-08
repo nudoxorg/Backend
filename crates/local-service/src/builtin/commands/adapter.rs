@@ -304,6 +304,7 @@ pub(in crate::builtin) struct CommandAdapter {
     discovery: Option<crate::discovery::DiscoveryGateway>,
     product_state: super::super::ProductState,
     index_operations: IndexOperationJournal,
+    journal_readiness: super::journal_readiness::JournalReadiness,
     compiler: LocalCompilerClient,
     search_snapshots: super::super::query::SearchSnapshotOwner,
     search_lane: SearchLane,
@@ -339,6 +340,9 @@ pub(in crate::builtin) struct CommandAdapter {
     /// Commands that change state, waiting for that job: one writer at a
     /// time, in arrival order. Reads never wait here.
     waiting: std::collections::VecDeque<(u64, Vec<u8>)>,
+    /// A failed/busy durable admission probe is retried only after a finite
+    /// change or explicit refresh. A ready probe is never cached as authority.
+    queued_writer_blocked: Option<super::journal_readiness::RetryToken>,
     /// Tickets in `waiting` whose clients stopped waiting. Their commands
     /// remain admitted and will still run, but their eventual response is
     /// discarded without registering another waiter.
@@ -387,7 +391,69 @@ enum IndexJobWork {
             >,
         >,
     },
+    /// An admitted candidate whose marker could not yet reserve the sole
+    /// durable Prepared slot. No candidate or Accepted receipt is discarded.
+    Publishing {
+        prepared: PreparedProductSelection,
+        blocked_sequence: super::journal_readiness::RetryToken,
+    },
     Transition,
+}
+
+enum MutationAdmission {
+    Ready,
+    Pending,
+    Unavailable(IndexOperationJournalError),
+}
+
+enum DeferredCommandOrigin {
+    Incoming,
+    Waiting,
+}
+
+enum FinishAddError {
+    PublicationBusy,
+    Failed(BuiltinModelError),
+}
+
+impl From<BuiltinModelError> for FinishAddError {
+    fn from(error: BuiltinModelError) -> Self {
+        Self::Failed(error)
+    }
+}
+
+fn prepare_publication_barrier(
+    journal: &mut IndexOperationJournal,
+    operation_key: Option<backend_library::IndexOperationKey>,
+    request_identity: Option<[u8; 32]>,
+    base_workspace_root: [u8; 32],
+    base_workspace_sequence: u64,
+    partial_plan: Option<super::index_operation::PartialPublicationPlan>,
+) -> Result<(), FinishAddError> {
+    let result = match operation_key {
+        Some(key) => journal.prepare_with_partial(
+            key,
+            request_identity,
+            base_workspace_root,
+            base_workspace_sequence,
+            partial_plan,
+        ),
+        None => journal.has_prepared().and_then(|pending| {
+            if pending {
+                Err(IndexOperationJournalError::PreparedBusy)
+            } else {
+                Ok(())
+            }
+        }),
+    };
+    result.map_err(|error| match error {
+        IndexOperationJournalError::PreparedBusy | IndexOperationJournalError::DatabaseBusy => {
+            FinishAddError::PublicationBusy
+        }
+        error => FinishAddError::Failed(BuiltinModelError(format!(
+            "prepare durable index-operation receipt: {error}"
+        ))),
+    })
 }
 
 /// What the owner loop answers while an index job compiles: reads, from the
@@ -571,6 +637,20 @@ impl ResidentCatalog {
 }
 
 impl CommandAdapter {
+    /// This fresh read avoids starting work behind an unresolved prepared
+    /// marker. Atomic keyed publication exclusion belongs to journal.prepare;
+    /// workspace commits additionally retain the engine owner's fenced lease.
+    fn mutation_admission(&self) -> MutationAdmission {
+        if self.indexing.is_some() {
+            return MutationAdmission::Pending;
+        }
+        match self.index_operations.has_prepared() {
+            Ok(false) => MutationAdmission::Ready,
+            Ok(true) => MutationAdmission::Pending,
+            Err(error) => MutationAdmission::Unavailable(error),
+        }
+    }
+
     pub(in crate::builtin) fn new(
         sql_projection: backend_extension_turso::TursoProjection,
         registry: Option<RegistryGateway>,
@@ -591,15 +671,18 @@ impl CommandAdapter {
         >,
     ) -> Result<Self, BuiltinModelError> {
         let browse_lane = BrowseLane::start().map_err(BuiltinModelError)?;
-        let index_operations = IndexOperationJournal::open(
-            product_state
-                .workspace_path()
-                .map_err(BuiltinModelError)?
-                .join("index-operations-v1.turso"),
-        )
-        .map_err(|error| {
+        let journal_path = product_state
+            .workspace_path()
+            .map_err(BuiltinModelError)?
+            .join("index-operations-v1.turso");
+        let mut index_operations = IndexOperationJournal::open(&journal_path).map_err(|error| {
             BuiltinModelError(format!("open durable index-operation journal: {error}"))
         })?;
+        let index_owner_epoch = new_index_owner_epoch();
+        let journal_readiness =
+            super::journal_readiness::JournalReadiness::start(journal_path, index_owner_epoch)
+                .map_err(BuiltinModelError)?;
+        index_operations.observe_changes(journal_readiness.changed());
         Ok(Self {
             sql_projection,
             registry,
@@ -607,6 +690,7 @@ impl CommandAdapter {
             discovery,
             product_state,
             index_operations,
+            journal_readiness,
             compiler,
             search_snapshots,
             search_lane: SearchLane::default(),
@@ -631,8 +715,9 @@ impl CommandAdapter {
             index_progress: std::collections::VecDeque::new(),
             index_progress_latest: std::collections::VecDeque::new(),
             next_index_ticket: 1,
-            index_owner_epoch: new_index_owner_epoch(),
+            index_owner_epoch,
             waiting: std::collections::VecDeque::new(),
+            queued_writer_blocked: None,
             abandoned_replies: BTreeSet::new(),
         })
     }
@@ -646,6 +731,21 @@ impl CommandAdapter {
         daemon: &mut ProductDaemon,
         body: &[u8],
         transport_ticket: u64,
+    ) -> Result<Executed, BuiltinModelError> {
+        self.execute_or_defer_from(
+            daemon,
+            body,
+            transport_ticket,
+            DeferredCommandOrigin::Incoming,
+        )
+    }
+
+    fn execute_or_defer_from(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        body: &[u8],
+        transport_ticket: u64,
+        origin: DeferredCommandOrigin,
     ) -> Result<Executed, BuiltinModelError> {
         let owner = daemon.engine().daemon().library().cursor();
         let request = backend_engine::decode_command_dto_for_owner(body, owner)
@@ -729,13 +829,61 @@ impl CommandAdapter {
                 IndexOperationJournalError::KeyConflict,
             );
         }
-        if self.indexing.is_some() && !answers_while_indexing(&request.command) {
+        // Exact same-key publication/status recovery is a continuation, not
+        // a new writer competing with its own durable Prepared marker.
+        if let Command::Surface(backend_library::SurfaceCommand::IndexOperationStart {
+            operation_key,
+            package,
+            execution_intent,
+        }) = &request.command
+            && let Some(JournalEntry::Retained(entry)) = self
+                .index_operations
+                .entry(*operation_key)
+                .map_err(|error| {
+                    BuiltinModelError(format!("read durable index-operation identity: {error}"))
+                })?
+            && !matches!(entry.state, StoredOperationState::Accepted)
+        {
+            if entry.package != *package || entry.execution_intent != *execution_intent {
+                return Self::encode_index_operation_start_failure(
+                    daemon,
+                    request.request_id,
+                    IndexOperationJournalError::KeyConflict,
+                );
+            }
+            let observation = self
+                .resolve_index_operation(daemon, *operation_key, None)
+                .map_err(|error| {
+                    BuiltinModelError(format!("recover durable index-operation status: {error}"))
+                })?;
+            return Self::encode_index_operation(daemon, request.request_id, observation, true);
+        }
+        let must_wait = if answers_while_indexing(&request.command) {
+            false
+        } else if matches!(origin, DeferredCommandOrigin::Incoming) && !self.waiting.is_empty() {
+            true
+        } else {
+            match self.mutation_admission() {
+                MutationAdmission::Ready => false,
+                MutationAdmission::Pending => true,
+                MutationAdmission::Unavailable(error) => {
+                    return Err(BuiltinModelError(format!(
+                        "durable mutation admission is unavailable: {error}"
+                    )));
+                }
+            }
+        };
+        if must_wait {
             if self.waiting.len() >= MAX_WAITING_COMMANDS {
                 return Err(BuiltinModelError(
                     "owner mutation queue is full; retry after current work completes".to_owned(),
                 ));
             }
-            self.waiting.push_back((transport_ticket, body.to_vec()));
+            self.journal_readiness.refresh();
+            match origin {
+                DeferredCommandOrigin::Incoming => self.waiting.push_back((transport_ticket, body.to_vec())),
+                DeferredCommandOrigin::Waiting => self.waiting.push_front((transport_ticket, body.to_vec())),
+            }
             return Ok(Executed::Deferred);
         }
         if let Command::Surface(backend_library::SurfaceCommand::IndexStart {
@@ -1094,6 +1242,9 @@ impl CommandAdapter {
         operation_key: backend_library::IndexOperationKey,
         request_id: u64,
     ) -> Result<Executed, BuiltinModelError> {
+        // Explicit recovery/status is also a retry opportunity after a failed
+        // readiness observation. It keeps ordinary durable status semantics.
+        self.journal_readiness.refresh();
         let observation = self
             .resolve_index_operation(daemon, operation_key, None)
             .map_err(|error| {
@@ -1349,6 +1500,46 @@ impl CommandAdapter {
                             entry = refreshed;
                         }
                     }
+                    // Prepared reserves publication for refusal captures as
+                    // well as successful selections. Selecting the exact
+                    // workspace request does not prove a compiler generation
+                    // was published: current terminal capture outcomes do.
+                    if entry.source_capture.as_ref().is_some_and(|capture| {
+                        !capture.profiles().is_empty()
+                            && capture.profiles().iter().all(|profile| {
+                                !matches!(
+                                    profile.state,
+                                    backend_library::IndexOperationSemanticProfileState::Pending { .. }
+                                        | backend_library::IndexOperationSemanticProfileState::Published { .. }
+                                )
+                            })
+                    }) {
+                        let (reason, detail, compiler_failure) = match terminal_outcome {
+                            Some(outcome) => index_operation_failure(Some(outcome)),
+                            None => (
+                                backend_library::IndexOperationFailureReason::WorkerFailed,
+                                backend_library::ProductText::from_static(
+                                    "every captured semantic profile ended without publication before its operation failure receipt was persisted",
+                                ),
+                                None,
+                            ),
+                        };
+                        if self.index_operations.failed_with_compiler_failure(
+                            operation_key,
+                            reason,
+                            detail,
+                            compiler_failure,
+                        ).is_ok() {
+                            return Ok(self.index_operations.observation(operation_key, None)?
+                                .expect("failed operation remains in the journal"));
+                        }
+                        return Ok(Self::unresolved_index_operation(
+                            operation_key,
+                            &entry,
+                            backend_library::IndexOperationUnresolvedReason::ReceiptPersistenceFailed,
+                            "the exact refusal capture is selected but its operation failure could not be persisted",
+                        ));
+                    }
                     let receipt = self
                         .current_index_operation_receipt(
                             daemon,
@@ -1383,12 +1574,21 @@ impl CommandAdapter {
                                 ));
                             }
                         };
-                        // If the receipt file cannot be replaced after a fully
-                        // checked workspace/view proof, keep Prepared on disk;
-                        // a future status read or restart can reconstruct it.
-                        let _ = self
+                        // Selected workspace/view evidence does not make the
+                        // journal terminal. Keep Prepared and report a typed
+                        // retryable observation if its receipt cannot persist.
+                        if self
                             .index_operations
-                            .published(operation_key, receipt.clone());
+                            .published(operation_key, receipt.clone())
+                            .is_err()
+                        {
+                            return Ok(Self::unresolved_index_operation(
+                                operation_key,
+                                &entry,
+                                backend_library::IndexOperationUnresolvedReason::ReceiptPersistenceFailed,
+                                "the exact workspace and view are selected but the owner could not durably record the publication receipt",
+                            ));
+                        }
                         return Ok(observation);
                     }
                     Ok(Self::unresolved_index_operation(
@@ -1547,6 +1747,7 @@ impl CommandAdapter {
     }
 
     pub(in crate::builtin) fn close(&mut self) {
+        self.journal_readiness.close();
         self.search_lane.close();
         self.search_replies.clear();
         self.browse_lane.close();
@@ -1969,7 +2170,7 @@ impl CommandAdapter {
         indexing: &mut IndexJob,
         prepared: PreparedProductSelection,
         legacy_reply: &mut Option<Result<Vec<u8>, BuiltinModelError>>,
-    ) -> backend_library::IndexJobOutcome {
+    ) -> Option<backend_library::IndexJobOutcome> {
         self.set_index_progress_stage(indexing, backend_library::IndexJobStage::Publishing);
         let refusal_outcome = prepared.profile_refusals.first().map(|_| {
             refused_index_outcome(
@@ -1981,7 +2182,7 @@ impl CommandAdapter {
             // All profiles were refused. Commit their independent typed
             // terminal captures without manufacturing a publication receipt.
             // The accepted keyed operation will resolve to ordinary Failed.
-            let result = (|| {
+            let result = (|| -> Result<(), FinishAddError> {
                 if let Some(fence) = prepared.revision_fence.as_ref()
                     && !super::super::ingest::compiler_revision_is_current_with_cancellation(
                         fence,
@@ -1991,9 +2192,9 @@ impl CommandAdapter {
                 {
                     return Err(BuiltinModelError(
                         "captured source changed before refusal outcomes committed".to_owned(),
-                    ));
+                    ).into());
                 }
-                let intent = prepared.intent.ok_or_else(|| {
+                let intent = prepared.intent.clone().ok_or_else(|| {
                     BuiltinModelError("profile refusals lost their capture intent".to_owned())
                 })?;
                 let intent = match indexing.operation_key {
@@ -2009,14 +2210,22 @@ impl CommandAdapter {
                         .map(|fence| fence.canonical_root()),
                     Arc::clone(&indexing.cancelled),
                 )?;
+                prepare_publication_barrier(
+                    &mut self.index_operations,
+                    indexing.operation_key,
+                    Some(committed.request_identity()),
+                    committed.base_workspace_root(),
+                    committed.base_workspace_sequence(),
+                    None,
+                )?;
                 commit_prepared_builtin_intent(daemon, indexing.request_id, committed)?;
-                self.publish_view(daemon, Some(&intent))
+                self.publish_view(daemon, Some(&intent)).map_err(Into::into)
             })();
             return match result {
                 Ok(()) => {
                     indexing.captures.clear();
                     // No available generation was claimed in this branch.
-                    match refusal_outcome.expect("refused outcome was checked") {
+                    Some(match refusal_outcome.expect("refused outcome was checked") {
                         backend_library::IndexJobOutcome::RefusedWithCompilerFailure {
                             failure,
                             ..
@@ -2028,14 +2237,26 @@ impl CommandAdapter {
                             "every language profile was refused; inspect package-profile for the retained outcomes",
                             None,
                         ),
-                    }
+                    })
                 }
-                Err(error) => backend_library::IndexJobOutcome::Failed(bounded_index_detail(error)),
+                Err(_) if indexing.cancelled.load(Ordering::Acquire) => {
+                    Some(backend_library::IndexJobOutcome::Cancelled)
+                }
+                Err(FinishAddError::PublicationBusy) => {
+                    indexing.work = IndexJobWork::Publishing {
+                        prepared,
+                        blocked_sequence: self.journal_readiness.retry_token(),
+                    };
+                    None
+                }
+                Err(FinishAddError::Failed(error)) => Some(backend_library::IndexJobOutcome::Failed(
+                    bounded_index_detail(error),
+                )),
             };
         }
         match self.finish_add(
             daemon,
-            prepared,
+            &prepared,
             indexing.request_id,
             indexing.requested_package,
             indexing.owner_ticket.package().clone(),
@@ -2045,24 +2266,33 @@ impl CommandAdapter {
             Ok((reply, partial)) => {
                 if let Some(partial) = partial {
                     indexing.captures.clear();
-                    return backend_library::IndexJobOutcome::PartiallyPublished(partial);
+                    return Some(backend_library::IndexJobOutcome::PartiallyPublished(partial));
                 }
                 if let Some(refusal) = refusal_outcome {
                     // The final intent already terminalized every capture and
                     // selected only admitted profiles. Do not reject them all
                     // again when exposing the truthful legacy refusal outcome.
                     indexing.captures.clear();
-                    return refusal;
+                    return Some(refusal);
                 }
                 if indexing.legacy_add.is_some() {
                     *legacy_reply = Some(Self::encode(daemon, indexing.request_id, reply, None));
                 }
-                backend_library::IndexJobOutcome::Published
+                Some(backend_library::IndexJobOutcome::Published)
             }
             Err(_) if indexing.cancelled.load(Ordering::Acquire) => {
-                backend_library::IndexJobOutcome::Cancelled
+                Some(backend_library::IndexJobOutcome::Cancelled)
             }
-            Err(error) => backend_library::IndexJobOutcome::Failed(bounded_index_detail(error)),
+            Err(FinishAddError::PublicationBusy) => {
+                indexing.work = IndexJobWork::Publishing {
+                    prepared,
+                    blocked_sequence: self.journal_readiness.retry_token(),
+                };
+                None
+            }
+            Err(FinishAddError::Failed(error)) => Some(backend_library::IndexJobOutcome::Failed(
+                bounded_index_detail(error),
+            )),
         }
     }
 
@@ -2109,15 +2339,30 @@ impl CommandAdapter {
         // index publication; selected-marker reconciliation retries it later.
         let _ = self.semantic_authority.drain_native_history_completions();
         let mut ready = Vec::new();
-        // These indexed probes intentionally hit the journal on every owner
-        // poll: multiprocess WAL lets another process admit or prepare work,
-        // so a process-local hint could otherwise hide committed rows. An
-        // unavailable probe is treated as pending/prepared, never as empty.
-        if self.indexing.is_none()
-            && self.index_operations.has_pending().unwrap_or(true)
-            && let Ok(Some(operation_key)) = self.index_operations.first_pending_key()
+        self.journal_readiness.poll();
+        // Background recovery hints are bound to this owner epoch and change
+        // sequence. A stable Unresolved operation is examined once per cursor,
+        // while reads and health continue without a synchronous quiet SQL probe.
+        // A candidate waiting for the Prepared slot must not prevent exact
+        // recovery of the foreign marker holding that slot. The bounded
+        // snapshot prioritizes Prepared over Accepted; never recover the
+        // resident job itself as an orphan.
+        if (self.indexing.is_none()
+            || self
+                .indexing
+                .as_ref()
+                .is_some_and(|job| matches!(job.work, IndexJobWork::Publishing { .. })))
+            && let Some(operation_key) = self
+                .journal_readiness
+                .recovery(daemon.engine().daemon().library().cursor())
+            && self
+                .indexing
+                .as_ref()
+                .is_none_or(|job| job.operation_key != Some(operation_key))
         {
-            let _ = self.resolve_index_operation(daemon, operation_key, None);
+            let result = self.resolve_index_operation(daemon, operation_key, None);
+            self.journal_readiness
+                .recovery_finished(operation_key, &result);
         }
         if let Some(mut indexing) = self.indexing.take() {
             let mut terminal;
@@ -2227,12 +2472,12 @@ impl CommandAdapter {
                             Some(&mut self.index_operations),
                         ) {
                             Ok(PreparedIndex::Ready(prepared)) => {
-                                terminal = Some(self.finish_prepared_index_selection(
+                                terminal = self.finish_prepared_index_selection(
                                     daemon,
                                     &mut indexing,
                                     prepared,
                                     &mut legacy_reply,
-                                ));
+                                );
                             }
                             Ok(PreparedIndex::Compile(job)) if job.has_pending_profiles() => {
                                 indexing.captures = job.captures.clone();
@@ -2256,12 +2501,12 @@ impl CommandAdapter {
                             Ok(PreparedIndex::Compile(job)) => {
                                 match finish_deferred_index(daemon, job) {
                                     Ok(prepared) => {
-                                        terminal = Some(self.finish_prepared_index_selection(
+                                        terminal = self.finish_prepared_index_selection(
                                             daemon,
                                             &mut indexing,
                                             prepared,
                                             &mut legacy_reply,
-                                        ));
+                                        );
                                     }
                                     Err(refusal) => {
                                         terminal = Some(backend_library::IndexJobOutcome::Refused(
@@ -2359,13 +2604,12 @@ impl CommandAdapter {
                                     } else {
                                         match finish_deferred_index(daemon, job) {
                                             Ok(prepared) => {
-                                                terminal =
-                                                    Some(self.finish_prepared_index_selection(
-                                                        daemon,
-                                                        &mut indexing,
-                                                        prepared,
-                                                        &mut legacy_reply,
-                                                    ));
+                                                terminal = self.finish_prepared_index_selection(
+                                                    daemon,
+                                                    &mut indexing,
+                                                    prepared,
+                                                    &mut legacy_reply,
+                                                );
                                             }
                                             Err(refusal) => {
                                                 terminal = Some(
@@ -2399,12 +2643,12 @@ impl CommandAdapter {
                                             Ok(()) => match finish_deferred_index(daemon, job) {
                                                 Ok(prepared) => {
                                                     terminal =
-                                                        Some(self.finish_prepared_index_selection(
+                                                        self.finish_prepared_index_selection(
                                                             daemon,
                                                             &mut indexing,
                                                             prepared,
                                                             &mut legacy_reply,
-                                                        ))
+                                                        );
                                                 }
                                                 Err(error) => {
                                                     terminal = Some(
@@ -2443,6 +2687,32 @@ impl CommandAdapter {
                         ),
                     ));
                 }
+                IndexJobWork::Publishing {
+                    prepared,
+                    blocked_sequence,
+                } => {
+                    if indexing.cancelled.load(Ordering::Acquire) {
+                        terminal = Some(backend_library::IndexJobOutcome::Cancelled);
+                    } else if blocked_sequence == self.journal_readiness.retry_token() {
+                        indexing.work = IndexJobWork::Publishing {
+                            prepared,
+                            blocked_sequence,
+                        };
+                        self.indexing = Some(indexing);
+                        return self.finish_deferred_poll(daemon, ready);
+                    } else {
+                        terminal = self.finish_prepared_index_selection(
+                            daemon,
+                            &mut indexing,
+                            prepared,
+                            &mut legacy_reply,
+                        );
+                    }
+                }
+            }
+            if terminal.is_none() {
+                self.indexing = Some(indexing);
+                return self.finish_deferred_poll(daemon, ready);
             }
             if let Some(mut outcome) = terminal {
                 if !matches!(outcome, backend_library::IndexJobOutcome::Published | backend_library::IndexJobOutcome::PartiallyPublished(_))
@@ -2515,12 +2785,25 @@ impl CommandAdapter {
                 ready.extend(self.complete_index_job(daemon, indexing, outcome, legacy_reply));
             }
         }
-        while self.indexing.is_none()
-            && !self.index_operations.has_prepared().unwrap_or(true)
-            && let Some((ticket, body)) = self.waiting.pop_front()
-        {
+        while self.indexing.is_none() && !self.waiting.is_empty() {
+            let retry = self.journal_readiness.retry_token();
+            if self.queued_writer_blocked.as_ref() == Some(&retry) {
+                break;
+            }
+            // Notifications may arrive after a foreign commit. Only this
+            // fresh durable read authorizes queued writer admission; cached
+            // emptiness is never authority. Failure remains conservatively busy.
+            if self.index_operations.has_prepared().unwrap_or(true) {
+                self.queued_writer_blocked = Some(retry);
+                break;
+            }
+            self.queued_writer_blocked = None;
+            let Some((ticket, body)) = self.waiting.pop_front() else {
+                break;
+            };
             let abandoned = self.abandoned_replies.remove(&ticket);
-            match self.execute_or_defer(daemon, &body, ticket) {
+            match self.execute_or_defer_from(daemon, &body, ticket, DeferredCommandOrigin::Waiting)
+            {
                 Ok(Executed::Reply(reply)) if !abandoned => ready.push((ticket, Ok(reply))),
                 Ok(Executed::Deferred) if abandoned => self.abandon_active_reply(ticket),
                 Ok(Executed::Reply(_)) | Ok(Executed::Deferred) => {}
@@ -2850,7 +3133,7 @@ impl CommandAdapter {
     fn finish_add(
         &mut self,
         daemon: &mut ProductDaemon,
-        prepared: PreparedProductSelection,
+        prepared: &PreparedProductSelection,
         request_id: u64,
         requested_package: backend_engine::PackageKey,
         requested_reference: backend_library::PackageReference,
@@ -2861,7 +3144,7 @@ impl CommandAdapter {
             AdmittedReply,
             Option<backend_library::IndexJobPartialPublication>,
         ),
-        BuiltinModelError,
+        FinishAddError,
     > {
         let PreparedProductSelection {
             intent: prepared_intent,
@@ -2877,7 +3160,7 @@ impl CommandAdapter {
                 .0
                 .package();
             if selected.iter().any(|(key, _)| key.package() != producer) {
-                return Err(BuiltinModelError("partial candidates span foreign producer namespaces".to_owned()));
+                return Err(BuiltinModelError("partial candidates span foreign producer namespaces".to_owned()).into());
             }
             Some(
                 super::index::source_capture_summary_for_root(
@@ -2904,7 +3187,7 @@ impl CommandAdapter {
                 )
             })
             .collect::<std::collections::BTreeMap<_, _>>();
-        let intent = match (prepared_intent, operation_key) {
+        let intent = match (prepared_intent.clone(), operation_key) {
             (Some(intent), Some(operation_key)) => Some(intent.with_operation_key(operation_key)?),
             (intent, _) => intent,
         };
@@ -2940,8 +3223,9 @@ impl CommandAdapter {
             .unwrap_or_default();
         let index_operations = &mut self.index_operations;
         let semantic_authority = &mut self.semantic_authority;
+        let mut prepared_busy = false;
         let committed = semantic_authority.commit_product_selection_changes(
-            selected,
+            selected.clone(),
             removals,
             || {
                     if let Some(revision_fence) = revision_fence.as_ref()
@@ -2953,21 +3237,20 @@ impl CommandAdapter {
                                     .to_owned(),
                             ));
                     }
-                    if let Some(operation_key) = operation_key {
-                        index_operations
-                            .prepare_with_partial(
-                                operation_key,
-                                request_identity,
-                                base_workspace_root,
-                                base_workspace_sequence,
-                                partial_plan.clone(),
-                            )
-                            .map_err(|error| {
-                                BuiltinModelError(format!(
-                                    "prepare durable index-operation receipt: {error}"
-                                ))
-                            })?;
-                    }
+                    prepare_publication_barrier(
+                        index_operations,
+                        operation_key,
+                        request_identity,
+                        base_workspace_root,
+                        base_workspace_sequence,
+                        partial_plan.clone(),
+                    ).map_err(|error| match error {
+                        FinishAddError::PublicationBusy => {
+                            prepared_busy = true;
+                            BuiltinModelError("durable publication is temporarily busy".to_owned())
+                        }
+                        FinishAddError::Failed(error) => error,
+                    })?;
                     prepared_intent
                         .map(|prepared| {
                             let intent = prepared.intent.clone();
@@ -2982,7 +3265,12 @@ impl CommandAdapter {
                         })
                         .transpose()
                 },
-        )?;
+        );
+        let committed = match committed {
+            Err(_) if prepared_busy => return Err(FinishAddError::PublicationBusy),
+            Err(error) => return Err(FinishAddError::Failed(error)),
+            Ok(committed) => committed,
+        };
         self.publish_view(daemon, committed.as_ref())?;
         let partial = partial_basis
             .map(|basis| {
@@ -3056,7 +3344,7 @@ impl CommandAdapter {
                     package: requested_reference,
                     receipt,
                     source_capture: selected_capture,
-                    refused_profiles: profile_refusals,
+                    refused_profiles: profile_refusals.clone(),
                 };
                 partial
                     .admit()
@@ -3110,6 +3398,22 @@ impl CommandAdapter {
         let owner = daemon.engine().daemon().library().cursor();
         let request = backend_engine::decode_command_dto_for_owner(body, owner)
             .map_err(|error| BuiltinModelError(format!("decode command DTO: {error}")))?;
+        if !answers_while_indexing(&request.command) {
+            match self.mutation_admission() {
+                MutationAdmission::Ready => {}
+                MutationAdmission::Pending => {
+                    return Err(BuiltinModelError(
+                        "durable mutation is pending; use the owner deferred command lane"
+                            .to_owned(),
+                    ));
+                }
+                MutationAdmission::Unavailable(error) => {
+                    return Err(BuiltinModelError(format!(
+                        "durable mutation admission is unavailable: {error}"
+                    )));
+                }
+            }
+        }
         let request_id = request.request_id;
         let certificate = request.certificate().cloned();
         let is_search = matches!(&request.command, Command::Search(_));
@@ -3568,8 +3872,12 @@ impl CommandAdapter {
                 }),
         };
         let profile_refusals = prepared.profile_refusals.clone();
-        let (reply, partial) = self.finish_add(daemon, prepared, request_id, requested_package,
-            requested_reference, None, Arc::new(AtomicBool::new(false)))?;
+        let (reply, partial) = self.finish_add(daemon, &prepared, request_id, requested_package,
+            requested_reference, None, Arc::new(AtomicBool::new(false)))
+            .map_err(|error| match error {
+                FinishAddError::PublicationBusy => BuiltinModelError("durable publication is pending; retry through the owner deferred command lane".to_owned()),
+                FinishAddError::Failed(error) => error,
+            })?;
         if let Some(partial) = partial {
             return Ok((CommandReply::Failed(backend_library::CommandFailure::PartiallyPublished(partial)), None));
         }
@@ -4953,10 +5261,11 @@ mod tests {
     use super::{
         ADD_TARGET_REQUIRED, AddTarget, CommandAdapter, Executed, GraphProjectionStamp, IndexJob,
         IndexJobWork, IndexOperationJournalError, JournalEntry, MAX_WAITING_COMMANDS,
-        ProductDaemon, ProductSemanticPublicationKey, ResidentCatalog, ResidentDependencies,
-        StoredOperationState, admitted_project_source_root, capture_terminalization_failed,
-        classify_add_target, index_operation_failure, index_operation_published_observation,
-        legacy_add_compiler_failure, pending_capture_unresolved,
+        PreparedProductSelection, ProductDaemon, ProductSemanticPublicationKey, ResidentCatalog,
+        ResidentDependencies, StoredOperation, StoredOperationState, admitted_project_source_root,
+        capture_terminalization_failed, classify_add_target, index_operation_failure,
+        index_operation_published_observation, legacy_add_compiler_failure,
+        pending_capture_unresolved,
     };
     use crate::builtin::{
         BuiltinIntent, BuiltinModel, BuiltinProfile, BuiltinSemanticRelation,
@@ -6408,6 +6717,676 @@ mod tests {
     }
 
     #[test]
+    fn quiet_owner_polls_do_not_query_the_operation_journal() {
+        let mut fixture = AdapterFixture::new();
+        let (adapter, daemon) = fixture.parts();
+        assert!(adapter.indexing.is_none());
+        assert!(adapter.waiting.is_empty());
+        let before = adapter.index_operations.read_query_count();
+        for _ in 0..1000 {
+            assert!(adapter.poll_deferred(daemon).is_empty());
+        }
+        assert_eq!(
+            adapter.index_operations.read_query_count(),
+            before,
+            "quiet polls must not execute synchronous journal SQL, including empty writer queues"
+        );
+    }
+
+    #[test]
+    fn direct_mutations_queue_behind_foreign_prepared_and_reads_continue() {
+        let mut fixture = AdapterFixture::new();
+        let package = fixture.package;
+        let label = fixture.label.clone();
+        let (adapter, daemon) = fixture.parts();
+        let path = adapter
+            .product_state
+            .workspace_path()
+            .expect("workspace")
+            .join("index-operations-v1.turso");
+        let mut foreign = super::IndexOperationJournal::open(path).expect("foreign journal");
+        let prepared = backend_library::IndexOperationKey::from_bytes([91; 32]).expect("key");
+        let new_key = backend_library::IndexOperationKey::from_bytes([92; 32]).expect("new key");
+        let reference = backend_library::PackageReference::parse(label.clone()).expect("package");
+        foreign
+            .accept(
+                prepared,
+                reference.clone(),
+                CompileExecutionIntent::Interactive,
+            )
+            .expect("accept");
+        foreign
+            .prepare(prepared, Some([93; 32]), [94; 32], 1)
+            .expect("prepared");
+        assert!(adapter.indexing.is_none());
+        let before = owner_cursor(daemon);
+        let commands = [
+            serde_json::to_vec(&backend_engine::CommandDto::new(
+                1,
+                Command::Surface(backend_library::SurfaceCommand::IndexOperationStart {
+                    operation_key: new_key,
+                    package: reference.clone(),
+                    execution_intent: CompileExecutionIntent::Interactive,
+                }),
+            ))
+            .expect("keyed request"),
+            serde_json::to_vec(&backend_engine::CommandDto::new(
+                2,
+                Command::Surface(backend_library::SurfaceCommand::IndexStart {
+                    package: reference,
+                    execution_intent: CompileExecutionIntent::Interactive,
+                }),
+            ))
+            .expect("start request"),
+            add_body(3, package, &label),
+            remove_body(4, package, &label),
+        ];
+        for (offset, body) in commands.iter().enumerate() {
+            assert!(matches!(
+                adapter.execute_or_defer(daemon, body, 800 + offset as u64),
+                Ok(Executed::Deferred)
+            ));
+            assert!(
+                adapter.indexing.is_none(),
+                "no scan/compiler starts behind foreign Prepared"
+            );
+        }
+        assert_eq!(adapter.waiting.len(), 4);
+        assert!(
+            foreign.entry(new_key).expect("new-key probe").is_none(),
+            "new keyed request was not accepted prematurely"
+        );
+        assert_eq!(owner_cursor(daemon), before);
+        assert!(project_is_admitted(daemon, package));
+        let health = serde_json::to_vec(&backend_engine::CommandDto::new(5, Command::Health))
+            .expect("health");
+        assert!(matches!(
+            adapter.execute_or_defer(daemon, &health, 900),
+            Ok(Executed::Reply(_))
+        ));
+        assert!(
+            adapter
+                .execute(daemon, &remove_body(6, package, &label))
+                .is_err(),
+            "synchronous mutation entry point also checks durable Prepared"
+        );
+    }
+
+    #[test]
+    fn prepared_busy_retains_candidate_and_accepted_receipt_without_hot_retry() {
+        let mut fixture = AdapterFixture::new();
+        let (adapter, daemon) = fixture.parts();
+        install_transition_job(adapter);
+        let own_key = backend_library::IndexOperationKey::from_bytes([95; 32]).expect("own key");
+        let other_key =
+            backend_library::IndexOperationKey::from_bytes([96; 32]).expect("other key");
+        let package = adapter
+            .indexing
+            .as_ref()
+            .expect("job")
+            .owner_ticket
+            .package()
+            .clone();
+        adapter
+            .index_operations
+            .accept(
+                own_key,
+                package.clone(),
+                CompileExecutionIntent::Interactive,
+            )
+            .expect("own acceptance");
+        let path = adapter
+            .product_state
+            .workspace_path()
+            .expect("workspace")
+            .join("index-operations-v1.turso");
+        let mut foreign = super::IndexOperationJournal::open(path).expect("foreign journal");
+        foreign
+            .accept(other_key, package, CompileExecutionIntent::Interactive)
+            .expect("foreign accept");
+        foreign
+            .prepare(other_key, Some([97; 32]), [98; 32], 1)
+            .expect("foreign prepared");
+        let mut indexing = adapter.indexing.take().expect("job");
+        indexing.operation_key = Some(own_key);
+        let candidate = PreparedProductSelection {
+            intent: None,
+            selected: Vec::new(),
+            revision_fence: None,
+            profile_refusals: Box::new([]),
+            partial_plan: None,
+        };
+        let mut legacy = None;
+        assert!(
+            adapter
+                .finish_prepared_index_selection(daemon, &mut indexing, candidate, &mut legacy)
+                .is_none()
+        );
+        assert!(matches!(indexing.work, IndexJobWork::Publishing { .. }));
+        assert!(matches!(
+            adapter
+                .index_operations
+                .entry(own_key)
+                .expect("accepted row"),
+            Some(JournalEntry::Retained(StoredOperation {
+                state: StoredOperationState::Accepted,
+                ..
+            }))
+        ));
+        adapter.indexing = Some(indexing);
+        adapter.journal_readiness.close();
+        // A saturated event counter must still permit an explicit owner
+        // retry. Quiet polls below remain unable to retry the same candidate.
+        adapter.journal_readiness.exhaust_notifications();
+        if let Some(IndexJob {
+            work: IndexJobWork::Publishing {
+                blocked_sequence, ..
+            },
+            ..
+        }) = adapter.indexing.as_mut()
+        {
+            *blocked_sequence = adapter.journal_readiness.retry_token();
+        }
+        let reads = adapter.index_operations.read_query_count();
+        for _ in 0..1000 {
+            assert!(adapter.poll_deferred(daemon).is_empty());
+        }
+        assert_eq!(
+            adapter.index_operations.read_query_count(),
+            reads,
+            "busy publication does not hot retry SQL"
+        );
+        foreign
+            .failed(
+                other_key,
+                backend_library::IndexOperationFailureReason::WorkerFailed,
+                backend_library::ProductText::from_static("foreign retired"),
+            )
+            .expect("release prepared slot");
+        adapter.journal_readiness.refresh();
+        adapter.poll_deferred(daemon);
+        assert!(
+            adapter.indexing.is_none(),
+            "same candidate resumes after explicit change"
+        );
+        assert!(matches!(
+            adapter.index_operations.entry(own_key).expect("own result"),
+            Some(JournalEntry::Retained(StoredOperation {
+                state: StoredOperationState::Published { .. },
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn database_writer_contention_retains_candidate_until_explicit_retry() {
+        let mut fixture = AdapterFixture::new();
+        let (adapter, daemon) = fixture.parts();
+        install_transition_job(adapter);
+        let operation = backend_library::IndexOperationKey::from_bytes([111; 32]).expect("key");
+        let package = adapter
+            .indexing
+            .as_ref()
+            .expect("job")
+            .owner_ticket
+            .package()
+            .clone();
+        adapter
+            .index_operations
+            .accept(operation, package, CompileExecutionIntent::Interactive)
+            .expect("accept");
+        let path = adapter
+            .product_state
+            .workspace_path()
+            .expect("workspace")
+            .join("index-operations-v1.turso");
+        let foreign = super::IndexOperationJournal::open(path).expect("foreign journal");
+        adapter.journal_readiness.close();
+        let mut writer = foreign.connection_for_test();
+        let (locked, lock_ready) = std::sync::mpsc::sync_channel(1);
+        let (release, released) = std::sync::mpsc::sync_channel(1);
+        let holder = std::thread::spawn(move || {
+            futures_executor::block_on(async {
+                let transaction = writer
+                    .transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate)
+                    .await
+                    .expect("hold independent writer");
+                locked.send(()).expect("writer ready");
+                let _ = released.recv_timeout(std::time::Duration::from_secs(10));
+                transaction
+                    .rollback()
+                    .await
+                    .expect("release independent writer");
+            })
+        });
+        lock_ready
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("independent transaction acquired");
+        let mut indexing = adapter.indexing.take().expect("job");
+        indexing.operation_key = Some(operation);
+        let started = std::time::Instant::now();
+        let outcome = adapter.finish_prepared_index_selection(
+            daemon,
+            &mut indexing,
+            PreparedProductSelection {
+                intent: None,
+                selected: Vec::new(),
+                revision_fence: None,
+                profile_refusals: Box::new([]),
+                partial_plan: None,
+            },
+            &mut None,
+        );
+        // Keep the competing Immediate transaction until the bounded driver
+        // timeout has returned, rather than racing a short sleep against it.
+        release.send(()).expect("release writer");
+        holder.join().expect("writer retired");
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(200),
+            "exercise the bounded database busy timeout"
+        );
+        assert!(
+            outcome.is_none(),
+            "retryable SQL contention must retain the candidate"
+        );
+        assert!(matches!(indexing.work, IndexJobWork::Publishing { .. }));
+        assert!(matches!(
+            adapter
+                .index_operations
+                .entry(operation)
+                .expect("accepted row"),
+            Some(JournalEntry::Retained(StoredOperation {
+                state: StoredOperationState::Accepted,
+                ..
+            }))
+        ));
+        adapter.indexing = Some(indexing);
+        adapter.journal_readiness.close();
+        let reads = adapter.index_operations.read_query_count();
+        for _ in 0..1000 {
+            assert!(adapter.poll_deferred(daemon).is_empty());
+        }
+        assert_eq!(
+            adapter.index_operations.read_query_count(),
+            reads,
+            "database busy does not hot retry"
+        );
+        adapter.journal_readiness.refresh();
+        adapter.poll_deferred(daemon);
+        assert!(
+            adapter.indexing.is_none(),
+            "same retained candidate resumes after release and explicit retry"
+        );
+        assert!(matches!(
+            adapter
+                .index_operations
+                .entry(operation)
+                .expect("published row"),
+            Some(JournalEntry::Retained(StoredOperation {
+                state: StoredOperationState::Published { .. },
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn orphan_recovery_sql_busy_rearms_once_on_public_retry_without_notifications() {
+        let mut fixture = AdapterFixture::new();
+        let package = fixture.package;
+        let label = fixture.label.clone();
+        let (adapter, daemon) = fixture.parts();
+        let operation = backend_library::IndexOperationKey::from_bytes([112; 32]).expect("key");
+        let path = adapter
+            .product_state
+            .workspace_path()
+            .expect("workspace")
+            .join("index-operations-v1.turso");
+        let mut foreign = super::IndexOperationJournal::open(path).expect("foreign journal");
+        foreign
+            .accept(
+                operation,
+                backend_library::PackageReference::parse(label.clone()).expect("package"),
+                CompileExecutionIntent::Interactive,
+            )
+            .expect("accept orphan");
+        let head = daemon.engine().daemon().owner().head();
+        foreign
+            .prepare(operation, None, *head.root().as_bytes(), head.sequence())
+            .expect("exact no-op marker");
+        assert!(matches!(
+            adapter.execute_or_defer(daemon, &remove_body(1, package, &label), 704),
+            Ok(Executed::Deferred)
+        ));
+        // Lose native notifications while retaining apparently healthy
+        // coverage. The reader still handles finite explicit refreshes.
+        adapter.journal_readiness.lose_notifications();
+        adapter.journal_readiness.refresh();
+        adapter.journal_readiness.poll();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !adapter.journal_readiness.prepared_hint() && std::time::Instant::now() < deadline {
+            adapter.journal_readiness.poll();
+            std::thread::yield_now();
+        }
+        assert!(adapter.journal_readiness.prepared_hint());
+        let mut writer = foreign.connection_for_test();
+        let (locked, lock_ready) = std::sync::mpsc::sync_channel(1);
+        let (release, released) = std::sync::mpsc::sync_channel(1);
+        let holder = std::thread::spawn(move || {
+            futures_executor::block_on(async {
+                let transaction = writer
+                    .transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate)
+                    .await
+                    .expect("hold independent writer");
+                locked.send(()).expect("writer ready");
+                let _ = released.recv_timeout(std::time::Duration::from_secs(10));
+                transaction.rollback().await.expect("release writer");
+            })
+        });
+        lock_ready
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("writer acquired");
+        let started = std::time::Instant::now();
+        assert!(adapter.poll_deferred(daemon).is_empty());
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(200),
+            "the actual orphan receipt persistence hit bounded SQL busy"
+        );
+        assert!(matches!(
+            adapter
+                .resolve_index_operation(daemon, operation, None)
+                .expect("selected workspace remains observable"),
+            backend_library::IndexOperationObservation::Known(backend_library::IndexOperationStatus {
+                state: backend_library::IndexOperationState::Unresolved {
+                    reason: backend_library::IndexOperationUnresolvedReason::ReceiptPersistenceFailed,
+                    ..
+                },
+                ..
+            })
+        ));
+        release.send(()).expect("release independent writer");
+        holder.join().expect("writer retired");
+        assert!(matches!(
+            foreign.entry(operation).expect("retained marker"),
+            Some(JournalEntry::Retained(StoredOperation {
+                state: StoredOperationState::Prepared { .. },
+                ..
+            }))
+        ));
+        let reads = adapter.index_operations.read_query_count();
+        for _ in 0..1000 {
+            assert!(adapter.poll_deferred(daemon).is_empty());
+        }
+        assert_eq!(
+            adapter.index_operations.read_query_count(),
+            reads,
+            "failed recovery does not become periodic SQL"
+        );
+        // The unkeyed client does not know the orphan's durable key. Its
+        // actual public retry must wake the failed recovery and the FIFO.
+        assert!(matches!(
+            adapter.execute_or_defer(daemon, &remove_body(2, package, &label), 705),
+            Ok(Executed::Deferred)
+        ));
+        let mut ready = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while ready.len() < 2 && std::time::Instant::now() < deadline {
+            ready.extend(adapter.poll_deferred(daemon));
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            ready.iter().map(|(ticket, _)| *ticket).collect::<Vec<_>>(),
+            vec![704, 705]
+        );
+        assert!(ready[0].1.is_ok());
+        assert!(!project_is_admitted(daemon, package));
+        assert!(matches!(
+            foreign.entry(operation).expect("recovered receipt"),
+            Some(JournalEntry::Retained(StoredOperation {
+                state: StoredOperationState::Published { .. },
+                ..
+            }))
+        ));
+        adapter.journal_readiness.close();
+        let reads = adapter.index_operations.read_query_count();
+        for _ in 0..1000 {
+            assert!(adapter.poll_deferred(daemon).is_empty());
+        }
+        assert_eq!(
+            adapter.index_operations.read_query_count(),
+            reads,
+            "settled recovery stays quiet"
+        );
+    }
+
+    #[test]
+    fn retained_candidate_allows_foreign_prepared_recovery() {
+        let mut fixture = AdapterFixture::new();
+        let (adapter, daemon) = fixture.parts();
+        install_transition_job(adapter);
+        let own_key = backend_library::IndexOperationKey::from_bytes([101; 32]).expect("own key");
+        let foreign_key =
+            backend_library::IndexOperationKey::from_bytes([102; 32]).expect("foreign key");
+        let package = adapter
+            .indexing
+            .as_ref()
+            .expect("job")
+            .owner_ticket
+            .package()
+            .clone();
+        // The resident Accepted row is deliberately older than the foreign
+        // Prepared row. Recovery must prioritize the marker blocking it.
+        adapter
+            .index_operations
+            .accept(
+                own_key,
+                package.clone(),
+                CompileExecutionIntent::Interactive,
+            )
+            .expect("own acceptance");
+        let path = adapter
+            .product_state
+            .workspace_path()
+            .expect("workspace")
+            .join("index-operations-v1.turso");
+        let mut foreign = super::IndexOperationJournal::open(path).expect("foreign journal");
+        foreign
+            .accept(foreign_key, package, CompileExecutionIntent::Interactive)
+            .expect("foreign acceptance");
+        let head = daemon.engine().daemon().owner().head();
+        foreign
+            .prepare(foreign_key, None, *head.root().as_bytes(), head.sequence())
+            .expect("foreign exact no-op marker");
+        assert_eq!(
+            foreign
+                .pending_snapshot()
+                .expect("prioritized snapshot")
+                .first,
+            Some(foreign_key)
+        );
+        let mut indexing = adapter.indexing.take().expect("job");
+        indexing.operation_key = Some(own_key);
+        assert!(
+            adapter
+                .finish_prepared_index_selection(
+                    daemon,
+                    &mut indexing,
+                    PreparedProductSelection {
+                        intent: None,
+                        selected: Vec::new(),
+                        revision_fence: None,
+                        profile_refusals: Box::new([]),
+                        partial_plan: None
+                    },
+                    &mut None
+                )
+                .is_none()
+        );
+        adapter.indexing = Some(indexing);
+        adapter.journal_readiness.refresh();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while adapter.indexing.is_some() && std::time::Instant::now() < deadline {
+            adapter.poll_deferred(daemon);
+            std::thread::yield_now();
+        }
+        assert!(
+            adapter.indexing.is_none(),
+            "foreign recovery must unblock the retained candidate"
+        );
+        for operation in [foreign_key, own_key] {
+            assert!(matches!(
+                adapter
+                    .index_operations
+                    .entry(operation)
+                    .expect("terminal row"),
+                Some(JournalEntry::Retained(StoredOperation {
+                    state: StoredOperationState::Published { .. },
+                    ..
+                }))
+            ));
+        }
+    }
+
+    #[test]
+    fn queued_writer_does_not_treat_unknown_hint_as_durable_absence() {
+        let mut fixture = AdapterFixture::new();
+        let package = fixture.package;
+        let label = fixture.label.clone();
+        let (adapter, daemon) = fixture.parts();
+        install_transition_job(adapter);
+        assert!(matches!(
+            adapter.execute_or_defer(daemon, &remove_body(1, package, &label), 701),
+            Ok(Executed::Deferred)
+        ));
+        adapter.indexing.take();
+        adapter.journal_readiness.close();
+        let path = adapter
+            .product_state
+            .workspace_path()
+            .expect("workspace")
+            .join("index-operations-v1.turso");
+        let mut foreign = super::IndexOperationJournal::open(path).expect("independent journal");
+        let operation = backend_library::IndexOperationKey::from_bytes([88; 32]).expect("key");
+        foreign
+            .accept(
+                operation,
+                backend_library::PackageReference::parse(label.clone()).expect("package"),
+                CompileExecutionIntent::Interactive,
+            )
+            .expect("durable accept");
+        foreign
+            .prepare(operation, Some([89; 32]), [90; 32], 1)
+            .expect("durable prepared");
+        let before = owner_cursor(daemon);
+        assert!(adapter.poll_deferred(daemon).is_empty());
+        assert_eq!(
+            adapter.waiting.len(),
+            1,
+            "fresh durable prepared state blocks the writer"
+        );
+        assert_eq!(owner_cursor(daemon), before);
+        assert!(project_is_admitted(daemon, package));
+        let reads = adapter.index_operations.read_query_count();
+        for _ in 0..1000 {
+            assert!(adapter.poll_deferred(daemon).is_empty());
+        }
+        assert_eq!(
+            adapter.index_operations.read_query_count(),
+            reads,
+            "a retained writer with unknown hints must not repeatedly probe Prepared"
+        );
+        foreign
+            .failed(
+                operation,
+                backend_library::IndexOperationFailureReason::WorkerFailed,
+                backend_library::ProductText::from_static("foreign retired"),
+            )
+            .expect("release durable slot");
+        assert!(
+            matches!(
+                adapter.execute_or_defer(daemon, &remove_body(2, package, &label), 703),
+                Ok(Executed::Deferred)
+            ),
+            "an incoming retry wakes the retained FIFO rather than bypassing it"
+        );
+        let ready = adapter.poll_deferred(daemon);
+        assert_eq!(
+            ready.iter().map(|(ticket, _)| *ticket).collect::<Vec<_>>(),
+            vec![701, 703],
+            "both replies retain incoming order"
+        );
+        assert!(ready[0].1.is_ok());
+        assert!(adapter.waiting.is_empty());
+        assert!(!project_is_admitted(daemon, package));
+    }
+
+    #[test]
+    fn queued_writer_explicit_retry_ignores_stale_prepared_hint_after_reader_loss() {
+        let mut fixture = AdapterFixture::new();
+        let package = fixture.package;
+        let label = fixture.label.clone();
+        let (adapter, daemon) = fixture.parts();
+        install_transition_job(adapter);
+        assert!(matches!(
+            adapter.execute_or_defer(daemon, &remove_body(1, package, &label), 702),
+            Ok(Executed::Deferred)
+        ));
+        adapter.indexing.take();
+        let path = adapter
+            .product_state
+            .workspace_path()
+            .expect("workspace")
+            .join("index-operations-v1.turso");
+        let mut foreign = super::IndexOperationJournal::open(path).expect("foreign journal");
+        let operation = backend_library::IndexOperationKey::from_bytes([108; 32]).expect("key");
+        foreign
+            .accept(
+                operation,
+                backend_library::PackageReference::parse(label).expect("package"),
+                CompileExecutionIntent::Interactive,
+            )
+            .expect("accept");
+        foreign
+            .prepare(operation, Some([109; 32]), [110; 32], 1)
+            .expect("prepare");
+        adapter.journal_readiness.exhaust_notifications();
+        adapter.journal_readiness.refresh();
+        adapter.journal_readiness.poll();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !adapter.journal_readiness.prepared_hint() && std::time::Instant::now() < deadline {
+            adapter.journal_readiness.poll();
+            std::thread::yield_now();
+        }
+        assert!(
+            adapter.journal_readiness.prepared_hint(),
+            "retain a positive degraded receipt"
+        );
+        adapter.journal_readiness.disconnect_reader();
+        assert!(adapter.poll_deferred(daemon).is_empty());
+        let reads = adapter.index_operations.read_query_count();
+        for _ in 0..1000 {
+            assert!(adapter.poll_deferred(daemon).is_empty());
+        }
+        assert_eq!(adapter.index_operations.read_query_count(), reads);
+        foreign
+            .failed(
+                operation,
+                backend_library::IndexOperationFailureReason::WorkerFailed,
+                backend_library::ProductText::from_static("foreign retired"),
+            )
+            .expect("release slot without a notification");
+        adapter.journal_readiness.refresh();
+        let ready = adapter.poll_deferred(daemon);
+        assert_eq!(
+            ready.len(),
+            1,
+            "explicit retry crosses the stale positive hint"
+        );
+        assert!(ready[0].1.is_ok());
+        assert!(adapter.waiting.is_empty());
+        assert!(!project_is_admitted(daemon, package));
+    }
+
+    #[test]
     fn abandoned_queued_remove_runs_once_through_the_command_adapter() {
         let mut fixture = AdapterFixture::new();
         let package = fixture.package;
@@ -6722,6 +7701,272 @@ mod tests {
         assert!(project_is_admitted(fixture.parts().1, package));
     }
 
+    #[test]
+    fn all_profiles_refused_waits_for_foreign_prepared_then_fails_keyed() {
+        all_profiles_refused_completion_control(false, false);
+    }
+
+    #[test]
+    fn selected_refusal_sql_busy_stays_prepared_until_explicit_retry() {
+        all_profiles_refused_completion_control(true, false);
+    }
+
+    #[test]
+    fn selected_refusal_cold_recovery_does_not_publish_a_failed_capture() {
+        all_profiles_refused_completion_control(false, true);
+    }
+
+    fn all_profiles_refused_completion_control(journal_busy: bool, restart_before_receipt: bool) {
+        let mut fixture = AdapterFixture::new();
+        let (_, label) = fixture.add_target();
+        fs::write(
+            Path::new(&label).join("pyproject.toml"),
+            "[project]\nname=\"blocked_refusal\"\nversion=\"1.0.0\"\n",
+        )
+        .expect("Python manifest");
+        fs::write(
+            Path::new(&label).join("source.py"),
+            "def blocked_refusal_name():\n    return 7\n",
+        )
+        .expect("captured source");
+        let operation = backend_library::IndexOperationKey::from_bytes([113; 32]).expect("key");
+        let other = backend_library::IndexOperationKey::from_bytes([114; 32]).expect("foreign key");
+        let (adapter, daemon) = fixture.parts();
+        assert!(matches!(
+            adapter.start_index_operation(
+                daemon,
+                operation,
+                backend_library::PackageReference::parse(label.clone()).expect("package"),
+                CompileExecutionIntent::Interactive,
+                706,
+            ),
+            Ok(Executed::Reply(_))
+        ));
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !adapter
+            .indexing
+            .as_ref()
+            .is_some_and(|job| matches!(job.work, IndexJobWork::Compiling { .. }))
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "reach pending capture"
+            );
+            adapter.poll_deferred(daemon);
+            std::thread::yield_now();
+        }
+        adapter.journal_readiness.close();
+        let path = adapter
+            .product_state
+            .workspace_path()
+            .expect("workspace")
+            .join("index-operations-v1.turso");
+        let mut foreign = super::IndexOperationJournal::open(path).expect("foreign journal");
+        foreign
+            .accept(
+                other,
+                backend_library::PackageReference::parse(label).expect("foreign package"),
+                CompileExecutionIntent::Interactive,
+            )
+            .expect("foreign acceptance");
+        foreign
+            .prepare(other, Some([97; 32]), [98; 32], 1)
+            .expect("foreign marker");
+        let captured = owner_cursor(daemon);
+        while !adapter
+            .indexing
+            .as_ref()
+            .is_some_and(|job| matches!(job.work, IndexJobWork::Publishing { .. }))
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "retain refused candidate"
+            );
+            adapter.poll_deferred(daemon);
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            owner_cursor(daemon),
+            captured,
+            "refusal cannot cross foreign Prepared"
+        );
+        assert!(matches!(
+            adapter.index_operations.entry(operation).expect("own row"),
+            Some(JournalEntry::Retained(StoredOperation {
+                state: StoredOperationState::Accepted,
+                ..
+            }))
+        ));
+        let reads = adapter.index_operations.read_query_count();
+        for _ in 0..1000 {
+            assert!(adapter.poll_deferred(daemon).is_empty());
+        }
+        assert_eq!(
+            adapter.index_operations.read_query_count(),
+            reads,
+            "refusal does not hot retry"
+        );
+        foreign
+            .failed(
+                other,
+                backend_library::IndexOperationFailureReason::WorkerFailed,
+                backend_library::ProductText::from_static("foreign retired"),
+            )
+            .expect("release foreign marker");
+        if journal_busy || restart_before_receipt {
+            // Stop at the real workspace commit boundary, before the owner
+            // writes its separate operation terminal receipt.
+            let mut indexing = adapter.indexing.take().expect("retained refusal job");
+            let IndexJobWork::Publishing { prepared, .. } =
+                std::mem::replace(&mut indexing.work, IndexJobWork::Transition)
+            else {
+                panic!("retained publication candidate");
+            };
+            let outcome = adapter
+                .finish_prepared_index_selection(daemon, &mut indexing, prepared, &mut None)
+                .expect("exact refusal capture committed");
+            assert!(matches!(
+                &outcome,
+                backend_library::IndexJobOutcome::RefusedWithCompilerFailure { .. }
+            ));
+            assert!(matches!(
+                adapter
+                    .index_operations
+                    .entry(operation)
+                    .expect("prepared row"),
+                Some(JournalEntry::Retained(StoredOperation {
+                    state: StoredOperationState::Prepared { .. },
+                    ..
+                }))
+            ));
+            if restart_before_receipt {
+                drop(indexing);
+                fixture = fixture.reopen();
+                let (adapter, daemon) = fixture.parts();
+                let recovered = adapter
+                    .resolve_index_operation(daemon, operation, None)
+                    .expect("cold selected refusal recovery");
+                assert!(
+                    matches!(
+                        recovered,
+                        backend_library::IndexOperationObservation::Known(
+                            backend_library::IndexOperationStatus {
+                                state: backend_library::IndexOperationState::Failed { .. },
+                                ..
+                            }
+                        )
+                    ),
+                    "cold refusal cannot become Published: {recovered:?}"
+                );
+                backend_library::SurfaceReply::IndexOperationStatus(recovered)
+                    .admit(backend_library::CommandId::IndexProgress)
+                    .expect("strict cold terminal");
+                return;
+            }
+            let mut writer = foreign.connection_for_test();
+            let (locked, lock_ready) = std::sync::mpsc::sync_channel(1);
+            let (release, released) = std::sync::mpsc::sync_channel(1);
+            let holder = std::thread::spawn(move || {
+                futures_executor::block_on(async {
+                    let transaction = writer
+                        .transaction_with_behavior(
+                            turso::transaction::TransactionBehavior::Immediate,
+                        )
+                        .await
+                        .expect("hold independent receipt writer");
+                    locked.send(()).expect("writer ready");
+                    let _ = released.recv_timeout(Duration::from_secs(10));
+                    transaction
+                        .rollback()
+                        .await
+                        .expect("release receipt writer");
+                })
+            });
+            lock_ready
+                .recv_timeout(Duration::from_secs(10))
+                .expect("writer acquired");
+            let started = std::time::Instant::now();
+            let unresolved = adapter
+                .resolve_index_operation(daemon, operation, Some(&outcome))
+                .expect("selected refusal remains observable during SQL busy");
+            assert!(
+                started.elapsed() >= Duration::from_millis(200),
+                "actual SQL busy timeout"
+            );
+            assert!(matches!(unresolved,
+                backend_library::IndexOperationObservation::Known(backend_library::IndexOperationStatus {
+                    state: backend_library::IndexOperationState::Unresolved {
+                        reason: backend_library::IndexOperationUnresolvedReason::ReceiptPersistenceFailed, ..
+                    }, ..
+                })), "busy refusal cannot become Published: {unresolved:?}");
+            assert!(matches!(
+                adapter
+                    .index_operations
+                    .entry(operation)
+                    .expect("retained marker"),
+                Some(JournalEntry::Retained(StoredOperation {
+                    state: StoredOperationState::Prepared { .. },
+                    ..
+                }))
+            ));
+            release.send(()).expect("explicit writer release");
+            holder.join().expect("writer kernel retired");
+            adapter.journal_readiness.refresh();
+            adapter.complete_index_job(daemon, indexing, outcome, None);
+        } else {
+            adapter.journal_readiness.refresh();
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while adapter.indexing.is_some() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "complete retained refusal"
+                );
+                adapter.poll_deferred(daemon);
+                std::thread::yield_now();
+            }
+        }
+        assert!(matches!(
+            adapter
+                .index_operations
+                .entry(operation)
+                .expect("terminal row"),
+            Some(JournalEntry::Retained(StoredOperation {
+                state: StoredOperationState::Failed {
+                    compiler_failure: Some(_),
+                    ..
+                },
+                ..
+            }))
+        ));
+        let observation = adapter
+            .resolve_index_operation(daemon, operation, None)
+            .expect("typed refusal");
+        assert!(matches!(
+            observation,
+            backend_library::IndexOperationObservation::Known(
+                backend_library::IndexOperationStatus {
+                    state: backend_library::IndexOperationState::Failed { .. },
+                    ..
+                }
+            )
+        ));
+        backend_library::SurfaceReply::IndexOperationStatus(observation)
+            .admit(backend_library::CommandId::IndexProgress)
+            .expect("strict terminal reply");
+        let mut fixture = fixture.reopen();
+        let (adapter, daemon) = fixture.parts();
+        assert!(matches!(
+            adapter
+                .resolve_index_operation(daemon, operation, None)
+                .expect("cold typed refusal"),
+            backend_library::IndexOperationObservation::Known(
+                backend_library::IndexOperationStatus {
+                    state: backend_library::IndexOperationState::Failed { .. },
+                    ..
+                }
+            )
+        ));
+    }
     #[test]
     fn refused_capture_reconciles_resident_view_before_terminal_reply() {
         let mut fixture = AdapterFixture::new();
