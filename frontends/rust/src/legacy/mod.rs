@@ -18,13 +18,14 @@ pub use self::authority::{
     MAX_RUST_WORKSPACE_SESSION_SOURCES, ModuleDeclaration, RustActiveHirRootInventory,
     RustAnalysisControl, RustAuthority, RustAuthorityError, RustCargoMetadataPolicy,
     RustDeclaration, RustDefinition, RustFeatureControl, RustFieldAccess, RustInferredExpression,
-    RustMethodCall, RustProject, RustReexport, RustSourceScope, RustWorkspace,
-    RustWorkspaceEditorBufferObserver, RustWorkspaceFile, RustWorkspaceFilesystemOperation,
-    RustWorkspaceFilesystemOutcome, RustWorkspaceReadFrontierComplete,
-    RustWorkspaceReadFrontierGap, RustWorkspaceReadFrontierGaps, RustWorkspaceReadFrontierObserver,
-    RustWorkspaceReadFrontierSealReport, RustWorkspaceReadFrontierSummary, RustWorkspaceSessionKey,
-    RustWorkspaceSessionLane, RustWorkspaceSessionLease, RustWorkspaceSessionStats, SemanticKind,
-    SourceByteLimit, SourceOrigin,
+    RustMethodCall, RustProject, RustReexport, RustSelectedSourceCoordinate, RustSourceScope,
+    RustWorkspace, RustWorkspaceEditorBufferObserver, RustWorkspaceFile,
+    RustWorkspaceFilesystemOperation, RustWorkspaceFilesystemOutcome,
+    RustWorkspaceReadFrontierComplete, RustWorkspaceReadFrontierGap, RustWorkspaceReadFrontierGaps,
+    RustWorkspaceReadFrontierObserver, RustWorkspaceReadFrontierSealReport,
+    RustWorkspaceReadFrontierSummary, RustWorkspaceSessionKey, RustWorkspaceSessionLane,
+    RustWorkspaceSessionLease, RustWorkspaceSessionStats, SemanticKind, SourceByteLimit,
+    SourceOrigin,
 };
 pub use self::purl::{RustLocatedPackage, RustPackageUrl, RustPurlError, manifest_edition};
 

@@ -19,7 +19,10 @@ use std::{
 };
 
 use backend_compile::{RustCargoFeatureSelectionV1, RustCargoWorkspaceFactsV1};
-use backend_semantic::vocabulary::{RustEdition, Stage};
+use backend_semantic::{
+    ir::SourceIdentity,
+    vocabulary::{RustEdition, Stage},
+};
 use ra_ap_base_db::{
     EditionedFileId, FileSet, SourceDatabase, SourceRoot, SourceRootId, all_crates,
 };
@@ -482,8 +485,29 @@ pub struct RustWorkspace {
     vfs: Vfs,
     /// Package-relative selected paths mapped to their lexical RA VFS paths.
     selected_source_paths: HashMap<PathBuf, PathBuf>,
+    /// Exact selected buffers keyed by their real RA file and Cargo edition.
+    selected_source_coordinates: HashMap<FileId, SelectedRustSourceCoordinate>,
     /// Exact active module membership for this database, built before it is shared.
     source_ownership_index: Option<RustSourceOwnershipIndex>,
+}
+
+/// Borrowed coordinate of one captured source with active Cargo ownership.
+///
+/// The source identity comes from the exact selected editor buffer. A loaded
+/// VFS path alone cannot create this coordinate.
+#[derive(Clone, Copy, Debug)]
+pub struct RustSelectedSourceCoordinate<'source> {
+    /// Admitted package-relative source operand, without filesystem guessing.
+    pub relative_path: &'source Path,
+    /// Central content identity of the captured source bytes.
+    pub source: SourceIdentity,
+}
+
+struct SelectedRustSourceCoordinate {
+    file: EditionedFileId,
+    vfs_path: VfsPath,
+    relative_path: PathBuf,
+    source: SourceIdentity,
 }
 
 #[derive(Clone, Copy)]
@@ -2003,6 +2027,7 @@ impl RustWorkspace {
             database,
             vfs,
             selected_source_paths: HashMap::new(),
+            selected_source_coordinates: HashMap::new(),
             source_ownership_index: None,
         })
     }
@@ -2140,6 +2165,7 @@ impl RustWorkspace {
                 source_file,
                 edition: self.edition,
                 source_scope,
+                selected_source_coordinates: &self.selected_source_coordinates,
             })
         })
     }
@@ -2831,6 +2857,65 @@ impl RustWorkspace {
             .zip(selected_source_paths)
             .map(|(file, path)| (file.relative_path.to_path_buf(), path))
             .collect();
+        // Only exact request buffers can become cross-file package targets.
+        // RA also loads unselected disk modules and dependencies; HIR name
+        // resolution alone cannot create a captured coordinate for those.
+        let mut coordinates = HashMap::new();
+        coordinates.try_reserve(files.len()).map_err(|_| {
+            RustAuthorityError::SessionSourceRootLimit {
+                maximum: MAX_RUST_WORKSPACE_SESSION_SOURCES,
+            }
+        })?;
+        let ownership = self
+            .source_ownership_index
+            .as_ref()
+            .ok_or(RustAuthorityError::SourceOwnershipIndexUnavailable)?;
+        for file in files {
+            control.check()?;
+            let path = self
+                .selected_source_paths
+                .get(file.relative_path)
+                .ok_or(RustAuthorityError::SessionFrontierMismatch)?;
+            let vfs_path = VfsPath::from(AbsPathBuf::assert_utf8(path.clone()));
+            let (file_id, FileExcluded::No) = self
+                .vfs
+                .file_id(&vfs_path)
+                .ok_or_else(|| RustAuthorityError::SourceNotLoaded { path: path.clone() })?
+            else {
+                return Err(RustAuthorityError::SourceNotLoaded { path: path.clone() });
+            };
+            let text = SourceDatabase::file_text(&self.database, file_id);
+            if text.text(&self.database).as_bytes() != file.source.as_bytes() {
+                return Err(RustAuthorityError::SourceBinding {
+                    expected: file.source.len(),
+                    observed: text.text(&self.database).len(),
+                });
+            }
+            let Some(RustSourceOwners::Unique(owner)) = ownership.owners_by_file.get(&file_id)
+            else {
+                continue;
+            };
+            let source = SourceIdentity::from_bytes(file.source.as_bytes()).ok_or(
+                RustAuthorityError::SourceBudget {
+                    actual: file.source.len() as u64,
+                    maximum: control.maximum_source_bytes,
+                },
+            )?;
+            let coordinate = SelectedRustSourceCoordinate {
+                file: EditionedFileId::new(
+                    &self.database,
+                    file_id,
+                    owner.krate.edition(&self.database),
+                ),
+                vfs_path,
+                relative_path: file.relative_path.to_path_buf(),
+                source,
+            };
+            if coordinates.insert(file_id, coordinate).is_some() {
+                return Err(RustAuthorityError::SessionFrontierMismatch);
+            }
+        }
+        self.selected_source_coordinates = coordinates;
         if let (Some(observer), Some(selected_file_ids)) =
             (observer.as_mut(), selected_file_ids.as_ref())
         {
@@ -3996,6 +4081,7 @@ pub struct RustAuthority<'analysis> {
     pub edition: RustEdition,
     /// Active Cargo relationship proven for this selected source.
     pub source_scope: RustSourceScope,
+    selected_source_coordinates: &'analysis HashMap<FileId, SelectedRustSourceCoordinate>,
 }
 
 impl<'analysis> RustAuthority<'analysis> {
@@ -4341,25 +4427,39 @@ impl<'analysis> RustAuthority<'analysis> {
         self.cross_file_package_path_from_file(range.file_id)
     }
 
+    /// Returns a captured coordinate only for the request's exact RA file,
+    /// edition, original VFS path, and active Cargo owner.
+    #[must_use]
+    pub fn selected_source_coordinate(
+        &self,
+        file: EditionedFileId,
+    ) -> Option<RustSelectedSourceCoordinate<'_>> {
+        let db = self.database;
+        let file_id = file.file_id(db);
+        let coordinate = self.selected_source_coordinates.get(&file_id)?;
+        if coordinate.file != file {
+            return None;
+        }
+        let source_root_id = db.file_source_root(file_id).source_root_id(db);
+        let source_root = db.source_root(source_root_id).source_root(db);
+        if source_root.is_library || source_root.path_for_file(&file_id)? != &coordinate.vfs_path {
+            return None;
+        }
+        Some(RustSelectedSourceCoordinate {
+            relative_path: &coordinate.relative_path,
+            source: coordinate.source,
+        })
+    }
+
     fn cross_file_package_path_from_file(&self, file_id: EditionedFileId) -> Option<String> {
         if file_id == self.source_file {
             return None;
         }
-        let db = self.database;
-        let file_id = file_id.file_id(db);
-        let source_root_id = db.file_source_root(file_id).source_root_id(db);
-        let source_root = db.source_root(source_root_id).source_root(db);
-        if source_root.is_library {
-            return None;
-        }
-        let vfs_path = source_root.path_for_file(&file_id)?;
-        let abs_path = vfs_path.as_path()?.as_str();
-        let marker = "/src/";
-        let pos = abs_path.rfind(marker)?;
-        let mut path = abs_path[pos + 1..].to_string();
-        if path.ends_with(".rs") {
-            path.truncate(path.len() - 3);
-        }
+        let selected = self.selected_source_coordinate(file_id)?;
+        let relative = selected.relative_path.to_str()?;
+        // Preserve existing module-coordinate normalization while deriving
+        // its operand only from the captured selected-source coordinate.
+        let mut path = relative.strip_suffix(".rs")?.to_owned();
         if let Some(stripped) = path.strip_suffix("/mod") {
             if !stripped.is_empty() {
                 path = stripped.to_string();
