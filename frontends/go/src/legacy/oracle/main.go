@@ -110,6 +110,24 @@ type Output struct {
 	// Errors carries package-load diagnostics; extraction proceeds
 	// best-effort even when some packages fail to type-check.
 	Errors []string `json:"errors,omitempty"`
+	// A compiler-excluded source can have no semantic package variant, for
+	// example an external-test namespace with only platform-inactive files.
+	// This private source witness never manufactures a JSON Package identity.
+	sourceExclusions []*sourceExclusion
+}
+
+type sourceExclusion struct {
+	constraint        *BuildConstraint
+	sourceDigest      [32]byte
+	declaredNamespace string
+	directory         compilerDirectoryWitness
+}
+
+// compilerDirectoryWitness anchors source availability to a real go/packages
+// directory. Its import path does not name the excluded source's package.
+type compilerDirectoryWitness struct {
+	path       string
+	importPath string
 }
 
 // Module mirrors the go.mod-derived module metadata.
@@ -342,6 +360,9 @@ func extractWithSelection(dir, pattern string, selection *packageSelection) (*Ou
 	sort.Slice(out.Packages, func(i, j int) bool {
 		return out.Packages[i].ImportPath < out.Packages[j].ImportPath
 	})
+	if err := captureUnownedExclusions(out, pkgs, ignoredByDirectory, selection.context); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
@@ -952,8 +973,8 @@ func parseConstraint(source []byte) (constraint.Expr, error) {
 	return nil, nil
 }
 
-func exportedDecls(path string) ([]*BuildDecl, error) {
-	file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ParseComments)
+func exportedDecls(path string, source []byte) ([]*BuildDecl, error) {
+	file, err := parser.ParseFile(token.NewFileSet(), path, source, parser.ParseComments)
 	if err != nil {
 		return nil, err
 	}
