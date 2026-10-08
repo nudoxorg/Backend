@@ -2464,6 +2464,12 @@ fn sanitize_package_compiler_detail(value: &str, source_truncated: bool) -> (Str
 
 fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, bool) {
     if let PackageCompilerFailureCause::Authority {
+        diagnostic: Some(CompilerAuthorityDiagnosticFacts { go_failure: Some(failure), .. }),
+        ..
+    } = cause {
+        return sanitize_package_compiler_detail(failure.detail(), false);
+    }
+    if let PackageCompilerFailureCause::Authority {
         diagnostic:
             Some(CompilerAuthorityDiagnosticFacts {
                 python_failure: Some(failure),
@@ -2579,7 +2585,8 @@ fn package_cause_is_valid(cause: &PackageCompilerFailureCause) -> bool {
         PackageCompilerFailureCause::Authority {
             diagnostic: Some(facts),
             ..
-        } => !(facts.python_failure.is_some() && facts.typescript_failure.is_some()),
+        } => [facts.python_failure.is_some(), facts.typescript_failure.is_some(),
+            facts.go_failure.is_some()].into_iter().filter(|present| *present).count() <= 1,
         PackageCompilerFailureCause::Authority {
             diagnostic: None, ..
         } => true,

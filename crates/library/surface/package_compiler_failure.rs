@@ -211,6 +211,10 @@ impl PackageCompilerFailureCause {
                     }),
                 ..
             } => failure.kind_tag(),
+            Self::Authority {
+                diagnostic: Some(CompilerAuthorityDiagnosticFacts { go_failure: Some(failure), .. }),
+                ..
+            } => failure.kind_tag(),
             Self::Authority { class, .. } => match class {
                 AuthorityClassFact::Syntax => "authority_syntax",
                 AuthorityClassFact::Binding => "authority_binding",
@@ -382,6 +386,9 @@ pub struct CompilerAuthorityDiagnosticFacts {
     /// Exact closed TypeScript cause; transcript, paths and solver text remain local.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub typescript_failure: Option<crate::interface::TypeScriptAuthorityFailureKind>,
+    /// Exact Go dependency-admission cause; native diagnostic text stays local.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub go_failure: Option<crate::interface::GoAuthorityFailureKind>,
 }
 
 /// Closed compact-lowering cause, with exact TypeScript projection operands
@@ -1778,6 +1785,7 @@ pub(crate) fn package_failure_from_terminal(
                         truncated: diagnostic.truncated,
                         python_failure: diagnostic.python_failure,
                         typescript_failure: diagnostic.typescript_failure,
+                        go_failure: diagnostic.go_failure,
                     }
                 }),
             },

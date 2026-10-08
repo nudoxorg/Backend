@@ -8,7 +8,8 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use super::update_path_digest;
+use super::{GoDependencyClosureFailure, GoOracle, GoOracleChildEnvironment,
+    dependency_witness::GoDependencyClosureWitness, update_path_digest};
 
 const GO_WORK_BYTES_LIMIT: usize = 1024 * 1024;
 const GO_AUTHORITY_MANIFEST_BYTES_LIMIT: usize = 1024 * 1024;
@@ -231,6 +232,7 @@ pub struct GoPackageAuthorityWitness {
     workspace_sum: GoManifestWitness,
     local_trees: Box<[GoLocalTreeWitness]>,
     local_only_reasons: Box<[GoLocalOnlyReason]>,
+    dependency_closure: Option<Box<GoDependencyClosureWitness>>,
     complete: bool,
 }
 
@@ -444,7 +446,25 @@ impl GoPackageAuthorityWitness {
             digest.update([0]);
             update_path_digest(&mut digest, reason.path());
         }
+        if let Some(closure) = &self.dependency_closure {
+            closure.update_identity(&mut digest);
+        }
         digest.finalize().into()
+    }
+
+    pub(super) fn capture_dependency_closure(
+        &mut self,
+        environment: &GoOracleChildEnvironment,
+        oracle: GoOracle,
+        cancelled: Option<&std::sync::atomic::AtomicBool>,
+    ) {
+        self.dependency_closure = Some(Box::new(GoDependencyClosureWitness::capture(
+            &self.package_root, &self.workspace, environment, oracle, cancelled,
+        )));
+    }
+
+    pub(super) fn dependency_closure_failure(&self) -> Option<GoDependencyClosureFailure> {
+        self.dependency_closure.as_ref().and_then(|closure| closure.failure())
     }
 
     /// Returns the selected workspace file used for the `GOWORK` child value.
@@ -469,14 +489,15 @@ impl GoPackageAuthorityWitness {
     /// execution.
     #[must_use]
     pub fn requires_local_execution(&self) -> bool {
-        !self.local_only_reasons.is_empty() || !self.complete
+        !self.local_only_reasons.is_empty() || !self.is_complete()
+            || self.dependency_closure.is_some()
     }
 
     /// Reports whether the complete set of authority inputs was bounded and
     /// captured. Incomplete witnesses are local-only and non-reusable.
     #[must_use]
-    pub const fn is_complete(&self) -> bool {
-        self.complete
+    pub fn is_complete(&self) -> bool {
+        self.complete && self.dependency_closure.as_ref().is_none_or(|closure| closure.is_complete())
     }
 
     /// Re-captures the filesystem closure and compares every witnessed input.
@@ -487,7 +508,13 @@ impl GoPackageAuthorityWitness {
         &self,
         package_root: impl AsRef<Path>,
     ) -> Result<bool, GoPackageAuthorityWitnessError> {
-        Ok(*self == Self::capture(package_root)?)
+        let mut current = Self::capture(package_root)?;
+        if let Some(closure) = &self.dependency_closure {
+            current.dependency_closure = Some(Box::new(
+                closure.recapture(&current.package_root, &current.workspace),
+            ));
+        }
+        Ok(*self == current)
     }
 }
 
@@ -1559,6 +1586,7 @@ fn capture_go_package_authority_witness(
         workspace_sum,
         local_trees: local_trees.into_boxed_slice(),
         local_only_reasons: reasons.into_boxed_slice(),
+        dependency_closure: None,
         complete,
     })
 }

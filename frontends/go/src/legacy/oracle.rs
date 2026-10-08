@@ -27,6 +27,8 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 mod authority_witness;
+mod dependency_witness;
+pub use self::dependency_witness::GoDependencyClosureFailure;
 pub use self::authority_witness::{
     GoFilesystemTargetKind, GoLocalOnlyReason, GoPackageAuthorityWitness,
     GoPackageAuthorityWitnessError, GoWorkFileWitness, GoWorkWitness, GoWorkWitnessError,
@@ -841,6 +843,9 @@ pub enum OracleError {
     /// A selected module/workspace/local-target witness changed before spawn.
     #[error("Go package authority witness changed before oracle execution")]
     PackageAuthorityWitnessChanged,
+    /// Offline Go package selection did not admit a complete dependency graph.
+    #[error("Go dependency closure is unavailable ({failure:?}); run `go mod download` in the project and retry")]
+    DependencyClosureUnavailable { failure: GoDependencyClosureFailure },
     /// The configured oracle tool is unavailable.
     #[error("Go oracle tooling unavailable ({tool}): {source}")]
     ToolingUnavailable {
@@ -870,6 +875,9 @@ pub enum OracleError {
         phase: &'static str,
         milliseconds: u64,
     },
+    /// Caller cancellation interrupted dependency admission and reaped its child.
+    #[error("Go dependency admission was cancelled")]
+    Cancelled,
     /// A schema cell was not the version this adapter understands.
     #[error("Go oracle schema is stale: found {found}, expected {expected}")]
     Staleness { found: u32, expected: u32 },
@@ -891,7 +899,7 @@ pub enum OracleError {
 }
 
 /// Configurable subprocess adapter for the vendored Go oracle.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct GoOracle {
     /// Maximum bytes retained and accepted from each child stream.
     pub output_limit: usize,
@@ -1451,21 +1459,25 @@ impl GoOracle {
     /// The child runs in its own process group; oversized output, deadlines,
     /// and pipe faults all reap the child and fold into typed rejections.
     fn execute(&self, command: &mut std::process::Command) -> Result<Vec<u8>, OracleError> {
-        self.execute_with_origin(command, false)
+        self.execute_with_origin(command, false, None)
     }
 
     fn execute_configured(
         &self,
         command: &mut std::process::Command,
     ) -> Result<Vec<u8>, OracleError> {
-        self.execute_with_origin(command, true)
+        self.execute_with_origin(command, true, None)
     }
 
     fn execute_with_origin(
         &self,
         command: &mut std::process::Command,
         configured: bool,
+        cancelled: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<Vec<u8>, OracleError> {
+        if cancelled.is_some_and(|token| token.load(std::sync::atomic::Ordering::Acquire)) {
+            return Err(OracleError::Cancelled);
+        }
         command
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
@@ -1515,6 +1527,12 @@ impl GoOracle {
         let mut stdout_done = false;
         let mut stderr_done = false;
         loop {
+            if cancelled.is_some_and(|token| token.load(std::sync::atomic::Ordering::Acquire)) {
+                terminate_child(&mut child);
+                drop(out_thread);
+                drop(err_thread);
+                return Err(OracleError::Cancelled);
+            }
             if let Ok((stream, observed)) = limit_rx.try_recv() {
                 terminate_child(&mut child);
                 // A descendant may maliciously retain one of the inherited
@@ -1852,7 +1870,21 @@ impl ConfiguredGoOracle {
         &self,
         package_root: impl AsRef<Path>,
     ) -> Result<GoPackageAuthorityWitness, GoPackageAuthorityWitnessError> {
-        GoPackageAuthorityWitness::capture(package_root)
+        self.package_authority_witness_cancellable(package_root, None)
+    }
+
+    /// Captures fresh Go-selected dependency files on the requesting worker,
+    /// with caller cancellation reaping the bounded listing child.
+    pub fn package_authority_witness_cancellable(
+        &self,
+        package_root: impl AsRef<Path>,
+        cancelled: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<GoPackageAuthorityWitness, GoPackageAuthorityWitnessError> {
+        let mut witness = GoPackageAuthorityWitness::capture(package_root)?;
+        if let Some(environment) = &self.child_environment {
+            witness.capture_dependency_closure(environment, self.oracle, cancelled);
+        }
+        Ok(witness)
     }
 
     /// Returns path-independent invocation mode and helper-source identity.
@@ -2062,6 +2094,9 @@ impl ConfiguredGoOracle {
         if !witness.matches_current(package_root)? {
             return Err(OracleError::PackageAuthorityWitnessChanged);
         }
+        if let Some(failure) = witness.dependency_closure_failure() {
+            return Err(OracleError::DependencyClosureUnavailable { failure });
+        }
         environment.revalidate_toolchain()?;
         let (helper_binary, revalidated_after_build) = self.cached_helper_binary()?;
         if !revalidated_after_build {
@@ -2082,6 +2117,9 @@ impl ConfiguredGoOracle {
             return Err(OracleError::PackageAuthorityWitnessChanged);
         }
         let image = self.oracle.execute_configured(command.command_mut())?;
+        if !witness.matches_current(package_root)? {
+            return Err(OracleError::PackageAuthorityWitnessChanged);
+        }
         environment.revalidate_toolchain()?;
         Ok(image)
     }

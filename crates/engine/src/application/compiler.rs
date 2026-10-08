@@ -4096,6 +4096,19 @@ fn package_authority_terminal(
         cause => {
             let (phase, class) = package_authority_projection(&cause);
             let typescript_failure = super::compiler_typescript_failure::failure_kind(&cause);
+            let go_failure = match &cause {
+                PackageAuthorityError::GoOracle(backend_frontend_go::legacy::OracleError::DependencyClosureUnavailable { failure }) => {
+                    use backend_frontend_go::legacy::oracle::GoDependencyClosureFailure as G;
+                    use backend_library::interface::GoAuthorityFailureKind as F;
+                    Some(match failure {
+                        G::Invocation => F::DependencyInvocation,
+                        G::Protocol => F::DependencyProtocol,
+                        G::PackageLoad => F::DependencyPackageLoad,
+                        G::EmptyGraph => F::DependencyEmptyGraph,
+                    })
+                }
+                _ => None,
+            };
             let python_failure = match &cause {
                 PackageAuthorityError::NativePythonToolchainIdentityMismatch { .. } => {
                     Some(PythonAuthorityFailureKind::ProducerIdentityMismatch)
@@ -4117,7 +4130,10 @@ fn package_authority_terminal(
                 Some(failure) => diagnostic.with_python_failure(failure),
                 None => match typescript_failure {
                     Some(failure) => diagnostic.with_typescript_failure(failure),
-                    None => diagnostic,
+                    None => match go_failure {
+                        Some(failure) => diagnostic.with_go_failure(failure),
+                        None => diagnostic,
+                    },
                 },
             });
             compiler_attempt_terminal(
@@ -4585,6 +4601,42 @@ mod tests {
         let file_detail = bounded_error_chain(&file_error);
         assert!(file_detail.text.contains("/tmp/nudox-go-oracle/main.go"));
         assert!(file_detail.text.contains("private source write denied"));
+    }
+
+    #[test]
+    fn go_dependency_refusal_preserves_exact_safe_cause_and_normal_setup_command() {
+        use backend_frontend_go::legacy::oracle::GoDependencyClosureFailure;
+        use backend_library::interface::GoAuthorityFailureKind;
+        let request = super::ApplicationCompilerRequest {
+            profile: LanguageProfile::Go(backend_semantic::vocabulary::GoVersion::Go125),
+            stage: Stage::LowerIr,
+            source: "package app\nfunc Main() {}\n",
+        };
+        let source = request_source(request).unwrap();
+        let target = ContentId::<backend_version::CompilationTargetDomain>::from_canonical_bytes(
+            b"go-dependency-refusal",
+        );
+        let toolchain = ResolvedToolchain::from_version(
+            NativeTool::GoCompiler,
+            host_path("/toolchain/bin/go"),
+            b"go version go1.25.0 linux/amd64",
+        ).unwrap();
+        let terminal = package_authority_terminal(
+            target, request, source, ToolchainSelection::ResolvedNative(toolchain),
+            PackageAuthorityError::GoOracle(OracleError::DependencyClosureUnavailable {
+                failure: GoDependencyClosureFailure::PackageLoad,
+            }),
+        );
+        let failure = backend_library::PackageCompilerFailure::from_package_terminal(
+            "main.go", &terminal,
+        ).unwrap().unwrap();
+        assert_eq!(failure.kind_tag(), GoAuthorityFailureKind::DependencyPackageLoad.kind_tag());
+        assert!(failure.detail().contains("go mod download"));
+        assert!(!failure.detail().contains("restart"));
+        assert!(!failure.cause().requires_tool_configuration());
+        let encoded = serde_json::to_string(&failure).unwrap();
+        assert!(encoded.contains("dependency_package_load"));
+        assert!(!encoded.contains("/toolchain"));
     }
 
     #[test]

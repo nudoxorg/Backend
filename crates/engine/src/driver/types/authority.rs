@@ -635,7 +635,8 @@ fn go_phase(cause: &backend_frontend_go::legacy::OracleError) -> AuthorityPhase 
             AuthorityPhase::Project
         }
         backend_frontend_go::legacy::OracleError::WorkspaceWitness(_)
-        | backend_frontend_go::legacy::OracleError::PackageAuthorityWitness(_) => {
+        | backend_frontend_go::legacy::OracleError::PackageAuthorityWitness(_)
+        | backend_frontend_go::legacy::OracleError::DependencyClosureUnavailable { .. } => {
             AuthorityPhase::Resolve
         }
         backend_frontend_go::legacy::OracleError::Spawn { .. }
@@ -646,6 +647,7 @@ fn go_phase(cause: &backend_frontend_go::legacy::OracleError) -> AuthorityPhase 
         | backend_frontend_go::legacy::OracleError::Exit { .. }
         | backend_frontend_go::legacy::OracleError::OutputLimit { .. }
         | backend_frontend_go::legacy::OracleError::Timeout { .. }
+        | backend_frontend_go::legacy::OracleError::Cancelled
         | backend_frontend_go::legacy::OracleError::Pipe { .. }
         | backend_frontend_go::legacy::OracleError::WorkerPanic { .. }
         | backend_frontend_go::legacy::OracleError::GoOracleSourceDirectory(_)

@@ -1017,6 +1017,8 @@ pub struct CompilerDiagnosticFacts {
     pub python_failure: Option<PythonAuthorityFailureKind>,
     /// Exact TypeScript authority cause; native bytes and paths remain local.
     pub typescript_failure: Option<super::TypeScriptAuthorityFailureKind>,
+    /// Exact Go dependency-admission cause; native bytes and paths remain local.
+    pub go_failure: Option<super::GoAuthorityFailureKind>,
     /// Zero-filled storage whose prefix through `byte_len` is the exact diagnostic prefix.
     pub bytes: [u8; MAX_NATIVE_DIAGNOSTIC_BYTES],
 }
@@ -1170,6 +1172,7 @@ impl CompilerDiagnostic {
             truncated: truncated || retained != bytes.len(),
             python_failure: None,
             typescript_failure: None,
+            go_failure: None,
             bytes: output,
         })))
     }
@@ -1180,6 +1183,7 @@ impl CompilerDiagnostic {
     pub fn with_python_failure(mut self, failure: PythonAuthorityFailureKind) -> Self {
         self.0.python_failure = Some(failure);
         self.0.typescript_failure = None;
+        self.0.go_failure = None;
         self
     }
 
@@ -1191,6 +1195,16 @@ impl CompilerDiagnostic {
     ) -> Self {
         self.0.typescript_failure = Some(failure);
         self.0.python_failure = None;
+        self.0.go_failure = None;
+        self
+    }
+
+    /// Adds an exact Go cause without modifying retained native bytes.
+    #[must_use]
+    pub fn with_go_failure(mut self, failure: super::GoAuthorityFailureKind) -> Self {
+        self.0.go_failure = Some(failure);
+        self.0.python_failure = None;
+        self.0.typescript_failure = None;
         self
     }
 
