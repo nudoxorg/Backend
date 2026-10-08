@@ -1,0 +1,39 @@
+{
+  "argv": [
+    "python3",
+    "-m",
+    "unittest",
+    "test_macos_sdk_bundle_contract",
+    "test_macos_sdk_finalization",
+    "test_macho_signing_identity",
+    "test_macos_macho_relocation",
+    "test_macos_launcher_contract",
+    "test_macos_release",
+    "test_macos_runner_contract",
+    "test_release_contract",
+    "test_release_platforms",
+    "-q"
+  ],
+  "canonical_base": "114332427dfb4aa66eec5277995fbf3209c98f8a",
+  "component_paths_exact_f1a8": [
+    "tools/package/build_macos_typescript_sdk.py",
+    "tools/package/collect-macos-macho-relocation.py",
+    "tools/package/finalize_macos_typescript_sdk.py",
+    "tools/package/macho_signing_identity.py",
+    "tools/package/macos-investor-bundle.py",
+    "tools/package/macos_release.py",
+    "tools/package/test_macho_signing_identity.py",
+    "tools/package/test_macos_release.py",
+    "tools/package/test_macos_sdk_bundle_contract.py",
+    "tools/package/test_macos_sdk_finalization.py"
+  ],
+  "elapsed_seconds": 4.187899415992433,
+  "exit": 0,
+  "proof_scope": "Ordinary Python fixture/source contracts, not native build/sign/notarization/install/real-app proof.",
+  "source": "064c5ea762d358649debdb047d48c9a2e005c8a8",
+  "source_before_equals_after": true,
+  "stderr_sha256": "0f754871f9b64000bade4a2247313037a6a48acd665978eef54669098eca5c59",
+  "stdout_sha256": "cb1bbb866fe4efef60f8366edc11829c9719f115cf6490ee6bcc4b114ab17836",
+  "tree": "872872e9f2aa02dc81071aaf45c9c23c1948f3a5",
+  "unrelated_canonical_entries_exact": 17933
+}
