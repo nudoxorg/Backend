@@ -3150,6 +3150,11 @@ impl TypeScriptProjectHost {
                 node_modules: module_root.into_boxed_path(),
             });
         }
+        if let Some(proof) = &resource_proof {
+            proof.validate_current().map_err(|source| TypeScriptProjectHostError::BundledSdkAdmission {
+                path: node.clone().into_boxed_path(), message: source.to_string().into_boxed_str(),
+            })?;
+        }
         let node_identity = self.admit_node_runtime(&node)?;
         if let Some(expected) = resource_proof
             .as_ref()

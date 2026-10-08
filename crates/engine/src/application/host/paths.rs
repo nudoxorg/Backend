@@ -1149,8 +1149,8 @@ fn bundled_typescript_node(
                 .into(),
         });
     };
-    validate_bundle_inventory_file(
-        runtime_record,
+    retain_selected_inventory_file(
+        &mut proof, runtime_record,
         &runtime,
         MAX_BUNDLED_NODE_BYTES,
         &manifest_path,
@@ -1404,8 +1404,8 @@ pub(crate) fn bundled_typescript_sdk(
             });
         }
         let path = bundle_root.join(&bundle_relative);
-        validate_bundle_inventory_file(
-            file_record,
+        retain_selected_inventory_file(
+            &mut proof, file_record,
             &path,
             MAX_BUNDLE_TYPESCRIPT_PACKAGE_BYTES,
             &manifest_path,
@@ -1511,8 +1511,8 @@ pub(crate) fn bundled_typescript_sdk(
         proof.expected_node_version = Some(selected_bundle_node_version(
             &helper_receipt_path, &helper_receipt, runtime_record,
         )?);
-    validate_bundle_inventory_file(
-            runtime_record,
+    retain_selected_inventory_file(
+            &mut proof, runtime_record,
         &runtime_path,
             MAX_BUNDLED_NODE_BYTES,
         &manifest_path,
@@ -1830,8 +1830,8 @@ impl StandaloneTypeScriptResources {
         {
             return Err(refuse("standalone Node differs from its SDK identity"));
         }
-        validate_bundle_inventory_file(
-            node_record,
+        retain_selected_inventory_file(
+            &mut self.proof, node_record,
             &node,
             MAX_BUNDLED_NODE_BYTES,
             &self.manifest_path,
@@ -1958,8 +1958,8 @@ fn standalone_typescript_sdk(
                 message: "standalone compiler exceeds its receipt byte bound".into(),
             });
         }
-        validate_bundle_inventory_file(
-            record,
+        retain_selected_inventory_file(
+            &mut resources.proof, record,
             &resources.root.join(relative),
             MAX_BUNDLE_TYPESCRIPT_PACKAGE_BYTES,
             &resources.manifest_path,
@@ -2099,6 +2099,22 @@ fn collect_bundle_typescript_files(
             });
         }
     }
+    Ok(())
+}
+
+fn retain_selected_inventory_file(
+    proof: &mut BundleTypeScriptResourceProof,
+    record: &serde_json::Value,
+    path: &Path,
+    maximum_bytes: u64,
+    manifest: &Path,
+) -> Result<(), LocalCompilerHostError> {
+    validate_bundle_inventory_file(record, path, maximum_bytes, manifest)?;
+    let expected = record["sha256"].as_str().expect("validated inventory digest").to_owned();
+    let identity = fs::symlink_metadata(path).map_err(|source| LocalCompilerHostError::BundleManifest {
+        path: path.to_path_buf().into_boxed_path(), message: source.to_string().into_boxed_str(),
+    })?;
+    proof.files.push((path.to_path_buf(), maximum_bytes, expected, identity));
     Ok(())
 }
 
@@ -2764,6 +2780,13 @@ mod tests {
         );
         admitted.proof
             .validate_current().expect("selected SDK receipt witness");
+        let original_api_bytes = fs::read(&typescript_api).unwrap();
+        fs::write(&typescript_api, b"same version, changed selected Compiler API").unwrap();
+        assert!(admitted.proof.validate_current().is_err());
+        fs::write(&typescript_api, &original_api_bytes).unwrap();
+        fs::write(&node, b"same version, changed selected Node").unwrap();
+        assert!(admitted.proof.validate_current().is_err());
+        fs::write(&node, b"fixture node").unwrap();
 
         // Unselected wrapper and driver assets cannot change this default checker recipe.
         fs::write(&report_program, b"broken unused wrapper").expect("alter unused report wrapper");
@@ -2846,6 +2869,9 @@ mod tests {
             proof: BundleTypeScriptResourceProof::from_bytes(&manifest_path, MAX_BUNDLE_MANIFEST_BYTES, &metadata).unwrap(),
         };
         assert_eq!(resources.admit_node().unwrap(), node);
+        fs::write(&node, b"same version, changed selected standalone Node").unwrap();
+        assert!(resources.proof.validate_current().is_err());
+        executable(&node);
         manifest["typescript_sdk"]["node"]["packaged_elf"]["needed"] = serde_json::json!(["libgcc_s.so.1"]);
         resources.manifest = manifest;
         assert!(matches!(resources.admit_node(), Err(LocalCompilerHostError::BundleManifest { .. })));
@@ -3240,6 +3266,11 @@ mod tests {
         fs::write(&resource, b"admitted regular bytes").unwrap();
         let before = fs::symlink_metadata(&resource).unwrap();
         fs::remove_file(&resource).unwrap();
+        #[cfg(target_os = "macos")]
+        // The pinned rustix version has no Darwin mkfifo API. The system POSIX
+        // fixture helper is bounded to this private path and its child is reaped.
+        assert!(std::process::Command::new("/usr/bin/mkfifo").arg(&resource).status().unwrap().success());
+        #[cfg(not(target_os = "macos"))]
         rustix::fs::mkfifo(&resource, rustix::fs::Mode::from_raw_mode(0o600)).unwrap();
         assert!(open_regular_resource(&resource, 1024, &before).is_err());
         assert!(read_bounded(&resource, 1024).is_err());

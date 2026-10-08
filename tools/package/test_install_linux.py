@@ -98,7 +98,7 @@ class InstallerFilesystemTests(unittest.TestCase):
         entry = {"tag": marker["tag"]}
         manifest = {"sha256": marker["sha256"]}
         with tempfile.TemporaryDirectory() as directory:
-            final = Path(directory)
+            final = Path(directory).resolve()
             (final / ".installed-release.json").write_text(json.dumps(marker))
             with patch.object(installer, "verify_package", side_effect=installer.InstallError("executable hash mismatch")) as verify:
                 with self.assertRaisesRegex(installer.InstallError, "failed its integrity/startup recheck"):
@@ -109,7 +109,7 @@ class InstallerFilesystemTests(unittest.TestCase):
         expected = {"tag": "checkpoint-test", "sha256": "a" * 64}
         entry = {"tag": "checkpoint-test"}
         with tempfile.TemporaryDirectory() as directory:
-            final = Path(directory)
+            final = Path(directory).resolve()
             (final / ".installed-release.json").write_text(json.dumps({"tag": "checkpoint-test", "sha256": "b" * 64}))
             with patch.object(installer, "verify_package") as verify:
                 with self.assertRaisesRegex(installer.InstallError, "different bytes"):
