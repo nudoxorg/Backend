@@ -68,6 +68,7 @@ fn host_failure(error: &TypeScriptProjectHostError) -> F {
         TypeScriptProjectHostError::WorkspaceConfigInvalid { .. } => F::HostWorkspaceConfigInvalid,
         TypeScriptProjectHostError::ConfigInvalid { .. } => F::HostConfigInvalid,
         TypeScriptProjectHostError::ConfigMissing { .. } => F::HostConfigMissing,
+        TypeScriptProjectHostError::CompilerProgramSourceMissing { .. } => F::HostCompilerApiBridge,
         TypeScriptProjectHostError::CompilerApiBridge { .. } => F::HostCompilerApiBridge,
         TypeScriptProjectHostError::CompilerIoClosureLimit { .. } => F::HostCompilerIoClosureLimit,
         TypeScriptProjectHostError::CompilerIoClosureMismatch { .. } => {
@@ -300,6 +301,14 @@ mod tests {
             ),
             (
                 PackageAuthorityError::TypeScriptProjectHost(
+                    TypeScriptProjectHostError::CompilerProgramSourceMissing {
+                        package_relative_path: "modules/private-source.js".into(),
+                    },
+                ),
+                F::HostCompilerApiBridge,
+            ),
+            (
+                PackageAuthorityError::TypeScriptProjectHost(
                     TypeScriptProjectHostError::CompilerApiBridge {
                         message: "private transcript".into(),
                     },
@@ -340,5 +349,12 @@ mod tests {
             assert!(!expected.detail().contains("private"));
             assert!(!expected.detail().contains("not configured"));
         }
+        let source_missing = TypeScriptProjectHostError::CompilerProgramSourceMissing {
+            package_relative_path: "modules/private-source.js".into(),
+        };
+        let local_detail = source_missing.to_string();
+        assert!(local_detail.contains("modules/private-source.js"));
+        assert!(!local_detail.contains("/private/"));
+        assert_eq!(host_failure(&source_missing), F::HostCompilerApiBridge);
     }
 }
