@@ -25,8 +25,8 @@ use ra_ap_base_db::{
 };
 use ra_ap_hir::{
     Adt, AssocItem, CfgExpr, CfgOptions, Const, EnumVariant, Field, FieldSource, Function,
-    HasSource, Impl, Macro, Module, ModuleDef, PathResolution, Semantics, Static, Trait, TypeAlias,
-    TypeInfo,
+    HasSource, Impl, Macro, MacroKind, Module, ModuleDef, PathResolution, Semantics, Static, Trait,
+    TypeAlias, TypeInfo,
 };
 use ra_ap_hir_def::nameres::{ModuleOrigin, crate_def_map, diagnostics::DefDiagnosticKind};
 use ra_ap_ide_db::{
@@ -53,8 +53,11 @@ const MAX_RUST_SOURCE_OWNERSHIP_MODULES: usize = MAX_RUST_WORKSPACE_ROOT_MEMBERS
 /// Maximum number of `include_str!` inputs admitted from Rustdoc attributes in one operation.
 const MAX_RUST_DOCUMENTATION_INPUTS: usize = 1024;
 
-/// Maximum combined bytes read for Rustdoc `include_str!` inputs in one operation.
+/// Maximum combined include bytes and decoded literal-concat bytes in one operation.
 const MAX_RUST_DOCUMENTATION_INPUT_BYTES: usize = 64 * 1024 * 1024;
+
+/// Maximum flat string arguments inspected in one Rustdoc `concat!` call.
+const MAX_RUST_DOCUMENTATION_LITERAL_ARGUMENTS: usize = 1024;
 
 /// Maximum package-relative active HIR roots retained on a detached-source error.
 const MAX_DETACHED_HIR_ROOT_SAMPLE: usize = 16;
@@ -67,19 +70,28 @@ const CARGO_METADATA_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 static CARGO_METADATA_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
+/// Request-owned facts used while admitting active Rustdoc expressions.
+struct DocumentationInputAdmission<'db, 'scan, 'cancel> {
+    semantics: &'scan Semantics<'db, RootDatabase>,
+    cfg: &'scan CfgOptions,
+    source_path: &'scan Path,
+    control: RustAnalysisControl<'cancel>,
+    total_bytes: &'scan mut usize,
+}
+
 /// Finds literal source-relative include paths used by active Rustdoc attributes.
 ///
 /// rust-analyzer remains responsible for evaluating the attributes and expanding
 /// `include_str!`; this syntax pass only makes bounded package files visible to
-/// its VFS first. Expressions such as `concat!`, `env!`, or generated paths fail
-/// closed because they cannot be safely admitted before RA expansion.
+/// its VFS first. A resolved built-in `concat!` with flat string literals needs
+/// no filesystem inputs. Nested macros and computed include paths fail closed.
 fn documentation_include_paths(
     source: &ra_ap_syntax::SyntaxNode,
-    cfg: &CfgOptions,
-    source_path: &Path,
+    admission: &mut DocumentationInputAdmission<'_, '_, '_>,
 ) -> Result<Vec<String>, RustAuthorityError> {
     let mut includes = Vec::new();
     for node in source.descendants() {
+        admission.control.check()?;
         let attributes = node
             .children()
             .filter_map(ast::Attr::cast)
@@ -94,7 +106,8 @@ fn documentation_include_paths(
 
         let mut disabled = false;
         for meta in attributes.iter().filter_map(ast::Attr::meta) {
-            if meta_disables_documented_item(&meta, cfg, source_path)? {
+            admission.control.check()?;
+            if meta_disables_documented_item(&meta, admission.cfg, admission.source_path)? {
                 disabled = true;
                 break;
             }
@@ -104,7 +117,7 @@ fn documentation_include_paths(
         }
 
         for meta in attributes.iter().filter_map(ast::Attr::meta) {
-            collect_active_documentation_includes(&meta, cfg, source_path, &mut includes)?;
+            collect_active_documentation_includes(&meta, admission, &mut includes)?;
         }
     }
     Ok(includes)
@@ -183,10 +196,11 @@ fn meta_disables_documented_item(
 
 fn collect_active_documentation_includes(
     meta: &ast::Meta,
-    cfg: &CfgOptions,
-    source_path: &Path,
+    admission: &mut DocumentationInputAdmission<'_, '_, '_>,
     includes: &mut Vec<String>,
 ) -> Result<(), RustAuthorityError> {
+    admission.control.check()?;
+    let source_path = admission.source_path;
     match meta {
         ast::Meta::KeyValueMeta(meta)
             if meta.path().is_some_and(|path| path.to_string() == "doc") =>
@@ -219,6 +233,34 @@ fn collect_active_documentation_includes(
                 .and_then(|path| path.segments().last())
                 .and_then(|segment| segment.name_ref())
                 .map(|name| name.text().to_string());
+            if macro_name.as_deref() == Some("concat") {
+                admit_literal_documentation_concat(
+                    &call,
+                    source_path,
+                    admission.control,
+                    admission.total_bytes,
+                )?;
+                let resolved = call.path().and_then(|path| {
+                    admission
+                        .semantics
+                        .resolve_path_per_ns(&path)
+                        .and_then(|resolution| resolution.macro_ns)
+                });
+                admission.control.check()?;
+                return match resolved {
+                    Some(PathResolution::Def(ModuleDef::Macro(resolved)))
+                        if resolved.kind(admission.semantics.db)
+                            == MacroKind::DeclarativeBuiltIn
+                            && resolved.name(admission.semantics.db).as_str() == "concat" =>
+                    {
+                        Ok(())
+                    }
+                    _ => Err(unsupported_documentation_expression(
+                        source_path,
+                        meta.syntax(),
+                    )),
+                };
+            }
             if macro_name.as_deref() != Some("include_str") {
                 return Err(unsupported_documentation_expression(
                     source_path,
@@ -275,10 +317,10 @@ fn collect_active_documentation_includes(
                     meta.syntax(),
                 ));
             };
-            match cfg.check(&CfgExpr::parse_from_ast(predicate)) {
+            match admission.cfg.check(&CfgExpr::parse_from_ast(predicate)) {
                 Some(true) => {
                     for nested in meta.metas() {
-                        collect_active_documentation_includes(&nested, cfg, source_path, includes)?;
+                        collect_active_documentation_includes(&nested, admission, includes)?;
                     }
                     Ok(())
                 }
@@ -297,6 +339,110 @@ fn collect_active_documentation_includes(
         }
         _ => Ok(()),
     }
+}
+
+/// Validates one flat literal call without evaluating, rendering, or loading inputs.
+/// RA resolves the macro definition separately and owns the eventual expansion.
+fn admit_literal_documentation_concat(
+    call: &ast::MacroCall,
+    source_path: &Path,
+    control: RustAnalysisControl<'_>,
+    total_bytes: &mut usize,
+) -> Result<(), RustAuthorityError> {
+    use ra_ap_syntax::SyntaxKind;
+
+    let unsupported = || unsupported_documentation_expression(source_path, call.syntax());
+    control.check()?;
+    let Some(tree) = call.token_tree() else {
+        return Err(unsupported());
+    };
+    let Some(left) = tree.left_delimiter_token() else {
+        return Err(unsupported());
+    };
+    let Some(right) = tree.right_delimiter_token() else {
+        return Err(unsupported());
+    };
+    if !matches!(
+        (left.kind(), right.kind()),
+        (SyntaxKind::L_PAREN, SyntaxKind::R_PAREN)
+            | (SyntaxKind::L_BRACK, SyntaxKind::R_BRACK)
+            | (SyntaxKind::L_CURLY, SyntaxKind::R_CURLY)
+    ) {
+        return Err(unsupported());
+    }
+
+    let mut expect_literal = true;
+    let mut arguments = 0_usize;
+    for element in tree.token_trees_and_tokens() {
+        control.check()?;
+        // A nested token tree is never a flat string argument, even if its
+        // tokens could be discarded to leave a superficially literal spelling.
+        let Some(token) = element.into_token() else {
+            return Err(unsupported());
+        };
+        if matches!(token.kind(), SyntaxKind::WHITESPACE | SyntaxKind::COMMENT)
+            || token.text_range() == left.text_range()
+            || token.text_range() == right.text_range()
+        {
+            continue;
+        }
+        if !expect_literal {
+            if token.kind() != SyntaxKind::COMMA {
+                return Err(unsupported());
+            }
+            expect_literal = true;
+            continue;
+        }
+        let Some(literal) = ast::String::cast(token) else {
+            return Err(unsupported());
+        };
+        arguments += 1;
+        if arguments > MAX_RUST_DOCUMENTATION_LITERAL_ARGUMENTS {
+            return Err(RustAuthorityError::DocumentationInputLimit {
+                actual: arguments,
+                maximum: MAX_RUST_DOCUMENTATION_LITERAL_ARGUMENTS,
+            });
+        }
+        let literal_bytes = literal.syntax().text().len() as u64;
+        if literal_bytes > u64::from(*control.maximum_source_bytes) {
+            return Err(RustAuthorityError::SourceBudget {
+                actual: literal_bytes,
+                maximum: control.maximum_source_bytes,
+            });
+        }
+        // String::value decodes the quoted interior; it does not reject an
+        // illegal literal suffix. Admit the complete token, including its raw
+        // delimiter, rather than silently discarding such source syntax.
+        let spelling = literal.syntax().text();
+        let complete_literal = spelling.split_once('"').is_some_and(|(prefix, _)| {
+            if prefix.is_empty() {
+                spelling.ends_with('"')
+            } else {
+                prefix.strip_prefix('r').is_some_and(|hashes| {
+                    hashes.bytes().all(|byte| byte == b'#')
+                        && spelling
+                            .strip_suffix(hashes)
+                            .is_some_and(|tail| tail.ends_with('"'))
+                })
+            }
+        });
+        if !complete_literal {
+            return Err(unsupported());
+        }
+        let value = literal.value().map_err(|_| unsupported())?;
+        control.check()?;
+        let actual = total_bytes.checked_add(value.len()).unwrap_or(usize::MAX);
+        if actual > MAX_RUST_DOCUMENTATION_INPUT_BYTES {
+            return Err(RustAuthorityError::DocumentationInputLimit {
+                actual,
+                maximum: MAX_RUST_DOCUMENTATION_INPUT_BYTES,
+            });
+        }
+        *total_bytes = actual;
+        expect_literal = false;
+    }
+    control.check()?;
+    Ok(())
 }
 
 fn unsupported_documentation_expression(
@@ -2071,8 +2217,13 @@ impl RustWorkspace {
             let parsed = semantics.parse(source_file);
             let include_paths = documentation_include_paths(
                 parsed.syntax(),
-                owner.cfg(&self.database),
-                selected.path,
+                &mut DocumentationInputAdmission {
+                    semantics: &semantics,
+                    cfg: owner.cfg(&self.database),
+                    source_path: selected.path,
+                    control,
+                    total_bytes: &mut total_bytes,
+                },
             )?;
 
             for include_path in include_paths {
@@ -4967,12 +5118,12 @@ pub enum RustAuthorityError {
         /// Exact canonical include path.
         path: PathBuf,
     },
-    /// The include count or combined byte budget was exceeded.
-    #[error("Rustdoc include inputs exceed bounded limit {maximum} (observed {actual})")]
+    /// The include count, flat literal argument count, or combined byte budget was exceeded.
+    #[error("Rustdoc inputs exceed bounded limit {maximum} (observed {actual})")]
     DocumentationInputLimit {
-        /// Observed number of paths or combined bytes.
+        /// Observed number of paths, literal arguments, or combined bytes.
         actual: usize,
-        /// Maximum number of paths or combined bytes admitted.
+        /// Maximum number of paths, literal arguments, or combined bytes admitted.
         maximum: usize,
     },
     /// A documentation attribute expression cannot be admitted before RA expansion.
@@ -5178,6 +5329,184 @@ const fn rust_edition(edition: ra_ap_syntax::Edition) -> RustEdition {
         ra_ap_syntax::Edition::Edition2018 => RustEdition::Rust2018,
         ra_ap_syntax::Edition::Edition2021 => RustEdition::Rust2021,
         ra_ap_syntax::Edition::Edition2024 => RustEdition::Rust2024,
+    }
+}
+
+#[cfg(test)]
+mod documentation_literal_concat_tests {
+    use std::{
+        path::Path,
+        sync::atomic::AtomicBool,
+        time::{Duration, Instant},
+    };
+
+    use ra_ap_syntax::{AstNode, Edition, ast};
+
+    use super::{
+        MAX_RUST_DOCUMENTATION_INPUT_BYTES, MAX_RUST_DOCUMENTATION_LITERAL_ARGUMENTS,
+        RustAnalysisControl, RustAuthorityError, SourceByteLimit,
+        admit_literal_documentation_concat,
+    };
+
+    fn call(expression: &str) -> ast::MacroCall {
+        ast::SourceFile::parse(
+            &format!("#[doc = {expression}] pub fn documented() {{}}"),
+            Edition::Edition2024,
+        )
+        .syntax_node()
+        .descendants()
+        .find_map(ast::MacroCall::cast)
+        .expect("fixture has a documentation macro call")
+    }
+
+    fn control(cancelled: &AtomicBool) -> RustAnalysisControl<'_> {
+        RustAnalysisControl {
+            cancelled,
+            maximum_source_bytes: SourceByteLimit::from(u32::MAX),
+            deadline: Instant::now() + Duration::from_secs(30),
+        }
+    }
+
+    #[test]
+    fn flat_literal_forms_charge_their_decoded_utf8_bytes() {
+        let cancelled = AtomicBool::new(false);
+        for (expression, expected) in [
+            ("concat!()", ""),
+            ("concat!(\"\",)", ""),
+            ("concat!(\"a\", /* separator */ \"b\",)", "ab"),
+            (r##"concat!(r#"raw "#, "\u{e9}\n")"##, "raw é\n"),
+            ("concat![\"square\"]", "square"),
+            ("concat!{\"curly\"}", "curly"),
+        ] {
+            let mut bytes = 7;
+            admit_literal_documentation_concat(
+                &call(expression),
+                Path::new("src/lib.rs"),
+                control(&cancelled),
+                &mut bytes,
+            )
+            .expect(expression);
+            assert_eq!(bytes, 7 + expected.len(), "{expression}");
+        }
+    }
+
+    #[test]
+    fn computed_nested_nonstring_and_malformed_arguments_are_refused() {
+        let cancelled = AtomicBool::new(false);
+        for expression in [
+            "concat!(env!(\"HOME\"))",
+            "concat!(include_str!(\"../outside.txt\"))",
+            "concat!(concat!(\"nested\"))",
+            "concat!((\"group\"))",
+            "concat!(NAME)",
+            "concat!(123)",
+            "concat!(true)",
+            "concat!('a')",
+            "concat!(b\"bytes\")",
+            "concat!(,)",
+            "concat!(\"a\" \"b\")",
+            "concat!(\"a\",,\"b\")",
+            "concat!(\"a\";)",
+            "concat!(\"a\"suffix)",
+            "concat!(r#\"a\"#suffix)",
+            r#"concat!("\q")"#,
+        ] {
+            assert!(
+                matches!(
+                    admit_literal_documentation_concat(
+                        &call(expression),
+                        Path::new("src/lib.rs"),
+                        control(&cancelled),
+                        &mut 0,
+                    ),
+                    Err(RustAuthorityError::UnsupportedDocumentationExpression { .. })
+                ),
+                "{expression}"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_literals_cannot_bypass_the_argument_bound() {
+        let cancelled = AtomicBool::new(false);
+        let expression = format!(
+            "concat!({})",
+            "\"\",".repeat(MAX_RUST_DOCUMENTATION_LITERAL_ARGUMENTS + 1)
+        );
+        let mut bytes = 0;
+        assert!(matches!(
+            admit_literal_documentation_concat(
+                &call(&expression), Path::new("src/lib.rs"), control(&cancelled), &mut bytes,
+            ),
+            Err(RustAuthorityError::DocumentationInputLimit { actual, maximum })
+                if actual == 1025 && maximum == 1024
+        ));
+        assert_eq!(bytes, 0);
+    }
+
+    #[test]
+    fn separate_calls_share_the_existing_operation_byte_bound() {
+        let cancelled = AtomicBool::new(false);
+        let mut bytes = MAX_RUST_DOCUMENTATION_INPUT_BYTES - 1;
+        admit_literal_documentation_concat(
+            &call("concat!(\"a\")"),
+            Path::new("src/lib.rs"),
+            control(&cancelled),
+            &mut bytes,
+        )
+        .expect("last admitted byte");
+        assert!(matches!(
+            admit_literal_documentation_concat(
+                &call("concat!(\"b\")"), Path::new("src/second.rs"), control(&cancelled), &mut bytes,
+            ),
+            Err(RustAuthorityError::DocumentationInputLimit { actual, maximum })
+                if actual == 64 * 1024 * 1024 + 1 && maximum == 64 * 1024 * 1024
+        ));
+        assert_eq!(bytes, MAX_RUST_DOCUMENTATION_INPUT_BYTES);
+    }
+
+    #[test]
+    fn encoded_literal_size_is_checked_before_decoding() {
+        let cancelled = AtomicBool::new(false);
+        let mut bounded = control(&cancelled);
+        bounded.maximum_source_bytes = SourceByteLimit::from(3);
+        let mut bytes = 0;
+        assert!(matches!(
+            admit_literal_documentation_concat(
+                &call(r#"concat!("\u{e9}")"#), Path::new("src/lib.rs"), bounded, &mut bytes,
+            ),
+            Err(RustAuthorityError::SourceBudget { actual: 8, maximum })
+                if *maximum == 3
+        ));
+        assert_eq!(bytes, 0);
+    }
+
+    #[test]
+    fn cancellation_and_deadline_refuse_without_charging_literal_bytes() {
+        let cancelled = AtomicBool::new(true);
+        let mut bytes = 5;
+        assert!(matches!(
+            admit_literal_documentation_concat(
+                &call("concat!(\"uncharged\")"),
+                Path::new("src/lib.rs"),
+                control(&cancelled),
+                &mut bytes,
+            ),
+            Err(RustAuthorityError::Cancelled)
+        ));
+        let running = AtomicBool::new(false);
+        let mut expired = control(&running);
+        expired.deadline = Instant::now();
+        assert!(matches!(
+            admit_literal_documentation_concat(
+                &call("concat!(\"uncharged\")"),
+                Path::new("src/lib.rs"),
+                expired,
+                &mut bytes,
+            ),
+            Err(RustAuthorityError::DeadlineExceeded)
+        ));
+        assert_eq!(bytes, 5);
     }
 }
 

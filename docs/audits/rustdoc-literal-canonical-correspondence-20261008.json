@@ -1,0 +1,15 @@
+{
+  "base": "6ca4d851252a916d86612b9e40455ae67cab9ea4",
+  "canonical_replay_source": "3036d4bcff476b07311d417969fc262fedc5c3b3",
+  "canonical_replay_tree": "2eced0fa497c82062ca80a243ba2af625bb49027",
+  "three_exact_native_tested_postimages": {
+    "frontends/rust/src/legacy/authority.rs": "100644 blob fce45cabe320ad062fdf622f8cc729b0baff4293",
+    "frontends/rust/tests/semantic_authority.rs": "100644 blob 9f34924c06141231ec384298c79cab0e1e9806d9",
+    "frontends/rust/tests/workspace_session.rs": "100644 blob 17b84c3e5ef91f6e92909f0d9f0ee779b8d2c2d1"
+  },
+  "other_git_entries_unchanged": 17963,
+  "canonical_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+  "native_tested_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+  "root_native_audit_sha256": "538ce1e3f6b722ac9b386b05ee1fa462449341048ce54ccd657010ec94b969ad",
+  "canonical_replay_native_unrun": true
+}

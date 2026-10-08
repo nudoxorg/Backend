@@ -678,6 +678,135 @@ fn rustdoc_oversized_include_fails_closed() -> Result<(), TestFailure> {
     outcome
 }
 
+/// Proves RA owns literal-concat documentation, including UTF-8 and active configuration.
+#[test]
+fn rustdoc_builtin_literal_concat_preserves_owned_expansion() -> Result<(), TestFailure> {
+    let root = project_root()?;
+    let outcome = (|| {
+        write_fixture(
+            root.join("src/lib.rs"),
+            r###"
+pub fn concat() {}
+#[doc = concat!("generated docs remain owned", " across expansion")]
+pub fn generated() {}
+#[doc = concat!(r#"raw UTF-8: "#, "\u{e9}\nsecond line",)]
+pub fn escaped() {}
+#[doc = std::concat!(/* literal only */ "qualified ", "builtin")]
+pub fn qualified() {}
+#[cfg_attr(all(), doc = concat!("active ", "configuration"))]
+#[cfg_attr(any(), doc = concat!(env!("NUDOX_MUST_NOT_BE_READ")))]
+pub fn configured() {}
+#[doc = concat!()]
+pub fn empty() {}
+"###,
+            "write literal Rustdoc concat source",
+        )?;
+        let toolchain = RustToolchain::discover(rustc_path()).map_err(RustAuthorityError::from)?;
+        let project = RustProject::open(&root, &toolchain, RustEdition::Rust2024)?;
+        let cancelled = AtomicBool::new(false);
+        project
+            .analyze(
+                RustAnalysisControl {
+                    cancelled: &cancelled,
+                    maximum_source_bytes: SourceByteLimit::from(8_192),
+                    deadline: Instant::now() + std::time::Duration::from_secs(180),
+                },
+                |authority| {
+                    for (name, expected) in [
+                        (
+                            b"generated".as_slice(),
+                            vec!["generated docs remain owned across expansion"],
+                        ),
+                        (b"escaped".as_slice(), vec!["raw UTF-8: é", "second line"]),
+                        (b"qualified".as_slice(), vec!["qualified builtin"]),
+                        (b"configured".as_slice(), vec!["active configuration"]),
+                        (b"empty".as_slice(), vec![]),
+                    ] {
+                        let declaration = authority
+                            .declarations()
+                            .find(|declaration| {
+                                matches!(declaration.definition, RustDefinition::Function(_))
+                                    && authority
+                                        .declaration_name(declaration)
+                                        .ok()
+                                        .and_then(|span| authority.source_at(span).ok())
+                                        == Some(name)
+                            })
+                            .ok_or(RustAuthorityError::MissingSemanticFact {
+                                fact: SemanticKind::Function,
+                            })?;
+                        let mut observed = Vec::new();
+                        authority.visit_declaration_documentation(
+                            &declaration.definition,
+                            |line, span| {
+                                assert!(
+                                    span.is_none(),
+                                    "expanded documentation has no invented source span"
+                                );
+                                observed.push(line.to_owned());
+                                Ok(())
+                            },
+                        )?;
+                        assert_eq!(
+                            observed,
+                            expected,
+                            "function {}",
+                            String::from_utf8_lossy(name)
+                        );
+                    }
+                    Ok(())
+                },
+            )
+            .map_err(TestFailure::Authority)
+    })();
+    fs::remove_dir_all(&root).map_err(|source| TestFailure::Io {
+        operation: "remove literal Rustdoc concat fixture",
+        source,
+    })?;
+    outcome
+}
+
+/// Proves spelling alone cannot admit a user macro or a differently named built-in.
+#[test]
+fn rustdoc_shadowed_and_aliased_concat_are_refused() -> Result<(), TestFailure> {
+    let root = project_root()?;
+    let outcome = (|| {
+        let toolchain = RustToolchain::discover(rustc_path()).map_err(RustAuthorityError::from)?;
+        for source in [
+            "macro_rules! concat { ($($value:tt)*) => { \"user generated\" }; }\n#[doc = concat!(\"literal\")]\npub fn documented() {}\n",
+            "use std::include_str as concat;\n#[doc = concat!(\"../outside.txt\")]\npub fn documented() {}\n",
+        ] {
+            write_fixture(
+                root.join("src/lib.rs"),
+                source,
+                "write shadowed Rustdoc macro source",
+            )?;
+            let project = RustProject::open(&root, &toolchain, RustEdition::Rust2024)?;
+            let cancelled = AtomicBool::new(false);
+            assert!(
+                matches!(
+                    project.analyze(
+                        RustAnalysisControl {
+                            cancelled: &cancelled,
+                            maximum_source_bytes: SourceByteLimit::from(8_192),
+                            deadline: Instant::now() + std::time::Duration::from_secs(180),
+                        },
+                        |_| Ok(())
+                    ),
+                    Err(RustAuthorityError::UnsupportedDocumentationExpression { .. })
+                ),
+                "unadmitted macro source: {source}"
+            );
+        }
+        Ok(())
+    })();
+    fs::remove_dir_all(&root).map_err(|source| TestFailure::Io {
+        operation: "remove shadowed Rustdoc concat fixture",
+        source,
+    })?;
+    outcome
+}
+
 /// Proves computed include paths fail closed before RA can silently omit the documentation.
 #[test]
 fn rustdoc_computed_include_path_fails_closed() -> Result<(), TestFailure> {

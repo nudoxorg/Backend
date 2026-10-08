@@ -1,0 +1,193 @@
+{
+  "schema": "nudox.root.rust6a-independent-native-audit.v1",
+  "source": {
+    "commit": "6a381c45bd04c94e75c518eedfd934db5795868e",
+    "tree": "664ab2745ee3e2ed72521bb16d2eab750a58f0f2",
+    "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+    "clean": true
+  },
+  "archive_sha256": "fabee9152c14801df7dc57c52344c45600553704335931bc1abd31f4402cd733",
+  "all_source_inputs_verified_against_actual_git": 17945,
+  "git_blob_bytes": 465272019,
+  "gitlinks_reference_only": [
+    "server/index/turso"
+  ],
+  "actual_unique_tests_passed": 11,
+  "failed": 0,
+  "ignored": 0,
+  "rows": [
+    {
+      "name": "build0-05-01",
+      "receipt_sha256": "deebbe6608637a13022a4d4eed12d15a9819836d4970bda6cdb4d7900c108dbb",
+      "exit": 0,
+      "tests": [],
+      "stdout_sha256": "3139cb6cb3b13dab4bd3b7fff4466e2d5599715de8a2549e801b7aeef81b7d4c",
+      "stderr_sha256": "ef0bd5b46003aab93888f38dcf1e4c91e4f3a4b8c8b9f027fdb459456fae37e3",
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-doc-concat-6a381-native-20261008/build0-05-01/images/frontend-lib",
+        "sha256": "6218344f083b2a0364fe0dea442692e501eb2a165d16401bbc445262bb58926a",
+        "bytes": 64636984,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_frontend_rust-df2d7d951c70da92"
+      },
+      "native_image_rehashed_by_root": false
+    },
+    {
+      "name": "build1-05-01",
+      "receipt_sha256": "2d65d682503ad0e3c22dd0e191a9d25410ccb7ca39c20378ddb83b3a6834801d",
+      "exit": 0,
+      "tests": [],
+      "stdout_sha256": "bb7f1b50a6f2a2cd2d3bc6c09ad530351c50a496c7915c614986ddd819a2b2fb",
+      "stderr_sha256": "8ec25e523140b69901fe4bab957ff1dcf871d7f013464f8973d95fdb44a65394",
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-doc-concat-6a381-native-20261008/build1-05-01/images/semantic-authority",
+        "sha256": "b27b764165eccb96853ceef8718d0c14bf0f7404500fd9531960daebdd23b71d",
+        "bytes": 67311920,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/semantic_authority-b964b5d139fa9c30"
+      },
+      "native_image_rehashed_by_root": false
+    },
+    {
+      "name": "build2-05-01",
+      "receipt_sha256": "36eb367922cbd8fbabcb3d66d87f6435413dbf98f9e9715414e8cb54d230b9c3",
+      "exit": 0,
+      "tests": [],
+      "stdout_sha256": "dc67dbfc996b836c89b861f9ca482a11abaf1efb5301a31f15b63c4da5a20141",
+      "stderr_sha256": "f0175b12085ec9cd2c52c2337342ec0a117a423a3102928128483084c3608617",
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-doc-concat-6a381-native-20261008/build2-05-01/images/workspace-session",
+        "sha256": "27acbfc771aacaa78c680de5fc9a0ceb4a2ee0d1a1f4b02a55bb5ebc0cd42114",
+        "bytes": 66915296,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/workspace_session-2eed41de6d0dd43d"
+      },
+      "native_image_rehashed_by_root": false
+    },
+    {
+      "name": "build3-05-01",
+      "receipt_sha256": "34237e847f0bba051b5468ccdedf7730b84295c60d89184da8fb7c646dcb449a",
+      "exit": 0,
+      "tests": [],
+      "stdout_sha256": "a31864e5379576761ea0008114c78becfcff5b4e7aefd6c19168436b24674f71",
+      "stderr_sha256": "dd945162a1a46b7d4ad825523e770c7ab7fab2ef438ba430e820b0977212ee43",
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-doc-concat-6a381-native-20261008/build3-05-01/images/engine-ready-package",
+        "sha256": "c3230f3841c148dcf35981e43efbc959f9fae0ba8f2cbfaca521c8e60bcb2581",
+        "bytes": 412480432,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/local_compiler-cdecc317941d1080"
+      },
+      "native_image_rehashed_by_root": false
+    },
+    {
+      "name": "run0-05-01",
+      "receipt_sha256": "2154fb71d86a1511cdedc8e4a8e85c89e0870619a9975ecc51f86ef48f908955",
+      "exit": 0,
+      "tests": [
+        "test legacy::authority::documentation_literal_concat_tests::cancellation_and_deadline_refuse_without_charging_literal_bytes ... ok",
+        "test legacy::authority::documentation_literal_concat_tests::computed_nested_nonstring_and_malformed_arguments_are_refused ... ok",
+        "test legacy::authority::documentation_literal_concat_tests::empty_literals_cannot_bypass_the_argument_bound ... ok",
+        "test legacy::authority::documentation_literal_concat_tests::encoded_literal_size_is_checked_before_decoding ... ok",
+        "test legacy::authority::documentation_literal_concat_tests::flat_literal_forms_charge_their_decoded_utf8_bytes ... ok",
+        "test legacy::authority::documentation_literal_concat_tests::separate_calls_share_the_existing_operation_byte_bound ... ok"
+      ],
+      "stdout_sha256": "a302267d30552776590de782d656bf79d3380c85152f4c3b8428a15f45e1b965",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-doc-concat-6a381-native-20261008/build0-05-01/images/frontend-lib",
+        "sha256": "6218344f083b2a0364fe0dea442692e501eb2a165d16401bbc445262bb58926a",
+        "bytes": 64636984,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_frontend_rust-df2d7d951c70da92"
+      },
+      "native_image_rehashed_by_root": false
+    },
+    {
+      "name": "run1-05-01",
+      "receipt_sha256": "f25bdac1a7a97ab3773d2ec126cb93f534f2a8cfdebf1e0b6aa61bbec4484f05",
+      "exit": 0,
+      "tests": [
+        "test rustdoc_builtin_literal_concat_preserves_owned_expansion ... ok"
+      ],
+      "stdout_sha256": "6e47251f4a0954b731ad9f0a4d3b3a95b86e07d129706f9df77b4ddae67049f5",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-doc-concat-6a381-native-20261008/build1-05-01/images/semantic-authority",
+        "sha256": "b27b764165eccb96853ceef8718d0c14bf0f7404500fd9531960daebdd23b71d",
+        "bytes": 67311920,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/semantic_authority-b964b5d139fa9c30"
+      },
+      "native_image_rehashed_by_root": false
+    },
+    {
+      "name": "run2-05-01",
+      "receipt_sha256": "81f3fe53174a8aa4c25e33da7e4d8c74c865824c9be32318f7843abaca7b74d5",
+      "exit": 0,
+      "tests": [
+        "test rustdoc_shadowed_and_aliased_concat_are_refused ... ok"
+      ],
+      "stdout_sha256": "5eb91b0d5a317ca65d96819d17f256ffb42dfb6ec8935b9222791c2477d1cfe2",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-doc-concat-6a381-native-20261008/build1-05-01/images/semantic-authority",
+        "sha256": "b27b764165eccb96853ceef8718d0c14bf0f7404500fd9531960daebdd23b71d",
+        "bytes": 67311920,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/semantic_authority-b964b5d139fa9c30"
+      },
+      "native_image_rehashed_by_root": false
+    },
+    {
+      "name": "run3-05-01",
+      "receipt_sha256": "500375b86a21093209cc1ea600aad02fbb4a706074eae3eb457907a0231400a2",
+      "exit": 0,
+      "tests": [
+        "test nested_documentation_macros_refuse_before_outside_input_capture ... ok"
+      ],
+      "stdout_sha256": "61b09a77589f774660914293300e3bf87cb1fe1296228920c68bdfe70a97407a",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-doc-concat-6a381-native-20261008/build2-05-01/images/workspace-session",
+        "sha256": "27acbfc771aacaa78c680de5fc9a0ceb4a2ee0d1a1f4b02a55bb5ebc0cd42114",
+        "bytes": 66915296,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/workspace_session-2eed41de6d0dd43d"
+      },
+      "native_image_rehashed_by_root": false
+    },
+    {
+      "name": "run4-05-01",
+      "receipt_sha256": "24ca39bf2fe3bd41483885abd8b5a4f40e706c2f76197e58e0de079cb9b46172",
+      "exit": 0,
+      "tests": [
+        "test rustdoc_computed_include_path_fails_closed ... ok"
+      ],
+      "stdout_sha256": "a47611c9d7e2117fd102eee7530312f6106f2495de0220fbf1af944848b151d5",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-doc-concat-6a381-native-20261008/build1-05-01/images/semantic-authority",
+        "sha256": "b27b764165eccb96853ceef8718d0c14bf0f7404500fd9531960daebdd23b71d",
+        "bytes": 67311920,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/semantic_authority-b964b5d139fa9c30"
+      },
+      "native_image_rehashed_by_root": false
+    },
+    {
+      "name": "run5-05-01",
+      "receipt_sha256": "2dc1ca7c93e8d79e2a9a6feb15012aa77b255480a6b24e232d033b9ac049e7a0",
+      "exit": 0,
+      "tests": [
+        "test package_batch::runtime_returns_one_failed_package_terminal_then_reuses_the_same_lane_without_partial_publish ... ok"
+      ],
+      "stdout_sha256": "9632990b85319949b4dd49532e060683eb6b396070a951d149794765f2733637",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-rust-doc-concat-6a381-native-20261008/build3-05-01/images/engine-ready-package",
+        "sha256": "c3230f3841c148dcf35981e43efbc959f9fae0ba8f2cbfaca521c8e60bcb2581",
+        "bytes": 412480432,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/local_compiler-cdecc317941d1080"
+      },
+      "native_image_rehashed_by_root": false
+    }
+  ],
+  "return_receipt_sha256": "bae7ac3ec49e302a4d703a4c86d3416a463f7ca293cdc821e4125043a44d656b",
+  "limitations": [
+    "Native images not rehashed by Root; SHA is producing supervisor evidence bound independently to Cargo artifact and actual native output.",
+    "Canonical f041 replay native unrun.",
+    "No installed CLI/MCP or full application acceptance inferred."
+  ]
+}
