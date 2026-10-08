@@ -1,0 +1,19 @@
+{
+  "status": "PASS",
+  "source": "8d122895b8bcb765142455e69cde04e6a5e13ecc",
+  "tree": "58eefee644c5a82b5414712b560d0323273f64bd",
+  "source_comparison": "Only delta.rs restored to exact8809, identical tests and lock",
+  "raw_profile_processes_verified": 6,
+  "native_suite": {
+    "source": "8d122895b8bcb765142455e69cde04e6a5e13ecc",
+    "passed": 103,
+    "failed": 0,
+    "ignored": 1
+  },
+  "limitations": [
+    "Admission-only phase, one independent process observation per size and version; no whole-query latency claim",
+    "Peak bytes reflect measured temporary allocations, not process RSS",
+    "Historical e42 cold query observation is unrelated to this paired source comparison"
+  ],
+  "evidence_sha256": "733acd79b64aff5394ee68d012277f0efd2968552207c98f9c5cd8bae480bffe"
+}

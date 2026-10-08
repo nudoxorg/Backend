@@ -1,0 +1,146 @@
+{
+  "phase": "64 DocumentState::from_relation admissions; relation construction excluded",
+  "input_bytes": [
+    16384,
+    1048576,
+    16777216
+  ],
+  "candidate_metrics": [
+    {
+      "text_bytes": 16384,
+      "iterations": 64,
+      "elapsed_ns": 34987,
+      "allocation_count": 64,
+      "allocation_bytes": 1024,
+      "allocation_peak_bytes": 16
+    },
+    {
+      "text_bytes": 1048576,
+      "iterations": 64,
+      "elapsed_ns": 426954,
+      "allocation_count": 128,
+      "allocation_bytes": 5120,
+      "allocation_peak_bytes": 80
+    },
+    {
+      "text_bytes": 16777216,
+      "iterations": 64,
+      "elapsed_ns": 4458577,
+      "allocation_count": 128,
+      "allocation_bytes": 5120,
+      "allocation_peak_bytes": 80
+    }
+  ],
+  "baseline_metrics": [
+    {
+      "text_bytes": 16384,
+      "iterations": 64,
+      "elapsed_ns": 120341,
+      "allocation_count": 256,
+      "allocation_bytes": 1052928,
+      "allocation_peak_bytes": 16452
+    },
+    {
+      "text_bytes": 1048576,
+      "iterations": 64,
+      "elapsed_ns": 5058859,
+      "allocation_count": 12416,
+      "allocation_bytes": 67326976,
+      "allocation_peak_bytes": 16500
+    },
+    {
+      "text_bytes": 16777216,
+      "iterations": 64,
+      "elapsed_ns": 86280654,
+      "allocation_count": 196736,
+      "allocation_bytes": 1077154816,
+      "allocation_peak_bytes": 16500
+    }
+  ],
+  "candidate_binary": {
+    "binary": "/root/codex-worktrees/sol61-cold-search-owned-tests-20261008/candidate-testbin",
+    "sha256": "67c0cdef3d8d1c57d4fde153b290509e3a28e65bc455dc1208a6ee12d2fefb06",
+    "source_commit": "8d122895b8bcb765142455e69cde04e6a5e13ecc",
+    "source_tree": "58eefee644c5a82b5414712b560d0323273f64bd",
+    "suite_receipt": "suite-candidate.json",
+    "cargo_lock_sha256": "9206616740b78b7cb330272655ee9fdc3213a9818da4bb964abd6ed083381363",
+    "delta_sha256": "b8c66524bc4b90fe64a9578f7e72cfc7c1bb69335248d55d191dae0756eb27eb",
+    "tests_sha256": "a32a8489cbdc24ea72ddd6aa468baccc2e0af21d52bebbc1246c00031af5d698"
+  },
+  "baseline_binary": {
+    "binary": "/root/codex-worktrees/sol61-cold-search-owned-tests-20261008/baseline-testbin",
+    "sha256": "f64d01b95136fa77f0c2232dc0a023d4cf576186d6c923a40fcf2e260deb7da8",
+    "source_commit": "89e4e2f8aafdb89f23e600a0aa28ad277147d310",
+    "source_tree": "8dfe482c6c3c35ecdbd9b817a2235095d1a504bc",
+    "build_receipt": "build-baseline.json",
+    "cargo_lock_sha256": "9206616740b78b7cb330272655ee9fdc3213a9818da4bb964abd6ed083381363",
+    "delta_sha256": "4b7e842d5300375b0902a0d875beb29a125ac79cc87fbd25d92dafe95aa91894",
+    "tests_sha256": "a32a8489cbdc24ea72ddd6aa468baccc2e0af21d52bebbc1246c00031af5d698"
+  },
+  "baseline_source": {
+    "source_commit": "89e4e2f8aafdb89f23e600a0aa28ad277147d310",
+    "source_tree": "8dfe482c6c3c35ecdbd9b817a2235095d1a504bc",
+    "candidate": "8d122895b8bcb765142455e69cde04e6a5e13ecc",
+    "restored_from": "8809eb34a5c44ee83145c143b9d444124542adc8",
+    "changed_paths": [
+      "extensions/tantivy/src/delta.rs"
+    ],
+    "delta_sha256": "4b7e842d5300375b0902a0d875beb29a125ac79cc87fbd25d92dafe95aa91894",
+    "tests_sha256": "a32a8489cbdc24ea72ddd6aa468baccc2e0af21d52bebbc1246c00031af5d698"
+  },
+  "suite": {
+    "source": "8d122895b8bcb765142455e69cde04e6a5e13ecc",
+    "passed": 103,
+    "failed": 0,
+    "ignored": 1
+  },
+  "retired_processes": [
+    {
+      "pid": 1688561,
+      "start_ticks": "78472145",
+      "same_process_alive": false
+    },
+    {
+      "pid": 1765962,
+      "start_ticks": "78506841",
+      "same_process_alive": false
+    },
+    {
+      "pid": 1759908,
+      "start_ticks": "78499999",
+      "same_process_alive": false
+    },
+    {
+      "pid": 1759910,
+      "start_ticks": "78499999",
+      "same_process_alive": false
+    },
+    {
+      "pid": 1759912,
+      "start_ticks": "78500000",
+      "same_process_alive": false
+    },
+    {
+      "pid": 1770830,
+      "start_ticks": "78511961",
+      "same_process_alive": false
+    },
+    {
+      "pid": 1770834,
+      "start_ticks": "78511961",
+      "same_process_alive": false
+    },
+    {
+      "pid": 1770837,
+      "start_ticks": "78511962",
+      "same_process_alive": false
+    }
+  ],
+  "restored_source": "8d122895b8bcb765142455e69cde04e6a5e13ecc",
+  "mutable_target_last_build": "baseline; immutable candidate and baseline test binaries retain exact binding",
+  "limitations": [
+    "Admission-only phase, one independent process observation per size and version; no whole-query latency claim",
+    "Peak bytes reflect measured temporary allocations, not process RSS",
+    "Historical e42 cold query observation is unrelated to this paired source comparison"
+  ]
+}
