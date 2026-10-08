@@ -449,7 +449,7 @@ fn relation_admission_rejects_nonadjacent_duplicate_fields_and_exact_byte_overfl
 }
 
 #[test]
-#[ignore = "owned allocation/input-size experiment; run alone with an allocation profiler"]
+#[ignore = "owned allocation/input-size experiment; run alone under a fresh runtime permit"]
 fn document_relation_admission_profile() {
     let text_bytes = std::env::var("BACKEND_DOCUMENT_ADMISSION_PROFILE_BYTES")
         .ok()
@@ -478,15 +478,18 @@ fn document_relation_admission_profile() {
         ..Limits::default()
     };
     let started = std::time::Instant::now();
-    for _ in 0..64 {
-        let admitted = DocumentState::from_relation(binding, relation.clone(), limits)
-            .expect("admit exact shared relation");
-        assert_eq!(admitted.binding().root, relation.root());
-        std::hint::black_box(admitted);
-    }
+    let allocations = allocation_counter::measure(|| {
+        for _ in 0..64 {
+            let admitted = DocumentState::from_relation(binding, relation.clone(), limits)
+                .expect("admit exact shared relation");
+            assert_eq!(admitted.binding().root, relation.root());
+            std::hint::black_box(admitted);
+        }
+    });
     println!(
-        "document_relation_admission text_bytes={text_bytes} iterations=64 elapsed_ns={}",
-        started.elapsed().as_nanos()
+        "document_relation_admission text_bytes={text_bytes} iterations=64 elapsed_ns={} allocation_count={} allocation_bytes={} allocation_peak_bytes={}",
+        started.elapsed().as_nanos(), allocations.count_total,
+        allocations.bytes_total, allocations.bytes_max,
     );
 }
 

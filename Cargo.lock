@@ -1194,6 +1194,7 @@ dependencies = [
 name = "backend-extension-tantivy"
 version = "0.2.0"
 dependencies = [
+ "allocation-counter",
  "backend-platform",
  "backend-semantic",
  "backend-version",
