@@ -148,6 +148,9 @@ fn prepared_writer_cancellation_before_grant_returns_the_same_live_writer() {
         Err(backend_engine::WorkspaceError::PublicationCancelled)
     ));
     drop(candidate);
+    writer
+        .prove_unselected()
+        .expect("generic cleanup may prove the unchanged base even before a grant");
     daemon
         .engine_mut()
         .daemon_mut()
@@ -688,8 +691,17 @@ fn prepared_writer_repeated_real_intent_preserves_current_view_binding() {
 
 #[test]
 fn prepared_writer_selected_head_read_failure_stays_pending_and_retryable() {
+    assert_selected_head_recovery_failure_returns_writer(false);
+}
+
+#[test]
+fn prepared_writer_selected_head_recovery_panic_stays_pending_and_retryable() {
+    assert_selected_head_recovery_failure_returns_writer(true);
+}
+
+fn assert_selected_head_recovery_failure_returns_writer(panic_recovery: bool) {
     use std::sync::atomic::{AtomicBool, Ordering};
-    struct FailOnceAdmission(Arc<AtomicBool>);
+    struct FailOnceAdmission(Arc<AtomicBool>, bool);
     impl WorkspaceModel for FailOnceAdmission {
         type Intent = BuiltinIntent;
         type Error = BuiltinModelError;
@@ -716,6 +728,9 @@ fn prepared_writer_selected_head_read_failure_stays_pending_and_retryable() {
             store: &backend_engine::FileStore,
         ) -> Result<backend_engine::PreparedTransition, BuiltinModelError> {
             if self.0.swap(false, Ordering::AcqRel) {
+                if self.1 {
+                    panic!("controlled selected-head recovery model unwind");
+                }
                 return Err(BuiltinModelError(
                     "controlled selected-head admission read failure".to_owned(),
                 ));
@@ -727,7 +742,7 @@ fn prepared_writer_selected_head_read_failure_stays_pending_and_retryable() {
     let fail = Arc::new(AtomicBool::new(false));
     let mut owner = backend_engine::WorkspaceOwner::open_with_registry(
         home.0.path(),
-        FailOnceAdmission(Arc::clone(&fail)),
+        FailOnceAdmission(Arc::clone(&fail), panic_recovery),
         super::super::super::genesis().expect("genesis"),
         super::super::super::product_relation_registry().expect("registry"),
     )
@@ -765,6 +780,19 @@ fn prepared_writer_selected_head_read_failure_stays_pending_and_retryable() {
         writer.prove_unselected().is_err(),
         "actual selected HEAD prevents failed settlement"
     );
+    let writer = if panic_recovery {
+        fail.store(true, Ordering::Release);
+        let (writer, error) = writer.reconcile_publication().expect_err(
+            "explicit recovery retry also catches model unwind without losing the writer",
+        );
+        assert!(matches!(
+            error,
+            backend_engine::WorkspaceError::PublicationPending { .. }
+        ));
+        writer
+    } else {
+        writer
+    };
     let published = writer
         .reconcile_publication()
         .expect("same writer recovers when the read succeeds");

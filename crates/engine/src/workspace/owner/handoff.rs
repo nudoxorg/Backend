@@ -325,7 +325,10 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
             reservation.binding == writer.binding && reservation.granted.is_none()
         }) && self.writer.is_none()
             && self.head == writer.owner.head
-            && matches!(writer.state, WriterState::Ready | WriterState::Prepared(_));
+            // No matching grant exists, so even a sealed cleanup attempt
+            // cannot have entered physical publication. A failed read during
+            // that cleanup must not strand the unique writer either.
+            && matches!(writer.state, WriterState::Ready | WriterState::Prepared(_) | WriterState::Settling(_));
         if !valid {
             return Err((writer, WorkspaceError::HeadConflict));
         }
@@ -533,6 +536,20 @@ impl<M: WorkspaceModel> WorkspaceWriter<M> {
     }
 
     fn reconcile(
+        &mut self,
+        claim: WorkspaceCandidateClaim,
+        prior_error: WorkspaceError,
+    ) -> Result<CommittedWorkspaceCandidate, WorkspaceError> {
+        // Recovery invokes the product model. Catch its unwind while only
+        // borrowing this writer, including when an explicit retry re-enters
+        // recovery after physical HEAD was already selected.
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.reconcile_inner(claim, prior_error)
+        }))
+        .map_err(|_| Self::retry_pending(claim, "workspace recovery model panicked"))?
+    }
+
+    fn reconcile_inner(
         &mut self,
         claim: WorkspaceCandidateClaim,
         prior_error: WorkspaceError,
