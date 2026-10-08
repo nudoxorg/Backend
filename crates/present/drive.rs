@@ -563,19 +563,23 @@ fn read_page(
     probe: Probe<'_>,
     continuation: Option<PageContinuation>,
 ) -> Result<ReplyDto, Fault> {
-    let operand = probe.operand();
     engine
         .probe_page(probe, continuation)
-        .map_err(|error| Fault::from_client_error(&error, operand))
-        .map_err(|fault| next_step(fault, probe))
+        .map_err(|error| probe_fault(&error, probe))
 }
 
 fn read(engine: &mut dyn Engine, probe: Probe<'_>) -> Result<ReplyDto, Fault> {
-    let operand = probe.operand();
     engine
         .probe(probe)
-        .map_err(|error| Fault::from_client_error(&error, operand))
-        .map_err(|fault| next_step(fault, probe))
+        .map_err(|error| probe_fault(&error, probe))
+}
+
+/// Preserves a typed client failure and its requested operand, adding only
+/// the actionable next step justified by that exact probe and failure class.
+/// Every surface, including direct graph-page adapters, shares this lowering.
+#[must_use]
+pub fn probe_fault(error: &ClientError, probe: Probe<'_>) -> Fault {
+    next_step(Fault::from_client_error(error, probe.operand()), probe)
 }
 
 /// Offers the step a reader can actually take after an address missed.

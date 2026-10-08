@@ -573,6 +573,21 @@ impl<P: Product> Server<P> {
         let params = object(params)?;
         let name = string(params, "name")?;
         let route = tool_route(name).ok_or_else(|| RpcError::new(-32602, "Unknown tool"))?;
+        // Admit the CallToolRequest envelope before interpreting tool inputs.
+        if !matches!(params.get("arguments"), None | Some(Value::Object(_))) {
+            return Err(RpcError::invalid("arguments must be an object"));
+        }
+        self.call_routed_tool(params, name, route)
+            .or_else(RpcError::into_tool_result)
+    }
+    /// A recognized route owns input/domain refusals. Envelope and retained
+    /// proof failures remain JSON-RPC errors; no display string classifies one.
+    fn call_routed_tool(
+        &mut self,
+        params: &Map<String, Value>,
+        name: &str,
+        route: ToolRoute,
+    ) -> Result<Value, RpcError> {
         let empty = Map::new();
         let arguments = match params.get("arguments") {
             None | Some(Value::Null) => &empty,
@@ -582,9 +597,14 @@ impl<P: Product> Server<P> {
         // The MCP schema requires an explicit path even though the shared CLI
         // grammar permits its project default. Admit it before any owner call.
         if name == "backend.index" {
-            if !arguments.get("path").and_then(Value::as_str).is_some_and(|path| !path.trim().is_empty()) {
+            if !arguments
+                .get("path")
+                .and_then(Value::as_str)
+                .is_some_and(|path| !path.trim().is_empty())
+            {
                 return Err(RpcError::from_fault(&Fault::usage(
-                    "path", "backend.index requires arguments.path: pass the repository's absolute path; use backend.index_start for a resumable operation",
+                    "path",
+                    "backend.index requires arguments.path: pass the repository's absolute path; use backend.index_start for a resumable operation",
                 )));
             }
         }
@@ -603,10 +623,10 @@ impl<P: Product> Server<P> {
             return self.index_job_tool(name, arguments, detail, &context);
         }
         if matches!(route, ToolRoute::RefusedIndexAwait) {
-            return Err(RpcError::new(
-                -32602,
+            return Err(RpcError::from_fault(&Fault::usage(
+                "ticket",
                 "Use backend.index_progress for bounded polling",
-            ));
+            )));
         }
         let context = continuation_context(&self.project, name, arguments, detail);
         let grammar = match route {
@@ -664,12 +684,11 @@ impl<P: Product> Server<P> {
                         CursorTarget::CliOption
                     },
                 ),
-                Err(fault) => Ok(refused(&fault)),
+                Err(fault) => Err(RpcError::from_fault(&fault)),
             },
-            Err(fault) => Ok(refused(&fault)),
+            Err(fault) => Err(RpcError::from_fault(&fault)),
         }
     }
-
     fn query_tool(
         &mut self,
         arguments: &Map<String, Value>,
@@ -692,7 +711,7 @@ impl<P: Product> Server<P> {
             .graph_query(input, limit(arguments)?, continuation)
         {
             Ok(page) => self.graph_page_result(&page, detail, context),
-            Err(error) => Ok(refused(&Fault::from_client_error(
+            Err(error) => Err(RpcError::from_fault(&Fault::from_client_error(
                 &error,
                 backend_present::Operand::Text(query),
             ))),
@@ -712,18 +731,24 @@ impl<P: Product> Server<P> {
             .product
             .graph_page(coordinate.clone(), limit(arguments)?, continuation)
             .map_err(|error| {
-                RpcError::from_fault(&Fault::from_client_error(
+                RpcError::from_fault(&backend_present::probe_fault(
                     &error,
-                    backend_present::Operand::Text(coordinate.clone()),
+                    Probe::Graph(&coordinate),
                 ))
             })?;
-        let backend_library::CommandReply::ProjectionPage(page) = reply.reply else {
-            return Err(RpcError::tool("graph page reply changed shape"));
+        let page = match reply.reply {
+            backend_library::CommandReply::ProjectionPage(page) => page,
+            backend_library::CommandReply::Failed(failure) => {
+                return Err(RpcError::from_fault(&backend_present::probe_fault(
+                    &ClientError::CommandFailed(failure),
+                    Probe::Graph(&coordinate),
+                )));
+            }
+            _ => return Err(RpcError::tool("graph page reply changed shape")),
         };
         let answer = Answer::Records(Box::new(record_list(&coordinate, &page.snapshot)));
         self.rendered(&answer, detail, context, CursorTarget::CliOption)
     }
-
     fn surface_tool(
         &mut self,
         arguments: &Map<String, Value>,
@@ -753,13 +778,15 @@ impl<P: Product> Server<P> {
             .admit()
             .map_err(|error| RpcError::invalid(format!("command: {error}")))?;
         let operand = surface_error_operand(&command);
-        let reply = self.product.surface(command).map_err(|error| match error {
-            ClientError::StaleCursor => RpcError::stale_cursor(),
-            other => RpcError::from_fault(&Fault::from_client_error(&other, operand)),
-        })?;
-        self.surface_reply_result(&reply, detail, context)
+        let reply = self
+            .product
+            .surface(command.clone())
+            .map_err(|error| match error {
+                ClientError::StaleCursor => RpcError::stale_cursor(),
+                other => RpcError::from_fault(&Fault::from_client_error(&other, operand)),
+            })?;
+        self.surface_reply_result(&command, &reply, detail, context)
     }
-
     fn index_job_tool(
         &mut self,
         name: &str,
@@ -813,18 +840,18 @@ impl<P: Product> Server<P> {
         let operand = surface_error_operand(&command);
         let reply = self
             .product
-            .surface(command)
+            .surface(command.clone())
             .map_err(|error| RpcError::from_fault(&Fault::from_client_error(&error, operand)))?;
-        self.surface_reply_result(&reply, detail, context)
+        self.surface_reply_result(&command, &reply, detail, context)
     }
-
     fn surface_reply_result(
         &mut self,
+        command: &SurfaceCommand,
         reply: &SurfaceReply,
         detail: Detail,
         context: &[u8],
     ) -> Result<Value, RpcError> {
-        let view = backend_present::product_view(reply);
+        let view = backend_present::product_view_for_command(command, reply);
         let view = match view.cursor_family().cloned() {
             Some(cursor) => {
                 let token = self.issue_cursor(cursor, context)?;
@@ -838,6 +865,7 @@ impl<P: Product> Server<P> {
             detail,
             None,
             SurfaceBody {
+                fault: view.fault().map(backend_present::FaultDto::new),
                 surface: SurfaceProjection {
                     reply,
                     next_cursor,
@@ -858,7 +886,6 @@ impl<P: Product> Server<P> {
             view.fault().is_some(),
         ))
     }
-
     fn get_prompt(&mut self, params: &Value) -> Result<Value, RpcError> {
         let params = object(params)?;
         if string(params, "name")? != "backend.explore" {
@@ -904,21 +931,19 @@ impl<P: Product> Server<P> {
             .filter(|token| !token.is_empty())
             .ok_or_else(|| RpcError::invalid("cursor must be a non-empty opaque string"))?;
         let owner_token = self.verify_cursor_token(token, context).ok_or_else(|| {
-            RpcError::invalid(
-                "cursor is unknown, expired, or belongs to another workspace authority",
-            )
+            RpcError::invalid("cursor is unknown, expired, or belongs to another workspace authority")
         })?;
         self.product
             .decode_continuation(&owner_token)
             .map(Some)
             .map_err(|error| match error {
                 ClientError::StaleCursor => RpcError::stale_cursor(),
-                _ => RpcError::invalid(
-                    "cursor is unknown, expired, or belongs to another workspace authority",
-                ),
+                other => RpcError::from_fault(&Fault::from_client_error(
+                    &other,
+                    backend_present::Operand::Argument("cursor".to_owned()),
+                )),
             })
     }
-
     fn index_search_cursor(
         &self,
         arguments: &Map<String, Value>,
@@ -1089,7 +1114,9 @@ that coordinate verbatim into backend.document for the signature and docs, backe
 the body, backend.references for uses, and backend.graph for calls. Do not invent coordinates \
 and do not guess from filenames when a tool can answer. A refusal names the operand and the next \
 call; follow it. Read backend://workspace/current when a result looks thin. Read \
-backend://tools/catalog for callable capability-dependent routes that are not in tools/list.";
+backend://tools/catalog for callable capability-dependent routes that are not in tools/list. \
+Status reports owner availability, published rows, lane coverage, and native oracle readiness separately; \
+structural rows do not prove native semantic coverage.";
 
 /// Returns the readable head of one stable identity.
 fn abbreviate(bytes: &[u8; 32]) -> String {
@@ -1520,6 +1547,9 @@ struct RpcError {
     kind: &'static str,
     detail: Option<String>,
     structured: Option<Value>,
+    // Retain the typed explanation until a recognized tool route decides its
+    // MCP result shape. Serialized text is never parsed back into authority.
+    fault: Option<Fault>,
 }
 
 impl RpcError {
@@ -1530,19 +1560,24 @@ impl RpcError {
             kind: "json_rpc",
             detail: None,
             structured: None,
+            fault: None,
         }
     }
 
     fn invalid(detail: impl Into<String>) -> Self {
+        Self::invalid_argument("arguments", detail)
+    }
+    fn invalid_argument(argument: &str, detail: impl Into<String>) -> Self {
+        let detail = detail.into();
         Self {
             code: -32602,
             message: "Invalid params",
             kind: "invalid_params",
-            detail: Some(detail.into()),
+            fault: Some(Fault::usage(argument, detail.clone())),
+            detail: Some(detail),
             structured: None,
         }
     }
-
     fn tool(detail: impl Into<String>) -> Self {
         Self {
             code: -32603,
@@ -1550,6 +1585,7 @@ impl RpcError {
             kind: "transport",
             detail: Some(detail.into()),
             structured: None,
+            fault: None,
         }
     }
 
@@ -1558,14 +1594,16 @@ impl RpcError {
             code: -32010,
             message: "Stale cursor",
             kind: "stale_cursor",
+            fault: Some(Fault::from_client_error(
+                &ClientError::StaleCursor,
+                backend_present::Operand::Argument("cursor".to_owned()),
+            )),
             detail: Some(
-                "the continuation belongs to an older immutable revision; restart the query"
-                    .to_owned(),
+                "the continuation belongs to an older immutable revision; restart the query".to_owned(),
             ),
             structured: None,
         }
     }
-
     /// Lowers one shared fault into the JSON-RPC error a resource read reports.
     fn from_fault(fault: &Fault) -> Self {
         Self {
@@ -1578,9 +1616,43 @@ impl RpcError {
             kind: fault.slug().as_str(),
             detail: Some(bounded_text(&markdown::fault(fault))),
             structured: Some(fault_value(fault)),
+            fault: Some(fault.clone()),
         }
     }
 
+    /// This classification is exhaustive so a new shared failure class must
+    /// deliberately choose its MCP contract. Proof failures cannot become a
+    /// domain refusal merely because another route used a different adapter.
+    fn into_tool_result(self) -> Result<Value, Self> {
+        use backend_present::FaultSlug;
+        if let Some(fault) = &self.fault {
+            let domain = match fault.slug() {
+                FaultSlug::Protocol
+                | FaultSlug::RequestMismatch
+                | FaultSlug::Freshness
+                | FaultSlug::IncoherentView => false,
+                FaultSlug::NotFound
+                | FaultSlug::WrongBasis
+                | FaultSlug::InvalidQuery
+                | FaultSlug::CompilerRefused
+                | FaultSlug::PartiallyPublished
+                | FaultSlug::CursorMismatch
+                | FaultSlug::SequenceOverflow
+                | FaultSlug::MutationRequiresOwner
+                | FaultSlug::Endpoint
+                | FaultSlug::Transport
+                | FaultSlug::LaneUnavailable
+                | FaultSlug::LanePartial
+                | FaultSlug::SourceUnavailable
+                | FaultSlug::Rejected
+                | FaultSlug::Usage => true,
+            };
+            if domain {
+                return Ok(refused(fault));
+            }
+        }
+        Err(self)
+    }
     fn into_reply(self, id: Value) -> Value {
         let mut data = serde_json::Map::new();
         data.insert("kind".to_owned(), Value::String(self.kind.to_owned()));
@@ -1740,6 +1812,8 @@ pub(super) fn default_detail(tool: &str) -> Detail {
 
 #[derive(Serialize)]
 struct SurfaceBody<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fault: Option<backend_present::FaultDto>,
     surface: SurfaceProjection<'a>,
 }
 
