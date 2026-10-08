@@ -1394,6 +1394,16 @@ mod tsz_source_coordinate_tests {
         identity_byte: u8,
         target: Option<(String, u32, u32, u32, [u8; 32], [u8; 32], u32, u32)>,
     ) -> Result<(Vec<u8>, DeclarationIdentity), String> {
+        source_image_with_capture(path, source, identity_byte, target, true)
+    }
+
+    pub(super) fn source_image_with_capture(
+        path: &str,
+        source: &str,
+        identity_byte: u8,
+        target: Option<(String, u32, u32, u32, [u8; 32], [u8; 32], u32, u32)>,
+        captured: bool,
+    ) -> Result<(Vec<u8>, DeclarationIdentity), String> {
         let source_identity =
             ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes());
         let source_facts = SourceIdentity {
@@ -1410,9 +1420,11 @@ mod tsz_source_coordinate_tests {
         let package = PackageUrl::parse("pkg:npm/fixture@1.0.0".to_owned())
             .map_err(|error| format!("fixture package coordinate: {error:?}"))?;
         let mut builder = IrBuilder::new();
-        builder
-            .set_image_provenance_for_package(source_facts, recipe, &package, path)
-            .map_err(|error| error.to_string())?;
+        if captured {
+            builder
+                .set_image_provenance_for_package(source_facts, recipe, &package, path)
+                .map_err(|error| error.to_string())?;
+        }
         let path_atom = builder
             .intern_atom(path.as_bytes())
             .map_err(|error| error.to_string())?;
@@ -2095,7 +2107,39 @@ mod python_native_call_tests {
             })
             .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
         let views = images.iter().collect::<Vec<_>>();
-        let index = ProjectCallableIndex::build_from_views(&views)?;
+        let python_only = ProjectCallableIndex::build_from_views(&views)?;
+        // A captured unrelated language may have partial declaration authority;
+        // its recipe still proves that it is outside the Python source frontier.
+        let ts_source = "class AppService { getHello(): string { return ''; } }";
+        let (ts_bytes, _) = super::tsz_source_coordinate_tests::source_image_with_capture(
+            "src/service.ts",
+            ts_source,
+            71,
+            None,
+            true,
+        )?;
+        let ts_image = SemanticImageView::reopen(&ts_bytes)?;
+        let mut mixed = views.clone();
+        mixed.push(&ts_image);
+        let index = ProjectCallableIndex::build_from_views(&mixed)?;
+        assert_eq!(
+            index.python_program_identity,
+            python_only.python_program_identity
+        );
+        assert!(index.python_program_identity.is_some());
+        // Unavailable provenance has neither a source path nor a language
+        // recipe. The index must refuse it rather than guess from a suffix.
+        let (unavailable_bytes, _) = super::tsz_source_coordinate_tests::source_image_with_capture(
+            "src/service.ts",
+            ts_source,
+            72,
+            None,
+            false,
+        )?;
+        let unavailable_image = SemanticImageView::reopen(&unavailable_bytes)?;
+        let mut unproven = views.clone();
+        unproven.push(&unavailable_image);
+        assert!(ProjectCallableIndex::build_from_views(&unproven).is_err());
         let paths = modules
             .iter()
             .map(|(path, _)| (*path).to_owned())
