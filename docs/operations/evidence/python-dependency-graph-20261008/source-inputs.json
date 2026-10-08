@@ -1,0 +1,40 @@
+{
+  "base": "1b46051a4bbc69440092bc7be41d80c918419282",
+  "base_source_archive": "../journal-native09-integration-audit/native09-source.tar.gz",
+  "source": {
+    "commit": "ea934be4f0f1d5d6f1e96d61a4e5bbd19fea4f8d",
+    "tree": "3d50c7a6dbb31112629dcdab85bab1651024b128",
+    "clean": true,
+    "lock_sha256": "25651f3e24835305ea3d55dc0510c54ba2d083357e0503455d48ff86804a4594"
+  },
+  "files": [
+    {
+      "path": "crates/engine/src/application/host/paths.rs",
+      "before_sha256": "e8ae6387d45a9ed7d09b58a316ad81c67acab3a208bed33476251915c8e46473",
+      "after_sha256": "ba09ac959942a23d96c052cabcfabe8116f4780b45ae9cb7cede527578e5b227",
+      "after_blob": "4fe0a5bd92ff58080d413ddb05374b7efc01aca6"
+    },
+    {
+      "path": "crates/engine/src/python_project.rs",
+      "before_sha256": "db622a921108663d7c352c9e6398db94146e82a7a5376decb68bb2854a1169b8",
+      "after_sha256": "1c4b28995e1427cb91ed898c732ce0deebd773d9debb99ce84464d2e25f6a252",
+      "after_blob": "d41e075c84c7997dd9ea84e28c8edb7c5f508de0"
+    },
+    {
+      "path": "crates/local-service/src/builtin/commands/adapter.rs",
+      "before_sha256": "f8e692011f11769a794cecce3127527b1c503ad2f901a22e19a8606a6938c04e",
+      "after_sha256": "47872e59eea6d293ca0f898389d48b5b33fa8b0f0b96c68839d07f8bdab3a9d1",
+      "after_blob": "77647372314da1d25fa167be0fed1d7b6bd04367"
+    }
+  ],
+  "fixture": {
+    "path": "/root/sol61-real-app-tail-20261008/httpie/project",
+    "commit": "5b604c37c6c67e18e7c3e9aee6c88a8c22b98345",
+    "tree": "ce66abc6fa4078b0d549dd0e4a3b512d9f1ee90e",
+    "clean": true,
+    "origin_sha256": "f8095e3f40200621ce7010f163a92a4adf6a915b7c0fde6150afe93d7f2a600d"
+  },
+  "root_graph_atom": "9f3311c5e14314456d96d376d6fda3ff50da6771",
+  "graph_test_atom": "d7fb5791e4dfd67cc1e804e0c91ba6eb65acf0c3",
+  "test_only_fifo_atom": "ea934be4f0f1d5d6f1e96d61a4e5bbd19fea4f8d"
+}
