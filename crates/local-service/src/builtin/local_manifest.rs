@@ -29,6 +29,87 @@ fn read_cargo_package_table(project_root: &Path) -> Result<(Vec<u8>, toml::Value
     Ok((bytes, root))
 }
 
+/// The identity-bearing forms of a local Cargo manifest.
+///
+/// A virtual workspace organizes member packages but is not itself a package:
+/// it has no registry coordinate, version, or package-level dependency facts.
+/// Keep that distinction explicit so callers cannot accidentally manufacture
+/// a package record from workspace metadata.
+#[derive(Debug)]
+pub(crate) enum RustManifestKind {
+    Package { bytes: Vec<u8>, root: toml::Value },
+    VirtualWorkspace,
+}
+
+fn validate_cargo_workspace(root: &toml::Value, manifest: &Path) -> Result<bool, String> {
+    let Some(workspace) = root.get("workspace") else {
+        return Ok(false);
+    };
+    let Some(workspace) = workspace.as_table() else {
+        return Err(format!(
+            "local manifest {} has a non-table [workspace] value",
+            manifest.display()
+        ));
+    };
+    if let Some(members) = workspace.get("members") {
+        let Some(members) = members.as_array() else {
+            return Err(format!(
+                "local manifest {} has a non-array workspace.members value",
+                manifest.display()
+            ));
+        };
+        if members.iter().any(|member| member.as_str().is_none()) {
+            return Err(format!(
+                "local manifest {} has a non-string workspace member",
+                manifest.display()
+            ));
+        }
+    }
+    Ok(true)
+}
+
+/// Reads and classifies one local Cargo manifest without inventing an identity
+/// for a virtual workspace.
+pub(crate) fn rust_manifest_kind(project_root: &Path) -> Result<Option<RustManifestKind>, String> {
+    let manifest = project_root.join("Cargo.toml");
+    if !manifest.is_file() {
+        return Ok(None);
+    }
+    let (bytes, root) = read_cargo_package_table(project_root)?;
+    let package = root.get("package");
+    let has_workspace = validate_cargo_workspace(&root, &manifest)?;
+    if let Some(package) = package {
+        if !package.is_table() {
+            return Err(format!(
+                "local manifest {} has a non-table [package] value",
+                manifest.display()
+            ));
+        }
+        return Ok(Some(RustManifestKind::Package { bytes, root }));
+    }
+    if !has_workspace {
+        return Err(format!(
+            "local manifest {} has neither a [package] nor a [workspace] table",
+            manifest.display()
+        ));
+    }
+    Ok(Some(RustManifestKind::VirtualWorkspace))
+}
+
+fn require_cargo_package_root(project_root: &Path) -> Result<(Vec<u8>, toml::Value), String> {
+    match rust_manifest_kind(project_root)? {
+        Some(RustManifestKind::Package { bytes, root }) => Ok((bytes, root)),
+        Some(RustManifestKind::VirtualWorkspace) => Err(format!(
+            "local manifest {} is a virtual Cargo workspace with no package identity",
+            project_root.join("Cargo.toml").display()
+        )),
+        None => Err(format!(
+            "local manifest {} is absent",
+            project_root.join("Cargo.toml").display()
+        )),
+    }
+}
+
 /// Reads `field` from the nearest ancestor manifest's `[workspace.package]`
 /// table, for a member manifest that writes `field.workspace = true`
 /// instead of a literal value (cargo's own inheritance, which the raw TOML
@@ -86,7 +167,14 @@ fn package_string_field(
 fn cargo_package_fields(
     project_root: &Path,
 ) -> Result<(ProductText, ProductText, PackageReference), String> {
-    let (_, root) = read_cargo_package_table(project_root)?;
+    let (_, root) = require_cargo_package_root(project_root)?;
+    cargo_package_fields_from_root(project_root, &root)
+}
+
+fn cargo_package_fields_from_root(
+    project_root: &Path,
+    root: &toml::Value,
+) -> Result<(ProductText, ProductText, PackageReference), String> {
     let manifest = project_root.join("Cargo.toml");
     let package = root
         .get("package")
@@ -136,15 +224,10 @@ fn resolve_staged_package_root(directory: &Path, version: &str) -> Result<PathBu
 }
 
 fn is_virtual_cargo_workspace(project_root: &Path) -> Result<bool, String> {
-    if !project_root.join("Cargo.toml").is_file() {
-        return Ok(false);
-    }
-    let (_, root) = read_cargo_package_table(project_root)?;
-    Ok(root
-        .get("workspace")
-        .and_then(toml::Value::as_table)
-        .is_some()
-        && root.get("package").is_none())
+    Ok(matches!(
+        rust_manifest_kind(project_root)?,
+        Some(RustManifestKind::VirtualWorkspace)
+    ))
 }
 
 /// Returns the on-disk source root for one indexed project label.
@@ -215,7 +298,14 @@ pub(crate) fn cargo_package_identity(
 
 /// Reads the Rust language profile declared by one indexed Cargo manifest.
 pub(crate) fn cargo_language_profile(project_root: &Path) -> Result<LanguageProfile, String> {
-    let (_, root) = read_cargo_package_table(project_root)?;
+    let (_, root) = require_cargo_package_root(project_root)?;
+    cargo_language_profile_from_root(project_root, &root)
+}
+
+fn cargo_language_profile_from_root(
+    project_root: &Path,
+    root: &toml::Value,
+) -> Result<LanguageProfile, String> {
     let manifest = project_root.join("Cargo.toml");
     let package = root
         .get("package")
@@ -247,14 +337,22 @@ pub(crate) fn cargo_language_profile(project_root: &Path) -> Result<LanguageProf
 
 /// Builds one registry package record from an indexed local Cargo manifest.
 pub(crate) fn cargo_registry_record(project_root: &Path) -> Result<RegistryPackageRecord, String> {
-    let (bytes, _) = read_cargo_package_table(project_root)?;
-    let (name, version, source) = cargo_package_identity(project_root)?;
+    let (bytes, root) = require_cargo_package_root(project_root)?;
+    cargo_registry_record_from_root(project_root, &bytes, &root)
+}
+
+fn cargo_registry_record_from_root(
+    project_root: &Path,
+    bytes: &[u8],
+    root: &toml::Value,
+) -> Result<RegistryPackageRecord, String> {
+    let (name, version, source) = cargo_package_fields_from_root(project_root, root)?;
     manifest_record(
         RegistryEcosystem::Cargo,
         name.as_str(),
         version.as_str(),
         source,
-        &bytes,
+        bytes,
     )
 }
 
@@ -262,25 +360,12 @@ pub(crate) fn cargo_registry_record(project_root: &Path) -> Result<RegistryPacka
 pub(crate) fn cargo_dependency_facts(
     project_root: &Path,
 ) -> Result<Option<PackageDependencySourceFacts>, String> {
-    let (bytes, root) = read_cargo_package_table(project_root)?;
-    let manifest = project_root.join("Cargo.toml");
-    let package = root
-        .get("package")
-        .and_then(toml::Value::as_table)
-        .ok_or_else(|| {
-            format!(
-                "local manifest {} has no [package] table",
-                manifest.display()
-            )
-        })?;
-    let name = package_string_field(package, project_root, &manifest, "name")?;
-    let version = package_string_field(package, project_root, &manifest, "version")?;
-    let source = PackageReference::parse(format!("pkg:cargo/{name}@{version}")).map_err(|_| {
-        format!(
-            "local manifest {} has an invalid package identity",
-            manifest.display()
-        )
-    })?;
+    let (bytes, root) = match rust_manifest_kind(project_root)? {
+        Some(RustManifestKind::Package { bytes, root }) => (bytes, root),
+        Some(RustManifestKind::VirtualWorkspace) => return Ok(None),
+        None => return Ok(None),
+    };
+    let (_, _, source) = cargo_package_fields_from_root(project_root, &root)?;
     let provenance = *blake3::hash(&bytes).as_bytes();
     let frontier = *blake3::hash(project_root.as_os_str().as_encoded_bytes()).as_bytes();
     let mut rows = Vec::new();
@@ -350,9 +435,10 @@ pub(crate) struct LocalPackageManifest {
 
 /// Reads one supported manifest when the directory has a provable identity.
 ///
-/// `Cargo.toml` stays authoritative, including a hard error for a virtual
-/// workspace or a missing edition. Other ecosystems are read only when Cargo
-/// is absent. A missing manifest or an unprovable version is `Ok(None)`.
+/// `Cargo.toml` stays authoritative, including a hard error for a malformed
+/// manifest or a missing edition. A virtual workspace has no package identity
+/// and is `Ok(None)`; other ecosystems are read only when Cargo is absent. A
+/// missing manifest or an unprovable version is also `Ok(None)`.
 ///
 /// # Errors
 ///
@@ -362,10 +448,15 @@ pub(crate) fn read_local_manifest(
     project_root: &Path,
 ) -> Result<Option<LocalPackageManifest>, String> {
     if project_root.join("Cargo.toml").is_file() {
-        return Ok(Some(LocalPackageManifest {
-            profile: cargo_language_profile(project_root)?,
-            record: cargo_registry_record(project_root)?,
-        }));
+        return match rust_manifest_kind(project_root)? {
+            Some(RustManifestKind::Package { bytes, root }) => {
+                let profile = cargo_language_profile_from_root(project_root, &root)?;
+                let record = cargo_registry_record_from_root(project_root, &bytes, &root)?;
+                Ok(Some(LocalPackageManifest { profile, record }))
+            }
+            Some(RustManifestKind::VirtualWorkspace) => Ok(None),
+            None => Ok(None),
+        };
     }
     if project_root.join("package.json").is_file() {
         return read_npm_manifest(project_root);
@@ -389,6 +480,15 @@ pub(crate) fn read_local_manifest(
 /// Returns an error when the manifest is missing, malformed, or unprovable.
 pub(crate) fn require_local_manifest(project_root: &Path) -> Result<LocalPackageManifest, String> {
     read_local_manifest(project_root)?.ok_or_else(|| {
+        if matches!(
+            rust_manifest_kind(project_root),
+            Ok(Some(RustManifestKind::VirtualWorkspace))
+        ) {
+            return format!(
+                "indexed Rust workspace {} has no single package identity; query a member package",
+                project_root.display()
+            );
+        }
         if has_python_manifest(project_root) {
             return format!("indexed Python project {} has dynamic or omitted package identity; inspect pyproject.toml, setup.cfg, or setup.py static metadata (Python code is never executed)", project_root.display());
         }
@@ -1251,9 +1351,10 @@ pub(crate) fn dependency_source_key(
 #[cfg(test)]
 mod tests {
     use super::{
-        LanguageProfile, PythonVersion, RustEdition, TypeScriptSource, cargo_language_profile,
-        cargo_package_fields, directory_version, indexed_package_source_root, read_local_manifest,
-        read_python_metadata, read_python_metadata_with_preopen, require_local_manifest,
+        LanguageProfile, PythonVersion, RustEdition, RustManifestKind, TypeScriptSource,
+        cargo_language_profile, cargo_package_fields, directory_version,
+        indexed_package_source_root, read_local_manifest, read_python_metadata,
+        read_python_metadata_with_preopen, require_local_manifest, rust_manifest_kind,
     };
     use backend_semantic::vocabulary::{GoVersion, JavaRelease};
     use std::fs;
@@ -1688,6 +1789,86 @@ mod tests {
     }
 
     #[test]
+    fn rust_manifest_kind_keeps_virtual_workspace_separate_from_packages() {
+        let root = fixture("cargo-virtual-workspace-kind");
+        let workspace = root.join("project");
+        let member = workspace.join("crates/serde");
+        write(
+            &workspace.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/serde\"]\nresolver = \"2\"\n",
+        );
+        write(
+            &member.join("Cargo.toml"),
+            "[package]\nname = \"serde\"\nversion = \"1.0.0\"\nedition = \"2021\"\n",
+        );
+
+        assert!(matches!(
+            rust_manifest_kind(&workspace).expect("valid virtual workspace"),
+            Some(RustManifestKind::VirtualWorkspace)
+        ));
+        assert!(
+            read_local_manifest(&workspace)
+                .expect("virtual workspace has no package record")
+                .is_none()
+        );
+        let member_manifest = read_local_manifest(&member)
+            .expect("workspace member package")
+            .expect("real member identity");
+        assert_eq!(member_manifest.record.name.as_str(), "serde");
+        assert_eq!(
+            member_manifest.record.coordinate.as_str(),
+            "pkg:cargo/serde@1.0.0"
+        );
+        assert!(matches!(
+            rust_manifest_kind(&member).expect("package manifest"),
+            Some(RustManifestKind::Package { .. })
+        ));
+
+        let malformed_members = root.join("malformed-members");
+        write(
+            &malformed_members.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/serde\", 7]\n",
+        );
+        let error = rust_manifest_kind(&malformed_members)
+            .expect_err("malformed member list remains an error");
+        assert!(error.contains("non-string workspace member"));
+
+        let non_array_members = root.join("non-array-members");
+        write(
+            &non_array_members.join("Cargo.toml"),
+            "[workspace]\nmembers = \"crates/serde\"\n",
+        );
+        let error =
+            rust_manifest_kind(&non_array_members).expect_err("workspace members must be an array");
+        assert!(error.contains("non-array workspace.members"));
+
+        let non_table_workspace = root.join("non-table-workspace");
+        write(
+            &non_table_workspace.join("Cargo.toml"),
+            "workspace = true\n",
+        );
+        let error = rust_manifest_kind(&non_table_workspace)
+            .expect_err("workspace declaration must be a table");
+        assert!(error.contains("non-table [workspace]"));
+
+        let non_table_package = root.join("non-table-package");
+        write(
+            &non_table_package.join("Cargo.toml"),
+            "package = \"serde\"\n",
+        );
+        let error = rust_manifest_kind(&non_table_package)
+            .expect_err("package declaration must be a table");
+        assert!(error.contains("non-table [package]"));
+
+        let unclassified = root.join("unclassified");
+        write(&unclassified.join("Cargo.toml"), "metadata = true\n");
+        let error = rust_manifest_kind(&unclassified)
+            .expect_err("Cargo manifest without package or workspace is malformed");
+        assert!(error.contains("neither a [package] nor a [workspace] table"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn local_manifest_staged_scan_skips_foreign_and_unprovable_trees() {
         let workspace = fixture("staging");
         let staging = workspace.join("registry").join("registry-staging");
@@ -1758,7 +1939,11 @@ mod tests {
             "[package]\nname = \"serde\"\nversion = \"1.0.228\"\nedition = \"2018\"\n",
         );
 
-        assert!(read_local_manifest(&wrapper).is_err());
+        assert!(
+            read_local_manifest(&wrapper)
+                .expect("virtual workspace has no package identity")
+                .is_none()
+        );
         assert_eq!(
             indexed_package_source_root("pkg:cargo/serde@1.0.228", &workspace)
                 .expect("staged member root"),
