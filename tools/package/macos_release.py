@@ -54,7 +54,12 @@ def preflight(config, stage="build"):
     floor = max(20, config.get("disk_floor_gib", 40))
     if stage == "sign":
         app = output / "package/Nudox.app"
-        total = sum(path.stat().st_size for path in app.rglob("*") if path.is_file() and not path.is_symlink())
+        import finalize_macos_typescript_sdk as sdk
+        try:
+            total = sdk.bundle.bundle_size(app)
+        except sdk.bundle.PackageError as error:
+            problems.append(str(error))
+            total = 0
         floor = max(2, 3 * total / 1024**3)
     if free < floor:
         problems.append(f"build volume has {free:.1f} GiB free; configured admission floor is {floor} GiB")

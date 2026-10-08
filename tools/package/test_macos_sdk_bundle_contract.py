@@ -128,7 +128,7 @@ class SdkOnlyContracts(unittest.TestCase):
     def test_whole_bundle_inventory_rejects_special_files_and_finite_limits(self):
         root=self.root/'inventory';root.mkdir()
         (root/'one').write_bytes(b'aa');(root/'two').write_bytes(b'bb')
-        with self.assertRaisesRegex(ValueError,'byte bound'):
+        with self.assertRaisesRegex(bundle.PackageError,'byte bound'):
             bundle.file_inventory(root,maximum_bytes=3)
         with self.assertRaisesRegex(bundle.PackageError,'entry bound'):
             bundle.file_inventory(root,maximum_entries=1)

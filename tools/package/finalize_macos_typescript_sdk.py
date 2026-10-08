@@ -32,6 +32,8 @@ def admit(app, evidence, output, expected_source_receipt_sha256, expected_assemb
         raise ValueError("SDK assembly manifest differs from its selected external package receipt")
     if parse_json_bytes(manifest_raw, "SDK assembly manifest") != evidence:
         raise ValueError("SDK assembly manifest changed before signing")
+    if (app / "Contents/_CodeSignature").exists() or (app / "Contents/_CodeSignature").is_symlink():
+        raise ValueError("unexpected app signature sidecar before outer app seal")
     observed = bundle.file_inventory(app)
     observed.pop(MANIFEST, None)
     if observed != evidence["files"]:
@@ -49,6 +51,9 @@ def admit(app, evidence, output, expected_source_receipt_sha256, expected_assemb
             or helpers.get("source_receipt_sha256") != origin_sha):
         raise ValueError("SDK assembly receipt differs from its manifest/origin binding")
     bundle.validate_sdk_helper_payload(receipt, app / "Contents/Resources/Helpers", evidence["source"], evidence["target"]["triple"])
+    if any(observed.get(f"Contents/MacOS/{name}", {}).get("mode") != 0o755
+           for name in bundle.EXECUTABLES):
+        raise ValueError("application executables must retain exact mode 0755")
     image_paths = [record["path"] for record in evidence["macho_images"]]
     if (len(set(image_paths)) != len(image_paths)
             or any(observed.get(name, {}).get("kind") != "file" for name in image_paths)):
@@ -100,15 +105,17 @@ def refresh(app, evidence, precursor):
         raise ValueError("signed Mach-O changed during code identity admission")
     observed = bundle.file_inventory(app)
     observed.pop(MANIFEST, None)
-    # Signing may change admitted Mach-O bytes and create signature sidecars.
-    # Everything else, including the original SDK receipt, must remain exact.
-    def signature_record(name):
-        return name.startswith("Contents/_CodeSignature/")
+    # Only inner Mach-O signatures changed; the outer app is sealed later.
+    if (app / "Contents/_CodeSignature").exists() or (app / "Contents/_CodeSignature").is_symlink():
+        raise ValueError("unexpected app signature sidecar before outer app seal")
+    for name in original_images:
+        if observed.get(name, {}).get("mode") != evidence["files"][name].get("mode"):
+            raise ValueError("application executable mode changed during signing")
     allowed = original_images | {RECEIPT}
     before = {name: value for name, value in evidence["files"].items()
-              if name not in allowed and not signature_record(name)}
+              if name not in allowed}
     after = {name: value for name, value in observed.items()
-             if name not in allowed and not signature_record(name)}
+             if name not in allowed}
     if before != after:
         raise ValueError("non-code SDK assembly bytes changed during signing/probes")
     for image in images:
@@ -133,8 +140,7 @@ def refresh(app, evidence, precursor):
                                       runtime_probes=probes,
                                       runtime_probe_status=receipt["runtime_probe_status"])
     result["macho_images"] = images
-    result["files"] = {name: value for name, value in observed.items()
-                       if not name.startswith("Contents/_CodeSignature/")}
+    result["files"] = observed
     result["file_inventory_scope"] = "all bundle files except this manifest and the subsequent outer Contents/_CodeSignature seal"
     result["sdk_finalization"] = {"assembly_build_manifest_sha256": precursor["manifest_sha256"],
                                   "assembly_helper_receipt_sha256": precursor["receipt_sha256"],

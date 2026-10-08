@@ -105,9 +105,9 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def file_inventory(root: Path, *, maximum_entries: int = 65536,
-                   maximum_bytes: int = 8 * 1024**3) -> dict[str, dict[str, Any]]:
-    inventory: dict[str, dict[str, Any]] = {}
+def bundle_entries(root: Path, *, maximum_entries: int = 65536,
+                   maximum_bytes: int = 8 * 1024**3):
+    """Walk a finite bundle without following links or reading file payloads."""
     pending = [root]
     entries = total = 0
     while pending:
@@ -117,21 +117,41 @@ def file_inventory(root: Path, *, maximum_entries: int = 65536,
                 if entries > maximum_entries:
                     fail("bundle inventory exceeds its finite entry bound")
                 path = Path(child.path)
-                relative = path.relative_to(root).as_posix()
-                mode = path.lstat().st_mode
-                if stat.S_ISLNK(mode):
-                    inventory[relative] = {"kind": "symlink", "target": os.readlink(path)}
-                elif stat.S_ISDIR(mode):
+                metadata = path.lstat()
+                mode = metadata.st_mode
+                if stat.S_ISDIR(mode):
                     pending.append(path)
                 elif stat.S_ISREG(mode):
-                    size, digest = admit_file_digest(path, min(512 * 1024**2, maximum_bytes - total))
-                    if path.lstat().st_mode != mode:
-                        fail("bundle file mode changed during inventory admission")
-                    total += size
-                    inventory[relative] = {"kind": "file", "sha256": digest,
-                                           "size_bytes": size, "mode": stat.S_IMODE(mode)}
-                else:
+                    if metadata.st_size > min(512 * 1024**2, maximum_bytes - total):
+                        fail("bundle inventory exceeds its finite file/aggregate byte bound")
+                    total += metadata.st_size
+                elif not stat.S_ISLNK(mode):
                     fail("bundle inventory contains a special file")
+                yield path, metadata
+
+
+def bundle_size(root: Path) -> int:
+    return sum(metadata.st_size for _, metadata in bundle_entries(root)
+               if stat.S_ISREG(metadata.st_mode))
+
+
+def file_inventory(root: Path, *, maximum_entries: int = 65536,
+                   maximum_bytes: int = 8 * 1024**3) -> dict[str, dict[str, Any]]:
+    inventory: dict[str, dict[str, Any]] = {}
+    total = 0
+    for path, metadata in bundle_entries(root, maximum_entries=maximum_entries,
+                                        maximum_bytes=maximum_bytes):
+        relative = path.relative_to(root).as_posix()
+        mode = metadata.st_mode
+        if stat.S_ISLNK(mode):
+            inventory[relative] = {"kind": "symlink", "target": os.readlink(path)}
+        elif stat.S_ISREG(mode):
+            size, digest = admit_file_digest(path, min(512 * 1024**2, maximum_bytes - total))
+            if path.lstat().st_mode != mode or size != metadata.st_size:
+                fail("bundle file mode/size changed during inventory admission")
+            total += size
+            inventory[relative] = {"kind": "file", "sha256": digest,
+                                   "size_bytes": size, "mode": stat.S_IMODE(mode)}
     return dict(sorted(inventory.items()))
 
 

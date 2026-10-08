@@ -49,6 +49,7 @@ class SdkFinalizationContracts(unittest.TestCase):
             image = app / 'Contents/MacOS' / name
             image.parent.mkdir(exist_ok=True)
             image.write_bytes(fixture(code=name.encode()))
+            image.chmod(0o755)
         paths = {f'Contents/MacOS/{name}' for name in fixtures.bundle.EXECUTABLES}
         paths.add('Contents/Resources/Helpers/typescript/node/bin/node')
         executables={name:fixtures.bundle.sha256(app/'Contents/MacOS'/name) for name in fixtures.bundle.EXECUTABLES}
@@ -81,8 +82,6 @@ class SdkFinalizationContracts(unittest.TestCase):
         precursor = self.admit(app,evidence)
         node = app/'Contents/Resources/Helpers/typescript/node/bin/node'
         node.write_bytes(fixture(b'changed unit signature' * 512, code=b'original Node code'))
-        signature = app/'Contents/_CodeSignature/CodeResources'
-        signature.parent.mkdir(); signature.write_bytes(b'unit previous seal')
         with patch.object(finalizer.bundle,'inspect_macho_tree',side_effect=self.inspect), patch.object(finalizer.bundle,'verify_sdk_runtime',return_value={'unit_post_sign_probe':True}) as probe:
             result = finalizer.refresh(app,evidence,precursor)
         emitted = json.loads((app/finalizer.RECEIPT).read_text())
@@ -199,6 +198,23 @@ class SdkFinalizationContracts(unittest.TestCase):
                 finalizer.refresh(app,evidence,precursor)
         self.assertEqual((app/finalizer.MANIFEST).read_bytes(),original)
         self.assertEqual((app/finalizer.RECEIPT).read_bytes(),original_receipt)
+
+    def test_app_sidecar_is_rejected_before_outer_seal(self):
+        app,evidence=self.assembly();precursor=self.admit(app,evidence)
+        sidecar=app/'Contents/_CodeSignature/extra'
+        sidecar.parent.mkdir();sidecar.write_bytes(b'unexpected pre-outer payload')
+        with patch.object(finalizer.bundle,'inspect_macho_tree',side_effect=self.inspect), patch.object(finalizer.bundle,'verify_sdk_runtime') as probe:
+            with self.assertRaisesRegex(ValueError,'signature sidecar before outer'):
+                finalizer.refresh(app,evidence,precursor)
+            probe.assert_not_called()
+
+    def test_application_mode_mutation_is_rejected_before_probe(self):
+        app,evidence=self.assembly();precursor=self.admit(app,evidence)
+        (app/'Contents/MacOS/backend-cli').chmod(0o777)
+        with patch.object(finalizer.bundle,'inspect_macho_tree',side_effect=self.inspect), patch.object(finalizer.bundle,'verify_sdk_runtime') as probe:
+            with self.assertRaisesRegex(ValueError,'executable mode changed'):
+                finalizer.refresh(app,evidence,precursor)
+            probe.assert_not_called()
 
     def test_unexpected_nested_signature_sidecar_is_not_ignored(self):
         app,evidence=self.assembly();precursor=self.admit(app,evidence)
