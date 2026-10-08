@@ -2191,6 +2191,7 @@ impl ConfiguredGoOracle {
     }
 }
 
+#[cfg(test)]
 fn cache_entry_is_valid(
     cache_root: &DirectoryCapability,
     entry_name: &str,
@@ -2423,6 +2424,7 @@ fn hash_regular_file_handle(
     Ok(total)
 }
 
+#[cfg(test)]
 fn hash_regular_file(path: &Path) -> std::io::Result<[u8; 32]> {
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::new(
