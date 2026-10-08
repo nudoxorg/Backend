@@ -1,0 +1,58 @@
+{
+  "canonical_base": "07dd35c9e0157ff4f4375bb6ca16549db769ac5a",
+  "integrated_source": "b9f29e42b6cbe404a8087c534429697e857931e8",
+  "integrated_tree": "f326de917dd4d6314d0673e0b73a2f825463905f",
+  "reviewed_source": "146c430f842df6042d62dc82c3eea4e9d77cf006",
+  "identical_reviewed_paths": [
+    "apps/cli/src/process.rs",
+    "apps/cli/src/render.rs",
+    "apps/cli/src/tests.rs",
+    "apps/mcp/src/jsonrpc.rs",
+    "apps/mcp/src/jsonrpc/codec.rs",
+    "apps/mcp/src/jsonrpc/tests.rs",
+    "apps/mcp/src/jsonrpc/tools.rs",
+    "crates/client/src/lib.rs",
+    "crates/client/src/query_continuation.rs",
+    "crates/client/src/query_continuation_tests.rs",
+    "crates/library/catalog/projection.rs",
+    "crates/local-service/src/builtin/commands/adapter.rs",
+    "crates/present/budget.rs",
+    "crates/present/call.rs",
+    "crates/present/compiler_fault_tests.rs",
+    "crates/present/drive.rs",
+    "crates/present/dto.rs",
+    "crates/present/fault.rs",
+    "crates/present/fixtures/worst-200-full-records-selected-id.json",
+    "crates/present/lib.rs",
+    "crates/present/product.rs",
+    "crates/present/readiness_tests.rs",
+    "crates/present/render/markdown.rs",
+    "crates/present/render/text.rs",
+    "crates/present/shell.rs",
+    "crates/present/status.rs",
+    "docs/audits/mcp-typed-tool-refusals-20261008.md",
+    "docs/audits/portable-plain-graph-continuation-20261008.md",
+    "docs/audits/shared-cli-mcp-readiness-20261008.md",
+    "docs/audits/shared-index-readiness-20261008.md"
+  ],
+  "lock_sha256": "9206616740b78b7cb330272655ee9fdc3213a9818da4bb964abd6ed083381363",
+  "already_present_atom": "88c7dce9721433176e8d669d76e733afab994ccb",
+  "files": {
+    "root-audit.py": {
+      "bytes": 5105,
+      "sha256": "0fb7cc648e992d663a56d911ce5d85f31659350a8e09b84bc9f14e9a2c4131fa"
+    },
+    "native-manifest.json": {
+      "bytes": 10469,
+      "sha256": "740215a0cc5a1dddade8cd1528571e3e05630fcceb5bf10829f0ccc2f4a4a9b0"
+    },
+    "root-audit.json": {
+      "bytes": 3828,
+      "sha256": "d3e6cb065ea2dce552d2bf7407a3b4bb1c8c8dfa476ed122aac343412aeed245"
+    },
+    "native-raw.tar.gz": {
+      "bytes": 675409,
+      "sha256": "78dd79f65e382dc40843048419810a0736eb5717fcad363b884f49a3ae65d0bc"
+    }
+  }
+}
