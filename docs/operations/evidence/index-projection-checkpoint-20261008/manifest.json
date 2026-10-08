@@ -1,0 +1,255 @@
+{
+  "schema": "nudox.index-projection.raw-evidence.v1",
+  "files": [
+    {
+      "path": "gate0/luna-index-projection-fence7382-native-gate0/cargo.stderr.log",
+      "bytes": 567431,
+      "sha256": "0333f1ea8e35827169595b38d5cf41a9d34d2b413546aed9adfbc199b5380a5d"
+    },
+    {
+      "path": "gate0/luna-index-projection-fence7382-native-gate0/cargo.stdout.jsonl",
+      "bytes": 237,
+      "sha256": "90c9e3d7785e5f2e5e793a13d7fd70534cf898e283e9118f02f851146c0cbec4"
+    },
+    {
+      "path": "gate0/luna-index-projection-fence7382-native-gate0/compiler-observations.jsonl",
+      "bytes": 173688,
+      "sha256": "114b1738da48d0edaed106fc8d2d3b1c34cb1298f1eeff3b1c1b338c3de68acb"
+    },
+    {
+      "path": "gate0/luna-index-projection-fence7382-native-gate0/completion.json",
+      "bytes": 2036,
+      "sha256": "b7ec00e5c69fedae88c82f3622036d1127e88a46e15fc5027a0817f9c29cdc51"
+    },
+    {
+      "path": "gate0/luna-index-projection-fence7382-native-gate0/diagnostics.json",
+      "bytes": 3,
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    },
+    {
+      "path": "gate0/luna-index-projection-fence7382-native-gate0/executed-test-binary-corroboration.json",
+      "bytes": 2675,
+      "sha256": "76c51d22135aa7c4a17b1592a406e60998fde69997f4bea29ad3d461caef5bf0"
+    },
+    {
+      "path": "gate0/luna-index-projection-fence7382-native-gate0/fleet.json",
+      "bytes": 25069,
+      "sha256": "6a0f239d1847bd2b16a3a02e45c804fceaf254c629078a11281df37659b07484"
+    },
+    {
+      "path": "gate0/luna-index-projection-fence7382-native-gate0/launch.json",
+      "bytes": 5154,
+      "sha256": "0bbdfbad436e87d0439dd5f41123e43c8731a1cca1765cb093872dcc8bc850bc"
+    },
+    {
+      "path": "gate0/luna-index-projection-fence7382-native-gate0/resources.jsonl",
+      "bytes": 47082,
+      "sha256": "272c2b137d27ecf13179aed06901a0e2df5a30ee3a5903c8b0d610c8484828e9"
+    },
+    {
+      "path": "gate0/luna-index-projection-fence7382-v5-gate0.json",
+      "bytes": 25069,
+      "sha256": "6a0f239d1847bd2b16a3a02e45c804fceaf254c629078a11281df37659b07484"
+    },
+    {
+      "path": "gate1/luna-index-projection-fence7382-native-gate1/cargo.stderr.log",
+      "bytes": 337093,
+      "sha256": "0a9152be3e173b34bd17c553463477f64d709190cf272bbc57945b75990936a0"
+    },
+    {
+      "path": "gate1/luna-index-projection-fence7382-native-gate1/cargo.stdout.jsonl",
+      "bytes": 215,
+      "sha256": "732356e90a108f3c658fa881483881db2b3bf4dd58e2361169dbd5f528e21905"
+    },
+    {
+      "path": "gate1/luna-index-projection-fence7382-native-gate1/compiler-observations.jsonl",
+      "bytes": 57948,
+      "sha256": "7ba9164c8f77f5748f4aa9f81716efd157bc9205202528d18d8ef8be144e9327"
+    },
+    {
+      "path": "gate1/luna-index-projection-fence7382-native-gate1/completion.json",
+      "bytes": 2035,
+      "sha256": "b0ec30ec4fee036761b9cb540ec9b7ac4ed4831020318b9dda19d080f125becb"
+    },
+    {
+      "path": "gate1/luna-index-projection-fence7382-native-gate1/diagnostics.json",
+      "bytes": 3,
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    },
+    {
+      "path": "gate1/luna-index-projection-fence7382-native-gate1/executed-test-binary-corroboration.json",
+      "bytes": 2635,
+      "sha256": "fdf93695004df007d838b895fcf3bc5e410ab3b88ca4572b8ac2ba30dbf9f7f3"
+    },
+    {
+      "path": "gate1/luna-index-projection-fence7382-native-gate1/fleet.json",
+      "bytes": 18505,
+      "sha256": "bde8ddc1f122d70ba30a2a86061cdff89c409632a4162c2741405533a6fe8324"
+    },
+    {
+      "path": "gate1/luna-index-projection-fence7382-native-gate1/launch.json",
+      "bytes": 5198,
+      "sha256": "410508bf4da3c22977905182b69066ac48c825efa845fb1ef0f7887ec9c9ea6e"
+    },
+    {
+      "path": "gate1/luna-index-projection-fence7382-native-gate1/resources.jsonl",
+      "bytes": 20001,
+      "sha256": "54b74e684e84730a26a195c0c4dc5192fca176da641c69d19f9b52633dccfcbc"
+    },
+    {
+      "path": "gate1/luna-index-projection-fence7382-v5-gate1-collector.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "gate1/luna-index-projection-fence7382-v5-gate1-collector.stdout.log",
+      "bytes": 18505,
+      "sha256": "bde8ddc1f122d70ba30a2a86061cdff89c409632a4162c2741405533a6fe8324"
+    },
+    {
+      "path": "gate1/luna-index-projection-fence7382-v5-gate1.json",
+      "bytes": 18505,
+      "sha256": "bde8ddc1f122d70ba30a2a86061cdff89c409632a4162c2741405533a6fe8324"
+    },
+    {
+      "path": "gate2/luna-index-projection-fence7382-native-gate2/cargo.stderr.log",
+      "bytes": 268031,
+      "sha256": "c74f959ea4f5af4e60df0b3fdebb10bee119e62cc6e944a1b3e54efe68dbc12c"
+    },
+    {
+      "path": "gate2/luna-index-projection-fence7382-native-gate2/cargo.stdout.jsonl",
+      "bytes": 208,
+      "sha256": "a1fae8f3b544700f8a4ae8febe1b7659d24a30ec4456b1f95cfcd501a074d891"
+    },
+    {
+      "path": "gate2/luna-index-projection-fence7382-native-gate2/compiler-observations.jsonl",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "gate2/luna-index-projection-fence7382-native-gate2/completion.json",
+      "bytes": 2035,
+      "sha256": "ab2f57a75fdb89cc2f546623539c0effbd0926232d42b2e985298c2999c49c61"
+    },
+    {
+      "path": "gate2/luna-index-projection-fence7382-native-gate2/diagnostics.json",
+      "bytes": 3,
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    },
+    {
+      "path": "gate2/luna-index-projection-fence7382-native-gate2/executed-test-binary-corroboration.json",
+      "bytes": 3520,
+      "sha256": "76d214b72c01e902a40bf273b29e4b6cbf2e3fa9a429b433c3e4afa5d05c0fd6"
+    },
+    {
+      "path": "gate2/luna-index-projection-fence7382-native-gate2/fleet.json",
+      "bytes": 24396,
+      "sha256": "da7e8bb6f167f51041b11e5caac26c9d0b4c1a2786cd3bf96c0c886c0bc1a0e9"
+    },
+    {
+      "path": "gate2/luna-index-projection-fence7382-native-gate2/launch.json",
+      "bytes": 5192,
+      "sha256": "6c0b4b0799b752fefdab7e80fbcad567c38e24d4a17064b084d11124c6914490"
+    },
+    {
+      "path": "gate2/luna-index-projection-fence7382-native-gate2/resources.jsonl",
+      "bytes": 354,
+      "sha256": "eb51757d57137df35ac4d207aef32872b2948ce60ba7bdeb1276e6f923549fed"
+    },
+    {
+      "path": "gate2/luna-index-projection-fence7382-v5-gate2-collector.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "gate2/luna-index-projection-fence7382-v5-gate2-collector.stdout.log",
+      "bytes": 24396,
+      "sha256": "da7e8bb6f167f51041b11e5caac26c9d0b4c1a2786cd3bf96c0c886c0bc1a0e9"
+    },
+    {
+      "path": "gate2/luna-index-projection-fence7382-v5-gate2.json",
+      "bytes": 24396,
+      "sha256": "da7e8bb6f167f51041b11e5caac26c9d0b4c1a2786cd3bf96c0c886c0bc1a0e9"
+    },
+    {
+      "path": "gate3/luna-index-projection-fence7382-native-gate3/cargo.stderr.log",
+      "bytes": 268022,
+      "sha256": "37ab78c3f31458d5f58c19bfe3df78291237bad6bcf41d503ebe866b07c878a5"
+    },
+    {
+      "path": "gate3/luna-index-projection-fence7382-native-gate3/cargo.stdout.jsonl",
+      "bytes": 201,
+      "sha256": "50f34f01e98ceb237c18e20e75f3a93b9c1cea821d0caae69963c46646ff97bb"
+    },
+    {
+      "path": "gate3/luna-index-projection-fence7382-native-gate3/compiler-observations.jsonl",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "gate3/luna-index-projection-fence7382-native-gate3/completion.json",
+      "bytes": 2035,
+      "sha256": "68addc6906428149a6aaf1d852eeb090299819e797f2440d737e488540b5bf62"
+    },
+    {
+      "path": "gate3/luna-index-projection-fence7382-native-gate3/diagnostics.json",
+      "bytes": 3,
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    },
+    {
+      "path": "gate3/luna-index-projection-fence7382-native-gate3/executed-test-binary-corroboration.json",
+      "bytes": 2805,
+      "sha256": "09a2edc33fc3bdca9a70b5b95ac1fe5abcb6d34a5f394927170b060f0a750b0d"
+    },
+    {
+      "path": "gate3/luna-index-projection-fence7382-native-gate3/fleet.json",
+      "bytes": 25765,
+      "sha256": "dd5b78978f906ded628ce3e1d68483d5268714ebce26b7817dc12438ebf08eb5"
+    },
+    {
+      "path": "gate3/luna-index-projection-fence7382-native-gate3/launch.json",
+      "bytes": 5183,
+      "sha256": "cc8b5c70010253c75a8d60fb06fb312c74aa2856b3bfe48485e0b0ccc9454ed5"
+    },
+    {
+      "path": "gate3/luna-index-projection-fence7382-native-gate3/resources.jsonl",
+      "bytes": 177,
+      "sha256": "5071d3e91f7225ba6a10acccc548608be61f73a125d6102bee994a209ac81ec3"
+    },
+    {
+      "path": "gate3/luna-index-projection-fence7382-v5-gate3-collector.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "gate3/luna-index-projection-fence7382-v5-gate3-collector.stdout.log",
+      "bytes": 25765,
+      "sha256": "dd5b78978f906ded628ce3e1d68483d5268714ebce26b7817dc12438ebf08eb5"
+    },
+    {
+      "path": "gate3/luna-index-projection-fence7382-v5-gate3.json",
+      "bytes": 25765,
+      "sha256": "dd5b78978f906ded628ce3e1d68483d5268714ebce26b7817dc12438ebf08eb5"
+    },
+    {
+      "path": "luna-index-projection-fence7382-evidence-manifest.json",
+      "bytes": 14211,
+      "sha256": "fdda0423d5a534c6b5217f9af422222555c160e675af2814b8d1347a4253855c"
+    },
+    {
+      "path": "luna-index-projection-final-retirement-check-7382.json",
+      "bytes": 3511,
+      "sha256": "e083c4060acc85c179b3bd96ce5c07f2c0e4e04fd49289a90995862fb52856fc"
+    },
+    {
+      "path": "nudox-root-index-projection-audit-20261008.json",
+      "bytes": 2612,
+      "sha256": "6fc9b17eabe1449e7bfa57ad233c4e5e82a42db8e21e7131769f4edfc45202f1"
+    },
+    {
+      "path": "nudox-root-index-projection-audit-20261008.py",
+      "bytes": 5070,
+      "sha256": "264881ba8d361649919dc014694cb60e6b3bf79a7418f4f2e71bf6e1866f8266"
+    }
+  ]
+}

@@ -4740,14 +4740,19 @@ impl CommandAdapter {
                     cached.graph.synced = Some(target);
                 }
                 let discovery_store = self.discovery.as_ref().map(|gateway| gateway.store());
-                let forge_records = if matches!(
-                    &surface,
-                    backend_engine::SurfaceCommand::IndexSearch { .. }
-                        | backend_engine::SurfaceCommand::Package { .. }
-                ) {
-                    self.forge.search_records().map_err(BuiltinModelError)?
-                } else {
-                    Vec::new()
+                let (forge_records, forge_catalog_revision) = match &surface {
+                    backend_engine::SurfaceCommand::IndexSearch { .. } => {
+                        let snapshot = self
+                            .forge
+                            .search_catalog_snapshot()
+                            .map_err(BuiltinModelError)?;
+                        (snapshot.records, Some(snapshot.revision))
+                    }
+                    backend_engine::SurfaceCommand::Package { .. } => (
+                        self.forge.search_records().map_err(BuiltinModelError)?,
+                        None,
+                    ),
+                    _ => (Vec::new(), None),
                 };
                 let reply = match &surface {
                     backend_engine::SurfaceCommand::PackageGraphPage { request } => request
@@ -4765,7 +4770,7 @@ impl CommandAdapter {
                         }),
                     _ => self
                         .product_state
-                        .execute_with_discovery_and_forge_snapshot(
+                        .execute_with_discovery_and_forge_catalog_snapshot(
                             surface.clone(),
                             view,
                             cached.catalog.records(),
@@ -4775,6 +4780,7 @@ impl CommandAdapter {
                             discovery_store,
                             cached.catalog.rows_snapshot(),
                             &forge_records,
+                            forge_catalog_revision,
                         ),
                 };
                 let reply = reply.or_else(|error| match (&surface, package_observation) {

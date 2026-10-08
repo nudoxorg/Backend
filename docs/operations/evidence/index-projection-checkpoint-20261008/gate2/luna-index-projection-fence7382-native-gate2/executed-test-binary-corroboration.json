@@ -1,0 +1,65 @@
+{
+  "argv": [
+    "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+    "test",
+    "--verbose",
+    "--locked",
+    "--offline",
+    "-j2",
+    "-p",
+    "backend-engine",
+    "--lib",
+    "forge_search_snapshot_keeps_publication_gate_until_capture_finishes",
+    "--",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "cargo_stderr_sha256": "c74f959ea4f5af4e60df0b3fdebb10bee119e62cc6e944a1b3e54efe68dbc12c",
+  "cargo_stdout_sha256": "a1fae8f3b544700f8a4ae8febe1b7659d24a30ec4456b1f95cfcd501a074d891",
+  "cargo_test_stdout_result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 902 filtered out; finished in 0.90s",
+  "cargo_verbose_running_line": "     Running `/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007/debug/deps/backend_engine-b4955c870b705815 forge_search_snapshot_keeps_publication_gate_until_capture_finishes --test-threads=1 --nocapture`",
+  "completion_exit": 0,
+  "completion_sha256": "ab2f57a75fdb89cc2f546623539c0effbd0926232d42b2e985298c2999c49c61",
+  "created_utc": "2026-10-08T10:05:32.119630+00:00",
+  "executed_parent_test_binary": {
+    "path": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007/debug/deps/backend_engine-b4955c870b705815",
+    "sha256": "026511be7d1acc263772fa9a0fde151c4f5aa71534383e9e3af2d33f59192a34",
+    "size_bytes": 460871472
+  },
+  "frozen_graph_before": {
+    "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268",
+    "clean": true,
+    "commit": "fbf27ce7d0dfa9e2e39463a61531bdf2b39645cc",
+    "tree": "320f2758f1c8ac8b25979a7f479564ac8d90f075"
+  },
+  "gate": 2,
+  "managed_graph_leases_empty": true,
+  "managed_permit_retired": true,
+  "nested_worker_filter_alone_was_not_counted": true,
+  "note": "The positive result is the actual parent test filter, not the helper filter (which returns successfully when its worker environment is absent). The unchanged supervisor does not map nested native executables; this supplement binds the raw Cargo invocation/result to the binary and records the assertions the passing parent checked.",
+  "parent_test_name": "forge_search_snapshot_keeps_publication_gate_until_capture_finishes",
+  "parent_test_source": {
+    "asserted_behavior": [
+      "worker process exits successfully",
+      "foreign owner sees the journal gate busy while the snapshot capture hook is paused",
+      "worker publishes after release and returns published:2",
+      "captured pre-publication revision remains unchanged and empty",
+      "next reader snapshot has one record and a different revision"
+    ],
+    "git_blob_sha1": "8136c59dfc1247cd2235e99ba11cc42e9a00f311",
+    "path": "crates/engine/src/forge/tests.rs",
+    "sha256": "f426223ccdcddc8a55d7fbefb6402b5eaea5ee62fd908bc59dccea37c45325c4"
+  },
+  "plan_sha256": "7682cadd7ceedb6090a2ebf63c61c09a170583218d178f031cbd98499dd20667",
+  "retirement": "owned-child-kernel-wait",
+  "schema": "nudox.luna.index-projection.executed-test-binary-corroboration.v1",
+  "source_before": {
+    "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+    "clean": true,
+    "commit": "7382f9f8a31990f3b0fe2e2b44093717699ad934",
+    "tree": "155f1b793645fff3bccbadae11e3a144d08db2f2"
+  },
+  "supervisor_binary_result_mapping_complete": false,
+  "supervisor_native_executables_field": [],
+  "supervisor_nested_subprocess_test_results": []
+}

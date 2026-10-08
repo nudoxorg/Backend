@@ -343,6 +343,27 @@ fn finish_retry<D: JournalCodec>(
 }
 
 impl<D: JournalCodec> HashChainJournal<D> {
+    /// Returns the current append position and chain digest without scanning
+    /// the journal. The pair is an exact identity for the validated history
+    /// held by this open journal instance; domains use it to key in-memory
+    /// projections after performing their normal external-refresh fence.
+    ///
+    /// The sequence is the next frame sequence, so an empty journal returns
+    /// zero together with the genesis digest.
+    /// # Errors
+    ///
+    /// Returns an error when the journal state is poisoned or unusable.
+    pub(crate) fn tail_identity(&self) -> Result<(u64, [u8; 32]), JournalError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| JournalError::Corrupt("poisoned journal"))?;
+        if state.unusable {
+            return Err(JournalError::Corrupt("journal append state"));
+        }
+        Ok((state.next_sequence, *state.chain.as_bytes()))
+    }
+
     /// Appends and syncs one canonical record.
     /// # Errors
     ///
