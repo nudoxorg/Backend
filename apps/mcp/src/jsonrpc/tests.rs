@@ -1954,12 +1954,14 @@ fn index_requires_its_advertised_path_before_owner_admission() {
         let response = request(&mut server, "tools/call", &params);
         assert_eq!(response["id"], 9);
         assert_eq!(response["error"]["code"], -32602, "{params}: {response}");
-        assert_eq!(response["error"]["message"], "Invalid params");
-        assert_eq!(response["error"]["data"]["kind"], "invalid_params");
-        assert_eq!(
-            response["error"]["data"]["detail"],
-            "path must be a non-empty string"
-        );
+        assert_eq!(response["error"]["message"], "Backend request failed");
+        assert_eq!(response["error"]["data"]["kind"], "usage");
+        let fault = &response["error"]["data"]["structuredContent"];
+        assert_eq!(fault["slug"], "usage");
+        assert_eq!(fault["operand"], "path");
+        assert_eq!(fault["cause"], "malformed");
+        assert!(fault["detail"].as_str().expect("typed path guidance").contains("backend.index requires arguments.path"));
+        assert!(response["error"]["data"]["detail"].as_str().expect("shared path guidance").contains("absolute path"));
         assert!(server.product.index_paths.is_empty(), "{params}");
         assert!(server.product.surface_commands.is_empty(), "{params}");
         assert_eq!(server.product.adapter_boundary, None, "{params}");
