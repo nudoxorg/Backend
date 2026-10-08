@@ -89,8 +89,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .ok_or("incomplete native frontier")?;
             let definitions = module.symbols.iter().filter_map(|symbol| match &symbol.outcome {
                 SymbolOutcome::Definition { target, callee } => Some(json!({"source_span":{"start":symbol.span.start,"end":symbol.span.end},"spelling":symbol.target,
-                    "target_path":target.relative_path,"target_name":target.qualified_name,"target_kind":format!("{:?}",target.kind),"target_span":{"start":target.name_span.start,"end":target.name_span.end},"same_module":target.same_module,
-                    "native_callee":callee.as_ref().map(|callee| json!({"target_path":callee.relative_path,"target_name":callee.qualified_name,"target_kind":format!("{:?}",callee.kind),"target_span":{"start":callee.name_span.start,"end":callee.name_span.end},"same_module":callee.same_module}))})),
+                    "target_path":target.relative_path,"source_coordinate":target.source_coordinate,"target_name":target.qualified_name,"target_kind":format!("{:?}",target.kind),"target_span":{"start":target.name_span.start,"end":target.name_span.end},"same_module":target.same_module,
+                    "native_callee":callee.as_ref().map(|callee| json!({"target_path":callee.relative_path,"source_coordinate":callee.source_coordinate,"target_name":callee.qualified_name,"target_kind":format!("{:?}",callee.kind),"target_span":{"start":callee.name_span.start,"end":callee.name_span.end},"same_module":callee.same_module}))})),
                 _ => None,
             }).collect::<Vec<_>>();
             let inferences = module.inferences.iter().map(|inference| json!({"span":{"start":inference.site.start,"end":inference.site.end},"site":format!("{:?}",inference.kind),"type":format!("{:?}",inference.observed)})).collect::<Vec<_>>();

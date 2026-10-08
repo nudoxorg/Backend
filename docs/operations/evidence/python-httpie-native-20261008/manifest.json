@@ -1,0 +1,22 @@
+{
+  "causal-comparison.json": {
+    "bytes": 2098,
+    "sha256": "d58480392f0de2af317055ef901e1159642013726f84ef8512f32fe249bc0185"
+  },
+  "raw-proof-20261008.tar.gz": {
+    "bytes": 830553,
+    "sha256": "d739f8c64a35d4a534059a7347a1bc2c4467c89a4c670dd4dff4fa649bdc206a"
+  },
+  "root-independent-audit.json": {
+    "bytes": 816,
+    "sha256": "98418d6c890e829c8ec82fd9fa5120dbfc89374b1b05288a49b1c658f4a5f70c"
+  },
+  "root-audit.py": {
+    "bytes": 3533,
+    "sha256": "09b94983b9a1928f45c286ec790cff288a86ac971b84f003ff1a895ec627f326"
+  },
+  "httpie-causal-native-proof.json": {
+    "bytes": 33118,
+    "sha256": "c54b18b92bf793bc687a181864b3ca5eee4490b5f621fd6f823cf5c09ab892b6"
+  }
+}
