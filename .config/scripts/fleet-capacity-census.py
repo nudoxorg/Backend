@@ -20,13 +20,14 @@ import re
 import subprocess
 import sys
 import time
+from collections import defaultdict
 from collections.abc import Callable, Mapping
 from typing import Any
 
 
 GIB = 1024**3
-FLEET_GROUP_LIMIT = 16
-MAX_CARGO_JOBS = 4
+FLEET_ADMISSION_SLOT_LIMIT = 16
+MAX_CARGO_JOBS_PER_PROCESS = 4
 MIN_AVAILABLE_MEMORY = 8 * GIB
 MIN_DESTINATION_DISK = 16 * GIB
 MAX_SAMPLE_AGE_SECONDS = 60
@@ -170,6 +171,161 @@ def collect_once(
     return samples
 
 
+def _index_cargo_entries(
+    rows: Any,
+    *,
+    host: str,
+    reasons: list[str],
+) -> dict[int, list[Mapping[str, Any]]]:
+    """Index raw Cargo rows without collapsing duplicate or malformed PIDs."""
+    if not isinstance(rows, list):
+        reasons.append(f"{host}:cargo-entry-list-missing")
+        return {}
+    by_pid: dict[int, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in rows:
+        if not isinstance(row, Mapping):
+            reasons.append(f"{host}:cargo-entry-shape-invalid")
+            continue
+        pid = row.get("pid")
+        pgid = row.get("pgid")
+        if type(pid) is not int or pid <= 0 or type(pgid) is not int or pgid <= 0:
+            reasons.append(f"{host}:cargo-entry-identity-invalid")
+            continue
+        by_pid[pid].append(row)
+    for pid, matches in by_pid.items():
+        if len(matches) != 1:
+            reasons.append(f"{host}:cargo-entry-pid-join-ambiguous")
+    return by_pid
+
+
+def _admission_slots_for_group(
+    group: Mapping[str, Any],
+    *,
+    host: str,
+    reasons: list[str],
+) -> int:
+    """Validate the sampler's explicit slot provenance, with a safe fallback."""
+    raw_pids = group.get("pids")
+    pids = raw_pids if isinstance(raw_pids, list) else []
+    valid_group_pids = {
+        pid for pid in pids if type(pid) is int and pid > 0
+    }
+    raw_cargo = group.get("cargo_pids")
+    cargo_pids = raw_cargo if isinstance(raw_cargo, list) else []
+    valid_cargo = [pid for pid in cargo_pids if type(pid) is int and pid > 0]
+    cargo_valid = (
+        isinstance(raw_cargo, list)
+        and len(valid_cargo) == len(raw_cargo)
+        and len(set(valid_cargo)) == len(valid_cargo)
+        and (group.get("kind") != "cargo" or bool(valid_cargo))
+        and set(valid_cargo).issubset(valid_group_pids)
+        and (group.get("kind") == "cargo" or not valid_cargo)
+    )
+
+    provenance = group.get("admission_slot_provenance")
+    valid = (
+        isinstance(raw_pids, list)
+        and len(valid_group_pids) == len(raw_pids)
+        and len(valid_group_pids) == len(pids)
+        and isinstance(provenance, Mapping)
+        and cargo_valid
+    )
+    if valid:
+        roots = provenance.get("cargo_root_pids")
+        residual_count = provenance.get("residual_slot_count")
+        residual_members = provenance.get("residual_member_pids")
+        residual_reason = provenance.get("residual_reason")
+        kind = group.get("kind")
+        valid = (
+            isinstance(roots, list)
+            and all(type(pid) is int and pid > 0 for pid in roots)
+            and roots == sorted(valid_cargo)
+            and type(residual_count) is int
+            and residual_count in {0, 1}
+            and isinstance(residual_members, list)
+            and all(type(pid) is int and pid > 0 for pid in residual_members)
+            and len(set(residual_members)) == len(residual_members)
+            and set(residual_members).issubset(valid_group_pids)
+            and (
+                (kind == "cargo" and (residual_count == 1) == bool(residual_members))
+                or (kind != "cargo" and residual_count == 1 and bool(residual_members))
+            )
+            and residual_reason == (
+                "unattributed-active-members" if kind == "cargo" and residual_count == 1
+                else "non-cargo-process-group" if kind != "cargo"
+                else None
+            )
+        )
+    if valid:
+        expected = len(valid_cargo) + residual_count if group.get("kind") == "cargo" else 1
+        reported = group.get("admission_slot_count")
+        valid = type(reported) is int and reported == expected
+    if valid:
+        return expected
+
+    reasons.append(f"{host}:compiler-admission-slot-provenance-invalid")
+    # A malformed record must never reduce occupancy. Count each identifiable
+    # Cargo root plus one residual PGID slot; otherwise retain one slot per PGID.
+    fallback_roots = max(1, len(set(valid_cargo)), len(valid_group_pids))
+    return fallback_roots + (1 if group.get("kind") == "cargo" else 0)
+
+
+def _validate_cargo_group_joins(
+    group: Mapping[str, Any],
+    *,
+    host: str,
+    entry_by_pid: Mapping[int, list[Mapping[str, Any]]],
+    group_coverage: dict[int, int],
+    reasons: list[str],
+    limitations: list[str],
+) -> None:
+    if group.get("kind") != "cargo":
+        return
+    pgid = group.get("pgid")
+    cargo_pids = group.get("cargo_pids")
+    if (
+        not isinstance(cargo_pids, list)
+        or not cargo_pids
+        or any(type(pid) is not int or pid <= 0 for pid in cargo_pids)
+        or len(set(cargo_pids)) != len(cargo_pids)
+    ):
+        reasons.append(f"{host}:cargo-pid-list-invalid")
+        return
+
+    per_pid_jobs: list[int | None] = []
+    for pid in cargo_pids:
+        group_coverage[pid] = group_coverage.get(pid, 0) + 1
+        matches = entry_by_pid.get(pid, [])
+        if len(matches) != 1:
+            reasons.append(f"{host}:cargo-entry-pid-join-missing-or-ambiguous")
+            continue
+        row = matches[0]
+        classification = row.get("classification")
+        if row.get("pgid") != pgid or classification not in {"build", "unknown"}:
+            reasons.append(f"{host}:cargo-entry-pid-join-mismatch")
+            continue
+        if classification == "build" and (
+            row.get("identity_validated") is not True
+            or not isinstance(row.get("start_token"), str)
+            or not row.get("start_token")
+        ):
+            reasons.append(f"{host}:cargo-entry-process-identity-unvalidated")
+        jobs = row.get("requested_cargo_jobs")
+        if type(jobs) is int:
+            per_pid_jobs.append(jobs)
+            if jobs > MAX_CARGO_JOBS_PER_PROCESS:
+                reasons.append(f"{host}:active-cargo-process-jobs-exceed-4")
+        else:
+            per_pid_jobs.append(None)
+            limitations.append(f"{host}:active-cargo-process-jobs-unknown-counted-conservatively")
+
+    expected_total = sum(per_pid_jobs) if per_pid_jobs and all(value is not None for value in per_pid_jobs) else None
+    reported_total = group.get("requested_cargo_jobs")
+    reported_known = group.get("job_limit_known")
+    if reported_total != expected_total or reported_known is not (expected_total is not None):
+        reasons.append(f"{host}:cargo-group-job-telemetry-mismatch")
+
+
 def evaluate_fleet(
     samples: Mapping[str, Mapping[str, Any]],
     *,
@@ -188,7 +344,7 @@ def evaluate_fleet(
         reasons.append("fleet-host-set-incomplete-or-unexpected")
     if destination not in hosts:
         reasons.append("destination-unknown")
-    if type(requested_jobs) is not int or not 1 <= requested_jobs <= MAX_CARGO_JOBS:
+    if type(requested_jobs) is not int or not 1 <= requested_jobs <= MAX_CARGO_JOBS_PER_PROCESS:
         reasons.append("requested-cargo-jobs-outside-1-through-4")
     if type(max_age_seconds) is not int or not 1 <= max_age_seconds <= 300:
         reasons.append("invalid-sample-age-policy")
@@ -196,6 +352,7 @@ def evaluate_fleet(
     host_summaries: dict[str, Any] = {}
     limitations: list[str] = []
     total_groups = 0
+    total_admission_slots = 0
     destination_memory_only = destination_memory_only_for_remote and destination != "local"
     for name, config in hosts.items():
         sample = samples.get(name)
@@ -205,6 +362,7 @@ def evaluate_fleet(
                 "complete": False,
                 "error": sample.get("error") if isinstance(sample, Mapping) else "missing-host-sample",
                 "compiler_group_count": None,
+                "compiler_admission_slot_count": None,
             }
             continue
         census = sample.get("census")
@@ -246,8 +404,13 @@ def evaluate_fleet(
         groups = groups_raw if isinstance(groups_raw, list) else []
         if not isinstance(groups_raw, list):
             reasons.append(f"{name}:compiler-group-list-missing")
+        entry_by_pid = _index_cargo_entries(
+            census.get("entries"), host=name, reasons=reasons
+        )
         seen_pgids: set[int] = set()
         active_groups: list[dict[str, Any]] = []
+        group_coverage: dict[int, int] = {}
+        admission_slots = 0
         for group in groups:
             if not isinstance(group, Mapping):
                 reasons.append(f"{name}:compiler-group-shape-invalid")
@@ -262,25 +425,44 @@ def evaluate_fleet(
             if classification not in {"build", "unknown", "orphan-rustc", "runtime-owner"}:
                 reasons.append(f"{name}:compiler-group-classification-invalid")
                 continue
+            valid_classification = {
+                "cargo": {"build", "unknown"},
+                "orphan-rustc": {"orphan-rustc", "unknown"},
+                "runtime-owner": {"runtime-owner", "unknown"},
+                "unknown": {"unknown"},
+            }[kind]
+            if classification not in valid_classification:
+                reasons.append(f"{name}:compiler-group-kind-classification-mismatch")
             active_groups.append(dict(group))
+            admission_slots += _admission_slots_for_group(
+                group, host=name, reasons=reasons
+            )
+            _validate_cargo_group_joins(
+                group,
+                host=name,
+                entry_by_pid=entry_by_pid,
+                group_coverage=group_coverage,
+                reasons=reasons,
+                limitations=limitations,
+            )
             if classification == "unknown":
                 limitations.append(f"{name}:unresolved-compiler-group-counted-conservatively")
-            if kind == "cargo":
-                jobs = group.get("requested_cargo_jobs")
-                if group.get("job_limit_known") is not True or type(jobs) is not int:
-                    limitations.append(f"{name}:active-cargo-jobs-unknown-group-counted-conservatively")
-                elif jobs > MAX_CARGO_JOBS:
-                    reasons.append(f"{name}:active-cargo-jobs-exceed-4")
+        for pid, rows in entry_by_pid.items():
+            if len(rows) != 1:
+                continue
+            if rows[0].get("classification") in {"build", "unknown"} and group_coverage.get(pid) != 1:
+                reasons.append(f"{name}:active-cargo-entry-group-join-missing-or-ambiguous")
         count = len(active_groups)
         total_groups += count
+        total_admission_slots += admission_slots
         limit = config.get("limit")
         if type(limit) is not int or limit < 1:
             reasons.append(f"{name}:host-limit-invalid")
-        elif count + (1 if name == destination else 0) > limit:
+        elif admission_slots + (1 if name == destination else 0) > limit:
             if allow_local_over_cap_for_remote and name == "local" and destination != "local":
                 limitations.append("local:over-host-cap-remote-admission-authorized")
             else:
-                reasons.append(f"{name}:host-compiler-group-limit-reached")
+                reasons.append(f"{name}:host-compiler-admission-slot-limit-reached")
         memory = resources.get("available_memory_bytes")
         memory_floor_applies = not destination_memory_only or name == destination
         if type(memory) is not int or memory < 0:
@@ -298,8 +480,10 @@ def evaluate_fleet(
             "visible_process_count": census.get("visible_process_count"),
             "cargo_entries": len(census.get("entries", [])) if isinstance(census.get("entries"), list) else None,
             "compiler_group_count": count,
+            "compiler_admission_slot_count": admission_slots,
             "compiler_groups": active_groups,
             "host_limit": limit,
+            "host_admission_slot_limit": limit,
             "available_memory_bytes": memory,
             "memory_floor_applies": memory_floor_applies,
             "available_memory_source": resources.get("available_memory_source"),
@@ -309,8 +493,8 @@ def evaluate_fleet(
             "census_sha256": sample.get("census_sha256"),
         }
 
-    if total_groups + (1 if destination in hosts else 0) > FLEET_GROUP_LIMIT:
-        reasons.append("fleet-compiler-group-limit-reached")
+    if total_admission_slots + (1 if destination in hosts else 0) > FLEET_ADMISSION_SLOT_LIMIT:
+        reasons.append("fleet-compiler-admission-slot-limit-reached")
     if destination in host_summaries:
         disk = host_summaries[destination].get("root_disk_available_bytes")
         if type(disk) is not int or disk < MIN_DESTINATION_DISK:
@@ -323,9 +507,22 @@ def evaluate_fleet(
         "allow_local_over_cap_for_remote": allow_local_over_cap_for_remote,
         "requested_cargo_jobs": requested_jobs,
         "current_fleet_compiler_group_count": total_groups,
-        "fleet_compiler_group_limit": FLEET_GROUP_LIMIT,
+        "current_fleet_compiler_admission_slot_count": total_admission_slots,
+        # Keep old JSON keys for existing report readers. Their explicit
+        # compatibility note below prevents treating PGID counts as admission
+        # occupancy; advisory_allowed is computed only from admission slots.
+        "fleet_compiler_group_limit": FLEET_ADMISSION_SLOT_LIMIT,
         "host_compiler_group_limits": {name: value.get("limit") for name, value in hosts.items()},
-        "max_cargo_jobs_per_group": MAX_CARGO_JOBS,
+        "max_cargo_jobs_per_group": MAX_CARGO_JOBS_PER_PROCESS,
+        "fleet_compiler_admission_slot_limit": FLEET_ADMISSION_SLOT_LIMIT,
+        "host_compiler_admission_slot_limits": {name: value.get("limit") for name, value in hosts.items()},
+        "max_cargo_jobs_per_cargo_process": MAX_CARGO_JOBS_PER_PROCESS,
+        "capacity_compatibility_note": (
+            "Legacy group-limit and jobs-per-group fields are compatibility aliases only; "
+            "compiler_group_count reports raw PGID telemetry, advisory_allowed uses "
+            "admission-slot counts, and the legacy jobs-per-group value means the "
+            "per-Cargo-process limit."
+        ),
         "memory_guard_scope": "destination" if destination_memory_only else "every-host",
         "destination_memory_only_for_remote": destination_memory_only,
         "minimum_available_memory_bytes_each_host": None if destination_memory_only else MIN_AVAILABLE_MEMORY,
@@ -362,7 +559,7 @@ def _write_exclusive(path: pathlib.Path, report: Mapping[str, Any]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--destination", choices=tuple(DEFAULT_HOSTS), required=True)
-    parser.add_argument("--jobs", type=int, default=MAX_CARGO_JOBS)
+    parser.add_argument("--jobs", type=int, default=MAX_CARGO_JOBS_PER_PROCESS)
     parser.add_argument(
         "--allow-local-over-cap-for-remote", action="store_true",
         help="Permit remote admission despite local occupancy; all other fleet, host, job, freshness and memory limits still apply.",

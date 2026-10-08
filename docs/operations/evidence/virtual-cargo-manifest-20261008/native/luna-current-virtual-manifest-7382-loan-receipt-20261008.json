@@ -1,0 +1,100 @@
+{
+  "authorization": "Root-directed sequential graph loan to run four focused Rust virtual-manifest controls on the existing warm Mac target/build only.",
+  "borrower_owner": {
+    "graph": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007",
+    "lifetime": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/clippy-source-graph-lifetime.lock",
+    "permit": null,
+    "recorded_at_utc": "2026-10-08T10:23:00.173214+00:00",
+    "source": {
+      "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+      "clean": true,
+      "commit": "d65fdc7a0c5f141219a628dde48a83118d1ab7b3",
+      "tree": "6bd690971032b1b726538e0d68ec180114f165ca"
+    },
+    "source_worktree": "/Users/rmccrar6/codex-worktrees/luna-current-virtual-manifest-7382-20261008"
+  },
+  "borrower_owner_sha256": "56b6fd04bdd1c953bc807c21bdd1fe7ccdddbb02413905facdb99f11f9f87fcf",
+  "borrower_patch_sha256": "23b15996e1546e8595589b05638b8547209bd5cb8febfc4add1d059fc6acd02f",
+  "borrower_source": {
+    "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+    "clean": true,
+    "commit": "d65fdc7a0c5f141219a628dde48a83118d1ab7b3",
+    "tree": "6bd690971032b1b726538e0d68ec180114f165ca"
+  },
+  "borrower_source_lock_created": "/Users/rmccrar6/codex-worktrees/luna-current-virtual-manifest-7382-20261008/.local/joined24-source.lock",
+  "borrower_source_lock_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "environment_sha256": "f0cdd089c484fe9e64ffb28e2808310a58a10f5849e5896eb53fa31b0609c32f",
+  "frozen_graph_after": {
+    "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268",
+    "clean": true,
+    "commit": "fbf27ce7d0dfa9e2e39463a61531bdf2b39645cc",
+    "tree": "320f2758f1c8ac8b25979a7f479564ac8d90f075"
+  },
+  "frozen_graph_before": {
+    "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268",
+    "clean": true,
+    "commit": "fbf27ce7d0dfa9e2e39463a61531bdf2b39645cc",
+    "tree": "320f2758f1c8ac8b25979a7f479564ac8d90f075"
+  },
+  "handoff_sha256": "31133b64574b175dc6c94d54717aa9182317e31a96042e8c06c0cecd13fbaa9b",
+  "locks_held": [
+    "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/clippy-source-graph-lifetime.lock",
+    "/Users/rmccrar6/codex-worktrees/sol61-joined24-352-mac-native-20261007/.local/joined24-source.lock",
+    "/Users/rmccrar6/codex-worktrees/luna-index-projection-fastpath-7382-20261008/.local/joined24-source.lock",
+    "/Users/rmccrar6/codex-worktrees/luna-current-virtual-manifest-7382-20261008/.local/joined24-source.lock",
+    "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007/.joined24-role.lock",
+    "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/target/clippy-current-canonical-20261007/debug/.cargo-lock",
+    "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/target/clippy-current-canonical-20261007/debug/.cargo-artifact-lock"
+  ],
+  "managed_graph_leases_after": [],
+  "managed_graph_leases_before": [],
+  "managed_host_permits_at_transfer": [
+    "slot-5.lock",
+    "worktree-590774537-64.lock"
+  ],
+  "native_launch_occurred_during_transfer": false,
+  "plan_path": "/private/tmp/luna-current-virtual-manifest-7382-joined24-plan.json",
+  "plan_sha256": "eb240dd5bd3e7966ae321926f16597c157ccbacc00c2cfba534a5e3ee07c94bb",
+  "previous_owner": {
+    "graph": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007",
+    "lifetime": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/clippy-source-graph-lifetime.lock",
+    "permit": "/Users/rmccrar6/.cache/nudox/cargo-1.97/locks/slot-0.lock",
+    "recorded_at_utc": "2026-10-08T10:06:00.062490+00:00",
+    "source": {
+      "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+      "clean": true,
+      "commit": "7382f9f8a31990f3b0fe2e2b44093717699ad934",
+      "tree": "155f1b793645fff3bccbadae11e3a144d08db2f2"
+    },
+    "source_worktree": "/Users/rmccrar6/codex-worktrees/luna-index-projection-fastpath-7382-20261008"
+  },
+  "previous_owner_archive_path": "/private/tmp/luna-index-projection-owner-archive-before-virtual-manifest-20261008.json",
+  "previous_owner_archive_sha256": "7ed5ebaba287632c03dd9b90a0bd8b7d3291daafef35a27e5b493af17b3c8220",
+  "previous_owner_path": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007/.joined24-source-owner.json",
+  "previous_owner_sha256": "7ed5ebaba287632c03dd9b90a0bd8b7d3291daafef35a27e5b493af17b3c8220",
+  "recorded_at_utc": "2026-10-08T10:23:00.173214+00:00",
+  "schema": "nudox.luna.joined24.graph-loan.v1",
+  "supervisor_sha256": "15ac811634ade9220da9b7c2a2d036d0a8074bf119ba9ee105ccaf120dd1b6c4",
+  "tool_hashes": {
+    "CARGO": {
+      "path": "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+      "sha256": "ad6923e08f2383443d5258a5b4896136e46305730347618ea18808ba8d9b85ac"
+    },
+    "CC": {
+      "path": "/nix/store/yn81qpksaxk576qb807fsck5ch7zmj6c-clang-wrapper-21.1.8/bin/clang",
+      "sha256": "78a620e8d5ff31cea9f3438739c9e388344b6de37975ac24084ee343ca1c5026"
+    },
+    "CXX": {
+      "path": "/nix/store/yn81qpksaxk576qb807fsck5ch7zmj6c-clang-wrapper-21.1.8/bin/clang++",
+      "sha256": "82949d1b309a293cd03a010dad7d4c963346b26f0990de713923dc2976f01384"
+    },
+    "RUSTC": {
+      "path": "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/rustc",
+      "sha256": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da"
+    },
+    "RUSTDOC": {
+      "path": "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/rustdoc",
+      "sha256": "aa94960b6a477441f6d1a797394daf4cafcc889d837550c8fa462b102e3fa5da"
+    }
+  }
+}

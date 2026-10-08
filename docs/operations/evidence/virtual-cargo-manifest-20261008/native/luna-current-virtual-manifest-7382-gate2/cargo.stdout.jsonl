@@ -1,0 +1,6 @@
+
+running 1 test
+test builtin::product_state::tests::virtual_cargo_workspace_public_search_keeps_member_declarations_available ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1143 filtered out; finished in 0.03s
+

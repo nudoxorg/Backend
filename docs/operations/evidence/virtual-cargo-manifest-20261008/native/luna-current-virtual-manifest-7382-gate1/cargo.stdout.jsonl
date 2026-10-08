@@ -1,0 +1,6 @@
+
+running 1 test
+test builtin::local_manifest::dependencies::tests::virtual_cargo_workspace_has_no_package_facts_but_members_keep_their_edges ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1143 filtered out; finished in 0.02s
+

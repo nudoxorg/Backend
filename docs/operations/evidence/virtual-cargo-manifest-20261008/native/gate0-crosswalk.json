@@ -1,0 +1,31 @@
+{
+  "binary": {
+    "format": "Mach-O 64-bit executable arm64",
+    "path": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007/debug/deps/backend_local_service-fb339fe309d09189",
+    "sha256": "2f220c5a174bbb50fe8c70479a4a87f2c8a83cc519428791d5e825a801f20dc0",
+    "size_bytes": 723284824
+  },
+  "gate": 0,
+  "mapping_note": "Supplemental mapping derives the exact executed test binary from the Cargo verbose Running line in cargo.stderr.log; supervisor retains executed_binary_results=[] for the no-JSON Cargo invocation.",
+  "plan_sha256": "eb240dd5bd3e7966ae321926f16597c157ccbacc00c2cfba534a5e3ee07c94bb",
+  "raw_artifacts": {
+    "cargo_stderr.log_sha256": "bcf0ac30a37f56efde688c0217f26931e5ac374c8cf835f0cc70c4745b32a713",
+    "cargo_stdout.jsonl_sha256": "85a502bd87d7ddae4fea0e4bbb02c45ed493225d176b97dad677571c59bb28be",
+    "completion.json_sha256": "8b09e59dfc0565b524e66d6a3eea62e821372b1082816238c17f2ecf6557e018",
+    "launch.json_sha256": "7de263f4800af8f97d4a77c0bdb7bd5b4bf82bbcd51c9acbd510dacb200675a7"
+  },
+  "schema": "nudox.luna.virtual-manifest.test-binary-crosswalk.v1",
+  "source": {
+    "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+    "commit": "d65fdc7a0c5f141219a628dde48a83118d1ab7b3",
+    "tree": "6bd690971032b1b726538e0d68ec180114f165ca",
+    "worktree": "/Users/rmccrar6/codex-worktrees/luna-current-virtual-manifest-7382-20261008"
+  },
+  "supervisor_artifact_mapping_complete": false,
+  "test": {
+    "exit": 0,
+    "name": "rust_manifest_kind_keeps_virtual_workspace_separate_from_packages",
+    "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1143 filtered out; finished in 0.02s",
+    "running_line": "Running `/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007/debug/deps/backend_local_service-fb339fe309d09189 rust_manifest_kind_keeps_virtual_workspace_separate_from_packages --test-threads=1 --nocapture`"
+  }
+}

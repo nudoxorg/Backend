@@ -1,0 +1,31 @@
+{
+  "binary": {
+    "format": "Mach-O 64-bit executable arm64",
+    "path": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007/debug/deps/backend_local_service-fb339fe309d09189",
+    "sha256": "2f220c5a174bbb50fe8c70479a4a87f2c8a83cc519428791d5e825a801f20dc0",
+    "size_bytes": 723284824
+  },
+  "gate": 3,
+  "mapping_note": "Supplemental manual mapping from exact Cargo verbose Running line to the test binary; supervisor mapping remains incomplete because Cargo JSON message format was omitted from the sealed plan.",
+  "plan_sha256": "eb240dd5bd3e7966ae321926f16597c157ccbacc00c2cfba534a5e3ee07c94bb",
+  "raw_artifacts": {
+    "cargo.stderr.log_sha256": "f5a84ded8b2f72f79c872fa0db7ad0c0fc244b3412aa677abb66712eb07fd5ca",
+    "cargo.stdout.jsonl_sha256": "2db217a014c197be7f3ee96a6ac07db1a24a5791c2f4da7c490289c74eceed80",
+    "completion.json_sha256": "dd745afd72ca5836ab978d8ec0be9baa1989c99cd85eabeeecfd0619793fd245",
+    "launch.json_sha256": "c36601973bbd8ba6c4ee4a22ad849f09df994bb09569baff830c6880d4e62556"
+  },
+  "schema": "nudox.luna.virtual-manifest.test-binary-crosswalk.v1",
+  "source": {
+    "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+    "commit": "d65fdc7a0c5f141219a628dde48a83118d1ab7b3",
+    "tree": "6bd690971032b1b726538e0d68ec180114f165ca",
+    "worktree": "/Users/rmccrar6/codex-worktrees/luna-current-virtual-manifest-7382-20261008"
+  },
+  "supervisor_artifact_mapping_complete": false,
+  "test": {
+    "exit": 0,
+    "name": "staged_cargo_member_survives_a_virtual_workspace_wrapper",
+    "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1143 filtered out; finished in 0.01s",
+    "running_line": "Running `/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007/debug/deps/backend_local_service-fb339fe309d09189 staged_cargo_member_survives_a_virtual_workspace_wrapper --test-threads=1 --nocapture`"
+  }
+}

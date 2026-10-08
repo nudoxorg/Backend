@@ -4040,6 +4040,95 @@ mod tests {
         }
     }
 
+    #[test]
+    fn virtual_cargo_workspace_public_search_keeps_member_declarations_available() {
+        let root = fixture("virtual-cargo-workspace-search");
+        let workspace = root.join("project");
+        let member = workspace.join("crates/serde");
+        fs::create_dir_all(member.join("src")).expect("workspace member directories");
+        fs::write(
+            workspace.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/serde\"]\nresolver = \"2\"\n",
+        )
+        .expect("virtual workspace manifest");
+        fs::write(
+            member.join("Cargo.toml"),
+            "[package]\nname = \"serde\"\nversion = \"1.0.0\"\nedition = \"2021\"\n",
+        )
+        .expect("member manifest");
+        fs::write(member.join("src/lib.rs"), "pub struct Serialize;\n").expect("member source");
+
+        let mut manifests = super::super::local_manifest::LocalManifestResidence::default();
+        manifests
+            .refresh([workspace.as_path()])
+            .expect("workspace root has no package dependency facts");
+        assert!(
+            manifests.facts().next().is_none(),
+            "the virtual root cannot acquire a synthetic package coordinate"
+        );
+
+        let package_label = workspace.to_str().expect("workspace path").to_owned();
+        let source_path = "crates/serde/src/lib.rs";
+        let symbol_label = format!("{package_label}::{source_path}:1::Serialize");
+        let root_digest = backend_engine::view_state_root(&[]);
+        let basis = backend_engine::Basis::new(
+            root_digest,
+            backend_engine::object_version(b"virtual-cargo-workspace-search"),
+        );
+        let package_row = Row::new(
+            RowId::Package(backend_engine::package_key(&package_label)),
+            basis,
+            package_label,
+        );
+        let symbol_row = Row::new(
+            RowId::Symbol(backend_engine::symbol_key(&symbol_label)),
+            basis,
+            symbol_label,
+        )
+        .with_source(
+            backend_library::SourceLocation::new(source_path, 1).expect("captured member source"),
+        );
+        let view = ViewRoot::new_incomplete(
+            backend_engine::view_key(b"virtual-cargo-workspace-search"),
+            basis,
+            backend_engine::Frontier::new(basis.branch, basis.log, basis.schema, root_digest, 0),
+            vec![package_row, symbol_row],
+            Vec::new(),
+        )
+        .expect("workspace source view");
+        let mut state = ProductState::open(root.join("product-state.json"))
+            .expect("public product search state");
+        let reply = state
+            .execute(
+                SurfaceCommand::IndexSearch {
+                    query: ProductText::from_static("Serialize"),
+                    limit: 4,
+                    cursor: None,
+                },
+                &view,
+                &[],
+                &CatalogLookupIndex::from_catalog(&[]),
+                &indexed_graph(Vec::new()),
+                None,
+            )
+            .expect("public search remains available after workspace refresh");
+        let SurfaceReply::IndexSearchPage(page) = reply else {
+            panic!("workspace declaration search returns the public search page");
+        };
+        assert_eq!(page.hits.len(), 1);
+        assert!(matches!(
+            &page.hits[0],
+            RegistrySearchHit::LocalDeclaration(record)
+                if record.name.as_str() == "Serialize"
+                    && matches!(
+                        &record.source,
+                        LocalDeclarationSource::Captured { path, line }
+                            if path.as_str() == source_path && line.get() == 1
+                    )
+        ));
+        let _ = fs::remove_dir_all(root);
+    }
+
     fn current_test_authority(
         row: &RegistryPackageRecord,
     ) -> backend_engine::RegistryPackageFactAuthority {
