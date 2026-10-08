@@ -1,0 +1,47 @@
+{
+  "schema": "nudox.joined24.mac-native.completion.v1",
+  "exit": 0,
+  "stop_reason": null,
+  "retirement": "owned-child-kernel-wait",
+  "source_after": {
+    "commit": "7382f9f8a31990f3b0fe2e2b44093717699ad934",
+    "tree": "155f1b793645fff3bccbadae11e3a144d08db2f2",
+    "clean": true,
+    "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e"
+  },
+  "frozen_graph_after": {
+    "commit": "fbf27ce7d0dfa9e2e39463a61531bdf2b39645cc",
+    "tree": "320f2758f1c8ac8b25979a7f479564ac8d90f075",
+    "clean": true,
+    "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+  },
+  "source_unchanged": true,
+  "frozen_graph_unchanged": true,
+  "test_results": [
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1140 filtered out; finished in 4.54s"
+  ],
+  "executed_binary_results": [],
+  "binary_result_mapping_complete": false,
+  "nested_subprocess_test_results": [],
+  "native_executables": [],
+  "compiler_errors": 0,
+  "environment_unchanged": true,
+  "toolchain_unchanged": true,
+  "ended_utc": "2026-10-08T09:57:56.088102+00:00",
+  "resources_after": {
+    "sampled_at_utc": "2026-10-08T09:57:56.092106+00:00",
+    "available_memory_bytes": 64039108608,
+    "root_disk_available_bytes": 1154890219520
+  },
+  "artifact_hashes": {
+    "cargo.stdout.jsonl": "90c9e3d7785e5f2e5e793a13d7fd70534cf898e283e9118f02f851146c0cbec4",
+    "cargo.stderr.log": "0333f1ea8e35827169595b38d5cf41a9d34d2b413546aed9adfbc199b5380a5d",
+    "diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+    "resources.jsonl": "272c2b137d27ecf13179aed06901a0e2df5a30ee3a5903c8b0d610c8484828e9",
+    "compiler-observations.jsonl": "114b1738da48d0edaed106fc8d2d3b1c34cb1298f1eeff3b1c1b338c3de68acb",
+    "launch.json": "0bbdfbad436e87d0439dd5f41123e43c8731a1cca1765cb093872dcc8bc850bc",
+    "fleet.json": "6a0f239d1847bd2b16a3a02e45c804fceaf254c629078a11281df37659b07484"
+  },
+  "managed_permit_retired": true,
+  "managed_graph_leases_empty": true
+}

@@ -1,5 +1,11 @@
 # Production readiness: what still needs attention
 
+### Durable index work avoidance — 2026-10-08
+
+The next source checkpoint reuses an unchanged admitted package-search projection while retaining full byte validation on every read. Its identity includes the live discovery store, exact revision, validated Forge journal tail and durable projection root. Forge refresh and snapshot capture now share the same interprocess publication gate. [Root's audit](../../audits/index-projection-checkpoint-20261008.md) records four actual focused native passes and exact thirteen-path source correspondence, including cross-process publication, tamper and reopen controls. The unchanged supervisor's missing executable mapping is explicitly retained; supplemental Cargo invocation evidence is not described as a locally rehashed image.
+
+This improves repeated index reads; it does not establish an end-to-end product or benchmark pass. The preceding TypeScript, Python, Go and Rust product blockers remain open. No installed binary or installer is changed by this checkpoint.
+
 ### Focused compiler/runtime checkpoint — 2026-10-08, 10:12 UTC
 
 TypeScript, Python, Go and Rust remain equally in scope. This checkpoint adds per-capture Go digest sharing with safe fresh hashing when a platform change witness is unavailable, truthful admitted-project TypeScript error recipes, and immutable Unix CAS publication before its existing durability barrier. Root reviewed the source and independently checked **28 actual focused passes**: Go20, TypeScript diagnostics4 and CAS4. [The audit and raw evidence](../../audits/runtime-tail-checkpoint-20261008.md) bind each result to its frozen source and distinguish generated inputs from tracked source. Cargo.lock is unchanged. This is a source checkpoint, not a combined workspace or installed product pass.

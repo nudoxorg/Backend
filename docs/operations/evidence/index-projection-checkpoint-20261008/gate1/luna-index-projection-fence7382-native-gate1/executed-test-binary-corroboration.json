@@ -1,0 +1,50 @@
+{
+  "argv": [
+    "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+    "test",
+    "--verbose",
+    "--locked",
+    "--offline",
+    "-j2",
+    "-p",
+    "backend-engine",
+    "--lib",
+    "forge_owner_refreshes_cross_instance_publications_for_reference_and_search",
+    "--",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "cargo_stderr_sha256": "0a9152be3e173b34bd17c553463477f64d709190cf272bbc57945b75990936a0",
+  "cargo_stdout_sha256": "732356e90a108f3c658fa881483881db2b3bf4dd58e2361169dbd5f528e21905",
+  "cargo_verbose_running_line": "     Running `/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007/debug/deps/backend_engine-b4955c870b705815 forge_owner_refreshes_cross_instance_publications_for_reference_and_search --test-threads=1 --nocapture`",
+  "completion_exit": 0,
+  "completion_sha256": "b0ec30ec4fee036761b9cb540ec9b7ac4ed4831020318b9dda19d080f125becb",
+  "created_utc": "2026-10-08T10:03:43.912621+00:00",
+  "executed_test_binary": {
+    "path": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007/debug/deps/backend_engine-b4955c870b705815",
+    "sha256": "026511be7d1acc263772fa9a0fde151c4f5aa71534383e9e3af2d33f59192a34",
+    "size_bytes": 460871472
+  },
+  "frozen_graph_before": {
+    "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268",
+    "clean": true,
+    "commit": "fbf27ce7d0dfa9e2e39463a61531bdf2b39645cc",
+    "tree": "320f2758f1c8ac8b25979a7f479564ac8d90f075"
+  },
+  "gate": 1,
+  "managed_graph_leases_empty": true,
+  "managed_permit_retired": true,
+  "note": "Supplemental crosswalk: the unchanged supervisor did not populate native_executables/binary_result_mapping_complete; this binds raw Cargo verbose invocation and stdout result to the emitted test binary without editing the supervisor receipt.",
+  "plan_sha256": "7682cadd7ceedb6090a2ebf63c61c09a170583218d178f031cbd98499dd20667",
+  "retirement": "owned-child-kernel-wait",
+  "schema": "nudox.luna.index-projection.executed-test-binary-corroboration.v1",
+  "source_before": {
+    "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+    "clean": true,
+    "commit": "7382f9f8a31990f3b0fe2e2b44093717699ad934",
+    "tree": "155f1b793645fff3bccbadae11e3a144d08db2f2"
+  },
+  "supervisor_binary_result_mapping_complete": false,
+  "supervisor_native_executables_field": [],
+  "test_stdout_result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 902 filtered out; finished in 0.98s"
+}

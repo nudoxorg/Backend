@@ -1,0 +1,86 @@
+{
+  "checked_at_utc": "2026-10-08T10:08:43.480884+00:00",
+  "frozen_graph": {
+    "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268",
+    "clean": true,
+    "commit": "fbf27ce7d0dfa9e2e39463a61531bdf2b39645cc",
+    "tree": "320f2758f1c8ac8b25979a7f479564ac8d90f075"
+  },
+  "gates": [
+    {
+      "child_pid": 17055,
+      "completion_sha256": "b7ec00e5c69fedae88c82f3622036d1127e88a46e15fc5027a0817f9c29cdc51",
+      "exit": 0,
+      "frozen_graph_unchanged": true,
+      "gate": 0,
+      "managed_graph_leases_empty": true,
+      "managed_permit_retired": true,
+      "retirement": "owned-child-kernel-wait",
+      "selected_permit_exists": false,
+      "selected_permit_path": "/Users/rmccrar6/.cache/nudox/cargo-1.97/locks/slot-2.lock",
+      "source_unchanged": true
+    },
+    {
+      "child_pid": 22960,
+      "completion_sha256": "b0ec30ec4fee036761b9cb540ec9b7ac4ed4831020318b9dda19d080f125becb",
+      "exit": 0,
+      "frozen_graph_unchanged": true,
+      "gate": 1,
+      "managed_graph_leases_empty": true,
+      "managed_permit_retired": true,
+      "retirement": "owned-child-kernel-wait",
+      "selected_permit_exists": false,
+      "selected_permit_path": "/Users/rmccrar6/.cache/nudox/cargo-1.97/locks/slot-0.lock",
+      "source_unchanged": true
+    },
+    {
+      "child_pid": 28332,
+      "completion_sha256": "ab2f57a75fdb89cc2f546623539c0effbd0926232d42b2e985298c2999c49c61",
+      "exit": 0,
+      "frozen_graph_unchanged": true,
+      "gate": 2,
+      "managed_graph_leases_empty": true,
+      "managed_permit_retired": true,
+      "retirement": "owned-child-kernel-wait",
+      "selected_permit_exists": false,
+      "selected_permit_path": "/Users/rmccrar6/.cache/nudox/cargo-1.97/locks/slot-0.lock",
+      "source_unchanged": true
+    },
+    {
+      "child_pid": 30081,
+      "completion_sha256": "68addc6906428149a6aaf1d852eeb090299819e797f2440d737e488540b5bf62",
+      "exit": 0,
+      "frozen_graph_unchanged": true,
+      "gate": 3,
+      "managed_graph_leases_empty": true,
+      "managed_permit_retired": true,
+      "retirement": "owned-child-kernel-wait",
+      "selected_permit_exists": false,
+      "selected_permit_path": "/Users/rmccrar6/.cache/nudox/cargo-1.97/locks/slot-0.lock",
+      "source_unchanged": true
+    }
+  ],
+  "managed_graph_leases": [],
+  "matching_live_compiler_processes": [],
+  "owner_record": {
+    "graph": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007",
+    "lifetime": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/clippy-source-graph-lifetime.lock",
+    "permit": "/Users/rmccrar6/.cache/nudox/cargo-1.97/locks/slot-0.lock",
+    "recorded_at_utc": "2026-10-08T10:06:00.062490+00:00",
+    "source": {
+      "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+      "clean": true,
+      "commit": "7382f9f8a31990f3b0fe2e2b44093717699ad934",
+      "tree": "155f1b793645fff3bccbadae11e3a144d08db2f2"
+    },
+    "source_worktree": "/Users/rmccrar6/codex-worktrees/luna-index-projection-fastpath-7382-20261008"
+  },
+  "owner_record_sha256": "7ed5ebaba287632c03dd9b90a0bd8b7d3291daafef35a27e5b493af17b3c8220",
+  "schema": "nudox.luna.index-projection.final-retirement-check.v1",
+  "source": {
+    "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+    "clean": true,
+    "commit": "7382f9f8a31990f3b0fe2e2b44093717699ad934",
+    "tree": "155f1b793645fff3bccbadae11e3a144d08db2f2"
+  }
+}
