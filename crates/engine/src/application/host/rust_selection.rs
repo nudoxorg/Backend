@@ -22,6 +22,7 @@ pub enum InstalledToolPlace {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::application::ClosedLocalHostEnvironmentSnapshot;
     use std::os::unix::fs::PermissionsExt as _;
 
     struct RustEnvironment {
