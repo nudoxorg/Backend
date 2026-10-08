@@ -113,6 +113,7 @@ def source_origin_records(
         source,
         target,
         args.expected_runner_sha256,
+        getattr(args, "expected_managed_plan_sha256", None),
     )
     app_root = args.artifact_dir.resolve(strict=True)
     app_processes = {
@@ -653,6 +654,7 @@ def main() -> int:
     parser.add_argument("--expected-revision", required=True)
     parser.add_argument("--expected-tree", required=True)
     parser.add_argument("--expected-runner-sha256", required=True)
+    parser.add_argument("--expected-managed-plan-sha256", help="selected external plan pin for managed native-host application receipts")
     parser.add_argument("--artifact-dir", required=True, type=Path)
     parser.add_argument("--build-receipt", required=True, type=Path)
     parser.add_argument("--sdk-only", action="store_true", help="collect only application and genuine Node/TypeScript SDK origins")
