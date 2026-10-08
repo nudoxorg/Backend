@@ -13,6 +13,7 @@ import tomllib
 from pathlib import Path
 
 from release_contract import ASSET, sha256
+from linux_release_package import read_regular_bytes
 
 HERE = Path(__file__).resolve().parent
 MACHO = {b"\xfe\xed\xfa\xcf", b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca", b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca"}
@@ -35,6 +36,20 @@ def release_inputs(config):
 
 def run(command, **kwargs):
     return subprocess.run(command, check=True, **kwargs)
+
+
+def selected_managed_build(config, output):
+    """Keep the operator's plan pin independent of self-contained package evidence."""
+    manifest=json.loads(read_regular_bytes(output/'package/Nudox.app/Contents/Resources/build-manifest.json',16*1024**2,'selected application manifest'))
+    if not config.get('managed_native_host_plan'):
+        if manifest.get('application_build',{}).get('cargo_provenance',{}).get('kind')=='managed-native-host':
+            raise ValueError('managed-native-host signing requires an external selected plan')
+        return
+    pin=config.get('expected_managed_plan_sha256')
+    build=json.loads(read_regular_bytes(output/'build/application-build-receipt.json',16*1024**2,'selected application build receipt'))
+    for proof in (build.get('cargo_provenance',{}),manifest.get('application_build',{}).get('cargo_provenance',{})):
+        if proof.get('kind')!='managed-native-host' or proof.get('operator_plan_sha256')!=pin:
+            raise ValueError('packaged managed-native-host build differs from the external selected plan pin')
 
 
 def preflight(config, stage="build"):
@@ -74,6 +89,9 @@ def preflight(config, stage="build"):
             problems.append("managed-native-host plan content pin differs")
     elif config.get("expected_managed_plan_sha256"):
         problems.append("managed-native-host plan pin requires a selected plan")
+    if stage=='sign':
+        try:selected_managed_build(config,output)
+        except (ValueError,RuntimeError,OSError) as error:problems.append(str(error))
     for key in ("expected_revision", "expected_tree", "expected_runner_sha256", "expected_icon_sha256", "minimum_os", "signing_identity", "notary_profile"):
         if not config.get(key):
             problems.append(f"missing release configuration: {key}")
@@ -84,6 +102,10 @@ def preflight(config, stage="build"):
         problems.append("codesign must resolve to the selected Apple /usr/bin/codesign")
     if not source.is_dir():
         problems.append("source checkout is missing")
+    elif config.get('managed_native_host_plan'):
+        import macos_managed_native_host as managed
+        try:managed.source_identity(source,config.get('expected_revision'),config.get('expected_tree'))
+        except (ValueError,RuntimeError,OSError) as error:problems.append(str(error))
     else:
         status = subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"], text=True)
         if status:
@@ -122,6 +144,8 @@ def prepare(config):
         build_arguments.extend(["--managed-native-host-plan", config["managed_native_host_plan"], "--expected-managed-plan-sha256", config["expected_managed_plan_sha256"]])
     run(build_arguments)
     arguments = [sys.executable, str(HERE / "macos-investor-bundle.py"), *common, "--artifact-dir", str(build / "artifacts"), "--build-receipt", str(build / "application-build-receipt.json"), "--output-dir", str(package), "--minimum-os", config["minimum_os"], "--expected-icon-sha256", config["expected_icon_sha256"]]
+    if config.get('managed_native_host_plan'):
+        arguments.extend(['--expected-managed-plan-sha256',config['expected_managed_plan_sha256']])
     for key in sorted(release_inputs(config) - {"cargo_runner"}):
         arguments.extend(["--" + key.replace("_", "-"), config[key]])
     if sdk_only(config):
@@ -146,6 +170,7 @@ def finalize(config):
     if candidate.exists():
         raise ValueError("completed/partial candidate already exists; inspect it before retrying")
     app = package / "Nudox.app"
+    selected_managed_build(config,output)
     sdk = None
     if sdk_only(config):
         import finalize_macos_typescript_sdk as sdk

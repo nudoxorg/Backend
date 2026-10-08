@@ -599,6 +599,7 @@ def validate_app_build(
     source: dict[str, str],
     target: str,
     expected_runner_sha256: str,
+    expected_managed_plan_sha256: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Path]]:
     receipt, _ = origin_receipt(receipt_path, "application")
     expected_source = {
@@ -626,6 +627,8 @@ def validate_app_build(
     if runner_before["sha256"] != expected_runner_sha256:
         fail("application receipt Cargo runner differs from the package operator's explicit pin")
     execution_kind = runner_before.get("execution_kind", "wrapper")
+    if expected_managed_plan_sha256 is not None and execution_kind != "managed-native-host":
+        fail("selected managed-native-host plan cannot be replaced by another build kind")
     if execution_kind not in {"wrapper", "direct-cargo", "managed-native-host"}:
         fail("application receipt has an unsupported Cargo runner execution kind")
     runner_assets = runner_before.get("referenced_asset_sha256")
@@ -748,7 +751,7 @@ def validate_app_build(
         validate_direct_cargo_provenance(provenance, source, target, runner_before)
     else:
         try:
-            managed.validate(provenance, expected_source, target, runner_before, receipt_path)
+            managed.validate(provenance, expected_source, target, runner_before, receipt_path, expected_managed_plan_sha256)
         except (ValueError, OSError, KeyError, TypeError, RuntimeError) as error:
             fail("managed native-host provenance refused: " + str(error))
     versions = provenance.get("toolchain")
@@ -1638,6 +1641,7 @@ def main() -> int:
     parser.add_argument("--expected-revision", required=True, help="full operator-reviewed application Git commit SHA")
     parser.add_argument("--expected-tree", required=True, help="full operator-reviewed application Git tree SHA")
     parser.add_argument("--expected-runner-sha256", required=True, help="full operator-reviewed Cargo runner SHA-256 from the application build")
+    parser.add_argument("--expected-managed-plan-sha256", help="external selected plan pin required for managed-native-host builds")
     parser.add_argument("--artifact-dir", required=True, type=Path, help="directory containing the three admitted application binaries")
     parser.add_argument("--build-receipt", required=True, type=Path, help="Root-produced application build receipt JSON")
     parser.add_argument("--sdk-only", action="store_true", help="bundle only genuine Node/TypeScript; no legacy language-helper claims or overrides")
@@ -1688,9 +1692,16 @@ def main() -> int:
         fail("--expected-tree must be a full lowercase Git tree SHA")
     if re.fullmatch(r"[0-9a-f]{64}", args.expected_runner_sha256) is None:
         fail("--expected-runner-sha256 must be a full lowercase SHA-256 digest")
-    source = validate_source(source_root, args.expected_revision, args.expected_tree)
+    if args.expected_managed_plan_sha256 is not None and re.fullmatch(r"[0-9a-f]{64}",args.expected_managed_plan_sha256) is None:
+        fail("--expected-managed-plan-sha256 must be a full lowercase SHA-256 digest")
+    if args.expected_managed_plan_sha256 is not None:
+        import macos_managed_native_host as managed
+        try:source=managed.source_identity(source_root,args.expected_revision,args.expected_tree)
+        except (ValueError,RuntimeError) as error:fail(str(error))
+    else:
+        source = validate_source(source_root, args.expected_revision, args.expected_tree)
     app_receipt, binaries = validate_app_build(
-        args.build_receipt.resolve(strict=True), artifact_dir, source, args.target, args.expected_runner_sha256
+        args.build_receipt.resolve(strict=True), artifact_dir, source, args.target, args.expected_runner_sha256, args.expected_managed_plan_sha256
     )
     helpers_receipt, helper_files = validate_helper_payload(
         args.helpers_receipt.resolve(strict=True), helpers_dir, source_root, source, args.target, sdk_only=args.sdk_only

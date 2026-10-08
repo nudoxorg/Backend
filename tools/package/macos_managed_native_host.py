@@ -62,6 +62,58 @@ def capture(command, maximum, **kwargs):
         process.stdout.close()
 
 
+def source_git(source, *arguments):
+    """Inspect this checkout, without operator Git config or worktree redirects."""
+    environment={key:value for key,value in os.environ.items() if not key.startswith('GIT_')}
+    environment.update(GIT_CONFIG_GLOBAL='/dev/null',GIT_CONFIG_SYSTEM='/dev/null',GIT_CONFIG_NOSYSTEM='1')
+    command=['git','-C',str(source),'--work-tree='+str(source),'-c','core.worktree='+str(source),
+             '-c','core.excludesFile=/dev/null','-c','core.fsmonitor=false',*arguments]
+    return capture(command,16*1024**2,env=environment)
+
+
+def source_identity(source, revision, tree):
+    head=source_git(source,'rev-parse','HEAD').decode().strip()
+    actual_tree=source_git(source,'rev-parse','HEAD^{tree}').decode().strip()
+    status=source_git(source,'status','--porcelain','--untracked-files=all').strip()
+    require(head==revision and actual_tree==tree and not status,
+            'source must remain at the exact operator-pinned clean commit')
+    # ls-files --others deliberately has no exclude options: .gitignore and
+    # .git/info/exclude must not hide an auto-discovered build.rs or source file.
+    roots=[];manifest_bytes=0
+    entries=source_git(source,'ls-tree','-rz','HEAD').split(b'\0')
+    require(len(entries)-1<=MAX_INPUTS,'tracked source exceeds its entry bound')
+    for entry in entries:
+        if not entry:continue
+        header,name=entry.split(b'\t',1)
+        if not name.endswith(b'Cargo.toml') or header.split()[1]!=b'blob':continue
+        path=source/os.fsdecode(name)
+        raw=read_regular_bytes(path,min(1024**2,MAX_SOURCE-manifest_bytes),'tracked Cargo manifest')
+        manifest_bytes+=len(raw);manifest=tomllib.loads(raw.decode())
+        if 'package' in manifest:roots.append(':(literal)'+str(path.parent.relative_to(source)))
+    if roots:
+        require(not source_git(source,'ls-files','--others','-z','--',*roots),
+                'source contains untracked or ignored Cargo package inputs')
+    return {'git_revision':head,'git_tree':actual_tree,
+            'cargo_lock_sha256':admit_file_digest(source/'Cargo.lock',MAX_IMAGE)[1],
+            'working_tree':'clean'}
+
+
+def owned_graph_directory(source, path, must_exist=False):
+    """Reject redirected existing components; a missing owned tail may be created."""
+    require(path.is_absolute() and '..' not in path.parts and path.is_relative_to(source/'.local'),
+            'native-host graph directory is not workspace owned')
+    current=source
+    for part in path.relative_to(source).parts:
+        current=current/part
+        try:metadata=current.lstat()
+        except FileNotFoundError:continue
+        require(stat.S_ISDIR(metadata.st_mode) and metadata.st_uid==os.geteuid(),
+                'native-host graph directory has a symlink, non-directory or foreign ancestor')
+    require(path.resolve(strict=False)==path,'native-host graph directory resolves outside the selected path')
+    require(not must_exist or path.is_dir(),'native-host actual graph directory is missing')
+    return str(path)
+
+
 def build_arguments():
     result = ['build', '--release', '--locked', '--offline', '-j2', '--message-format=json']
     for package in PACKAGES:
@@ -206,7 +258,7 @@ def validate_source_inventory(value, source):
 
 def tracked_inputs(source, identity):
     """Hash actual tracked bytes against their Git blob IDs, with finite I/O."""
-    raw = capture(['git', '-C', str(source), 'ls-tree', '-rz', 'HEAD'],16*1024**2)
+    raw = source_git(source,'ls-tree','-rz','HEAD')
     files = []; links = []; total = 0
     entries = raw.split(b'\0')
     require(len(entries) - 1 <= MAX_INPUTS, 'tracked source exceeds its entry bound')
@@ -272,7 +324,7 @@ def _read_ref(receipt_path, ref, maximum):
     return raw
 
 
-def validate(proof, source, target, runner, receipt_path):
+def validate(proof, source, target, runner, receipt_path, expected_plan_sha256):
     """Validate only the new kind; caller retains common app/runner/image checks."""
     require(proof.get('schema') == SCHEMA and proof.get('kind') == KIND
             and proof.get('target_mode') == 'native-host' and proof.get('target') == target,
@@ -283,7 +335,7 @@ def validate(proof, source, target, runner, receipt_path):
             and proof.get('exit_status') == 0 and type(proof['exit_status']) is int,
             'native-host proof lacks exact recipe or successful kernel wait')
     refs = proof.get('raw_evidence')
-    require(isinstance(refs, dict) and set(refs) == {'source_before','source_after','tools_before','tools_after','cargo_log','wrapper','runner_script','environment_script','configs_before','configs_after','environment','metadata','execution','plan'},
+    require(isinstance(refs, dict) and set(refs) == {'source_before','source_after','tools_before','tools_after','cargo_log','wrapper','runner_script','environment_script','configs_before','configs_after','environment','metadata','execution','plan','graph_after'},
             'native-host proof lacks its raw evidence')
     require(proof.get('record_sha256') == proof_digest(proof),
             'native-host raw evidence digest differs')
@@ -297,7 +349,8 @@ def validate(proof, source, target, runner, receipt_path):
             and Path(role).is_relative_to(Path(workspace)/'.local'),
             'native-host build role is not workspace owned')
     plan_raw=_read_ref(receipt_path,refs['plan'],65536);plan=read_plan(plan_raw)
-    require(digest(plan_raw)==proof.get('operator_plan_sha256') and plan['build_role']==role
+    require(isinstance(expected_plan_sha256,str) and re.fullmatch('[0-9a-f]{64}',expected_plan_sha256) is not None
+            and digest(plan_raw)==proof.get('operator_plan_sha256')==expected_plan_sha256 and plan['build_role']==role
             and all(runner['referenced_asset_sha256'].get('runner.'+label)==entry['sha256']
                     for label,entry in plan_assets(plan)),
             'native-host retained operator plan differs from selected pins')
@@ -341,6 +394,12 @@ def validate(proof, source, target, runner, receipt_path):
     actual_build=raw_wrapper.get('cargo_build_dir')
     require(actual_build in {str(Path(role)/'.nudox-cargo'/('slot-'+str(index))) for index in range(min(4,plan['build_slots']))},
             'native-host actual managed graph escaped the selected role/slot bounds')
+    require(proof.get('physical_graph_directories')=={'target':workspace+'/.local/target','release':workspace+'/.local/target/release',
+                                                     'provenance':workspace+'/.local/target/.nudox-provenance',
+                                                     'build_role':role,'actual_build':actual_build},
+            'native-host physical graph paths differ from the selected owned paths')
+    require(json.loads(_read_ref(receipt_path,refs['graph_after'],65536))==proof['physical_graph_directories'],
+            'native-host retained physical graph observation differs')
     for name in ('cargo','rustc','rustdoc'):
         initial=raw_toolchain.get('executables_before',{}).get(name,{})
         final=raw_toolchain.get('executables_after',{}).get(name,{})
@@ -470,6 +529,13 @@ def build(args, api):
                     'managed native-host lifetime lock is not an owned persistent file')
             fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
             lock_identities[name]=(metadata.st_dev,metadata.st_ino)
+        owned_graph_directory(source,source/'.local/target')
+        owned_graph_directory(source,source/'.local/target/release')
+        owned_graph_directory(source,source/'.local/target/.nudox-provenance')
+        owned_graph_directory(source,role)
+        owned_graph_directory(source,role/'.nudox-cargo/leases')
+        for index in range(min(4,plan['build_slots'])):
+            owned_graph_directory(source,role/'.nudox-cargo'/('slot-'+str(index))/'release')
         environment=api['_static_environment'](Path(paths['environment.0']))
         require(environment.get('NUDOX_CARGO_BUILD_SLOTS',str(plan['build_slots']))==str(plan['build_slots']),
                 'managed native-host selected environment slot count differs')
@@ -489,7 +555,7 @@ def build(args, api):
             hosts=[line.removeprefix('host: ') for line in vv.splitlines() if line.startswith('host: ')]
             require(hosts==[args.target],'selected rustc host differs from requested native host')
             return {**result,'rustc_vv':vv,'host':hosts[0]}
-        identity=api['source_manifest'](source,args.expected_revision,args.expected_tree)
+        identity=source_identity(source,args.expected_revision,args.expected_tree)
         output.mkdir();evidence=output/'evidence';evidence.mkdir()
         refs={'plan':_raw_reference(evidence,'plan.json',raw)}
         refs['runner_script']=_raw_reference(evidence,'runner.sh',runner_raw)
@@ -503,9 +569,13 @@ def build(args, api):
         provenance_dir=source/'.local/target/.nudox-provenance';previous={p.name for p in provenance_dir.glob('*.json')}
         command=[paths['interpreter'],str(runner_path),*build_arguments()]
         try:
+            owned_graph_directory(source,source/'.local/target')
+            owned_graph_directory(source,source/'.local/target/release')
+            owned_graph_directory(source,source/'.local/target/.nudox-provenance')
+            owned_graph_directory(source,role)
             execution=api['_stream_direct_cargo'](command,source,env,evidence/'cargo.log',maximum_log_bytes=MAX_LOG)
             require(execution['returncode']==0,'managed native-host Cargo build failed; raw output retained')
-            require(api['source_manifest'](source,args.expected_revision,args.expected_tree)==identity,
+            require(source_identity(source,args.expected_revision,args.expected_tree)==identity,
                     'managed native-host source identity changed')
             refs['source_after']=_reference(evidence,'source-after.json',tracked_inputs(source,identity))
             refs['configs_after']=_reference(evidence,'configs-after.json',capture_configs(source,plan))
@@ -523,6 +593,13 @@ def build(args, api):
             new_records={p.name:p for p in provenance_dir.glob('*.json') if p.name not in previous}
             require(len(new_records)==1,'managed wrapper record count changed')
             wrapper_raw=read_regular_bytes(next(iter(new_records.values())),8*1024**2,'native wrapper raw record')
+            actual_build=Path(json.loads(wrapper_raw)['cargo_build_dir'])
+            physical_graph={'target':owned_graph_directory(source,source/'.local/target',True),
+                            'release':owned_graph_directory(source,source/'.local/target/release',True),
+                            'provenance':owned_graph_directory(source,provenance_dir,True),
+                            'build_role':owned_graph_directory(source,role,True),
+                            'actual_build':owned_graph_directory(source,actual_build,True)}
+            refs['graph_after']=_reference(evidence,'graph-after.json',physical_graph)
             (evidence/'wrapper.json').write_bytes(wrapper_raw)
             refs['wrapper']={'path':'evidence/wrapper.json','sha256':digest(wrapper_raw),'size_bytes':len(wrapper_raw)}
             refs['cargo_log']={'path':'evidence/cargo.log',**{k:execution['output_log'][k] for k in ('sha256','size_bytes')}}
@@ -538,16 +615,18 @@ def build(args, api):
                     name=event['target']['name'];require(name not in events,'duplicate native producing event');events[name]=event
             outputs=[]
             for name,event in events.items():
+                owned_graph_directory(source,Path(event['executable']).parent,True)
                 size,sha=admit_file_digest(Path(event['executable']),MAX_IMAGE)
                 outputs.append({'path':output_name(name),'cargo_executable':event['executable'],'sha256':sha,'size_bytes':size})
             proof={'schema':SCHEMA,'kind':KIND,'target_mode':'native-host','target':args.target,'workspace_root':str(source),
                    'build_role':str(role),'command':[*runner['invocation_prefix'],*build_arguments()],
                    'operator_plan_sha256':digest(raw),
+                   'physical_graph_directories':physical_graph,
                    'retirement':'owned-child-kernel-wait','child_pid':execution['child_pid'],'exit_status':0,
                    'raw_evidence':refs,'managed_wrapper_provenance':wrapper,'cargo_artifacts':events,'source_artifacts':source_events,'outputs':outputs}
             proof['record_sha256']=proof_digest(proof)
             public_runner={k:v for k,v in runner.items() if not k.startswith('_')}
-            validate(proof,identity,args.target,public_runner,output/'application-build-receipt.json')
+            validate(proof,identity,args.target,public_runner,output/'application-build-receipt.json',args.expected_managed_plan_sha256)
             artifacts=output/'artifacts';artifacts.mkdir()
             for item in outputs:
                 name=Path(item['cargo_executable']).name;dest=artifacts/name;shutil.copy2(item['cargo_executable'],dest)

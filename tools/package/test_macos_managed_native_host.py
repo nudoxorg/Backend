@@ -61,6 +61,10 @@ class ManagedNativeTests(unittest.TestCase):
             outputs.append({'path':native.output_name(name),'cargo_executable':events[name]['executable'],'sha256':sha,'size_bytes':image.stat().st_size})
         wrapper=builder.cargo_provenance(evidence,{p.name for p in evidence.glob('*.json')}-{'wrapper.json'},Path(workspace),source,None,Path(workspace)/'.local/target')
         proof={'schema':4,'kind':native.KIND,'target_mode':'native-host','target':'aarch64-apple-darwin','workspace_root':workspace,'build_role':workspace+'/.local/build/role','command':[*runner['invocation_prefix'],*native.build_arguments()],'retirement':'owned-child-kernel-wait','child_pid':123,'exit_status':0,'raw_evidence':refs,'managed_wrapper_provenance':wrapper,'cargo_artifacts':events,'source_artifacts':list(events.values()),'outputs':outputs,'operator_plan_sha256':refs['plan']['sha256'],'record_sha256':'f'*64}
+        proof['physical_graph_directories']={'target':workspace+'/.local/target','release':workspace+'/.local/target/release',
+                                             'provenance':workspace+'/.local/target/.nudox-provenance',
+                                             'build_role':proof['build_role'],'actual_build':raw_wrapper['cargo_build_dir']}
+        refs['graph_after']=native._reference(evidence,'graph-after.json',proof['physical_graph_directories'])
         data=(source,runner,proof,root/'application-build-receipt.json',artifacts)
         self.write_log(data,list(events.values()))
         receipt={'schema':1,'source':source,'source_before':source,'source_after':source,'source_unchanged':True,'target':'aarch64-apple-darwin','profile':'release','locked_build':True,'cargo_runner_before':runner,'cargo_runner_after':runner,'cargo_runner_unchanged':True,'cargo_provenance':proof,'command':proof['command'],'executables':executables}
@@ -78,12 +82,13 @@ class ManagedNativeTests(unittest.TestCase):
 
     def validate(self,data):
         data[2]['record_sha256']=native.proof_digest(data[2])
-        native.validate(data[2],data[0],'aarch64-apple-darwin',data[1],data[3])
+        selected=json.loads(data[3].read_text())['cargo_provenance']['operator_plan_sha256']
+        native.validate(data[2],data[0],'aarch64-apple-darwin',data[1],data[3],selected)
 
     def test_accepts_release_four_through_existing_common_app_validator(self):
         with tempfile.TemporaryDirectory() as d:
             source,runner,_,receipt,artifacts=self.fixture(Path(d))
-            _,images=bundle.validate_app_build(receipt,artifacts,source,'aarch64-apple-darwin',runner['sha256'])
+            _,images=bundle.validate_app_build(receipt,artifacts,source,'aarch64-apple-darwin',runner['sha256'],json.loads(receipt.read_text())['cargo_provenance']['operator_plan_sha256'])
             self.assertEqual(set(images),set(native.PACKAGES))
 
     def test_rejects_host_kind_schema_target_mode_and_recipe_relabel(self):
@@ -154,7 +159,7 @@ class ManagedNativeTests(unittest.TestCase):
                 data=self.fixture(Path(d))
                 if change=='digest':
                     data[2]['record_sha256']='0'*64
-                    with self.assertRaisesRegex(ValueError,'evidence digest'):native.validate(data[2],data[0],'aarch64-apple-darwin',data[1],data[3])
+                    with self.assertRaisesRegex(ValueError,'evidence digest'):native.validate(data[2],data[0],'aarch64-apple-darwin',data[1],data[3],data[2]['operator_plan_sha256'])
                     continue
                 execution=json.loads((Path(d)/data[2]['raw_evidence']['execution']['path']).read_text())
                 if change=='cwd':execution['cwd']='/other'
@@ -199,9 +204,11 @@ class ManagedNativeTests(unittest.TestCase):
             data=self.fixture(Path(d));evidence=Path(d)/'evidence'
             plan=json.loads((evidence/'plan.json').read_text());plan['build_slots']=6
             ref=native._reference(evidence,'plan.json',plan);data[2]['raw_evidence']['plan']=ref;data[2]['operator_plan_sha256']=ref['sha256']
+            receipt=json.loads(data[3].read_text());receipt['cargo_provenance']['operator_plan_sha256']=ref['sha256'];data[3].write_bytes(native.canonical(receipt))
             with self.assertRaisesRegex(ValueError,'effective environment'):self.validate(data)
             env=json.loads((evidence/'environment.json').read_text());env['NUDOX_CARGO_BUILD_SLOTS']='6'
             data[2]['raw_evidence']['environment']=native._reference(evidence,'environment.json',env)
+            receipt=json.loads(data[3].read_text());receipt['cargo_provenance']['operator_plan_sha256']=ref['sha256'];data[3].write_bytes(native.canonical(receipt))
             self.validate(data)
 
     def test_runner_dispatch_is_closed_and_exact_selected_cargo(self):
@@ -324,7 +331,7 @@ class ManagedNativeTests(unittest.TestCase):
         cache.write_text('# fixture cache wrapper\n');cache.chmod(0o755)
         for package in native.PACKAGES:
             path=source/native.PACKAGE_ROOTS[package];(path/'src').mkdir(parents=True)
-            (path/'Cargo.toml').write_text('# fixture manifest\n');(path/'src/main.rs').write_text('// fixture source\n')
+            (path/'Cargo.toml').write_text('[package]\nname="'+package+'"\nversion="0.1.0"\n');(path/'src/main.rs').write_text('// fixture source\n')
         subprocess.run(['git','-C',str(source),'add','.'],check=True)
         subprocess.run(['git','-C',str(source),'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','producer fixture'],check=True)
         revision=subprocess.check_output(['git','-C',str(source),'rev-parse','HEAD'],text=True).strip()
@@ -356,6 +363,7 @@ class ManagedNativeTests(unittest.TestCase):
         observed=[]
         def fake_stream(command,cwd,env,log_path,maximum_log_bytes):
             observed.append((command,cwd,env,maximum_log_bytes))
+            (source/'.local/build/role/.nudox-cargo/slot-0').mkdir(parents=True,exist_ok=True)
             events=[]
             for name in native.PACKAGES:
                 path=source/'.local/target/release'/name;path.parent.mkdir(parents=True,exist_ok=True)
@@ -395,7 +403,7 @@ class ManagedNativeTests(unittest.TestCase):
             self.assertNotIn('--target',command);self.assertEqual(cwd,args.source_root)
             self.assertEqual(env['NUDOX_CARGO_BUILD_SLOTS'],'4');self.assertEqual(maximum,native.MAX_LOG)
             receipt_path=args.output_dir/'application-build-receipt.json';receipt=json.loads(receipt_path.read_text())
-            _,images=bundle.validate_app_build(receipt_path,args.output_dir/'artifacts',receipt['source'],args.target,args.expected_runner_sha256)
+            _,images=bundle.validate_app_build(receipt_path,args.output_dir/'artifacts',receipt['source'],args.target,args.expected_runner_sha256,args.expected_managed_plan_sha256)
             self.assertEqual(set(images),set(native.PACKAGES))
             self.assertFalse(receipt['cargo_provenance']['cargo_artifacts']['backend-cli']['fresh'])
             for lock in locks:
@@ -440,5 +448,78 @@ class ManagedNativeTests(unittest.TestCase):
             self.assertEqual(build[-4:],['--managed-native-host-plan',config['managed_native_host_plan'],
                                        '--expected-managed-plan-sha256','e'*64])
             self.assertNotIn('--managed-native-host-plan',package)
+            self.assertEqual(package[package.index('--expected-managed-plan-sha256')+1],'e'*64)
+
+    def test_git_configuration_cannot_hide_untracked_package_build_script(self):
+        for hidden in ['global-exclude','info-exclude','worktree']:
+            with self.subTest(hidden=hidden),tempfile.TemporaryDirectory() as d:
+                root=Path(d);args,_,observed,stream=self.producer_fixture(root)
+                source=args.source_root;extra=source/'apps/cli/build.rs';extra.write_text('fn main() {}\n')
+                home=root/'home';home.mkdir();exclude=root/'exclude';exclude.write_text('build.rs\n')
+                if hidden=='global-exclude':(home/'.gitconfig').write_text('[core]\nexcludesFile = '+str(exclude)+'\n')
+                if hidden=='info-exclude':(source/'.git/info/exclude').write_text('build.rs\n')
+                if hidden=='worktree':
+                    alternate=root/'clean-alternate';subprocess.run(['git','clone','-q',str(source),str(alternate)],check=True)
+                    subprocess.run(['git','-C',str(source),'config','core.worktree',str(alternate)],check=True)
+                environment={**os.environ,'HOME':str(home)}
+                ordinary=subprocess.check_output(['git','-C',str(source),'status','--porcelain','--untracked-files=all'],env=environment)
+                self.assertEqual(ordinary,b'')
+                api=dict(vars(builder));api['_stream_direct_cargo']=stream
+                with patch.object(native,'capture',wraps=native.capture) as inspected:
+                    with patch.dict(os.environ,{'HOME':str(home)}),self.assertRaisesRegex(ValueError,'untracked or ignored|clean commit'):
+                        native.build(args,api)
+                    cargo=json.loads(args.managed_native_host_plan.read_text())['tools']['cargo']['path']
+                    self.assertFalse(any(call.args[0][0]==cargo for call in inspected.call_args_list))
+                self.assertEqual(observed,[]);self.assertFalse(args.output_dir.exists())
+
+    def test_graph_and_target_symlink_ancestors_refuse_before_cargo(self):
+        for selected in ['.local','.local/build','.local/target','.local/target/release',
+                         '.local/target/.nudox-provenance','.local/build/role/.nudox-cargo/slot-0/release']:
+            with self.subTest(selected=selected),tempfile.TemporaryDirectory() as d:
+                root=Path(d);args,_,observed,stream=self.producer_fixture(root)
+                foreign=root/'foreign';foreign.mkdir();path=args.source_root/selected
+                path.parent.mkdir(parents=True,exist_ok=True);path.symlink_to(foreign,target_is_directory=True)
+                api=dict(vars(builder));api['_stream_direct_cargo']=stream
+                with patch.object(native,'capture',wraps=native.capture) as inspected:
+                    with self.assertRaisesRegex(ValueError,'graph directory'):native.build(args,api)
+                    cargo=json.loads(args.managed_native_host_plan.read_text())['tools']['cargo']['path']
+                    self.assertFalse(any(call.args[0][0]==cargo for call in inspected.call_args_list))
+                self.assertEqual(observed,[]);self.assertEqual(list(foreign.iterdir()),[])
+
+    def test_physical_graph_evidence_cannot_name_a_foreign_resolved_directory(self):
+        with tempfile.TemporaryDirectory() as d:
+            data=self.fixture(Path(d));data[2]['physical_graph_directories']['target']='/foreign/target'
+            with self.assertRaisesRegex(ValueError,'physical graph'):self.validate(data)
+
+    def test_coherent_replacement_plan_is_rejected_by_external_package_pin(self):
+        with tempfile.TemporaryDirectory() as d:
+            data=self.fixture(Path(d));source,runner,proof,receipt,artifacts=data
+            selected=proof['operator_plan_sha256'];plan=json.loads((Path(d)/'evidence/plan.json').read_text())
+            plan['lifetime_locks']=['/other/owner.lock']
+            ref=native._reference(Path(d)/'evidence','plan.json',plan);proof['raw_evidence']['plan']=ref
+            proof['operator_plan_sha256']=ref['sha256'];proof['record_sha256']=native.proof_digest(proof)
+            value=json.loads(receipt.read_text());value['cargo_provenance']=proof;receipt.write_bytes(native.canonical(value))
+            with self.assertRaisesRegex(bundle.PackageError,'operator plan'):
+                bundle.validate_app_build(receipt,artifacts,source,'aarch64-apple-darwin',runner['sha256'],selected)
+            with self.assertRaisesRegex(bundle.PackageError,'operator plan'):
+                bundle.validate_app_build(receipt,artifacts,source,'aarch64-apple-darwin',runner['sha256'])
+
+    def test_sign_rechecks_selected_plan_before_any_codesign(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);output=root/'release';build=output/'build';build.mkdir(parents=True)
+            resources=output/'package/Nudox.app/Contents/Resources';resources.mkdir(parents=True)
+            proof={'kind':native.KIND,'operator_plan_sha256':'f'*64}
+            (build/'application-build-receipt.json').write_bytes(native.canonical({'cargo_provenance':proof}))
+            (resources/'build-manifest.json').write_bytes(native.canonical({'application_build':{'cargo_provenance':proof}}))
+            config={'source_root':str(root),'output_dir':str(output),'managed_native_host_plan':str(root/'plan.json'),
+                    'expected_managed_plan_sha256':'e'*64}
+            with patch.object(release,'preflight',return_value={'ready':True}),patch.object(release,'run') as run:
+                with self.assertRaisesRegex(ValueError,'external selected plan'):release.finalize(config)
+                run.assert_not_called()
+            config['expected_managed_plan_sha256']='f'*64
+            release.selected_managed_build(config,output)
+            del config['managed_native_host_plan']
+            with self.assertRaisesRegex(ValueError,'requires an external selected plan'):
+                release.selected_managed_build(config,output)
 
 if __name__=='__main__':unittest.main()
