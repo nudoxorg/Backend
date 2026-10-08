@@ -3284,6 +3284,17 @@ fn local_profile_source_metadata(
     local_records: &[RegistryPackageRecord],
     workspace: Option<&Path>,
 ) -> Result<Option<backend_library::PythonProjectMetadata>, String> {
+    // Optional Python enrichment cannot turn an authoritative registry
+    // profile into a filesystem query. A PURL needs both Python relevance
+    // and a local version-record witness before any source-root lookup.
+    if let PackageReference::Purl(coordinate) = package
+        && (coordinate.package_type().registry() != Some(RegistryEcosystem::Pypi)
+            || !local_records.iter().any(|record| {
+                record.authority.is_none() && record.ecosystem == RegistryEcosystem::Pypi
+            }))
+    {
+        return Ok(None);
+    }
     let mut matching = None;
     for row in view
         .row_refs()
@@ -3822,6 +3833,40 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn registry_catalog_python_profile_needs_local_metadata_witness_before_source_resolution() {
+        let package = PackageReference::parse("pkg:pypi/example@1.0.0").expect("package");
+        let view = registry_source_view(package.as_str(), "example/__init__.py");
+        let mut record = registry_row(package.as_str(), "example");
+        record.authority = Some(current_test_authority(&record));
+        let catalog = vec![record];
+        let index = CatalogLookupIndex::from_catalog(&catalog);
+        let reply = profile(&view, &catalog, &index, &package, None).expect("catalog-only profile");
+        assert!(matches!(
+            reply,
+            SurfaceReply::PackageProfile {
+                versions: 1,
+                source_metadata: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn optional_registry_metadata_guard_preserves_exact_local_manifest_errors() {
+        let root = fixture("optional-local-python-error");
+        fs::write(root.join("pyproject.toml"), "[project]\nname = ")
+            .expect("malformed Python manifest");
+        let label = root.to_str().expect("fixture path");
+        let package = PackageReference::parse(label).expect("local package");
+        let view = registry_source_view(label, "example.py");
+        assert!(
+            local_profile_source_metadata(&view, &package, &[], None).is_err(),
+            "an exact local request must retain its malformed manifest error"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
