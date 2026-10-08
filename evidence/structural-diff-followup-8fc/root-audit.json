@@ -1,0 +1,28 @@
+{
+  "reviewer": "/root",
+  "reviewed_at_utc": "2026-10-08T00:07:20Z",
+  "integration_base": "6c3eea8fb6ae7c4307fb941bc125b956f99a81c6",
+  "source_atom": "8fc06385836ca03c81b5ee32bb246c709d75381c",
+  "integrated_source_atom": "da131ecd85",
+  "evidence_atom": "98d6314098870c73a583cc6f3cdc4dd129e70db6",
+  "production_review": "Full changed production file, all added controls and the authenticated Docs loader reviewed. Typed package/path/kind coordinates, occurrence multiplicity and strict row preimage admission retained.",
+  "archive_sha256": "ad1690eb4b76a1e732a989cadf645c09114f442851d932064c13b35422993577",
+  "independent_archive_verification": {
+    "safe_unique_members": 32,
+    "verified_decompressed_bytes": 31950514,
+    "checks": ["Every retained member byte count and SHA-256 matched the committed index", "No unindexed, absolute or traversal members"]
+  },
+  "native_scope": {
+    "actual_base": "2da31be31988726f171c1e95b39aa55588153163",
+    "only_dirty_source": "crates/local-service/src/builtin/commands/diff.rs",
+    "dirty_source_equals_integrated_source_sha256": "8fc86337d00b31be70b8d09c5984deca6aa06b88f850a15ddb7419db5159646a",
+    "base_to_current_canonical_diff_file_changes": 0,
+    "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268",
+    "passed": 21,
+    "failed": 0,
+    "filtered": 1056,
+    "authenticated_docs_rows": 18249,
+    "scope_limit": "Native predecessor-base proof of the byte-identical production change; not a rebuilt canonical binary or installed current CLI/MCP acceptance claim."
+  },
+  "remaining_limits": ["Path moves produce remove/add", "Structural fallback cannot prove semantic parent-only changes or resolve opaque raw link targets", "Identical-reference work avoidance is a future optimization, not included"]
+}

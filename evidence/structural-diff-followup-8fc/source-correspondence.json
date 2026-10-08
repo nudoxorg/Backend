@@ -1,0 +1,152 @@
+{
+  "attempts_08_14": [
+    {
+      "attempt": 8,
+      "exit_code": 101,
+      "source_commit": "2da31be31988726f171c1e95b39aa55588153163",
+      "source_diff_sha256": "373f90fd06bc8a481f9d996f4c00fd0e689275fa999809fa0ca4056b99d473c0"
+    },
+    {
+      "attempt": 9,
+      "exit_code": 101,
+      "source_commit": "2da31be31988726f171c1e95b39aa55588153163",
+      "source_diff_sha256": "76bca802d5a5e102569e98f9e80f783443da3994059bc5718387e9f9dbf0084e"
+    },
+    {
+      "attempt": 10,
+      "exit_code": 101,
+      "source_commit": "2da31be31988726f171c1e95b39aa55588153163",
+      "source_diff_sha256": "a2c665a8093bfcb29b245a542b2d6449fdcfbb127057ee572a4221655006f9aa"
+    },
+    {
+      "attempt": 11,
+      "exit_code": 101,
+      "source_commit": "2da31be31988726f171c1e95b39aa55588153163",
+      "source_diff_sha256": "9e25f2d38f31d4040f689d7c905fbd417e4acc7f76bf256419a6a61991f41926"
+    },
+    {
+      "attempt": 12,
+      "exit_code": 101,
+      "source_commit": "2da31be31988726f171c1e95b39aa55588153163",
+      "source_diff_sha256": "26993ae9457d99b4fe84545c785a04b12da12683f9317aeed9fc707e423adc2b"
+    },
+    {
+      "attempt": 13,
+      "exit_code": 101,
+      "source_commit": "2da31be31988726f171c1e95b39aa55588153163",
+      "source_diff_sha256": "85cd9a0077c6432db2ec43c891ec968ab8b194b72cf3b2f412c476fdff424297"
+    },
+    {
+      "attempt": 14,
+      "exit_code": 0,
+      "source_commit": "2da31be31988726f171c1e95b39aa55588153163",
+      "source_diff_sha256": "3456d49ae13427f19ddca1bb3f3b7f03d4f390be1952f7e699cc2cc87492c3be"
+    }
+  ],
+  "authenticated_docs_seal": {
+    "bytes": 1775767,
+    "original_receipt_member": "immutable-copy-receipt.json",
+    "private_and_original_receipts_byte_identical": true,
+    "private_copy_receipt_member": "attempt14/private-copy-immutable-copy-receipt.json",
+    "sha256": "afb8e250d293b9da9f024a4c969246c68ca3729cc1197ca42895e34b8dae2dba"
+  },
+  "committed_change": {
+    "base_commit": "2da31be31988726f171c1e95b39aa55588153163",
+    "base_tree": "99bb2ae09a1c1e14d9a5d1ae9bc5a3dd311c3d95",
+    "cargo_lock_after": {
+      "bytes": 421381,
+      "git_blob": "49e3cc50cc3424d6d0eee338eca0863cfb176819",
+      "path": "Cargo.lock",
+      "sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+    },
+    "cargo_lock_before": {
+      "bytes": 421381,
+      "git_blob": "49e3cc50cc3424d6d0eee338eca0863cfb176819",
+      "path": "Cargo.lock",
+      "sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268"
+    },
+    "diff_stat": "1 file changed, 1431 insertions(+), 94 deletions(-)",
+    "final_commit": "8fc06385836ca03c81b5ee32bb246c709d75381c",
+    "final_tree": "a9a5ca7ed81ecb82c2f5b0110a93810de7116d62",
+    "modified_paths": [
+      "crates/local-service/src/builtin/commands/diff.rs"
+    ],
+    "normal_git_diff": {
+      "archive_member": "committed-2da-to-8fc.patch",
+      "bytes": 60305,
+      "sha256": "fcabd359f87c8bbb9a68c6120a126cd604ad8f1c82f58250e757f9e434f4322c"
+    },
+    "source_after": {
+      "bytes": 107820,
+      "git_blob": "f5b608f82ffd397f765f7e7f13df728228b57222",
+      "path": "crates/local-service/src/builtin/commands/diff.rs",
+      "sha256": "8fc86337d00b31be70b8d09c5984deca6aa06b88f850a15ddb7419db5159646a"
+    },
+    "source_before": {
+      "bytes": 58677,
+      "git_blob": "e5e49a57a3c4434bb683f88034e4624c06ae544e",
+      "path": "crates/local-service/src/builtin/commands/diff.rs",
+      "sha256": "66b8e744b5d75df31fc8d09b5878f1cea0af9e9faee7e4f25d7f77b44b0dbc4d"
+    }
+  },
+  "format": "structural-diff-followup-source-correspondence-v1",
+  "limitations": [
+    "This is a native backend test and production-loader admitted-Docs self-diff result, not whole-fleet public CLI/MCP acceptance.",
+    "Structural fallback treats path moves as remove/add; parent-only changes and opaque link targets are not claimed as semantic identity."
+  ],
+  "native_attempt14": {
+    "base_commit": "2da31be31988726f171c1e95b39aa55588153163",
+    "base_tree": "99bb2ae09a1c1e14d9a5d1ae9bc5a3dd311c3d95",
+    "both_native_and_committed_patches_apply_to_base_and_reproduce_final_source": true,
+    "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268",
+    "committed_file_matches_native_file_byte_for_byte": true,
+    "dirty_patch_bytes": 60153,
+    "dirty_patch_member": "attempt14/native-dirty.patch",
+    "dirty_patch_sha256": "3456d49ae13427f19ddca1bb3f3b7f03d4f390be1952f7e699cc2cc87492c3be",
+    "docs_control": {
+      "admitted_view_rows": 18249,
+      "same_root_self_diff": "empty"
+    },
+    "elapsed_seconds": 456.361,
+    "exit_code": 0,
+    "filtered_test_result": "21 passed; 0 failed; 0 ignored; 1056 filtered out",
+    "native_source_bytes": 107820,
+    "native_source_member": "attempt14/native-diff.rs",
+    "native_source_sha256": "8fc86337d00b31be70b8d09c5984deca6aa06b88f850a15ddb7419db5159646a",
+    "patch_sha256_differs_from_local_rendering": true,
+    "private_workspace_files_added": [
+      "objects/closure-reader-leases/660f25803ae3a331cf560680991f0caa97bd435f9fa533ed907c84ea7f16a525-86002-0.lease",
+      "objects/closure-reader-leases/660f25803ae3a331cf560680991f0caa97bd435f9fa533ed907c84ea7f16a525-86002-1.lease"
+    ],
+    "private_workspace_files_removed": [],
+    "private_workspace_recovery_mutations": [
+      "OWNER.state"
+    ],
+    "scope": "native macOS production loader plus structural multiset controls on one authenticated admitted Docs image; not full CLI/MCP acceptance",
+    "sealed_receipt_sha256_after": "afb8e250d293b9da9f024a4c969246c68ca3729cc1197ca42895e34b8dae2dba",
+    "source_state": "dirty working tree based on base_commit; it was not a committed 8fc checkout",
+    "target_reused_after_attempt08_through_attempt13_exit_101": true,
+    "test_binary_sha256": "83bd50cf177cc85fe95738264dd8021836b6be73b095addd3f778b696d1d89f1",
+    "working_copy": {
+      "authority_file_mode": "0o600",
+      "authority_file_uid": 1893584017,
+      "effective_uid": 1893584017,
+      "member_count": 7806,
+      "sealed_receipt_sha256": "afb8e250d293b9da9f024a4c969246c68ca3729cc1197ca42895e34b8dae2dba",
+      "working_copy_verified": true
+    }
+  },
+  "raw_evidence_archive": {
+    "bytes": 8256693,
+    "member_index": "attempts-08-14.members.json",
+    "member_index_sha256": "844a96910bd7d70bd4c1a278cb43e74fd082796aac68ded91600ff6de493420a",
+    "path": "attempts-08-14.raw.tar.gz",
+    "sha256": "ad1690eb4b76a1e732a989cadf645c09114f442851d932064c13b35422993577"
+  },
+  "validation": {
+    "committed_patch_apply_check": true,
+    "committed_patch_reproduces_final_diff_rs_sha256": "8fc86337d00b31be70b8d09c5984deca6aa06b88f850a15ddb7419db5159646a",
+    "native_patch_apply_check": true,
+    "native_patch_reproduces_final_diff_rs_sha256": "8fc86337d00b31be70b8d09c5984deca6aa06b88f850a15ddb7419db5159646a"
+  }
+}
