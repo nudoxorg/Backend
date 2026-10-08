@@ -487,7 +487,15 @@ pub(super) fn analyze(
                 let matches = syntax[path]
                     .declarations
                     .iter()
-                    .filter(|target| target.name_span == span)
+                    // The synthetic module root has no written identifier. In
+                    // an empty initializer its extent is 0..0, which native
+                    // module navigation can return but a declaration source
+                    // coordinate deliberately cannot encode. Keep that
+                    // occurrence unresolved rather than minting a callable
+                    // target from the module container.
+                    .filter(|target| {
+                        target.kind != DeclarationKind::Module && target.name_span == span
+                    })
                     .collect::<Vec<_>>();
                 let [target] = matches.as_slice() else {
                     continue;

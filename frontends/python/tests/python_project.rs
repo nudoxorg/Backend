@@ -702,3 +702,139 @@ fn native_relative_import_aliases_retain_exact_selected_function_coordinates()
     std::fs::remove_dir_all(root)?;
     Ok(())
 }
+
+#[test]
+fn native_empty_package_initializers_are_not_named_declaration_targets()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = std::env::temp_dir().join(format!(
+        "nudox-python-empty-package-target-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root)?;
+    let sources = [
+        PythonProjectSource {
+            relative_path: "pkg/__init__.py",
+            source: "",
+        },
+        PythonProjectSource {
+            relative_path: "pkg/cli/__init__.py",
+            source: "",
+        },
+        PythonProjectSource {
+            relative_path: "pkg/cli/argparser.py",
+            source: "class HTTPieArgumentParser:\n    def __init__(self):\n        self.ready = True\n\ndef build_parser():\n    return HTTPieArgumentParser()\n",
+        },
+        PythonProjectSource {
+            relative_path: "test_cli.py",
+            source: "import pkg.cli.argparser\n\nclass TestArgumentParser:\n    def setup_method(self):\n        self.parser = pkg.cli.argparser.HTTPieArgumentParser()\n        self.second = pkg.cli.argparser.build_parser()\n\ndef invalid_module_call():\n    return pkg.cli()\n",
+        },
+    ];
+    for source in &sources {
+        let path = root.join(source.relative_path);
+        std::fs::create_dir_all(path.parent().ok_or("source parent")?)?;
+        std::fs::write(path, source.source)?;
+    }
+    let cancelled = AtomicBool::new(false);
+    let report = NativePythonProjectAuthority::admit()?.analyze_project(
+        &root,
+        "pkg",
+        &sources,
+        PythonVersion::Python314,
+        publication_control(&cancelled),
+    )?;
+    for source in &sources {
+        assert!(report.module(source.relative_path).is_some());
+    }
+    let caller = report.module("test_cli.py").ok_or("caller report")?;
+    let positive = sources[3]
+        .source
+        .find("HTTPieArgumentParser()")
+        .ok_or("class call")?;
+    let symbol = caller
+        .symbols
+        .iter()
+        .find(|symbol| symbol.span.start as usize == positive)
+        .ok_or("class call occurrence")?;
+    let SymbolOutcome::Definition { target, callee } = &symbol.outcome else {
+        return Err("qualified cross-file class call lost its native target".into());
+    };
+    assert_eq!(target.relative_path.as_ref(), "pkg/cli/argparser.py");
+    assert_eq!(
+        target.kind,
+        backend_frontend_python::legacy::DeclarationKind::Class
+    );
+    let coordinate =
+        backend_semantic::ir::PythonSourceCoordinate::decode(&target.source_coordinate)
+            .ok_or("class coordinate")?;
+    assert_eq!(coordinate.0.path, target.relative_path.as_ref());
+    assert_eq!(
+        coordinate.0.source,
+        *backend_semantic::ir::SourceIdentity::from_bytes(sources[2].source.as_bytes())
+            .ok_or("target source extent")?
+            .identity
+    );
+    let manifest = sources
+        .iter()
+        .map(|source| {
+            Ok((
+                source.relative_path.to_owned(),
+                *backend_semantic::ir::SourceIdentity::from_bytes(source.source.as_bytes())
+                    .ok_or("manifest source extent")?
+                    .identity,
+            ))
+        })
+        .collect::<Result<Vec<_>, &'static str>>()?;
+    assert_eq!(
+        coordinate.0.program,
+        backend_semantic::ir::python_program_identity(&manifest).ok_or("program identity")?
+    );
+    assert_eq!(
+        callee.as_ref().ok_or("constructor callee")?.name.as_ref(),
+        "__init__"
+    );
+    let function_call = sources[3]
+        .source
+        .find("build_parser()")
+        .ok_or("function call")?;
+    let function = caller
+        .symbols
+        .iter()
+        .find_map(|symbol| match &symbol.outcome {
+            SymbolOutcome::Definition { target, .. }
+                if symbol.span.start as usize == function_call =>
+            {
+                Some(target)
+            }
+            _ => None,
+        })
+        .ok_or("cross-file function target")?;
+    assert_eq!(function.relative_path.as_ref(), "pkg/cli/argparser.py");
+    assert_eq!(
+        function.kind,
+        backend_frontend_python::legacy::DeclarationKind::Function
+    );
+    assert_eq!(function.name.as_ref(), "build_parser");
+    let function_coordinate =
+        backend_semantic::ir::PythonSourceCoordinate::decode(&function.source_coordinate)
+            .ok_or("function coordinate")?;
+    assert_eq!(function_coordinate.0.program, coordinate.0.program);
+    assert_eq!(function_coordinate.0.source, coordinate.0.source);
+    assert_eq!(
+        &sources[2].source[function.name_span.start as usize..function.name_span.end as usize],
+        "build_parser"
+    );
+    let module_call = sources[3].source.rfind("cli()").ok_or("module call")?;
+    assert!(caller.symbols.iter().any(|symbol| {
+        symbol.span.start as usize == module_call
+            && matches!(symbol.outcome, SymbolOutcome::Unresolved)
+    }));
+    assert!(caller.symbols.iter().all(|symbol| {
+        !matches!(&symbol.outcome, SymbolOutcome::Definition { target, .. }
+            if target.kind == backend_frontend_python::legacy::DeclarationKind::Module)
+    }));
+    report
+        .witness()
+        .validate_current(publication_control(&cancelled))?;
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
