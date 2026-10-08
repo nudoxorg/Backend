@@ -54,6 +54,7 @@ class ManagedNativeTests(unittest.TestCase):
         for key,value in [('source_before',inputs),('source_after',inputs),('tools_before',tools),('tools_after',tools),('wrapper',raw_wrapper),('environment',{'CARGO_TARGET_DIR':workspace+'/.local/target','CARGO_BUILD_BUILD_DIR':workspace+'/.local/build/role','NUDOX_CARGO_BUILD_SLOTS':'4','RUSTC':'/fixture/rustc','RUSTDOC':'/fixture/rustdoc','RUSTC_WRAPPER':'/fixture/wrapper','HOME':'/fixture/home','TMPDIR':'/fixture/tmp','PATH':'/usr/bin:/bin','PWD':workspace,'CARGO_HOME':'/fixture/home/.cargo'})]:refs[key]=native._reference(evidence,key+'.json',value)
         metadata={'packages':[{'name':name,'manifest_path':workspace+'/'+native.PACKAGE_ROOTS[name]+'/Cargo.toml','targets':[{'name':name,'kind':['bin'],'src_path':workspace+'/'+native.PACKAGE_ROOTS[name]+'/src/main.rs'}]} for name in native.PACKAGES]}
         refs['metadata']=native._reference(evidence,'metadata.json',metadata)
+        refs['metadata_stderr']=native._raw_reference(evidence,'metadata.stderr',b'')
         events={};outputs=[];executables={}
         for name in native.PACKAGES:
             image=artifacts/name;image.write_bytes(b'compiled '+name.encode());image.chmod(0o755);sha=hashlib.sha256(image.read_bytes()).hexdigest();executables[name]=sha
@@ -322,7 +323,7 @@ class ManagedNativeTests(unittest.TestCase):
             (root/'vendor').symlink_to('missing-directory')
             with self.assertRaisesRegex(ValueError,'gitlinks require'):native.tracked_inputs(root,{})
 
-    def producer_fixture(self, root, change=None, multiline_manifest=False):
+    def producer_fixture(self, root, change=None, multiline_manifest=False, metadata_behavior=None):
         """Fake tool outputs exercise production orchestration, never a compiler."""
         root=root.resolve()
         source=root/'source';source.mkdir();self.tracked_fixture(source)
@@ -344,7 +345,12 @@ class ManagedNativeTests(unittest.TestCase):
         tool_dir=root/'tools';tool_dir.mkdir();tools={}
         for name in ('cargo','rustc','rustdoc'):
             path=tool_dir/name;special=json.dumps(metadata) if name=='cargo' else 'rustc 1.97.1\nhost: aarch64-apple-darwin'
-            path.write_text("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf '%s\\n' '"+name+" 1.97.1'\nelse\n  cat <<'FIXTURE_OUTPUT'\n"+special+"\nFIXTURE_OUTPUT\nfi\n")
+            diagnostic=ending=''
+            if name=='cargo' and metadata_behavior:
+                diagnostic="printf '%s\\n' 'warning: resolver fixture' >&2\n"
+                if metadata_behavior=='invalid-json':special='not JSON'
+                if metadata_behavior=='error-status':ending='exit 7\n'
+            path.write_text("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf '%s\\n' '"+name+" 1.97.1'\nelse\n"+diagnostic+"  cat <<'FIXTURE_OUTPUT'\n"+special+"\nFIXTURE_OUTPUT\n"+ending+"fi\n")
             path.chmod(0o755);tools[name]=path
         environment=root/'environment.sh';environment.write_text('export PATH=/usr/bin:/bin\nexport CARGO_HOME='+str(root/'cargo-home')+'\n')
         wrapper=root/'rustc-wrapper';wrapper.write_text('# fixture wrapper\n')
@@ -396,6 +402,38 @@ class ManagedNativeTests(unittest.TestCase):
                 'finished_at_utc':'fixture-end','elapsed_ns':1,
                 'output_log':{'path':'cargo.log','sha256':native.digest(raw),'size_bytes':len(raw)}}
         return args,locks,observed,fake_stream
+
+    def test_producer_accepts_entire_metadata_json_with_separate_retained_warning(self):
+        with tempfile.TemporaryDirectory() as d:
+            args,locks,observed,fake_stream=self.producer_fixture(Path(d),metadata_behavior='warning')
+            api=dict(vars(builder));api['_stream_direct_cargo']=fake_stream
+            self.assertEqual(native.build(args,api),0)
+            receipt_path=args.output_dir/'application-build-receipt.json'
+            receipt=json.loads(receipt_path.read_bytes());refs=receipt['cargo_provenance']['raw_evidence']
+            raw=native._read_ref(receipt_path,refs['metadata'],8*1024**2)
+            self.assertEqual(len(json.loads(raw)['packages']),4)
+            self.assertEqual(native._read_ref(receipt_path,refs['metadata_stderr'],1024**2),b'warning: resolver fixture\n')
+            bundle.validate_app_build(receipt_path,args.output_dir/'artifacts',receipt['source'],args.target,args.expected_runner_sha256,args.expected_managed_plan_sha256)
+            self.assertEqual(len(observed),1)
+
+    def test_producer_rejects_invalid_metadata_json_or_error_status_before_build(self):
+        for behavior in ['invalid-json','error-status']:
+            with self.subTest(behavior=behavior),tempfile.TemporaryDirectory() as d:
+                args,locks,observed,fake_stream=self.producer_fixture(Path(d),metadata_behavior=behavior)
+                api=dict(vars(builder));api['_stream_direct_cargo']=fake_stream
+                with self.assertRaises(ValueError):native.build(args,api)
+                self.assertEqual(observed,[])
+                self.assertFalse((args.output_dir/'application-build-receipt.json').exists())
+                self.assertTrue((args.output_dir/'evidence/metadata.json').read_bytes())
+                self.assertEqual((args.output_dir/'evidence/metadata.stderr').read_bytes(),b'warning: resolver fixture\n')
+                for lock in locks:
+                    with lock.open('r+') as handle:fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
+
+    def test_metadata_capture_bounds_each_stream_and_waits_its_owned_child(self):
+        for stream in ['stdout','stderr']:
+            with self.subTest(stream=stream),self.assertRaisesRegex(ValueError,'metadata '+stream+' exceeds'):
+                redirect=' >&2' if stream=='stderr' else ''
+                native.capture_metadata(['/bin/sh','-c',"printf 'too long'"+redirect+'; sleep 1'],3,3)
 
     def test_producer_retains_new_raw_recipe_and_common_validator_accepts_it(self):
         with tempfile.TemporaryDirectory() as d:
