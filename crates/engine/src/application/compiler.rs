@@ -2407,6 +2407,21 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         )),
                     }
                 })?;
+                let rust_toolchain = authority_configuration
+                    .resolve_toolchain(target.profile, control)
+                    .map_err(|cause| {
+                        package_authority_terminal(
+                            package.package_target.target(),
+                            first_application_request,
+                            first_authority,
+                            toolchain,
+                            cause,
+                        )
+                    })
+                    .map_err(|terminal| PackageSemanticError::Compile {
+                        path: first_source.relative_path.into(),
+                        terminal: Box::new(terminal),
+                    })?;
                 let (toolchain_identity, environment_identity, local_authority_identity) =
                     execution_identity
                         .filter(|identity| {
@@ -2444,7 +2459,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     .collect::<Vec<_>>();
                 let key = RustWorkspaceSessionKey::new(
                     package.package_root,
-                    authority_configuration.toolchain,
+                    rust_toolchain,
                     edition,
                     target.stage,
                     authority_configuration.features,
@@ -4492,6 +4507,7 @@ fn package_authority_projection(
         PackageAuthorityError::JavaHarness(_)
         | PackageAuthorityError::GoAuthorityWitness(_)
         | PackageAuthorityError::ImageTooLarge { .. }
+        | PackageAuthorityError::RustToolchainAdmission { .. }
         | PackageAuthorityError::ToolchainUnavailable { .. }
         | PackageAuthorityError::Cancelled { .. }
         | PackageAuthorityError::Deadline { .. }

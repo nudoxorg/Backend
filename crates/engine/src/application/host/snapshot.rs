@@ -16,9 +16,20 @@ pub const MAX_CLOSED_LOCAL_HOST_ENVIRONMENT_BYTES: usize = 30 * 1024;
 
 const SNAPSHOT_VERSION: u8 = 1;
 const SNAPSHOT_WITH_FAILURE_VERSION: u8 = 2;
+const SNAPSHOT_WITH_DEFERRED_CARGO_HOME_VERSION: u8 = 3;
 const SNAPSHOT_PREFIX_BYTES: usize = br#"{"version":1,"paths":["#.len();
 const SNAPSHOT_SUFFIX_BYTES: usize = 2; // `]}`
 const ENTRY_FIXED_BYTES: usize = br#"{"variable":"","path":}"#.len();
+
+/// Whether a closed compiler selection may create its inferred default Cargo home.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalHostCargoHomeSelection {
+    /// The selected Cargo home must already exist and pass normal path validation.
+    Strict,
+    /// Installed capture selected the exact `HOME/.cargo` default for Rust request-time creation.
+    DeferredDefault,
+}
 
 /// How the current local owner obtained its compiler-host paths.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -26,7 +37,7 @@ const ENTRY_FIXED_BYTES: usize = br#"{"variable":"","path":}"#.len();
 pub enum LocalCompilerHostSelectionSource {
     /// locald captured installed paths from this process before the owner began serving.
     CapturedInstalledTools,
-    /// The launching host supplied a complete version-1 closed snapshot.
+    /// The launching host supplied a complete version-1, version-2, or version-3 snapshot.
     IncomingClosedSnapshot,
 }
 
@@ -284,6 +295,7 @@ fn hex_fingerprint(fingerprint: &[u8; 32]) -> String {
 pub struct ClosedLocalHostEnvironmentSnapshot {
     paths: Vec<(LocalHostVariable, PathBuf)>,
     go_failure: Option<LocalRuntimeGoAuthorityFailure>,
+    cargo_home_selection: LocalHostCargoHomeSelection,
 }
 
 impl ClosedLocalHostEnvironmentSnapshot {
@@ -350,7 +362,17 @@ impl ClosedLocalHostEnvironmentSnapshot {
         Ok(Self {
             paths: selected,
             go_failure: None,
+            cargo_home_selection: LocalHostCargoHomeSelection::Strict,
         })
+    }
+
+    pub(super) fn with_deferred_default_cargo_home(
+        mut self,
+    ) -> Result<Self, ClosedLocalHostEnvironmentSnapshotError> {
+        self.cargo_home_selection = LocalHostCargoHomeSelection::DeferredDefault;
+        self.validate_deferred_default_cargo_home()?;
+        self.encode()?;
+        Ok(self)
     }
 
     /// Binds a Go-only refusal to the closed launch without rediscovering any paths.
@@ -373,6 +395,41 @@ impl ClosedLocalHostEnvironmentSnapshot {
         self.go_failure
     }
 
+    /// Returns how the selected Cargo home may be used.
+    #[must_use]
+    pub const fn cargo_home_selection(&self) -> LocalHostCargoHomeSelection {
+        self.cargo_home_selection
+    }
+
+    fn validate_deferred_default_cargo_home(
+        &self,
+    ) -> Result<(), ClosedLocalHostEnvironmentSnapshotError> {
+        if self.cargo_home_selection == LocalHostCargoHomeSelection::Strict {
+            return Ok(());
+        }
+        let Some(home) = self.path(LocalHostVariable::Home) else {
+            return Err(ClosedLocalHostEnvironmentSnapshotError::InvalidDeferredCargoHome);
+        };
+        let expected = home.join(".cargo");
+        let valid_rust_pair = [LocalHostVariable::NudoxRustc, LocalHostVariable::NudoxCargo]
+            .into_iter()
+            .all(|role| {
+                self.path(role).is_some_and(|path| {
+                    std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
+                        && backend_frontend_rust::legacy::canonical_executable(path)
+                            .is_ok_and(|canonical| canonical == path)
+                })
+            });
+        if !valid_rust_pair
+            || self.path(LocalHostVariable::NudoxCargoHome) != Some(expected.as_path())
+        {
+            return Err(ClosedLocalHostEnvironmentSnapshotError::InvalidDeferredCargoHome);
+        }
+        // Reject a missing or linked parent during snapshot admission. The request-time creator
+        // repeats the owner/permission checks and creates only through its no-follow handle.
+        validate_deferred_cargo_home_parent(home)
+    }
+
     /// Returns the selected path for a role; an absent path means that role is sealed absent.
     #[must_use]
     pub fn path(&self, variable: LocalHostVariable) -> Option<&Path> {
@@ -390,7 +447,7 @@ impl ClosedLocalHostEnvironmentSnapshot {
             .map(|(variable, path)| (*variable, path.as_path()))
     }
 
-    /// Encodes the snapshot as canonical bounded version-1 or version-2 JSON.
+    /// Encodes the snapshot as canonical bounded version-1, version-2, or version-3 JSON.
     ///
     /// # Errors
     ///
@@ -409,13 +466,20 @@ impl ClosedLocalHostEnvironmentSnapshot {
             });
         }
         let wire = SnapshotWire {
-            version: if self.go_failure.is_some() {
-                SNAPSHOT_WITH_FAILURE_VERSION
-            } else {
-                SNAPSHOT_VERSION
+            version: match self.cargo_home_selection {
+                LocalHostCargoHomeSelection::DeferredDefault => {
+                    SNAPSHOT_WITH_DEFERRED_CARGO_HOME_VERSION
+                }
+                LocalHostCargoHomeSelection::Strict if self.go_failure.is_some() => {
+                    SNAPSHOT_WITH_FAILURE_VERSION
+                }
+                LocalHostCargoHomeSelection::Strict => SNAPSHOT_VERSION,
             },
             paths,
             go_failure: self.go_failure,
+            cargo_home_selection: (self.cargo_home_selection
+                == LocalHostCargoHomeSelection::DeferredDefault)
+                .then_some(self.cargo_home_selection),
         };
         let encoded = serde_json::to_string(&wire)
             .map_err(|_| ClosedLocalHostEnvironmentSnapshotError::InvalidEncoding)?;
@@ -425,7 +489,7 @@ impl ClosedLocalHostEnvironmentSnapshot {
         Ok(encoded)
     }
 
-    /// Parses a canonical bounded version-1 or version-2 snapshot.
+    /// Parses a canonical bounded version-1, version-2, or deferred-Cargo-home version-3 snapshot.
     ///
     /// # Errors
     ///
@@ -436,10 +500,19 @@ impl ClosedLocalHostEnvironmentSnapshot {
         }
         let wire: SnapshotWire = serde_json::from_str(input)
             .map_err(|_| ClosedLocalHostEnvironmentSnapshotError::InvalidEncoding)?;
-        if !matches!(
-            (wire.version, wire.go_failure),
-            (SNAPSHOT_VERSION, None) | (SNAPSHOT_WITH_FAILURE_VERSION, Some(_))
-        ) {
+        let supported_version = match wire.version {
+            SNAPSHOT_VERSION => {
+                wire.go_failure.is_none() && wire.cargo_home_selection.is_none()
+            }
+            SNAPSHOT_WITH_FAILURE_VERSION => {
+                wire.go_failure.is_some() && wire.cargo_home_selection.is_none()
+            }
+            SNAPSHOT_WITH_DEFERRED_CARGO_HOME_VERSION => {
+                wire.cargo_home_selection == Some(LocalHostCargoHomeSelection::DeferredDefault)
+            }
+            _ => false,
+        };
+        if !supported_version {
             return Err(ClosedLocalHostEnvironmentSnapshotError::UnsupportedVersion);
         }
         if wire.paths.len() > LocalHostVariable::CLOSED_ENVIRONMENT_SNAPSHOT_ROLE_COUNT {
@@ -467,12 +540,36 @@ impl ClosedLocalHostEnvironmentSnapshot {
             paths.push((variable, path));
         }
 
-        let snapshot = Self::from_paths(paths)?.with_go_failure(wire.go_failure)?;
+        let mut snapshot = Self::from_paths(paths)?.with_go_failure(wire.go_failure)?;
+        if wire.cargo_home_selection == Some(LocalHostCargoHomeSelection::DeferredDefault) {
+            snapshot = snapshot.with_deferred_default_cargo_home()?;
+        }
         if snapshot.encode()?.as_bytes() != input.as_bytes() {
             return Err(ClosedLocalHostEnvironmentSnapshotError::NonCanonical);
         }
         Ok(snapshot)
     }
+}
+
+pub(super) fn validate_deferred_cargo_home_parent(
+    home: &Path,
+) -> Result<(), ClosedLocalHostEnvironmentSnapshotError> {
+    backend_platform::DirectoryCapability::open(home)
+        .map_err(|_| ClosedLocalHostEnvironmentSnapshotError::InvalidDeferredCargoHome)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let metadata = std::fs::metadata(home)
+            .map_err(|_| ClosedLocalHostEnvironmentSnapshotError::InvalidDeferredCargoHome)?;
+        if !metadata.is_dir()
+            || metadata.uid() != rustix::process::geteuid().as_raw()
+            || metadata.mode() & 0o300 != 0o300
+            || metadata.mode() & 0o022 != 0
+        {
+            return Err(ClosedLocalHostEnvironmentSnapshotError::InvalidDeferredCargoHome);
+        }
+    }
+    Ok(())
 }
 
 /// Safe failures from closed compiler-host snapshot admission.
@@ -482,6 +579,8 @@ pub enum ClosedLocalHostEnvironmentSnapshotError {
     InvalidEncoding,
     /// The encoded version is not supported.
     UnsupportedVersion,
+    /// The deferred Cargo-home marker does not identify a selected default under a safe home.
+    InvalidDeferredCargoHome,
     /// A variable name is not in the closed role vocabulary.
     UnsupportedRole,
     /// The workspace data root is owned by the local workspace, not this snapshot.
@@ -513,6 +612,9 @@ impl fmt::Display for ClosedLocalHostEnvironmentSnapshotError {
         formatter.write_str(match self {
             Self::InvalidEncoding => "compiler environment snapshot is invalid",
             Self::UnsupportedVersion => "compiler environment snapshot version is unsupported",
+            Self::InvalidDeferredCargoHome => {
+                "compiler environment snapshot has an invalid deferred Cargo home"
+            }
             Self::UnsupportedRole => "compiler environment snapshot role is unsupported",
             Self::WorkspaceOwnedRole => {
                 "compiler environment snapshot contains a workspace-owned role"
@@ -539,6 +641,8 @@ struct SnapshotWire {
     paths: Vec<SnapshotPathWire>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     go_failure: Option<LocalRuntimeGoAuthorityFailure>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cargo_home_selection: Option<LocalHostCargoHomeSelection>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -645,7 +749,8 @@ fn decimal_digits(mut value: usize) -> usize {
 mod tests {
     use super::{
         ClosedLocalHostEnvironmentSnapshot, ClosedLocalHostEnvironmentSnapshotError,
-        MAX_CLOSED_LOCAL_HOST_ENVIRONMENT_BYTES, SnapshotPathWire, SnapshotWire,
+        LocalHostCargoHomeSelection, MAX_CLOSED_LOCAL_HOST_ENVIRONMENT_BYTES, SnapshotPathWire,
+        SnapshotWire,
     };
     use crate::application::LocalHostVariable;
     use backend_platform::{NativePath, NativePathWire};
@@ -842,6 +947,7 @@ mod tests {
         let workspace_role = SnapshotWire {
             version: 1,
             go_failure: None,
+            cargo_home_selection: None,
             paths: vec![SnapshotPathWire {
                 variable: LocalHostVariable::NudoxDataRoot
                     .environment_name()
@@ -857,6 +963,7 @@ mod tests {
         let out_of_order = SnapshotWire {
             version: 1,
             go_failure: None,
+            cargo_home_selection: None,
             paths: vec![
                 SnapshotPathWire {
                     variable: LocalHostVariable::NudoxCargo.environment_name().to_owned(),
@@ -884,6 +991,7 @@ mod tests {
         let duplicate = SnapshotWire {
             version: 1,
             go_failure: None,
+            cargo_home_selection: None,
             paths: vec![
                 SnapshotPathWire {
                     variable: LocalHostVariable::Home.environment_name().to_owned(),
@@ -909,6 +1017,7 @@ mod tests {
         let wrong_platform = SnapshotWire {
             version: 1,
             go_failure: None,
+            cargo_home_selection: None,
             paths: vec![SnapshotPathWire {
                 variable: LocalHostVariable::Home.environment_name().to_owned(),
                 path: wrong_platform,
@@ -928,6 +1037,7 @@ mod tests {
         let nul_path = SnapshotWire {
             version: 1,
             go_failure: None,
+            cargo_home_selection: None,
             paths: vec![SnapshotPathWire {
                 variable: LocalHostVariable::Home.environment_name().to_owned(),
                 path: nul_path,
@@ -956,6 +1066,7 @@ mod tests {
             version: 1,
             paths,
             go_failure: None,
+            cargo_home_selection: None,
         })
         .expect("too many roles JSON");
         assert_eq!(
@@ -975,6 +1086,244 @@ mod tests {
             )]),
             Err(ClosedLocalHostEnvironmentSnapshotError::TooLarge)
         );
+    }
+
+    #[test]
+    fn deferred_default_is_explicit_v3_and_changes_selection_identity() {
+        use super::super::LocalCompilerHostSelection;
+
+        let root = test_directory("cargo-v3");
+        let home = root.join("home");
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&home).expect("home");
+        std::fs::create_dir_all(&bin).expect("bin");
+        let home = std::fs::canonicalize(home).expect("canonical home");
+        let rustc = bin.join("rustc");
+        let cargo = bin.join("cargo");
+        std::fs::write(&rustc, "rustc fixture").expect("rustc");
+        std::fs::write(&cargo, "cargo fixture").expect("cargo");
+        let rustc = std::fs::canonicalize(rustc).expect("canonical rustc");
+        let cargo = std::fs::canonicalize(cargo).expect("canonical cargo");
+        let cargo_home = home.join(".cargo");
+        let paths = [
+            (LocalHostVariable::Home, home.clone()),
+            (LocalHostVariable::NudoxRustc, rustc),
+            (LocalHostVariable::NudoxCargo, cargo),
+            (LocalHostVariable::NudoxCargoHome, cargo_home.clone()),
+        ];
+
+        let strict = ClosedLocalHostEnvironmentSnapshot::from_paths(paths.clone())
+            .expect("path-only construction stays strict");
+        assert_eq!(strict.cargo_home_selection(), LocalHostCargoHomeSelection::Strict);
+        let strict_wire = strict.encode().unwrap();
+        assert!(strict_wire.starts_with("{\"version\":1,"));
+        assert_eq!(
+            ClosedLocalHostEnvironmentSnapshot::parse(&strict_wire).unwrap(),
+            strict
+        );
+
+        let deferred = strict
+            .clone()
+            .with_deferred_default_cargo_home()
+            .expect("typed capture authority");
+        assert_eq!(
+            deferred.cargo_home_selection(),
+            LocalHostCargoHomeSelection::DeferredDefault
+        );
+        assert!(!cargo_home.exists(), "v3 only carries future creation authority");
+        let encoded = deferred.encode().expect("encode v3");
+        assert!(encoded.starts_with("{\"version\":3,"));
+        assert!(encoded.contains("\"cargo_home_selection\":\"deferred_default\""));
+        assert_eq!(
+            ClosedLocalHostEnvironmentSnapshot::parse(&encoded).expect("parse v3"),
+            deferred
+        );
+        let strict_selection = LocalCompilerHostSelection::captured_installed_tools(
+            strict,
+            None,
+        )
+        .expect("strict identity");
+        let deferred_selection = LocalCompilerHostSelection::captured_installed_tools(
+            deferred,
+            None,
+        )
+        .expect("deferred identity");
+        assert_ne!(
+            strict_selection.fingerprint(),
+            deferred_selection.fingerprint(),
+            "the typed creation policy participates in the selection identity"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o777))
+                .expect("make parent unsafe");
+            assert_eq!(
+                strict_selection
+                    .snapshot()
+                    .clone()
+                    .with_deferred_default_cargo_home()
+                    .expect_err("unsafe parent cannot receive create authority"),
+                ClosedLocalHostEnvironmentSnapshotError::InvalidDeferredCargoHome
+            );
+        }
+        std::fs::remove_dir_all(root).expect("fixture cleanup");
+    }
+
+    #[test]
+    fn deferred_default_rejects_forged_or_ambiguous_v3_snapshots() {
+        let root = test_directory("cargo-v3-forged");
+        let home = root.join("home");
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&home).expect("home");
+        std::fs::create_dir_all(&bin).expect("bin");
+        let home = std::fs::canonicalize(home).expect("canonical home");
+        let rustc = bin.join("rustc");
+        let cargo = bin.join("cargo");
+        std::fs::write(&rustc, "rustc fixture").expect("rustc");
+        std::fs::write(&cargo, "cargo fixture").expect("cargo");
+        let paths = vec![
+            (LocalHostVariable::Home, home.clone()),
+            (LocalHostVariable::NudoxRustc, std::fs::canonicalize(rustc).unwrap()),
+            (LocalHostVariable::NudoxCargo, std::fs::canonicalize(cargo).unwrap()),
+            (LocalHostVariable::NudoxCargoHome, home.join(".cargo")),
+        ];
+        let strict = ClosedLocalHostEnvironmentSnapshot::from_paths(paths.clone())
+            .expect("strict fixture");
+        let mut missing_tag: serde_json::Value =
+            serde_json::from_str(&strict.encode().unwrap()).unwrap();
+        missing_tag["version"] = serde_json::json!(3);
+        assert_eq!(
+            ClosedLocalHostEnvironmentSnapshot::parse(&missing_tag.to_string()),
+            Err(ClosedLocalHostEnvironmentSnapshotError::UnsupportedVersion)
+        );
+
+        let mut wrong_tag: serde_json::Value =
+            serde_json::from_str(&strict.encode().unwrap()).unwrap();
+        wrong_tag["version"] = serde_json::json!(3);
+        wrong_tag["cargo_home_selection"] = serde_json::json!("strict");
+        assert_eq!(
+            ClosedLocalHostEnvironmentSnapshot::parse(&wrong_tag.to_string()),
+            Err(ClosedLocalHostEnvironmentSnapshotError::UnsupportedVersion)
+        );
+
+        let no_home = ClosedLocalHostEnvironmentSnapshot::from_paths(
+            paths
+                .iter()
+                .filter(|(role, _)| *role != LocalHostVariable::Home)
+                .cloned(),
+        )
+        .expect("closed pair without home");
+        let mut no_home_v3: serde_json::Value =
+            serde_json::from_str(&no_home.encode().unwrap()).unwrap();
+        no_home_v3["version"] = serde_json::json!(3);
+        no_home_v3["cargo_home_selection"] = serde_json::json!("deferred_default");
+        assert_eq!(
+            ClosedLocalHostEnvironmentSnapshot::parse(&no_home_v3.to_string()),
+            Err(ClosedLocalHostEnvironmentSnapshotError::InvalidDeferredCargoHome)
+        );
+
+        let mismatch = ClosedLocalHostEnvironmentSnapshot::from_paths([
+            paths[0].clone(),
+            paths[1].clone(),
+            paths[2].clone(),
+            (LocalHostVariable::NudoxCargoHome, root.join("other-cache")),
+        ])
+        .expect("absolute mismatched cache path");
+        let mut mismatch_v3: serde_json::Value =
+            serde_json::from_str(&mismatch.encode().unwrap()).unwrap();
+        mismatch_v3["version"] = serde_json::json!(3);
+        mismatch_v3["cargo_home_selection"] = serde_json::json!("deferred_default");
+        assert_eq!(
+            ClosedLocalHostEnvironmentSnapshot::parse(&mismatch_v3.to_string()),
+            Err(ClosedLocalHostEnvironmentSnapshotError::InvalidDeferredCargoHome)
+        );
+
+        let not_admitted = ClosedLocalHostEnvironmentSnapshot::from_paths([
+            (LocalHostVariable::Home, home.clone()),
+            (LocalHostVariable::NudoxRustc, root.join("missing-rustc")),
+            paths[2].clone(),
+            paths[3].clone(),
+        ])
+        .expect("absolute missing compiler path");
+        let mut not_admitted_v3: serde_json::Value =
+            serde_json::from_str(&not_admitted.encode().unwrap()).unwrap();
+        not_admitted_v3["version"] = serde_json::json!(3);
+        not_admitted_v3["cargo_home_selection"] = serde_json::json!("deferred_default");
+        assert_eq!(
+            ClosedLocalHostEnvironmentSnapshot::parse(&not_admitted_v3.to_string()),
+            Err(ClosedLocalHostEnvironmentSnapshotError::InvalidDeferredCargoHome)
+        );
+
+        let relative_path = PathBuf::from("relative-home");
+        let relative_path = NativePath::from_path(&relative_path)
+            .expect("relative native path")
+            .to_wire()
+            .expect("relative path wire");
+        let relative_home = SnapshotWire {
+            version: 3,
+            paths: vec![SnapshotPathWire {
+                variable: LocalHostVariable::Home.environment_name().to_owned(),
+                path: relative_path,
+            }],
+            go_failure: None,
+            cargo_home_selection: Some(LocalHostCargoHomeSelection::DeferredDefault),
+        };
+        let relative_home = serde_json::to_string(&relative_home).expect("relative v3 JSON");
+        assert_eq!(
+            ClosedLocalHostEnvironmentSnapshot::parse(&relative_home),
+            Err(ClosedLocalHostEnvironmentSnapshotError::RelativePath)
+        );
+        std::fs::remove_dir_all(root).expect("fixture cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deferred_default_accepts_canonical_rustup_proxy_names() {
+        let root = test_directory("cargo-v3-rustup-proxy");
+        let home = root.join("home");
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&home).expect("home");
+        std::fs::create_dir_all(&bin).expect("bin");
+        let home = std::fs::canonicalize(home).expect("canonical home");
+        let bin = std::fs::canonicalize(bin).expect("canonical bin");
+        let rustup = bin.join("rustup");
+        std::fs::write(&rustup, "rustup fixture").expect("rustup fixture");
+        let rustc = bin.join("rustc");
+        let cargo = bin.join("cargo");
+        std::os::unix::fs::symlink(&rustup, &rustc).expect("rustc proxy");
+        std::os::unix::fs::symlink(&rustup, &cargo).expect("cargo proxy");
+        let paths = [
+            (LocalHostVariable::Home, home.clone()),
+            (LocalHostVariable::NudoxRustc, rustc),
+            (LocalHostVariable::NudoxCargo, cargo),
+            (
+                LocalHostVariable::NudoxCargoHome,
+                home.join(".cargo"),
+            ),
+        ];
+
+        let snapshot = ClosedLocalHostEnvironmentSnapshot::from_paths(paths)
+            .expect("closed rustup proxy paths")
+            .with_deferred_default_cargo_home()
+            .expect("rustup proxy names remain exact executable authority");
+        let encoded = snapshot.encode().expect("encode proxy snapshot");
+        assert_eq!(
+            ClosedLocalHostEnvironmentSnapshot::parse(&encoded).expect("parse proxy snapshot"),
+            snapshot
+        );
+        std::fs::remove_dir_all(root).expect("fixture cleanup");
+    }
+
+    fn test_directory(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "nudox-snapshot-{name}-{}-{}",
+            std::process::id(),
+            super::super::NEXT_NATIVE_WORK.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).expect("fixture root");
+        std::fs::canonicalize(root).expect("canonical fixture root")
     }
 
     #[cfg(unix)]

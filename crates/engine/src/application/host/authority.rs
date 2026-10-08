@@ -28,9 +28,10 @@ use crate::application::toolchain_probe::{
 };
 use crate::application::typescript_host::{TypeScriptProjectHost, is_module_tsc_script};
 use crate::application::{
-    LocalRuntimeCSharpAuthority, LocalRuntimeGoAuthorityFailure, LocalRuntimeJavaAuthority,
+    DeferredRustToolchain, LocalRuntimeCSharpAuthority, LocalRuntimeGoAuthorityFailure, LocalRuntimeJavaAuthority,
     LocalRuntimePackageAuthority, LocalRuntimePackageRoot, LocalRuntimePythonCheckerAdmission,
-    LocalRuntimePythonCheckerProbeFailure, LocalRuntimeRustAuthority, LocalRuntimeToolchain,
+    LocalRuntimePythonCheckerProbeFailure, LocalRuntimeRustAuthority,
+    LocalRuntimeRustToolchainSelection, LocalRuntimeToolchain,
     PyreflyToolchainIdentity,
 };
 
@@ -174,7 +175,11 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             executables.cargo_home.as_deref(),
         ) {
             (Some(rustc), Some(cargo), Some(cargo_home)) => {
-                Some(self.rust_authority(rustc, cargo, cargo_home, probe_limits)?)
+                if executables.cargo_home_deferred {
+                    Some(self.deferred_rust_authority(rustc, cargo, cargo_home, probe_limits)?)
+                } else {
+                    Some(self.rust_authority(rustc, cargo, cargo_home, probe_limits)?)
+                }
             }
             _ => None,
         };
@@ -300,7 +305,42 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             cargo_home.to_path_buf(),
         )?;
         Ok(LocalRuntimeRustAuthority {
-            toolchain,
+            toolchain: LocalRuntimeRustToolchainSelection::Ready(toolchain),
+            maximum_source_bytes: SourceByteLimit::from(PACKAGE_SOURCE_BYTES),
+            all_features: true,
+            no_default_features: false,
+            features: Box::new([]),
+            metadata_policy: self.rust_cargo_metadata_policy,
+        })
+    }
+
+    fn deferred_rust_authority(
+        &self,
+        rustc: &Path,
+        cargo: &Path,
+        cargo_home: &Path,
+        probe_limits: ToolchainProbeLimits,
+    ) -> Result<LocalRuntimeRustAuthority, LocalCompilerHostError> {
+        // Explicit sysroots keep their strict current validation. Only the inferred sysroot
+        // probe and the typed absent default Cargo home are deferred to the first Rust request.
+        let sysroot = self
+            .optional_absolute_path(LocalHostVariable::NudoxRustSysroot)?
+            .map(|path| {
+                self.validate_directory(
+                    LocalHostPathRole::RustSysroot,
+                    LocalHostVariable::NudoxRustSysroot,
+                    path,
+                )
+            })
+            .transpose()?;
+        Ok(LocalRuntimeRustAuthority {
+            toolchain: LocalRuntimeRustToolchainSelection::Deferred(DeferredRustToolchain::new(
+                rustc.to_path_buf(),
+                cargo.to_path_buf(),
+                cargo_home.to_path_buf(),
+                sysroot,
+                probe_limits,
+            )),
             maximum_source_bytes: SourceByteLimit::from(PACKAGE_SOURCE_BYTES),
             all_features: true,
             no_default_features: false,
@@ -506,6 +546,7 @@ pub(super) struct NativeExecutables {
     pub(super) rustc: Option<PathBuf>,
     pub(super) cargo: Option<PathBuf>,
     pub(super) cargo_home: Option<PathBuf>,
+    pub(super) cargo_home_deferred: bool,
     pub(super) clang: Option<PathBuf>,
     pub(super) python: Option<PathBuf>,
     pub(super) typescript: Option<PathBuf>,
@@ -632,6 +673,7 @@ mod invocation_selection_tests {
             rustc: None,
             cargo: None,
             cargo_home: None,
+            cargo_home_deferred: false,
             clang: None,
             python: None,
             typescript,

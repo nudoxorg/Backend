@@ -10,7 +10,8 @@ use backend_engine::application::{
     LocalCompilerClient, LocalCompilerConfig, LocalCompilerControl,
     LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths, LocalCompilerScratch,
     LocalCompilerTimeout, LocalRuntimePackageAuthority, LocalRuntimeRustAuthority,
-    LocalRuntimeToolchain, LocalToolchainSet, OwnedPackageSource, OwnedPackageSourceSet,
+    LocalRuntimeRustToolchainSelection, LocalRuntimeToolchain, LocalToolchainSet,
+    OwnedPackageSource, OwnedPackageSourceSet,
     PackageSemanticError, PackageSource, PackageSourceSet, StagedEmbeddingStatus,
 };
 use backend_engine::driver::{ResolvedToolchain, ToolchainSelection};
@@ -284,7 +285,7 @@ fn rust_package_staging_keeps_detached_sources_out_of_artifact_and_coverage_acco
     )
     .map_err(|error| fixture_error(format!("package profile rejected: {error:?}")))?;
     let authority = LocalRuntimeRustAuthority {
-        toolchain: rust_toolchain.clone(),
+        toolchain: LocalRuntimeRustToolchainSelection::Ready(rust_toolchain.clone()),
         maximum_source_bytes: SourceByteLimit::from(8 * 1024),
         all_features: false,
         no_default_features: false,
@@ -447,7 +448,7 @@ fn runtime_returns_one_failed_package_terminal_then_reuses_the_same_lane_without
     .map_err(|error| fixture_error(format!("package profile rejected: {error:?}")))?;
 
     let authority = LocalRuntimeRustAuthority {
-        toolchain: rust_toolchain.clone(),
+        toolchain: LocalRuntimeRustToolchainSelection::Ready(rust_toolchain.clone()),
         maximum_source_bytes: SourceByteLimit::from(8 * 1024),
         all_features: false,
         no_default_features: false,

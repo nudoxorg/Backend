@@ -47,6 +47,7 @@ use backend_version::{ContentId, ToolchainDomain};
 use thiserror::Error;
 
 use super::typescript_host::TypeScriptProjectHost;
+use super::runtime::LocalRuntimeRustToolchainSelection;
 
 /// Bounded, explicit package-authority adapters selected by the application
 /// owner.  Every optional field names one independently configured producer;
@@ -107,15 +108,35 @@ pub struct CSharpPackageAuthorityConfiguration<'config> {
 /// text or a native executable selection alone.
 #[derive(Clone, Copy, Debug)]
 pub struct RustPackageAuthorityConfiguration<'config> {
-    /// Rust toolchain and sysroot already established for rust-analyzer.  Its
-    /// executable must exactly match the request's resolved Rust compiler.
-    pub toolchain: &'config RustToolchain,
+    /// Rust authority selected for this owner; a typed deferred default is realized only for a
+    /// Rust request. Its executable must match the request's resolved compiler.
+    pub toolchain: &'config LocalRuntimeRustToolchainSelection,
     /// Exact source budget checked before Cargo graph loading.
     pub maximum_source_bytes: SourceByteLimit,
     /// Caller-selected Cargo feature policy.
     pub features: RustFeatureControl<'config>,
     /// Registry metadata network policy for complete Cargo resolution.
     pub metadata_policy: RustCargoMetadataPolicy,
+}
+
+impl RustPackageAuthorityConfiguration<'_> {
+    pub(crate) fn resolve_toolchain(
+        &self,
+        profile: LanguageProfile,
+        control: CompileControl<'_>,
+    ) -> Result<&RustToolchain, PackageAuthorityError> {
+        self.toolchain.resolve(control).map_err(|cause| match cause {
+            super::LocalRuntimeRustAuthorityFailure::Cancelled => PackageAuthorityError::Cancelled {
+                profile,
+                stage: PackageAuthorityStage::RustProject,
+            },
+            super::LocalRuntimeRustAuthorityFailure::Deadline => PackageAuthorityError::Deadline {
+                profile,
+                stage: PackageAuthorityStage::RustProject,
+            },
+            cause => PackageAuthorityError::RustToolchainAdmission { profile, cause },
+        })
+    }
 }
 
 /// Explicit Java authority inputs.  The source path is converted to a package
@@ -565,13 +586,6 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                         stage: PackageAuthorityStage::RustProject,
                     },
                 )?;
-                if configuration.toolchain.tool.as_path() != resolved.as_ref() {
-                    return Err(PackageAuthorityError::RustToolchainExecutableMismatch {
-                        profile: request.profile,
-                        configured: configuration.toolchain.tool.clone().into_boxed_path(),
-                        resolved: resolved.as_ref().to_path_buf().into_boxed_path(),
-                    });
-                }
                 match request.unit_key {
                     CompilationUnitKeyV2::PackageRoot => {}
                     CompilationUnitKeyV2::RustCrate { root, .. } => {
@@ -596,6 +610,20 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                         },
                     ));
                 }
+                checkpoint(
+                    request.control,
+                    request.profile,
+                    PackageAuthorityStage::RustProject,
+                )?;
+                let rust_toolchain =
+                    configuration.resolve_toolchain(request.profile, request.control)?;
+                if rust_toolchain.tool.as_path() != resolved.as_ref() {
+                    return Err(PackageAuthorityError::RustToolchainExecutableMismatch {
+                        profile: request.profile,
+                        configured: rust_toolchain.tool.clone().into_boxed_path(),
+                        resolved: resolved.as_ref().to_path_buf().into_boxed_path(),
+                    });
+                }
                 if let Some(workspace) = rust_workspace {
                     workspace
                         .validate_binding(request.package_root, profile)
@@ -613,7 +641,7 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                 } else {
                     let workspace = RustWorkspace::open_with_features_and_metadata_policy(
                         request.package_root,
-                        configuration.toolchain,
+                        rust_toolchain,
                         profile,
                         configuration.features,
                         configuration.metadata_policy,
@@ -1013,6 +1041,14 @@ pub enum PackageAuthorityError {
         configured: Box<Path>,
         /// Compiler executable selected for the enclosing driver request.
         resolved: Box<Path>,
+    },
+    /// A selected deferred Rust authority failed only when a Rust package requested it.
+    #[error("Rust toolchain admission for {profile:?} failed: {cause:?}")]
+    RustToolchainAdmission {
+        /// Requested Rust profile.
+        profile: LanguageProfile,
+        /// Exact bounded deferred-admission outcome.
+        cause: super::LocalRuntimeRustAuthorityFailure,
     },
     /// The selected Clang driver differs from the executable bound by the driver.
     #[error("Clang authority driver differs from the resolved compiler for {profile:?}")]
