@@ -1,0 +1,130 @@
+{
+  "source_commit": "5f2a97eb4c74c175e190ff9637373c6bcf9ae39e",
+  "source_tree": "08d334bdf7ae6bd87c4943b58f010d4554dcbb12",
+  "attempts": [
+    {
+      "attempt": 1,
+      "raw_capacity_receipt": "/private/tmp/sol61-search-fleet-current-5f2-trio01.json",
+      "raw_sha256": "2299b5d48cb5157dd4c9554425d23de4c6a09bc250fb9adc26a5a6a77c280209",
+      "stored_file": "sol61-search-fleet-current-5f2-trio01.json.gz",
+      "stored_sha256": "1ed880ba93f5b914865d5208113e164d3b70873542adde878af50cedbca3b566",
+      "advisory_allowed": false,
+      "reasons": [
+        "local:available-memory-below-8-gib-or-missing"
+      ],
+      "sampled_at_utc": "2026-10-08T00:15:56.412804+00:00",
+      "native_child_spawned": false,
+      "pre_child_harness_failure": null,
+      "memory_guard_scope": "each-host",
+      "destination_memory_only_for_remote": false
+    },
+    {
+      "attempt": 2,
+      "raw_capacity_receipt": "/private/tmp/sol61-search-fleet-current-5f2-trio02.json",
+      "raw_sha256": "df47f5ab552ba8517ea01261b86b6829144794bf494987573f57d4bc70281ad1",
+      "stored_file": "sol61-search-fleet-current-5f2-trio02.json.gz",
+      "stored_sha256": "0c9e86541a8ff67309d545404b6b96cc1b3c53568cc1417184820b4d94f59eeb",
+      "advisory_allowed": false,
+      "reasons": [
+        "local:available-memory-below-8-gib-or-missing"
+      ],
+      "sampled_at_utc": "2026-10-08T00:17:24.787576+00:00",
+      "native_child_spawned": false,
+      "pre_child_harness_failure": null,
+      "memory_guard_scope": "each-host",
+      "destination_memory_only_for_remote": false
+    },
+    {
+      "attempt": 3,
+      "raw_capacity_receipt": "/private/tmp/sol61-search-fleet-current-5f2-trio03.json",
+      "raw_sha256": "ab194fcc1cda1fe3427bfb06c49df42cc2e95520686617df06fcd86a18d70d12",
+      "stored_file": "sol61-search-fleet-current-5f2-trio03.json.gz",
+      "stored_sha256": "38bde680980d7645e2fc0d763e478b369c0e68417660f1bd30d5787201e3e690",
+      "advisory_allowed": false,
+      "reasons": [
+        "local:available-memory-below-8-gib-or-missing"
+      ],
+      "sampled_at_utc": "2026-10-08T00:19:00.469333+00:00",
+      "native_child_spawned": false,
+      "pre_child_harness_failure": null,
+      "memory_guard_scope": "each-host",
+      "destination_memory_only_for_remote": false
+    },
+    {
+      "attempt": 4,
+      "raw_capacity_receipt": "/private/tmp/sol61-search-fleet-current-5f2-trio04.json",
+      "raw_sha256": "2c5ca21018817d36c24afe1b9c733f5427406846bdb29bf980aa2a7b76c61768",
+      "stored_file": "sol61-search-fleet-current-5f2-trio04.json.gz",
+      "stored_sha256": "7d4de670e286d77fc2896b60907f21f327d1340fa0dfe828db1d9c9b4de2ef29",
+      "advisory_allowed": true,
+      "reasons": [],
+      "sampled_at_utc": "2026-10-08T00:21:04.054791+00:00",
+      "native_child_spawned": false,
+      "pre_child_harness_failure": "FileExistsError on unchanged prior native-mac-06 output path; corrected output parameter; no child spawned",
+      "memory_guard_scope": "each-host",
+      "destination_memory_only_for_remote": false
+    },
+    {
+      "attempt": 5,
+      "raw_capacity_receipt": "/private/tmp/sol61-search-fleet-current-5f2-trio05.json",
+      "raw_sha256": "26c9296c7d69581583cbdeb97dc4c6af6b18c6a5bd2c7137e9c3b5de711afbfc",
+      "stored_file": "sol61-search-fleet-current-5f2-trio05.json.gz",
+      "stored_sha256": "872e1d5d006bd0b5526f5adb00ef4a2be51e5e3cfaa8a678d8e53adf00bdacd5",
+      "advisory_allowed": false,
+      "reasons": [
+        "local:available-memory-below-8-gib-or-missing"
+      ],
+      "sampled_at_utc": "2026-10-08T00:22:09.283512+00:00",
+      "native_child_spawned": false,
+      "pre_child_harness_failure": null,
+      "memory_guard_scope": "each-host",
+      "destination_memory_only_for_remote": false
+    },
+    {
+      "attempt": 6,
+      "raw_capacity_receipt": "/private/tmp/sol61-search-fleet-current-5f2-trio06.json",
+      "raw_sha256": "78269541fac65686f3537015177c3a20351da3406ff3ed556b39d341ebbae8b4",
+      "stored_file": "sol61-search-fleet-current-5f2-trio06.json.gz",
+      "stored_sha256": "dcf34703c71d4899452a4fcf52a28eca6a51da4ad7e36f3bcbfe29b30c02c55a",
+      "advisory_allowed": false,
+      "reasons": [
+        "local:available-memory-below-8-gib-or-missing"
+      ],
+      "sampled_at_utc": "2026-10-08T00:23:31.888159+00:00",
+      "native_child_spawned": false,
+      "pre_child_harness_failure": null,
+      "memory_guard_scope": "each-host",
+      "destination_memory_only_for_remote": false
+    },
+    {
+      "attempt": 7,
+      "raw_capacity_receipt": "/private/tmp/sol61-search-fleet-current-5f2-trio07.json",
+      "raw_sha256": "6c11fabf2e0e4235c2fe321820c87c77ad45d87a2f4f8b00fe3abeb0e012be57",
+      "stored_file": "sol61-search-fleet-current-5f2-trio07.json.gz",
+      "stored_sha256": "c79fa1c859c260a423fd601fbd5608f37f505e5047134c8d0df702da648500ac",
+      "advisory_allowed": false,
+      "reasons": [
+        "local:available-memory-below-8-gib-or-missing"
+      ],
+      "sampled_at_utc": "2026-10-08T00:25:28.821943+00:00",
+      "native_child_spawned": false,
+      "pre_child_harness_failure": null,
+      "memory_guard_scope": "each-host",
+      "destination_memory_only_for_remote": false
+    },
+    {
+      "attempt": 8,
+      "raw_capacity_receipt": "/private/tmp/sol61-search-fleet-current-5f2-trio08-destmem.json",
+      "raw_sha256": "8d4ff3bdc0e6dde8d2e21bed98d9513dd537eec2791ea211c517a3a58342a747",
+      "stored_file": "sol61-search-fleet-current-5f2-trio08-destmem.json.gz",
+      "stored_sha256": "20ef3baa9ed73cf075717b80bde45cacee23827d0855c6c894cdff95031261d0",
+      "advisory_allowed": true,
+      "reasons": [],
+      "sampled_at_utc": "2026-10-08T00:27:42.974278+00:00",
+      "native_child_spawned": true,
+      "pre_child_harness_failure": null,
+      "memory_guard_scope": "destination",
+      "destination_memory_only_for_remote": true
+    }
+  ]
+}

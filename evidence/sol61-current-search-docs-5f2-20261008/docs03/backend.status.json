@@ -1,0 +1,69 @@
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "ready \u00b7 18249 row(s) \u00b7 revision eac31ae1 \u00b7 source a98a2689 \u00b7 sequence 12\n~lanes exact\u271318249 names\u271318249 graph\u271318249 semantic\u2717 unconfigured\nfrontends 9/9 ready \u00b7 oracles 0/18 ready \u00b7 17 no-manifest \u00b7 embedding unconfigured\n"
+      }
+    ],
+    "structuredContent": {
+      "readiness": "ready",
+      "revision": "eac31ae1ea40450b4acf3a4294ffecb510ffc1e9d2dc69234ad9f2c714746178",
+      "revision_tag": "eac31ae1",
+      "rows": 18249,
+      "coverage": [
+        {
+          "lane": "exact",
+          "state": "complete"
+        },
+        {
+          "lane": "names",
+          "state": "complete"
+        },
+        {
+          "lane": "graph",
+          "state": "complete"
+        },
+        {
+          "lane": "semantic",
+          "state": "unavailable",
+          "reason": "unconfigured"
+        }
+      ],
+      "capabilities": {
+        "frontends_ready": 9,
+        "frontends_total": 9,
+        "oracles_ready": 0,
+        "oracles_total": 18,
+        "embedding": "unconfigured",
+        "unavailable": [
+          {
+            "reason": "no-manifest",
+            "count": 17
+          }
+        ],
+        "summary": "frontends 9/9 ready \u00b7 oracles 0/18 ready \u00b7 17 no-manifest \u00b7 embedding unconfigured"
+      },
+      "answer": "status",
+      "detail": "summary",
+      "budget": {
+        "bytes": 696,
+        "estimatedTokens": 174,
+        "bytesPerToken": 4
+      }
+    },
+    "isError": false,
+    "_meta": {
+      "backend/wireBudget": {
+        "bytes": 1184,
+        "estimatedTokens": 296,
+        "bytesPerToken": 4,
+        "limitBytes": 49152,
+        "scope": "complete_jsonrpc_line"
+      }
+    }
+  },
+  "_acceptance_wire_bytes": 1184
+}

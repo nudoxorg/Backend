@@ -1,0 +1,38 @@
+{
+  "jsonrpc": "2.0",
+  "id": 11,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "# semantic-versions\nno row at this revision\n"
+      }
+    ],
+    "structuredContent": {
+      "heading": "semantic-versions",
+      "records": [],
+      "semantic_data": {
+        "kind": "versions",
+        "value": []
+      },
+      "answer": "product",
+      "detail": "summary",
+      "budget": {
+        "bytes": 191,
+        "estimatedTokens": 48,
+        "bytesPerToken": 4
+      }
+    },
+    "isError": false,
+    "_meta": {
+      "backend/wireBudget": {
+        "bytes": 485,
+        "estimatedTokens": 122,
+        "bytesPerToken": 4,
+        "limitBytes": 49152,
+        "scope": "complete_jsonrpc_line"
+      }
+    }
+  },
+  "_acceptance_wire_bytes": 485
+}
