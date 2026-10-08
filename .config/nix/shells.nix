@@ -219,6 +219,7 @@ let
     ];
     packages = [
       toolchains.cross
+      pkgs.python3
       pkgs.nushell
     ]
     ++ crossCompilers
