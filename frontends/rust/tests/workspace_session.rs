@@ -10,8 +10,9 @@ use std::{
 use backend_frontend_rust::legacy::{
     CargoMetadataIncompleteCause, CargoMetadataPreflightError, RustAnalysisControl,
     RustAuthorityError, RustCargoMetadataPolicy, RustFeatureControl, RustToolchain, RustWorkspace,
-    RustWorkspaceFile, RustWorkspaceReadFrontierObserver, RustWorkspaceSessionKey,
-    RustWorkspaceSessionLane, SourceByteLimit,
+    RustWorkspaceFile, RustWorkspaceFilesystemOperation, RustWorkspaceFilesystemOutcome,
+    RustWorkspaceReadFrontierObserver, RustWorkspaceSessionKey, RustWorkspaceSessionLane,
+    SourceByteLimit,
 };
 use backend_semantic::vocabulary::{RustEdition, Stage};
 use ra_ap_syntax::AstNode;
@@ -1013,6 +1014,110 @@ fn workspace_overlay_updates_selected_files_across_package_roots()
         Ok::<(), Box<dyn std::error::Error>>(())
     })();
 
+    fs::remove_dir_all(&root)?;
+    outcome
+}
+
+/// Diagnostic only: counts the actual Rustdoc preloader call sites, not all
+/// Cargo, project-model, or operating-system reads.
+#[derive(Default)]
+struct RejectedDocumentationInputs {
+    filesystem_attempts: usize,
+    input_reads: usize,
+}
+
+impl RustWorkspaceReadFrontierObserver for RejectedDocumentationInputs {
+    fn observe_editor_buffer(&mut self, _: &Path, _: &[u8]) {}
+    fn observe_ra_vfs_file(&mut self, _: &str, _: &[u8]) -> bool {
+        true
+    }
+    fn observe_rustdoc_input(&mut self, _: &str, _: &[u8]) -> bool {
+        self.input_reads += 1;
+        true
+    }
+    fn observe_authority_filesystem_attempt(
+        &mut self,
+        _: &str,
+        _: RustWorkspaceFilesystemOperation,
+        _: RustWorkspaceFilesystemOutcome,
+        _: Option<&str>,
+    ) -> bool {
+        self.filesystem_attempts += 1;
+        true
+    }
+    fn observe_unresolved_module_candidate(&mut self, _: &str, _: &str, _: &str) -> bool {
+        true
+    }
+}
+
+#[test]
+fn nested_documentation_macros_refuse_before_outside_input_capture()
+-> Result<(), Box<dyn std::error::Error>> {
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!("backend-rust-doc-concat-{nonce}-{sequence}"));
+    let package = root.join("package");
+    fs::create_dir_all(package.join("src"))?;
+    fs::write(
+        package.join("Cargo.toml"),
+        "[package]\nname = \"doc_concat_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )?;
+    let outside = root.join("outside.txt");
+    let canary = b"This file is outside the admitted Cargo package.\n";
+    fs::write(&outside, canary)?;
+    let outcome = (|| {
+        let toolchain = RustToolchain::discover(rustc_path())?;
+        let source_paths = [PathBuf::from("src/lib.rs")];
+        for source in [
+            "#[doc = concat!(include_str!(\"../../outside.txt\"))]\npub fn documented() {}\n",
+            "#[doc = include_str!(concat!(\"../../\", \"outside.txt\"))]\npub fn documented() {}\n",
+        ] {
+            fs::write(package.join("src/lib.rs"), source)?;
+            let key = RustWorkspaceSessionKey::new(
+                &package,
+                &toolchain,
+                RustEdition::Rust2024,
+                Stage::LowerIr,
+                RustFeatureControl::default(),
+                RustCargoMetadataPolicy::Offline,
+                None,
+                None,
+                None,
+                [0x6c; 32],
+                &source_paths,
+            )?;
+            let files = [RustWorkspaceFile {
+                relative_path: &source_paths[0],
+                source,
+            }];
+            let cancelled = AtomicBool::new(false);
+            let control = RustAnalysisControl {
+                cancelled: &cancelled,
+                maximum_source_bytes: SourceByteLimit::from(8_192),
+                deadline: Instant::now() + Duration::from_secs(180),
+            };
+            let mut lane = RustWorkspaceSessionLane::default();
+            let mut observer = RejectedDocumentationInputs::default();
+            assert!(
+                matches!(
+                    lane.begin_with_read_frontier_observer(key, &files, control, &mut observer),
+                    Err(RustAuthorityError::UnsupportedDocumentationExpression { .. })
+                ),
+                "nested source must not admit a documentation input: {source}"
+            );
+            assert_eq!(
+                observer.filesystem_attempts, 0,
+                "no preloader path resolution or file read"
+            );
+            assert_eq!(
+                observer.input_reads, 0,
+                "no outside bytes admitted into the VFS"
+            );
+            assert_eq!(fs::read(&outside)?, canary);
+            assert_eq!(fs::read(package.join("src/lib.rs"))?, source.as_bytes());
+        }
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })();
     fs::remove_dir_all(&root)?;
     outcome
 }
