@@ -518,6 +518,27 @@ pub(super) fn digest_bytes(bytes: &[u8]) -> Digest {
     hasher.digest()
 }
 
+fn hash_item_name(name: backend_semantic::ir::ItemNameView<'_>, hasher: &mut StableHasher) {
+    match name {
+        backend_semantic::ir::ItemNameView::Named(bytes) => bytes.hash(hasher),
+        backend_semantic::ir::ItemNameView::AnonymousCallable { anchor } => {
+            b"anonymous-callable".hash(hasher);
+            anchor.encoded_bytes().hash(hasher);
+        }
+    }
+}
+
+fn digest_item_name(name: backend_semantic::ir::ItemNameView<'_>) -> Digest {
+    match name {
+        backend_semantic::ir::ItemNameView::Named(bytes) => digest_bytes(bytes),
+        anonymous => {
+            let mut hasher = StableHasher::default();
+            hash_item_name(anonymous, &mut hasher);
+            hasher.digest()
+        }
+    }
+}
+
 pub(super) fn range_manifest_digest(view: &FragmentView<'_>) -> Result<Digest, CorpusAuditError> {
     Ok(range_manifest_digest_from_manifest(
         FragmentRangeManifest::from_view(view)?,
@@ -589,7 +610,7 @@ fn member_order_digest(ir: &Ir, members: &[EntityId]) -> Digest {
         member.raw.hash(&mut hasher);
         if let Some(item) = ir.item(*member) {
             item.kind().hash(&mut hasher);
-            item.name().hash(&mut hasher);
+            hash_item_name(item.name(), &mut hasher);
         }
     }
     hasher.digest()
@@ -695,7 +716,7 @@ fn semantic_digest(ir: &Ir) -> Digest {
         item.visibility().hash(&mut hasher);
         item.parent().hash(&mut hasher);
         item.semantic_type().hash(&mut hasher);
-        item.name().hash(&mut hasher);
+        hash_item_name(item.name(), &mut hasher);
         item.members().hash(&mut hasher);
         item.docs().hash(&mut hasher);
         item.attributes().hash(&mut hasher);
@@ -1727,7 +1748,13 @@ fn semantic_entities_digest<R: SemanticReader + ?Sized>(reader: &R) -> Digest {
             None => 0_u8.hash(&mut hasher),
         }
         entity.kind.hash(&mut hasher);
-        scope.hash_atom(&mut hasher, entity.name);
+        if matches!(
+            entity.name,
+            backend_semantic::ir::ItemName::AnonymousCallable(_)
+        ) {
+            b"anonymous-callable".hash(&mut hasher);
+        }
+        scope.hash_atom(&mut hasher, entity.name.atom());
         entity.visibility.hash(&mut hasher);
         match entity.parent {
             Some(parent) => {
@@ -2678,7 +2705,7 @@ pub(super) fn observe_owned(
                 (
                     child.source().map(|span| span.start()),
                     child.kind(),
-                    digest_bytes(child.name()),
+                    digest_item_name(child.name()),
                 )
             })
             .collect();
@@ -2694,7 +2721,7 @@ pub(super) fn observe_owned(
         EntityObservation {
             id: item.id(),
             kind: item.kind(),
-            name: digest_bytes(item.name()),
+            name: digest_item_name(item.name()),
             visibility: item.visibility(),
             parent: item.parent(),
             authority: authority_facts(ir, item.id()),
@@ -2704,7 +2731,7 @@ pub(super) fn observe_owned(
                 .members()
                 .first()
                 .and_then(|member| ir.item(*member))
-                .map(|member| digest_bytes(member.name())),
+                .map(|member| digest_item_name(member.name())),
             children,
             nested,
             first_nested,
