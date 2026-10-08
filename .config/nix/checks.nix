@@ -51,7 +51,7 @@ let
       null;
 in
 {
-  nushell-command = commands.backend;
+  nushell-command = commands.backendCi;
   agent-skills = commands.agentSkills;
   formatting = formatting.check;
 
@@ -252,7 +252,7 @@ in
     inherit pkgs;
     name = "backend-tooling-contracts";
     packages = [
-      commands.backend
+      commands.backendCi
       pkgs.ast-grep
       pkgs.nushell
     ];
