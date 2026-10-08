@@ -1,0 +1,30 @@
+{
+  "reviewer": "root",
+  "source_evidence_commit": "403a891d50dfc8bc6622a78ceaf27c692822e014",
+  "native_source": "5f2a97eb4c74c175e190ff9637373c6bcf9ae39e",
+  "canonical_compared": "7899d417a0256755f89b670dbc1ef4644c1012d3",
+  "production_changed_paths": [],
+  "excluded_non_product_prefixes": [
+    "docs/",
+    "evidence/",
+    ".config/scripts/"
+  ],
+  "indexed_stored_members_verified": 140,
+  "decompressed_raw_members_verified": 139,
+  "native_manifest_sha256": "163296ef6000159943cd43b8cfd48f08989c8132f06426481805266efe5444c8",
+  "native_source_receipt_artifact_binding_verified": true,
+  "executable_bytes_rehashed_by_root_in_this_audit": false,
+  "executable_hash_scope": "Compared retained Cargo events, build receipt, manifest and runtime identity. Actual executable copying/hash verification was the remote native supervisor; this audit does not claim another executable rehash.",
+  "actual_runtime_controls": {
+    "total": 37,
+    "while_search_pending": 36,
+    "maximum_seconds": 1.8368273340165615
+  },
+  "mcp_transport_surface_calls": 9,
+  "references_functional_result": "FAIL: 0 records with a pinned authentic caller",
+  "graph_semantics": "Not established: symbol records are not edge evidence",
+  "fresh_empty_home_acceptance": false,
+  "native_tests_on_current_source": 0,
+  "predecessor_tests_relabelled": false,
+  "audit_script_sha256": "197ab51fd283c653280813ea4e3fc2451fb9e4cddbbda96bc3fcbe9443da2ad0"
+}
