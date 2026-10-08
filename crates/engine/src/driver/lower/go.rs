@@ -3778,11 +3778,11 @@ mod tests {
             "module example.com/go-selection\n\ngo 1.23\n",
         )
         .expect("module fixture");
-        std::fs::write(
-            &caller,
-            "package selection\nfunc Caller() int { return Platform() }\n",
-        )
-        .expect("caller fixture");
+        let caller_source = format!(
+            "package selection\nfunc Caller() int {{\n{}return Platform() }}\n",
+            "\n".repeat(512),
+        );
+        std::fs::write(&caller, &caller_source).expect("caller fixture");
         std::fs::write(
             &active,
             "package selection\n// Platform is selected.\nfunc Platform() int { return 1 }\n",
@@ -3790,6 +3790,10 @@ mod tests {
         .expect("active fixture");
         let source =
             b"package selection\n// Platform is dormant.\nfunc Platform() int { return 2 }\n";
+        assert!(
+            caller_source.find("Platform").expect("known caller") > source.len(),
+            "fixture must expose active call spans outside the inactive source bytes"
+        );
         std::fs::write(&inactive, source).expect("implicit filename exclusion fixture");
         let modules = root.path().join("modules");
         std::fs::create_dir(&modules).expect("empty offline module cache");

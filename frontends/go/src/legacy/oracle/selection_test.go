@@ -265,6 +265,27 @@ func TestCompilerSelectionContradictionsRefuse(t *testing.T) {
 	}
 }
 
+func TestNativeSelectionRetainsTheClosedParentPolicy(t *testing.T) {
+	selection, err := nativeSelection([]string{"CGO_ENABLED=0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.context.GOOS != build.Default.GOOS || selection.context.GOARCH != build.Default.GOARCH || selection.context.CgoEnabled || len(selection.context.BuildTags) != 0 {
+		t.Fatal("native selection changed the closed parent profile")
+	}
+	for _, environment := range [][]string{
+		nil,
+		{"CGO_ENABLED=1"},
+		{"CGO_ENABLED=0", "GOOS="},
+		{"CGO_ENABLED=0", "GOARCH=contradictory"},
+		{"CGO_ENABLED=0", "GOFLAGS=-tags=ambient"},
+	} {
+		if _, err := nativeSelection(environment); err == nil {
+			t.Fatalf("accepted unadmitted native policy %v", environment)
+		}
+	}
+}
+
 func TestAuthoritySourceSelectionMustHaveOneOwner(t *testing.T) {
 	source := "/selected/source.go"
 	for _, output := range []*Output{
