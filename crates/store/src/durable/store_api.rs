@@ -12,7 +12,7 @@ use super::{
     sync_directory, write_immutable, write_immutable_file_with_status, write_immutable_with_status,
 };
 use crate::{UntrustedObjectId, WorkspaceClosure};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::io::Read as _;
 
 impl FileStore {
@@ -322,8 +322,12 @@ impl FileStore {
             .changed_objects()
             .map(|object| (*object).clone())
             .collect::<Vec<_>>();
+        // The selected frontier can contain thousands of path-copied nodes.
+        // Commit each immutable identity once while assembling its exact union;
+        // pairwise comparisons rehash both payloads for every preceding node.
+        let mut changed_ids = changed.iter().map(TypedObject::id).collect::<BTreeSet<_>>();
         for root in selected_roots {
-            if !changed.iter().any(|object| object.id() == root.id()) {
+            if changed_ids.insert(root.id()) {
                 changed.push(root.clone());
             }
         }
