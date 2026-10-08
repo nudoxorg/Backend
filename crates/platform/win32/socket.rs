@@ -114,6 +114,14 @@ impl LocalStream {
         self.0.peer_addr().map(LocalAddr::from_socket)
     }
 
+    /// Returns the read deadline for blocking reads.
+    ///
+    /// # Errors
+    /// Returns an error when the socket option cannot be read.
+    pub fn read_timeout(&self) -> io::Result<Option<Duration>> {
+        self.0.read_timeout()
+    }
+
     /// Sets the read deadline for blocking reads.
     ///
     /// # Errors

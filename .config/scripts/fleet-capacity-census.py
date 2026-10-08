@@ -179,6 +179,7 @@ def evaluate_fleet(
     now: dt.datetime | None = None,
     max_age_seconds: int = MAX_SAMPLE_AGE_SECONDS,
     allow_local_over_cap_for_remote: bool = False,
+    destination_memory_only_for_remote: bool = False,
 ) -> dict[str, Any]:
     """Fail closed on missing/stale/incomplete evidence and enforce fleet caps."""
     now = (now or dt.datetime.now(dt.timezone.utc)).astimezone(dt.timezone.utc)
@@ -195,6 +196,7 @@ def evaluate_fleet(
     host_summaries: dict[str, Any] = {}
     limitations: list[str] = []
     total_groups = 0
+    destination_memory_only = destination_memory_only_for_remote and destination != "local"
     for name, config in hosts.items():
         sample = samples.get(name)
         if not isinstance(sample, Mapping) or sample.get("transport_complete") is not True:
@@ -280,8 +282,13 @@ def evaluate_fleet(
             else:
                 reasons.append(f"{name}:host-compiler-group-limit-reached")
         memory = resources.get("available_memory_bytes")
-        if type(memory) is not int or memory < MIN_AVAILABLE_MEMORY:
+        memory_floor_applies = not destination_memory_only or name == destination
+        if type(memory) is not int or memory < 0:
+            reasons.append(f"{name}:available-memory-invalid-or-missing")
+        elif memory_floor_applies and memory < MIN_AVAILABLE_MEMORY:
             reasons.append(f"{name}:available-memory-below-8-gib-or-missing")
+        elif not memory_floor_applies and memory < MIN_AVAILABLE_MEMORY:
+            limitations.append(f"{name}:below-memory-floor-destination-only-admission-authorized")
         host_summaries[name] = {
             "complete": complete,
             "sample_started_at_utc": census.get("sample_started_at_utc"),
@@ -294,6 +301,7 @@ def evaluate_fleet(
             "compiler_groups": active_groups,
             "host_limit": limit,
             "available_memory_bytes": memory,
+            "memory_floor_applies": memory_floor_applies,
             "available_memory_source": resources.get("available_memory_source"),
             "root_disk_available_bytes": resources.get("root_disk_available_bytes"),
             "snapshot_issue_counts": census.get("snapshot_issue_counts"),
@@ -318,7 +326,10 @@ def evaluate_fleet(
         "fleet_compiler_group_limit": FLEET_GROUP_LIMIT,
         "host_compiler_group_limits": {name: value.get("limit") for name, value in hosts.items()},
         "max_cargo_jobs_per_group": MAX_CARGO_JOBS,
-        "minimum_available_memory_bytes_each_host": MIN_AVAILABLE_MEMORY,
+        "memory_guard_scope": "destination" if destination_memory_only else "every-host",
+        "destination_memory_only_for_remote": destination_memory_only,
+        "minimum_available_memory_bytes_each_host": None if destination_memory_only else MIN_AVAILABLE_MEMORY,
+        "minimum_available_memory_bytes_destination": MIN_AVAILABLE_MEMORY,
         "minimum_destination_root_disk_bytes": MIN_DESTINATION_DISK,
         "max_sample_age_seconds": max_age_seconds,
         "advisory_allowed": not unique_reasons,
@@ -357,6 +368,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Permit remote admission despite local occupancy; all other fleet, host, job, freshness and memory limits still apply.",
     )
     parser.add_argument("--max-age-seconds", type=int, default=MAX_SAMPLE_AGE_SECONDS)
+    parser.add_argument(
+        "--destination-memory-only-for-remote", action="store_true",
+        help="Authorized remote admission checks the destination memory floor; all hosts still need fresh complete samples and fleet/job limits. Local admission keeps every-host memory floors.",
+    )
     parser.add_argument("--output", type=pathlib.Path)
     parser.add_argument("--ilo-target", default=DEFAULT_HOSTS["ilo"]["ssh_target"])
     parser.add_argument("--ilo-python", default=DEFAULT_HOSTS["ilo"]["python"])
@@ -382,6 +397,7 @@ def main(argv: list[str] | None = None) -> int:
         hosts=hosts,
         max_age_seconds=args.max_age_seconds,
         allow_local_over_cap_for_remote=args.allow_local_over_cap_for_remote,
+        destination_memory_only_for_remote=args.destination_memory_only_for_remote,
     )
     report["collector_started_at_utc"] = started.isoformat()
     report["sampler_path"] = str(census_path.resolve())

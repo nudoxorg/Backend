@@ -104,7 +104,7 @@ pub(crate) fn executable_content_digest(path: &Path) -> io::Result<[u8; 32]> {
             "selected executable exceeds the admitted snapshot bound",
         ));
     }
-    let before_identity = invocation_file_identity(&before)?;
+    let before_identity = invocation_file_identity(&before, path, Some(&file))?;
     let before_modified = before.modified().ok();
     let mut hasher = blake3::Hasher::new();
     let mut total = 0_u64;
@@ -133,8 +133,8 @@ pub(crate) fn executable_content_digest(path: &Path) -> io::Result<[u8; 32]> {
     let path_metadata = std::fs::metadata(path)?;
     if total != before.len()
         || after.len() != before.len()
-        || invocation_file_identity(&after)? != before_identity
-        || invocation_file_identity(&path_metadata)? != before_identity
+        || invocation_file_identity(&after, path, Some(&file))? != before_identity
+        || invocation_file_identity(&path_metadata, path, None)? != before_identity
         || before_modified != after.modified().ok()
         || std::fs::canonicalize(path)? != path
     {
@@ -268,7 +268,7 @@ fn collect_typescript_module_entries(
             "selected TypeScript package contains a non-regular directory",
         ));
     }
-    let before_identity = invocation_file_identity(&before)?;
+    let before_identity = invocation_file_identity(&before, directory, None)?;
     let mut children = std::fs::read_dir(directory)?
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<io::Result<Vec<_>>>()?;
@@ -348,7 +348,7 @@ fn collect_typescript_module_entries(
         }
     }
     let after = std::fs::symlink_metadata(directory)?;
-    if invocation_file_identity(&after)? != before_identity
+    if invocation_file_identity(&after, directory, None)? != before_identity
         || std::fs::canonicalize(directory)? != directory
     {
         return Err(io::Error::new(
@@ -359,8 +359,17 @@ fn collect_typescript_module_entries(
     Ok(())
 }
 
+#[cfg(windows)]
+pub(crate) type FileObjectId = u128;
+#[cfg(not(windows))]
+pub(crate) type FileObjectId = u64;
+
 #[cfg(unix)]
-fn invocation_file_identity(metadata: &std::fs::Metadata) -> io::Result<(u64, u64)> {
+fn invocation_file_identity(
+    metadata: &std::fs::Metadata,
+    _path: &Path,
+    _file: Option<&std::fs::File>,
+) -> io::Result<(u64, FileObjectId)> {
     use std::os::unix::fs::MetadataExt;
     Ok((metadata.dev(), metadata.ino()))
 }
@@ -368,7 +377,7 @@ fn invocation_file_identity(metadata: &std::fs::Metadata) -> io::Result<(u64, u6
 /// Returns the identity of one already-selected regular file without rereading its contents.
 /// Callers use this only inside a package lease whose full content witness is revalidated at
 /// package boundaries.
-pub(crate) fn executable_object_identity(path: &Path) -> io::Result<(u64, u64)> {
+pub(crate) fn executable_object_identity(path: &Path) -> io::Result<(u64, FileObjectId)> {
     if !path.is_absolute() || std::fs::canonicalize(path)? != path {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -382,11 +391,11 @@ pub(crate) fn executable_object_identity(path: &Path) -> io::Result<(u64, u64)> 
             "selected executable is no longer a regular file",
         ));
     }
-    invocation_file_identity(&metadata)
+    invocation_file_identity(&metadata, path, None)
 }
 
 /// Returns the identity of one already-selected compiler package directory.
-pub(crate) fn compiler_directory_object_identity(path: &Path) -> io::Result<(u64, u64)> {
+pub(crate) fn compiler_directory_object_identity(path: &Path) -> io::Result<(u64, FileObjectId)> {
     if !path.is_absolute() || std::fs::canonicalize(path)? != path {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -400,26 +409,28 @@ pub(crate) fn compiler_directory_object_identity(path: &Path) -> io::Result<(u64
             "selected compiler package is no longer a directory",
         ));
     }
-    invocation_file_identity(&metadata)
+    invocation_file_identity(&metadata, path, None)
 }
 
 #[cfg(windows)]
-fn invocation_file_identity(metadata: &std::fs::Metadata) -> io::Result<(u64, u64)> {
-    use std::os::windows::fs::MetadataExt;
-    let volume = metadata.volume_serial_number().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::Unsupported,
-            "file volume identity is unavailable",
-        )
-    })?;
-    let index = metadata
-        .file_index()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "file index is unavailable"))?;
-    Ok((u64::from(volume), index))
+fn invocation_file_identity(
+    _metadata: &std::fs::Metadata,
+    path: &Path,
+    file: Option<&std::fs::File>,
+) -> io::Result<(u64, FileObjectId)> {
+    let identity = match file {
+        Some(file) => backend_platform::FileIdentity::of_file(file)?,
+        None => backend_platform::FileIdentity::of_path_nofollow(path)?,
+    };
+    Ok(identity.parts())
 }
 
 #[cfg(not(any(unix, windows)))]
-fn invocation_file_identity(_metadata: &std::fs::Metadata) -> io::Result<(u64, u64)> {
+fn invocation_file_identity(
+    _metadata: &std::fs::Metadata,
+    _path: &Path,
+    _file: Option<&std::fs::File>,
+) -> io::Result<(u64, FileObjectId)> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "stable file identity is unavailable on this platform",
