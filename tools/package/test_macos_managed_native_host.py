@@ -322,7 +322,7 @@ class ManagedNativeTests(unittest.TestCase):
             (root/'vendor').symlink_to('missing-directory')
             with self.assertRaisesRegex(ValueError,'gitlinks require'):native.tracked_inputs(root,{})
 
-    def producer_fixture(self, root, change=None):
+    def producer_fixture(self, root, change=None, multiline_manifest=False):
         """Fake tool outputs exercise production orchestration, never a compiler."""
         root=root.resolve()
         source=root/'source';source.mkdir();self.tracked_fixture(source)
@@ -332,6 +332,9 @@ class ManagedNativeTests(unittest.TestCase):
         for package in native.PACKAGES:
             path=source/native.PACKAGE_ROOTS[package];(path/'src').mkdir(parents=True)
             (path/'Cargo.toml').write_text('[package]\nname="'+package+'"\nversion="0.1.0"\n');(path/'src/main.rs').write_text('// fixture source\n')
+        if multiline_manifest:
+            with (source/'apps/cli/Cargo.toml').open('a') as manifest:
+                manifest.write('[dependencies]\nbackend-frontend-typescript = {\n    path = "../../frontends/typescript",\n}\n')
         subprocess.run(['git','-C',str(source),'add','.'],check=True)
         subprocess.run(['git','-C',str(source),'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','producer fixture'],check=True)
         revision=subprocess.check_output(['git','-C',str(source),'rev-parse','HEAD'],text=True).strip()
@@ -471,6 +474,30 @@ class ManagedNativeTests(unittest.TestCase):
                     cargo=json.loads(args.managed_native_host_plan.read_text())['tools']['cargo']['path']
                     self.assertFalse(any(call.args[0][0]==cargo for call in inspected.call_args_list))
                 self.assertEqual(observed,[]);self.assertFalse(args.output_dir.exists())
+
+    def test_source_inspection_accepts_cargo_multiline_inline_table_without_a_new_parser(self):
+        with tempfile.TemporaryDirectory() as d:
+            args,_,observed,stream=self.producer_fixture(Path(d),multiline_manifest=True)
+            with self.assertRaises(native.tomllib.TOMLDecodeError):
+                native.tomllib.loads((args.source_root/'apps/cli/Cargo.toml').read_text())
+            api=dict(vars(builder));api['_stream_direct_cargo']=stream
+            self.assertEqual(native.build(args,api),0)
+            self.assertEqual(len(observed),1)
+            self.assertTrue((args.output_dir/'application-build-receipt.json').is_file())
+
+    def test_undecoded_cargo_manifest_still_refuses_hidden_untracked_build_script_before_cargo(self):
+        with tempfile.TemporaryDirectory() as d:
+            args,_,observed,stream=self.producer_fixture(Path(d),multiline_manifest=True)
+            (args.source_root/'apps/cli/build.rs').write_text('fn main() {}\n')
+            (args.source_root/'.git/info/exclude').write_text('build.rs\n')
+            api=dict(vars(builder));api['_stream_direct_cargo']=stream
+            cargo=json.loads(args.managed_native_host_plan.read_text())['tools']['cargo']['path']
+            with patch.object(native,'capture',wraps=native.capture) as inspected:
+                with self.assertRaisesRegex(ValueError,'untracked or ignored'):
+                    native.build(args,api)
+                self.assertFalse(any(call.args[0][0]==cargo for call in inspected.call_args_list))
+            self.assertEqual(observed,[])
+            self.assertFalse(args.output_dir.exists())
 
     def test_graph_and_target_symlink_ancestors_refuse_before_cargo(self):
         for selected in ['.local','.local/build','.local/target','.local/target/release',
