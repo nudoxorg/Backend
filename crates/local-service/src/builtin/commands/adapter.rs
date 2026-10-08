@@ -1500,6 +1500,46 @@ impl CommandAdapter {
                             entry = refreshed;
                         }
                     }
+                    // Prepared reserves publication for refusal captures as
+                    // well as successful selections. Selecting the exact
+                    // workspace request does not prove a compiler generation
+                    // was published: current terminal capture outcomes do.
+                    if entry.source_capture.as_ref().is_some_and(|capture| {
+                        !capture.profiles().is_empty()
+                            && capture.profiles().iter().all(|profile| {
+                                !matches!(
+                                    profile.state,
+                                    backend_library::IndexOperationSemanticProfileState::Pending { .. }
+                                        | backend_library::IndexOperationSemanticProfileState::Published { .. }
+                                )
+                            })
+                    }) {
+                        let (reason, detail, compiler_failure) = match terminal_outcome {
+                            Some(outcome) => index_operation_failure(Some(outcome)),
+                            None => (
+                                backend_library::IndexOperationFailureReason::WorkerFailed,
+                                backend_library::ProductText::from_static(
+                                    "every captured semantic profile ended without publication before its operation failure receipt was persisted",
+                                ),
+                                None,
+                            ),
+                        };
+                        if self.index_operations.failed_with_compiler_failure(
+                            operation_key,
+                            reason,
+                            detail,
+                            compiler_failure,
+                        ).is_ok() {
+                            return Ok(self.index_operations.observation(operation_key, None)?
+                                .expect("failed operation remains in the journal"));
+                        }
+                        return Ok(Self::unresolved_index_operation(
+                            operation_key,
+                            &entry,
+                            backend_library::IndexOperationUnresolvedReason::ReceiptPersistenceFailed,
+                            "the exact refusal capture is selected but its operation failure could not be persisted",
+                        ));
+                    }
                     let receipt = self
                         .current_index_operation_receipt(
                             daemon,
@@ -7663,6 +7703,20 @@ mod tests {
 
     #[test]
     fn all_profiles_refused_waits_for_foreign_prepared_then_fails_keyed() {
+        all_profiles_refused_completion_control(false, false);
+    }
+
+    #[test]
+    fn selected_refusal_sql_busy_stays_prepared_until_explicit_retry() {
+        all_profiles_refused_completion_control(true, false);
+    }
+
+    #[test]
+    fn selected_refusal_cold_recovery_does_not_publish_a_failed_capture() {
+        all_profiles_refused_completion_control(false, true);
+    }
+
+    fn all_profiles_refused_completion_control(journal_busy: bool, restart_before_receipt: bool) {
         let mut fixture = AdapterFixture::new();
         let (_, label) = fixture.add_target();
         fs::write(
@@ -7759,15 +7813,117 @@ mod tests {
                 backend_library::ProductText::from_static("foreign retired"),
             )
             .expect("release foreign marker");
-        adapter.journal_readiness.refresh();
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while adapter.indexing.is_some() {
+        if journal_busy || restart_before_receipt {
+            // Stop at the real workspace commit boundary, before the owner
+            // writes its separate operation terminal receipt.
+            let mut indexing = adapter.indexing.take().expect("retained refusal job");
+            let IndexJobWork::Publishing { prepared, .. } =
+                std::mem::replace(&mut indexing.work, IndexJobWork::Transition)
+            else {
+                panic!("retained publication candidate");
+            };
+            let outcome = adapter
+                .finish_prepared_index_selection(daemon, &mut indexing, prepared, &mut None)
+                .expect("exact refusal capture committed");
+            assert!(matches!(
+                &outcome,
+                backend_library::IndexJobOutcome::RefusedWithCompilerFailure { .. }
+            ));
+            assert!(matches!(
+                adapter
+                    .index_operations
+                    .entry(operation)
+                    .expect("prepared row"),
+                Some(JournalEntry::Retained(StoredOperation {
+                    state: StoredOperationState::Prepared { .. },
+                    ..
+                }))
+            ));
+            if restart_before_receipt {
+                drop(indexing);
+                fixture = fixture.reopen();
+                let (adapter, daemon) = fixture.parts();
+                let recovered = adapter
+                    .resolve_index_operation(daemon, operation, None)
+                    .expect("cold selected refusal recovery");
+                assert!(
+                    matches!(
+                        recovered,
+                        backend_library::IndexOperationObservation::Known(
+                            backend_library::IndexOperationStatus {
+                                state: backend_library::IndexOperationState::Failed { .. },
+                                ..
+                            }
+                        )
+                    ),
+                    "cold refusal cannot become Published: {recovered:?}"
+                );
+                backend_library::SurfaceReply::IndexOperationStatus(recovered)
+                    .admit(backend_library::CommandId::IndexProgress)
+                    .expect("strict cold terminal");
+                return;
+            }
+            let mut writer = foreign.connection_for_test();
+            let (locked, lock_ready) = std::sync::mpsc::sync_channel(1);
+            let (release, released) = std::sync::mpsc::sync_channel(1);
+            let holder = std::thread::spawn(move || {
+                futures_executor::block_on(async {
+                    let transaction = writer
+                        .transaction_with_behavior(
+                            turso::transaction::TransactionBehavior::Immediate,
+                        )
+                        .await
+                        .expect("hold independent receipt writer");
+                    locked.send(()).expect("writer ready");
+                    let _ = released.recv_timeout(Duration::from_secs(10));
+                    transaction
+                        .rollback()
+                        .await
+                        .expect("release receipt writer");
+                })
+            });
+            lock_ready
+                .recv_timeout(Duration::from_secs(10))
+                .expect("writer acquired");
+            let started = std::time::Instant::now();
+            let unresolved = adapter
+                .resolve_index_operation(daemon, operation, Some(&outcome))
+                .expect("selected refusal remains observable during SQL busy");
             assert!(
-                std::time::Instant::now() < deadline,
-                "complete retained refusal"
+                started.elapsed() >= Duration::from_millis(200),
+                "actual SQL busy timeout"
             );
-            adapter.poll_deferred(daemon);
-            std::thread::yield_now();
+            assert!(matches!(unresolved,
+                backend_library::IndexOperationObservation::Known(backend_library::IndexOperationStatus {
+                    state: backend_library::IndexOperationState::Unresolved {
+                        reason: backend_library::IndexOperationUnresolvedReason::ReceiptPersistenceFailed, ..
+                    }, ..
+                })), "busy refusal cannot become Published: {unresolved:?}");
+            assert!(matches!(
+                adapter
+                    .index_operations
+                    .entry(operation)
+                    .expect("retained marker"),
+                Some(JournalEntry::Retained(StoredOperation {
+                    state: StoredOperationState::Prepared { .. },
+                    ..
+                }))
+            ));
+            release.send(()).expect("explicit writer release");
+            holder.join().expect("writer kernel retired");
+            adapter.journal_readiness.refresh();
+            adapter.complete_index_job(daemon, indexing, outcome, None);
+        } else {
+            adapter.journal_readiness.refresh();
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while adapter.indexing.is_some() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "complete retained refusal"
+                );
+                adapter.poll_deferred(daemon);
+                std::thread::yield_now();
+            }
         }
         assert!(matches!(
             adapter
@@ -7811,7 +7967,6 @@ mod tests {
             )
         ));
     }
-
     #[test]
     fn refused_capture_reconciles_resident_view_before_terminal_reply() {
         let mut fixture = AdapterFixture::new();
