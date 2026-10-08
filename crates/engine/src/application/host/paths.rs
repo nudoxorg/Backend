@@ -2383,7 +2383,7 @@ mod tests {
         fs::create_dir_all(&path).expect("create private test directory");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
             .expect("make test directory private");
-        path
+        fs::canonicalize(path).expect("canonical private test directory")
     }
 
     fn executable(path: &Path) {

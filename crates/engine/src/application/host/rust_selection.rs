@@ -64,6 +64,8 @@ mod tests {
             std::process::id(),
             super::super::NEXT_NATIVE_WORK.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
+        std::fs::create_dir_all(&root).expect("fixture root");
+        let root = std::fs::canonicalize(root).expect("canonical fixture root");
         let home = root.join("home");
         let bin = root.join("bin");
         std::fs::create_dir_all(&home).expect("home");
