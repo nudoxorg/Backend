@@ -3968,8 +3968,8 @@ fn direct_and_generic_graph_routes_preserve_typed_domain_and_protocol_failures()
     for failure in [
         backend_library::CommandFailure::NotFound,
         backend_library::CommandFailure::WrongBasis {
-            expected: view_state_root(b"current-view").into(),
-            observed: view_state_root(b"stale-view").into(),
+            expected: view_state_root(&[("fixture".to_owned(), "current-view".to_owned())]).into(),
+            observed: view_state_root(&[("fixture".to_owned(), "stale-view".to_owned())]).into(),
         },
     ] {
         let expected = if matches!(failure, backend_library::CommandFailure::NotFound) {
