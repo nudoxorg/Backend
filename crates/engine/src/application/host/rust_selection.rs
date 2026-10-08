@@ -292,6 +292,121 @@ mod tests {
 
         std::fs::remove_dir_all(root).expect("owned fixture cleanup");
     }
+
+    #[test]
+    fn captured_rust_with_absent_or_existing_default_home_does_not_probe_sysroot_at_startup() {
+        struct ClosedEnvironment {
+            snapshot: ClosedLocalHostEnvironmentSnapshot,
+            data_root: PathBuf,
+        }
+        impl LocalHostEnvironment for ClosedEnvironment {
+            fn value(&self, variable: LocalHostVariable) -> Option<OsString> {
+                if variable == LocalHostVariable::NudoxDataRoot {
+                    return Some(self.data_root.clone().into_os_string());
+                }
+                self.snapshot
+                    .path(variable)
+                    .map(|path| path.as_os_str().to_owned())
+            }
+
+            fn cargo_home_selection(&self) -> super::super::LocalHostCargoHomeSelection {
+                self.snapshot.cargo_home_selection()
+            }
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "nudox-rust-startup-read-only-{}-{}",
+            std::process::id(),
+            super::super::NEXT_NATIVE_WORK.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(root.join("home")).expect("home");
+        std::fs::create_dir(root.join("bin")).expect("bin");
+        let root = std::fs::canonicalize(root).expect("canonical fixture root");
+        let home = root.join("home");
+        let bin = root.join("bin");
+        let marker = root.join("unexpected-sysroot-probe");
+        std::fs::write(
+            bin.join("rustc"),
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = --print ]; then printf probe > '{}'; exit 71; fi\nprintf 'rustc 1.97.1 fixture\\n'\n",
+                marker.display(),
+            ),
+        )
+        .expect("sysroot-probe sentinel");
+        std::fs::write(
+            bin.join("cargo"),
+            "#!/bin/sh\nprintf 'cargo 1.97.1 fixture\\n'\n",
+        )
+        .expect("Cargo version fixture");
+        for tool in ["rustc", "cargo"] {
+            std::fs::set_permissions(bin.join(tool), std::fs::Permissions::from_mode(0o700))
+                .expect("tool permissions");
+        }
+        let cache = home.join(".cargo");
+        for existing in [false, true] {
+            if existing {
+                std::fs::create_dir(&cache).expect("existing default cache");
+                std::fs::set_permissions(&cache, std::fs::Permissions::from_mode(0o755))
+                    .expect("existing user permissions");
+                std::fs::write(cache.join("user-marker"), b"preserve").expect("user content");
+            }
+            let captured = LocalCompilerHost::new(
+                RustEnvironment {
+                    home: home.clone(),
+                    bin: bin.clone(),
+                    cargo: None,
+                    cargo_home: None,
+                    typescript: None,
+                    configured: None,
+                },
+                super::super::LocalHostDiscovery::InstalledTools,
+            )
+            .capture_installed_selection()
+            .expect("read-only installed capture");
+            let host = LocalCompilerHost::new(
+                ClosedEnvironment {
+                    snapshot: captured.snapshot().clone(),
+                    data_root: root.join("absent-runtime-data"),
+                },
+                super::super::LocalHostDiscovery::ClosedSnapshot,
+            );
+            let capabilities = host
+                .inspect_capabilities()
+                .expect("bounded version inspection");
+            let rust =
+                capabilities.for_profile(backend_semantic::vocabulary::LanguageProfile::Rust(
+                    backend_semantic::vocabulary::RustEdition::Rust2024,
+                ));
+            assert_eq!(
+                rust.state(),
+                crate::application::LocalCompilerCapabilityState::Deferred
+            );
+            assert_eq!(rust.manifest(), None);
+            assert_eq!(
+                rust.setup_issue(),
+                None,
+                "selected Rust remains available for request admission"
+            );
+            assert!(!marker.exists(), "startup must not infer a Rust sysroot");
+            assert!(!root.join("absent-runtime-data").exists());
+            assert_eq!(
+                cache.exists(),
+                existing,
+                "startup must not create a default cache"
+            );
+            if existing {
+                assert_eq!(
+                    std::fs::read(cache.join("user-marker")).unwrap(),
+                    b"preserve"
+                );
+                assert_eq!(
+                    std::fs::metadata(&cache).unwrap().permissions().mode() & 0o777,
+                    0o755
+                );
+            }
+        }
+        std::fs::remove_dir_all(root).expect("owned fixture cleanup");
+    }
 }
 
 impl InstalledToolPlace {

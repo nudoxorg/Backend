@@ -1137,6 +1137,13 @@ pub(super) fn semantic_capabilities(
             backend_engine::CapabilityFamily::LanguageOracle { profile, task } => {
                 let compiler_capability = compiler.capabilities().for_profile(profile);
                 return match compiler_capability.state() {
+                    backend_engine::application::LocalCompilerCapabilityState::Deferred => {
+                        backend_engine::CapabilityStatus::unavailable(
+                            status.id(),
+                            status.family(),
+                            backend_engine::CapabilityUnavailable::NoManifest,
+                        )
+                    }
                     backend_engine::application::LocalCompilerCapabilityState::Probing => {
                         backend_engine::CapabilityStatus::probing(status.id(), status.family())
                     }

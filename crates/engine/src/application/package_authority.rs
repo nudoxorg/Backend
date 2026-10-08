@@ -586,6 +586,17 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                         stage: PackageAuthorityStage::RustProject,
                     },
                 )?;
+                if configuration.toolchain.selected_rustc() != resolved.as_ref() {
+                    return Err(PackageAuthorityError::RustToolchainExecutableMismatch {
+                        profile: request.profile,
+                        configured: configuration
+                            .toolchain
+                            .selected_rustc()
+                            .to_path_buf()
+                            .into_boxed_path(),
+                        resolved: resolved.as_ref().to_path_buf().into_boxed_path(),
+                    });
+                }
                 match request.unit_key {
                     CompilationUnitKeyV2::PackageRoot => {}
                     CompilationUnitKeyV2::RustCrate { root, .. } => {
@@ -1049,6 +1060,12 @@ pub enum PackageAuthorityError {
         profile: LanguageProfile,
         /// Exact bounded deferred-admission outcome.
         cause: super::LocalRuntimeRustAuthorityFailure,
+    },
+    /// The fresh Rust workspace could not retain its exact Cargo resolution witness.
+    #[error("Rust workspace authority for {profile:?} has no complete Cargo witness")]
+    RustWorkspaceWitnessUnavailable {
+        /// Requested Rust profile.
+        profile: LanguageProfile,
     },
     /// The selected Clang driver differs from the executable bound by the driver.
     #[error("Clang authority driver differs from the resolved compiler for {profile:?}")]

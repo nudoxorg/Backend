@@ -18,7 +18,7 @@ use backend_frontend_typescript::legacy::Checker as TypeScriptChecker;
 use backend_library::interface::PackageEcosystem;
 use backend_semantic::vocabulary::NativeTool;
 
-use super::paths::{TypeScriptHostSelection, canonicalize_existing, create_directory};
+use super::paths::{TypeScriptHostSelection, create_directory};
 use super::{
     AUTHORITY_IMAGE_BYTES, LocalCompilerHost, LocalCompilerHostError, LocalHostDirectory,
     LocalHostEnvironment, LocalHostPathRole, LocalHostVariable, PACKAGE_SOURCE_BYTES, nonzero,
@@ -175,11 +175,20 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             executables.cargo_home.as_deref(),
         ) {
             (Some(rustc), Some(cargo), Some(cargo_home)) => {
-                if executables.cargo_home_deferred {
-                    Some(self.deferred_rust_authority(rustc, cargo, cargo_home, probe_limits)?)
-                } else {
-                    Some(self.rust_authority(rustc, cargo, cargo_home, probe_limits)?)
-                }
+                let sysroot = self.optional_absolute_path(LocalHostVariable::NudoxRustSysroot)?;
+                Some(match (executables.cargo_home_deferred, sysroot) {
+                    (false, Some(sysroot)) => {
+                        self.rust_authority(rustc, cargo, cargo_home, sysroot)?
+                    }
+                    (cargo_home_deferred, sysroot) => self.deferred_rust_authority(
+                        rustc,
+                        cargo,
+                        cargo_home,
+                        cargo_home_deferred,
+                        sysroot,
+                        probe_limits,
+                    )?,
+                })
             }
             _ => None,
         };
@@ -263,41 +272,13 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         rustc: &Path,
         cargo: &Path,
         cargo_home: &Path,
-        probe_limits: ToolchainProbeLimits,
+        sysroot: PathBuf,
     ) -> Result<LocalRuntimeRustAuthority, LocalCompilerHostError> {
-        let sysroot = match self.optional_absolute_path(LocalHostVariable::NudoxRustSysroot)? {
-            Some(path) => self.validate_directory(
-                LocalHostPathRole::RustSysroot,
-                LocalHostVariable::NudoxRustSysroot,
-                path,
-            )?,
-            None => {
-                let output = probe_command(
-                    NativeTool::Rustc,
-                    rustc,
-                    &["--print", "sysroot"],
-                    probe_limits,
-                )?;
-                let path = match str::from_utf8(&output) {
-                    Ok(text) => PathBuf::from(text.trim()),
-                    Err(source) => {
-                        return Err(LocalCompilerHostError::RustSysrootEncoding { output, source });
-                    }
-                };
-                if path.as_os_str().is_empty() {
-                    return Err(LocalCompilerHostError::RustSysrootEmpty {
-                        compiler: rustc.to_path_buf().into_boxed_path(),
-                    });
-                }
-                if !path.is_absolute() {
-                    return Err(LocalCompilerHostError::RustSysrootRelative {
-                        compiler: rustc.to_path_buf().into_boxed_path(),
-                        sysroot: path.into_boxed_path(),
-                    });
-                }
-                canonicalize_existing(LocalHostPathRole::RustSysroot, &path)?
-            }
-        };
+        let sysroot = self.validate_directory(
+            LocalHostPathRole::RustSysroot,
+            LocalHostVariable::NudoxRustSysroot,
+            sysroot,
+        )?;
         let toolchain = RustToolchain::from_paths_with_cargo(
             rustc.to_path_buf(),
             sysroot,
@@ -319,12 +300,13 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         rustc: &Path,
         cargo: &Path,
         cargo_home: &Path,
+        cargo_home_deferred: bool,
+        sysroot: Option<PathBuf>,
         probe_limits: ToolchainProbeLimits,
     ) -> Result<LocalRuntimeRustAuthority, LocalCompilerHostError> {
-        // Explicit sysroots keep their strict current validation. Only the inferred sysroot
-        // probe and the typed absent default Cargo home are deferred to the first Rust request.
-        let sysroot = self
-            .optional_absolute_path(LocalHostVariable::NudoxRustSysroot)?
+        // Explicit paths keep their strict current validation. Inferring a sysroot, including
+        // with an existing Cargo home, must not run Rust during unrelated owner startup.
+        let sysroot = sysroot
             .map(|path| {
                 self.validate_directory(
                     LocalHostPathRole::RustSysroot,
@@ -338,6 +320,11 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 rustc.to_path_buf(),
                 cargo.to_path_buf(),
                 cargo_home.to_path_buf(),
+                if cargo_home_deferred {
+                    super::LocalHostCargoHomeSelection::DeferredDefault
+                } else {
+                    super::LocalHostCargoHomeSelection::Strict
+                },
                 sysroot,
                 probe_limits,
             )),

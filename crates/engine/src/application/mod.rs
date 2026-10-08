@@ -86,7 +86,7 @@ pub use self::package_authority::{
     enter_package_authority,
 };
 pub use self::package_source::MAX_LOCAL_PACKAGE_SOURCE_BYTES;
-pub(crate) use self::runtime::LocalCompilerPlaneExecutionSeed;
+pub(crate) use self::runtime::{AdmittedRustRequestAuthority, LocalCompilerPlaneExecutionSeed};
 pub use self::runtime::{
     CompilerSessionLineage, ExactInputWitness, LocalCompilerCapabilities, LocalCompilerCapability,
     LocalCompilerCapabilityState, LocalCompilerClient, LocalCompilerExecutionIdentity,
