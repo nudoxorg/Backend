@@ -96,11 +96,13 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             }
             _ => None,
         };
-        let typescript_report = self.executable(
-            LocalHostVariable::NudoxTypeScriptReportProgram,
-            LocalHostPathRole::TypeScriptReportProgram,
-            ArrayVec::new(),
-        )?;
+        let typescript_report = self
+            .executable(
+                LocalHostVariable::NudoxTypeScriptReportProgram,
+                LocalHostPathRole::TypeScriptReportProgram,
+                ArrayVec::new(),
+            )?
+            .or_else(|| typescript_host.report_program.clone());
         let (node, node_origin) = match typescript_host.node {
             Some(selection) => (Some(selection.path), Some(selection.origin)),
             None => (None, None),
@@ -110,7 +112,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             .then(|| executables.typescript.clone())
             .flatten();
         let explicit_module_root = typescript_host
-            .compiler_explicit
+            .module_root_explicit
             .then(|| typescript_module_root.clone())
             .flatten();
         let installed_default_module_root = (!typescript_host.compiler_explicit)
@@ -128,7 +130,9 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             typescript_report.clone(),
             probe_limits,
         )
-        .with_installed_default(installed_default_compiler, installed_default_module_root);
+        .with_installed_default(installed_default_compiler, installed_default_module_root)
+        .with_installed_default_origin(typescript_host.compiler_origin)
+        .with_bundled_application(typescript_host.bundled_application);
         let typescript = if executables.typescript.is_some() {
             match (typescript_report, node, typescript_module_root) {
                 (Some(program), _, _) => Some(TypeScriptChecker::default().with_program(program)?),
@@ -335,7 +339,8 @@ pub(super) fn go_authority_failure(
 ) -> LocalRuntimeGoAuthorityFailure {
     match error {
         LocalCompilerHostError::RelativeEnvironmentPath {
-            variable: LocalHostVariable::NudoxGoRoot, ..
+            variable: LocalHostVariable::NudoxGoRoot,
+            ..
         }
         | LocalCompilerHostError::GoRootProbe(_)
         | LocalCompilerHostError::GoRootEncoding { .. }

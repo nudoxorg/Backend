@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -291,7 +292,7 @@ def safe_extract(archive: Path, destination: Path) -> None:
                 source = bundle.extractfile(member)
                 if source is None:
                     raise InstallError(f"archive member could not be read: {member.name!r}")
-                mode = 0o755 if relative in allowed_bin else 0o644
+                mode = 0o755 if relative in allowed_bin or relative == "share/nudox/typescript/node/bin/node" else 0o644
                 flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
                 descriptor = os.open(target, flags, mode)
                 with os.fdopen(descriptor, "wb") as output, source:
@@ -304,11 +305,30 @@ def safe_extract(archive: Path, destination: Path) -> None:
 
 
 def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    """Hash one bounded regular object without link following or FIFO waits on reuse."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_MEMBER_BYTES:
+                raise InstallError("installed file is not a bounded regular file")
+            digest = hashlib.sha256()
+            count = 0
+            while count <= before.st_size:
+                chunk = stream.read(min(1024 * 1024, before.st_size - count + 1))
+                if not chunk:
+                    break
+                count += len(chunk)
+                digest.update(chunk)
+            after = os.fstat(stream.fileno())
+            current = path.lstat()
+            identity = lambda metadata: (metadata.st_dev, metadata.st_ino, metadata.st_size,
+                                         metadata.st_mtime_ns, metadata.st_ctime_ns)
+            if count != before.st_size or identity(before) != identity(after) or identity(current) != identity(after):
+                raise InstallError("installed file changed during bounded hashing")
+            return digest.hexdigest()
+    except OSError as error:
+        raise InstallError(f"installed file could not be safely hashed: {error}") from error
 
 
 def _glibc_version() -> tuple[int, int] | None:
@@ -320,7 +340,106 @@ def _glibc_version() -> tuple[int, int] | None:
     return (int(match.group(1)), int(match.group(2))) if match else None
 
 
+
+def _verified_package_path(root: Path, relative: str, *, directory: bool = False) -> Path:
+    """Admit real package descendants, including every parent, before reuse or execution."""
+    try:
+        if root.is_symlink() or not root.is_dir() or root.resolve(strict=True) != root:
+            raise InstallError("package root is not a canonical real directory")
+        parts = PurePosixPath(relative).parts
+        if "\\" in relative or any(part in {".", "..", "/"} for part in parts):
+            raise InstallError("package path contains an unsafe component")
+        path = root
+        for index, part in enumerate(parts):
+            path = path / part
+            last = index == len(parts) - 1
+            if path.is_symlink() or (not last or directory) and not path.is_dir() or last and not directory and not path.is_file():
+                raise InstallError("package path contains a link or invalid file/directory boundary: " + relative)
+        if path.resolve(strict=True) != path or not path.is_relative_to(root):
+            raise InstallError("package path leaves its canonical root: " + relative)
+        return path
+    except OSError as error:
+        raise InstallError("package path is unreadable: " + relative) from error
+
+
+def verify_typescript_sdk(root: Path, package: dict) -> None:
+    """Recheck the installed SDK before promotion or reuse; never run project setup."""
+    sdk = package.get("typescript_sdk")
+    if sdk is None or (isinstance(sdk, dict) and sdk.get("bundled") is False):
+        return  # Legacy packages make no bundled SDK claim.
+    if not isinstance(sdk, dict) or sdk.get("schema") != "nudox.typescript-sdk.v1" or sdk.get("bundled") is not True or sdk.get("root") != "share/nudox/typescript":
+        raise InstallError("package has an invalid bundled TypeScript SDK contract")
+    files = sdk.get("files")
+    if not isinstance(files, dict) or not files or len(files) > 512:
+        raise InstallError("SDK has no bounded complete file inventory")
+    expected_directories = set()
+    for relative, record in files.items():
+        if not isinstance(relative, str):
+            raise InstallError("SDK inventory contains a non-string path")
+        path = PurePosixPath(relative)
+        if not relative.startswith("share/nudox/typescript/") or path.as_posix() != relative or "\\" in relative or any(part in {".", ".."} for part in path.parts):
+            raise InstallError("SDK inventory contains an unsafe path")
+        expected_directories.update(parent.as_posix() for parent in path.parents if parent.parts)
+        if not isinstance(record, dict) or record.get("kind") != "file" or not isinstance(record.get("sha256"), str) or not SHA_RE.fullmatch(record["sha256"]):
+            raise InstallError("SDK inventory contains an invalid file record")
+    observed = set()
+    total = 0
+    package_bytes = 0
+    pending = [_verified_package_path(root, "share/nudox/typescript", directory=True)]
+    while pending:
+        for path in pending.pop().iterdir():
+            relative = path.relative_to(root).as_posix()
+            _verified_package_path(root, relative, directory=path.is_dir())
+            if path.is_symlink() or not (path.is_file() or path.is_dir()):
+                raise InstallError("installed SDK contains a link or special file")
+            if path.is_dir():
+                if relative not in expected_directories:
+                    raise InstallError("installed SDK contains an unreceipted directory")
+                pending.append(path)
+                continue
+            record = files.get(relative)
+            member_bytes = path.stat().st_size
+            total += member_bytes
+            if relative.startswith("share/nudox/typescript/node_modules/typescript/"):
+                package_bytes += member_bytes
+                if package_bytes > 96 * 1024 * 1024:
+                    raise InstallError("installed TypeScript package exceeds its 96 MiB byte bound")
+            if record is None or total > 512 * 1024 * 1024 or len(observed) >= 512:
+                raise InstallError("installed SDK differs from its bounded inventory")
+            if record["sha256"] != _file_sha256(path) or record.get("size_bytes") != path.stat().st_size:
+                raise InstallError("installed SDK file differs from its receipt: " + relative)
+            observed.add(relative)
+    if observed != set(files):
+        raise InstallError("installed SDK has missing or unreceipted files")
+    node_relative = "share/nudox/typescript/node/bin/node"
+    required = {node_relative, "share/nudox/typescript/node/LICENSE",
+                "share/nudox/typescript/node_modules/typescript/package.json",
+                "share/nudox/typescript/node_modules/typescript/bin/tsc",
+                "share/nudox/typescript/node_modules/typescript/lib/typescript.js",
+                "share/nudox/typescript/node_modules/typescript/LICENSE.txt",
+                "share/nudox/typescript/node_modules/typescript/ThirdPartyNoticeText.txt"}
+    if not required.issubset(observed):
+        raise InstallError("SDK omits its runtime, compiler API, or license notices")
+    node = root / node_relative
+    record = sdk.get("node")
+    if not isinstance(record, dict) or record.get("packaged_path") != node_relative or record.get("packaged_sha256") != files[node_relative]["sha256"] or not os.access(node, os.X_OK):
+        raise InstallError("SDK Node executable differs from its relocated identity")
+    clean_environment = {key: value for key, value in os.environ.items()
+                         if key not in {"LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT", "NIX_LD", "NIX_LD_LIBRARY_PATH", "NODE_PATH", "NODE_OPTIONS"}}
+    for arguments, expected in [(["--version"], sdk.get("node_version")),
+        (["-e", "process.stdout.write(require(process.argv[1]).version)", str(root / "share/nudox/typescript/node_modules/typescript/lib/typescript.js")], sdk.get("typescript_version"))]:
+        try:
+            result = subprocess.run([str(node), *arguments], env=clean_environment, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True, timeout=15)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise InstallError(f"installed SDK could not start without loader overrides: {error}") from error
+        if not isinstance(expected, str) or result.returncode != 0 or result.stdout.strip() != expected:
+            raise InstallError("installed SDK does not reproduce its recorded Node/Compiler API identity")
+
 def verify_package(root: Path, entry: dict, manifest: dict) -> None:
+    _verified_package_path(root, "", directory=True)
+    for relative in ("build-manifest.json", "packaging-manifest.json", *("bin/" + name for name in REQUIRED_BINARIES)):
+        _verified_package_path(root, relative)
     if not (root / "bin/backend-cli").is_file() or not os.access(root / "bin/backend-cli", os.X_OK):
         raise InstallError("installed stage does not contain an executable backend-cli")
     if any((root / name).stat().st_size > 16 * 1024 * 1024 for name in ("build-manifest.json", "packaging-manifest.json")):
@@ -352,10 +471,19 @@ def verify_package(root: Path, entry: dict, manifest: dict) -> None:
     libraries = package.get("libraries")
     if not isinstance(libraries, dict):
         raise InstallError("package manifest has no shared-library inventory")
+    if len(libraries) > 64:
+        raise InstallError("package shared-library closure exceeds its 64 member bound")
+    library_bytes = 0
     for soname, record in libraries.items():
         if not isinstance(record, dict) or record.get("packaged_path") != f"lib/{soname}":
             raise InstallError(f"package manifest has an invalid shared-library record for {soname}")
-        library = root / "lib" / soname
+        if not isinstance(soname, str) or PurePosixPath(soname).name != soname or "\\" in soname or soname in {".", ".."}:
+            raise InstallError("package has an unsafe shared-library name")
+        library = _verified_package_path(root, "lib/" + soname)
+        member_bytes = library.stat().st_size
+        library_bytes += member_bytes
+        if member_bytes > 96 * 1024 * 1024 or library_bytes > 512 * 1024 * 1024:
+            raise InstallError("package shared-library closure exceeds its byte bound")
         if not library.is_file() or record.get("packaged_sha256") != _file_sha256(library):
             raise InstallError(f"package manifest does not attest shared library {soname}")
     minimum = tuple(int(part) for part in manifest["minimum_glibc"].split("."))
@@ -367,6 +495,7 @@ def verify_package(root: Path, entry: dict, manifest: dict) -> None:
         binary = root / "bin" / name
         if not binary.is_file() or not os.access(binary, os.X_OK):
             raise InstallError(f"package omits executable {name}")
+    verify_typescript_sdk(root, package)
     # Run harmless entrypoint checks with build-machine loader overrides removed.
     clean_env = {key: value for key, value in os.environ.items() if key not in {"LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT", "NIX_LD", "NIX_LD_LIBRARY_PATH"}}
     for name, args in (("backend-cli", ["--version"]), ("backend-mcp", ["--help"])):
@@ -408,9 +537,18 @@ def _replace_symlink(link: Path, target: str) -> None:
 
 def verify_existing_install(final: Path, expected_marker: dict, entry: dict, manifest: dict) -> None:
     """Reuse a prior release only after rechecking the files on disk."""
-    installed_marker = final / ".installed-release.json"
+    installed_marker = _verified_package_path(final, ".installed-release.json")
     try:
-        existing_marker = json.loads(installed_marker.read_text())
+        descriptor = os.open(installed_marker, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_size > 16 * 1024:
+                raise InstallError("installed release marker is not a bounded regular file")
+            raw_marker = stream.read(16 * 1024 + 1)
+            after = os.fstat(stream.fileno())
+            if len(raw_marker) > 16 * 1024 or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                raise InstallError("installed release marker changed during bounded admission")
+            existing_marker = json.loads(raw_marker)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise InstallError(f"refusing to reuse existing unverified install at {final}") from error
     if existing_marker != expected_marker:

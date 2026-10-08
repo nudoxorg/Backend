@@ -1,6 +1,7 @@
 """Data and filesystem regressions for the Linux installer; no product ELF is faked."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import tarfile
 import tempfile
@@ -54,12 +55,92 @@ class InstallerMetadataTests(unittest.TestCase):
 
 
 class InstallerFilesystemTests(unittest.TestCase):
+    def test_reuse_marker_refuses_links_fifos_and_oversize_without_runtime_execution(self):
+        for kind in ("symlink", "fifo", "oversize"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                marker = root / ".installed-release.json"
+                if kind == "symlink":
+                    outside = root / "other-marker"
+                    outside.write_text("{}")
+                    os.symlink(outside, marker)
+                elif kind == "fifo":
+                    os.mkfifo(marker)
+                else:
+                    marker.write_bytes(b" " * (16 * 1024 + 1))
+                with patch.object(installer, "verify_package") as verify:
+                    with self.assertRaises(installer.InstallError):
+                        installer.verify_existing_install(root, {}, {"tag":"fixture"}, {})
+                    verify.assert_not_called()
+
+    def test_hash_refuses_fifo_swap_after_path_admission_and_oversized_sparse_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            member = root / "member"
+            member.write_bytes(b"admitted regular file")
+            installer._verified_package_path(root, "member")
+            real_open = os.open
+
+            def swap_before_open(path, flags, *arguments, **keywords):
+                if Path(path) == member:
+                    member.rename(root / "original")
+                    os.mkfifo(member)
+                return real_open(path, flags, *arguments, **keywords)
+
+            with patch.object(installer.os, "open", side_effect=swap_before_open):
+                with self.assertRaisesRegex(installer.InstallError, "bounded regular file"):
+                    installer._file_sha256(member)
+            member.unlink()
+            with member.open("wb") as stream:
+                stream.truncate(8 * 1024 * 1024 * 1024)
+            with patch.object(installer.hashlib, "sha256") as hashing:
+                with self.assertRaisesRegex(installer.InstallError, "bounded regular file"):
+                    installer._file_sha256(member)
+                hashing.assert_not_called()
+
+    def test_installed_sdk_refuses_runtime_package_bound_before_hashing_oversize_member(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            relative = "share/nudox/typescript/node_modules/typescript/lib/typescript.js"
+            api = root / relative
+            api.parent.mkdir(parents=True)
+            with api.open("wb") as file:
+                file.truncate(96 * 1024 * 1024 + 1)
+            sdk = {"schema": "nudox.typescript-sdk.v1", "bundled": True,
+                   "root": "share/nudox/typescript",
+                   "files": {relative: {"kind": "file", "sha256": "a" * 64,
+                                         "size_bytes": api.stat().st_size}}}
+            with patch.object(installer, "_file_sha256") as hash_payload:
+                with self.assertRaisesRegex(installer.InstallError, "TypeScript package exceeds its 96 MiB"):
+                    installer.verify_typescript_sdk(root, {"typescript_sdk": sdk})
+                hash_payload.assert_not_called()
+
+    def test_existing_package_aliases_are_refused_even_when_bytes_are_unchanged(self):
+        for relative, directory in (("share", True), ("share/nudox/typescript", True),
+                                    ("lib", True), ("lib/libgcc_s.so.1", False)):
+            with self.subTest(relative=relative), tempfile.TemporaryDirectory() as temporary:
+                base = Path(temporary).resolve()
+                root = base / "package"
+                (root / "share/nudox/typescript").mkdir(parents=True)
+                (root / "lib").mkdir()
+                (root / "lib/libgcc_s.so.1").write_bytes(b"unchanged installed bytes")
+                original = root / relative
+                outside = base / "outside"
+                original.rename(outside)
+                os.symlink(outside, original)
+                with self.assertRaisesRegex(installer.InstallError, "link or invalid"):
+                    installer._verified_package_path(root, relative, directory=directory)
+                # Descendants cannot make a linked parent acceptable either.
+                if directory:
+                    with self.assertRaisesRegex(installer.InstallError, "link or invalid"):
+                        installer._verified_package_path(root, relative + "/member")
+
     def test_existing_marker_does_not_skip_rechecking_installed_files(self):
         marker = {"version": "0.2.0", "tag": "checkpoint-test", "source_sha": "a" * 40, "asset": "release.tar.gz", "sha256": "b" * 64}
         entry = {"tag": marker["tag"]}
         manifest = {"sha256": marker["sha256"]}
         with tempfile.TemporaryDirectory() as directory:
-            final = Path(directory)
+            final = Path(directory).resolve()
             (final / ".installed-release.json").write_text(json.dumps(marker))
             with patch.object(installer, "verify_package", side_effect=installer.InstallError("executable hash mismatch")) as verify:
                 with self.assertRaisesRegex(installer.InstallError, "failed its integrity/startup recheck"):
@@ -70,7 +151,7 @@ class InstallerFilesystemTests(unittest.TestCase):
         expected = {"tag": "checkpoint-test", "sha256": "a" * 64}
         entry = {"tag": "checkpoint-test"}
         with tempfile.TemporaryDirectory() as directory:
-            final = Path(directory)
+            final = Path(directory).resolve()
             (final / ".installed-release.json").write_text(json.dumps({"tag": "checkpoint-test", "sha256": "b" * 64}))
             with patch.object(installer, "verify_package") as verify:
                 with self.assertRaisesRegex(installer.InstallError, "different bytes"):
