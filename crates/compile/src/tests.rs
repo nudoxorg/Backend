@@ -883,7 +883,7 @@ fn native_persistent_runner_requires_advertised_protocol_and_key() -> Result<(),
     let toolchain = typed_of::<ToolchainSchema>(b"tool");
     let limits = limits(128, 64, Duration::from_secs(1), 192)?;
     let cold = SupervisedCommand::for_authority(
-        PathBuf::from("/bin/cat"),
+        test_coreutils_tool("cat"),
         Vec::new(),
         ProcessEnvironment::new(Vec::new())?,
         PathBuf::from("/tmp"),
@@ -904,7 +904,7 @@ fn native_persistent_runner_requires_advertised_protocol_and_key() -> Result<(),
     };
     let snapshot = authority.discover()?;
     let command = SupervisedCommand::for_authority(
-        PathBuf::from("/bin/cat"),
+        test_coreutils_tool("cat"),
         Vec::new(),
         ProcessEnvironment::new(Vec::new())?,
         PathBuf::from("/tmp"),
@@ -1095,6 +1095,24 @@ fn pool_leases_are_bounded_and_return_scratch_on_drop() -> Result<(), Box<dyn Er
     let reused = pool.acquire(2)?;
     assert!(reused.is_empty());
     Ok(())
+}
+
+// Nix coreutils dispatches on argv[0]. The authority runner stages a tool
+// under a different name, so use the pinned per-tool wrappers when provided.
+#[cfg(unix)]
+fn test_coreutils_tool(name: &str) -> PathBuf {
+    if let Some(root) = std::env::var_os("NUDOX_TEST_COREUTILS_BIN") {
+        let root = PathBuf::from(root);
+        assert!(
+            root.is_absolute(),
+            "the test coreutils root must be absolute"
+        );
+        let tool = root.join(name);
+        assert!(tool.is_file(), "the pinned test tool must exist: {tool:?}");
+        tool
+    } else {
+        PathBuf::from("/bin").join(name)
+    }
 }
 
 #[cfg(unix)]

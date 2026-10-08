@@ -316,7 +316,6 @@ let
         # The pinned process tools the Linux lane's shell exports (corpus-env):
         # without them, tests that clear their environment exit 127.
         NUDOX_TEST_COREUTILS_BIN = corpusEnv.NUDOX_TEST_COREUTILS_BIN;
-        NUDOX_PROCESS_SHELL = "${pkgs.bash}/bin/sh";
         CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER = "${arm64.stdenv.cc}/bin/aarch64-unknown-linux-gnu-gcc";
         CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER = "${pkgs.qemu-user}/bin/qemu-aarch64";
         # Emulated test trees are built once per run and thrown away; full

@@ -56,7 +56,7 @@ def main() -> None:
         fail("LocalHostVariable enum or variable_name mapping was not found")
     variants = set(re.findall(r"^\s{4}([A-Z][A-Za-z0-9_]*),\s*$", enum.group(1), re.M))
     arms = re.findall(
-        r'LocalHostVariable::([A-Za-z0-9_]+)\s*=>\s*"([A-Z][A-Z0-9_]*)"',
+        r'LocalHostVariable::([A-Za-z0-9_]+)\s*=>\s*(?:\{\s*)?"([A-Z][A-Z0-9_]*)"',
         mapping.group(1),
     )
     mapped_variants = [variant for variant, _ in arms]
@@ -86,6 +86,14 @@ def main() -> None:
         "NUDOX_MAVEN_ROOT",
         "NUDOX_NUGET_ROOT",
         "NUDOX_GENERIC_ROOT",
+        # LocalHost emits these from its validated project/application
+        # TypeScript selection. Ambient Nix shell defaults must not override
+        # that selection or masquerade as a validated application bundle.
+        "BACKEND_LOCALD_DEFAULT_TSC",
+        "BACKEND_LOCALD_DEFAULT_TYPESCRIPT_NODE",
+        "BACKEND_LOCALD_BUNDLED_TYPESCRIPT_NODE",
+        "BACKEND_LOCALD_TYPESCRIPT_BUNDLED_APPLICATION",
+        "BACKEND_LOCALD_DEFAULT_TYPESCRIPT_MODULE_ROOT",
     }
     if not supplied_by_process_or_profile <= host_names:
         fail(
@@ -118,11 +126,10 @@ def main() -> None:
             fail(f"frontend adapter {name} lacks a live Nix declaration and source consumer")
 
     # Pinned process tools for hosts without an FHS /bin (NixOS): the
-    # supervisor's resource-limit shell and the coreutils that tests run after
+    # coreutils that tests run after
     # clearing their environment. They are never LocalHost authorities, and
     # stay only while a source still reads them.
     process_tools = {
-        "NUDOX_PROCESS_SHELL": read(supervisor_path),
         "NUDOX_TEST_COREUTILS_BIN": read(compile_tests_path),
     }
     for name, consumer in process_tools.items():

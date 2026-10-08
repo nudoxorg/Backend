@@ -142,7 +142,6 @@ in
   # Tests that execute coreutils after ProcessEnvironment::env_clear() must
   # pass an absolute executable, not rely on the host's /bin layout or PATH.
   NUDOX_TEST_COREUTILS_BIN = "${testCoreutils}/bin";
-  NUDOX_PROCESS_SHELL = "${pkgs.bash}/bin/sh";
   COMPILER_STABLE_TOOLCHAIN = "${toolchains.stable}";
   COMPILER_TYPESCRIPT_COMPILER = "${compilers.typescript}/bin/tsc";
   LIBCLANG_PATH = "${compilers.libclang.lib}/lib";
