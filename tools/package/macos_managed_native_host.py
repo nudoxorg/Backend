@@ -16,6 +16,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import tomllib
 
 from linux_release_package import admit_file_digest, read_regular_bytes
 
@@ -84,11 +85,15 @@ def plan_assets(plan):
 
 def read_plan(raw):
     plan=json.loads(raw)
-    require(isinstance(plan,dict) and set(plan)=={'schema','environment','interpreter','tools','rustc_wrapper','build_role','jobs','lifetime_locks'}
+    require(isinstance(plan,dict) and set(plan)=={'schema','environment','interpreter','tools','rustc_wrapper','build_role','jobs','build_slots','cargo_home','cargo_configs','lifetime_locks'}
             and plan['schema']=='nudox.macos-managed-native-host-plan.v1'
             and type(plan['jobs']) is int and plan['jobs']==2
+            and type(plan['build_slots']) is int and plan['build_slots'] in {4,6}
             and isinstance(plan['tools'],dict) and set(plan['tools'])=={'cargo','rustc','rustdoc'},
             'managed native-host plan is not closed or changes tools/jobs')
+    require(isinstance(plan['cargo_home'],str) and Path(plan['cargo_home']).is_absolute()
+            and '..' not in Path(plan['cargo_home']).parts and isinstance(plan['cargo_configs'],list),
+            'managed native-host Cargo home/config inventory is missing')
     for label,entry in plan_assets(plan):
         require(isinstance(entry,dict) and set(entry)=={'path','sha256'}
                 and isinstance(entry['path'],str) and Path(entry['path']).is_absolute()
@@ -99,6 +104,70 @@ def read_plan(raw):
             and len(set(plan['lifetime_locks']))==len(plan['lifetime_locks']),
             'managed native-host lifetime lock set differs')
     return plan
+
+
+def runner_cargo(raw, selected):
+    """Admit the two literal dispatch sites in the pinned managed runner.
+
+    The exact reviewed script digest remains mandatory. This is a dispatch
+    identity check, not an interpreter for arbitrary shell programs.
+    """
+    forwarding = [line.strip() for line in raw.decode('utf-8').splitlines()
+                  if re.search(r'"\$@"(?:\s*&)?\s*$',line) and not line.lstrip().startswith('#')]
+    require(forwarding == ['exec '+selected+' "$@"',selected+' "$@" &'],
+            'managed runner Cargo dispatch differs from the selected Cargo')
+    require(Path(selected).is_absolute() and re.fullmatch(r'/[A-Za-z0-9_./+-]+',selected) is not None,
+            'managed runner Cargo path is not a literal absolute executable')
+    return selected
+
+
+def config_paths(workspace, cargo_home):
+    roots=[Path(workspace),*Path(workspace).parents]
+    require(len(roots)<=64,'native-host Cargo ancestor config search exceeds its bound')
+    return list(dict.fromkeys(str(root/'.cargo'/name) for root in roots for name in ('config','config.toml'))) + [
+        str(Path(cargo_home)/name) for name in ('config','config.toml')
+        if str(Path(cargo_home)/name) not in {str(root/'.cargo'/part) for root in roots for part in ('config','config.toml')}]
+
+
+def config_pins(inventory):
+    return [{key:value for key,value in entry.items() if key!='content'} for entry in inventory]
+
+
+def validate_configs(inventory, plan, workspace):
+    require(isinstance(inventory,list) and [entry.get('path') for entry in inventory]==config_paths(workspace,plan['cargo_home'])
+            and config_pins(inventory)==plan['cargo_configs'],
+            'native-host effective Cargo config pins/absence witnesses differ')
+    total=0
+    def no_include(value):
+        if isinstance(value,dict):return all(key!='include' and no_include(child) for key,child in value.items())
+        if isinstance(value,list):return all(no_include(child) for child in value)
+        return True
+    for entry in inventory:
+        if entry.get('state')=='absent':
+            require(set(entry)=={'path','state'},'native-host absent Cargo config witness is malformed')
+            continue
+        require(set(entry)=={'path','state','sha256','size_bytes','content'} and entry['state']=='file'
+                and isinstance(entry['content'],str),'native-host Cargo config entry is malformed')
+        raw=entry['content'].encode();total+=len(raw)
+        require(len(raw)<=65536 and total<=512*1024 and entry['size_bytes']==len(raw)
+                and entry['sha256']==digest(raw),'native-host Cargo config exceeds its bound or changed')
+        require(no_include(tomllib.loads(entry['content'])),
+                'native-host recursive Cargo config include is not admitted')
+
+
+def capture_configs(workspace, plan):
+    inventory=[];total=0
+    for name in config_paths(workspace,plan['cargo_home']):
+        path=Path(name)
+        for parent in path.parents:
+            if parent.is_symlink():raise ValueError('native-host Cargo config ancestor is a symlink')
+        try:metadata=path.lstat()
+        except FileNotFoundError:inventory.append({'path':name,'state':'absent'});continue
+        require(stat.S_ISREG(metadata.st_mode),'native-host Cargo config is not a regular file')
+        raw=read_regular_bytes(path,min(65536,512*1024-total),'native-host Cargo config');total+=len(raw)
+        inventory.append({'path':name,'state':'file','sha256':digest(raw),'size_bytes':len(raw),'content':raw.decode()})
+    validate_configs(inventory,plan,workspace)
+    return inventory
 
 
 def validate_source_inventory(value, source):
@@ -214,7 +283,7 @@ def validate(proof, source, target, runner, receipt_path):
             and proof.get('exit_status') == 0 and type(proof['exit_status']) is int,
             'native-host proof lacks exact recipe or successful kernel wait')
     refs = proof.get('raw_evidence')
-    require(isinstance(refs, dict) and set(refs) == {'source_before','source_after','tools_before','tools_after','cargo_log','wrapper','environment','metadata','execution','plan'},
+    require(isinstance(refs, dict) and set(refs) == {'source_before','source_after','tools_before','tools_after','cargo_log','wrapper','runner_script','environment_script','configs_before','configs_after','environment','metadata','execution','plan'},
             'native-host proof lacks its raw evidence')
     require(proof.get('record_sha256') == proof_digest(proof),
             'native-host raw evidence digest differs')
@@ -232,6 +301,14 @@ def validate(proof, source, target, runner, receipt_path):
             and all(runner['referenced_asset_sha256'].get('runner.'+label)==entry['sha256']
                     for label,entry in plan_assets(plan)),
             'native-host retained operator plan differs from selected pins')
+    runner_raw=_read_ref(receipt_path,refs['runner_script'],128*1024)
+    require(digest(runner_raw)==runner['sha256'] and runner_raw.splitlines()[0]==('#!'+plan['interpreter']['path']).encode(),
+            'native-host retained runner differs from selected pin/interpreter')
+    runner_cargo(runner_raw,plan['tools']['cargo']['path'])
+    configs=json.loads(_read_ref(receipt_path,refs['configs_before'],2*1024**2))
+    validate_configs(configs,plan,workspace)
+    require(configs==json.loads(_read_ref(receipt_path,refs['configs_after'],2*1024**2)),
+            'native-host effective Cargo config changed during the build')
     execution=json.loads(_read_ref(receipt_path, refs['execution'],1024**2))
     require(isinstance(execution,dict) and execution.get('cwd') == workspace
             and execution.get('child_pid') == proof['child_pid']
@@ -260,6 +337,19 @@ def validate(proof, source, target, runner, receipt_path):
                 and isinstance(tool.get('version'),str) and tool['version'].strip(),
                 'native-host actual tool bytes differ from pin')
     wrapper_raw = _read_ref(receipt_path, refs['wrapper'], 8*1024**2)
+    raw_wrapper=json.loads(wrapper_raw);raw_toolchain=raw_wrapper['toolchain']
+    actual_build=raw_wrapper.get('cargo_build_dir')
+    require(actual_build in {str(Path(role)/'.nudox-cargo'/('slot-'+str(index))) for index in range(min(4,plan['build_slots']))},
+            'native-host actual managed graph escaped the selected role/slot bounds')
+    for name in ('cargo','rustc','rustdoc'):
+        initial=raw_toolchain.get('executables_before',{}).get(name,{})
+        final=raw_toolchain.get('executables_after',{}).get(name,{})
+        require(raw_toolchain.get(name+'_path')==tools[name]['path']
+                and initial.get('path')==tools[name]['path'] and initial.get('sha256')==tools[name]['sha256']
+                and initial.get('version')==tools[name]['version']
+                and isinstance(initial.get('resolved_path'),str) and Path(initial['resolved_path']).is_absolute()
+                and final=={key:initial[key] for key in ('path','resolved_path','sha256')},
+                'native-host raw wrapper selected executable identity differs')
     # Reuse the existing wrapper validator, including source/lock/tool/feature
     # and output checks.  None denotes a genuine native-host empty target list.
     spec=importlib.util.spec_from_file_location('native_host_wrapper_validator',Path(__file__).with_name('build-macos-investor-app.py'))
@@ -273,11 +363,25 @@ def validate(proof, source, target, runner, receipt_path):
             and all(wrapper['toolchain'][name]==tools[name]['version'] for name in ('cargo','rustc','rustdoc')),
             'native-host managed wrapper/tool/source pins differ')
     environment=json.loads(_read_ref(receipt_path, refs['environment'],1024**2))
+    static_raw=_read_ref(receipt_path,refs['environment_script'],128*1024)
+    require(digest(static_raw)==plan['environment']['sha256'],
+            'native-host retained static environment differs from plan')
+    static=legacy._static_environment(receipt_path.parent/refs['environment_script']['path'])
+    require(isinstance(environment,dict) and all(isinstance(environment.get(key),str) and Path(environment[key]).is_absolute() for key in ('HOME','TMPDIR')),
+            'native-host effective HOME/TMPDIR are not absolute')
+    expected_environment={**static,'HOME':environment['HOME'],'TMPDIR':environment['TMPDIR'],
+                          'CARGO_HOME':static.get('CARGO_HOME',str(Path(environment['HOME'])/'.cargo')),
+                          'PWD':workspace,'CARGO_TARGET_DIR':workspace+'/.local/target',
+                          'RUSTC':plan['tools']['rustc']['path'],'RUSTDOC':plan['tools']['rustdoc']['path'],
+                          'RUSTC_WRAPPER':plan['rustc_wrapper']['path'],'CARGO_BUILD_BUILD_DIR':role,
+                          'NUDOX_CARGO_BUILD_SLOTS':str(plan['build_slots'])}
     require(isinstance(environment,dict) and environment.get('CARGO_TARGET_DIR')==workspace+'/.local/target'
             and environment.get('CARGO_BUILD_BUILD_DIR')==proof.get('build_role')
             and environment.get('RUSTC') == tools['rustc']['path']
             and environment.get('RUSTDOC') == tools['rustdoc']['path']
-            and environment.get('NUDOX_CARGO_BUILD_SLOTS')=='4'
+            and environment.get('CARGO_HOME')==plan['cargo_home']
+            and environment.get('NUDOX_CARGO_BUILD_SLOTS')==str(plan['build_slots'])
+            and environment==expected_environment
             and all(isinstance(k,str) and isinstance(v,str) and not k.startswith('CARGO_PROFILE_') for k,v in environment.items()),
             'native-host effective environment differs')
     metadata=json.loads(_read_ref(receipt_path,refs['metadata'],8*1024**2))
@@ -288,17 +392,24 @@ def validate(proof, source, target, runner, receipt_path):
         targets=[t for t in package[0].get('targets',[]) if t.get('name')==name and t.get('kind')==['bin']]
         require(len(targets)==1 and targets[0].get('src_path')==workspace+'/'+PACKAGE_ROOTS[name]+'/src/main.rs',
                 'native-host metadata bin operand differs')
-    events = {}
+    events = {};source_events=[]
     for line in _read_ref(receipt_path, refs['cargo_log'], MAX_LOG).splitlines():
         try: event = json.loads(line)
         except (ValueError, UnicodeDecodeError): continue
         if not isinstance(event,dict) or event.get('reason') != 'compiler-artifact':continue
+        manifest=event.get('manifest_path')
+        if isinstance(manifest,str) and Path(manifest).is_relative_to(workspace):
+            require(Path(manifest).is_absolute() and '..' not in Path(manifest).parts and event.get('fresh') is False,
+                    'native-host source-rooted artifact was reused without producing-source proof')
+            source_events.append(event)
         name=event.get('target',{}).get('name')
         if name not in PACKAGES or not event.get('executable'):continue
         require(name not in events, 'duplicate native-host producing artifact')
         events[name]=event
     require(set(events) == set(PACKAGES) and proof.get('cargo_artifacts') == events,
             'native-host proof lacks exact raw producing artifacts')
+    require(proof.get('source_artifacts')==source_events,
+            'native-host complete source-rooted artifact inventory differs from raw events')
     outputs=proof.get('outputs'); require(isinstance(outputs,list) and len(outputs)==4,
             'native-host output count differs')
     output_by_name={item.get('path'):item for item in outputs}
@@ -326,6 +437,10 @@ def validate(proof, source, target, runner, receipt_path):
 
 def build(args, api):
     """Run one new invocation; retain failed logs rather than inventing a receipt."""
+    # These Git inspections do not invoke a pager. Repository/config overrides
+    # must not redirect either the selected source identity or its blob walk.
+    require(not any(name.startswith('GIT_') and name!='GIT_PAGER' for name in os.environ),
+            'managed native-host source admission refuses ambient GIT_* overrides')
     source=args.source_root.resolve(strict=True);output=args.output_dir.resolve(strict=False)
     raw=read_regular_bytes(args.managed_native_host_plan,65536,'managed native-host plan')
     require(digest(raw)==args.expected_managed_plan_sha256,'managed native-host plan pin differs')
@@ -340,6 +455,7 @@ def build(args, api):
     require(digest(runner_raw)==args.expected_runner_sha256,'managed runner pin differs')
     first=runner_raw.splitlines()[0].decode()
     require(first=='#!'+paths['interpreter'],'managed runner interpreter differs')
+    runner_cargo(runner_raw,plan['tools']['cargo']['path'])
     role=Path(plan['build_role']);require(role.is_absolute() and '..' not in role.parts
                                         and role.is_relative_to(source/'.local'),
                                         'managed native-host role must remain workspace owned')
@@ -355,13 +471,17 @@ def build(args, api):
             fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
             lock_identities[name]=(metadata.st_dev,metadata.st_ino)
         environment=api['_static_environment'](Path(paths['environment.0']))
+        require(environment.get('NUDOX_CARGO_BUILD_SLOTS',str(plan['build_slots']))==str(plan['build_slots']),
+                'managed native-host selected environment slot count differs')
         tool_paths={name:plan['tools'][name]['path'] for name in plan['tools']}
         runner={'execution_kind':KIND,'path':str(runner_path),'sha256':args.expected_runner_sha256,'expected_sha256':args.expected_runner_sha256,
                 'invocation_prefix':['$CARGO_RUNNER_INTERPRETER','$CARGO_RUNNER'],
                 'referenced_asset_sha256':{**assets,'runner.exec':assets['runner.tool.CARGO']},
                 '_environment':environment,'_tool_paths':tool_paths}
         env=api['_direct_build_environment'](runner,source,source/'.local/target')
-        env.update(RUSTC_WRAPPER=paths['tool.RUSTC_WRAPPER'],CARGO_BUILD_BUILD_DIR=str(role),NUDOX_CARGO_BUILD_SLOTS='4')
+        env.update(RUSTC_WRAPPER=paths['tool.RUSTC_WRAPPER'],CARGO_BUILD_BUILD_DIR=str(role),NUDOX_CARGO_BUILD_SLOTS=str(plan['build_slots']))
+        require(env['CARGO_HOME']==plan['cargo_home'],'managed native-host effective Cargo home differs from plan')
+        configs_before=capture_configs(source,plan)
         def tool_snapshot():
             result=api['_direct_tool_snapshot'](runner,source,env)
             result={name:{**value,'path':tool_paths[name]} for name,value in result.items()}
@@ -372,6 +492,9 @@ def build(args, api):
         identity=api['source_manifest'](source,args.expected_revision,args.expected_tree)
         output.mkdir();evidence=output/'evidence';evidence.mkdir()
         refs={'plan':_raw_reference(evidence,'plan.json',raw)}
+        refs['runner_script']=_raw_reference(evidence,'runner.sh',runner_raw)
+        refs['environment_script']=_raw_reference(evidence,'environment.sh',read_regular_bytes(Path(paths['environment.0']),128*1024,'native-host environment script'))
+        refs['configs_before']=_reference(evidence,'configs-before.json',configs_before)
         refs['environment']=_reference(evidence,'environment.json',env)
         metadata=capture([tool_paths['cargo'],'metadata','--locked','--offline','--no-deps','--format-version','1'],8*1024**2,cwd=source,env=env)
         refs['metadata']=_reference(evidence,'metadata.json',json.loads(metadata))
@@ -385,6 +508,7 @@ def build(args, api):
             require(api['source_manifest'](source,args.expected_revision,args.expected_tree)==identity,
                     'managed native-host source identity changed')
             refs['source_after']=_reference(evidence,'source-after.json',tracked_inputs(source,identity))
+            refs['configs_after']=_reference(evidence,'configs-after.json',capture_configs(source,plan))
             # Re-admit every original runner/environment/wrapper/tool pin after execution.
             for label,path in paths.items():require(admit_file_digest(Path(path),MAX_IMAGE)[1]==assets['runner.'+label],
                                                    'managed native-host referenced asset changed')
@@ -405,10 +529,11 @@ def build(args, api):
             refs['execution']=_reference(evidence,'execution.json',{
                 **{key:execution[key] for key in ('returncode','child_pid','started_at_utc','finished_at_utc','elapsed_ns','output_log')},
                 'command':command,'cwd':str(source),'retirement':'owned-child-kernel-wait'})
-            events={}
+            events={};source_events=[]
             for line in read_regular_bytes(evidence/'cargo.log',MAX_LOG,'native Cargo log').splitlines():
                 try:event=json.loads(line)
                 except (ValueError,UnicodeDecodeError):continue
+                if isinstance(event,dict) and event.get('reason')=='compiler-artifact' and isinstance(event.get('manifest_path'),str) and Path(event['manifest_path']).is_relative_to(source):source_events.append(event)
                 if isinstance(event,dict) and event.get('reason')=='compiler-artifact' and event.get('executable') and event.get('target',{}).get('name') in PACKAGES:
                     name=event['target']['name'];require(name not in events,'duplicate native producing event');events[name]=event
             outputs=[]
@@ -419,7 +544,7 @@ def build(args, api):
                    'build_role':str(role),'command':[*runner['invocation_prefix'],*build_arguments()],
                    'operator_plan_sha256':digest(raw),
                    'retirement':'owned-child-kernel-wait','child_pid':execution['child_pid'],'exit_status':0,
-                   'raw_evidence':refs,'managed_wrapper_provenance':wrapper,'cargo_artifacts':events,'outputs':outputs}
+                   'raw_evidence':refs,'managed_wrapper_provenance':wrapper,'cargo_artifacts':events,'source_artifacts':source_events,'outputs':outputs}
             proof['record_sha256']=proof_digest(proof)
             public_runner={k:v for k,v in runner.items() if not k.startswith('_')}
             validate(proof,identity,args.target,public_runner,output/'application-build-receipt.json')

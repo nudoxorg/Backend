@@ -32,14 +32,26 @@ class ManagedNativeTests(unittest.TestCase):
         raw_wrapper={'schema':2,'workspace_root':workspace,'cargo_target_dir':workspace+'/.local/target','git_head':'a'*40,'cargo_lock_sha256':'c'*64,'cargo_lock_sha256_after':'c'*64,'source_changed_during_build':False,'source_dirty_sha256':'e'*64,'source_dirty_sha256_after':'e'*64,'cargo_exit_status':0,'toolchain':{'capture_complete':True,'changed_during_build':False,**{n:n+' 1.97.1' for n in ['cargo','rustc','rustdoc']}},'wrapper':{n+'_sha256':'d'*64 for n in ['runtime','source','rustc']},'features':{'features':[],'all_features':False,'no_default_features':False,'targets':[]},'run_id':'new-fixture-only','outputs':[]}
         inputs={'source':source,'files':[{'path':'Cargo.lock','mode':'100644','git_blob':'f'*40,'bytes':1,'sha256':'f'*64},{'path':'.config/scripts/cargo-shared-cache.sh','mode':'100755','git_blob':'f'*40,'bytes':1,'sha256':'d'*64}],'gitlinks':[],'total_blob_bytes':2}
         tools={n:{'sha256':'d'*64,'version':n+' 1.97.1','path':'/fixture/'+n} for n in ['cargo','rustc','rustdoc']};tools.update(host='aarch64-apple-darwin',rustc_vv='rustc 1.97.1\nhost: aarch64-apple-darwin\n')
-        refs={}
+        runner_raw=b'#!/bin/sh\nexec /fixture/cargo \"$@\"\n/fixture/cargo \"$@\" &\n'
+        runner['sha256']=runner['expected_sha256']=assets['runner']=native.digest(runner_raw)
+        raw_wrapper['wrapper']['runtime_sha256']=runner['sha256']
+        for name in ('cargo','rustc','rustdoc'):
+            raw_wrapper['toolchain'][name+'_path']=tools[name]['path']
+        raw_wrapper['toolchain']['executables_before']={name:{**tools[name],'resolved_path':tools[name]['path']} for name in ('cargo','rustc','rustdoc')}
+        raw_wrapper['toolchain']['executables_after']={name:{key:value for key,value in tool.items() if key!='version'} for name,tool in raw_wrapper['toolchain']['executables_before'].items()}
+        refs={'runner_script':native._raw_reference(evidence,'runner.sh',runner_raw)}
         pin=lambda path:{'path':path,'sha256':'d'*64}
         plan={'schema':'nudox.macos-managed-native-host-plan.v1','environment':pin('/fixture/environment.sh'),
               'interpreter':pin('/bin/sh'),'tools':{name:pin('/fixture/'+name) for name in ('cargo','rustc','rustdoc')},
               'rustc_wrapper':pin('/fixture/wrapper'),'build_role':workspace+'/.local/build/role',
-              'jobs':2,'lifetime_locks':['/fixture/owner.lock']}
+              'jobs':2,'build_slots':4,'cargo_home':'/fixture/home/.cargo','cargo_configs':[{'path':path,'state':'absent'} for path in native.config_paths(workspace,'/fixture/home/.cargo')],'lifetime_locks':['/fixture/owner.lock']}
+        static_raw=b'export PATH=/usr/bin:/bin\n'
+        plan['environment']['sha256']=assets['runner.environment.0']=native.digest(static_raw)
+        refs['environment_script']=native._raw_reference(evidence,'environment.sh',static_raw)
+        for key in ('configs_before','configs_after'):refs[key]=native._reference(evidence,key+'.json',plan['cargo_configs'])
+        raw_wrapper['cargo_build_dir']=workspace+'/.local/build/role/.nudox-cargo/slot-0'
         refs['plan']=native._reference(evidence,'plan.json',plan)
-        for key,value in [('source_before',inputs),('source_after',inputs),('tools_before',tools),('tools_after',tools),('wrapper',raw_wrapper),('environment',{'CARGO_TARGET_DIR':workspace+'/.local/target','CARGO_BUILD_BUILD_DIR':workspace+'/.local/build/role','NUDOX_CARGO_BUILD_SLOTS':'4','RUSTC':'/fixture/rustc','RUSTDOC':'/fixture/rustdoc'})]:refs[key]=native._reference(evidence,key+'.json',value)
+        for key,value in [('source_before',inputs),('source_after',inputs),('tools_before',tools),('tools_after',tools),('wrapper',raw_wrapper),('environment',{'CARGO_TARGET_DIR':workspace+'/.local/target','CARGO_BUILD_BUILD_DIR':workspace+'/.local/build/role','NUDOX_CARGO_BUILD_SLOTS':'4','RUSTC':'/fixture/rustc','RUSTDOC':'/fixture/rustdoc','RUSTC_WRAPPER':'/fixture/wrapper','HOME':'/fixture/home','TMPDIR':'/fixture/tmp','PATH':'/usr/bin:/bin','PWD':workspace,'CARGO_HOME':'/fixture/home/.cargo'})]:refs[key]=native._reference(evidence,key+'.json',value)
         metadata={'packages':[{'name':name,'manifest_path':workspace+'/'+native.PACKAGE_ROOTS[name]+'/Cargo.toml','targets':[{'name':name,'kind':['bin'],'src_path':workspace+'/'+native.PACKAGE_ROOTS[name]+'/src/main.rs'}]} for name in native.PACKAGES]}
         refs['metadata']=native._reference(evidence,'metadata.json',metadata)
         events={};outputs=[];executables={}
@@ -48,7 +60,7 @@ class ManagedNativeTests(unittest.TestCase):
             events[name]={'reason':'compiler-artifact','manifest_path':workspace+'/'+native.PACKAGE_ROOTS[name]+'/Cargo.toml','target':{'name':name,'kind':['bin'],'src_path':workspace+'/'+native.PACKAGE_ROOTS[name]+'/src/main.rs'},'profile':{'opt_level':'3','debuginfo':0,'debug_assertions':False,'overflow_checks':False,'test':False},'fresh':False,'executable':workspace+'/.local/target/release/'+name}
             outputs.append({'path':native.output_name(name),'cargo_executable':events[name]['executable'],'sha256':sha,'size_bytes':image.stat().st_size})
         wrapper=builder.cargo_provenance(evidence,{p.name for p in evidence.glob('*.json')}-{'wrapper.json'},Path(workspace),source,None,Path(workspace)/'.local/target')
-        proof={'schema':4,'kind':native.KIND,'target_mode':'native-host','target':'aarch64-apple-darwin','workspace_root':workspace,'build_role':workspace+'/.local/build/role','command':[*runner['invocation_prefix'],*native.build_arguments()],'retirement':'owned-child-kernel-wait','child_pid':123,'exit_status':0,'raw_evidence':refs,'managed_wrapper_provenance':wrapper,'cargo_artifacts':events,'outputs':outputs,'operator_plan_sha256':refs['plan']['sha256'],'record_sha256':'f'*64}
+        proof={'schema':4,'kind':native.KIND,'target_mode':'native-host','target':'aarch64-apple-darwin','workspace_root':workspace,'build_role':workspace+'/.local/build/role','command':[*runner['invocation_prefix'],*native.build_arguments()],'retirement':'owned-child-kernel-wait','child_pid':123,'exit_status':0,'raw_evidence':refs,'managed_wrapper_provenance':wrapper,'cargo_artifacts':events,'source_artifacts':list(events.values()),'outputs':outputs,'operator_plan_sha256':refs['plan']['sha256'],'record_sha256':'f'*64}
         data=(source,runner,proof,root/'application-build-receipt.json',artifacts)
         self.write_log(data,list(events.values()))
         receipt={'schema':1,'source':source,'source_before':source,'source_after':source,'source_unchanged':True,'target':'aarch64-apple-darwin','profile':'release','locked_build':True,'cargo_runner_before':runner,'cargo_runner_after':runner,'cargo_runner_unchanged':True,'cargo_provenance':proof,'command':proof['command'],'executables':executables}
@@ -61,6 +73,7 @@ class ManagedNativeTests(unittest.TestCase):
                    'child_pid':123,'returncode':0,'elapsed_ns':1,'started_at_utc':'fixture-start','finished_at_utc':'fixture-end',
                    'retirement':'owned-child-kernel-wait','output_log':{'path':'cargo.log','sha256':native.digest(raw),'size_bytes':len(raw)}}
         data[2]['raw_evidence']['execution']=native._reference(data[3].parent/'evidence','execution.json',execution)
+        data[2]['source_artifacts']=[e for e in events if e.get('reason')=='compiler-artifact' and Path(e['manifest_path']).is_relative_to(data[2]['workspace_root'])]
         data[2]['record_sha256']=native.proof_digest(data[2])
 
     def validate(self,data):
@@ -69,8 +82,8 @@ class ManagedNativeTests(unittest.TestCase):
 
     def test_accepts_release_four_through_existing_common_app_validator(self):
         with tempfile.TemporaryDirectory() as d:
-            source,_,_,receipt,artifacts=self.fixture(Path(d))
-            _,images=bundle.validate_app_build(receipt,artifacts,source,'aarch64-apple-darwin','d'*64)
+            source,runner,_,receipt,artifacts=self.fixture(Path(d))
+            _,images=bundle.validate_app_build(receipt,artifacts,source,'aarch64-apple-darwin',runner['sha256'])
             self.assertEqual(set(images),set(native.PACKAGES))
 
     def test_rejects_host_kind_schema_target_mode_and_recipe_relabel(self):
@@ -164,19 +177,122 @@ class ManagedNativeTests(unittest.TestCase):
                 with self.assertRaises(ValueError):self.validate(data)
 
     def test_rejects_retained_plan_with_different_pins_or_jobs(self):
-        for change in ['pin','jobs','tool-path','extra']:
+        for change in ['pin','jobs','tool-path','extra','slots','bool-slots']:
             with self.subTest(change=change),tempfile.TemporaryDirectory() as d:
                 data=self.fixture(Path(d));plan=json.loads((Path(d)/'evidence/plan.json').read_text())
                 if change=='pin':plan['tools']['rustc']['sha256']='0'*64
                 if change=='jobs':plan['jobs']=4
                 if change=='tool-path':plan['tools']['rustc']['path']='/other/rustc'
                 if change=='extra':plan['unknown']=True
+                if change=='slots':plan['build_slots']=5
+                if change=='bool-slots':plan['build_slots']=True
                 ref=native._reference(Path(d)/'evidence','plan.json',plan);data[2]['raw_evidence']['plan']=ref
                 data[2]['operator_plan_sha256']=ref['sha256']
                 with self.assertRaises(ValueError):self.validate(data)
 
     def tracked_fixture(self,root):
         subprocess.run(['git','init','-q',str(root)],check=True);(root/'Cargo.lock').write_bytes(b'lock');(root/'link').symlink_to('Cargo.lock');subprocess.run(['git','-C',str(root),'add','.'],check=True);subprocess.run(['git','-C',str(root),'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','fixture'],check=True)
+
+
+    def test_slot_namespace_is_explicit_four_or_six_and_environment_must_match(self):
+        with tempfile.TemporaryDirectory() as d:
+            data=self.fixture(Path(d));evidence=Path(d)/'evidence'
+            plan=json.loads((evidence/'plan.json').read_text());plan['build_slots']=6
+            ref=native._reference(evidence,'plan.json',plan);data[2]['raw_evidence']['plan']=ref;data[2]['operator_plan_sha256']=ref['sha256']
+            with self.assertRaisesRegex(ValueError,'effective environment'):self.validate(data)
+            env=json.loads((evidence/'environment.json').read_text());env['NUDOX_CARGO_BUILD_SLOTS']='6'
+            data[2]['raw_evidence']['environment']=native._reference(evidence,'environment.json',env)
+            self.validate(data)
+
+    def test_runner_dispatch_is_closed_and_exact_selected_cargo(self):
+        cargo='/fixture/cargo'
+        raw=b'#!/bin/sh\nexec /fixture/cargo "$@"\n/fixture/cargo "$@" &\n'
+        self.assertEqual(native.runner_cargo(raw,cargo),cargo)
+        for changed in [raw.replace(b'/fixture/cargo',b'/other/cargo'),raw.replace(b'exec ',b''),raw+ b'/fixture/cargo "$@" &\n',raw.replace(b'/fixture/cargo',b'$CARGO')]:
+            with self.subTest(changed=changed),self.assertRaisesRegex(ValueError,'dispatch'):native.runner_cargo(changed,cargo)
+
+    def test_same_version_wrong_raw_wrapper_cargo_is_rejected(self):
+        for change in ['path','hash','after']:
+            with self.subTest(change=change),tempfile.TemporaryDirectory() as d:
+                data=self.fixture(Path(d));evidence=Path(d)/'evidence';raw=json.loads((evidence/'wrapper.json').read_text())
+                if change=='path':raw['toolchain']['cargo_path']='/other/cargo'
+                if change=='hash':raw['toolchain']['executables_before']['cargo']['sha256']='0'*64
+                if change=='after':raw['toolchain']['executables_after']['cargo']['resolved_path']='/other/cargo'
+                data[2]['raw_evidence']['wrapper']=native._reference(evidence,'wrapper.json',raw)
+                with self.assertRaisesRegex(ValueError,'raw wrapper selected executable'):self.validate(data)
+
+    def test_producer_refuses_wrong_runner_cargo_or_slot_mismatch_before_launch(self):
+        for change in ['cargo','slots']:
+            with self.subTest(change=change),tempfile.TemporaryDirectory() as d:
+                args,locks,observed,fake_stream=self.producer_fixture(Path(d));api=dict(vars(builder));api['_stream_direct_cargo']=fake_stream
+                if change=='cargo':
+                    args.cargo_runner.write_text(args.cargo_runner.read_text().replace('/tools/cargo','/other/cargo'))
+                    args.expected_runner_sha256=builder.sha256(args.cargo_runner)
+                else:
+                    plan=json.loads(args.managed_native_host_plan.read_text());environment=Path(plan['environment']['path'])
+                    environment.write_text(environment.read_text()+'export NUDOX_CARGO_BUILD_SLOTS=6\n')
+                    plan['environment']['sha256']=builder.sha256(environment);args.managed_native_host_plan.write_bytes(native.canonical(plan))
+                    args.expected_managed_plan_sha256=builder.sha256(args.managed_native_host_plan)
+                with self.assertRaisesRegex((ValueError,builder.BuildError),'dispatch|slot count differs|unsupported variable'):native.build(args,api)
+                self.assertEqual(observed,[]);self.assertFalse(args.output_dir.exists())
+                for lock in locks:
+                    with lock.open('r+') as handle:fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
+
+
+    def test_actual_wrapper_graph_must_be_inside_selected_role_and_slot_bounds(self):
+        for changed in ['/foreign/slot-0','slot-4','slot-6']:
+            with self.subTest(changed=changed),tempfile.TemporaryDirectory() as d:
+                data=self.fixture(Path(d));evidence=Path(d)/'evidence';raw=json.loads((evidence/'wrapper.json').read_text())
+                raw['cargo_build_dir']=changed if changed.startswith('/') else data[2]['build_role']+'/.nudox-cargo/'+changed
+                data[2]['raw_evidence']['wrapper']=native._reference(evidence,'wrapper.json',raw)
+                with self.assertRaisesRegex(ValueError,'actual managed graph'):self.validate(data)
+
+    def test_producer_rejects_ambient_git_identity_overrides_before_inspection(self):
+        for name in ('GIT_DIR','GIT_WORK_TREE','GIT_CONFIG_COUNT'):
+            with self.subTest(name=name),patch.dict(os.environ,{name:'/foreign'}):
+                with self.assertRaisesRegex(ValueError,'ambient GIT_'):native.build(None,{})
+
+    def test_every_source_rooted_dependency_artifact_must_be_newly_emitted(self):
+        for kind in ['lib','proc-macro','custom-build']:
+            with self.subTest(kind=kind),tempfile.TemporaryDirectory() as d:
+                data=self.fixture(Path(d));events=list(data[2]['cargo_artifacts'].values())
+                events.append({'reason':'compiler-artifact','manifest_path':data[2]['workspace_root']+'/vendor/dependency/Cargo.toml',
+                               'target':{'name':'dependency','kind':[kind]},'fresh':True})
+                self.write_log(data,events)
+                with self.assertRaisesRegex(ValueError,'source-rooted artifact was reused'):self.validate(data)
+        with tempfile.TemporaryDirectory() as d:
+            data=self.fixture(Path(d));events=list(data[2]['cargo_artifacts'].values())
+            events.append({'reason':'compiler-artifact','manifest_path':'/external/registry/dependency/Cargo.toml','target':{'name':'dependency'},'fresh':True})
+            self.write_log(data,events);self.validate(data)
+
+    def test_effective_configs_are_pinned_and_no_include_or_symlink_is_followed(self):
+        for change in ['unreviewed','include','symlink','oversize']:
+            with self.subTest(change=change),tempfile.TemporaryDirectory() as d:
+                root=Path(d).resolve();source=root/'source';source.mkdir();cargo_home=root/'cargo-home';cargo_home.mkdir()
+                plan={'cargo_home':str(cargo_home),'cargo_configs':[{'path':path,'state':'absent'} for path in native.config_paths(source,cargo_home)]}
+                config=cargo_home/'config.toml';raw=b'[build]\nrustflags=["--cfg","fixture"]\n'
+                if change=='include':raw=b'include="other.toml"\n'
+                if change=='oversize':raw=b'#'+b'x'*65536
+                config.write_bytes(raw)
+                if change!='unreviewed':
+                    plan['cargo_configs']=[{'path':entry['path'],'state':'file','sha256':native.digest(raw),'size_bytes':len(raw)} if entry['path']==str(config) else entry for entry in plan['cargo_configs']]
+                if change=='symlink':config.rename(cargo_home/'other');config.symlink_to('other')
+                with self.assertRaises((ValueError,RuntimeError)):native.capture_configs(source,plan)
+
+    def test_producer_rejects_unreviewed_config_before_cargo_and_changed_config_after(self):
+        for change in ['before','after']:
+            with self.subTest(change=change),tempfile.TemporaryDirectory() as d:
+                args,locks,observed,fake_stream=self.producer_fixture(Path(d));api=dict(vars(builder));plan=json.loads(args.managed_native_host_plan.read_text())
+                config=Path(plan['cargo_home'])/'config.toml';config.parent.mkdir()
+                if change=='before':config.write_text('[build]\nrustflags=["--cfg","unreviewed"]\n')
+                def stream(*positional,**keywords):
+                    result=fake_stream(*positional,**keywords);config.write_text('[build]\nrustflags=["--cfg","changed"]\n');return result
+                api['_stream_direct_cargo']=stream
+                with self.assertRaisesRegex(ValueError,'config pins/absence'):native.build(args,api)
+                self.assertEqual(len(observed),0 if change=='before' else 1)
+                self.assertFalse((args.output_dir/'application-build-receipt.json').exists())
+                for lock in locks:
+                    with lock.open('r+') as handle:fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
 
     def test_actual_source_blob_and_symlink_bytes_match_git_then_mutation_refuses(self):
         with tempfile.TemporaryDirectory() as d:
@@ -220,15 +336,17 @@ class ManagedNativeTests(unittest.TestCase):
             path=tool_dir/name;special=json.dumps(metadata) if name=='cargo' else 'rustc 1.97.1\nhost: aarch64-apple-darwin'
             path.write_text("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf '%s\\n' '"+name+" 1.97.1'\nelse\n  cat <<'FIXTURE_OUTPUT'\n"+special+"\nFIXTURE_OUTPUT\nfi\n")
             path.chmod(0o755);tools[name]=path
-        environment=root/'environment.sh';environment.write_text('export PATH=/usr/bin:/bin\n')
+        environment=root/'environment.sh';environment.write_text('export PATH=/usr/bin:/bin\nexport CARGO_HOME='+str(root/'cargo-home')+'\n')
         wrapper=root/'rustc-wrapper';wrapper.write_text('# fixture wrapper\n')
-        runner=root/'cargo-runner';runner.write_text('#!/bin/sh\n# fixture runner, not executed\n')
+        runner=root/'cargo-runner';runner.write_text('#!/bin/sh\nexec '+str(tools['cargo'])+' \"$@\"\n'+str(tools['cargo'])+' \"$@\" &\n')
         locks=[root/'owner.lock',root/'source.lock']
         for lock in locks:lock.touch(mode=0o600)
         pin=lambda path:{'path':str(path),'sha256':builder.sha256(path)}
         plan={'schema':'nudox.macos-managed-native-host-plan.v1','environment':pin(environment),
               'interpreter':pin(Path('/bin/sh')),'tools':{name:pin(path) for name,path in tools.items()},
-              'rustc_wrapper':pin(wrapper),'build_role':str(source/'.local/build/role'),'jobs':2,
+              'rustc_wrapper':pin(wrapper),'build_role':str(source/'.local/build/role'),'jobs':2,'build_slots':4,
+              'cargo_home':str(root/'cargo-home'),
+              'cargo_configs':[{'path':path,'state':'absent'} for path in native.config_paths(source,str(root/'cargo-home'))],
               'lifetime_locks':[str(path) for path in locks]}
         plan_path=root/'plan.json';plan_path.write_bytes(native.canonical(plan))
         args=SimpleNamespace(source_root=source,output_dir=root/'build',managed_native_host_plan=plan_path,
@@ -249,13 +367,16 @@ class ManagedNativeTests(unittest.TestCase):
             if change=='missing':events.pop()
             raw=b''.join(native.canonical(event) for event in events);log_path.write_bytes(raw)
             provenance=source/'.local/target/.nudox-provenance';provenance.mkdir()
-            record={'schema':2,'workspace_root':str(source),'cargo_target_dir':str(source/'.local/target'),
+            record={'schema':2,'cargo_build_dir':str(source/'.local/build/role/.nudox-cargo/slot-0'),'workspace_root':str(source),'cargo_target_dir':str(source/'.local/target'),
                 'git_head':revision,'cargo_lock_sha256':builder.sha256(source/'Cargo.lock'),
                 'cargo_lock_sha256_after':builder.sha256(source/'Cargo.lock'),'source_changed_during_build':False,
                 'source_dirty_sha256':'e'*64,'source_dirty_sha256_after':'e'*64,'cargo_exit_status':0,
                 'toolchain':{'capture_complete':True,'changed_during_build':False,**{name:name+' 1.97.1' for name in tools}},
                 'wrapper':{'runtime_sha256':builder.sha256(runner),'source_sha256':builder.sha256(cache),'rustc_sha256':builder.sha256(wrapper)},
                 'features':{'features':[],'all_features':False,'no_default_features':False,'targets':[]},'run_id':'producer-fixture','outputs':[]}
+            for name in ('cargo','rustc','rustdoc'):record['toolchain'][name+'_path']=str(tools[name])
+            record['toolchain']['executables_before']={name:{'path':str(path),'resolved_path':str(path.resolve()),'sha256':builder.sha256(path),'version':name+' 1.97.1'} for name,path in tools.items()}
+            record['toolchain']['executables_after']={name:{key:value for key,value in tool.items() if key!='version'} for name,tool in record['toolchain']['executables_before'].items()}
             (provenance/'new.json').write_bytes(native.canonical(record))
             if change=='source':(source/'Cargo.lock').write_bytes(b'mutated')
             if change=='tool':tools['rustc'].write_text(tools['rustc'].read_text()+'# changed\n')
