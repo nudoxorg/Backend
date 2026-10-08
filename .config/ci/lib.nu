@@ -72,6 +72,10 @@ export def run-bounded [limit: duration, command: string, ...args: string]: noth
     try {
         "" | run-external "timeout" "--kill-after=120s" $"($limit / 1sec | math round)s" $command ...$args
     } catch {|error|
+        if ($error.exit_code? | default 0) == 75 {
+            print $"CI problem: transient infrastructure failure in ($command); exit 75"
+            exit 75
+        }
         if ($error.exit_code? | default 0) in [124 137] {
             error make {msg: $"($STEP_TIMEOUT): ($command) was still running after ($limit)"}
         }

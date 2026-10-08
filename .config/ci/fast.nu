@@ -74,7 +74,7 @@ def main []: nothing -> nothing {
     let system = (^nix eval --raw --impure --expr "builtins.currentSystem" | str trim)
     let installables = fast-flake-checks | each {|check| $"path:.#checks.($system).($check)" }
     let checks = ci-step "fast" "structural flake checks" {||
-        with-plain-tmp {|| run-bounded 20min "nix" "build" "-L" "--keep-going" "--no-link" ...$installables }
+        with-plain-tmp {|| run-bounded 20min "python3" ($env.FILE_PWD | path join "structural-checks.py") ...$installables }
     }
     stop-if-superseded "fast"
     # Native first: a plain compile error shows up before the foreign targets
