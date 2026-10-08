@@ -63,6 +63,8 @@ pub enum Boundary {
     EffectAmbiguous = 25,
     /// A confirmed effect receipt is about to be persisted.
     EffectConfirmed = 26,
+    /// Physical workspace HEAD selected, before any engine acknowledgement.
+    OwnerAcknowledgement = 27,
 }
 
 impl Boundary {

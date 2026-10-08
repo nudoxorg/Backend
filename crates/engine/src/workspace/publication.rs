@@ -30,6 +30,32 @@ const JOURNAL_PUBLISHED: u8 = 1 << 6;
 const NOTIFICATION: u8 = 1 << 7;
 
 impl PublicationStatus {
+    /// Recovery of physical HEAD alone does not observe engine acknowledgements.
+    pub(crate) const fn unobserved_acknowledgements() -> Self {
+        Self {
+            pending: STORE_PUBLISH
+                | JOURNAL_SELECT
+                | JOURNAL_FLUSH
+                | HEAD_WRITE
+                | HEAD_SYNC
+                | HEAD_SELECTION
+                | JOURNAL_PUBLISHED
+                | NOTIFICATION,
+        }
+    }
+
+    /// Retains the known store status and marks every unobserved engine ack.
+    pub(crate) const fn with_unobserved_acknowledgements(mut self) -> Self {
+        self.pending |= JOURNAL_SELECT
+            | JOURNAL_FLUSH
+            | HEAD_WRITE
+            | HEAD_SYNC
+            | HEAD_SELECTION
+            | JOURNAL_PUBLISHED
+            | NOTIFICATION;
+        self
+    }
+
     pub(crate) const fn with_store_publish_pending(mut self) -> Self {
         self.pending |= STORE_PUBLISH;
         self

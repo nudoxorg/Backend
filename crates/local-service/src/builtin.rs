@@ -1017,20 +1017,41 @@ fn view_for_workspace(
     generations: &mut SemanticGenerationResidence,
 ) -> Result<(ViewRoot, coverage::ActivatedProfiles, usize), BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
-    let sources = read_indexed_sources(&snapshot)?;
+    view_for_snapshot(
+        &snapshot,
+        compiler,
+        deployment,
+        filesystem_workspace,
+        image_rows,
+        generations,
+    )
+}
+
+/// Builds an immutable product view from one captured workspace head. This
+/// path never reselects mutable store HEAD and is usable by the sole writer's
+/// preparation worker before the candidate becomes admitted for serving.
+fn view_for_snapshot(
+    snapshot: &WorkspaceSnapshot,
+    compiler: &backend_engine::application::LocalCompilerClient,
+    deployment: SemanticDeployment,
+    filesystem_workspace: &std::path::Path,
+    image_rows: &mut view_build::ImageRowResidence,
+    generations: &mut SemanticGenerationResidence,
+) -> Result<(ViewRoot, coverage::ActivatedProfiles, usize), BuiltinModelError> {
+    let sources = read_indexed_sources(snapshot)?;
     let files = sources.files.len();
-    let (initial, _) = initial_view_for_workspace(&snapshot)?;
+    let (initial, _) = initial_view_for_workspace(snapshot)?;
     let projected = rows_for_indexed_sources(
         &initial,
         &sources,
-        &snapshot,
+        snapshot,
         compiler,
         filesystem_workspace,
         view_build::ForeignPublication::Reject,
         image_rows,
         generations,
     )?;
-    let coverage = view_coverage(&snapshot, &projected.activated, deployment)?;
+    let coverage = view_coverage(snapshot, &projected.activated, deployment)?;
     let _admitted_bytes = admitted_view_bytes(&projected.rows)?;
     let view = ViewRoot::new_checked(
         initial.recipe(),
@@ -1038,10 +1059,123 @@ fn view_for_workspace(
         initial.frontier(),
         projected.rows,
         coverage,
-        builtin_view_capability_for_workspace(&snapshot)?,
+        builtin_view_capability_for_workspace(snapshot)?,
     )
     .map_err(|error| BuiltinModelError(format!("{error:?}")))?;
     Ok((view, projected.activated, files))
+}
+
+/// A private replacement built with the same package/reuse/hydration planner
+/// as ordinary publication. No writer, sink, or serving daemon is borrowed.
+struct PreparedBuiltinView {
+    workspace_root: WorkspaceRoot,
+    view: ViewRoot,
+    event: Option<backend_engine::CursorEvent>,
+    outcome: view_publish::PublicationOutcome,
+}
+
+struct BuiltinViewPreparation {
+    snapshot: WorkspaceSnapshot,
+    current: ViewRoot,
+    event: Option<backend_engine::CursorEvent>,
+}
+
+impl BuiltinViewPreparation {
+    fn select(
+        &mut self,
+        view: ViewRoot,
+        cursor: backend_engine::Cursor,
+        admission: BuiltinViewAdmission,
+        delta: Option<backend_engine::CommittedViewDelta>,
+    ) -> Result<(), BuiltinModelError> {
+        // The planner emits at most one transition. A second event would need
+        // the intervening library/cursor history and must not be coalesced.
+        if self.event.is_some() || cursor != backend_engine::Cursor::for_view_root(&view) {
+            return Err(BuiltinModelError(
+                "view planner emitted multiple transitions".to_owned(),
+            ));
+        }
+        backend_engine::ViewBindingAdmission::admit(&admission, &self.snapshot, &view)
+            .map_err(BuiltinModelError)?;
+        self.current = view;
+        self.event = delta.map(|delta| backend_engine::CursorEvent::View {
+            delta: Box::new(delta),
+        });
+        Ok(())
+    }
+}
+
+fn prepare_builtin_view(
+    snapshot: WorkspaceSnapshot,
+    current: ViewRoot,
+    compiler: &backend_engine::application::LocalCompilerClient,
+    deployment: SemanticDeployment,
+    filesystem_workspace: &std::path::Path,
+    prior: Option<&view_publish::PublishedRoots>,
+    edit: Option<&BuiltinIntent>,
+    image_rows: &mut view_build::ImageRowResidence,
+    generations: &mut SemanticGenerationResidence,
+) -> Result<PreparedBuiltinView, BuiltinModelError> {
+    let mut preparation = BuiltinViewPreparation {
+        snapshot,
+        current,
+        event: None,
+    };
+    let outcome = prepare_builtin_view_inner(
+        &mut preparation,
+        compiler,
+        deployment,
+        filesystem_workspace,
+        prior,
+        edit,
+        image_rows,
+        generations,
+    )?;
+    Ok(PreparedBuiltinView {
+        workspace_root: preparation.snapshot.root(),
+        view: preparation.current,
+        event: preparation.event,
+        outcome,
+    })
+}
+
+fn install_prepared_builtin_view(
+    daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    prepared: PreparedBuiltinView,
+) -> Result<view_publish::PublicationOutcome, BuiltinModelError> {
+    let PreparedBuiltinView {
+        workspace_root,
+        view,
+        event,
+        outcome,
+    } = prepared;
+    if daemon.engine().daemon().owner().snapshot().root() != workspace_root {
+        return Err(BuiltinModelError(
+            "prepared view workspace differs from the admitted owner".to_owned(),
+        ));
+    }
+    if event.is_none() {
+        // The planner retained the exact root and capability. Preserve the
+        // ordinary no-op path: do not rebuild its projection or sync the sink.
+        let current = daemon.engine().daemon().library().view();
+        if current.root() != view.root() || current.version() != view.version() {
+            return Err(BuiltinModelError(
+                "prepared no-op view differs from the admitted library".to_owned(),
+            ));
+        }
+        return Ok(outcome);
+    }
+    let cursor = backend_engine::Cursor::for_view_root(&view);
+    let admission = BuiltinViewAdmission {
+        workspace_root,
+        source_root: view.basis().root,
+    };
+    daemon
+        .engine_mut()
+        .daemon_mut()
+        .publish_view(view, cursor, &admission, event)
+        .map_err(|error| BuiltinModelError(format!("{error:?}")))?;
+    Ok(outcome)
 }
 
 fn publish_builtin_view(
@@ -1054,7 +1188,85 @@ fn publish_builtin_view(
     image_rows: &mut view_build::ImageRowResidence,
     generations: &mut SemanticGenerationResidence,
 ) -> Result<view_publish::PublicationOutcome, BuiltinModelError> {
-    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let prepared = prepare_builtin_view(
+        daemon.engine().daemon().owner().snapshot(),
+        daemon.engine().daemon().library().view().clone(),
+        compiler,
+        deployment,
+        filesystem_workspace,
+        prior,
+        edit,
+        image_rows,
+        generations,
+    )?;
+    install_prepared_builtin_view(daemon, prepared)
+}
+
+// These narrow wrappers keep existing direct publication controls on the same
+// pure planner used by the worker path.
+#[cfg(test)]
+fn commit_published_target(
+    daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    current: ViewRoot,
+    target: ViewRoot,
+) -> Result<Vec<backend_engine::CommittedViewDelta>, BuiltinModelError> {
+    let mut preparation = BuiltinViewPreparation {
+        snapshot: daemon.engine().daemon().owner().snapshot(),
+        current,
+        event: None,
+    };
+    let current = preparation.current.clone();
+    let deltas = prepare_published_target(&mut preparation, current, target)?;
+    publish_test_preparation(daemon, preparation)?;
+    Ok(deltas)
+}
+
+#[cfg(test)]
+fn rebind_published_view(
+    daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+) -> Result<Vec<backend_engine::CommittedViewDelta>, BuiltinModelError> {
+    let mut preparation = BuiltinViewPreparation {
+        snapshot: daemon.engine().daemon().owner().snapshot(),
+        current: daemon.engine().daemon().library().view().clone(),
+        event: None,
+    };
+    let deltas = prepare_rebound_view(&mut preparation)?;
+    publish_test_preparation(daemon, preparation)?;
+    Ok(deltas)
+}
+
+#[cfg(test)]
+fn publish_test_preparation(
+    daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    preparation: BuiltinViewPreparation,
+) -> Result<(), BuiltinModelError> {
+    if preparation.event.is_none() {
+        return Ok(());
+    }
+    let view = preparation.current;
+    let cursor = backend_engine::Cursor::for_view_root(&view);
+    let admission = BuiltinViewAdmission {
+        workspace_root: preparation.snapshot.root(),
+        source_root: view.basis().root,
+    };
+    daemon
+        .engine_mut()
+        .daemon_mut()
+        .publish_view(view, cursor, &admission, preparation.event)
+        .map_err(|error| BuiltinModelError(format!("{error:?}")))
+}
+
+fn prepare_builtin_view_inner(
+    preparation: &mut BuiltinViewPreparation,
+    compiler: &backend_engine::application::LocalCompilerClient,
+    deployment: SemanticDeployment,
+    filesystem_workspace: &std::path::Path,
+    prior: Option<&view_publish::PublishedRoots>,
+    edit: Option<&BuiltinIntent>,
+    image_rows: &mut view_build::ImageRowResidence,
+    generations: &mut SemanticGenerationResidence,
+) -> Result<view_publish::PublicationOutcome, BuiltinModelError> {
+    let snapshot = preparation.snapshot.clone();
     let source_target = view_publish::source_root(&snapshot)?;
     let semantic_target = view_publish::semantic_root(&snapshot)?;
     let (source_base, source_transition_target) = snapshot
@@ -1083,14 +1295,14 @@ fn publish_builtin_view(
             BuiltinModelError("reused publication is missing its witness".to_owned())
         })?;
         return Ok(view_publish::PublicationOutcome {
-            deltas: rebind_published_view(daemon)?,
+            deltas: prepare_rebound_view(preparation)?,
             roots: prior.clone(),
             path: view_publish::PublicationPath::Reused,
         });
     }
     if let view_publish::PublicationPlan::Package { package } = plan
-        && let Some(outcome) = publish_package_view(
-            daemon,
+        && let Some(outcome) = prepare_package_view(
+            preparation,
             compiler,
             deployment,
             filesystem_workspace,
@@ -1105,16 +1317,16 @@ fn publish_builtin_view(
     {
         return Ok(outcome);
     }
-    let current = daemon.engine().daemon().library().view().clone();
-    let (target, activated, files) = view_for_workspace(
-        daemon,
+    let current = preparation.current.clone();
+    let (target, activated, files) = view_for_snapshot(
+        &snapshot,
         compiler,
         deployment,
         filesystem_workspace,
         image_rows,
         generations,
     )?;
-    let deltas = commit_published_target(daemon, current, target)?;
+    let deltas = prepare_published_target(preparation, current, target)?;
     Ok(view_publish::PublicationOutcome {
         deltas,
         roots: view_publish::PublishedRoots {
@@ -1126,8 +1338,8 @@ fn publish_builtin_view(
     })
 }
 
-fn publish_package_view(
-    daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+fn prepare_package_view(
+    preparation: &mut BuiltinViewPreparation,
     compiler: &backend_engine::application::LocalCompilerClient,
     deployment: SemanticDeployment,
     filesystem_workspace: &std::path::Path,
@@ -1142,13 +1354,13 @@ fn publish_package_view(
     let Some(prior) = prior else {
         return Ok(None);
     };
-    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let snapshot = preparation.snapshot.clone();
     let sources = view_publish::read_project_sources(&snapshot, package)?;
     if sources.projects.is_empty() {
         return Ok(None);
     }
     let (initial, _) = initial_view_for_workspace(&snapshot)?;
-    let current = daemon.engine().daemon().library().view().clone();
+    let current = preparation.current.clone();
     if let Some(edit) = edit
         && let Some(changed) = view_publish::changed_structural_files(edit, &sources)
         && let Some(resident) = view_publish::resident_symbols(current.row_refs(), package)
@@ -1173,7 +1385,7 @@ fn publish_package_view(
                 let same_basis = current.basis() == initial.basis();
                 if changes.is_empty() && same_coverage && same_basis {
                     return Ok(Some(package_publication(
-                        rebind_published_view(daemon)?,
+                        prepare_rebound_view(preparation)?,
                         prior,
                         source_target,
                         semantic_target,
@@ -1184,7 +1396,8 @@ fn publish_package_view(
                     && same_basis
                     && view_publish::row_patch_fits(current.row_count(), changes.len())
                 {
-                    if let Some(deltas) = try_commit_row_patch(daemon, current.clone(), changes)? {
+                    if let Some(deltas) = prepare_row_patch(preparation, current.clone(), changes)?
+                    {
                         return Ok(Some(package_publication(
                             deltas,
                             prior,
@@ -1207,7 +1420,7 @@ fn publish_package_view(
                     ) => return Ok(None),
                 };
                 return admit_spliced_package(
-                    daemon,
+                    preparation,
                     &snapshot,
                     &initial,
                     deployment,
@@ -1250,7 +1463,7 @@ fn publish_package_view(
         ) {
             Ok(changes) if changes.is_empty() => {
                 return Ok(Some(package_publication(
-                    rebind_published_view(daemon)?,
+                    prepare_rebound_view(preparation)?,
                     prior,
                     source_target,
                     semantic_target,
@@ -1258,7 +1471,7 @@ fn publish_package_view(
                 )));
             }
             Ok(changes) if view_publish::row_patch_fits(current.row_count(), changes.len()) => {
-                if let Some(deltas) = try_commit_row_patch(daemon, current.clone(), changes)? {
+                if let Some(deltas) = prepare_row_patch(preparation, current.clone(), changes)? {
                     return Ok(Some(package_publication(
                         deltas,
                         prior,
@@ -1284,7 +1497,7 @@ fn publish_package_view(
             ) => return Ok(None),
         };
     admit_spliced_package(
-        daemon,
+        preparation,
         &snapshot,
         &initial,
         deployment,
@@ -1316,8 +1529,8 @@ fn package_publication(
     }
 }
 
-fn try_commit_row_patch(
-    daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+fn prepare_row_patch(
+    preparation: &mut BuiltinViewPreparation,
     current: ViewRoot,
     changes: Vec<backend_engine::RowChange>,
 ) -> Result<Option<Vec<backend_engine::CommittedViewDelta>>, BuiltinModelError> {
@@ -1327,7 +1540,7 @@ fn try_commit_row_patch(
     if !changes.is_empty() {
         admitted_bytes_after_row_changes(current.row_refs(), &changes)?;
     }
-    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let snapshot = preparation.snapshot.clone();
     let workspace_root = snapshot.root();
     let capability = builtin_view_capability_for_workspace(&snapshot)?;
     let prepared = match current.prepare(
@@ -1348,31 +1561,20 @@ fn try_commit_row_patch(
         workspace_root,
         source_root: view.basis().root,
     };
-    daemon
-        .engine_mut()
-        .daemon_mut()
-        .publish_view(
-            view,
-            cursor,
-            &admission,
-            Some(backend_engine::CursorEvent::View {
-                delta: Box::new(committed.clone()),
-            }),
-        )
-        .map_err(|error| BuiltinModelError(format!("{error:?}")))?;
+    preparation.select(view, cursor, admission, Some(committed.clone()))?;
     Ok(Some(vec![committed]))
 }
 
-fn rebind_published_view(
-    daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+fn prepare_rebound_view(
+    preparation: &mut BuiltinViewPreparation,
 ) -> Result<Vec<backend_engine::CommittedViewDelta>, BuiltinModelError> {
-    let current = daemon.engine().daemon().library().view().clone();
-    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let current = preparation.current.clone();
+    let snapshot = preparation.snapshot.clone();
     let capability = builtin_view_capability_for_workspace(&snapshot)?;
     if current.capability().as_ref() == Some(&capability) {
         return Ok(Vec::new());
     }
-    try_commit_row_patch(daemon, current, Vec::new())?.ok_or_else(|| {
+    prepare_row_patch(preparation, current, Vec::new())?.ok_or_else(|| {
         BuiltinModelError(
             "the retained view could not admit its current workspace capability".to_owned(),
         )
@@ -1380,7 +1582,7 @@ fn rebind_published_view(
 }
 
 fn admit_spliced_package(
-    daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    preparation: &mut BuiltinViewPreparation,
     snapshot: &WorkspaceSnapshot,
     initial: &ViewRoot,
     deployment: SemanticDeployment,
@@ -1402,7 +1604,7 @@ fn admit_spliced_package(
         builtin_view_capability_for_workspace(snapshot)?,
     )
     .map_err(|error| BuiltinModelError(format!("{error:?}")))?;
-    let deltas = commit_published_target(daemon, current, target)?;
+    let deltas = prepare_published_target(preparation, current, target)?;
     Ok(view_publish::PublicationOutcome {
         deltas,
         roots: view_publish::PublishedRoots {
@@ -1414,8 +1616,8 @@ fn admit_spliced_package(
     })
 }
 
-fn commit_published_target(
-    daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+fn prepare_published_target(
+    preparation: &mut BuiltinViewPreparation,
     mut current: ViewRoot,
     target: ViewRoot,
 ) -> Result<Vec<backend_engine::CommittedViewDelta>, BuiltinModelError> {
@@ -1424,7 +1626,7 @@ fn commit_published_target(
         && current.row_count() == target.row_count()
         && current.row_refs().eq(target.row_refs())
     {
-        return rebind_published_view(daemon);
+        return prepare_rebound_view(preparation);
     }
     let changes = changed_rows(&current, &target);
     let deltas = if current.row_count() == 0
@@ -1439,7 +1641,7 @@ fn commit_published_target(
             changes: changes.into(),
         }]
     };
-    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let snapshot = preparation.snapshot.clone();
     let workspace_root = snapshot.root();
     let capability = builtin_view_capability_for_workspace(&snapshot)?;
     let mut committed_deltas = Vec::with_capacity(deltas.len());
@@ -1455,18 +1657,7 @@ fn commit_published_target(
             workspace_root,
             source_root: view.basis().root,
         };
-        daemon
-            .engine_mut()
-            .daemon_mut()
-            .publish_view(
-                view.clone(),
-                cursor,
-                &admission,
-                Some(backend_engine::CursorEvent::View {
-                    delta: Box::new(committed.clone()),
-                }),
-            )
-            .map_err(|error| BuiltinModelError(format!("{error:?}")))?;
+        preparation.select(view.clone(), cursor, admission, Some(committed.clone()))?;
         current = view;
         committed_deltas.push(committed);
     }
@@ -1713,7 +1904,10 @@ pub(crate) fn compose_owner(
     daemon
         .engine_mut()
         .daemon_mut()
-        .set_view_persistence(Box::new(view_journal));
+        .set_view_persistence(Box::new(view_journal))
+        .map_err(|(_, error)| {
+            ProcessError::Profile(format!("install view persistence: {error}"))
+        })?;
     if let Some(recovered) = recovered_view {
         let admission = BuiltinViewAdmission {
             workspace_root,

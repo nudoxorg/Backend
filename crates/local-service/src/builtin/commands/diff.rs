@@ -2716,7 +2716,8 @@ mod semantic_diff_tests {
         daemon
             .engine_mut()
             .daemon_mut()
-            .set_view_persistence(Box::new(journal));
+            .set_view_persistence(Box::new(journal))
+            .unwrap_or_else(|(_, error)| panic!("install fixture view persistence: {error}"));
         daemon
             .engine_mut()
             .daemon_mut()

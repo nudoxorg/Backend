@@ -1666,3 +1666,9 @@ fn raw_psrd_decoder_rejects_truncation_count_reference_and_order_corruption() {
     truncated_page.truncate(truncated_page.len() - 1);
     assert!(!psrd_decodes(&truncated_page));
 }
+
+#[path = "prepared_writer_tests.rs"]
+mod prepared_writer_tests;
+
+#[path = "prepared_read_head_tests.rs"]
+mod prepared_read_head_tests;

@@ -4,6 +4,7 @@ use super::super::{
     BuiltinValidator, BuiltinWorkspaceRelation, ProductSourceRecord, ingest,
 };
 use super::index_operation::IndexOperationJournal;
+use backend_engine::WorkspaceSnapshot;
 use backend_engine::application::{
     CaptureWorkspaceIdentityV2, CapturedFullWorkspaceV2, CompilerBalancingRequest,
     CompilerByteCredits, CompilerCpuCredits, CompilerDemand, CompilerInputAdmissionError,
@@ -1308,8 +1309,22 @@ pub(in crate::builtin) fn source_capture_receipt_for_root(
     operation_key: backend_library::IndexOperationKey,
     expected_request_identity: Option<[u8; 32]>,
 ) -> Result<Option<backend_library::IndexOperationSourceCaptureReceipt>, BuiltinModelError> {
-    source_capture_summary_for_root(
-        daemon,
+    source_capture_receipt_for_snapshot(
+        &daemon.engine().daemon().owner().snapshot(),
+        package,
+        operation_key,
+        expected_request_identity,
+    )
+}
+
+fn source_capture_receipt_for_snapshot(
+    snapshot: &WorkspaceSnapshot,
+    package: &backend_engine::PackageReference,
+    operation_key: backend_library::IndexOperationKey,
+    expected_request_identity: Option<[u8; 32]>,
+) -> Result<Option<backend_library::IndexOperationSourceCaptureReceipt>, BuiltinModelError> {
+    source_capture_summary_for_snapshot(
+        snapshot,
         package,
         Some(operation_key),
         expected_request_identity,
@@ -1335,9 +1350,21 @@ pub(in crate::builtin) fn source_capture_summary_for_root(
     operation_key: Option<backend_library::IndexOperationKey>,
     expected_request_identity: Option<[u8; 32]>,
 ) -> Result<Option<backend_library::IndexSourceCaptureSummary>, BuiltinModelError> {
-    let owner = daemon.engine().daemon().owner();
-    let snapshot = owner.snapshot();
-    let Some(relation) = semantic_capture_relation(&snapshot).map_err(|error| {
+    source_capture_summary_for_snapshot(
+        &daemon.engine().daemon().owner().snapshot(),
+        package,
+        operation_key,
+        expected_request_identity,
+    )
+}
+
+fn source_capture_summary_for_snapshot(
+    snapshot: &WorkspaceSnapshot,
+    package: &backend_engine::PackageReference,
+    operation_key: Option<backend_library::IndexOperationKey>,
+    expected_request_identity: Option<[u8; 32]>,
+) -> Result<Option<backend_library::IndexSourceCaptureSummary>, BuiltinModelError> {
+    let Some(relation) = semantic_capture_relation(snapshot).map_err(|error| {
         BuiltinModelError(format!("open selected source-capture relation: {error}"))
     })?
     else {
@@ -1578,11 +1605,24 @@ fn completed_capture_changes(
     semantic_changes: &[BuiltinSemanticChange],
     completions: &[AdmittedCapturePublication],
 ) -> Result<CompletedCaptureChanges, BuiltinModelError> {
-    let snapshot = daemon.engine().daemon().owner().snapshot();
+    completed_capture_changes_for_snapshot(
+        &daemon.engine().daemon().owner().snapshot(),
+        captures,
+        semantic_changes,
+        completions,
+    )
+}
+
+fn completed_capture_changes_for_snapshot(
+    snapshot: &WorkspaceSnapshot,
+    captures: &BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
+    semantic_changes: &[BuiltinSemanticChange],
+    completions: &[AdmittedCapturePublication],
+) -> Result<CompletedCaptureChanges, BuiltinModelError> {
     let publications = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open completed publications: {error}")))?;
-    let relation = semantic_capture_relation(&snapshot)
+    let relation = semantic_capture_relation(snapshot)
         .map_err(|error| BuiltinModelError(format!("open completed semantic captures: {error}")))?
         .ok_or_else(|| BuiltinModelError("semantic capture relation disappeared".to_owned()))?;
     let mut changes = Vec::with_capacity(captures.len());
@@ -2367,6 +2407,22 @@ pub(super) fn finish_deferred_profile(
     profile: DeferredProfileTicket,
     compiled: Result<StagedSemanticPackage, PackageSemanticRuntimeError>,
 ) -> Result<(), DeferredProfileFailure> {
+    finish_deferred_profile_for_snapshot(
+        &daemon.engine().daemon().owner().snapshot(),
+        semantic_authority,
+        job,
+        profile,
+        compiled,
+    )
+}
+
+pub(super) fn finish_deferred_profile_for_snapshot(
+    snapshot: &WorkspaceSnapshot,
+    semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
+    job: &mut DeferredIndex,
+    profile: DeferredProfileTicket,
+    compiled: Result<StagedSemanticPackage, PackageSemanticRuntimeError>,
+) -> Result<(), DeferredProfileFailure> {
     if job.completed_profiles >= job.expected_profiles {
         return Err(BuiltinModelError(
             "the deferred compile answered more profiles than requested; prior selected semantic generation was preserved"
@@ -2374,11 +2430,7 @@ pub(super) fn finish_deferred_profile(
         )
         .into());
     }
-    let relation = daemon
-        .engine()
-        .daemon()
-        .owner()
-        .snapshot()
+    let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic publications: {error}")))?;
     let compiler_failure = typed_package_compiler_failure(&compiled)?;
@@ -2467,6 +2519,28 @@ fn prepare_terminal_profile_partition(
     ),
     BuiltinModelError,
 > {
+    prepare_terminal_profile_partition_for_snapshot(
+        &daemon.engine().daemon().owner().snapshot(),
+        captures,
+        capture_changes,
+        refused_profiles,
+        has_publications,
+    )
+}
+
+fn prepare_terminal_profile_partition_for_snapshot(
+    snapshot: &WorkspaceSnapshot,
+    captures: &BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
+    capture_changes: &mut [BuiltinCaptureChange],
+    refused_profiles: &BTreeMap<LanguageProfile, PackageCompilerFailure>,
+    has_publications: bool,
+) -> Result<
+    (
+        Box<[backend_library::IndexOperationProfileRefusal]>,
+        Option<super::index_operation::PartialPublicationPlan>,
+    ),
+    BuiltinModelError,
+> {
     let mut matched_refusals = 0;
     for change in capture_changes.iter_mut() {
         if let Some(failure) = refused_profiles.get(&change.key.profile()) {
@@ -2528,7 +2602,7 @@ fn prepare_terminal_profile_partition(
                     })?
                     .package();
                 let mut capture =
-                    source_capture_receipt_for_root(daemon, package, operation_key, None)?
+                    source_capture_receipt_for_snapshot(snapshot, package, operation_key, None)?
                         .ok_or_else(|| {
                             BuiltinModelError(
                                 "partial selection lost its keyed source receipt".to_owned(),
@@ -2566,6 +2640,13 @@ fn prepare_terminal_profile_partition(
 
 pub(super) fn finish_deferred_index(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    job: DeferredIndex,
+) -> Result<PreparedProductSelection, BuiltinModelError> {
+    finish_deferred_index_for_snapshot(&daemon.engine().daemon().owner().snapshot(), job)
+}
+
+fn finish_deferred_index_for_snapshot(
+    snapshot: &WorkspaceSnapshot,
     mut job: DeferredIndex,
 ) -> Result<PreparedProductSelection, BuiltinModelError> {
     if !job.profiles.is_empty() || job.completed_profiles != job.expected_profiles {
@@ -2574,24 +2655,22 @@ pub(super) fn finish_deferred_index(
             .to_owned(),
         ));
     }
-    let completed = completed_capture_changes(
-        daemon,
+    let completed = completed_capture_changes_for_snapshot(
+        snapshot,
         &job.captures,
         &job.semantic_changes,
         &job.capture_publications,
     )?;
     job.semantic_changes.extend(completed.retained_publications);
     let mut capture_changes = completed.captures;
-    let (profile_refusals, partial_plan) = prepare_terminal_profile_partition(
-        daemon,
+    let (profile_refusals, partial_plan) = prepare_terminal_profile_partition_for_snapshot(
+        snapshot,
         &job.captures,
         &mut capture_changes,
         &job.refused_profiles,
         !job.capture_publications.is_empty(),
     )?;
-    let owner = daemon.engine().daemon().owner();
-    let relation = owner
-        .snapshot()
+    let relation = snapshot
         .relation::<BuiltinWorkspaceRelation>()
         .map_err(|error| BuiltinModelError(format!("open deferred project source: {error}")))?;
     let prior_project = relation

@@ -369,8 +369,10 @@ pub use backend_replication::{
 pub use backend_replication::{PeerCredentialError, peer_is_same_effective_uid};
 pub use daemon::{
     CompletionNotice, Daemon, DaemonConfig, DaemonError, DaemonHandle, DaemonProtocolConfig,
-    DaemonReply, DaemonRequest, Operation, QueryState, ReplicationReply, SubscriptionReply,
-    ViewBinding, ViewBindingAdmission, ViewBindingState, ViewPersistence,
+    DaemonReply, DaemonRequest, Operation, PublishedReadHead, QueryState,
+    ReadHeadPublicationFailure, ReadHeadWriter, ReplicationReply, RetiredReadHead,
+    SelectedReadHead, SubscriptionReply, ViewBinding, ViewBindingAdmission, ViewBindingState,
+    ViewPersistence,
 };
 pub use dispatch::{
     AcceptedResultProof, AuthoritySnapshot, AuthorityTransition, Blake3AuthorityVerifier,
@@ -422,13 +424,15 @@ pub use worker::{
 };
 pub use workspace::{
     DerivedOutputEntry, DerivedOutputPublication, Durable, DurablePublication, HeadExpectation,
-    OwnerLease, PersistedTransition, Prepared, PreparedPublication, PreparedTransition,
-    PublicationStatus, Published, PublishedPublication, RelationIdentity, RelationKeyPrefix,
-    TransactionId, TransactionSchema, TransactionVersion, TransitionWork, WorkspaceError,
-    WorkspaceGcPin, WorkspaceHead, WorkspaceModel, WorkspaceOwner, WorkspaceRecord,
+    OwnerLease, OwnerLeaseIdentity, PersistedTransition, Prepared, PreparedPublication,
+    PreparedTransition, PreparedWorkspaceCandidate, PublicationStatus, PublishGrant, Published,
+    PublishedPublication, PublishedWorkspaceWriter, RelationIdentity, RelationKeyPrefix,
+    RetiredWorkspaceHead, TransactionId, TransactionSchema, TransactionVersion, TransitionWork,
+    UnselectedWorkspaceCandidate, WorkspaceCandidateClaim, WorkspaceError, WorkspaceGcPin,
+    WorkspaceHead, WorkspaceModel, WorkspaceOwner, WorkspacePublicationFailure, WorkspaceRecord,
     WorkspaceRelationChild, WorkspaceRelationError, WorkspaceRelationFault,
     WorkspaceRelationHandle, WorkspaceRelationNodeHandle, WorkspaceRelationNodePage,
-    WorkspaceRelationRejection, WorkspaceSnapshot,
+    WorkspaceRelationRejection, WorkspaceSnapshot, WorkspaceWriter,
 };
 
 /// Generic engine composition around one daemon owner.
