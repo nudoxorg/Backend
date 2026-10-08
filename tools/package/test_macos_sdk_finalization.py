@@ -10,11 +10,21 @@ from unittest.mock import patch
 import finalize_macos_typescript_sdk as finalizer
 import macos_release as release
 import test_macos_sdk_bundle_contract as fixtures
+import macho_signing_identity as identity
+from test_macho_signing_identity import fixture, remove_signature
 
 
 class SdkFinalizationContracts(unittest.TestCase):
     def setUp(self):
         fixtures.SdkOnlyContracts.setUp(self)
+        tool = self.root / 'selected-codesign'
+        tool.write_bytes(b'unit selected signing tool')
+        for mock in (patch.object(identity, 'CODESIGN', tool),
+                     patch.object(finalizer.bundle, 'bounded_sdk_probe', side_effect=remove_signature)):
+            mock.start(); self.addCleanup(mock.stop)
+
+    def admit(self, app, evidence):
+        return finalizer.admit(app, evidence, self.output, self.selected_receipt_sha256)
 
     def assembly(self):
         self.output = self.root / 'release'
@@ -22,7 +32,7 @@ class SdkFinalizationContracts(unittest.TestCase):
         payload = app / 'Contents/Resources/Helpers'
         shutil.copytree(self.payload, payload)
         node = payload / 'typescript/node/bin/node'
-        node.write_bytes(b'\xcf\xfa\xed\xfeunit Node fixture')
+        node.write_bytes(fixture(code=b'original Node code'))
         original = copy.deepcopy(self.receipt)
         original['files']['typescript/node/bin/node'] = fixtures.bundle.sha256(node)
         original['tools']['node']['sha256'] = fixtures.bundle.sha256(node)
@@ -30,11 +40,14 @@ class SdkFinalizationContracts(unittest.TestCase):
         provenance.mkdir()
         origin = app / finalizer.ORIGIN
         origin.write_text(json.dumps(original))
+        self.selected_receipt = self.root / 'selected-source-receipt.json'
+        shutil.copyfile(origin, self.selected_receipt)
+        self.selected_receipt_sha256 = fixtures.bundle.sha256(self.selected_receipt)
         receipt, receipt_path = fixtures.bundle.write_sdk_bundle_receipt(payload, provenance, self.source, self.target, original, origin)
         for name in fixtures.bundle.EXECUTABLES:
             image = app / 'Contents/MacOS' / name
             image.parent.mkdir(exist_ok=True)
-            image.write_bytes(b'\xcf\xfa\xed\xfeunit application fixture')
+            image.write_bytes(fixture(code=name.encode()))
         paths = {f'Contents/MacOS/{name}' for name in fixtures.bundle.EXECUTABLES}
         paths.add('Contents/Resources/Helpers/typescript/node/bin/node')
         evidence = {'schema':1, 'source':self.source,
@@ -58,9 +71,9 @@ class SdkFinalizationContracts(unittest.TestCase):
         original_manifest = (app/finalizer.MANIFEST).read_bytes()
         original_receipt = (app/finalizer.RECEIPT).read_bytes()
         original_origin = (app/finalizer.ORIGIN).read_bytes()
-        precursor = finalizer.admit(app,evidence,self.output)
+        precursor = self.admit(app,evidence)
         node = app/'Contents/Resources/Helpers/typescript/node/bin/node'
-        node.write_bytes(node.read_bytes()+b'unit code signature')
+        node.write_bytes(fixture(b'changed unit signature' * 512, code=b'original Node code'))
         signature = app/'Contents/_CodeSignature/CodeResources'
         signature.parent.mkdir(); signature.write_bytes(b'unit previous seal')
         with patch.object(finalizer.bundle,'inspect_macho_tree',side_effect=self.inspect), patch.object(finalizer.bundle,'verify_sdk_runtime',return_value={'unit_post_sign_probe':True}) as probe:
@@ -82,12 +95,12 @@ class SdkFinalizationContracts(unittest.TestCase):
         app,evidence=self.assembly()
         (app/'Contents/MacOS/backend-cli').write_bytes(b'changed')
         with self.assertRaisesRegex(ValueError,'inventory changed'):
-            finalizer.admit(app,evidence,self.output)
+            self.admit(app,evidence)
         self.assertFalse((self.output/'sdk-assembly-evidence').exists())
 
     def test_signing_must_not_change_package_before_native_probe(self):
         app,evidence=self.assembly()
-        precursor=finalizer.admit(app,evidence,self.output)
+        precursor=self.admit(app,evidence)
         (app/'Contents/Resources/Helpers/typescript/node_modules/typescript/lib/typescript.js').write_bytes(b'changed')
         with patch.object(finalizer.bundle,'verify_sdk_runtime') as probe:
             with self.assertRaisesRegex(ValueError,'package/notices changed'):
@@ -95,14 +108,14 @@ class SdkFinalizationContracts(unittest.TestCase):
             probe.assert_not_called()
 
     def test_unsigned_inner_image_blocks_probe_and_outer_seal(self):
-        app,evidence=self.assembly();precursor=finalizer.admit(app,evidence,self.output)
+        app,evidence=self.assembly();precursor=self.admit(app,evidence)
         with patch.object(finalizer.bundle,'inspect_macho_tree',return_value=[{'path':r['path'],'signature':'invalidated'} for r in evidence['macho_images']]), patch.object(finalizer.bundle,'verify_sdk_runtime') as probe:
             with self.assertRaisesRegex(ValueError,'set/signatures'):
                 finalizer.refresh(app,evidence,precursor)
             probe.assert_not_called()
 
     def test_native_probe_failure_leaves_no_refreshed_manifest(self):
-        app,evidence=self.assembly();precursor=finalizer.admit(app,evidence,self.output)
+        app,evidence=self.assembly();precursor=self.admit(app,evidence)
         original=(app/finalizer.MANIFEST).read_bytes()
         with patch.object(finalizer.bundle,'inspect_macho_tree',side_effect=self.inspect), patch.object(finalizer.bundle,'verify_sdk_runtime',side_effect=finalizer.bundle.PackageError('unit native failure')):
             with self.assertRaisesRegex(finalizer.bundle.PackageError,'unit native failure'):
@@ -115,13 +128,15 @@ class SdkFinalizationContracts(unittest.TestCase):
         source=self.root/'source';source.mkdir();(source/'Cargo.toml').write_text('[workspace.package]\nversion="0.2.0"\n')
         (source/'Cargo.lock').write_bytes(b'unit lock')
         config={'source_root':str(source),'output_dir':str(self.output),'expected_revision':self.source['git_revision'],
-                'expected_tree':self.source['git_tree'],'minimum_os':'14.4','signing_identity':'unit Developer ID','notary_profile':'unit-profile','sdk_only':True}
+                'expected_tree':self.source['git_tree'],'minimum_os':'14.4','signing_identity':'unit Developer ID','notary_profile':'unit-profile','sdk_only':True,
+                'helpers_receipt':str(self.selected_receipt)}
         outer_manifest=[]
         def run(command,**kwargs):
             if command[0]=='codesign' and '--sign' in command:
                 path=Path(command[-1])
                 if path.is_file():
-                    path.write_bytes(path.read_bytes()+b'unit signature mutation')
+                    code = b'original Node code' if path.name == 'node' else path.name.encode()
+                    path.write_bytes(fixture(b'changed unit signature' * 512, code=code))
                 else:
                     refreshed=json.loads((app/finalizer.MANIFEST).read_text())
                     node=app/'Contents/Resources/Helpers/typescript/node/bin/node'
@@ -163,7 +178,7 @@ class SdkFinalizationContracts(unittest.TestCase):
             parse.assert_not_called();run.assert_not_called()
 
     def test_native_probe_cannot_leave_stale_application_image_hashes(self):
-        app,evidence=self.assembly();precursor=finalizer.admit(app,evidence,self.output)
+        app,evidence=self.assembly();precursor=self.admit(app,evidence)
         original=(app/finalizer.MANIFEST).read_bytes()
         def probe(*args):
             image=app/'Contents/MacOS/backend-cli'
@@ -173,6 +188,43 @@ class SdkFinalizationContracts(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'files changed during native probes'):
                 finalizer.refresh(app,evidence,precursor)
         self.assertEqual((app/finalizer.MANIFEST).read_bytes(),original)
+
+    def test_signed_substitution_of_node_or_application_is_rejected_before_probe(self):
+        for name in ('Contents/Resources/Helpers/typescript/node/bin/node', 'Contents/MacOS/backend-cli'):
+            with self.subTest(image=name):
+                # Separate assembly preserves each admission's private precursor.
+                if hasattr(self, 'output'):
+                    shutil.rmtree(self.output)
+                app,evidence=self.assembly();precursor=self.admit(app,evidence)
+                (app/name).write_bytes(fixture(b'signed replacement', code=b'substitute code'))
+                with patch.object(finalizer.bundle,'inspect_macho_tree',side_effect=self.inspect), patch.object(finalizer.bundle,'verify_sdk_runtime') as probe:
+                    with self.assertRaisesRegex(ValueError,'code differs'):
+                        finalizer.refresh(app,evidence,precursor)
+                    probe.assert_not_called()
+
+    def test_self_consistent_replaced_origin_cannot_change_external_selection(self):
+        app,evidence=self.assembly()
+        origin=app/finalizer.ORIGIN
+        origin.write_bytes(origin.read_bytes()+b'\n')
+        new_pin=fixtures.bundle.sha256(origin)
+        receipt_path=app/finalizer.RECEIPT
+        receipt=json.loads(receipt_path.read_text());receipt['source_receipt_sha256']=new_pin
+        receipt_path.write_text(json.dumps(receipt))
+        evidence['compiler_helpers']['source_receipt_sha256']=new_pin
+        evidence['compiler_helpers']['receipt_sha256']=fixtures.bundle.sha256(receipt_path)
+        evidence['files']=fixtures.bundle.file_inventory(app);evidence['files'].pop(finalizer.MANIFEST)
+        (app/finalizer.MANIFEST).write_text(json.dumps(evidence))
+        with self.assertRaisesRegex(ValueError,'manifest/origin binding'):
+            self.admit(app,evidence)
+        self.assertFalse((self.output/'sdk-assembly-evidence').exists())
+
+    def test_mode_mutation_after_admission_is_rejected_before_probes(self):
+        app,evidence=self.assembly();precursor=self.admit(app,evidence)
+        (app/'Contents/Resources/Helpers/typescript/node/bin/node').chmod(0o777)
+        with patch.object(finalizer.bundle,'verify_sdk_runtime') as probe:
+            with self.assertRaisesRegex(finalizer.bundle.PackageError,'0755/0644'):
+                finalizer.refresh(app,evidence,precursor)
+            probe.assert_not_called()
 
 
 if __name__=='__main__':unittest.main()

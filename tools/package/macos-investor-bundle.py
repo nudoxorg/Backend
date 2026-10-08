@@ -20,6 +20,7 @@ import posixpath
 import re
 import selectors
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -104,19 +105,34 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def file_inventory(root: Path) -> dict[str, dict[str, Any]]:
+def file_inventory(root: Path, *, maximum_entries: int = 65536,
+                   maximum_bytes: int = 8 * 1024**3) -> dict[str, dict[str, Any]]:
     inventory: dict[str, dict[str, Any]] = {}
-    for path in sorted(root.rglob("*")):
-        relative = path.relative_to(root).as_posix()
-        if path.is_symlink():
-            inventory[relative] = {"kind": "symlink", "target": os.readlink(path)}
-        elif path.is_file():
-            inventory[relative] = {
-                "kind": "file",
-                "sha256": sha256(path),
-                "size_bytes": path.stat().st_size,
-            }
-    return inventory
+    pending = [root]
+    entries = total = 0
+    while pending:
+        with os.scandir(pending.pop()) as children:
+            for child in children:
+                entries += 1
+                if entries > maximum_entries:
+                    fail("bundle inventory exceeds its finite entry bound")
+                path = Path(child.path)
+                relative = path.relative_to(root).as_posix()
+                mode = path.lstat().st_mode
+                if stat.S_ISLNK(mode):
+                    inventory[relative] = {"kind": "symlink", "target": os.readlink(path)}
+                elif stat.S_ISDIR(mode):
+                    pending.append(path)
+                elif stat.S_ISREG(mode):
+                    size, digest = admit_file_digest(path, min(512 * 1024**2, maximum_bytes - total))
+                    if path.lstat().st_mode != mode:
+                        fail("bundle file mode changed during inventory admission")
+                    total += size
+                    inventory[relative] = {"kind": "file", "sha256": digest,
+                                           "size_bytes": size, "mode": stat.S_IMODE(mode)}
+                else:
+                    fail("bundle inventory contains a special file")
+    return dict(sorted(inventory.items()))
 
 
 def load_json(path: Path, label: str) -> dict[str, Any]:
@@ -813,6 +829,45 @@ def validate_roslyn_build(
     return receipt, observed
 
 
+def sdk_file_modes(records: dict[str, str]) -> dict[str, int]:
+    return {relative: 0o755 if relative == "typescript/node/bin/node" else 0o644
+            for relative in records}
+
+
+def sdk_file_digests(helper_dir: Path, records: dict[str, str]) -> dict[str, str]:
+    """Refresh selected hashes only within remaining aggregate/package budgets."""
+    if not isinstance(records, dict) or not records or len(records) > 512:
+        fail("SDK helper receipt must contain a bounded complete file inventory")
+    total = package_bytes = 0
+    observed = {}
+    for relative in records:
+        if not isinstance(relative, str):
+            fail("SDK helper receipt has an unsafe file path")
+        path = Path(relative)
+        if ("\\" in relative or path.is_absolute()
+                or path.as_posix() != relative or any(part in {".", ".."} for part in path.parts)
+                or (relative not in {"typescript/node/bin/node", "typescript/node/LICENSE"}
+                    and not relative.startswith("typescript/node_modules/typescript/"))):
+            fail("SDK helper receipt has an unsafe file path")
+        selected = helper_dir / relative
+        expected_mode = sdk_file_modes({relative: ""})[relative]
+        if stat.S_IMODE(selected.lstat().st_mode) != expected_mode:
+            fail("SDK helper file differs from its exact 0755/0644 mode policy")
+        maximum = 512 * 1024**2 - total
+        package = relative.startswith("typescript/node_modules/typescript/")
+        if package:
+            maximum = min(maximum, 96 * 1024**2 - package_bytes)
+        if relative == "typescript/node/LICENSE":
+            maximum = min(maximum, 1024**2)
+        size, digest = admit_file_digest(selected, maximum)
+        if stat.S_IMODE(selected.lstat().st_mode) != expected_mode:
+            fail("SDK helper mode changed during bounded admission")
+        total += size
+        package_bytes += size if package else 0
+        observed[relative] = digest
+    return observed
+
+
 def validate_sdk_helper_payload(
     receipt: dict[str, Any], helper_dir: Path, source: dict[str, str], target: str,
 ) -> tuple[dict[str, Any], dict[str, str]]:
@@ -822,6 +877,8 @@ def validate_sdk_helper_payload(
     records = receipt.get("files")
     if not isinstance(records, dict) or not records or len(records) > 512:
         fail("SDK helper receipt must contain a bounded complete file inventory")
+    if receipt.get("file_modes") != sdk_file_modes(records):
+        fail("SDK helper receipt must bind exact 0755 Node and 0644 package/notice modes")
     directories: set[str] = set()
     for relative, digest in records.items():
         if not isinstance(relative, str) or "\\" in relative:
@@ -849,6 +906,9 @@ def validate_sdk_helper_payload(
                 continue
             if relative not in records:
                 fail("SDK helper payload contains an unreceipted file")
+            expected_mode = receipt["file_modes"][relative]
+            if stat.S_IMODE(path.lstat().st_mode) != expected_mode:
+                fail("SDK helper file differs from its exact 0755/0644 mode policy")
             maximum = 512 * 1024**2 - total
             is_package = relative.startswith("typescript/node_modules/typescript/")
             if is_package:
@@ -860,6 +920,8 @@ def validate_sdk_helper_payload(
             except (OSError, ValueError) as error:
                 fail(f"SDK helper file failed bounded identity admission: {error}")
             total += size
+            if stat.S_IMODE(path.lstat().st_mode) != expected_mode:
+                fail("SDK helper mode changed during bounded admission")
             if is_package:
                 package_bytes += size
             observed[relative] = digest
@@ -903,8 +965,8 @@ def write_sdk_bundle_receipt(
     """Bind relocated bytes separately; retain the admitted original receipt unchanged."""
     receipt = dict(original)
     receipt["source"] = dict(source)
-    receipt["files"] = {relative: admit_file_digest(helper_resources / relative, 512 * 1024**2)[1]
-                        for relative in original["files"]}
+    receipt["files"] = sdk_file_digests(helper_resources, original["files"])
+    receipt["file_modes"] = sdk_file_modes(receipt["files"])
     receipt["tools"] = {name: dict(record) for name, record in original["tools"].items()}
     receipt["tools"]["node"]["sha256"] = receipt["files"]["typescript/node/bin/node"]
     receipt["source_receipt_sha256"] = sha256(original_receipt)

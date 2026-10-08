@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Native Mac release driver: preflight, receipted build/package, sign/notarize."""
 import argparse
+import hashlib
 import json
 import platform
 import plistlib
@@ -143,7 +144,11 @@ def finalize(config):
                 or evidence["bundle"]["minimum_macos"] != config["minimum_os"]):
             raise ValueError("SDK assembly source/target/minimum OS differs from selected release")
         try:
-            precursor = sdk.admit(app, evidence, output)
+            selected_receipt = Path(config["helpers_receipt"]).resolve(strict=True)
+            if selected_receipt.is_relative_to(app.resolve(strict=True)):
+                raise ValueError("selected SDK source receipt must be external to the assembled app")
+            selected_bytes = sdk.read_regular_bytes(selected_receipt, 16 * 1024**2, "selected external SDK source receipt")
+            precursor = sdk.admit(app, evidence, output, hashlib.sha256(selected_bytes).hexdigest())
         except sdk.bundle.PackageError as error:
             raise ValueError(str(error)) from error
     elif evidence.get("compiler_helpers", {}).get("assembly_mode") == "typescript-sdk-only":

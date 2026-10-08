@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from linux_release_package import parse_json_bytes, read_regular_bytes
+from macho_signing_identity import code_identity
 
 spec = importlib.util.spec_from_file_location("signed_sdk_bundle", Path(__file__).with_name("macos-investor-bundle.py"))
 bundle = importlib.util.module_from_spec(spec)
@@ -20,8 +21,9 @@ def read_json(path, label):
     return parse_json_bytes(read_regular_bytes(path, 16 * 1024**2, label), label)
 
 
-def admit(app, evidence, output):
+def admit(app, evidence, output, expected_source_receipt_sha256):
     """Reject changed assembly inputs and retain their exact precursor bytes."""
+    bundle.require_sha(expected_source_receipt_sha256, "selected external SDK receipt")
     manifest_raw = read_regular_bytes(app / MANIFEST, 16 * 1024**2, "SDK assembly manifest")
     if parse_json_bytes(manifest_raw, "SDK assembly manifest") != evidence:
         raise ValueError("SDK assembly manifest changed before signing")
@@ -31,28 +33,40 @@ def admit(app, evidence, output):
         raise ValueError("SDK assembly file inventory changed before signing")
     receipt_raw = read_regular_bytes(app / RECEIPT, 16 * 1024**2, "SDK assembly helper receipt")
     receipt = parse_json_bytes(receipt_raw, "SDK assembly helper receipt")
+    origin_raw = read_regular_bytes(app / ORIGIN, 16 * 1024**2, "SDK selected source receipt")
+    origin_sha = hashlib.sha256(origin_raw).hexdigest()
     helpers = evidence["compiler_helpers"]
     if (helpers.get("assembly_mode") != "typescript-sdk-only"
             or hashlib.sha256(receipt_raw).hexdigest() != helpers["receipt_sha256"]
             or receipt.get("files") != helpers["files"] or receipt.get("tools") != helpers["tools"]
-            or receipt.get("source_receipt_sha256") != bundle.sha256(app / ORIGIN)
-            or helpers.get("source_receipt_sha256") != bundle.sha256(app / ORIGIN)):
+            or origin_sha != expected_source_receipt_sha256
+            or receipt.get("source_receipt_sha256") != origin_sha
+            or helpers.get("source_receipt_sha256") != origin_sha):
         raise ValueError("SDK assembly receipt differs from its manifest/origin binding")
     bundle.validate_sdk_helper_payload(receipt, app / "Contents/Resources/Helpers", evidence["source"], evidence["target"]["triple"])
+    image_paths = [record["path"] for record in evidence["macho_images"]]
+    if (len(set(image_paths)) != len(image_paths)
+            or any(observed.get(name, {}).get("kind") != "file" for name in image_paths)):
+        raise ValueError("Mach-O identity paths must be unique admitted bundle files")
+    identities = {record["path"]: code_identity(app / record["path"], bundle.bounded_sdk_probe)
+                  for record in evidence["macho_images"]}
+    if any(observed.get(name, {}).get("sha256") != identity["raw_sha256"]
+           for name, identity in identities.items()):
+        raise ValueError("admitted Mach-O identity differs from its assembly inventory")
     precursor = output / "sdk-assembly-evidence"
     precursor.mkdir()
     (precursor / "build-manifest.json").write_bytes(manifest_raw)
     (precursor / "compiler-helpers-receipt.json").write_bytes(receipt_raw)
     return {"manifest_sha256": hashlib.sha256(manifest_raw).hexdigest(),
-            "receipt_sha256": hashlib.sha256(receipt_raw).hexdigest(), "receipt": receipt}
+            "receipt_sha256": hashlib.sha256(receipt_raw).hexdigest(), "receipt": receipt,
+            "selected_source_receipt_sha256": origin_sha, "code_identities": identities}
 
 
 def refresh(app, evidence, precursor):
     """Authenticate signed bytes and probes; caller seals the outer app next."""
     receipt = copy.deepcopy(precursor["receipt"])
     payload = app / "Contents/Resources/Helpers"
-    receipt["files"] = {name: bundle.admit_file_digest(payload / name, 512 * 1024**2)[1]
-                        for name in receipt["files"]}
+    receipt["files"] = bundle.sdk_file_digests(payload, receipt["files"])
     if any(digest != precursor["receipt"]["files"][name]
            for name, digest in receipt["files"].items() if name != "typescript/node/bin/node"):
         raise ValueError("SDK package/notices changed during signing")
@@ -67,6 +81,18 @@ def refresh(app, evidence, precursor):
     original_images = {record["path"] for record in evidence["macho_images"]}
     if {record["path"] for record in images} != original_images or any(record["signature"] != "signed" for record in images):
         raise ValueError("post-sign SDK Mach-O set/signatures differ from admitted assembly")
+    signed_identities = {record["path"]: code_identity(app / record["path"], bundle.bounded_sdk_probe)
+                         for record in images}
+    if set(signed_identities) != set(precursor["code_identities"]):
+        raise ValueError("post-sign code identity set differs from admitted assembly")
+    for name, identity in signed_identities.items():
+        before_identity = precursor["code_identities"][name]
+        if any(identity[key] != before_identity[key] for key in
+               ("signature_independent_sha256", "codesign_path", "codesign_sha256", "normalization")):
+            raise ValueError("post-sign executable code differs from admitted pre-sign content")
+    if any(identity["raw_sha256"] != next(record["sha256"] for record in images if record["path"] == name)
+           for name, identity in signed_identities.items()):
+        raise ValueError("signed Mach-O changed during code identity admission")
     observed = bundle.file_inventory(app)
     observed.pop(MANIFEST, None)
     # Signing may change admitted Mach-O bytes and create signature sidecars.
@@ -107,6 +133,9 @@ def refresh(app, evidence, precursor):
     result["file_inventory_scope"] = "all bundle files except this manifest and the subsequent outer Contents/_CodeSignature seal"
     result["sdk_finalization"] = {"assembly_build_manifest_sha256": precursor["manifest_sha256"],
                                   "assembly_helper_receipt_sha256": precursor["receipt_sha256"],
+                                  "selected_source_receipt_sha256": precursor["selected_source_receipt_sha256"],
+                                  "code_identity_before": precursor["code_identities"],
+                                  "code_identity_after": signed_identities,
                                   "native_probes_stage": "after inner signing, before outer app seal"}
     result["bundle"]["signature"] = "outer seal is recorded by the release manifest"
     result["distribution_status"] = "signed inner images and SDK probes admitted; outer app signing/notarization and native installed QA pending"

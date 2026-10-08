@@ -76,6 +76,7 @@ def stage(source_root: Path, revision: str, tree: str, target: str, node: Path,
         destination.chmod(0o755 if relative == "typescript/node/bin/node" else 0o644)
     receipt = {"schema": 1, "source": source, "target": target,
                "files": {relative: digest for relative, (_, digest) in admitted.items()},
+               "file_modes": bundle.sdk_file_modes(admitted),
                "tools": {"node": {"version": node_version, "sha256": node_digest}, "typescript": {"version": typescript_version}},
                "notices": {"node": "typescript/node/LICENSE", "typescript": "typescript/node_modules/typescript/LICENSE.txt",
                            "typescript_third_party": "typescript/node_modules/typescript/ThirdPartyNoticeText.txt"},

@@ -2,6 +2,7 @@
 """SDK packaging data/lifecycle contracts; ordinary fixtures are not native SDK proof."""
 import importlib.util
 import json
+import os
 import plistlib
 from pathlib import Path
 import subprocess
@@ -44,6 +45,7 @@ class SdkOnlyContracts(unittest.TestCase):
         self.target = 'aarch64-apple-darwin'
         self.receipt = dict(schema=1, source=self.source, target=self.target,
                             files={name:bundle.sha256(self.payload/name) for name in files},
+                            file_modes=bundle.sdk_file_modes(files),
                             tools={'node':{'version':'v24.18.0','sha256':bundle.sha256(self.payload/'typescript/node/bin/node')},'typescript':{'version':'5.9.3'}},
                             notices={'node':'typescript/node/LICENSE','typescript':package+'LICENSE.txt','typescript_third_party':package+'ThirdPartyNoticeText.txt'})
 
@@ -91,6 +93,49 @@ class SdkOnlyContracts(unittest.TestCase):
         with p.open('wb') as f:f.truncate(96*1024**2+1)
         with self.assertRaisesRegex(bundle.PackageError,'bounded identity admission'):
             self.validate()
+
+    def test_exact_modes_are_receipted_and_enforced_for_node_and_package(self):
+        for name, mode in [('typescript/node/bin/node', 0o777),
+                           ('typescript/node_modules/typescript/lib/typescript.js', 0o755)]:
+            with self.subTest(name=name):
+                selected=self.payload/name;selected.chmod(mode)
+                with self.assertRaisesRegex(bundle.PackageError,'0755/0644'):
+                    self.validate()
+                selected.chmod(bundle.sdk_file_modes({name:''})[name])
+        self.receipt['file_modes']['typescript/node/bin/node']=0o777
+        with self.assertRaisesRegex(bundle.PackageError,'bind exact'):
+            self.validate()
+
+    def test_refresh_passes_remaining_total_and_package_budgets_before_hash(self):
+        node='typescript/node/bin/node'
+        package='typescript/node_modules/typescript/lib/typescript.js'
+        records={node:self.receipt['files'][node], package:self.receipt['files'][package]}
+        seen=[]
+        def digest(path,maximum):
+            seen.append((path,maximum))
+            if path.name=='node':return 500*1024**2,'a'*64
+            self.assertEqual(maximum,12*1024**2)
+            raise ValueError('rejected by remaining bound before hashing')
+        with patch.object(bundle,'admit_file_digest',side_effect=digest):
+            with self.assertRaisesRegex(ValueError,'remaining bound'):
+                bundle.sdk_file_digests(self.payload,records)
+        self.assertEqual(len(seen),2)
+        with patch.object(bundle,'admit_file_digest') as digest:
+            with self.assertRaisesRegex(bundle.PackageError,'bounded complete'):
+                bundle.sdk_file_digests(self.payload,{str(n):'a'*64 for n in range(513)})
+            digest.assert_not_called()
+
+    def test_whole_bundle_inventory_rejects_special_files_and_finite_limits(self):
+        root=self.root/'inventory';root.mkdir()
+        (root/'one').write_bytes(b'aa');(root/'two').write_bytes(b'bb')
+        with self.assertRaisesRegex(ValueError,'byte bound'):
+            bundle.file_inventory(root,maximum_bytes=3)
+        with self.assertRaisesRegex(bundle.PackageError,'entry bound'):
+            bundle.file_inventory(root,maximum_entries=1)
+        if hasattr(os,'mkfifo'):
+            os.mkfifo(root/'pipe')
+            with self.assertRaisesRegex(bundle.PackageError,'special file'):
+                bundle.file_inventory(root)
 
     def test_relocation_receipt_keeps_original_and_binds_actual_changed_node(self):
         original = self.root/'source-receipt.json';original.write_text(json.dumps(self.receipt))
