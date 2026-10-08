@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -504,9 +505,18 @@ def _replace_symlink(link: Path, target: str) -> None:
 
 def verify_existing_install(final: Path, expected_marker: dict, entry: dict, manifest: dict) -> None:
     """Reuse a prior release only after rechecking the files on disk."""
-    installed_marker = final / ".installed-release.json"
+    installed_marker = _verified_package_path(final, ".installed-release.json")
     try:
-        existing_marker = json.loads(installed_marker.read_text())
+        descriptor = os.open(installed_marker, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_size > 16 * 1024:
+                raise InstallError("installed release marker is not a bounded regular file")
+            raw_marker = stream.read(16 * 1024 + 1)
+            after = os.fstat(stream.fileno())
+            if len(raw_marker) > 16 * 1024 or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                raise InstallError("installed release marker changed during bounded admission")
+            existing_marker = json.loads(raw_marker)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise InstallError(f"refusing to reuse existing unverified install at {final}") from error
     if existing_marker != expected_marker:

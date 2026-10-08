@@ -11,6 +11,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -21,7 +22,8 @@ TARGET = "x86_64-unknown-linux-gnu"
 INTERPRETER = "/lib64/ld-linux-x86-64.so.2"
 TAG_RE = re.compile(r"checkpoint-[0-9]{8}-[a-f0-9]{10}-linux-x64\Z")
 # Shared with native standalone SDK admission; one finite loader classification.
-GLIBC_SONAMES = frozenset(Path(__file__).with_name("linux_system_sonames.txt").read_text().splitlines())
+LINUX_SYSTEM_SONAMES_BYTES = Path(__file__).with_name("linux_system_sonames.txt").read_bytes()
+GLIBC_SONAMES = frozenset(LINUX_SYSTEM_SONAMES_BYTES.decode("ascii").splitlines())
 
 NEEDED = re.compile(r"^\s*(\S+) => (\S+) \(", re.MULTILINE)
 GLIBC_VERSION = re.compile(r"GLIBC_([0-9]+\.[0-9]+)")
@@ -62,16 +64,78 @@ def ldd_dependencies(linkage: str) -> list[tuple[str, str]]:
     return dependencies
 
 
-def load_json(path: Path, label: str) -> dict:
-    if path.is_symlink() or not path.is_file() or path.stat().st_size > 16 * 1024 * 1024:
-        fail(f"{label} must be a regular file under 16 MiB")
+def read_regular_bytes(path: Path, maximum: int, label: str) -> bytes:
+    """Read one bounded regular object without following its final link or waiting on a FIFO."""
     try:
-        value = json.loads(path.read_text())
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_size > maximum:
+                fail(f"{label} must be a regular file under its byte bound")
+            value = stream.read(maximum + 1)
+            after = os.fstat(stream.fileno())
+            current = path.lstat()
+            if len(value) > maximum or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns) or (current.st_dev, current.st_ino) != (after.st_dev, after.st_ino):
+                fail(f"{label} changed during admission")
+            return value
+    except OSError as error:
+        fail(f"cannot read {label}: {error}")
+
+
+def parse_json_bytes(raw: bytes, label: str) -> dict:
+    try:
+        value = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
         fail(f"cannot read {label}: {error}")
     if not isinstance(value, dict):
         fail(f"{label} must contain a JSON object")
     return value
+
+
+def load_json(path: Path, label: str) -> dict:
+    return parse_json_bytes(read_regular_bytes(path, 16 * 1024 * 1024, label), label)
+
+
+def copy_admitted_file(source: Path, target: Path, expected_digest: str) -> None:
+    """Copy from one regular FD and bind pre-relocation private-stage bytes to admission."""
+    created = False
+    try:
+        descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as incoming:
+            before = os.fstat(incoming.fileno())
+            if not stat.S_ISREG(before.st_mode):
+                fail("admitted copy source is not a regular file")
+            digest = hashlib.sha256()
+            with target.open("xb") as outgoing:
+                created = True
+                copied = 0
+                while copied <= before.st_size:
+                    chunk = incoming.read(min(1024 * 1024, before.st_size - copied + 1))
+                    if not chunk:
+                        break
+                    copied += len(chunk)
+                    digest.update(chunk)
+                    outgoing.write(chunk)
+                if copied != before.st_size:
+                    fail("admitted copy source size changed while copying")
+            after = os.fstat(incoming.fileno())
+            current = source.lstat()
+            identity = lambda metadata: (metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns)
+            if identity(before) != identity(after) or identity(current) != identity(after) or digest.hexdigest() != expected_digest or sha256(target) != expected_digest:
+                fail("staged bytes differ from the original admitted digest or source object changed")
+    except (OSError, ValueError):
+        if created:
+            target.unlink(missing_ok=True)
+        raise
+
+
+def check_loader_policy(source: Path, revision: str) -> None:
+    try:
+        compiled = subprocess.check_output(["git", "-C", str(source), "show", f"{revision}:tools/package/linux_system_sonames.txt"], stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError:
+        fail("build source has no compiled Linux loader policy")
+    if compiled != LINUX_SYSTEM_SONAMES_BYTES:
+        fail("packager Linux loader policy differs from the exact compiled build source")
 
 
 def require_tool(path: Path, label: str) -> Path:
@@ -124,6 +188,7 @@ def check_source(source: Path, build: dict, receipt: dict) -> tuple[str, str, st
     selected_lock = subprocess.check_output(["git", "-C", str(source), "show", f"{revision}:Cargo.lock"])
     if hashlib.sha256(selected_lock).hexdigest() != lock_sha:
         fail("source Cargo.lock differs from build manifest")
+    check_loader_policy(source, revision)
     selected_cargo = subprocess.check_output(["git", "-C", str(source), "show", f"{revision}:Cargo.toml"], text=True)
     version = tomllib.loads(selected_cargo)["workspace"]["package"]["version"]
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
@@ -137,9 +202,12 @@ def admit_receipt(build: dict) -> dict:
     if not isinstance(record, dict) or not isinstance(source, dict):
         fail("build manifest omits source or root receipt")
     receipt_path = Path(record.get("path", ""))
-    if not receipt_path.is_absolute() or not receipt_path.is_file() or sha256(receipt_path) != record.get("sha256"):
+    if not receipt_path.is_absolute():
+        fail("root build receipt path is not absolute")
+    receipt_bytes = read_regular_bytes(receipt_path, 16 * 1024 * 1024, "root build receipt")
+    if hashlib.sha256(receipt_bytes).hexdigest() != record.get("sha256"):
         fail("root build receipt is missing or differs from its recorded hash")
-    receipt = load_json(receipt_path, "root build receipt")
+    receipt = parse_json_bytes(receipt_bytes, "root build receipt")
     build_source = build["source"]
     receipt_source = receipt.get("source", {})
     if receipt.get("exit") != 0 or receipt_source.get("clean_before") is not True or receipt_source.get("clean_after") is not True or receipt.get("toolchain", {}).get("unchanged") is not True or build_source.get("clean") is not True:
@@ -179,10 +247,11 @@ def public_build_manifest(build: dict) -> dict:
 
 
 
-def admit_typescript_sdk(directory: Path, receipt_path: Path, source: dict) -> tuple[dict, dict[str, Path]]:
+def admit_typescript_sdk(directory: Path, receipt_path: Path, source: dict) -> tuple[dict, dict[str, Path], str]:
     """Admit a complete source-bound SDK payload before ELF relocation; no project setup runs."""
     directory = directory.resolve(strict=True)
-    receipt = load_json(receipt_path, "TypeScript SDK receipt")
+    receipt_bytes = read_regular_bytes(receipt_path, 16 * 1024 * 1024, "TypeScript SDK receipt")
+    receipt = parse_json_bytes(receipt_bytes, "TypeScript SDK receipt")
     if receipt.get("schema") != "nudox.typescript-sdk.v1" or receipt.get("target") != TARGET:
         fail("TypeScript SDK receipt has an unsupported schema or target")
     if receipt.get("source") != source:
@@ -232,7 +301,7 @@ def admit_typescript_sdk(directory: Path, receipt_path: Path, source: dict) -> t
         fail("TypeScript Compiler API package differs from its SDK identity")
     if tools["node"].get("sha256") != records["node/bin/node"] or not os.access(observed["node/bin/node"], os.X_OK):
         fail("TypeScript SDK Node is not the receipted executable")
-    return receipt, observed
+    return receipt, observed, hashlib.sha256(receipt_bytes).hexdigest()
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -248,13 +317,14 @@ def main() -> int:
     args = parser.parse_args()
 
     manifest_path = args.manifest.resolve(strict=True)
-    build = load_json(manifest_path, "build manifest")
+    build_bytes = read_regular_bytes(manifest_path, 16 * 1024 * 1024, "build manifest")
+    build = parse_json_bytes(build_bytes, "build manifest")
     receipt = admit_receipt(build)
     revision, tree, lock_sha, version = check_source(args.source, build, receipt)
     release_tag = args.release_tag or f"checkpoint-{dt.datetime.now(dt.timezone.utc):%Y%m%d}-{revision[:10]}-linux-x64"
     if not TAG_RE.fullmatch(release_tag) or not release_tag.endswith("-" + revision[:10] + "-linux-x64"):
         fail("release tag must be checkpoint-YYYYMMDD-<source-10>-linux-x64 for the receipted source")
-    sdk_receipt, sdk_sources = admit_typescript_sdk(args.typescript_sdk_directory, args.typescript_sdk_receipt, build["source"])
+    sdk_receipt, sdk_sources, sdk_receipt_digest = admit_typescript_sdk(args.typescript_sdk_directory, args.typescript_sdk_receipt, build["source"])
     patchelf = require_tool(args.patchelf, "patchelf")
     readelf = require_tool(args.readelf, "readelf")
     ldd = require_tool(args.ldd, "ldd")
@@ -267,6 +337,7 @@ def main() -> int:
     (root / "lib").mkdir(mode=0o700)
 
     sources: dict[str, Path] = {}
+    admitted_digests: dict[str, str] = {}
     artifact_records = build.get("executables")
     if not isinstance(artifact_records, dict):
         fail("build manifest omits executable records")
@@ -278,6 +349,7 @@ def main() -> int:
         if not source_binary.is_absolute() or source_binary.is_symlink() or not source_binary.is_file() or sha256(source_binary) != record.get("sha256"):
             fail(f"{name} differs from the successful build receipt")
         sources[name] = source_binary.resolve(strict=True)
+        admitted_digests[name] = record["sha256"]
 
     sdk_root = root / "share/nudox/typescript"
     for relative, sdk_source in sdk_sources.items():
@@ -285,23 +357,24 @@ def main() -> int:
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         if relative == "node/bin/node":
             continue  # Copied once by the shared ELF relocation pass below.
-        shutil.copyfile(sdk_source, target)
+        copy_admitted_file(sdk_source, target, sdk_receipt["files"][relative])
         target.chmod(0o755 if relative == "node/bin/node" else 0o644)
     sources["typescript-node"] = sdk_sources["node/bin/node"]
+    admitted_digests["typescript-node"] = sdk_receipt["files"]["node/bin/node"]
 
     glibc_family = set(GLIBC_SONAMES)
     libraries: dict[str, dict] = {}
     executables: list[dict] = []
     for name, source_binary in sources.items():
-        original = elf_info(readelf, source_binary)
-        if not original["interpreter"]:
-            fail(f"{name} has no ELF interpreter")
         packaged_relative = "share/nudox/typescript/node/bin/node" if name == "typescript-node" else f"bin/{name}"
         packaged = root / packaged_relative
         runtime_search = "$ORIGIN/../../../../../lib" if name == "typescript-node" else "$ORIGIN/../lib"
-        shutil.copyfile(source_binary, packaged)
+        copy_admitted_file(source_binary, packaged, admitted_digests[name])
+        original = elf_info(readelf, packaged)
+        if not original["interpreter"]:
+            fail(f"{name} has no ELF interpreter")
         packaged.chmod(0o755)
-        linkage = run([str(ldd), str(source_binary)])
+        linkage = run([str(ldd), str(packaged)])
         (output / f"{name}.ldd.txt").write_text(linkage + "\n")
         for soname, raw_path in ldd_dependencies(linkage):
             if soname in glibc_family:
@@ -323,11 +396,11 @@ def main() -> int:
             fail(f"patchelf changed the wrong ELF contract for {name}")
         if run([str(patchelf), "--print-rpath", str(packaged)]) != runtime_search:
             fail(f"{name} retains an unexpected runtime search path")
-        executables.append({"name": name, "original_sha256": sha256(source_binary), "packaged_path": packaged_relative, "packaged_sha256": sha256(packaged), "packaged_bytes": packaged.stat().st_size, "original_elf": {"needed": original["needed"], "interpreter_present": bool(original["interpreter"]), "required_glibc_versions": original["required_glibc_versions"]}, "packaged_elf": patched})
+        executables.append({"name": name, "original_sha256": admitted_digests[name], "packaged_path": packaged_relative, "packaged_sha256": sha256(packaged), "packaged_bytes": packaged.stat().st_size, "original_elf": {"needed": original["needed"], "interpreter_present": bool(original["interpreter"]), "required_glibc_versions": original["required_glibc_versions"]}, "packaged_elf": patched})
 
     for soname, record in libraries.items():
         packaged = root / "lib" / soname
-        shutil.copyfile(record["source_path"], packaged)
+        copy_admitted_file(record["source_path"], packaged, record["source_sha256"])
         packaged.chmod(0o755)
         run([str(patchelf), "--set-rpath", "$ORIGIN", str(packaged)])
         if run([str(patchelf), "--print-rpath", str(packaged)]) != "$ORIGIN":
@@ -373,7 +446,7 @@ def main() -> int:
         "root": "share/nudox/typescript", "node": node_record,
         "typescript_version": sdk_receipt["tools"]["typescript"]["version"],
         "node_version": sdk_receipt["tools"]["node"]["version"],
-        "source_receipt_sha256": sha256(args.typescript_sdk_receipt),
+        "source_receipt_sha256": sdk_receipt_digest,
         "files": sdk_files,
     }
 
@@ -387,8 +460,9 @@ def main() -> int:
         "schema": "nudox.linux-portable-package.v1",
         "release_tag": release_tag,
         "source": build["source"],
-        "original_build_manifest_sha256": sha256(manifest_path),
+        "original_build_manifest_sha256": hashlib.sha256(build_bytes).hexdigest(),
         "build_manifest_sha256": sha256(root / "build-manifest.json"),
+        "system_sonames_sha256": hashlib.sha256(LINUX_SYSTEM_SONAMES_BYTES).hexdigest(),
         "packager_path": "tools/package/linux_release_package.py",
         "packager_sha256": sha256(Path(__file__).resolve()),
         "patchelf_tool": "patchelf",

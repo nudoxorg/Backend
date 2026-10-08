@@ -55,6 +55,24 @@ class InstallerMetadataTests(unittest.TestCase):
 
 
 class InstallerFilesystemTests(unittest.TestCase):
+    def test_reuse_marker_refuses_links_fifos_and_oversize_without_runtime_execution(self):
+        for kind in ("symlink", "fifo", "oversize"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                marker = root / ".installed-release.json"
+                if kind == "symlink":
+                    outside = root / "other-marker"
+                    outside.write_text("{}")
+                    os.symlink(outside, marker)
+                elif kind == "fifo":
+                    os.mkfifo(marker)
+                else:
+                    marker.write_bytes(b" " * (16 * 1024 + 1))
+                with patch.object(installer, "verify_package") as verify:
+                    with self.assertRaises(installer.InstallError):
+                        installer.verify_existing_install(root, {}, {"tag":"fixture"}, {})
+                    verify.assert_not_called()
+
     def test_existing_package_aliases_are_refused_even_when_bytes_are_unchanged(self):
         for relative, directory in (("share", True), ("share/nudox/typescript", True),
                                     ("lib", True), ("lib/libgcc_s.so.1", False)):

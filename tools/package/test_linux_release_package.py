@@ -4,6 +4,8 @@ from pathlib import Path
 import tempfile
 import unittest
 import os
+import hashlib
+import subprocess
 
 import linux_release_package as package
 
@@ -75,7 +77,8 @@ class SDKReceiptAdmissionTests(unittest.TestCase):
             root = Path(directory) / "payload"
             root.mkdir()
             receipt_path, receipt, source = self.fixture(root)
-            admitted, files = package.admit_typescript_sdk(root, receipt_path, source)
+            admitted, files, digest = package.admit_typescript_sdk(root, receipt_path, source)
+            self.assertEqual(digest, package.sha256(receipt_path))
             self.assertEqual(admitted, receipt)
             self.assertEqual(set(files), set(receipt["files"]))
             with self.assertRaisesRegex(ValueError, "exact application source"):
@@ -107,6 +110,65 @@ class SDKReceiptAdmissionTests(unittest.TestCase):
             os.symlink(original, member)
             with self.assertRaisesRegex(ValueError, "link or special file"):
                 package.admit_typescript_sdk(root, receipt_path, source)
+
+
+class CopiedAdmissionTests(unittest.TestCase):
+    def test_sdk_change_after_admission_cannot_be_reinventoried_as_the_old_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "payload"
+            root.mkdir()
+            receipt_path, receipt, source = SDKReceiptAdmissionTests().fixture(root)
+            _, paths, admitted_receipt_digest = package.admit_typescript_sdk(root, receipt_path, source)
+            for relative in ("node_modules/typescript/lib/typescript.js", "node/bin/node"):
+                member = paths[relative]
+                member.write_bytes(b"changed after admission; metadata version remains the same")
+                target = root.parent / ("staged-" + member.name)
+                with self.assertRaisesRegex(ValueError, "original admitted digest"):
+                    package.copy_admitted_file(member, target, receipt["files"][relative])
+                self.assertFalse(target.exists())
+            receipt_path.write_bytes(b"changed receipt after parsed admission")
+            self.assertNotEqual(admitted_receipt_digest, package.sha256(receipt_path))
+
+    def test_build_and_library_original_digests_bind_pre_relocation_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source"
+            target = Path(directory) / "stage"
+            original = b"exact admitted artifact bytes; no ELF execution"
+            source.write_bytes(original)
+            digest = hashlib.sha256(original).hexdigest()
+            package.copy_admitted_file(source, target, digest)
+            self.assertEqual(target.read_bytes(), original)
+            target.unlink()
+            source.write_bytes(b"replacement after successful build record admission")
+            with self.assertRaisesRegex(ValueError, "original admitted digest"):
+                package.copy_admitted_file(source, target, digest)
+            self.assertFalse(target.exists())
+
+    def test_docs_descendant_keeps_exact_build_policy_but_policy_descendant_refuses(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def git(*args):
+                return subprocess.check_output(["git", "-C", str(root), *args], stderr=subprocess.PIPE, text=True).strip()
+            git("init", "-q")
+            policy = root / "tools/package/linux_system_sonames.txt"
+            policy.parent.mkdir(parents=True)
+            policy.write_bytes(package.LINUX_SYSTEM_SONAMES_BYTES)
+            git("add", ".")
+            git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "exact compiled policy")
+            compiled = git("rev-parse", "HEAD")
+            (root / "docs-only.txt").write_text("documentation descendant")
+            git("add", ".")
+            git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "documentation only")
+            package.check_loader_policy(root, compiled)
+            # Compare the actual loaded packager policy with the older compiled file.
+            import unittest.mock
+            changed = package.LINUX_SYSTEM_SONAMES_BYTES.replace(b"libanl.so.1\n", b"")
+            policy.write_bytes(changed)
+            git("add", ".")
+            git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "loader policy descendant")
+            with unittest.mock.patch.object(package, "LINUX_SYSTEM_SONAMES_BYTES", policy.read_bytes()):
+                with self.assertRaisesRegex(ValueError, "exact compiled build source"):
+                    package.check_loader_policy(root, compiled)
 
 
 class LinkageTests(unittest.TestCase):
