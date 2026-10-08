@@ -1,0 +1,19 @@
+{
+  "schema": "nudox.root-nativehost-toml-source-review.v1",
+  "base": "71f86385027abee5449e9ab8da9a4363772ef7f6",
+  "reviewed_source": "9d700b0b1bb48de0321b6ed8ee4cc6f69aa9a51d",
+  "reviewed_tree": "c82d0d960bc0edc5f6875970d5956d0afe57f644",
+  "tested_source": "18cc3f8b03536c11ef4ca934ff048f2ec8b1840a",
+  "exact_tested_postimages": {
+    "tools/package/macos_managed_native_host.py": "100644 blob 25781022a90996c044f3636d1645d43576a64b7b",
+    "tools/package/test_macos_managed_native_host.py": "100644 blob 003a1c25bf553217d61f1170bf26fd6fbf7a2682"
+  },
+  "unchanged_other_git_entries": 17962,
+  "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+  "root_executed_python_tests": 51,
+  "native_rust_tests": 0,
+  "release_build_verified": false,
+  "root_test_log": "/private/tmp/nudox-root-macos-toml-18cc-51-fixtures-20261008.log",
+  "root_test_log_sha256": "06ec4e18e562ff727ac4b2807722a53cf459c1df09d092b116ef5200d96c451f",
+  "test_scope": "ordinary Python managed producer, runner, and release plan fixture tests; fake compiler outputs are not native acceptance"
+}

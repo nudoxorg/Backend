@@ -88,8 +88,15 @@ def source_identity(source, revision, tree):
         if not name.endswith(b'Cargo.toml') or header.split()[1]!=b'blob':continue
         path=source/os.fsdecode(name)
         raw=read_regular_bytes(path,min(1024**2,MAX_SOURCE-manifest_bytes),'tracked Cargo manifest')
-        manifest_bytes+=len(raw);manifest=tomllib.loads(raw.decode())
-        if 'package' in manifest:roots.append(':(literal)'+str(path.parent.relative_to(source)))
+        manifest_bytes+=len(raw)
+        try:package='package' in tomllib.loads(raw.decode())
+        except tomllib.TOMLDecodeError:
+            # Cargo may accept TOML syntax newer than Python's parser. This
+            # inspection only selects directories for the no-exclude input
+            # check; conservatively include an undecoded manifest directory.
+            # The selected Cargo still validates the full manifest later.
+            package=True
+        if package:roots.append(':(literal)'+str(path.parent.relative_to(source)))
     if roots:
         require(not source_git(source,'ls-files','--others','-z','--',*roots),
                 'source contains untracked or ignored Cargo package inputs')

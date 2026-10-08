@@ -1,0 +1,3 @@
+Cargo accepts multiline inline tables that the available Python TOML parser rejects. Source input inspection now conservatively scans an undecodable manifest directory for untracked inputs; the selected Cargo still validates the actual manifest. Hidden ignored build scripts remain refused before Cargo.
+
+Root reviewed the full two-file patch and independently ran all 51 ordinary Python fixture tests on 18cc3f8b. The canonical replay has identical two-file postimages and leaves all other source entries and Cargo.lock unchanged. These tests do not prove a native macOS build or installed application.
