@@ -428,7 +428,7 @@ func TestIgnoredMalformedBodyDoesNotPoisonActiveCompilerPackage(t *testing.T) {
 		}
 	}
 	for _, reference := range active.Packages[0].References {
-		knownCall = knownCall || (reference.Owner == "Inferred" && reference.Target == "Active" && reference.TargetPkg == "example.com/dormant" && reference.File == filepath.Join(dir, "active.go"))
+		knownCall = knownCall || (active.Packages[0].ImportPath == "example.com/dormant" && reference.Owner == "Inferred" && reference.Target == "Active" && reference.TargetPkg == "" && reference.File == filepath.Join(dir, "active.go"))
 	}
 	if !knownDoc || !knownCall || !inferredInt {
 		t.Fatalf("known active compiler facts were lost: doc=%v call=%v inferred-int=%v", knownDoc, knownCall, inferredInt)
