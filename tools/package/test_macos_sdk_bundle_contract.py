@@ -195,4 +195,22 @@ class SdkOnlyContracts(unittest.TestCase):
                 stager.stage(self.root,'a'*40,'b'*40,self.target,node,'v24.18.0','0'*64,license,bundle.sha256(license),package,'5.9.3',self.root/'bad')
         self.assertFalse((self.root/'bad').exists())
 
+    def test_staging_bounds_package_metadata_before_json_parsing(self):
+        node=self.payload/'typescript/node/bin/node';license=self.payload/'typescript/node/LICENSE';package=self.payload/'typescript/node_modules/typescript'
+        with (package/'package.json').open('wb') as file:file.truncate(1024**2+1)
+        with patch.object(stager.bundle,'validate_source',return_value=self.source), patch.object(stager,'parse_json_bytes') as parse:
+            with self.assertRaisesRegex(stager.bundle.PackageError,'metadata failed bounded identity admission'):
+                stager.stage(self.root,'a'*40,'b'*40,self.target,node,'v24.18.0',bundle.sha256(node),license,bundle.sha256(license),package,'5.9.3',self.root/'oversize')
+            parse.assert_not_called()
+        self.assertFalse((self.root/'oversize').exists())
+
+    def test_payload_metadata_reopen_remains_bounded(self):
+        relative='typescript/node_modules/typescript/package.json'
+        with (self.payload/relative).open('wb') as file:file.truncate(1024**2+1)
+        self.receipt['files'][relative]=bundle.sha256(self.payload/relative)
+        with patch.object(bundle,'parse_json_bytes') as parse:
+            with self.assertRaisesRegex(bundle.PackageError,'metadata failed bounded identity admission'):
+                self.validate()
+            parse.assert_not_called()
+
 if __name__=='__main__':unittest.main()

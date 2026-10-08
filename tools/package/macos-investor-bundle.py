@@ -26,7 +26,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from linux_release_package import admit_file_digest
+from linux_release_package import admit_file_digest, parse_json_bytes, read_regular_bytes
 
 from macho_relocation import (
     RelocationInputError,
@@ -878,7 +878,11 @@ def validate_sdk_helper_payload(
     node = helper_dir / "typescript/node/bin/node"
     if tools["node"].get("sha256") != observed["typescript/node/bin/node"] or not os.access(node, os.X_OK):
         fail("SDK Node differs from its executable tool identity")
-    package = load_json(helper_dir / "typescript/node_modules/typescript/package.json", "TypeScript package")
+    try:
+        package = parse_json_bytes(read_regular_bytes(helper_dir / "typescript/node_modules/typescript/package.json",
+                                                     1024**2, "TypeScript package metadata"), "TypeScript package metadata")
+    except (OSError, ValueError) as error:
+        fail(f"SDK TypeScript metadata failed bounded identity admission: {error}")
     if package.get("name") != "typescript" or package.get("version") != tools["typescript"]["version"]:
         fail("SDK Compiler API package differs from its selected identity")
     notices = {"node": "typescript/node/LICENSE", "typescript": "typescript/node_modules/typescript/LICENSE.txt",

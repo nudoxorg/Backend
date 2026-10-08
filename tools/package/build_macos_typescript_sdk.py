@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 import sys
 
-from linux_release_package import admit_file_digest, copy_admitted_file
+from linux_release_package import admit_file_digest, copy_admitted_file, parse_json_bytes, read_regular_bytes
 
 spec = importlib.util.spec_from_file_location("macos_sdk_bundle", Path(__file__).with_name("macos-investor-bundle.py"))
 assert spec and spec.loader
@@ -38,7 +38,11 @@ def stage(source_root: Path, revision: str, tree: str, target: str, node: Path,
     bundle.require_sha(license_digest, "selected Node license")
     if not node_version.strip() or not typescript_version.strip() or not os.access(node, os.X_OK):
         bundle.fail("Mac SDK staging requires explicit versions and a real executable Node")
-    package_json = bundle.load_json(package / "package.json", "selected TypeScript package")
+    try:
+        package_json = parse_json_bytes(read_regular_bytes(package / "package.json", 1024**2,
+                                                         "selected TypeScript metadata"), "selected TypeScript metadata")
+    except (OSError, ValueError) as error:
+        bundle.fail(f"selected TypeScript metadata failed bounded identity admission: {error}")
     if package_json.get("name") != "typescript" or package_json.get("version") != typescript_version:
         bundle.fail("selected TypeScript package differs from the requested package version")
     inputs = {"typescript/node/bin/node": (node, 512 * 1024**2),
