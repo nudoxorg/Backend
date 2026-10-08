@@ -2625,11 +2625,9 @@ mod tests {
                 .map(|(node, _)| node),
             Some(fs::canonicalize(&runtime).expect("canonical bundled Node")),
         );
-        assert_eq!(
-            bundled_typescript_node(Some(&manifest))
-                .expect("unrecognized executable path is ignored"),
-            None,
-        );
+        assert!(bundled_typescript_node(Some(&manifest))
+            .expect("unrecognized executable path is ignored")
+            .is_none());
 
         fs::write(&runtime, b"modified Node").expect("change bundled Node bytes");
         assert!(matches!(

@@ -45,6 +45,7 @@ fn checker_failure(error: &CheckerError) -> F {
 
 fn host_failure(error: &TypeScriptProjectHostError) -> F {
     match error {
+        TypeScriptProjectHostError::BundledSdkAdmission { .. } => F::HostToolchainResolution,
         TypeScriptProjectHostError::ToolchainResolution { .. } => F::HostToolchainResolution,
         TypeScriptProjectHostError::RelativePackageRoot { .. } => F::HostRelativePackageRoot,
         TypeScriptProjectHostError::HomePath { .. } => F::HostHomePath,
@@ -288,6 +289,15 @@ mod tests {
     #[test]
     fn typescript_failure_distinguishes_host_bridge_staging_and_checker_exit() {
         let cases = [
+            (
+                PackageAuthorityError::TypeScriptProjectHost(
+                    TypeScriptProjectHostError::BundledSdkAdmission {
+                        path: "/private/sdk/packaging-manifest.json".into(),
+                        message: "private receipt mismatch".into(),
+                    },
+                ),
+                F::HostToolchainResolution,
+            ),
             (
                 PackageAuthorityError::TypeScriptProjectHost(
                     TypeScriptProjectHostError::CompilerApiBridge {
