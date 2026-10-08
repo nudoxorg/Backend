@@ -18,6 +18,10 @@ import tarfile
 import tomllib
 
 BINARIES = ("backend-cli", "backend-mcp", "backend-locald")
+MAX_BINARY_BYTES = 512 * 1024 * 1024
+MAX_TYPESCRIPT_PACKAGE_BYTES = 96 * 1024 * 1024
+MAX_NODE_LIBRARY_BYTES = 512 * 1024 * 1024
+MAX_NODE_LIBRARIES = 64
 TARGET = "x86_64-unknown-linux-gnu"
 INTERPRETER = "/lib64/ld-linux-x86-64.so.2"
 TAG_RE = re.compile(r"checkpoint-[0-9]{8}-[a-f0-9]{10}-linux-x64\Z")
@@ -232,6 +236,16 @@ def admit_receipt(build: dict) -> dict:
     if hashlib.sha256(receipt_bytes).hexdigest() != record.get("sha256"):
         fail("root build receipt is missing or differs from its recorded hash")
     receipt = parse_json_bytes(receipt_bytes, "root build receipt")
+    if record.get("schema") != "nudox.runtime-artifact-build-receipt.v1" or receipt.get("schema") != record["schema"]:
+        fail("root build receipt has an unsupported or mismatched schema")
+    public = public_build_manifest(build)
+    artifacts = receipt.get("artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != set(BINARIES):
+        fail("root build receipt must attest exactly the three product artifacts")
+    for name in BINARIES:
+        artifact = artifacts[name]
+        if not isinstance(artifact, dict) or any(artifact.get(key) != public["executables"][name][key] for key in ("sha256", "bytes")):
+            fail(f"root build receipt artifact differs from the build manifest: {name}")
     build_source = build["source"]
     receipt_source = receipt.get("source", {})
     if receipt.get("exit") != 0 or receipt_source.get("clean_before") is not True or receipt_source.get("clean_after") is not True or receipt.get("toolchain", {}).get("unchanged") is not True or build_source.get("clean") is not True:
@@ -256,7 +270,7 @@ def public_build_manifest(build: dict) -> dict:
         record = executables[name]
         if not isinstance(record, dict) or not re.fullmatch(r"[a-f0-9]{64}", record.get("sha256", "")):
             fail(f"build manifest has an invalid {name} hash")
-        if not isinstance(record.get("bytes"), int) or isinstance(record["bytes"], bool) or record["bytes"] <= 0:
+        if not isinstance(record.get("bytes"), int) or isinstance(record["bytes"], bool) or record["bytes"] <= 0 or record["bytes"] > MAX_BINARY_BYTES:
             fail(f"build manifest has an invalid {name} size")
         public_executables[name] = {"sha256": record["sha256"], "bytes": record["bytes"]}
     receipt = build.get("root_receipt")
@@ -294,6 +308,7 @@ def admit_typescript_sdk(directory: Path, receipt_path: Path, source: dict) -> t
     observed: dict[str, Path] = {}
     admitted_sizes: dict[str, int] = {}
     total = 0
+    package_bytes = 0
     pending = [directory]
     while pending:
         for path in pending.pop().iterdir():
@@ -309,7 +324,15 @@ def admit_typescript_sdk(directory: Path, receipt_path: Path, source: dict) -> t
             total += estimated_length
             if relative not in records or total > 512 * 1024 * 1024 or len(observed) >= 512:
                 fail("TypeScript SDK payload exceeds or differs from its bounded receipt")
-            admitted_length, digest = admit_file_digest(path, 512 * 1024 * 1024 - (total - estimated_length))
+            maximum = 512 * 1024 * 1024 - (total - estimated_length)
+            is_typescript = relative.startswith("node_modules/typescript/")
+            if is_typescript:
+                if estimated_length > MAX_TYPESCRIPT_PACKAGE_BYTES - package_bytes:
+                    fail("TypeScript package exceeds its 96 MiB byte bound")
+                maximum = min(maximum, MAX_TYPESCRIPT_PACKAGE_BYTES - package_bytes)
+            admitted_length, digest = admit_file_digest(path, maximum)
+            if is_typescript:
+                package_bytes += admitted_length
             total += admitted_length - estimated_length
             if records[relative] != digest:
                 fail(f"TypeScript SDK payload differs from its receipt: {relative}")
@@ -377,9 +400,9 @@ def main() -> int:
             fail(f"build manifest omits {name}")
         source_binary = Path(record.get("path", ""))
         expected_bytes = record.get("bytes")
-        if not isinstance(expected_bytes, int) or isinstance(expected_bytes, bool) or expected_bytes <= 0 or not source_binary.is_absolute() or source_binary.is_symlink():
+        if not isinstance(expected_bytes, int) or isinstance(expected_bytes, bool) or expected_bytes <= 0 or expected_bytes > MAX_BINARY_BYTES or not source_binary.is_absolute() or source_binary.is_symlink():
             fail(f"{name} has an invalid admitted build length or source path")
-        actual_bytes, actual_digest = admit_file_digest(source_binary, expected_bytes)
+        actual_bytes, actual_digest = admit_file_digest(source_binary, MAX_BINARY_BYTES)
         if actual_bytes != expected_bytes or actual_digest != record.get("sha256"):
             fail(f"{name} differs from the successful build receipt")
         sources[name] = source_binary.resolve(strict=True)
@@ -400,12 +423,13 @@ def main() -> int:
 
     glibc_family = set(GLIBC_SONAMES)
     libraries: dict[str, dict] = {}
+    library_total_bytes = 0
     executables: list[dict] = []
     for name, source_binary in sources.items():
         packaged_relative = "share/nudox/typescript/node/bin/node" if name == "typescript-node" else f"bin/{name}"
         packaged = root / packaged_relative
         runtime_search = "$ORIGIN/../../../../../lib" if name == "typescript-node" else "$ORIGIN/../lib"
-        copy_admitted_file(source_binary, packaged, admitted_digests[name], admitted_lengths[name], admitted_lengths[name])
+        copy_admitted_file(source_binary, packaged, admitted_digests[name], admitted_lengths[name], MAX_BINARY_BYTES)
         original = elf_info(readelf, packaged)
         if not original["interpreter"]:
             fail(f"{name} has no ELF interpreter")
@@ -421,10 +445,16 @@ def main() -> int:
             if not dependency.is_absolute() or not dependency.is_file():
                 fail(f"could not resolve non-glibc dependency {soname}: {raw_path}")
             dependency = dependency.resolve(strict=True)
-            library_bytes, digest = admit_file_digest(dependency, 96 * 1024 * 1024)
+            if soname not in libraries and len(libraries) >= MAX_NODE_LIBRARIES:
+                fail("package shared-library closure exceeds its 64 member bound")
+            previous = libraries.get(soname)
+            remaining = MAX_NODE_LIBRARY_BYTES - library_total_bytes + (previous["source_bytes"] if previous else 0)
+            library_bytes, digest = admit_file_digest(dependency, min(96 * 1024 * 1024, remaining))
             previous = libraries.get(soname)
             if previous and previous["source_sha256"] != digest:
                 fail(f"different dependencies use the same ELF soname {soname}")
+            if previous is None:
+                library_total_bytes += library_bytes
             libraries.setdefault(soname, {"source_path": dependency, "source_sha256": digest, "source_bytes": library_bytes})
         run([str(patchelf), "--set-interpreter", INTERPRETER, "--set-rpath", runtime_search, str(packaged)])
         patched = elf_info(readelf, packaged)

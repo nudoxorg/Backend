@@ -73,6 +73,23 @@ class InstallerFilesystemTests(unittest.TestCase):
                         installer.verify_existing_install(root, {}, {"tag":"fixture"}, {})
                     verify.assert_not_called()
 
+    def test_installed_sdk_refuses_runtime_package_bound_before_hashing_oversize_member(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            relative = "share/nudox/typescript/node_modules/typescript/lib/typescript.js"
+            api = root / relative
+            api.parent.mkdir(parents=True)
+            with api.open("wb") as file:
+                file.truncate(96 * 1024 * 1024 + 1)
+            sdk = {"schema": "nudox.typescript-sdk.v1", "bundled": True,
+                   "root": "share/nudox/typescript",
+                   "files": {relative: {"kind": "file", "sha256": "a" * 64,
+                                         "size_bytes": api.stat().st_size}}}
+            with patch.object(installer, "_file_sha256") as hash_payload:
+                with self.assertRaisesRegex(installer.InstallError, "TypeScript package exceeds its 96 MiB"):
+                    installer.verify_typescript_sdk(root, {"typescript_sdk": sdk})
+                hash_payload.assert_not_called()
+
     def test_existing_package_aliases_are_refused_even_when_bytes_are_unchanged(self):
         for relative, directory in (("share", True), ("share/nudox/typescript", True),
                                     ("lib", True), ("lib/libgcc_s.so.1", False)):

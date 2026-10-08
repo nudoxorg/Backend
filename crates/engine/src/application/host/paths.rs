@@ -1871,6 +1871,7 @@ impl StandaloneTypeScriptResources {
             .ok_or_else(|| refuse("standalone Node omits its ELF dependency identity"))?
             .clone();
         let mut seen = std::collections::BTreeSet::new();
+        let mut dependency_bytes = 0u64;
         while let Some(dependency) = pending.pop() {
             let name = dependency
                 .as_str()
@@ -1893,6 +1894,11 @@ impl StandaloneTypeScriptResources {
             if record["packaged_path"].as_str() != Some(relative.as_str()) {
                 return Err(refuse("Node dependency path escaped the package"));
             }
+            let member_bytes = record["packaged_bytes"].as_u64()
+                .ok_or_else(|| refuse("Node dependency has no bounded byte identity"))?;
+            dependency_bytes = dependency_bytes.checked_add(member_bytes)
+                .filter(|bytes| *bytes <= 512 * 1024 * 1024)
+                .ok_or_else(|| refuse("Node dependency closure exceeds its aggregate byte bound"))?;
             let path = self.root.join(relative);
             validate_bundle_inventory_file(
                 &serde_json::json!({"kind":"file", "size_bytes":record.get("packaged_bytes"), "sha256":record.get("packaged_sha256")}),

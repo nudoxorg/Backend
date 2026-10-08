@@ -49,6 +49,65 @@ class PublicBuildManifestTests(unittest.TestCase):
             })
 
 
+class RootArtifactReceiptTests(unittest.TestCase):
+    def fixture(self, root):
+        source = {"commit": "a" * 40, "tree": "b" * 40, "clean": True}
+        artifacts = {name: {"sha256": "c" * 64, "bytes": 1234} for name in package.BINARIES}
+        receipt = {"schema": "nudox.runtime-artifact-build-receipt.v1", "exit": 0,
+                   "source": {**source, "clean_before": True, "clean_after": True},
+                   "toolchain": {"unchanged": True}, "artifacts": artifacts}
+        path = root / "receipt.json"
+        build = {"schema": "nudox.runtime-build-manifest.v1", "source": source,
+                 "executables": {name: {**record, "path": str(root / name)} for name, record in artifacts.items()},
+                 "root_receipt": {"schema": receipt["schema"], "path": str(path)}}
+        self.seal(path, receipt, build)
+        return path, receipt, build
+
+    def seal(self, path, receipt, build):
+        path.write_text(json.dumps(receipt))
+        build["root_receipt"]["sha256"] = package.sha256(path)
+
+    def test_root_receipt_binds_exact_schema_and_all_three_artifact_digests_and_lengths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path, receipt, build = self.fixture(Path(directory).resolve())
+            self.assertEqual(package.admit_receipt(build), receipt)
+            for field, value in (("sha256", "d" * 64), ("bytes", 1235)):
+                with self.subTest(field=field):
+                    previous = receipt["artifacts"]["backend-cli"][field]
+                    receipt["artifacts"]["backend-cli"][field] = value
+                    self.seal(path, receipt, build)
+                    with self.assertRaisesRegex(ValueError, "artifact differs"):
+                        package.admit_receipt(build)
+                    receipt["artifacts"]["backend-cli"][field] = previous
+            receipt["schema"] = "unexpected"
+            self.seal(path, receipt, build)
+            with self.assertRaisesRegex(ValueError, "mismatched schema"):
+                package.admit_receipt(build)
+            receipt["schema"] = build["root_receipt"]["schema"]
+            receipt["artifacts"].pop("backend-mcp")
+            self.seal(path, receipt, build)
+            with self.assertRaisesRegex(ValueError, "exactly the three"):
+                package.admit_receipt(build)
+
+    def test_initial_sparse_artifact_record_refuses_before_payload_hash_or_stage(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            path, receipt, build = self.fixture(root)
+            artifact = root / "backend-cli"
+            oversized = 8 * 1024 * 1024 * 1024
+            with artifact.open("wb") as file:
+                file.truncate(oversized)
+            build["executables"]["backend-cli"]["bytes"] = oversized
+            receipt["artifacts"]["backend-cli"]["bytes"] = oversized
+            self.seal(path, receipt, build)
+            with patch.object(package, "admit_file_digest") as hash_payload:
+                with self.assertRaisesRegex(ValueError, "invalid backend-cli size"):
+                    package.admit_receipt(build)
+                hash_payload.assert_not_called()
+            self.assertFalse((root / "stage").exists())
+
+
 class SDKReceiptAdmissionTests(unittest.TestCase):
     """Filesystem/receipt controls only: no SDK or product executable is run."""
     def fixture(self, root):
@@ -91,6 +150,18 @@ class SDKReceiptAdmissionTests(unittest.TestCase):
             api = root / "node_modules/typescript/lib/typescript.js"
             api.write_bytes(b"changed API")
             with self.assertRaisesRegex(ValueError, "differs from its receipt"):
+                package.admit_typescript_sdk(root, receipt_path, source)
+
+    def test_direct_sdk_receipt_cannot_exceed_runtime_typescript_package_bound(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "payload"
+            root.mkdir()
+            receipt_path, receipt, source = self.fixture(root)
+            api = root / "node_modules/typescript/lib/typescript.js"
+            with api.open("r+b") as file:
+                file.truncate(package.MAX_TYPESCRIPT_PACKAGE_BYTES + 1)
+            # The claimed digest cannot authorize an over-bound package.
+            with self.assertRaisesRegex(ValueError, "TypeScript package exceeds its 96 MiB"):
                 package.admit_typescript_sdk(root, receipt_path, source)
 
     def test_sdk_receipt_cannot_add_an_escape_or_linked_member(self):

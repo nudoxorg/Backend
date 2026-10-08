@@ -365,6 +365,7 @@ def verify_typescript_sdk(root: Path, package: dict) -> None:
             raise InstallError("SDK inventory contains an invalid file record")
     observed = set()
     total = 0
+    package_bytes = 0
     pending = [_verified_package_path(root, "share/nudox/typescript", directory=True)]
     while pending:
         for path in pending.pop().iterdir():
@@ -378,7 +379,12 @@ def verify_typescript_sdk(root: Path, package: dict) -> None:
                 pending.append(path)
                 continue
             record = files.get(relative)
-            total += path.stat().st_size
+            member_bytes = path.stat().st_size
+            total += member_bytes
+            if relative.startswith("share/nudox/typescript/node_modules/typescript/"):
+                package_bytes += member_bytes
+                if package_bytes > 96 * 1024 * 1024:
+                    raise InstallError("installed TypeScript package exceeds its 96 MiB byte bound")
             if record is None or total > 512 * 1024 * 1024 or len(observed) >= 512:
                 raise InstallError("installed SDK differs from its bounded inventory")
             if record["sha256"] != _file_sha256(path) or record.get("size_bytes") != path.stat().st_size:
@@ -446,12 +452,19 @@ def verify_package(root: Path, entry: dict, manifest: dict) -> None:
     libraries = package.get("libraries")
     if not isinstance(libraries, dict):
         raise InstallError("package manifest has no shared-library inventory")
+    if len(libraries) > 64:
+        raise InstallError("package shared-library closure exceeds its 64 member bound")
+    library_bytes = 0
     for soname, record in libraries.items():
         if not isinstance(record, dict) or record.get("packaged_path") != f"lib/{soname}":
             raise InstallError(f"package manifest has an invalid shared-library record for {soname}")
         if not isinstance(soname, str) or PurePosixPath(soname).name != soname or "\\" in soname or soname in {".", ".."}:
             raise InstallError("package has an unsafe shared-library name")
         library = _verified_package_path(root, "lib/" + soname)
+        member_bytes = library.stat().st_size
+        library_bytes += member_bytes
+        if member_bytes > 96 * 1024 * 1024 or library_bytes > 512 * 1024 * 1024:
+            raise InstallError("package shared-library closure exceeds its byte bound")
         if not library.is_file() or record.get("packaged_sha256") != _file_sha256(library):
             raise InstallError(f"package manifest does not attest shared library {soname}")
     minimum = tuple(int(part) for part in manifest["minimum_glibc"].split("."))
