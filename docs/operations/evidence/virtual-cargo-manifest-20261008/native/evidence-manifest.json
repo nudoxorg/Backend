@@ -1,0 +1,331 @@
+{
+  "binary": {
+    "format": "Mach-O 64-bit executable arm64",
+    "path": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007/debug/deps/backend_local_service-fb339fe309d09189",
+    "sha256": "2f220c5a174bbb50fe8c70479a4a87f2c8a83cc519428791d5e825a801f20dc0",
+    "size_bytes": 723284824
+  },
+  "gates": [
+    {
+      "argv": [
+        "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+        "test",
+        "--verbose",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "backend-local-service",
+        "--lib",
+        "rust_manifest_kind_keeps_virtual_workspace_separate_from_packages",
+        "--",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "crosswalk": {
+        "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/gate0-crosswalk.json",
+        "sha256": "ce084243f4284990bb5a0e2c75c2bccf806c8820ee43d4741216e1c860624d97"
+      },
+      "ended_utc": "2026-10-08T10:33:54.103674+00:00",
+      "exit": 0,
+      "gate": 0,
+      "graph_unchanged": true,
+      "leases_empty": true,
+      "permit_retired": true,
+      "raw": {
+        "cargo.stderr.log": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate0/cargo.stderr.log",
+          "sha256": "bcf0ac30a37f56efde688c0217f26931e5ac374c8cf835f0cc70c4745b32a713"
+        },
+        "cargo.stdout.jsonl": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate0/cargo.stdout.jsonl",
+          "sha256": "85a502bd87d7ddae4fea0e4bbb02c45ed493225d176b97dad677571c59bb28be"
+        },
+        "compiler-observations.jsonl": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate0/compiler-observations.jsonl",
+          "sha256": "0765b8da949efda03acbc5085dacf05868ab4c7a9bcaba185be94cab82a19c35"
+        },
+        "completion.json": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate0/completion.json",
+          "sha256": "8b09e59dfc0565b524e66d6a3eea62e821372b1082816238c17f2ecf6557e018"
+        },
+        "diagnostics.json": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate0/diagnostics.json",
+          "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+        },
+        "fleet.json": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate0/fleet.json",
+          "sha256": "54b091b3201e8540987af40c60aad394b91c204a250e2a8f69e493c68498d78f"
+        },
+        "launch.json": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate0/launch.json",
+          "sha256": "7de263f4800af8f97d4a77c0bdb7bd5b4bf82bbcd51c9acbd510dacb200675a7"
+        },
+        "resources.jsonl": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate0/resources.jsonl",
+          "sha256": "647ad4f5810c6dbe80d0e833cff7e913d757e133b07c56cf468e9aecbaf4864b"
+        }
+      },
+      "retirement": "owned-child-kernel-wait",
+      "source_unchanged": true,
+      "started_utc": "2026-10-08T10:24:14.733970+00:00",
+      "test": "rust_manifest_kind_keeps_virtual_workspace_separate_from_packages",
+      "test_result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1143 filtered out; finished in 0.02s",
+      "v5_admission": {
+        "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-v5-gate0.json",
+        "sampled_at_utc": "2026-10-08T10:23:53.049469+00:00",
+        "sha256": "54b091b3201e8540987af40c60aad394b91c204a250e2a8f69e493c68498d78f"
+      }
+    },
+    {
+      "argv": [
+        "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+        "test",
+        "--verbose",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "backend-local-service",
+        "--lib",
+        "virtual_cargo_workspace_has_no_package_facts_but_members_keep_their_edges",
+        "--",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "crosswalk": {
+        "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/gate1-crosswalk.json",
+        "sha256": "241f331bf42a60d9bec87c4cd3cfc1ffddf1012fc68eb0adff68d3ec1295e93a"
+      },
+      "ended_utc": "2026-10-08T10:35:23.030664+00:00",
+      "exit": 0,
+      "gate": 1,
+      "graph_unchanged": true,
+      "leases_empty": true,
+      "permit_retired": true,
+      "raw": {
+        "cargo.stderr.log": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate1/cargo.stderr.log",
+          "sha256": "8cb650930f5205a422d1298c866be07cb219f7c862ae99bc67a82208d45d3bda"
+        },
+        "cargo.stdout.jsonl": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate1/cargo.stdout.jsonl",
+          "sha256": "d364a28434dc483fc31f2bf650340458dd4f7e9e488d59939812ef95f35f0815"
+        },
+        "compiler-observations.jsonl": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate1/compiler-observations.jsonl",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "completion.json": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate1/completion.json",
+          "sha256": "f18923f2c09da5913eac7fa2379bdfab4595aecd70ac6790ab149662f08d8c24"
+        },
+        "diagnostics.json": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate1/diagnostics.json",
+          "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+        },
+        "fleet.json": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate1/fleet.json",
+          "sha256": "4a6c89e64af032a54de6dcecbb84ebef7ac191940df8d513db0c27688fe3d625"
+        },
+        "launch.json": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate1/launch.json",
+          "sha256": "ba73297853c49f8c80afc3ec2cbbca741e1a3244a5ed4c46e91b5117973d7512"
+        },
+        "resources.jsonl": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate1/resources.jsonl",
+          "sha256": "f0b36fbb2b0912d53f0df67558dd3bdf9aa5c580065181e69c050e890d16f25c"
+        }
+      },
+      "retirement": "owned-child-kernel-wait",
+      "source_unchanged": true,
+      "started_utc": "2026-10-08T10:35:16.020335+00:00",
+      "test": "virtual_cargo_workspace_has_no_package_facts_but_members_keep_their_edges",
+      "test_result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1143 filtered out; finished in 0.02s",
+      "v5_admission": {
+        "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-v5-gate1.json",
+        "sampled_at_utc": "2026-10-08T10:35:11.130689+00:00",
+        "sha256": "4a6c89e64af032a54de6dcecbb84ebef7ac191940df8d513db0c27688fe3d625"
+      }
+    },
+    {
+      "argv": [
+        "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+        "test",
+        "--verbose",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "backend-local-service",
+        "--lib",
+        "virtual_cargo_workspace_public_search_keeps_member_declarations_available",
+        "--",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "crosswalk": {
+        "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/gate2-crosswalk.json",
+        "sha256": "7cfbde3cd78b357a4f8d9e9a4852d641ccdcb9a968ea7a138a26b5420ff25353"
+      },
+      "ended_utc": "2026-10-08T10:36:18.038630+00:00",
+      "exit": 0,
+      "gate": 2,
+      "graph_unchanged": true,
+      "leases_empty": true,
+      "permit_retired": true,
+      "raw": {
+        "cargo.stderr.log": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate2/cargo.stderr.log",
+          "sha256": "29be217c20a4ae75792f5b848de3fc4aed64d92477023bf532f311e6557db4b4"
+        },
+        "cargo.stdout.jsonl": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate2/cargo.stdout.jsonl",
+          "sha256": "b2b61af47af5020042f7c488a675eaf719a25b2bc0351cd4b75ac6b81bdd9f10"
+        },
+        "compiler-observations.jsonl": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate2/compiler-observations.jsonl",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "completion.json": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate2/completion.json",
+          "sha256": "66f955ee5d7463f099f9b6b9b4b21b75d0fb28cc84878030b46a26f6596456aa"
+        },
+        "diagnostics.json": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate2/diagnostics.json",
+          "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+        },
+        "fleet.json": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate2/fleet.json",
+          "sha256": "f79832fb89976b11ebdcd4de80761cef22e5ec37cddc3a576e893ebf6487a4b5"
+        },
+        "launch.json": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate2/launch.json",
+          "sha256": "83fb0f10f49653fb22b401b74b0a12956f55c301f11511380b8db9132f1d2cad"
+        },
+        "resources.jsonl": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate2/resources.jsonl",
+          "sha256": "14b4ba5d5b8893323f371d56f65afaa193d291130a7272eb72be747dee404fab"
+        }
+      },
+      "retirement": "owned-child-kernel-wait",
+      "source_unchanged": true,
+      "started_utc": "2026-10-08T10:36:13.093797+00:00",
+      "test": "virtual_cargo_workspace_public_search_keeps_member_declarations_available",
+      "test_result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1143 filtered out; finished in 0.03s",
+      "v5_admission": {
+        "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-v5-gate2.json",
+        "sampled_at_utc": "2026-10-08T10:36:08.112301+00:00",
+        "sha256": "f79832fb89976b11ebdcd4de80761cef22e5ec37cddc3a576e893ebf6487a4b5"
+      }
+    },
+    {
+      "argv": [
+        "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+        "test",
+        "--verbose",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "backend-local-service",
+        "--lib",
+        "staged_cargo_member_survives_a_virtual_workspace_wrapper",
+        "--",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "crosswalk": {
+        "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/gate3-crosswalk.json",
+        "sha256": "de78337554be7e17ad7f76453b518207d5ad7d731bc6ed5cd19a85e878e30c6b"
+      },
+      "ended_utc": "2026-10-08T10:36:56.670809+00:00",
+      "exit": 0,
+      "gate": 3,
+      "graph_unchanged": true,
+      "leases_empty": true,
+      "permit_retired": true,
+      "raw": {
+        "cargo.stderr.log": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate3/cargo.stderr.log",
+          "sha256": "f5a84ded8b2f72f79c872fa0db7ad0c0fc244b3412aa677abb66712eb07fd5ca"
+        },
+        "cargo.stdout.jsonl": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate3/cargo.stdout.jsonl",
+          "sha256": "2db217a014c197be7f3ee96a6ac07db1a24a5791c2f4da7c490289c74eceed80"
+        },
+        "compiler-observations.jsonl": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate3/compiler-observations.jsonl",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "completion.json": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate3/completion.json",
+          "sha256": "dd745afd72ca5836ab978d8ec0be9baa1989c99cd85eabeeecfd0619793fd245"
+        },
+        "diagnostics.json": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate3/diagnostics.json",
+          "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+        },
+        "fleet.json": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate3/fleet.json",
+          "sha256": "87601b5abf5bf57f90b4c4dea9a003039183cf2dc8de78416324a3983734e4a6"
+        },
+        "launch.json": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate3/launch.json",
+          "sha256": "c36601973bbd8ba6c4ee4a22ad849f09df994bb09569baff830c6880d4e62556"
+        },
+        "resources.jsonl": {
+          "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-gate3/resources.jsonl",
+          "sha256": "69f394c1ea157e1adec6c3af34c5323b5413d27fe9cd9caea8775b09e2e46738"
+        }
+      },
+      "retirement": "owned-child-kernel-wait",
+      "source_unchanged": true,
+      "started_utc": "2026-10-08T10:36:51.700751+00:00",
+      "test": "staged_cargo_member_survives_a_virtual_workspace_wrapper",
+      "test_result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1143 filtered out; finished in 0.01s",
+      "v5_admission": {
+        "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-v5-gate3.json",
+        "sampled_at_utc": "2026-10-08T10:36:47.054696+00:00",
+        "sha256": "87601b5abf5bf57f90b4c4dea9a003039183cf2dc8de78416324a3983734e4a6"
+      }
+    }
+  ],
+  "graph": {
+    "build_role": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007",
+    "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268",
+    "commit": "fbf27ce7d0dfa9e2e39463a61531bdf2b39645cc",
+    "target": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/target/clippy-current-canonical-20261007",
+    "tree": "320f2758f1c8ac8b25979a7f479564ac8d90f075",
+    "worktree": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007"
+  },
+  "loan_receipt": {
+    "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-loan-receipt-20261008.json",
+    "sha256": "fca2d943862dc1939edc8983991d96a6f011327a13b3833ae378e9121438aa28"
+  },
+  "plan": {
+    "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-7382-joined24-plan.json",
+    "sha256": "eb240dd5bd3e7966ae321926f16597c157ccbacc00c2cfba534a5e3ee07c94bb"
+  },
+  "return_and_next_loan_receipt": {
+    "next_owner": "/Users/rmccrar6/codex-worktrees/sol61-search-ranking-native-13940-20261008",
+    "next_owner_commit": "13940c1b131bea62eb1a2fd358390e669724b046",
+    "next_owner_tree": "f16188fc978c92f0848d3f5cb679dbe461958307",
+    "path": "/private/tmp/luna-current-virtual-manifest-7382-evidence/luna-current-virtual-manifest-return-and-ranking-loan-20261008.json",
+    "sha256": "50e399287fe396fa9c0ae2e89450a9bf13bbb77b866da2eb6ec0ab13bdc4400b"
+  },
+  "schema": "nudox.luna.virtual-manifest.focused-native-evidence.v1",
+  "scope_note": "Four focused backend-local-service library tests only; no Clippy, full library suite, or full app build.",
+  "source": {
+    "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+    "commit": "d65fdc7a0c5f141219a628dde48a83118d1ab7b3",
+    "reviewed_diff_sha256": "23b15996e1546e8595589b05638b8547209bd5cb8febfc4add1d059fc6acd02f",
+    "tree": "6bd690971032b1b726538e0d68ec180114f165ca",
+    "worktree": "/Users/rmccrar6/codex-worktrees/luna-current-virtual-manifest-7382-20261008"
+  },
+  "supervisor_binary_mapping": {
+    "complete": false,
+    "reason": "sealed plan invoked Cargo verbose mode without --message-format=json; exact Running lines and result text were manually bound to the test executable and hash in each crosswalk",
+    "supplemented_by_manual_crosswalks": true
+  }
+}

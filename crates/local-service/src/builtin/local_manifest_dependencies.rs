@@ -805,6 +805,37 @@ mod tests {
     }
 
     #[test]
+    fn virtual_cargo_workspace_has_no_package_facts_but_members_keep_their_edges() {
+        let root = fixture("cargo-virtual-workspace");
+        let workspace = root.join("project");
+        let member = workspace.join("crates/serde");
+        write(
+            &workspace.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/serde\"]\nresolver = \"2\"\n\n[workspace.dependencies]\nserde_json = \"1\"\n",
+        );
+        write(
+            &member.join("Cargo.toml"),
+            "[package]\nname = \"serde\"\nversion = \"1.0.0\"\nedition = \"2021\"\n\n[dependencies]\nserde_json = \"1\"\n",
+        );
+
+        assert!(
+            local_dependency_facts(&workspace)
+                .expect("virtual workspace is valid")
+                .is_none()
+        );
+        let (source, facts) = local_dependency_facts(&member)
+            .expect("member dependencies")
+            .expect("member package facts");
+        assert_eq!(source.as_str(), "pkg:cargo/serde@1.0.0");
+        let rows = known(&facts);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].source.as_str(), "pkg:cargo/serde@1.0.0");
+        assert_eq!(rows[0].target.name.as_str(), "serde_json");
+        assert_eq!(rows[0].target.requirement.as_str(), "1");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn local_dependency_go_require_ignores_replace_and_marks_indirect() {
         let root = fixture("go");
         let module = root.join("errors@v0.9.1");

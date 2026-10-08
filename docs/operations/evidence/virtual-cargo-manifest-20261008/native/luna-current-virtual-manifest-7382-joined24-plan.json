@@ -1,0 +1,141 @@
+{
+  "authorization": "Root-approved focused native validation of the committed, source-reviewed three-path virtual Cargo manifest atom on exact projection/fence source7382f9f8a31990f3b0fe2e2b44093717699ad934. Run only the four listed Rust virtual-manifest controls on the existing returned warm joined24 Mac target/build graph, sequentially with fresh V5 admissions and jobs2. No broad suite or new target.",
+  "build_role": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007",
+  "cargo_jobs": 2,
+  "destination": "h16001mac",
+  "destination_memory_only_for_remote": true,
+  "environment_file": "/private/tmp/luna-index-projection-environment-successor6-targeted.sh",
+  "environment_sha256": "f0cdd089c484fe9e64ffb28e2808310a58a10f5849e5896eb53fa31b0609c32f",
+  "expected_toolchain": {
+    "CARGO": {
+      "path": "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+      "sha256": "ad6923e08f2383443d5258a5b4896136e46305730347618ea18808ba8d9b85ac"
+    },
+    "CC": {
+      "path": "/nix/store/yn81qpksaxk576qb807fsck5ch7zmj6c-clang-wrapper-21.1.8/bin/clang",
+      "sha256": "78a620e8d5ff31cea9f3438739c9e388344b6de37975ac24084ee343ca1c5026"
+    },
+    "CXX": {
+      "path": "/nix/store/yn81qpksaxk576qb807fsck5ch7zmj6c-clang-wrapper-21.1.8/bin/clang++",
+      "sha256": "82949d1b309a293cd03a010dad7d4c963346b26f0990de713923dc2976f01384"
+    },
+    "RUSTC": {
+      "path": "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/rustc",
+      "sha256": "210df6794001b73ec3d453878707fa1e0bdcb63c427024a6e6574bbe5615a4da"
+    },
+    "RUSTDOC": {
+      "path": "/nix/store/ff5chd1i7bm0d7ki0ahkbkgwij973qvx-rust-1.97.1-with-components-2026-07-16/bin/rustdoc",
+      "sha256": "aa94960b6a477441f6d1a797394daf4cafcc889d837550c8fa462b102e3fa5da"
+    }
+  },
+  "frozen_graph_identity": {
+    "cargo_lock_sha256": "b508bc8978b37e09e54887a76cdb7055a4188f1243770057784a08ad61560268",
+    "clean": true,
+    "commit": "fbf27ce7d0dfa9e2e39463a61531bdf2b39645cc",
+    "tree": "320f2758f1c8ac8b25979a7f479564ac8d90f075"
+  },
+  "frozen_graph_worktree": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007",
+  "handoff_record": "/private/tmp/sol61-joined24-idle-handoff-to-index-projection-20261008.json",
+  "handoff_sha256": "31133b64574b175dc6c94d54717aa9182317e31a96042e8c06c0cecd13fbaa9b",
+  "jobs": [
+    {
+      "argv": [
+        "test",
+        "--verbose",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "backend-local-service",
+        "--lib",
+        "rust_manifest_kind_keeps_virtual_workspace_separate_from_packages",
+        "--",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "id": "virtual-manifest-control-1",
+      "scope": "Run only `rust_manifest_kind_keeps_virtual_workspace_separate_from_packages` with existing assertions intact."
+    },
+    {
+      "argv": [
+        "test",
+        "--verbose",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "backend-local-service",
+        "--lib",
+        "virtual_cargo_workspace_has_no_package_facts_but_members_keep_their_edges",
+        "--",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "id": "virtual-manifest-control-2",
+      "scope": "Run only `virtual_cargo_workspace_has_no_package_facts_but_members_keep_their_edges` with existing assertions intact."
+    },
+    {
+      "argv": [
+        "test",
+        "--verbose",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "backend-local-service",
+        "--lib",
+        "virtual_cargo_workspace_public_search_keeps_member_declarations_available",
+        "--",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "id": "virtual-manifest-control-3",
+      "scope": "Run only `virtual_cargo_workspace_public_search_keeps_member_declarations_available` with existing assertions intact."
+    },
+    {
+      "argv": [
+        "test",
+        "--verbose",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "backend-local-service",
+        "--lib",
+        "staged_cargo_member_survives_a_virtual_workspace_wrapper",
+        "--",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "id": "virtual-manifest-control-4",
+      "scope": "Run only `staged_cargo_member_survives_a_virtual_workspace_wrapper` with existing assertions intact."
+    }
+  ],
+  "lifetime_lock": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/clippy-source-graph-lifetime.lock",
+  "managed_host_permit_registry": "/Users/rmccrar6/.cache/nudox/cargo-1.97/locks",
+  "memory_guard_scope": "destination",
+  "schema": "nudox.luna.index-projection.mac-native.plan.v1",
+  "source": {
+    "commit": "d65fdc7a0c5f141219a628dde48a83118d1ab7b3",
+    "lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+    "tree": "6bd690971032b1b726538e0d68ec180114f165ca"
+  },
+  "source_composition": {
+    "applied_commit": "d65fdc7a0c5f141219a628dde48a83118d1ab7b3",
+    "base_commit": "7382f9f8a31990f3b0fe2e2b44093717699ad934",
+    "base_tree": "155f1b793645fff3bccbadae11e3a144d08db2f2",
+    "change": "Root-reviewed Rust virtual Cargo workspace root and member discovery/search handling; exact assertions unchanged.",
+    "paths": [
+      "crates/local-service/src/builtin/local_manifest.rs",
+      "crates/local-service/src/builtin/local_manifest_dependencies.rs",
+      "crates/local-service/src/builtin/product_state.rs"
+    ],
+    "result_tree": "6bd690971032b1b726538e0d68ec180114f165ca",
+    "reviewed_patch_sha256": "23b15996e1546e8595589b05638b8547209bd5cb8febfc4add1d059fc6acd02f"
+  },
+  "source_worktree": "/Users/rmccrar6/codex-worktrees/luna-current-virtual-manifest-7382-20261008",
+  "supervisor": "/private/tmp/sol61-joined24-mac-supervisor-v5.py",
+  "supervisor_sha256": "15ac811634ade9220da9b7c2a2d036d0a8074bf119ba9ee105ccaf120dd1b6c4",
+  "target": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/target/clippy-current-canonical-20261007",
+  "temporary_directory": "/private/tmp/luna-current-virtual-manifest-7382-native-tmp"
+}

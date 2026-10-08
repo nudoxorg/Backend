@@ -1,0 +1,3 @@
+{"sampled_at_utc": "2026-10-08T10:35:16.026926+00:00", "available_memory_bytes": 64815251456, "root_disk_available_bytes": 1147992694784, "consecutive_low_resource_samples": 0}
+{"sampled_at_utc": "2026-10-08T10:35:18.074116+00:00", "available_memory_bytes": 64596983808, "root_disk_available_bytes": 1147992662016, "consecutive_low_resource_samples": 0}
+{"sampled_at_utc": "2026-10-08T10:35:20.131855+00:00", "available_memory_bytes": 64534511616, "root_disk_available_bytes": 1147992666112, "consecutive_low_resource_samples": 0}

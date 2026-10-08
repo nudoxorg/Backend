@@ -1,0 +1,240 @@
+{
+  "schema": "nudox.evidence-file-manifest.v1",
+  "files": [
+    {
+      "path": "native/evidence-manifest.json",
+      "bytes": 17259,
+      "sha256": "3f1c9faa9251574222f4681faf99e1b18d6a7d125f7c2b3a07a7de1c0e4a7d9a"
+    },
+    {
+      "path": "native/gate0-crosswalk.json",
+      "bytes": 2051,
+      "sha256": "ce084243f4284990bb5a0e2c75c2bccf806c8820ee43d4741216e1c860624d97"
+    },
+    {
+      "path": "native/gate1-crosswalk.json",
+      "bytes": 2062,
+      "sha256": "241f331bf42a60d9bec87c4cd3cfc1ffddf1012fc68eb0adff68d3ec1295e93a"
+    },
+    {
+      "path": "native/gate2-crosswalk.json",
+      "bytes": 2062,
+      "sha256": "7cfbde3cd78b357a4f8d9e9a4852d641ccdcb9a968ea7a138a26b5420ff25353"
+    },
+    {
+      "path": "native/gate3-crosswalk.json",
+      "bytes": 2028,
+      "sha256": "de78337554be7e17ad7f76453b518207d5ad7d731bc6ed5cd19a85e878e30c6b"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate0/cargo.stderr.log",
+      "bytes": 563476,
+      "sha256": "bcf0ac30a37f56efde688c0217f26931e5ac374c8cf835f0cc70c4745b32a713"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate0/cargo.stdout.jsonl",
+      "bytes": 225,
+      "sha256": "85a502bd87d7ddae4fea0e4bbb02c45ed493225d176b97dad677571c59bb28be"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate0/compiler-observations.jsonl",
+      "bytes": 174232,
+      "sha256": "0765b8da949efda03acbc5085dacf05868ab4c7a9bcaba185be94cab82a19c35"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate0/completion.json",
+      "bytes": 2036,
+      "sha256": "8b09e59dfc0565b524e66d6a3eea62e821372b1082816238c17f2ecf6557e018"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate0/diagnostics.json",
+      "bytes": 3,
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate0/fleet.json",
+      "bytes": 25919,
+      "sha256": "54b091b3201e8540987af40c60aad394b91c204a250e2a8f69e493c68498d78f"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate0/launch.json",
+      "bytes": 5140,
+      "sha256": "7de263f4800af8f97d4a77c0bdb7bd5b4bf82bbcd51c9acbd510dacb200675a7"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate0/resources.jsonl",
+      "bytes": 49737,
+      "sha256": "647ad4f5810c6dbe80d0e833cff7e913d757e133b07c56cf468e9aecbaf4864b"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate1/cargo.stderr.log",
+      "bytes": 353044,
+      "sha256": "8cb650930f5205a422d1298c866be07cb219f7c862ae99bc67a82208d45d3bda"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate1/cargo.stdout.jsonl",
+      "bytes": 247,
+      "sha256": "d364a28434dc483fc31f2bf650340458dd4f7e9e488d59939812ef95f35f0815"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate1/compiler-observations.jsonl",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate1/completion.json",
+      "bytes": 2036,
+      "sha256": "f18923f2c09da5913eac7fa2379bdfab4595aecd70ac6790ab149662f08d8c24"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate1/diagnostics.json",
+      "bytes": 3,
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate1/fleet.json",
+      "bytes": 28098,
+      "sha256": "4a6c89e64af032a54de6dcecbb84ebef7ac191940df8d513db0c27688fe3d625"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate1/launch.json",
+      "bytes": 5202,
+      "sha256": "ba73297853c49f8c80afc3ec2cbbca741e1a3244a5ed4c46e91b5117973d7512"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate1/resources.jsonl",
+      "bytes": 531,
+      "sha256": "f0b36fbb2b0912d53f0df67558dd3bdf9aa5c580065181e69c050e890d16f25c"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate2/cargo.stderr.log",
+      "bytes": 353044,
+      "sha256": "29be217c20a4ae75792f5b848de3fc4aed64d92477023bf532f311e6557db4b4"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate2/cargo.stdout.jsonl",
+      "bytes": 232,
+      "sha256": "b2b61af47af5020042f7c488a675eaf719a25b2bc0351cd4b75ac6b81bdd9f10"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate2/compiler-observations.jsonl",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate2/completion.json",
+      "bytes": 2036,
+      "sha256": "66f955ee5d7463f099f9b6b9b4b21b75d0fb28cc84878030b46a26f6596456aa"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate2/diagnostics.json",
+      "bytes": 3,
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate2/fleet.json",
+      "bytes": 24975,
+      "sha256": "f79832fb89976b11ebdcd4de80761cef22e5ec37cddc3a576e893ebf6487a4b5"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate2/launch.json",
+      "bytes": 5201,
+      "sha256": "83fb0f10f49653fb22b401b74b0a12956f55c301f11511380b8db9132f1d2cad"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate2/resources.jsonl",
+      "bytes": 354,
+      "sha256": "14b4ba5d5b8893323f371d56f65afaa193d291130a7272eb72be747dee404fab"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate3/cargo.stderr.log",
+      "bytes": 353027,
+      "sha256": "f5a84ded8b2f72f79c872fa0db7ad0c0fc244b3412aa677abb66712eb07fd5ca"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate3/cargo.stdout.jsonl",
+      "bytes": 216,
+      "sha256": "2db217a014c197be7f3ee96a6ac07db1a24a5791c2f4da7c490289c74eceed80"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate3/compiler-observations.jsonl",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate3/completion.json",
+      "bytes": 2036,
+      "sha256": "dd745afd72ca5836ab978d8ec0be9baa1989c99cd85eabeeecfd0619793fd245"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate3/diagnostics.json",
+      "bytes": 3,
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate3/fleet.json",
+      "bytes": 21470,
+      "sha256": "87601b5abf5bf57f90b4c4dea9a003039183cf2dc8de78416324a3983734e4a6"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate3/launch.json",
+      "bytes": 5184,
+      "sha256": "c36601973bbd8ba6c4ee4a22ad849f09df994bb09569baff830c6880d4e62556"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-gate3/resources.jsonl",
+      "bytes": 354,
+      "sha256": "69f394c1ea157e1adec6c3af34c5323b5413d27fe9cd9caea8775b09e2e46738"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-joined24-plan.json",
+      "bytes": 6228,
+      "sha256": "eb240dd5bd3e7966ae321926f16597c157ccbacc00c2cfba534a5e3ee07c94bb"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-7382-loan-receipt-20261008.json",
+      "bytes": 5992,
+      "sha256": "fca2d943862dc1939edc8983991d96a6f011327a13b3833ae378e9121438aa28"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-return-and-ranking-loan-20261008.json",
+      "bytes": 14542,
+      "sha256": "50e399287fe396fa9c0ae2e89450a9bf13bbb77b866da2eb6ec0ab13bdc4400b"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-v5-gate0.json",
+      "bytes": 25919,
+      "sha256": "54b091b3201e8540987af40c60aad394b91c204a250e2a8f69e493c68498d78f"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-v5-gate1.json",
+      "bytes": 28098,
+      "sha256": "4a6c89e64af032a54de6dcecbb84ebef7ac191940df8d513db0c27688fe3d625"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-v5-gate2.json",
+      "bytes": 24975,
+      "sha256": "f79832fb89976b11ebdcd4de80761cef22e5ec37cddc3a576e893ebf6487a4b5"
+    },
+    {
+      "path": "native/luna-current-virtual-manifest-v5-gate3.json",
+      "bytes": 21470,
+      "sha256": "87601b5abf5bf57f90b4c4dea9a003039183cf2dc8de78416324a3983734e4a6"
+    },
+    {
+      "path": "root-audit.json",
+      "bytes": 1444,
+      "sha256": "2657c7cd3dd842b6c486797ba80c9bcb51e37dc41b7c909ed0df639ff4852dd4"
+    },
+    {
+      "path": "root-audit.py",
+      "bytes": 4555,
+      "sha256": "baa0f96c8d6e598446a16d48972d33ded748006b63a8eed1b52bf8811ce43386"
+    },
+    {
+      "path": "source-filemap.json",
+      "bytes": 2672,
+      "sha256": "588b6fd27ef00c72dd7a9fb908056b3c0a959256a9dbfed3714bf262696f1ef3"
+    }
+  ]
+}

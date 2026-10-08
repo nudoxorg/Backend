@@ -1,0 +1,31 @@
+{
+  "binary": {
+    "format": "Mach-O 64-bit executable arm64",
+    "path": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007/debug/deps/backend_local_service-fb339fe309d09189",
+    "sha256": "2f220c5a174bbb50fe8c70479a4a87f2c8a83cc519428791d5e825a801f20dc0",
+    "size_bytes": 723284824
+  },
+  "gate": 2,
+  "mapping_note": "Supplemental manual mapping from exact Cargo verbose Running line to the test binary; supervisor mapping remains incomplete because Cargo JSON message format was omitted from the sealed plan.",
+  "plan_sha256": "eb240dd5bd3e7966ae321926f16597c157ccbacc00c2cfba534a5e3ee07c94bb",
+  "raw_artifacts": {
+    "cargo.stderr.log_sha256": "29be217c20a4ae75792f5b848de3fc4aed64d92477023bf532f311e6557db4b4",
+    "cargo.stdout.jsonl_sha256": "b2b61af47af5020042f7c488a675eaf719a25b2bc0351cd4b75ac6b81bdd9f10",
+    "completion.json_sha256": "66f955ee5d7463f099f9b6b9b4b21b75d0fb28cc84878030b46a26f6596456aa",
+    "launch.json_sha256": "83fb0f10f49653fb22b401b74b0a12956f55c301f11511380b8db9132f1d2cad"
+  },
+  "schema": "nudox.luna.virtual-manifest.test-binary-crosswalk.v1",
+  "source": {
+    "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+    "commit": "d65fdc7a0c5f141219a628dde48a83118d1ab7b3",
+    "tree": "6bd690971032b1b726538e0d68ec180114f165ca",
+    "worktree": "/Users/rmccrar6/codex-worktrees/luna-current-virtual-manifest-7382-20261008"
+  },
+  "supervisor_artifact_mapping_complete": false,
+  "test": {
+    "exit": 0,
+    "name": "virtual_cargo_workspace_public_search_keeps_member_declarations_available",
+    "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1143 filtered out; finished in 0.03s",
+    "running_line": "Running `/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007/debug/deps/backend_local_service-fb339fe309d09189 virtual_cargo_workspace_public_search_keeps_member_declarations_available --test-threads=1 --nocapture`"
+  }
+}
