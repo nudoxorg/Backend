@@ -10,8 +10,8 @@ use super::{
 /// The engine deliberately does not choose a serialization format for a
 /// product's view certificates.  A composition can install a sink that
 /// persists the exact checked root and event before [`Daemon::publish_view`]
-/// exposes it to clients.  The owner loop is single-threaded, so the sink is
-/// mutable and cannot race a workspace publication.
+/// exposes it to clients. The sink is uniquely owned by the daemon or its
+/// reserved read-head worker; it is never shared behind a mutable lock.
 pub trait ViewPersistence: Send {
     /// Commits one checked view snapshot and optional event before it becomes
     /// visible through the daemon's library or notification cursor.
@@ -264,65 +264,27 @@ where
             return Err(DaemonError::from(crate::WorkspaceError::WriterReserved));
         }
         let workspace = self.owner.snapshot();
-        admission
-            .admit(&workspace, &view)
-            .map_err(DaemonError::ViewAdmission)?;
-        if let Some(event) = event.as_ref() {
-            let expected_cursor = self
-                .library
-                .cursor()
-                .advance_event(event)
-                .map_err(|_| DaemonError::CursorInvalid)?;
-            if expected_cursor != cursor {
-                return Err(DaemonError::CursorInvalid);
-            }
-            if let backend_library::CursorEvent::View { delta } = event {
-                let expected_view = delta
-                    .clone()
-                    .apply_to(self.library.view())
-                    .map_err(|_| DaemonError::CursorInvalid)?;
-                if expected_view != view {
-                    return Err(DaemonError::CursorInvalid);
-                }
-            } else if self.library.view() != &view {
-                return Err(DaemonError::CursorInvalid);
-            }
-        }
-        let retained_view = view.clone();
-        let projection = backend_library::ViewProjection::admit(view, cursor)
-            .map_err(|error| DaemonError::Library(format!("view projection: {error:?}")))?;
-        let library = Library::from_projection(projection)
-            .map_err(|error| DaemonError::Library(error.to_string()))?;
+        let prepared = super::read_head::prepare_view(
+            &workspace,
+            &self.library,
+            self.notification_state(),
+            self.protocol.max_subscription_credit,
+            view,
+            cursor,
+            admission,
+            event,
+        )?;
         if let Some(persistence) = self.view_persistence.as_mut() {
             persistence
-                .persist(workspace.root(), &retained_view, cursor, event.as_ref())
+                .persist(
+                    workspace.root(),
+                    prepared.library.view(),
+                    prepared.library.cursor(),
+                    prepared.event.as_ref(),
+                )
                 .map_err(DaemonError::ViewAdmission)?;
         }
-        self.library = library;
-        self.remember_cursor(cursor);
-        self.view_binding = ViewBinding::current(workspace.root(), retained_view.basis().root);
-        if let Some(event) = event {
-            self.view_events.push(event);
-            if self.view_events.len() > self.protocol.max_subscription_credit {
-                let excess = self
-                    .view_events
-                    .len()
-                    .checked_sub(self.protocol.max_subscription_credit)
-                    .ok_or(DaemonError::SubscriptionCredit)?;
-                self.view_events.drain(..excess);
-                self.view_events_base_sequence = self
-                    .view_events_base_sequence
-                    .checked_add(
-                        u64::try_from(excess).map_err(|_| DaemonError::SubscriptionCredit)?,
-                    )
-                    .ok_or(DaemonError::SubscriptionCredit)?;
-            }
-            self.prune_cursor_history();
-            // Cursor sequence numbers are the event suffix index. Retain the
-            // exact cursor encodings accepted by this owner so the wire
-            // boundary never has to reconstruct typed IDs from raw bytes.
-            self.remember_cursor(cursor);
-        }
+        let _retired = self.install_prepared_view(prepared, workspace.root());
         Ok(())
     }
 
@@ -330,8 +292,18 @@ where
     /// load its state before this setter is called, then use
     /// [`Self::restore_view`] to seed the owner projection without writing a
     /// duplicate record.
-    pub fn set_view_persistence(&mut self, persistence: Box<dyn ViewPersistence>) {
+    pub fn set_view_persistence(
+        &mut self,
+        persistence: Box<dyn ViewPersistence>,
+    ) -> Result<(), (Box<dyn ViewPersistence>, DaemonError)> {
+        if self.owner.writer_reserved() {
+            return Err((
+                persistence,
+                DaemonError::from(crate::WorkspaceError::WriterReserved),
+            ));
+        }
         self.view_persistence = Some(persistence);
+        Ok(())
     }
 
     fn subscription_reset(

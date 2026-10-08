@@ -39,6 +39,7 @@ mod completion;
 mod pending;
 mod protocol;
 mod query;
+mod read_head;
 mod remote;
 mod runtime;
 
@@ -108,3 +109,8 @@ pub use protocol::{
     DaemonRequest, Operation, ReplicationReply, RequestEnvelope, SubscriptionReply,
 };
 pub use query::{QueryState, ViewBinding, ViewBindingAdmission, ViewBindingState, ViewPersistence};
+
+pub use read_head::{
+    PublishedReadHead, ReadHeadPublicationFailure, ReadHeadWriter, RetiredReadHead,
+    SelectedReadHead,
+};

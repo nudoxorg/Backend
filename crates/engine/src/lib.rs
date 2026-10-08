@@ -371,6 +371,7 @@ pub use daemon::{
     CompletionNotice, Daemon, DaemonConfig, DaemonError, DaemonHandle, DaemonProtocolConfig,
     DaemonReply, DaemonRequest, Operation, QueryState, ReplicationReply, SubscriptionReply,
     ViewBinding, ViewBindingAdmission, ViewBindingState, ViewPersistence,
+    PublishedReadHead, ReadHeadPublicationFailure, ReadHeadWriter, RetiredReadHead, SelectedReadHead,
 };
 pub use dispatch::{
     AcceptedResultProof, AuthoritySnapshot, AuthorityTransition, Blake3AuthorityVerifier,

@@ -88,6 +88,13 @@ impl<M: WorkspaceModel> std::fmt::Debug for PublishedWorkspaceWriter<M> {
 }
 
 impl<M: WorkspaceModel> PublishedWorkspaceWriter<M> {
+    /// Borrows the already admitted physical selection. It is not a fresh
+    /// store-HEAD read and cannot authorize another publication.
+    #[must_use]
+    pub fn snapshot(&self) -> crate::WorkspaceSnapshot {
+        self.writer.owner.snapshot()
+    }
+
     /// Returns the existing post-selection acknowledgement status.
     #[must_use]
     pub const fn status(&self) -> PublicationStatus {
