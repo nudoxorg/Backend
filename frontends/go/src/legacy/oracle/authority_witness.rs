@@ -4,12 +4,17 @@ use std::{
     collections::BTreeMap,
     io::Read,
     path::{Path, PathBuf},
+    sync::atomic::AtomicBool,
 };
 
 use sha2::{Digest, Sha256};
 
-use super::{GoDependencyClosureFailure, GoOracle, GoOracleChildEnvironment,
-    dependency_witness::GoDependencyClosureWitness, update_path_digest};
+use super::{
+    GoDependencyClosureFailure, GoOracle, GoOracleChildEnvironment,
+    capture_digest::{CaptureLimits, CaptureScratch, CapturedFile, is_cancelled},
+    dependency_witness::GoDependencyClosureWitness,
+    update_path_digest,
+};
 
 const GO_WORK_BYTES_LIMIT: usize = 1024 * 1024;
 const GO_AUTHORITY_MANIFEST_BYTES_LIMIT: usize = 1024 * 1024;
@@ -385,7 +390,11 @@ impl GoPackageAuthorityWitness {
     /// Captures Go manifests, selected workspace state, local directive
     /// targets, and bounded target-tree identities for one package root.
     pub fn capture(package_root: impl AsRef<Path>) -> Result<Self, GoPackageAuthorityWitnessError> {
-        capture_go_package_authority_witness(package_root.as_ref())
+        capture_go_package_authority_witness(
+            package_root.as_ref(),
+            &mut CaptureScratch::default(),
+            None,
+        )
     }
 
     /// Returns the path-independent identity for fully portable closure and a
@@ -452,16 +461,28 @@ impl GoPackageAuthorityWitness {
         digest.finalize().into()
     }
 
-    pub(super) fn capture_dependency_closure(
-        &mut self,
-        environment: &GoOracleChildEnvironment,
+    pub(super) fn capture_selected(
+        package_root: &Path,
+        environment: Option<&GoOracleChildEnvironment>,
         oracle: GoOracle,
-        cancelled: Option<&std::sync::atomic::AtomicBool>,
-    ) {
-        let roots = self.dependency_roots(environment);
-        self.dependency_closure = Some(Box::new(GoDependencyClosureWitness::capture(
-            &self.package_root, &self.workspace, environment, oracle, &roots, cancelled,
-        )));
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<Self, GoPackageAuthorityWitnessError> {
+        let mut scratch = CaptureScratch::default();
+        let mut witness =
+            capture_go_package_authority_witness(package_root, &mut scratch, cancelled)?;
+        if let Some(environment) = environment {
+            let roots = witness.dependency_roots(environment);
+            witness.dependency_closure = Some(Box::new(GoDependencyClosureWitness::capture(
+                &witness.package_root,
+                &witness.workspace,
+                environment,
+                oracle,
+                &roots,
+                &mut scratch,
+                cancelled,
+            )));
+        }
+        Ok(witness)
     }
 
     fn dependency_roots(&self, environment: &GoOracleChildEnvironment) -> Vec<PathBuf> {
@@ -509,7 +530,11 @@ impl GoPackageAuthorityWitness {
     /// captured. Incomplete witnesses are local-only and non-reusable.
     #[must_use]
     pub fn is_complete(&self) -> bool {
-        self.complete && self.dependency_closure.as_ref().is_none_or(|closure| closure.is_complete())
+        self.complete
+            && self
+                .dependency_closure
+                .as_ref()
+                .is_none_or(|closure| closure.is_complete())
     }
 
     /// Re-captures the filesystem closure and compares every witnessed input.
@@ -530,12 +555,18 @@ impl GoPackageAuthorityWitness {
         package_root: impl AsRef<Path>,
         cancelled: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<bool, GoPackageAuthorityWitnessError> {
-        let mut current = Self::capture(package_root)?;
+        let mut scratch = CaptureScratch::default();
+        let mut current =
+            capture_go_package_authority_witness(package_root.as_ref(), &mut scratch, cancelled)?;
         if let Some(closure) = &self.dependency_closure {
             let roots = current.dependency_roots(closure.environment());
-            current.dependency_closure = Some(Box::new(
-                closure.recapture(&current.package_root, &current.workspace, &roots, cancelled),
-            ));
+            current.dependency_closure = Some(Box::new(closure.recapture(
+                &current.package_root,
+                &current.workspace,
+                &roots,
+                &mut scratch,
+                cancelled,
+            )));
         }
         Ok(*self == current)
     }
@@ -923,7 +954,12 @@ fn is_local_go_path(value: &str) -> bool {
         || value.starts_with("..\\")
 }
 
-fn capture_local_tree(path: &Path, budget: &mut GoLocalTreeBudget) -> GoLocalTreeCapture {
+fn capture_local_tree(
+    path: &Path,
+    budget: &mut GoLocalTreeBudget,
+    scratch: &mut CaptureScratch,
+    cancelled: Option<&AtomicBool>,
+) -> GoLocalTreeCapture {
     let requested_root = normalize_absolute_path(path);
     let mut entries = Vec::new();
     let mut incomplete_reasons = Vec::new();
@@ -965,9 +1001,12 @@ fn capture_local_tree(path: &Path, budget: &mut GoLocalTreeBudget) -> GoLocalTre
     let before_bytes = budget.bytes;
     let complete = walk_local_tree(
         &root,
+        &root,
         Path::new(""),
         0,
         budget,
+        scratch,
+        cancelled,
         &mut entries,
         &mut incomplete_reasons,
     );
@@ -985,13 +1024,22 @@ fn capture_local_tree(path: &Path, budget: &mut GoLocalTreeBudget) -> GoLocalTre
 }
 
 fn walk_local_tree(
+    root: &Path,
     path: &Path,
     relative_path: &Path,
     depth: usize,
     budget: &mut GoLocalTreeBudget,
+    scratch: &mut CaptureScratch,
+    cancelled: Option<&AtomicBool>,
     entries: &mut Vec<GoLocalTreeEntry>,
     incomplete_reasons: &mut Vec<GoLocalOnlyReason>,
 ) -> bool {
+    if is_cancelled(cancelled) {
+        incomplete_reasons.push(GoLocalOnlyReason::UnreadableTreeEntry {
+            path: path.to_path_buf(),
+        });
+        return false;
+    }
     if budget.exhausted {
         incomplete_reasons.push(GoLocalOnlyReason::WitnessLimitExceeded {
             path: path.to_path_buf(),
@@ -1081,62 +1129,44 @@ fn walk_local_tree(
             });
             return false;
         }
-        let mut file = match std::fs::File::open(&target) {
-            Ok(file) => file,
-            Err(_) => {
+        let length = target_metadata.len();
+        let captured = scratch.capture_file(
+            path,
+            &[root.to_path_buf()],
+            &mut budget.bytes,
+            CaptureLimits {
+                file_bytes: GO_LOCAL_TREE_FILE_BYTES_LIMIT as u64,
+                total_bytes: GO_LOCAL_TREE_BYTES_LIMIT as u64,
+            },
+            cancelled,
+        );
+        let (length, digest) = match captured {
+            CapturedFile::File { bytes, digest } => (bytes, Some(digest)),
+            CapturedFile::Unavailable => {
                 incomplete_reasons.push(GoLocalOnlyReason::UnreadableTreeEntry {
                     path: path.to_path_buf(),
                 });
-                return false;
+                (length, None)
+            }
+            CapturedFile::Limit => {
+                budget.exhausted = true;
+                incomplete_reasons.push(GoLocalOnlyReason::WitnessLimitExceeded {
+                    path: path.to_path_buf(),
+                    limit: "local tree file bytes",
+                });
+                (length, None)
             }
         };
-        let length = target_metadata.len();
-        if length > GO_LOCAL_TREE_FILE_BYTES_LIMIT as u64
-            || budget.bytes.saturating_add(length) > GO_LOCAL_TREE_BYTES_LIMIT as u64
-        {
-            budget.exhausted = true;
-            entries.push(GoLocalTreeEntry {
-                relative_path: relative_path.to_path_buf(),
-                kind: GoLocalTreeEntryKind::Symlink {
-                    target,
-                    bytes: Some(length),
-                    digest: None,
-                },
-            });
-            incomplete_reasons.push(GoLocalOnlyReason::WitnessLimitExceeded {
-                path: path.to_path_buf(),
-                limit: "local tree file bytes",
-            });
-            return false;
-        }
-        let mut bytes = Vec::with_capacity(length as usize);
-        if Read::by_ref(&mut file)
-            .take((GO_LOCAL_TREE_FILE_BYTES_LIMIT + 1) as u64)
-            .read_to_end(&mut bytes)
-            .is_err()
-        {
-            incomplete_reasons.push(GoLocalOnlyReason::UnreadableTreeEntry {
-                path: path.to_path_buf(),
-            });
-            return false;
-        }
-        if bytes.len() as u64 != length {
-            incomplete_reasons.push(GoLocalOnlyReason::UnreadableTreeEntry {
-                path: path.to_path_buf(),
-            });
-            return false;
-        }
-        budget.bytes = budget.bytes.saturating_add(length);
         budget.entries = budget.entries.saturating_add(1);
         entries.push(GoLocalTreeEntry {
             relative_path: relative_path.to_path_buf(),
             kind: GoLocalTreeEntryKind::Symlink {
                 target,
                 bytes: Some(length),
-                digest: Some(Sha256::digest(&bytes).into()),
+                digest,
             },
         });
-        return true;
+        return digest.is_some();
     }
     if metadata.is_file() {
         let length = metadata.len();
@@ -1158,45 +1188,42 @@ fn walk_local_tree(
             });
             return false;
         }
-        let mut file = match std::fs::File::open(path) {
-            Ok(file) => file,
-            Err(_) => {
+        let captured = scratch.capture_file(
+            path,
+            &[root.to_path_buf()],
+            &mut budget.bytes,
+            CaptureLimits {
+                file_bytes: GO_LOCAL_TREE_FILE_BYTES_LIMIT as u64,
+                total_bytes: GO_LOCAL_TREE_BYTES_LIMIT as u64,
+            },
+            cancelled,
+        );
+        let (length, digest) = match captured {
+            CapturedFile::File { bytes, digest } => (bytes, Some(digest)),
+            CapturedFile::Unavailable => {
                 incomplete_reasons.push(GoLocalOnlyReason::UnreadableTreeEntry {
                     path: path.to_path_buf(),
                 });
-                return false;
+                (length, None)
+            }
+            CapturedFile::Limit => {
+                budget.exhausted = true;
+                incomplete_reasons.push(GoLocalOnlyReason::WitnessLimitExceeded {
+                    path: path.to_path_buf(),
+                    limit: "local tree file bytes",
+                });
+                (length, None)
             }
         };
-        let mut bytes = Vec::with_capacity(length as usize);
-        if Read::by_ref(&mut file)
-            .take((GO_LOCAL_TREE_FILE_BYTES_LIMIT + 1) as u64)
-            .read_to_end(&mut bytes)
-            .is_err()
-            || bytes.len() as u64 != length
-        {
-            incomplete_reasons.push(GoLocalOnlyReason::UnreadableTreeEntry {
-                path: path.to_path_buf(),
-            });
-            return false;
-        }
-        if budget.entries >= GO_LOCAL_TREE_ENTRY_LIMIT {
-            budget.exhausted = true;
-            incomplete_reasons.push(GoLocalOnlyReason::WitnessLimitExceeded {
-                path: path.to_path_buf(),
-                limit: "local tree entries",
-            });
-            return false;
-        }
         budget.entries += 1;
-        budget.bytes = budget.bytes.saturating_add(length);
         entries.push(GoLocalTreeEntry {
             relative_path: relative_path.to_path_buf(),
             kind: GoLocalTreeEntryKind::File {
                 bytes: length,
-                digest: Some(Sha256::digest(&bytes).into()),
+                digest,
             },
         });
-        return true;
+        return digest.is_some();
     }
     if !metadata.is_dir() {
         incomplete_reasons.push(GoLocalOnlyReason::UnreadableTreeEntry {
@@ -1224,6 +1251,12 @@ fn walk_local_tree(
         Ok(children) => {
             let mut entries = Vec::new();
             for child in children {
+                if is_cancelled(cancelled) {
+                    incomplete_reasons.push(GoLocalOnlyReason::UnreadableTreeEntry {
+                        path: path.to_path_buf(),
+                    });
+                    return false;
+                }
                 match child {
                     Ok(child) if entries.len() < remaining_entries => entries.push(child),
                     Ok(_) => {
@@ -1268,15 +1301,18 @@ fn walk_local_tree(
             continue;
         }
         let child_complete = walk_local_tree(
+            root,
             &child.path(),
             &child_relative,
             depth.saturating_add(1),
             budget,
+            scratch,
+            cancelled,
             entries,
             incomplete_reasons,
         );
         complete &= child_complete;
-        if budget.exhausted {
+        if budget.exhausted || is_cancelled(cancelled) {
             break;
         }
     }
@@ -1328,6 +1364,8 @@ struct GoDirectiveSet {
 
 fn capture_go_package_authority_witness(
     requested: &Path,
+    scratch: &mut CaptureScratch,
+    cancelled: Option<&AtomicBool>,
 ) -> Result<GoPackageAuthorityWitness, GoPackageAuthorityWitnessError> {
     if !requested.is_absolute() {
         return Err(GoWorkWitnessError::RelativeRoot {
@@ -1582,7 +1620,7 @@ fn capture_go_package_authority_witness(
     let mut tree_budget = GoLocalTreeBudget::default();
     let mut local_trees = Vec::new();
     for target in unique_targets.into_values() {
-        let tree = capture_local_tree(&target.path, &mut tree_budget);
+        let tree = capture_local_tree(&target.path, &mut tree_budget, scratch, cancelled);
         complete &= tree.witness.complete;
         if !tree.root_available {
             reasons.push(GoLocalOnlyReason::UnsupportedFilesystemTarget {
@@ -1653,5 +1691,114 @@ fn update_manifest_identity(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod capture_scratch_tests {
+    use super::*;
+
+    #[test]
+    fn local_tree_and_selected_file_share_one_hash_with_independent_budgets() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let path = root.join("value.go");
+        let content = vec![b'x'; 128 * 1024 + 7];
+        std::fs::write(&path, &content).unwrap();
+        let mut scratch = CaptureScratch::default();
+        let mut budget = GoLocalTreeBudget::default();
+        let tree = capture_local_tree(&root, &mut budget, &mut scratch, None);
+        assert!(tree.witness.complete);
+        assert_eq!(budget.bytes, content.len() as u64);
+        let mut selected_bytes = 0;
+        let selected = super::super::dependency_witness::capture_file(
+            &path,
+            &[root.clone()],
+            &mut selected_bytes,
+            &mut scratch,
+            None,
+        );
+        let digest = <[u8; 32]>::from(Sha256::digest(&content));
+        assert_eq!(
+            selected,
+            CapturedFile::File {
+                bytes: content.len() as u64,
+                digest
+            }
+        );
+        assert!(tree.witness.entries.iter().any(|entry| matches!(entry.kind,
+            GoLocalTreeEntryKind::File { bytes, digest: Some(actual) }
+                if bytes == content.len() as u64 && actual == digest)));
+        assert_eq!(scratch.hash_files, 1);
+        assert_eq!(scratch.hash_bytes, content.len() as u64);
+        assert_eq!(selected_bytes, content.len() as u64);
+    }
+
+    #[test]
+    fn local_tree_cancels_during_a_chunk_without_admitting_partial_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let path = root.join("value.go");
+        std::fs::write(&path, vec![b'x'; 128 * 1024]).unwrap();
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let mut scratch = CaptureScratch::default();
+        scratch.cancel_after_bytes = Some((64 * 1024, cancelled.clone()));
+        let mut budget = GoLocalTreeBudget::default();
+        let tree = capture_local_tree(&root, &mut budget, &mut scratch, Some(&cancelled));
+        assert!(!tree.witness.complete);
+        assert_eq!(scratch.hash_files, 1);
+        assert_eq!(scratch.hash_bytes, 64 * 1024);
+        assert_eq!(budget.bytes, 0);
+        assert!(tree.witness.entries.iter().all(|entry| !matches!(
+            entry.kind,
+            GoLocalTreeEntryKind::File {
+                digest: Some(_),
+                ..
+            }
+        )));
+        cancelled.store(false, std::sync::atomic::Ordering::Release);
+        scratch.cancel_after_bytes = None;
+        assert!(matches!(
+            super::super::dependency_witness::capture_file(
+                &path,
+                &[root],
+                &mut 0,
+                &mut scratch,
+                Some(&cancelled),
+            ),
+            CapturedFile::File { bytes: 131072, .. }
+        ));
+        assert_eq!(scratch.hash_files, 2);
+        assert_eq!(scratch.hash_bytes, 192 * 1024);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_tree_does_not_read_or_reuse_an_escaping_symlink() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let source = outside.path().canonicalize().unwrap().join("value.go");
+        std::fs::write(&source, b"package outside\n").unwrap();
+        let mut scratch = CaptureScratch::default();
+        assert!(matches!(
+            scratch.capture_file(
+                &source,
+                &[source.parent().unwrap().to_path_buf()],
+                &mut 0,
+                CaptureLimits {
+                    file_bytes: 1024,
+                    total_bytes: 1024
+                },
+                None
+            ),
+            CapturedFile::File { .. }
+        ));
+        std::os::unix::fs::symlink(&source, root.join("value.go")).unwrap();
+        let tree = capture_local_tree(&root, &mut GoLocalTreeBudget::default(), &mut scratch, None);
+        assert!(!tree.witness.complete);
+        assert_eq!(tree.witness.bytes, 0);
+        assert_eq!(scratch.hash_files, 1);
+        assert_eq!(scratch.hash_bytes, 16);
     }
 }

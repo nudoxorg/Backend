@@ -27,6 +27,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 mod authority_witness;
+mod capture_digest;
 mod dependency_witness;
 fn check_go_cancellation(cancelled: Option<&std::sync::atomic::AtomicBool>) -> Result<(), OracleError> {
     if cancelled.is_some_and(|token| token.load(std::sync::atomic::Ordering::Acquire)) {
@@ -1896,11 +1897,12 @@ impl ConfiguredGoOracle {
         package_root: impl AsRef<Path>,
         cancelled: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<GoPackageAuthorityWitness, GoPackageAuthorityWitnessError> {
-        let mut witness = GoPackageAuthorityWitness::capture(package_root)?;
-        if let Some(environment) = &self.child_environment {
-            witness.capture_dependency_closure(environment, self.oracle, cancelled);
-        }
-        Ok(witness)
+        GoPackageAuthorityWitness::capture_selected(
+            package_root.as_ref(),
+            self.child_environment.as_ref(),
+            self.oracle,
+            cancelled,
+        )
     }
 
     /// Returns path-independent invocation mode and helper-source identity.

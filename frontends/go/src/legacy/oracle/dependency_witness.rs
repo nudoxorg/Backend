@@ -2,15 +2,21 @@
 
 use std::{
     collections::BTreeSet,
-    io::Read,
-    path::{Component, Path, PathBuf},
-    sync::atomic::{AtomicBool, Ordering},
+    path::{Path, PathBuf},
+    sync::atomic::AtomicBool,
 };
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use super::{GoOracle, GoOracleChildEnvironment, GoWorkWitness, update_path_digest};
+use super::{
+    GoOracle, GoOracleChildEnvironment, GoWorkWitness,
+    capture_digest::{
+        CaptureLimits, CaptureScratch, CapturedFile as DependencyFileState, admitted_path,
+        clean_components, is_cancelled,
+    },
+    update_path_digest,
+};
 
 const FILE_COUNT_LIMIT: usize = 32 * 1024;
 const FILE_BYTES_LIMIT: u64 = 16 * 1024 * 1024;
@@ -78,13 +84,6 @@ struct DependencyFile {
     state: DependencyFileState,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum DependencyFileState {
-    File { bytes: u64, digest: [u8; 32] },
-    Unavailable,
-    Limit,
-}
-
 // Go owns this protocol. Unknown Go fields do not become semantic facts; the
 // exact bounded transcript is also hashed so they cannot authorize stale reuse.
 #[derive(Deserialize)]
@@ -124,6 +123,7 @@ impl GoDependencyClosureWitness {
         environment: &GoOracleChildEnvironment,
         oracle: GoOracle,
         roots: &[PathBuf],
+        scratch: &mut CaptureScratch,
         cancelled: Option<&AtomicBool>,
     ) -> Self {
         let mut command = std::process::Command::new(environment.go_executable());
@@ -249,7 +249,7 @@ impl GoDependencyClosureWitness {
         let mut total = 0u64;
         let mut files = Vec::new();
         for path in paths.into_iter().take(FILE_COUNT_LIMIT) {
-            let state = capture_file(&path, roots, &mut total, cancelled);
+            let state = capture_file(&path, roots, &mut total, scratch, cancelled);
             if failure.is_none() {
                 failure = match state {
                     DependencyFileState::File { .. } => None,
@@ -281,9 +281,18 @@ impl GoDependencyClosureWitness {
         root: &Path,
         work: &GoWorkWitness,
         roots: &[PathBuf],
+        scratch: &mut CaptureScratch,
         cancelled: Option<&AtomicBool>,
     ) -> Self {
-        Self::capture(root, work, &self.environment, self.oracle, roots, cancelled)
+        Self::capture(
+            root,
+            work,
+            &self.environment,
+            self.oracle,
+            roots,
+            scratch,
+            cancelled,
+        )
     }
 
     pub(super) const fn is_complete(&self) -> bool {
@@ -327,116 +336,43 @@ impl GoDependencyClosureWitness {
     }
 }
 
-fn is_cancelled(cancelled: Option<&AtomicBool>) -> bool {
-    cancelled.is_some_and(|token| token.load(Ordering::Acquire))
-}
-
-fn clean_components(path: &Path) -> bool {
-    !path.as_os_str().is_empty()
-        && path
-            .components()
-            .all(|part| !matches!(part, Component::ParentDir | Component::CurDir))
-}
-
-fn admitted_path(path: &Path, roots: &[PathBuf]) -> bool {
-    if !path.is_absolute()
-        || !clean_components(path)
-        || !roots.iter().any(|root| path.starts_with(root))
-    {
-        return false;
-    }
-    path.canonicalize()
-        .is_ok_and(|resolved| roots.iter().any(|root| resolved.starts_with(root)))
-}
-
-#[derive(PartialEq)]
-struct FileStamp {
-    identity: backend_platform::FileIdentity,
-    bytes: u64,
-    modified: std::time::SystemTime,
-    #[cfg(unix)]
-    changed: (i64, i64),
-}
-
-fn file_stamp(file: &std::fs::File) -> std::io::Result<FileStamp> {
-    let metadata = file.metadata()?;
-    if !metadata.is_file() {
-        return Err(std::io::Error::other("dependency is not a regular file"));
-    }
-    Ok(FileStamp {
-        identity: backend_platform::FileIdentity::of_file(file)?,
-        bytes: metadata.len(),
-        modified: metadata.modified()?,
-        #[cfg(unix)]
-        changed: {
-            use std::os::unix::fs::MetadataExt as _;
-            (metadata.ctime(), metadata.ctime_nsec())
-        },
-    })
-}
-
-fn capture_file(
+pub(super) fn capture_file(
     path: &Path,
     roots: &[PathBuf],
     total: &mut u64,
+    scratch: &mut CaptureScratch,
     cancelled: Option<&AtomicBool>,
 ) -> DependencyFileState {
-    if is_cancelled(cancelled) || !admitted_path(path, roots) {
-        return DependencyFileState::Unavailable;
-    }
-    let Ok(resolved) = path.canonicalize() else {
-        return DependencyFileState::Unavailable;
-    };
-    let Ok(mut file) = backend_platform::durability::open_regular_file_nofollow(&resolved) else {
-        return DependencyFileState::Unavailable;
-    };
-    let Ok(before) = file_stamp(&file) else {
-        return DependencyFileState::Unavailable;
-    };
-    if backend_platform::FileIdentity::of_path_nofollow(&resolved).ok() != Some(before.identity) {
-        return DependencyFileState::Unavailable;
-    }
-    let bytes = before.bytes;
-    if bytes > FILE_BYTES_LIMIT || total.saturating_add(bytes) > TOTAL_BYTES_LIMIT {
-        return DependencyFileState::Limit;
-    }
-    let mut digest = Sha256::new();
-    let mut read = 0u64;
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        if is_cancelled(cancelled) {
-            return DependencyFileState::Unavailable;
-        }
-        let Ok(count) = file.read(&mut buffer) else {
-            return DependencyFileState::Unavailable;
-        };
-        if count == 0 {
-            break;
-        }
-        read = read.saturating_add(count as u64);
-        if read > bytes {
-            return DependencyFileState::Unavailable;
-        }
-        digest.update(&buffer[..count]);
-    }
-    if read != bytes
-        || file_stamp(&file).ok().as_ref() != Some(&before)
-        || path.canonicalize().ok().as_ref() != Some(&resolved)
-        || !admitted_path(path, roots)
-        || backend_platform::FileIdentity::of_path_nofollow(&resolved).ok() != Some(before.identity)
-    {
-        return DependencyFileState::Unavailable;
-    }
-    *total = total.saturating_add(bytes);
-    DependencyFileState::File {
-        bytes,
-        digest: digest.finalize().into(),
-    }
+    scratch.capture_file(
+        path,
+        roots,
+        total,
+        CaptureLimits {
+            file_bytes: FILE_BYTES_LIMIT,
+            total_bytes: TOTAL_BYTES_LIMIT,
+        },
+        cancelled,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn capture_file(
+        path: &Path,
+        roots: &[PathBuf],
+        total: &mut u64,
+        cancelled: Option<&AtomicBool>,
+    ) -> DependencyFileState {
+        super::capture_file(
+            path,
+            roots,
+            total,
+            &mut CaptureScratch::default(),
+            cancelled,
+        )
+    }
 
     #[test]
     fn closure_refusal_recovery_is_specific_to_the_failure() {
