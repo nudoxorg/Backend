@@ -54,6 +54,7 @@ def validate_channel(channel):
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--prefix',type=Path,help='install prefix (default ~/.local)')
+    parser.add_argument('--allow-downgrade',action='store_true',help='allow an older or different same-date checkpoint')
     parser.add_argument('--channel-url',default=CHANNEL,help=argparse.SUPPRESS)
     args=parser.parse_args(argv); selected=platform_key()
     channel=validate_channel(json.loads(fetch(args.channel_url,65536)))
@@ -64,6 +65,7 @@ def main(argv=None):
             path=Path(temp)/'install.py'; path.write_bytes(verified(channel['bootstrap'],MAX_SCRIPT))
             command=[sys.executable,str(path),'--channel-url',args.channel_url]
             if args.prefix: command+=['--prefix',str(args.prefix)]
+            if args.allow_downgrade: command+=['--allow-downgrade']
             return subprocess.call(command)
         entry=channel['platforms'][selected]
         print('Diagnostic preview; whole-project acceptance is not established.',flush=True)
@@ -71,6 +73,7 @@ def main(argv=None):
         path=Path(temp)/'platform-installer.py'; path.write_bytes(verified(entry['installer'],MAX_SCRIPT))
         command=[sys.executable,str(path)]
         if args.prefix: command+=['--prefix',str(args.prefix)]
+        if args.allow_downgrade: command+=['--allow-downgrade']
         if selected=='macos-arm64': command+=['--archive-url',entry['archive']['url'],'--archive-sha256',entry['archive']['sha256'],'--archive-size',str(entry['archive']['bytes']),'--source',entry['source'],'--tag',entry['tag']]
         return subprocess.call(command)
 if __name__=='__main__':

@@ -3,8 +3,10 @@
 from __future__ import annotations
 # Helpers reused unchanged from pinned install-linux-x64.py
 # SHA 61837bb39ca18cd0a39e0f63c05f80bc35a34a798aa686f50af7cb85a46c6a90.
-import argparse, hashlib, json, os, re, shutil, subprocess, sys, tarfile, tempfile, time
+import argparse, datetime, fcntl, hashlib, json, os, re, shutil, stat, subprocess, sys, tarfile, tempfile, time
 from pathlib import Path, PurePosixPath
+from contextlib import contextmanager
+PLATFORM="macos-arm64"
 import urllib.request, urllib.parse, urllib.error
 MAX_ARCHIVE_BYTES=2*1024**3
 MAX_MEMBER_BYTES=1024**3
@@ -139,21 +141,136 @@ def command_links(managed_root: Path) -> dict[str, str]:
     }
     return {name: str(managed_root / "current" / "bin" / binary) for name, binary in binaries.items()}
 
-def install(prefix: Path, entry: dict, manifest: dict, archive: Path) -> None:
+def _validate_install_directory(path):
+    metadata = path.lstat()
+    if (not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o022):
+        raise InstallError("managed install directory is not a real private owned directory: " + str(path))
+
+
+def _file_identity(value):
+    return (value.st_dev, value.st_ino, value.st_size, value.st_uid, value.st_nlink,
+            value.st_mode, value.st_mtime_ns, value.st_ctime_ns)
+
+
+def _validate_marker(marker):
+    fields = {"version", "tag", "source_sha", "asset", "sha256"}
+    if not isinstance(marker, dict) or set(marker) != fields:
+        raise InstallError("release marker fields are invalid")
+    if not isinstance(marker["version"], str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", marker["version"]):
+        raise InstallError("release marker version is invalid")
+    if not isinstance(marker["source_sha"], str) or not re.fullmatch(r"[a-f0-9]{40}", marker["source_sha"]):
+        raise InstallError("release marker source is invalid")
+    if not isinstance(marker["sha256"], str) or not re.fullmatch(r"[a-f0-9]{64}", marker["sha256"]):
+        raise InstallError("release marker archive hash is invalid")
+    asset_prefix = "nudox-macos-arm64-" if PLATFORM == "macos-arm64" else "nudox-linux-x86_64-"
+    asset = re.fullmatch(re.escape(asset_prefix) + r"([a-f0-9]{10,40})\.tar\.gz", marker["asset"] if isinstance(marker["asset"], str) else "")
+    if asset is None or not marker["source_sha"].startswith(asset[1]):
+        raise InstallError("release marker archive does not match its platform/source")
+    tag = marker["tag"]
+    if not isinstance(tag, str):
+        raise InstallError("release marker tag is invalid")
+    checkpoint = re.fullmatch(r"checkpoint-([0-9]{8})-([a-f0-9]{10})-" + re.escape(PLATFORM), tag)
+    if checkpoint:
+        if checkpoint[2] != marker["source_sha"][:10]:
+            raise InstallError("release marker checkpoint does not match its source")
+        try:
+            return datetime.date(int(checkpoint[1][:4]), int(checkpoint[1][4:6]), int(checkpoint[1][6:8]))
+        except ValueError as error:
+            raise InstallError("release marker checkpoint date is invalid") from error
+    if PLATFORM == "linux-x64" and tag == "v" + marker["version"]:
+        return None
+    raise InstallError("release marker has an unknown checkpoint identity")
+
+
+def _read_active_marker(current):
+    marker = current.resolve(strict=True) / ".installed-release.json"
+    try:
+        descriptor = os.open(marker, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(before.st_mode) or before.st_size > 16 * 1024
+                    or before.st_uid != os.geteuid() or before.st_nlink != 1
+                    or stat.S_IMODE(before.st_mode) & 0o022):
+                raise InstallError("active release marker is not a bounded private owned regular file")
+            raw = stream.read(16 * 1024 + 1)
+            after = os.fstat(stream.fileno())
+            if len(raw) != before.st_size or _file_identity(before) != _file_identity(after) or _file_identity(after) != _file_identity(marker.lstat()):
+                raise InstallError("active release marker changed during admission")
+        return json.loads(raw)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise InstallError("cannot verify active checkpoint before update") from error
+
+
+def check_checkpoint_update(current, incoming, allow_downgrade=False):
+    """Admit exact marker identities; the explicit flag changes ordering only."""
+    incoming_date = _validate_marker(incoming)
+    if not current.exists():
+        if current.is_symlink():
+            raise InstallError("active install pointer is dangling")
+        return
+    installed = _read_active_marker(current)
+    active_date = _validate_marker(installed)
+    if incoming["tag"] == installed["tag"]:
+        if incoming != installed:
+            raise InstallError("active release tag is already installed with different bytes")
+        return
+    if allow_downgrade:
+        return
+    if incoming_date is None or active_date is None:
+        if incoming_date is None and active_date is None and tuple(map(int, incoming["version"].split("."))) > tuple(map(int, installed["version"].split("."))):
+            return
+        raise InstallError("refusing unordered checkpoint/stable replacement; use --allow-downgrade explicitly")
+    if incoming_date <= active_date:
+        reason = "older" if incoming_date < active_date else "different same-date"
+        raise InstallError(f"refusing {reason} checkpoint {incoming['tag']}; active is {installed['tag']}. Use --allow-downgrade to replace it explicitly")
+
+
+@contextmanager
+def _install_lease(managed_root):
+    """Hold one owned inode from checkpoint admission through publication."""
+    _validate_install_directory(managed_root)
+    path = managed_root / ".install.lock"
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        before = os.fstat(descriptor)
+        if (not stat.S_ISREG(before.st_mode) or before.st_size != 0
+                or before.st_uid != os.geteuid() or before.st_nlink != 1
+                or stat.S_IMODE(before.st_mode) != 0o600):
+            raise InstallError("install lease is not a private owned single-link regular file")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        if _file_identity(before) != _file_identity(os.fstat(descriptor)) or _file_identity(before) != _file_identity(path.lstat()):
+            raise InstallError("install lease identity changed while waiting")
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def install(prefix: Path, entry: dict, manifest: dict, archive: Path, *, allow_downgrade: bool = False) -> None:
     os.umask(0o077)
     prefix.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _validate_install_directory(prefix)
     lib_dir = prefix / "lib"
     if lib_dir.is_symlink():
         raise InstallError(f"managed install parent must not be a symlink: {lib_dir}")
     lib_dir.mkdir(mode=0o700, exist_ok=True)
+    _validate_install_directory(lib_dir)
     if not lib_dir.is_dir():
         raise InstallError(f"managed install parent is not a directory: {lib_dir}")
     managed_root = prefix / "lib" / "nudox"
     if managed_root.is_symlink():
         raise InstallError(f"managed install root must not be a symlink: {managed_root}")
     managed_root.mkdir(mode=0o700, exist_ok=True)
+    _validate_install_directory(managed_root)
     if not managed_root.is_dir():
         raise InstallError("managed install root is not a directory")
+    with _install_lease(managed_root):
+        _install_locked(prefix, entry, manifest, archive, allow_downgrade=allow_downgrade)
+
+
+def _install_locked(prefix, entry, manifest, archive, *, allow_downgrade=False):
+    managed_root = prefix / "lib" / "nudox"
     version_root = _version_root(prefix)
     version_root.mkdir(mode=0o700, exist_ok=True)
     if version_root.is_symlink() or not version_root.is_dir():
@@ -180,11 +297,12 @@ def install(prefix: Path, entry: dict, manifest: dict, archive: Path) -> None:
         raise InstallError(f"refusing to replace non-symlink active install pointer: {current}")
     if current.is_symlink() and not _managed_link(current, managed_root):
         raise InstallError(f"refusing to replace active install pointer outside the managed NuDox install: {current}")
+    marker = {"version": entry["version"], "tag": entry["tag"], "source_sha": entry["source_sha"], "asset": entry["asset"], "sha256": manifest["sha256"]}
+    check_checkpoint_update(current, marker, allow_downgrade)
     stage = Path(tempfile.mkdtemp(prefix=".staging-", dir=version_root))
     try:
         safe_extract(archive, stage)
         verify_package(stage, entry, manifest)
-        marker = {"version": entry["version"], "tag": entry["tag"], "source_sha": entry["source_sha"], "asset": entry["asset"], "sha256": manifest["sha256"]}
         (stage / ".installed-release.json").write_text(json.dumps(marker, sort_keys=True) + "\n")
         os.chmod(stage, 0o755)
         if final.exists() or final.is_symlink():
@@ -246,6 +364,7 @@ def verify_package(root,entry,manifest):
         if subprocess.run([str(root/'bin'/name),'--help'],env=clean,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=15).returncode: raise InstallError('packaged startup failed: '+name)
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__); parser.add_argument('--prefix',type=Path)
+    parser.add_argument('--allow-downgrade',action='store_true',help='allow an older or different same-date checkpoint')
     for flag in ['archive-url','archive-sha256','archive-size','source','tag']: parser.add_argument('--'+flag,required=True)
     args=parser.parse_args(argv)
     if sys.platform!='darwin' or os.uname().machine.lower() not in {'arm64','aarch64'}: raise InstallError('Mac preview supports arm64 only')
@@ -260,7 +379,7 @@ def main(argv=None):
         archive=Path(temporary)/'archive.tar.gz'
         download_archive(args.archive_url,args.archive_sha256,size,archive)
         entry={'version':'0.0.0','tag':args.tag,'source_sha':args.source,'asset':Path(parsed.path).name}
-        install(prefix,entry,{'sha256':args.archive_sha256},archive)
+        install(prefix,entry,{'sha256':args.archive_sha256},archive,allow_downgrade=args.allow_downgrade)
     print('Installed diagnostic Mac CLI preview in '+str(prefix)+'; add '+str(prefix/'bin')+' to PATH.')
     print('Known publication failures remain; ad-hoc signed, not notarized. Commands: nudox, nudox-mcp, nudox-locald.')
     return 0
