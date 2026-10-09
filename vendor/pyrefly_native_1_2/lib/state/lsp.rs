@@ -29,6 +29,7 @@ use pyrefly_python::module_path::ModulePathDetails;
 use pyrefly_python::module_path::ModuleStyle;
 use pyrefly_python::short_identifier::ShortIdentifier;
 use pyrefly_python::symbol_kind::SymbolKind;
+use pyrefly_python::sys_info::PythonVersion;
 use pyrefly_python::sys_info::SysInfo;
 use pyrefly_types::type_alias::TypeAliasData;
 use pyrefly_util::gas::Gas;
@@ -1680,13 +1681,36 @@ impl<'a> Transaction<'a> {
         attr_name: &Name,
         pyi_definition: &TextRangeWithModule,
     ) -> Option<(Module, TextRange, Option<TextRange>)> {
-        let context = AttributeContext::from_module(&pyi_definition.module, pyi_definition.range)?;
         let executable_handle = self
             .import_handle_prefer_executable(request_handle, pyi_definition.module.name(), None)
             .finding()?;
         if executable_handle.path().style() != ModuleStyle::Executable {
             return None;
         }
+        let interface_handle = Handle::new(
+            pyi_definition.module.name(),
+            pyi_definition.module.path().dupe(),
+            request_handle.sys_info().dupe(),
+        );
+        // Only reuse the current transaction's AST for this exact source snapshot.
+        // Module equality compares allocation identity, including the captured bytes.
+        // The original context parser uses the default Python target version.
+        let interface_ast = self
+            .get_module_info(&interface_handle)
+            .filter(|module| {
+                module == &pyi_definition.module
+                    && interface_handle.sys_info().version() == PythonVersion::default()
+            })
+            .and_then(|_| self.get_ast(&interface_handle))
+            .unwrap_or_else(|| {
+                Ast::parse(
+                    pyi_definition.module.contents(),
+                    pyi_definition.module.source_type(),
+                )
+                .0
+                .into()
+            });
+        let context = AttributeContext::from_ast(&interface_ast, pyi_definition.range)?;
         let _ = self.get_exports(&executable_handle);
         let executable_module = self.get_module_info(&executable_handle)?;
         let ast = self.get_ast(&executable_handle).unwrap_or_else(|| {

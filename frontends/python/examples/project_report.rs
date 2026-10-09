@@ -1,5 +1,6 @@
 //! Explicit native-authority comparison over immutable pinned package bytes.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
@@ -96,7 +97,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let inferences = module.inferences.iter().map(|inference| json!({"span":{"start":inference.site.start,"end":inference.site.end},"site":format!("{:?}",inference.kind),"type":format!("{:?}",inference.observed)})).collect::<Vec<_>>();
             modules.push(json!({"path":source.relative_path,"definitions":definitions,"inferences":inferences}));
         }
-        passes.push(json!({"pass":pass,"session":"fresh committed State","elapsed_ms":started.elapsed().as_millis(),"modules":modules}));
+        let mut diagnostic_kinds = BTreeMap::<&str, usize>::new();
+        let mut diagnostic_severities = BTreeMap::<&str, usize>::new();
+        for diagnostic in report.diagnostics() {
+            *diagnostic_kinds.entry(&diagnostic.kind).or_default() += 1;
+            *diagnostic_severities
+                .entry(&diagnostic.severity)
+                .or_default() += 1;
+        }
+        let diagnostics = report.diagnostics().iter().map(|diagnostic| json!({
+            "path":diagnostic.relative_path,"span":{"start":diagnostic.span.start,"end":diagnostic.span.end},
+            "kind":diagnostic.kind,"severity":diagnostic.severity,"message":diagnostic.message
+        })).collect::<Vec<_>>();
+        let coverage_gaps = report.coverage_gaps().iter().map(|gap| json!({
+            "path":gap.relative_path,"span":{"start":gap.span.start,"end":gap.span.end},"kind":format!("{:?}",gap.kind)
+        })).collect::<Vec<_>>();
+        passes.push(json!({"pass":pass,"session":"fresh committed State","elapsed_ms":started.elapsed().as_millis(),"modules":modules,
+            "diagnostic_counts":{"total":diagnostics.len(),"by_kind":diagnostic_kinds,"by_severity":diagnostic_severities},
+            "diagnostics":diagnostics,"coverage_gaps":coverage_gaps}));
     }
     println!(
         "{}",

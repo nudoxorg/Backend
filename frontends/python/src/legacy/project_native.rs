@@ -35,7 +35,9 @@ use super::{
     CheckerError, CheckerReport, ImportResolution, Inference, InferenceSite, InferredType,
     NativePythonTypeConstructor, SymbolOutcome, SymbolResolution,
 };
-use crate::legacy::{AnnotationPosition, DeclarationKind, ModuleFacts, OccurrenceKind, Span};
+use crate::legacy::{
+    AnnotationPosition, DeclarationFact, DeclarationKind, ModuleFacts, OccurrenceKind, Span,
+};
 
 pub(super) struct NativeProjectResult {
     pub(super) modules: BTreeMap<Box<str>, CheckerReport>,
@@ -282,6 +284,42 @@ pub(super) fn analyze(
     let mut modules = BTreeMap::new();
     let mut diagnostics = Vec::new();
     let mut projection = TypeProjection::new(control);
+    // The committed State and captured syntax are immutable for this projection.
+    // Index exact identifier sites once, retaining ambiguous sites as unresolved.
+    let mut declaration_sites = BTreeMap::<(&str, u32, u32), Option<&DeclarationFact>>::new();
+    for (path, facts) in syntax {
+        for declaration in &facts.declarations {
+            checkpoint(control)?;
+            if declaration.kind == DeclarationKind::Module {
+                continue;
+            }
+            let site = (
+                *path,
+                declaration.name_span.start,
+                declaration.name_span.end,
+            );
+            match declaration_sites.entry(site) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(Some(declaration));
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    entry.insert(None);
+                }
+            }
+        }
+    }
+    let mut definition_templates = BTreeMap::<(&str, u32, u32), DefinitionTemplate>::new();
+    let mut import_binding_sites = BTreeSet::new();
+    for (path, probes) in &imports {
+        for import in probes {
+            checkpoint(control)?;
+            import_binding_sites.insert((
+                *path,
+                import.binding_span.start,
+                import.binding_span.end,
+            ));
+        }
+    }
     for (source, handle) in sources.iter().zip(&handles) {
         checkpoint(control)?;
         let native_module = read.get_module_info(handle).ok_or_else(|| {
@@ -294,6 +332,8 @@ pub(super) fn analyze(
             ));
         }
         let facts = &syntax[source.relative_path];
+        let annotated_returns = annotated_function_returns(facts, control)?;
+        let native_ast = read.get_ast(handle);
         let mut inferences = Vec::new();
         for declaration in &facts.declarations {
             checkpoint(control)?;
@@ -307,19 +347,9 @@ pub(super) fn analyze(
                 let Some(callable) = callable(&ty) else {
                     continue;
                 };
-                if !facts.annotations.iter().any(|annotation| {
-                    annotation.position == AnnotationPosition::Return
-                        && facts
-                            .declarations
-                            .iter()
-                            .filter(|candidate| {
-                                candidate.kind == DeclarationKind::Function
-                                    && candidate.span.start <= annotation.span.start
-                                    && annotation.span.end <= candidate.span.end
-                            })
-                            .min_by_key(|candidate| candidate.span.end - candidate.span.start)
-                            .is_some_and(|owner| owner.name_span == declaration.name_span)
-                }) {
+                if !annotated_returns
+                    .contains(&(declaration.name_span.start, declaration.name_span.end))
+                {
                     inferences.push(Inference {
                         site: declaration.name_span,
                         kind: InferenceSite::Return,
@@ -430,8 +460,8 @@ pub(super) fn analyze(
             // In this pinned release, the identifier API still substitutes a
             // chosen overload for attribute callees. Query the exact native AST
             // expression range to retain its raw ClassDef declaration link.
-            let expression_range = read.get_ast(handle).and_then(|ast| {
-                Ast::locate_node(&ast, TextSize::new(position))
+            let expression_range = native_ast.as_ref().and_then(|ast| {
+                Ast::locate_node(ast, TextSize::new(position))
                     .into_iter()
                     .find_map(|node| {
                         node.as_expr_ref()
@@ -477,9 +507,11 @@ pub(super) fn analyze(
                 let Some(path) = path.to_str() else {
                     continue;
                 };
-                let Some(target_source) = selected.get(path) else {
+                let Some((path, target_source)) = selected.get_key_value(path) else {
                     continue;
                 };
+                let path = *path;
+                let target_source = *target_source;
                 if definition.module.contents().as_bytes() != target_source.as_bytes() {
                     return Err(project_error(
                         path,
@@ -499,81 +531,75 @@ pub(super) fn analyze(
                         "native definition span is outside captured UTF-8 bytes",
                     ));
                 }
-                let matches = syntax[path]
-                    .declarations
-                    .iter()
-                    // The synthetic module root has no written identifier. In
-                    // an empty initializer its extent is 0..0, which native
-                    // module navigation can return but a declaration source
-                    // coordinate deliberately cannot encode. Keep that
-                    // occurrence unresolved rather than minting a callable
-                    // target from the module container.
-                    .filter(|target| {
-                        target.kind != DeclarationKind::Module && target.name_span == span
-                    })
-                    .collect::<Vec<_>>();
-                let [target] = matches.as_slice() else {
+                let site = (path, span.start, span.end);
+                let Some(target) = declaration_sites.get(&site).copied().flatten() else {
                     continue;
                 };
-                // The native IDE query falls back to the local import binding
-                // when its imported declaration is unavailable. That location
-                // proves the binding spelling, not a resolved callable target.
+                // Native fallback to an import binding still does not prove a
+                // callable target. Keep this refusal before coordinate encoding.
                 if matches!(
                     occurrence.kind,
                     OccurrenceKind::FunctionCall | OccurrenceKind::MethodCall
                 ) && target.kind == DeclarationKind::Alias
-                    && imports[path]
-                        .iter()
-                        .any(|import| import.binding_span == target.name_span)
+                    && import_binding_sites.contains(&site)
                 {
                     continue;
                 }
-                let mut enclosing = syntax[path]
-                    .declarations
-                    .iter()
-                    .filter(|candidate| {
-                        matches!(
-                            candidate.kind,
-                            DeclarationKind::Class | DeclarationKind::Function
-                        ) && candidate.name_span != target.name_span
-                            && candidate.span.start <= target.span.start
-                            && target.span.end <= candidate.span.end
-                    })
-                    .collect::<Vec<_>>();
-                enclosing.sort_by_key(|candidate| {
-                    (candidate.span.start, std::cmp::Reverse(candidate.span.end))
-                });
-                let mut scopes = enclosing
-                    .iter()
-                    .map(|candidate| candidate.name.as_str())
-                    .collect::<Vec<_>>();
-                scopes.push(target.name.as_str());
-                let source_identity = source_identities.get(path).ok_or_else(|| {
-                    project_error(path, "native target is outside selected source identities")
-                })?;
-                let source_coordinate = backend_semantic::ir::PythonSourceCoordinate(
-                    backend_semantic::ir::SourceDeclarationCoordinate {
-                        program: program_identity,
-                        source: *source_identity,
-                        path,
-                        declaration_start: target.span.start,
-                        declaration_end: target.span.end,
-                        name_start: target.name_span.start,
-                    },
-                )
-                .encode()
-                .ok_or_else(|| {
-                    project_error(path, "native target source coordinate is inadmissible")
-                })?;
+                if let std::collections::btree_map::Entry::Vacant(entry) =
+                    definition_templates.entry(site)
+                {
+                    let mut enclosing = syntax[path]
+                        .declarations
+                        .iter()
+                        .filter(|candidate| {
+                            matches!(
+                                candidate.kind,
+                                DeclarationKind::Class | DeclarationKind::Function
+                            ) && candidate.name_span != target.name_span
+                                && candidate.span.start <= target.span.start
+                                && target.span.end <= candidate.span.end
+                        })
+                        .collect::<Vec<_>>();
+                    enclosing.sort_by_key(|candidate| {
+                        (candidate.span.start, std::cmp::Reverse(candidate.span.end))
+                    });
+                    let mut scopes = enclosing
+                        .iter()
+                        .map(|candidate| candidate.name.as_str())
+                        .collect::<Vec<_>>();
+                    scopes.push(target.name.as_str());
+                    let source_identity = source_identities.get(path).ok_or_else(|| {
+                        project_error(path, "native target is outside selected source identities")
+                    })?;
+                    let source_coordinate = backend_semantic::ir::PythonSourceCoordinate(
+                        backend_semantic::ir::SourceDeclarationCoordinate {
+                            program: program_identity,
+                            source: *source_identity,
+                            path,
+                            declaration_start: target.span.start,
+                            declaration_end: target.span.end,
+                            name_start: target.name_span.start,
+                        },
+                    )
+                    .encode()
+                    .ok_or_else(|| {
+                        project_error(path, "native target source coordinate is inadmissible")
+                    })?;
+                    entry.insert(DefinitionTemplate {
+                        source_coordinate: source_coordinate.into_boxed_str(),
+                        qualified_suffix: scopes.join(".").into_boxed_str(),
+                    });
+                }
+                let template = &definition_templates[&site];
                 let target = DefinitionTarget {
                     relative_path: path.into(),
-                    source_coordinate: source_coordinate.into_boxed_str(),
+                    source_coordinate: template.source_coordinate.clone(),
                     package: package.into(),
                     name_span: span,
                     qualified_name: if is_binding {
                         class_name.clone().expect("native ClassDef name")
                     } else {
-                        format!("{}.{}", definition.module.name(), scopes.join("."))
+                        format!("{}.{}", definition.module.name(), template.qualified_suffix)
                             .into_boxed_str()
                     },
                     name: target.name.clone().into_boxed_str(),
@@ -697,6 +723,39 @@ pub(super) fn analyze(
         frontier,
         mirror_tree,
     })
+}
+
+/// Syntax-derived parts shared by every native answer at one exact declaration
+/// site. Native module names and ClassDef qualified names remain per-answer.
+struct DefinitionTemplate {
+    source_coordinate: Box<str>,
+    qualified_suffix: Box<str>,
+}
+
+fn annotated_function_returns(
+    facts: &ModuleFacts,
+    control: PythonProjectControl<'_>,
+) -> Result<BTreeSet<(u32, u32)>, CheckerError> {
+    let mut sites = BTreeSet::new();
+    for annotation in &facts.annotations {
+        checkpoint(control)?;
+        if annotation.position != AnnotationPosition::Return {
+            continue;
+        }
+        if let Some(owner) = facts
+            .declarations
+            .iter()
+            .filter(|candidate| {
+                candidate.kind == DeclarationKind::Function
+                    && candidate.span.start <= annotation.span.start
+                    && annotation.span.end <= candidate.span.end
+            })
+            .min_by_key(|candidate| candidate.span.end - candidate.span.start)
+        {
+            sites.insert((owner.name_span.start, owner.name_span.end));
+        }
+    }
+    Ok(sites)
 }
 
 struct ImportProbe {
@@ -1411,6 +1470,39 @@ fn native_constructor(ty: &Type) -> NativePythonTypeConstructor {
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    #[test]
+    fn written_return_owner_is_the_innermost_function_site() {
+        let source =
+            "def outer():\n    def inner() -> int:\n        return 1\n    return inner()\n";
+        let facts = crate::legacy::extract(
+            source.as_bytes(),
+            backend_semantic::vocabulary::PythonVersion::Python314,
+        )
+        .expect("valid nested functions");
+        let cancelled = AtomicBool::new(false);
+        let sites = annotated_function_returns(
+            &facts,
+            PythonProjectControl {
+                cancelled: &cancelled,
+                deadline: Instant::now() + Duration::from_secs(5),
+            },
+        )
+        .expect("annotation ownership");
+        let inner = facts
+            .declarations
+            .iter()
+            .find(|declaration| declaration.name == "inner")
+            .expect("inner declaration");
+        let outer = facts
+            .declarations
+            .iter()
+            .find(|declaration| declaration.name == "outer")
+            .expect("outer declaration");
+        assert_eq!(sites.len(), 1);
+        assert!(sites.contains(&(inner.name_span.start, inner.name_span.end)));
+        assert!(!sites.contains(&(outer.name_span.start, outer.name_span.end)));
+    }
 
     #[test]
     fn scheduled_type_nodes_reserve_work_before_growing_pending_queue() {

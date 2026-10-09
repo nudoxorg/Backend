@@ -1,0 +1,167 @@
+{
+  "schema": "nudox.root.python-current1770.audit.v1",
+  "source": {
+    "commit": "1770c9c531e62bbc58a3abfb7cc5c027ea579161",
+    "lock_sha256": "b45bb9a10382c70e6888b220e82061d038b886a5235978f9442c6483229bb1dd",
+    "status": "",
+    "tree": "444e92a2753a960e49e207b780fa13004fb6abca"
+  },
+  "raw_files_rehashed": 116,
+  "raw_bytes_rehashed": 134362409,
+  "git_blobs_independently_rehashed": 18016,
+  "git_source_bytes_rehashed": 466977854,
+  "native_names": [
+    "legacy::checker::project_native::tests::written_return_owner_is_the_innermost_function_site",
+    "captured_baseline_preserves_native_cross_file_facts_and_unfiltered_diagnostics",
+    "native_empty_package_initializers_are_not_named_declaration_targets",
+    "native_interface_attributes_keep_executable_and_stub_fallback_coordinates",
+    "native_project_restores_cross_module_definitions_preserving_utf8",
+    "native_relative_import_aliases_retain_exact_selected_function_coordinates"
+  ],
+  "native_passed": 6,
+  "fresh_pyrefly_library_and_custom_build": true,
+  "generated_tests": 18,
+  "apps": {
+    "open-webui": {
+      "modules_per_state": 263,
+      "fresh_states": 2,
+      "elapsed_ms": [
+        32613,
+        31825
+      ],
+      "diagnostics": {
+        "by_kind": {
+          "bad-argument-type": 321,
+          "bad-assignment": 42,
+          "bad-context-manager": 22,
+          "bad-function-definition": 102,
+          "bad-index": 11,
+          "bad-override": 1,
+          "bad-override-mutable-attribute": 2,
+          "bad-return": 42,
+          "bad-specialization": 13,
+          "bad-typed-dict-key": 1,
+          "bad-unpacking": 1,
+          "deprecated": 1,
+          "implicit-import": 13,
+          "invalid-annotation": 1,
+          "missing-argument": 4,
+          "missing-attribute": 889,
+          "missing-import": 772,
+          "no-matching-overload": 5,
+          "not-a-type": 12,
+          "not-callable": 5,
+          "not-iterable": 13,
+          "redundant-condition": 28,
+          "unavailable-type-projection": 1508,
+          "unbound-name": 18,
+          "unexpected-keyword": 5,
+          "unnecessary-type-conversion": 70,
+          "unsupported-operation": 72
+        },
+        "by_severity": {
+          "ERROR": 2354,
+          "WARN": 112,
+          "info": 1508
+        },
+        "total": 3974
+      },
+      "selected_profile": "Python314",
+      "module_payloads_equal": true
+    },
+    "docs": {
+      "modules_per_state": 233,
+      "fresh_states": 2,
+      "elapsed_ms": [
+        16087,
+        12954
+      ],
+      "diagnostics": {
+        "by_kind": {
+          "bad-argument-type": 7,
+          "bad-assignment": 4,
+          "bad-context-manager": 6,
+          "bad-function-definition": 6,
+          "bad-index": 8,
+          "bad-override": 25,
+          "bad-override-mutable-attribute": 3,
+          "bad-return": 1,
+          "bad-unpacking": 1,
+          "implicit-import": 2,
+          "invalid-inheritance": 1,
+          "invalid-yield": 1,
+          "missing-argument": 2,
+          "missing-attribute": 60,
+          "missing-import": 682,
+          "missing-source-for-stubs": 24,
+          "unavailable-type-projection": 533,
+          "unbound-name": 10,
+          "unnecessary-comparison": 3,
+          "unnecessary-type-conversion": 3,
+          "unsupported-operation": 6
+        },
+        "by_severity": {
+          "ERROR": 847,
+          "WARN": 8,
+          "info": 533
+        },
+        "total": 1388
+      },
+      "selected_profile": "Python314",
+      "module_payloads_equal": true
+    },
+    "mealie": {
+      "modules_per_state": 663,
+      "fresh_states": 2,
+      "elapsed_ms": [
+        22654,
+        22271
+      ],
+      "diagnostics": {
+        "by_kind": {
+          "bad-argument-type": 56,
+          "bad-assignment": 8,
+          "bad-index": 2,
+          "bad-override": 3,
+          "bad-override-mutable-attribute": 5,
+          "bad-override-param-name": 3,
+          "bad-return": 3,
+          "deprecated": 2,
+          "internal-error": 1,
+          "invalid-annotation": 11,
+          "missing-argument": 1,
+          "missing-attribute": 76,
+          "missing-import": 1051,
+          "missing-source-for-stubs": 31,
+          "no-matching-overload": 3,
+          "not-callable": 1,
+          "redundant-cast": 5,
+          "redundant-condition": 13,
+          "unavailable-type-projection": 1302,
+          "unbound-name": 12,
+          "unnecessary-type-conversion": 29,
+          "unreachable-match-case": 5,
+          "unsupported-operation": 24
+        },
+        "by_severity": {
+          "ERROR": 1291,
+          "WARN": 54,
+          "info": 1302
+        },
+        "total": 2647
+      },
+      "selected_profile": "Python314",
+      "module_payloads_equal": true
+    }
+  },
+  "literal_original_source_restoration": true,
+  "administrative_allocation_retained": true,
+  "packet_sha256": "30e29837db99f5ef8b6e927a6cd291d4902e52025f83c8f3d574eb1139911265",
+  "limits": [
+    "Native authority slice only; no public CLI/MCP/installed release proof.",
+    "All app profiles Python314; retained-AST reuse requires default313 and these apps do not exercise that path.",
+    "No same-host baseline; no causal speedup claim.",
+    "Docs/Mealie module arrays equal predecessor; diagnostic messages differ by temporary paths and two Mealie orjson suggestions per State.",
+    "Historical Mac Open deadline failure and all diagnostics/coverage gaps retained."
+  ]
+}

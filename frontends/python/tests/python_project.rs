@@ -17,6 +17,95 @@ fn publication_control(cancelled: &AtomicBool) -> PythonProjectControl<'_> {
 }
 
 #[test]
+fn native_interface_attributes_keep_executable_and_stub_fallback_coordinates() {
+    let root = std::env::temp_dir().join(format!(
+        "nudox-python-interface-attributes-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).expect("fixture root");
+    let checker = NativePythonProjectAuthority::admit().expect("compiled native producer");
+    let interface = "class Outer:\n    class Inner:\n        marker: int\n        def run(self) -> str: ...\n        def missing(self) -> int: ...\n";
+    let executable = "# 🐍 executable coordinates differ from the interface\nclass Outer:\n    class Inner:\n        marker = 1\n        def run(self):\n            return 'yes'\n";
+    let stub_only = "class Solo:\n    def ping(self) -> int: ...\n";
+    let caller = "from .api import Outer\nfrom .stubonly import Solo\nvalue = Outer.Inner()\nvalue.run()\nvalue.marker\nvalue.missing()\nSolo().ping()\n";
+    let cancelled = AtomicBool::new(false);
+    // The retained parser uses the configured version; the original fallback
+    // parser uses 3.13. Both must preserve the same native target coordinates.
+    for version in [PythonVersion::Python313, PythonVersion::Python314] {
+        for prefix in ["", "# fresh captured source snapshot\n"] {
+            let executable = format!("{prefix}{executable}");
+            let sources = [
+                PythonProjectSource {
+                    relative_path: "pkg/__init__.py",
+                    source: "",
+                },
+                PythonProjectSource {
+                    relative_path: "pkg/api.pyi",
+                    source: interface,
+                },
+                PythonProjectSource {
+                    relative_path: "pkg/api.py",
+                    source: &executable,
+                },
+                PythonProjectSource {
+                    relative_path: "pkg/stubonly.pyi",
+                    source: stub_only,
+                },
+                PythonProjectSource {
+                    relative_path: "pkg/client.py",
+                    source: caller,
+                },
+            ];
+            let report = checker
+                .analyze_project(
+                    &root,
+                    "pkg",
+                    &sources,
+                    version,
+                    publication_control(&cancelled),
+                )
+                .expect("fresh native interface transaction");
+            let client = report.module("pkg/client.py").expect("caller report");
+            for (name, path, target_source) in [
+                ("run", "pkg/api.py", executable.as_str()),
+                ("marker", "pkg/api.py", executable.as_str()),
+                ("missing", "pkg/api.pyi", interface),
+                ("ping", "pkg/stubonly.pyi", stub_only),
+            ] {
+                let occurrence = caller.find(&format!(".{name}")).expect("caller site") + 1;
+                let target = client
+                    .symbols
+                    .iter()
+                    .find_map(|symbol| match &symbol.outcome {
+                        SymbolOutcome::Definition { target, .. }
+                            if symbol.span.start as usize == occurrence =>
+                        {
+                            Some(target)
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("native attribute target for {name}"));
+                assert_eq!(target.relative_path.as_ref(), path, "{name}");
+                assert_eq!(
+                    target.name_span.start as usize,
+                    target_source.find(name).expect("target name"),
+                    "{name} in {version:?}"
+                );
+                assert_eq!(
+                    &target_source[target.name_span.start as usize..target.name_span.end as usize],
+                    name
+                );
+            }
+            report
+                .witness()
+                .validate_current(publication_control(&cancelled))
+                .expect("unchanged captured source witness");
+        }
+    }
+    std::fs::remove_dir_all(root).expect("fixture cleanup");
+}
+
+#[test]
 fn native_project_restores_cross_module_definitions_preserving_utf8() {
     let root =
         std::env::temp_dir().join(format!("nudox-python-project-test-{}", std::process::id()));
