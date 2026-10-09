@@ -28,7 +28,7 @@ mod tests;
 
 pub use admission::{
     MAX_COMMAND_TEXT, ReplyAdmissionError, RequestAdmissionError, admit_reply,
-    admit_reply_with_capability, admit_request, reply_memory_bound,
+    admit_reply_with_capability, admit_request, admit_surface_reply, reply_memory_bound,
 };
 pub use claims::{WireCertificate, WireClaim, WireSchema};
 pub use codec::{

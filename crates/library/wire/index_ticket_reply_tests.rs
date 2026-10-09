@@ -297,3 +297,248 @@ fn index_ticket_commands_keep_identity_free_failures_as_failures() {
         }
     }
 }
+
+fn operation_observations(
+    key: crate::IndexOperationKey,
+    package: &PackageReference,
+    intent: crate::CompileExecutionIntent,
+) -> Vec<IndexOperationObservation> {
+    vec![
+        IndexOperationObservation::Known(crate::IndexOperationStatus::new(
+            key,
+            package.clone(),
+            intent,
+            crate::IndexOperationState::Accepted,
+        )),
+        IndexOperationObservation::Known(crate::IndexOperationStatus::new(
+            key,
+            package.clone(),
+            intent,
+            crate::IndexOperationState::Failed {
+                reason: crate::IndexOperationFailureReason::Cancelled,
+                detail: ProductText::from_static("cancelled before publication"),
+                compiler_failure: None,
+            },
+        )),
+        IndexOperationObservation::Unknown { operation_key: key },
+        IndexOperationObservation::OutsideReceiptWindow {
+            operation_key: key,
+            request_digest: crate::index_operation_request_digest(package, intent),
+        },
+    ]
+}
+
+fn operation_replies(
+    key: crate::IndexOperationKey,
+    package: &PackageReference,
+    intent: crate::CompileExecutionIntent,
+) -> Vec<(SurfaceCommand, SurfaceReply)> {
+    operation_observations(key, package, intent)
+        .into_iter()
+        .flat_map(|observation| {
+            [
+                (
+                    SurfaceCommand::IndexOperationStart {
+                        operation_key: key,
+                        package: package.clone(),
+                        execution_intent: intent,
+                    },
+                    SurfaceReply::IndexOperationStarted(observation.clone()),
+                ),
+                (
+                    SurfaceCommand::IndexOperationStatus { operation_key: key },
+                    SurfaceReply::IndexOperationStatus(observation),
+                ),
+            ]
+        })
+        .collect()
+}
+
+#[test]
+fn index_operation_replies_bind_exact_keys_through_borrowed_and_wire_admission() {
+    let key = crate::IndexOperationKey::from_bytes([7; 32]).expect("key");
+    let foreign_key = crate::IndexOperationKey::from_bytes([8; 32]).expect("foreign key");
+    let package = PackageReference::parse("/workspace/demo").expect("package");
+    let intent = crate::CompileExecutionIntent::Interactive;
+    for (command, reply) in operation_replies(key, &package, intent) {
+        crate::admit_surface_reply(&command, &reply).expect("exact borrowed pair");
+        let decoded = decoded(reply);
+        crate::admit_reply(
+            &CommandDto::new(42, Command::Surface(command.clone())),
+            &decoded,
+        )
+        .expect("exact decoded pair");
+        let foreign_command = match command {
+            SurfaceCommand::IndexOperationStart {
+                package,
+                execution_intent,
+                ..
+            } => SurfaceCommand::IndexOperationStart {
+                operation_key: foreign_key,
+                package,
+                execution_intent,
+            },
+            SurfaceCommand::IndexOperationStatus { .. } => SurfaceCommand::IndexOperationStatus {
+                operation_key: foreign_key,
+            },
+            _ => unreachable!("operation fixture"),
+        };
+        assert!(
+            matches!(
+                crate::admit_reply(
+                    &CommandDto::new(42, Command::Surface(foreign_command)),
+                    &decoded,
+                ),
+                Err(crate::ReplyAdmissionError::Protocol(_))
+            ),
+            "matching envelope ID and self-consistent receipt cannot authorize another key"
+        );
+    }
+}
+
+#[test]
+fn index_operation_start_rejects_self_consistent_foreign_requests_and_tombstones() {
+    let key = crate::IndexOperationKey::from_bytes([7; 32]).expect("key");
+    let package = PackageReference::parse("/workspace/demo").expect("package");
+    let command = SurfaceCommand::IndexOperationStart {
+        operation_key: key,
+        package: package.clone(),
+        execution_intent: crate::CompileExecutionIntent::Interactive,
+    };
+    for (foreign_package, foreign_intent) in [
+        (
+            PackageReference::parse("/workspace/foreign").expect("foreign package"),
+            crate::CompileExecutionIntent::Interactive,
+        ),
+        (package, crate::CompileExecutionIntent::Background),
+    ] {
+        for observation in operation_observations(key, &foreign_package, foreign_intent) {
+            if matches!(observation, IndexOperationObservation::Unknown { .. }) {
+                continue; // Unknown carries a key, not a claim about a package.
+            }
+            let reply = SurfaceReply::IndexOperationStarted(observation);
+            reply
+                .admit(command.id())
+                .expect("internally valid foreign request");
+            assert!(matches!(
+                crate::admit_reply(
+                    &CommandDto::new(42, Command::Surface(command.clone())),
+                    &decoded(reply),
+                ),
+                Err(crate::ReplyAdmissionError::Protocol(_))
+            ));
+        }
+    }
+}
+
+#[test]
+fn index_start_and_progress_reject_shared_id_reply_family_substitution_in_both_directions() {
+    let ticket = ticket(7, 3, "/workspace/demo");
+    let key = crate::IndexOperationKey::from_bytes([7; 32]).expect("key");
+    let pairs = [
+        (
+            SurfaceCommand::IndexOperationStart {
+                operation_key: key,
+                package: ticket.package().clone(),
+                execution_intent: crate::CompileExecutionIntent::Interactive,
+            },
+            SurfaceReply::IndexStarted(crate::IndexStartResult::Started {
+                ticket: ticket.clone(),
+                stage: IndexJobStage::Scanning,
+            }),
+        ),
+        (
+            SurfaceCommand::IndexStart {
+                package: ticket.package().clone(),
+                execution_intent: crate::CompileExecutionIntent::Interactive,
+            },
+            SurfaceReply::IndexOperationStarted(IndexOperationObservation::Unknown {
+                operation_key: key,
+            }),
+        ),
+        (
+            SurfaceCommand::IndexOperationStatus { operation_key: key },
+            SurfaceReply::IndexProgress(IndexJobObservation::Unknown {
+                ticket: ticket.clone(),
+                current_owner_epoch: [9; 16],
+            }),
+        ),
+        (
+            SurfaceCommand::IndexProgress {
+                ticket,
+                after_sequence: 0,
+            },
+            SurfaceReply::IndexOperationStatus(IndexOperationObservation::Unknown {
+                operation_key: key,
+            }),
+        ),
+    ];
+    for (command, reply) in pairs {
+        reply
+            .admit(command.id())
+            .expect("same command ID is insufficient");
+        assert!(matches!(
+            crate::admit_surface_reply(&command, &reply),
+            Err(crate::ReplyAdmissionError::Protocol(_))
+        ));
+        assert!(matches!(
+            crate::admit_reply(
+                &CommandDto::new(42, Command::Surface(command)),
+                &decoded(reply),
+            ),
+            Err(crate::ReplyAdmissionError::Protocol(_))
+        ));
+    }
+}
+
+#[test]
+fn index_start_binds_packages_without_conflating_tickets_or_universal_failures() {
+    let package = PackageReference::parse("/workspace/demo").expect("package");
+    let command = SurfaceCommand::IndexStart {
+        package: package.clone(),
+        execution_intent: crate::CompileExecutionIntent::Interactive,
+    };
+    for other in ["/workspace/demo", "/workspace/foreign"] {
+        let ticket = ticket(7, 3, other);
+        for reply in [
+            SurfaceReply::IndexStarted(crate::IndexStartResult::Started {
+                ticket: ticket.clone(),
+                stage: IndexJobStage::Scanning,
+            }),
+            SurfaceReply::IndexStarted(crate::IndexStartResult::Terminal(IndexJobTerminal {
+                ticket,
+                outcome: IndexJobOutcome::Cancelled,
+            })),
+        ] {
+            let result = crate::admit_reply(
+                &CommandDto::new(42, Command::Surface(command.clone())),
+                &decoded(reply),
+            );
+            assert_eq!(result.is_ok(), other == package.as_str());
+        }
+    }
+    let key = crate::IndexOperationKey::from_bytes([7; 32]).expect("key");
+    for command in [
+        command,
+        SurfaceCommand::IndexOperationStart {
+            operation_key: key,
+            package,
+            execution_intent: crate::CompileExecutionIntent::Interactive,
+        },
+        SurfaceCommand::IndexOperationStatus { operation_key: key },
+    ] {
+        for failure in [
+            CommandReply::Error("transport failed".to_owned()),
+            CommandReply::Failed(crate::CommandFailure::InvalidQuery(
+                "request refused".to_owned(),
+            )),
+        ] {
+            let failure = ReplyDto::new(42, failure);
+            crate::admit_reply(
+                &CommandDto::new(42, Command::Surface(command.clone())),
+                &failure,
+            )
+            .expect("universal failure makes no receipt claim");
+        }
+    }
+}

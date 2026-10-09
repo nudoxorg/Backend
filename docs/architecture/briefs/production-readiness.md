@@ -1,3 +1,11 @@
+## 2026-10-09 — Bind indexing replies to the exact submitted operation
+
+Borrowed and framed reply admission now share one checked boundary. Durable indexing starts bind the reply to the submitted operation key, package, intent and canonical request digest, including compacted terminal records. Progress binds the exact key and reply family; legacy ticket commands keep their existing package/ticket checks. Universal failure replies retain their existing handling. This closes substitution between self-consistent replies that happen to reuse the same envelope identifier without cloning the request or changing the DTO.
+
+Eight genuine native wire controls pass on source `7270bf9d3fc80cd952d811218a8b9c80786b7097`, using a freshly produced library test image. Root independently checked all132 raw archive files,18,019 producing Git blobs, the four exact postimages,18 receipt/log hashes, owned rustc observation, actual remote image hash and the literal original source/lock/stamp return. [The audit](../../audits/index-operation-reply-binding-native-evidence-20261009.json) retains the complete raw test output and source/image identities.
+
+This is a narrow source checkpoint. The same producing cohort's MCP gate is131 passed/2 failed, with eight later native controls initially not run. Its corrected test setup and subsequent native runs are separate evidence. Matching current normal binaries, installed CLI/MCP/GUI, public all-tool real-project acceptance, current Clippy and release packaging remain open; this checkpoint does not certify them.
+
 ## 2026-10-09 — Python projection reuse: native slice validated, public acceptance still open
 
 The five Python postimages from `1770c9c531e62bbc58a3abfb7cc5c027ea579161` reuse a per-snapshot declaration/span index and borrow the current native module AST when the exact allocation, retained AST and parser version permit it. Executable-unavailable attribute resolution avoids parsing a discarded body. There is no cross-snapshot mutable cache and the original parser fallback remains.
