@@ -30,7 +30,7 @@ use backend_extension_turso::{
     reopen_selected_compiler_metadata,
 };
 use backend_library::interface::{SemanticImageAuthority, SemanticImageSnapshot};
-use backend_semantic::ir::{ImageProvenance, SemanticCoreReader};
+use backend_semantic::ir::{ImageProvenance, SemanticCoreReader, SemanticReader};
 use backend_semantic::vocabulary::CompileRecipeFact;
 use backend_semantic::vocabulary::LanguageProfile;
 use backend_semantic::vocabulary::Stage;
@@ -835,31 +835,48 @@ impl SelectedClosureImageLoader {
 }
 
 impl generation_residence::SelectedSemanticImageLoader for SelectedClosureImageLoader {
-    fn load(
+    fn selection(
         &self,
         key: &ProductSemanticPublicationKey,
         claim: SemanticPublicationClaim,
+    ) -> Result<generation_residence::SelectedSemanticImageSelection, BuiltinModelError> {
+        self.selected(key, claim)
+            .map(generation_residence::SelectedSemanticImageSelection::Admitted)
+    }
+
+    fn load(
+        &self,
+        selection: generation_residence::SelectedSemanticImageSelection,
         max_bytes: usize,
         max_images: usize,
-    ) -> Result<Box<[SemanticImageSnapshot]>, BuiltinModelError> {
-        let selected = self.selected(key, claim)?;
-        load_selected_images(&self.store, &selected, max_bytes, max_images)
+    ) -> Result<generation_residence::SelectedSemanticImages, BuiltinModelError> {
+        load_selected_images(&self.store, selection, max_bytes, max_images)
     }
 }
 
 impl generation_residence::SelectedSemanticImageLoader for CapturedClosureImageLoader {
-    fn load(
+    fn selection(
         &self,
         key: &ProductSemanticPublicationKey,
         claim: SemanticPublicationClaim,
+    ) -> Result<generation_residence::SelectedSemanticImageSelection, BuiltinModelError> {
+        let binding = *claim.binding().identity.as_ref();
+        self.by_binding
+            .get(&(key.clone(), binding))
+            .cloned()
+            .map(generation_residence::SelectedSemanticImageSelection::Admitted)
+            .ok_or_else(|| {
+                BuiltinModelError("semantic projection names a generation absent from the captured admitted proof inventory".to_owned())
+            })
+    }
+
+    fn load(
+        &self,
+        selection: generation_residence::SelectedSemanticImageSelection,
         max_bytes: usize,
         max_images: usize,
-    ) -> Result<Box<[SemanticImageSnapshot]>, BuiltinModelError> {
-        let binding = *claim.binding().identity.as_ref();
-        let selected = self.by_binding.get(&(key.clone(), binding)).ok_or_else(|| {
-            BuiltinModelError("semantic projection names a generation absent from the captured admitted proof inventory".to_owned())
-        })?;
-        load_selected_images(&self.store, selected, max_bytes, max_images)
+    ) -> Result<generation_residence::SelectedSemanticImages, BuiltinModelError> {
+        load_selected_images(&self.store, selection, max_bytes, max_images)
     }
 }
 
@@ -869,11 +886,20 @@ impl generation_residence::SelectedSemanticImageLoader for CapturedClosureImageL
 /// mandatory and unchanged on every miss.
 fn load_selected_images(
     store: &FileStore,
-    selected: &SelectedGeneration,
+    selection: generation_residence::SelectedSemanticImageSelection,
     max_bytes: usize,
     max_images: usize,
-) -> Result<Box<[SemanticImageSnapshot]>, BuiltinModelError> {
-    let reopened = reopen_selected_compiler_metadata(store, selected).map_err(|error| {
+) -> Result<generation_residence::SelectedSemanticImages, BuiltinModelError> {
+    let selected = match selection {
+        generation_residence::SelectedSemanticImageSelection::Admitted(selected) => selected,
+        #[cfg(test)]
+        generation_residence::SelectedSemanticImageSelection::Fixture(_) => {
+            return Err(BuiltinModelError(
+                "cache fixture has no admitted selected closure".to_owned(),
+            ));
+        }
+    };
+    let reopened = reopen_selected_compiler_metadata(store, &selected).map_err(|error| {
         BuiltinModelError(format!("reopen selected semantic metadata: {error}"))
     })?;
     let manifest = store
@@ -881,6 +907,10 @@ fn load_selected_images(
         .map_err(|error| {
             BuiltinModelError(format!("open selected semantic image index: {error:?}"))
         })?;
+    let program_bytes = reopened
+        .metadata()
+        .native_program_sources()
+        .map_or(0, |member| member.byte_length() as usize);
     let members = reopened.metadata().images();
     if members.len() > max_images {
         return Err(BuiltinModelError(format!(
@@ -888,7 +918,7 @@ fn load_selected_images(
             members.len()
         )));
     }
-    let admitted_bytes = members.iter().try_fold(0_usize, |total, member| {
+    let admitted_bytes = members.iter().try_fold(program_bytes, |total, member| {
         total.checked_add(member.byte_length() as usize)
     });
     let Some(admitted_bytes) = admitted_bytes else {
@@ -901,6 +931,13 @@ fn load_selected_images(
             "selected semantic image bytes {admitted_bytes} exceed residence admission limit {max_bytes}"
         )));
     }
+    // Reject from the small admitted inventory before reading either
+    // image payloads or the full native program membership payload.
+    let program_sources =
+        backend_extension_turso::reopen_native_program_sources(&manifest, reopened.metadata())
+            .map_err(|error| {
+                BuiltinModelError(format!("reopen selected native program sources: {error}"))
+            })?;
     let mut images = Vec::new();
     images.try_reserve_exact(members.len()).map_err(|_| {
         BuiltinModelError("selected semantic image inventory is too large".to_owned())
@@ -951,7 +988,47 @@ fn load_selected_images(
             )?,
         );
     }
-    Ok(images.into_boxed_slice())
+    if let Some(sources) = &program_sources {
+        use backend_semantic::ir::SemanticReader as _;
+        let mappings = sources
+            .sources()
+            .filter_map(|row| row.package_path.map(|path| (path, row.source)))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        for image in &images {
+            let view = image
+                .reopen()
+                .map_err(|error| BuiltinModelError(format!("open program image: {error}")))?;
+            let ImageProvenance::Captured {
+                source,
+                recipe,
+                scope,
+                ..
+            } = view.image_facts().provenance
+            else {
+                return Err(BuiltinModelError(
+                    "selected program image has no provenance".to_owned(),
+                ));
+            };
+            let path = view
+                .atom(scope.path)
+                .and_then(|path| std::str::from_utf8(path).ok())
+                .ok_or_else(|| {
+                    BuiltinModelError("selected program image path is invalid".to_owned())
+                })?;
+            if recipe.profile.language() != backend_semantic::vocabulary::Language::TypeScript
+                || recipe.toolchain != sources.toolchain()
+                || mappings.get(path) != Some(&source)
+            {
+                return Err(BuiltinModelError(
+                    "selected program differs from image source or recipe".to_owned(),
+                ));
+            }
+        }
+    }
+    Ok(generation_residence::SelectedSemanticImages {
+        images: images.into_boxed_slice(),
+        native_program_sources: program_sources.map(Arc::new),
+    })
 }
 
 #[derive(Clone)]
@@ -1045,16 +1122,43 @@ struct AdmittedCompilerImage {
 }
 
 impl CompilerImageAdmission {
+    #[cfg(test)]
     fn from_reopened(bytes: &[u8]) -> Result<Self, BuiltinModelError> {
+        Self::from_reopened_in_program(bytes, None, None)
+    }
+
+    fn from_reopened_in_program(
+        bytes: &[u8],
+        program: Option<&backend_semantic::ir::NativeProgramSourceManifest>,
+        mappings: Option<&BTreeMap<&str, backend_semantic::ir::SourceIdentity>>,
+    ) -> Result<Self, BuiltinModelError> {
         let reopened = backend_semantic::ir::SemanticImageView::reopen(bytes).map_err(|error| {
             BuiltinModelError(format!("reopen admitted semantic image: {error:?}"))
         })?;
-        let ImageProvenance::Captured { source, recipe, .. } = reopened.image_facts().provenance
+        let ImageProvenance::Captured {
+            source,
+            recipe,
+            scope,
+            ..
+        } = reopened.image_facts().provenance
         else {
             return Err(BuiltinModelError(
                 "admitted semantic image has no captured compiler provenance".to_owned(),
             ));
         };
+        if let Some(program) = program {
+            let path = reopened
+                .atom(scope.path)
+                .and_then(|path| std::str::from_utf8(path).ok())
+                .ok_or_else(|| BuiltinModelError("program image path is invalid".to_owned()))?;
+            if recipe.toolchain != program.toolchain()
+                || mappings.and_then(|mappings| mappings.get(path)) != Some(&source)
+            {
+                return Err(BuiltinModelError(
+                    "program image differs from captured membership".to_owned(),
+                ));
+            }
+        }
         Ok(Self { source, recipe })
     }
 
@@ -1076,10 +1180,21 @@ impl CompilerImageAdmission {
     }
 }
 
+#[cfg(test)]
 fn admit_compiler_image_provenance(
     store: &FileStore,
     gc_pin: &backend_store::GcPinGuard,
     image: &CompilerImageMember,
+) -> Result<AdmittedCompilerImage, BuiltinModelError> {
+    admit_compiler_image_provenance_in_program(store, gc_pin, image, None, None)
+}
+
+fn admit_compiler_image_provenance_in_program(
+    store: &FileStore,
+    gc_pin: &backend_store::GcPinGuard,
+    image: &CompilerImageMember,
+    program: Option<&backend_semantic::ir::NativeProgramSourceManifest>,
+    mappings: Option<&BTreeMap<&str, backend_semantic::ir::SourceIdentity>>,
 ) -> Result<AdmittedCompilerImage, BuiltinModelError> {
     store
         .with_verified_object_claim_pinned(
@@ -1098,8 +1213,12 @@ fn admit_compiler_image_provenance(
                 if identity.as_ref() != image.semantic_image_identity() {
                     return Err(backend_store::StoreError::Corrupt);
                 }
-                let provenance = CompilerImageAdmission::from_reopened(object.bytes())
-                    .map_err(|_| backend_store::StoreError::Corrupt)?;
+                let provenance = CompilerImageAdmission::from_reopened_in_program(
+                    object.bytes(),
+                    program,
+                    mappings,
+                )
+                .map_err(|_| backend_store::StoreError::Corrupt)?;
                 Ok(AdmittedCompilerImage {
                     object_id: object.id(),
                     provenance,
@@ -1165,9 +1284,54 @@ impl AdmittedCompilation {
         })?;
         let mut admitted_images = BTreeMap::new();
         let mut expected_members = BTreeSet::new();
+        let native_program = if let Some(member) = metadata.native_program_sources() {
+            let closure = store
+                .open_closure(payload_pin.receipt().closure())
+                .map_err(|error| {
+                    BuiltinModelError(format!("open native program output closure: {error:?}"))
+                })?;
+            let program =
+                backend_extension_turso::reopen_native_program_sources(&closure, &metadata)
+                    .map_err(BuiltinModelError)?
+                    .ok_or_else(|| {
+                        BuiltinModelError("native program member was not admitted".to_owned())
+                    })?;
+            if runtime_admission.profile.language()
+                != backend_semantic::vocabulary::Language::TypeScript
+                || program.toolchain().as_ref() != &runtime_admission.toolchain
+            {
+                return Err(BuiltinModelError(
+                    "native program differs from the admitted compiler invocation".to_owned(),
+                ));
+            }
+            let id = closure
+                .admit_claim(UntrustedObjectId::from_bytes(*member.object_id()))
+                .map_err(|error| {
+                    BuiltinModelError(format!("admit native program membership: {error:?}"))
+                })?
+                .ok_or_else(|| {
+                    BuiltinModelError("native program is absent from its output closure".to_owned())
+                })?;
+            expected_members.insert(id);
+            Some(program)
+        } else {
+            None
+        };
+        let program_mappings = native_program.as_ref().map(|program| {
+            program
+                .sources()
+                .filter_map(|row| row.package_path.map(|path| (path, row.source)))
+                .collect::<BTreeMap<_, _>>()
+        });
         for image in metadata.images() {
             let ordinal = image.artifact_ordinal();
-            let admitted = admit_compiler_image_provenance(store, &gc_pin, image)?;
+            let admitted = admit_compiler_image_provenance_in_program(
+                store,
+                &gc_pin,
+                image,
+                native_program.as_ref(),
+                program_mappings.as_ref(),
+            )?;
             if admitted_images.contains_key(&ordinal)
                 || !payload_index
                     .contains_object_id(admitted.object_id)
@@ -2895,6 +3059,28 @@ impl SemanticAuthority {
                 })?,
             );
         }
+        let program_member = if let Some(sources) = staged.native_program_sources() {
+            let object_id = stream_payload::<
+                backend_semantic::ir::NativeProgramSourceManifestSchema,
+            >(&mut builder, sources.as_bytes())?;
+            payload_ids.insert(object_id);
+            let verified = self
+                .store
+                .verify_object_claim(UntrustedObjectId::from_bytes(*object_id.as_bytes()))
+                .map_err(|error| {
+                    BuiltinModelError(format!("verify native program source manifest: {error:?}"))
+                })?;
+            Some(
+                backend_extension_turso::CompilerProgramSourceMember::from_verified_object(
+                    verified, sources,
+                )
+                .map_err(|error| {
+                    BuiltinModelError(format!("admit native program source member: {error}"))
+                })?,
+            )
+        } else {
+            None
+        };
         let payload_pin = builder.seal_pinned().map_err(|error| {
             BuiltinModelError(format!("seal staged semantic output closure: {error:?}"))
         })?;
@@ -2913,7 +3099,7 @@ impl SemanticAuthority {
         let binding_bytes: [u8; 108] = staged.binding_bytes().try_into().map_err(|_| {
             BuiltinModelError("staged semantic binding has the wrong width".to_owned())
         })?;
-        let metadata = CompilerPublicationMetadata::new_with_versioned_planes(
+        let mut metadata = CompilerPublicationMetadata::new_with_versioned_planes(
             staged.manifest_bytes(),
             binding_bytes,
             images,
@@ -2922,6 +3108,13 @@ impl SemanticAuthority {
         .map_err(|error| {
             BuiltinModelError(format!("admit semantic publication metadata: {error}"))
         })?;
+        if let Some(member) = program_member {
+            metadata = metadata
+                .with_native_program_sources(member)
+                .map_err(|error| {
+                    BuiltinModelError(format!("bind native program source metadata: {error}"))
+                })?;
+        }
         let claim =
             SemanticPublicationClaim::admit(staged.manifest_facts(), staged.binding_facts())
                 .map_err(|error| BuiltinModelError(error.to_owned()))?;
@@ -4736,7 +4929,7 @@ mod tests {
             .publish_staged(&key, attempt, &staged, |_| Ok(()))
             .expect("publish actual multifile Rust output through semantic authority");
         assert!(
-            before.load(&key, claim, 16 * 1024 * 1024, 2).is_err(),
+            before.selection(&key, claim).is_err(),
             "a later remembered generation cannot mutate the captured prior proof inventory"
         );
         let captured = authority
@@ -4751,7 +4944,11 @@ mod tests {
         let read_key = key.clone();
         let reader = std::thread::spawn(move || {
             loaded_tx
-                .send(captured.load(&read_key, claim, 16 * 1024 * 1024, 2))
+                .send(
+                    captured
+                        .selection(&read_key, claim)
+                        .and_then(|selection| captured.load(selection, 16 * 1024 * 1024, 2)),
+                )
                 .expect("return actual captured-image read");
         });
         let loaded = loaded_rx.recv_timeout(Duration::from_secs(10));
@@ -4761,6 +4958,7 @@ mod tests {
             loaded
                 .expect("retained read never waits for mutable selector write lease")
                 .expect("same production CAS schema/membership/identity decoder")
+                .images
                 .len(),
             2
         );

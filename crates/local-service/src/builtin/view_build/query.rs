@@ -105,8 +105,10 @@ fn append_compiler_query_facts(
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic query relation: {error}")))?;
+    let available = super::SourceAvailability::of(sources)?;
     let mut complete = BTreeSet::new();
     let mut pending = Vec::new();
+    let mut package_profile_scopes = BTreeMap::<_, BTreeMap<_, _>>::new();
     let mut after = None;
     loop {
         let page = relation
@@ -116,11 +118,12 @@ fn append_compiler_query_facts(
             if !key.is_selected() {
                 continue;
             }
-            let ProductSemanticPublicationRecord::Published {
-                coverage: backend_engine::builtin::SemanticPublicationCoverage::Complete,
-                claim,
-            } = record
-            else {
+            super::SourceAvailability::record_publication_scope(
+                package_profile_scopes.entry(key.package_key()).or_default(),
+                key,
+                record,
+            );
+            let ProductSemanticPublicationRecord::Published { coverage, claim } = record else {
                 continue;
             };
             let project = sources
@@ -134,6 +137,7 @@ fn append_compiler_query_facts(
                 })?;
             let activated =
                 activate_semantic_publication(compiler, key, *claim, generations, image_rows)?;
+            let activated = available.select(key, *coverage, activated, image_rows)?;
             pending.push(PendingQueryPublication {
                 package: project.package,
                 label: project.label.clone(),
@@ -141,10 +145,15 @@ fn append_compiler_query_facts(
                 profile: key.profile(),
                 activated,
             });
-            complete.insert((
-                project.package.to_bytes(),
-                super::super::ingest::lane_profile(key.profile()),
-            ));
+            if matches!(
+                coverage,
+                backend_engine::builtin::SemanticPublicationCoverage::Complete
+            ) {
+                complete.insert((
+                    project.package.to_bytes(),
+                    super::super::ingest::lane_profile(key.profile()),
+                ));
+            }
         }
         let Some(next) = page.next().cloned() else {
             break;
@@ -171,7 +180,25 @@ fn append_compiler_query_facts(
     }
     let mut package_indexes = BTreeMap::<backend_engine::PackageKey, ProjectCallableIndex>::new();
     for (package, views) in &package_views {
-        package_indexes.insert(*package, ProjectCallableIndex::build_from_views(views)?);
+        let profiles = package_profile_scopes.get(package).ok_or_else(|| {
+            BuiltinModelError("selected query publication has no profile scope".to_owned())
+        })?;
+        let scopes = available.retargeting_scopes(*package, profiles);
+        package_indexes.insert(
+            *package,
+            ProjectCallableIndex::build_from_views_with_programs(
+                views,
+                &scopes,
+                &pending
+                    .iter()
+                    .filter(|publication| publication.package == *package)
+                    .filter_map(|publication| publication.activated.program())
+                    .collect::<Vec<_>>(),
+                !pending.iter().any(|publication| {
+                    publication.package == *package && publication.activated.has_program_manifest()
+                }),
+            )?,
+        );
     }
 
     let mut ids = BTreeSet::new();
@@ -404,8 +431,7 @@ fn open_query_publications<'a>(
     let mut opened = Vec::with_capacity(pending.len());
     for publication in pending {
         let mut images = Vec::new();
-        let mut rest = publication.activated.images();
-        while let Some((bytes, next)) = rest.split_first() {
+        for bytes in publication.activated.images() {
             let view = bytes.reopen().map_err(|error| {
                 BuiltinModelError(format!("reopen semantic query image: {error}"))
             })?;
@@ -425,7 +451,6 @@ fn open_query_publications<'a>(
                 digest,
                 identities,
             });
-            rest = next;
         }
         opened.push(OpenedQueryPublication {
             package: publication.package,
@@ -443,7 +468,7 @@ struct PendingQueryPublication {
     label: String,
     coordinate: backend_semantic::vocabulary::PackageUrl,
     profile: backend_semantic::vocabulary::LanguageProfile,
-    activated: super::super::ActivatedProductSemantics,
+    activated: super::SelectedSourceArtifacts,
 }
 
 pub(super) fn append_structural_query_facts(

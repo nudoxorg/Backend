@@ -1060,6 +1060,15 @@ impl StagedSemanticPackage {
             && self.stage == manifest.invocation_recipe().stage()
     }
 
+    /// Exact full native program membership, including libraries and dependencies.
+    /// This is not a complete-fact or complete-read certificate.
+    #[must_use]
+    pub fn native_program_sources(
+        &self,
+    ) -> Option<&backend_semantic::ir::NativeProgramSourceManifest> {
+        self.staged.native_program_sources.as_ref()
+    }
+
     /// Returns the exact verified generation root facts for this output closure.
     #[must_use]
     pub const fn generation_facts(&self) -> backend_store::hydration::VerifiedGenerationFacts {
@@ -1648,6 +1657,9 @@ pub enum PackageSemanticError {
         /// Exact embedding runtime or output-bound failure.
         cause: Box<str>,
     },
+    /// Full native program membership could not be canonically admitted.
+    #[error("native TypeScript program source manifest is invalid")]
+    NativeProgramSources(#[source] backend_semantic::ir::NativeProgramSourceManifestError),
     /// A checked size computation overflowed or exceeded the package budget.
     #[error("package semantic publication exceeds its {lane} byte budget")]
     Capacity {
@@ -1706,6 +1718,78 @@ pub enum PackageSemanticError {
     /// A bounded owned lane could not reserve its exact capacity.
     #[error("package semantic publication allocation failed")]
     Allocation(#[source] std::collections::TryReserveError),
+}
+
+/// The source of truth is the exact bound program, not the output artifact list.
+fn capture_native_program_sources(
+    project: &TszProject,
+    package_paths: &BTreeMap<Box<str>, Box<str>>,
+    toolchain: ContentId<backend_version::ToolchainDomain>,
+    mut checkpoint: impl FnMut(u64) -> Result<(), PackageSemanticError>,
+) -> Result<backend_semantic::ir::NativeProgramSourceManifest, PackageSemanticError> {
+    use backend_semantic::ir::{
+        MAX_NATIVE_PROGRAM_SOURCES, NativeProgramSource, NativeProgramSourceManifest,
+        NativeProgramSourceManifestError,
+    };
+    use backend_version::ContentPayloadHasher;
+    checkpoint(1)?;
+    let files = &project.program().files;
+    if files.is_empty() || files.len() > MAX_NATIVE_PROGRAM_SOURCES {
+        return Err(PackageSemanticError::NativeProgramSources(
+            NativeProgramSourceManifestError::Limit,
+        ));
+    }
+    let mut mappings = BTreeMap::new();
+    for (package, native) in package_paths {
+        checkpoint(1)?;
+        if mappings.insert(native.as_ref(), package.as_ref()).is_some() {
+            return Err(PackageSemanticError::NativeProgramSources(
+                NativeProgramSourceManifestError::Encoding,
+            ));
+        }
+    }
+    let mut sources = Vec::with_capacity(files.len());
+    for file in files {
+        checkpoint(1)?;
+        let source = file
+            .arena
+            .get_source_file_at(file.source_file)
+            .ok_or(PackageSemanticError::NativeProgramSources(
+                NativeProgramSourceManifestError::Encoding,
+            ))?
+            .text
+            .as_bytes();
+        let byte_len = u32::try_from(source.len()).map_err(|_| {
+            PackageSemanticError::NativeProgramSources(NativeProgramSourceManifestError::Limit)
+        })?;
+        let mut hasher = ContentPayloadHasher::<SourceFactDomain>::new(u64::from(byte_len));
+        for chunk in source.chunks(32 * 1024) {
+            checkpoint(1)?;
+            hasher.push_chunk(chunk).map_err(|_| {
+                PackageSemanticError::NativeProgramSources(
+                    NativeProgramSourceManifestError::Encoding,
+                )
+            })?;
+        }
+        let identity = hasher.finish().map_err(|_| {
+            PackageSemanticError::NativeProgramSources(NativeProgramSourceManifestError::Encoding)
+        })?;
+        sources.push(NativeProgramSource {
+            program_path: file.file_name.clone(),
+            source: backend_semantic::ir::SourceIdentity { identity, byte_len },
+            package_path: mappings.remove(file.file_name.as_str()).map(str::to_owned),
+        });
+    }
+    if !mappings.is_empty() {
+        return Err(PackageSemanticError::NativeProgramSources(
+            NativeProgramSourceManifestError::Encoding,
+        ));
+    }
+    checkpoint(sources.len() as u64)?;
+    let manifest = NativeProgramSourceManifest::from_sources(toolchain, sources)
+        .map_err(PackageSemanticError::NativeProgramSources)?;
+    checkpoint(0)?;
+    Ok(manifest)
 }
 
 fn package_compile_host_hint(terminal: &CompilerTerminal) -> &'static str {
@@ -1772,6 +1856,7 @@ pub(crate) struct StagedPackageCompilation {
         Option<std::sync::Arc<crate::application::typescript_host::TypeScriptProjectWitness>>,
     typescript_closure_witness:
         Option<crate::application::typescript_program::TypeScriptProgramClosureWitness>,
+    native_program_sources: Option<backend_semantic::ir::NativeProgramSourceManifest>,
     python_witness: Option<StagedPythonProjectWitness>,
     embeddings: Option<StagedEmbeddingOutput>,
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
@@ -2064,6 +2149,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         let mut tsz_budget = None;
         let mut tsz_package_paths = std::collections::BTreeMap::<Box<str>, Box<str>>::new();
         let mut typescript_closure_witness = None;
+        let mut native_program_sources = None;
         if let Some(project) = typescript_project.as_ref() {
             let inputs = project.inputs();
             let mut resolver = inputs.resolver();
@@ -2129,6 +2215,34 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         let tsz_project = tsz_authority
             .as_ref()
             .and_then(TszProjectAuthority::project);
+        if let (Some(project), Some(budget), Some(toolchain)) =
+            (tsz_project, tsz_budget.as_ref(), typescript_toolchain)
+        {
+            let stopped = |cause| {
+                let terminal = package_authority_terminal(
+                    package.package_target.target(),
+                    first_application_request,
+                    first_authority,
+                    ToolchainSelection::ResolvedNative(toolchain),
+                    PackageAuthorityError::TypeScriptTsz(
+                        backend_frontend_typescript::TszAuthorityError::ExecutionStopped(cause),
+                    ),
+                );
+                PackageSemanticError::Compile {
+                    path: first_source.relative_path.into(),
+                    terminal: Box::new(terminal),
+                }
+            };
+            native_program_sources = Some(capture_native_program_sources(
+                project,
+                &tsz_package_paths,
+                toolchain.identity,
+                |units| {
+                    backend_frontend_typescript::TszExecutionCheckpoint::checkpoint(budget, units)
+                        .map_err(&stopped)
+                },
+            )?);
+        }
         let tsz_session = match (tsz_project, tsz_budget.as_ref()) {
             (Some(project), Some(budget)) => {
                 Some(project.checked_query_session(budget).map_err(|cause| {
@@ -2983,6 +3097,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 .as_ref()
                 .map(|project| std::sync::Arc::clone(&project.witness)),
             typescript_closure_witness,
+            native_program_sources,
             python_witness: python_project
                 .as_ref()
                 .map(|project| StagedPythonProjectWitness {
@@ -4819,6 +4934,120 @@ mod tests {
                 tool: NativeTool::TypeScriptCompiler
             }
         ));
+    }
+
+    #[test]
+    fn native_program_sources_capture_bound_libraries_and_exact_package_mapping() {
+        use backend_frontend_typescript::{
+            TszCheckerOptions, TszEnvironmentFingerprint, TszFileInput, TszLibraryInput,
+            TszProjectAuthority, TszProjectOptions, TszProjectSemanticOptions,
+        };
+        use std::collections::BTreeMap;
+        let mut authority = TszProjectAuthority::new();
+        let library = TszLibraryInput::from_utf8(
+            "@compiler/lib.checker-only.d.ts",
+            b"interface CheckerOnly {}".to_vec(),
+        )
+        .expect("admitted library")
+        .into_lib_file();
+        authority
+            .update(
+                vec![
+                    TszFileInput {
+                        path: "workspace/pkg/main.ts".into(),
+                        source: "export {};".into(),
+                    },
+                    TszFileInput {
+                        path: "workspace/pkg/omitted.ts".into(),
+                        source: "export const value = 1;".into(),
+                    },
+                    // An unmapped declaration input is a real bound program
+                    // member. Checker-only LibFiles are retained separately.
+                    TszFileInput {
+                        path: "@compiler/lib.fixture.d.ts".into(),
+                        source: "interface Fixture {}".into(),
+                    },
+                ],
+                TszProjectOptions {
+                    checker: TszCheckerOptions::default(),
+                    semantic_options: TszProjectSemanticOptions::structural(),
+                    module_resolutions: Vec::new(),
+                    environment: TszEnvironmentFingerprint::from_sha256([7; 32]),
+                },
+                &[library],
+            )
+            .expect("real native bound program");
+        let project = authority.project().expect("project retained");
+        let mappings = BTreeMap::from([
+            (
+                Box::<str>::from("main.ts"),
+                Box::<str>::from("workspace/pkg/main.ts"),
+            ),
+            (
+                Box::<str>::from("omitted.ts"),
+                Box::<str>::from("workspace/pkg/omitted.ts"),
+            ),
+        ]);
+        let mut polls = 0;
+        let manifest = super::capture_native_program_sources(
+            project,
+            &mappings,
+            ContentId::from_canonical_bytes(b"captured compiler"),
+            |_| {
+                polls += 1;
+                Ok(())
+            },
+        )
+        .expect("manifest");
+        assert_eq!(manifest.sources().len(), project.program().files.len());
+        assert!(
+            manifest
+                .sources()
+                .any(|row| row.program_path == "@compiler/lib.fixture.d.ts"
+                    && row.package_path.is_none())
+        );
+        assert_eq!(
+            project.source_text("@compiler/lib.checker-only.d.ts"),
+            Some("interface CheckerOnly {}")
+        );
+        assert!(
+            !manifest
+                .sources()
+                .any(|row| row.program_path == "@compiler/lib.checker-only.d.ts")
+        );
+        assert_eq!(
+            manifest
+                .sources()
+                .filter(|row| row.package_path.is_some())
+                .count(),
+            2
+        );
+        assert!(polls > 3);
+        let wrong = BTreeMap::from([(
+            Box::<str>::from("main.ts"),
+            Box::<str>::from("absent/main.ts"),
+        )]);
+        assert!(matches!(
+            super::capture_native_program_sources(
+                project,
+                &wrong,
+                ContentId::from_canonical_bytes(b"captured compiler"),
+                |_| Ok(())
+            ),
+            Err(PackageSemanticError::NativeProgramSources(_))
+        ));
+        assert!(
+            matches!(
+                super::capture_native_program_sources(
+                    project,
+                    &mappings,
+                    ContentId::from_canonical_bytes(b"captured compiler"),
+                    |_| Err(PackageSemanticError::MissingPublication)
+                ),
+                Err(PackageSemanticError::MissingPublication)
+            ),
+            "original checkpoint refusal is retained"
+        );
     }
 
     #[test]

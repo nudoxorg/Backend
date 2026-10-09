@@ -24,9 +24,12 @@
 //! The fallback direction is semantic → structural, never the reverse, and
 //! never silently structural-only when semantics exist:
 //!
-//! * No complete publication for the file's profile → the structural lane
-//!   answers, and the cause is retained
-//!   ([`StructuralCause`]).
+//! * A Partial publication supplies positive semantic facts only from selected
+//!   artifacts that match the current source identity. Structural declarations
+//!   remain because an available image does not prove a complete file inventory.
+//!   The ledger records [`FileLane::Mixed`]; coverage remains Partial.
+//! * No available selected artifact for the file → the structural lane answers,
+//!   and the cause is retained ([`StructuralCause`]).
 //! * A complete publication exists → the semantic lane answers. Structural
 //!   rows for that file are suppressed entirely rather than merged, so a
 //!   client never sees a half-structural half-semantic outline.
@@ -72,8 +75,8 @@ pub(super) enum SemanticFreshness {
 /// Why the structural baseline answered for one file.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum StructuralCause {
-    /// No selected semantic publication exists for the file's profile yet
-    /// (first scan, compile never ran, or compile still pending).
+    /// No complete selected publication covers the file's profile. A Partial
+    /// publication may exist without a current available artifact for this file.
     NoCompletePublication,
     /// The selected semantic publication is an explicit terminal; the reason
     /// is retained so the client sees why semantics will not answer.
@@ -91,6 +94,9 @@ pub(super) enum FileLane {
         /// Whether the image matches the current scan.
         freshness: SemanticFreshness,
     },
+    /// Current selected artifacts supplied positive semantic facts, while
+    /// structural declarations remain because file completeness is unproved.
+    Mixed,
     /// The structural baseline answered for the stated cause.
     Structural {
         /// Why semantics did not answer.

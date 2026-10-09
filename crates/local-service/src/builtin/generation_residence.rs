@@ -32,6 +32,7 @@ struct GenerationKey {
     scope: [u8; 32],
     manifest: [u8; 32],
     binding: [u8; 32],
+    selected_closure: Option<[u8; 32]>,
 }
 
 impl GenerationKey {
@@ -40,6 +41,18 @@ impl GenerationKey {
             scope,
             manifest: *claim.manifest().identity.as_ref(),
             binding: *claim.binding().identity.as_ref(),
+            selected_closure: None,
+        }
+    }
+
+    fn from_selected(
+        claim: SemanticPublicationClaim,
+        scope: [u8; 32],
+        selection: &SelectedSemanticImageSelection,
+    ) -> Self {
+        Self {
+            selected_closure: Some(selection.closure_id()),
+            ..Self::from_claim(claim, scope)
         }
     }
 
@@ -49,6 +62,28 @@ impl GenerationKey {
             scope: [0; 32],
             manifest,
             binding,
+            selected_closure: None,
+        }
+    }
+}
+
+/// Exact immutable selection obtained from the loader's captured binding map.
+/// The retained selection supplies both the residence key and payload reopen;
+/// no second selection lookup can cross-pair them during a cache miss.
+pub(crate) enum SelectedSemanticImageSelection {
+    /// Previously admitted native closure selected for this exact binding.
+    Admitted(backend_extension_turso::SelectedGeneration),
+    /// Cache-only fixtures do not create a native selected-generation proof.
+    #[cfg(test)]
+    Fixture([u8; 32]),
+}
+
+impl SelectedSemanticImageSelection {
+    fn closure_id(&self) -> [u8; 32] {
+        match self {
+            Self::Admitted(selected) => *selected.closure_id(),
+            #[cfg(test)]
+            Self::Fixture(closure) => *closure,
         }
     }
 }
@@ -58,14 +93,25 @@ impl GenerationKey {
 /// The loader owns a snapshot of typed Turso selections and a CAS reader. It
 /// does not retain the mutable authority database handle, so concurrent
 /// semantic cache misses do not serialize on one authority mutex.
+pub(crate) struct SelectedSemanticImages {
+    pub(crate) images: Box<[SemanticImageSnapshot]>,
+    pub(crate) native_program_sources:
+        Option<Arc<backend_semantic::ir::NativeProgramSourceManifest>>,
+}
+
 pub(crate) trait SelectedSemanticImageLoader: Send + Sync {
-    fn load(
+    fn selection(
         &self,
         key: &ProductSemanticPublicationKey,
         claim: SemanticPublicationClaim,
+    ) -> Result<SelectedSemanticImageSelection, super::BuiltinModelError>;
+
+    fn load(
+        &self,
+        selection: SelectedSemanticImageSelection,
         max_bytes: usize,
         max_images: usize,
-    ) -> Result<Box<[SemanticImageSnapshot]>, super::BuiltinModelError>;
+    ) -> Result<SelectedSemanticImages, super::BuiltinModelError>;
 }
 
 /// Shared semantic images for claims this process has already activated.
@@ -117,6 +163,7 @@ struct ResidentImageWeight {
 #[derive(Clone)]
 struct ResidentGeneration {
     images: Arc<[SemanticImageSnapshot]>,
+    native_program_sources: Option<Arc<backend_semantic::ir::NativeProgramSourceManifest>>,
     weight: ResidentImageWeight,
     last_access: u64,
 }
@@ -235,27 +282,48 @@ impl SemanticGenerationResidence {
         &mut self,
         key: &ProductSemanticPublicationKey,
         claim: SemanticPublicationClaim,
-    ) -> Result<Arc<[SemanticImageSnapshot]>, super::BuiltinModelError> {
+    ) -> Result<
+        (
+            Arc<[SemanticImageSnapshot]>,
+            Option<Arc<backend_semantic::ir::NativeProgramSourceManifest>>,
+        ),
+        super::BuiltinModelError,
+    > {
+        let Some(loader) = self.selected_loader.as_ref() else {
+            self.owner_calls += 1;
+            return Err(super::BuiltinModelError(
+                "semantic authority image loader is unavailable".to_owned(),
+            ));
+        };
+        let selection = match loader.selection(key, claim) {
+            Ok(selection) => selection,
+            Err(error) => {
+                self.owner_calls += 1;
+                return Err(error);
+            }
+        };
         let scope = publication_scope(key);
-        let cache_key = GenerationKey::from_claim(claim, scope);
+        let cache_key = GenerationKey::from_selected(claim, scope, &selection);
         if let Some(entry) = self.images.get(&cache_key) {
-            let hit = Arc::clone(&entry.images);
+            let hit = (
+                Arc::clone(&entry.images),
+                entry.native_program_sources.clone(),
+            );
             self.touch(cache_key);
             self.hits += 1;
             return Ok(hit);
         }
         self.owner_calls += 1;
-        let loader = self.selected_loader.as_ref().ok_or_else(|| {
-            super::BuiltinModelError("semantic authority image loader is unavailable".to_owned())
-        })?;
-        let images = Arc::from(loader.load(
-            key,
-            claim,
+        let loaded = loader.load(
+            selection,
             self.budget.max_generation_bytes,
             self.budget.max_generation_images,
-        )?);
-        let _admission = self.remember(cache_key, Arc::clone(&images));
-        Ok(images)
+        )?;
+        let images = Arc::from(loaded.images);
+        let sources = loaded.native_program_sources;
+        let _admission =
+            self.remember_with_program(cache_key, Arc::clone(&images), sources.clone());
+        Ok((images, sources))
     }
 
     fn recall<E>(
@@ -308,11 +376,27 @@ impl SemanticGenerationResidence {
         key: GenerationKey,
         images: Arc<[SemanticImageSnapshot]>,
     ) -> ResidentAdmission {
+        self.remember_with_program(key, images, None)
+    }
+
+    fn remember_with_program(
+        &mut self,
+        key: GenerationKey,
+        images: Arc<[SemanticImageSnapshot]>,
+        native_program_sources: Option<Arc<backend_semantic::ir::NativeProgramSourceManifest>>,
+    ) -> ResidentAdmission {
         if self.images.contains_key(&key) {
             self.touch(key);
             return ResidentAdmission::AlreadyResident;
         }
-        let Some(weight) = resident_weight(&images) else {
+        let Some(weight) = resident_weight(&images).and_then(|mut weight| {
+            weight.bytes = weight.bytes.checked_add(
+                native_program_sources
+                    .as_ref()
+                    .map_or(0, |sources| sources.as_bytes().len()),
+            )?;
+            Some(weight)
+        }) else {
             self.uncached_oversized_generations =
                 self.uncached_oversized_generations.saturating_add(1);
             return ResidentAdmission::WeightOverflow;
@@ -358,6 +442,7 @@ impl SemanticGenerationResidence {
             key,
             ResidentGeneration {
                 images,
+                native_program_sources,
                 weight,
                 last_access,
             },
@@ -1148,13 +1233,21 @@ mod tests {
     }
 
     impl SelectedSemanticImageLoader for SnapshotLoader {
-        fn load(
+        fn selection(
             &self,
             _key: &ProductSemanticPublicationKey,
             _claim: SemanticPublicationClaim,
+        ) -> Result<super::SelectedSemanticImageSelection, super::super::BuiltinModelError>
+        {
+            Ok(super::SelectedSemanticImageSelection::Fixture([7; 32]))
+        }
+
+        fn load(
+            &self,
+            _selection: super::SelectedSemanticImageSelection,
             max_bytes: usize,
             max_images: usize,
-        ) -> Result<Box<[SemanticImageSnapshot]>, super::super::BuiltinModelError> {
+        ) -> Result<super::SelectedSemanticImages, super::super::BuiltinModelError> {
             *self.checks.lock().expect("checks") += 1;
             let weight = resident_weight(&self.images).expect("fixture weight");
             if weight.bytes > max_bytes || weight.images > max_images {
@@ -1171,7 +1264,10 @@ mod tests {
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()
-                .map(Vec::into_boxed_slice)
+                .map(|images| super::SelectedSemanticImages {
+                    images: images.into_boxed_slice(),
+                    native_program_sources: None,
+                })
         }
     }
 
@@ -1410,9 +1506,203 @@ mod tests {
         let again = preparation
             .load_selected(fixture.key(), claim)
             .expect("failed foreign claims did not change admitted selection");
-        assert!(Arc::ptr_eq(activated.image_set(), &again));
+        assert!(Arc::ptr_eq(activated.image_set(), &again.0));
+        assert!(
+            again.1.is_none(),
+            "the C fixture has no TS program membership"
+        );
         assert_eq!(owner.owner_calls(), 1);
         assert_eq!(owner.hits(), 0);
+    }
+
+    #[test]
+    fn native_program_membership_is_shared_and_charged_to_the_resident_byte_budget() {
+        use backend_semantic::ir::{
+            NativeProgramSource, NativeProgramSourceManifest, SourceIdentity,
+        };
+        use backend_version::ContentId;
+        let manifest = Arc::new(
+            NativeProgramSourceManifest::from_sources(
+                ContentId::from_canonical_bytes(b"selected compiler"),
+                vec![NativeProgramSource {
+                    program_path: "workspace/main.ts".into(),
+                    package_path: Some("main.ts".into()),
+                    source: SourceIdentity::from_bytes(b"export {};").expect("source"),
+                }],
+            )
+            .expect("program"),
+        );
+        let snapshots: Arc<[SemanticImageSnapshot]> = Arc::from(images(b"image"));
+        let total_bytes = manifest.as_bytes().len() + snapshots[0].as_ref().len();
+        let key = GenerationKey::from_parts([1; 32], [2; 32]);
+        let mut budget = super::ResidenceBudget::default();
+        budget.max_bytes = total_bytes;
+        budget.max_generation_bytes = total_bytes - 1;
+        let mut refused = SemanticGenerationResidence::with_budget(budget);
+        assert!(
+            matches!(refused.remember_with_program(key, Arc::clone(&snapshots), Some(Arc::clone(&manifest))),
+            super::ResidentAdmission::GenerationBytesExceeded { bytes, .. } if bytes == total_bytes)
+        );
+        assert!(refused.images.is_empty());
+        budget.max_generation_bytes = total_bytes;
+        let mut retained = SemanticGenerationResidence::with_budget(budget);
+        assert!(matches!(
+            retained.remember_with_program(
+                key,
+                Arc::clone(&snapshots),
+                Some(Arc::clone(&manifest))
+            ),
+            super::ResidentAdmission::Retained(_)
+        ));
+        assert_eq!(retained.resident_bytes, total_bytes);
+        let entry = retained
+            .images
+            .get(&key)
+            .expect("resident program and images");
+        assert!(Arc::ptr_eq(
+            entry.native_program_sources.as_ref().expect("program"),
+            &manifest
+        ));
+        assert!(Arc::ptr_eq(&entry.images, &snapshots));
+    }
+
+    #[test]
+    fn identical_image_claims_keep_different_selected_program_members_separate() {
+        use backend_engine::publication::{
+            binding::{COMPILATION_BINDING_BYTES, CompilationBindingView},
+            manifest::{CompilationManifestFacts, CompilationManifestFormat},
+        };
+        use backend_semantic::ir::{
+            NativeProgramSource, NativeProgramSourceManifest, SourceIdentity,
+        };
+        use backend_semantic::vocabulary::{LanguageProfile, TypeScriptSource};
+        use backend_store::hydration::VerifiedGenerationFacts;
+        use backend_version::{ContentId, DependencySetDomain, GenerationId};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct ProgramLoader {
+            images: Vec<SemanticImageSnapshot>,
+            programs: [Arc<NativeProgramSourceManifest>; 2],
+            current: AtomicUsize,
+            loads: AtomicUsize,
+        }
+        impl SelectedSemanticImageLoader for ProgramLoader {
+            fn selection(
+                &self,
+                _key: &ProductSemanticPublicationKey,
+                _claim: SemanticPublicationClaim,
+            ) -> Result<super::SelectedSemanticImageSelection, super::super::BuiltinModelError>
+            {
+                let selected = self.current.load(Ordering::Acquire);
+                Ok(super::SelectedSemanticImageSelection::Fixture(
+                    self.programs[selected].program(),
+                ))
+            }
+
+            fn load(
+                &self,
+                selection: super::SelectedSemanticImageSelection,
+                max_bytes: usize,
+                max_images: usize,
+            ) -> Result<super::SelectedSemanticImages, super::super::BuiltinModelError>
+            {
+                let selected = self
+                    .programs
+                    .iter()
+                    .find(|program| program.program() == selection.closure_id())
+                    .expect("captured fixture selection");
+                assert!(self.images.len() <= max_images);
+                assert!(
+                    resident_weight(&self.images).expect("weight").bytes
+                        + selected.as_bytes().len()
+                        <= max_bytes
+                );
+                self.loads.fetch_add(1, Ordering::AcqRel);
+                Ok(super::SelectedSemanticImages {
+                    images: copies(&self.images).into_boxed_slice(),
+                    native_program_sources: Some(Arc::clone(selected)),
+                })
+            }
+        }
+
+        // This is a cache fixture, not a compiler publication or native
+        // completeness claim. Both selections have exactly the same image
+        // manifest/binding and bytes, but a different retained SDK member.
+        let manifest = CompilationManifestFacts {
+            identity: ArtifactId::from_encoded_bytes(b"same image manifest"),
+            format: CompilationManifestFormat::SemanticV3,
+            fragment_count: 1,
+            byte_length: 1,
+        };
+        let mut binding = [0; COMPILATION_BINDING_BYTES];
+        let binding = CompilationBindingView::write_into(
+            VerifiedGenerationFacts {
+                pinned_root: GenerationId::from_canonical_bytes(b"same image generation"),
+                dep_set: ContentId::<DependencySetDomain>::from_canonical_bytes(b"same deps"),
+            },
+            manifest.identity,
+            &mut binding,
+        )
+        .expect("canonical fixture binding");
+        let claim = SemanticPublicationClaim::admit(manifest, *binding).expect("fixture claim");
+        let key = ProductSemanticPublicationKey::new(
+            backend_engine::PackageReference::parse("fixture".to_owned()).expect("package"),
+            backend_library::interface::PackageUrl::parse("pkg:npm/fixture@1.0.0".to_owned())
+                .expect("coordinate"),
+            LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+        )
+        .expect("product key");
+        let programs = [b"original SDK".as_slice(), b"changed SDK".as_slice()].map(|sdk| {
+            Arc::new(
+                NativeProgramSourceManifest::from_sources(
+                    ContentId::from_canonical_bytes(b"same compiler"),
+                    vec![NativeProgramSource {
+                        program_path: "@compiler/lib.fixture.d.ts".into(),
+                        source: SourceIdentity::from_bytes(sdk).expect("SDK source"),
+                        package_path: None,
+                    }],
+                )
+                .expect("bounded membership"),
+            )
+        });
+        let loader = Arc::new(ProgramLoader {
+            images: copies(&images(b"identical image bytes")),
+            programs,
+            current: AtomicUsize::new(0),
+            loads: AtomicUsize::new(0),
+        });
+        let mut residence = SemanticGenerationResidence::default();
+        residence.install_selected_loader(loader.clone());
+        let first = residence.load_selected(&key, claim).expect("first program");
+        loader.current.store(1, Ordering::Release);
+        let second = residence
+            .load_selected(&key, claim)
+            .expect("second program");
+        assert_eq!(first.0[0].as_ref(), second.0[0].as_ref());
+        assert!(!Arc::ptr_eq(&first.0, &second.0));
+        assert!(Arc::ptr_eq(
+            first.1.as_ref().expect("first"),
+            &loader.programs[0]
+        ));
+        assert!(Arc::ptr_eq(
+            second.1.as_ref().expect("second"),
+            &loader.programs[1]
+        ));
+        assert_ne!(
+            first.1.as_ref().expect("first").program(),
+            second.1.as_ref().expect("second").program()
+        );
+        loader.current.store(0, Ordering::Release);
+        let restored = residence
+            .load_selected(&key, claim)
+            .expect("same closure hit");
+        assert!(Arc::ptr_eq(&first.0, &restored.0));
+        assert!(Arc::ptr_eq(
+            first.1.as_ref().expect("first"),
+            restored.1.as_ref().expect("restored")
+        ));
+        assert_eq!(loader.loads.load(Ordering::Acquire), 2);
+        assert_eq!(residence.hits(), 1);
     }
 
     #[test]
@@ -1781,7 +2071,7 @@ mod tests {
         );
         assert_eq!(admitted.resident_bytes, weight.bytes);
         assert!(admitted.high_water_bytes <= weight.bytes);
-        for (expected, observed) in source.images().iter().zip(reopened.iter()) {
+        for (expected, observed) in source.images().iter().zip(reopened.0.iter()) {
             assert_eq!(expected.as_ref(), observed.as_ref());
         }
     }
