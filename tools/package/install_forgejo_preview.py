@@ -20,15 +20,16 @@ import urllib.request
 
 ORIGIN = "https://dev.nudox.org"
 RELEASES = "/git/philocalyst/Backend/releases/download/"
-BOOTSTRAP_TAG = "nudox-diagnostic-installer-20261009"
+BOOTSTRAP_TAG = "nudox-diagnostic-installer-20261009-r2"
 CHANNEL = ORIGIN + RELEASES + BOOTSTRAP_TAG + "/preview-channel.json"
 MAX_SCRIPT = 1024 * 1024
 MAX_METADATA = 65536
 MAX_ARCHIVE = 2 * 1024**3
-# These are the final reviewed libraries, including only the original Linux pins.
+# The Mac library remains on its original pin. R2 carries a repaired Linux
+# library beside the bootstrap, leaving the older checkpoint release untouched.
 LIBRARIES = {
     "macos-arm64": ("82f71f98a05a2b13e05afd7185e35c5f8d252b9973ab4ce6d32ab22688794f25", 22094, "install-macos-arm64"),
-    "linux-x64": ("8baa4a60be98ee4e41e26c3b1cf0d4800e8ec4b8c80758128f38c19a06c799c9", 46973, "install-linux-x64"),
+    "linux-x64": ("e11fcc271fc3a8feb676b9f8c383bbf5bdc215578ffc399774819184908ed071", 49954, "install-linux-x64"),
 }
 
 
@@ -154,7 +155,11 @@ def validate_channel(channel):
         if not isinstance(installer, dict) or not isinstance(installer.get("sha256"), str):
             raise InstallError("invalid mirror platform library")
         library_name = LIBRARIES[key][2]
-        artifact(installer, tag, library_name + "-" + installer["sha256"][:16] + ".py", MAX_SCRIPT)
+        library_asset = library_name + "-" + installer["sha256"][:16] + ".py"
+        library_tag = tag
+        if key == "linux-x64" and installer.get("url") == release_url(BOOTSTRAP_TAG, library_asset):
+            library_tag = BOOTSTRAP_TAG
+        artifact(installer, library_tag, library_asset, MAX_SCRIPT)
         archive_name = ("nudox-macos-arm64-" if key == "macos-arm64" else "nudox-linux-x86_64-") + source[:10] + ".tar.gz"
         artifact(entry["archive"], tag, archive_name, MAX_ARCHIVE)
         if key == "linux-x64":

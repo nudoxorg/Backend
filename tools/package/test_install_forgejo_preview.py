@@ -112,11 +112,42 @@ class Tests(unittest.TestCase):
                      lambda c: c["platforms"]["macos-arm64"].update(source="b" * 40),
                      lambda c: c["platforms"]["macos-arm64"].update(tag="checkpoint-20261340-a659d5d181-macos-arm64"),
                      lambda c: c["platforms"]["linux-x64"]["installer"].update(sha256="b" * 64),
+                     lambda c: c["platforms"]["linux-x64"]["installer"].update(
+                         url=boot.release_url("unapproved-tag", "install-linux-x64-" + c["platforms"]["linux-x64"]["installer"]["sha256"][:16] + ".py")),
                      lambda c: c["platforms"]["linux-x64"]["archive"].update(bytes=True),
                      lambda c: c["platforms"]["linux-x64"]["manifest"].update(url=boot.CHANNEL)]
         for mutation in mutations:
             value = channel(); mutation(value)
             with self.assertRaises(boot.InstallError): boot.validate_channel(value)
+
+    def test_r2_pins_repaired_linux_library_without_changing_prior_release_assets(self):
+        value = channel()
+        boot.validate_channel(value)
+        boot.admit_libraries(value)
+        self.assertEqual(boot.BOOTSTRAP_TAG, "nudox-diagnostic-installer-20261009-r2")
+        linux = value["platforms"]["linux-x64"]
+        mac = value["platforms"]["macos-arm64"]
+        self.assertEqual(linux["installer"]["url"], boot.release_url(
+            boot.BOOTSTRAP_TAG, "install-linux-x64-" + boot.LIBRARIES["linux-x64"][0][:16] + ".py"))
+        self.assertEqual((linux["installer"]["sha256"], linux["installer"]["bytes"]), boot.LIBRARIES["linux-x64"][:2])
+        self.assertEqual(boot.LIBRARIES["macos-arm64"],
+                         ("82f71f98a05a2b13e05afd7185e35c5f8d252b9973ab4ce6d32ab22688794f25", 22094, "install-macos-arm64"))
+        self.assertEqual(mac["installer"], {
+            "url": boot.release_url(mac["tag"], "install-macos-arm64-82f71f98a05a2b13.py"),
+            "sha256": "82f71f98a05a2b13e05afd7185e35c5f8d252b9973ab4ce6d32ab22688794f25",
+            "bytes": 22094})
+        self.assertEqual(mac["archive"], {
+            "url": boot.release_url(mac["tag"], "nudox-macos-arm64-a659d5d181.tar.gz"),
+            "sha256": "f88b841030699ae277afe697b6c92e98dfbb09a815f40388e3d2fbee0661e110",
+            "bytes": 70309994})
+        self.assertEqual(linux["archive"], {
+            "url": boot.release_url(linux["tag"], "nudox-linux-x86_64-c0016d4f4f.tar.gz"),
+            "sha256": "b394e10203d02898b20140f0f9f9869aa8412e6e288fb8d8e25ac01469df7a05",
+            "bytes": 133556631})
+        self.assertEqual(linux["manifest"], {
+            "url": boot.release_url(linux["tag"], "release-manifest-linux-x64.json"),
+            "sha256": "384ab3802efd256752f39fd8e3d79ace7af9e3ccf72797c71577327cb2535b24",
+            "bytes": 698})
 
     def test_supported_and_refused_platforms(self):
         for system, machine, key in [("Linux", "x86_64", "linux-x64"), ("Linux", "AMD64", "linux-x64"),
@@ -129,6 +160,15 @@ class Tests(unittest.TestCase):
         value = channel(); entry = value["platforms"]["macos-arm64"]
         entry["installer"].update(sha256="b" * 64, bytes=23000,
                 url=boot.release_url(entry["tag"], "install-macos-arm64-" + "b" * 16 + ".py"))
+        boot.validate_channel(value)
+        with self.assertRaisesRegex(boot.InstallError, "reviewed bytes"):
+            boot.admit_libraries(value)
+
+    def test_unreviewed_r2_linux_library_digest_is_rejected_by_compiled_pin(self):
+        value = channel()
+        installer = value["platforms"]["linux-x64"]["installer"]
+        installer.update(sha256="b" * 64, bytes=49955,
+                         url=boot.release_url(boot.BOOTSTRAP_TAG, "install-linux-x64-" + "b" * 16 + ".py"))
         boot.validate_channel(value)
         with self.assertRaisesRegex(boot.InstallError, "reviewed bytes"):
             boot.admit_libraries(value)
@@ -324,6 +364,55 @@ urllib.request.build_opener=lambda *handlers: Opener()
                 self.assertEqual(requests[0:3], [boot.CHANNEL, value["bootstrap"]["url"], boot.CHANNEL])
                 self.assertIn(entry["installer"]["url"], requests[3:])
                 (root / "requests").unlink()
+
+    def test_r2_bootstrap_updates_old_linux_pin_before_library_admission(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); entry, archive = mac_fixture(root)
+            new_source = (ROOT / "install_forgejo_preview.py").read_bytes()
+            new_sha = hashlib.sha256(new_source).hexdigest()
+            old_pin = ("e11fcc271fc3a8feb676b9f8c383bbf5bdc215578ffc399774819184908ed071", 49954)
+            current_pin = boot.LIBRARIES["linux-x64"][:2]
+            old_row = f'"linux-x64": ("{current_pin[0]}", {current_pin[1]}, "install-linux-x64")'.encode()
+            prior_row = f'"linux-x64": ("8baa4a60be98ee4e41e26c3b1cf0d4800e8ec4b8c80758128f38c19a06c799c9", 46973, "install-linux-x64")'.encode()
+            self.assertEqual(current_pin, old_pin)
+            self.assertEqual(new_source.count(old_row), 1)
+            old_source = new_source.replace(old_row, prior_row, 1)
+            self.assertNotEqual(old_source, new_source)
+            old_file = root / "old-r2-bootstrap.py"; old_file.write_bytes(old_source)
+            new_bootstrap = root / "current-r2-bootstrap.py"; new_bootstrap.write_bytes(new_source)
+            value = channel(); value["platforms"]["macos-arm64"] = entry
+            self.assertEqual(value["bootstrap"]["sha256"], new_sha)
+            self.assertNotEqual(("8baa4a60be98ee4e41e26c3b1cf0d4800e8ec4b8c80758128f38c19a06c799c9", 46973),
+                                (value["platforms"]["linux-x64"]["installer"]["sha256"], value["platforms"]["linux-x64"]["installer"]["bytes"]))
+            metadata = root / "channel.json"; metadata.write_text(json.dumps(value))
+            mapping = {boot.CHANNEL: str(metadata), value["bootstrap"]["url"]: str(new_bootstrap),
+                       entry["installer"]["url"]: str(ROOT / "install_macos_preview.py"),
+                       entry["archive"]["url"]: str(archive)}
+            (root / "mapping.json").write_text(json.dumps(mapping))
+            (root / "sitecustomize.py").write_text('''import io,json,os,pathlib,platform,urllib.request
+platform.system=lambda: 'Darwin'
+platform.machine=lambda: 'arm64'
+mapping=json.loads(pathlib.Path(os.environ['FIXTURE_MAPPING']).read_text())
+class Response(io.BytesIO):
+ def __init__(self,url): super().__init__(pathlib.Path(mapping[url]).read_bytes()); self.url=url
+ def geturl(self): return self.url
+class Opener:
+ def open(self,request,timeout):
+  with open(os.environ['FIXTURE_REQUESTS'],'a') as log: log.write(request.full_url+'\\n')
+  return Response(request.full_url)
+urllib.request.build_opener=lambda *handlers: Opener()
+''')
+            environment = {**os.environ, "PYTHONPATH": str(root), "PYTHONDONTWRITEBYTECODE": "1",
+                           "FIXTURE_MAPPING": str(root / "mapping.json"), "FIXTURE_REQUESTS": str(root / "requests")}
+            prefix = root / "installed"
+            result = subprocess.run([sys.executable, str(old_file), "--prefix", str(prefix), "--allow-downgrade"],
+                                    text=True, capture_output=True, env=environment, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((prefix / "lib/nudox/current").is_symlink())
+            requests = (root / "requests").read_text().splitlines()
+            self.assertEqual(requests[0:3], [boot.CHANNEL, value["bootstrap"]["url"], boot.CHANNEL])
+            self.assertIn(entry["installer"]["url"], requests[3:])
+            self.assertNotIn(value["platforms"]["linux-x64"]["installer"]["url"], requests)
 
 
 if __name__ == "__main__":

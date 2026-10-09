@@ -365,6 +365,54 @@ def _verified_package_path(root: Path, relative: str, *, directory: bool = False
         raise InstallError("package path is unreadable: " + relative) from error
 
 
+# This limits diagnostic text only; subprocess.run still captures the probe streams.
+_SDK_PROBE_OUTPUT_LIMIT = 4096
+
+
+def _bounded_probe_text(value) -> str:
+    """Render a bounded diagnostic excerpt from subprocess output."""
+    if value is None:
+        return "<empty>"
+    if isinstance(value, bytes):
+        truncated = len(value) > _SDK_PROBE_OUTPUT_LIMIT
+        value = value[:_SDK_PROBE_OUTPUT_LIMIT].decode("utf-8", errors="replace")
+    else:
+        value = str(value)
+        truncated = len(value) > _SDK_PROBE_OUTPUT_LIMIT
+        value = value[:_SDK_PROBE_OUTPUT_LIMIT]
+    if not value:
+        return "<empty>"
+    return repr(value) + (" <truncated>" if truncated else "")
+
+
+def _nixos_stub_loader_diagnosis(stderr) -> str | None:
+    """Recognize the observed NixOS generic-linux stub diagnostic by its evidence."""
+    if isinstance(stderr, bytes):
+        stderr = stderr[:_SDK_PROBE_OUTPUT_LIMIT].decode("utf-8", errors="replace")
+    text = str(stderr or "")[:_SDK_PROBE_OUTPUT_LIMIT].casefold()
+    if ("could not start dynamically linked executable" in text
+            and "nixos cannot run dynamically linked executables intended for generic" in text):
+        return ("the loader reports that generic Linux dynamically linked executables are "
+                "unsupported on this NixOS host; the packaged Node runtime needs a compatible "
+                "host runtime before this install can be published")
+    return None
+
+
+def _sdk_probe_failure(label, expected, returncode, stdout, stderr, detail=None) -> InstallError:
+    diagnosis = _nixos_stub_loader_diagnosis(stderr)
+    parts = [f"TypeScript SDK {label} probe failed"]
+    if detail:
+        parts.append(_bounded_probe_text(detail))
+    if expected is not None:
+        parts.append(f"expected={_bounded_probe_text(expected)}")
+    parts.extend((f"returncode={returncode}",
+                  f"stdout={_bounded_probe_text(stdout)}",
+                  f"stderr={_bounded_probe_text(stderr)}"))
+    if diagnosis:
+        parts.append(diagnosis)
+    return InstallError("; ".join(parts))
+
+
 def verify_typescript_sdk(root: Path, package: dict) -> None:
     """Recheck the installed SDK before promotion or reuse; never run project setup."""
     sdk = package.get("typescript_sdk")
@@ -429,15 +477,35 @@ def verify_typescript_sdk(root: Path, package: dict) -> None:
         raise InstallError("SDK Node executable differs from its relocated identity")
     clean_environment = {key: value for key, value in os.environ.items()
                          if key not in {"LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT", "NIX_LD", "NIX_LD_LIBRARY_PATH", "NODE_PATH", "NODE_OPTIONS"}}
-    for arguments, expected in [(["--version"], sdk.get("node_version")),
-        (["-e", "process.stdout.write(require(process.argv[1]).version)", str(root / "share/nudox/typescript/node_modules/typescript/lib/typescript.js")], sdk.get("typescript_version"))]:
+    probes = [
+        ("Node --version", ["--version"], sdk.get("node_version")),
+        ("TypeScript API version",
+         ["-e", "process.stdout.write(require(process.argv[1]).version)",
+          str(root / "share/nudox/typescript/node_modules/typescript/lib/typescript.js")],
+         sdk.get("typescript_version")),
+    ]
+    for label, arguments, expected in probes:
+        if not isinstance(expected, str) or not expected:
+            raise InstallError(f"SDK has no valid recorded {label} identity")
         try:
             result = subprocess.run([str(node), *arguments], env=clean_environment, stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE, text=True, timeout=15)
-        except (OSError, subprocess.TimeoutExpired) as error:
-            raise InstallError(f"installed SDK could not start without loader overrides: {error}") from error
-        if not isinstance(expected, str) or result.returncode != 0 or result.stdout.strip() != expected:
-            raise InstallError("installed SDK does not reproduce its recorded Node/Compiler API identity")
+        except subprocess.TimeoutExpired as error:
+            raise _sdk_probe_failure(label, expected, "unavailable",
+                                     getattr(error, "stdout", None) or getattr(error, "output", None),
+                                     getattr(error, "stderr", None), "timed out after 15 seconds") from error
+        except OSError as error:
+            raise _sdk_probe_failure(label, expected, "unavailable", None, None,
+                                     f"could not launch probe ({error.__class__.__name__}: {error})") from error
+        if result.returncode != 0:
+            raise _sdk_probe_failure(label, expected, result.returncode,
+                                     result.stdout, result.stderr)
+        actual = result.stdout.strip()
+        if actual != expected:
+            raise _sdk_probe_failure(label, expected, result.returncode,
+                                     result.stdout, result.stderr,
+                                     f"reported version={_bounded_probe_text(actual)}")
+
 
 def verify_package(root: Path, entry: dict, manifest: dict) -> None:
     _verified_package_path(root, "", directory=True)

@@ -2,9 +2,9 @@
   "schema": "nudox.diagnostic-forgejo-channel.v1",
   "production_ready": false,
   "bootstrap": {
-    "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009/install-forgejo-bootstrap-a0ef6ed94b145648.py",
-    "sha256": "a0ef6ed94b1456483ce652809533cdbf007f42c9c8950bad3d67177ce0c87130",
-    "bytes": 13137
+    "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009-r2/install-forgejo-bootstrap-36f0ea62e3b49cad.py",
+    "sha256": "36f0ea62e3b49cadebcef0f89e735639530c0ba1686e62d4dcbfea96294174f5",
+    "bytes": 13426
   },
   "platforms": {
     "linux-x64": {
@@ -12,14 +12,15 @@
       "source": "c0016d4f4fc9b0f0a452c7c9556954e2287948b3",
       "tag": "checkpoint-20261008-c0016d4f4f-linux-x64",
       "known_failures": [
-        "Ubuntu 24.04+ / glibc 2.39+ only; October 8 diagnostic binaries.",
-        "Original GNU install/reinstall passed; packed native runtime control timed out.",
+        "The October 8 GNU install/reinstall was validated on Ubuntu 24.04+ with glibc 2.39 or newer. This is the validation boundary; the glibc minimum alone does not establish compatibility with every Linux distribution or loader configuration.",
+        "The packed native runtime control timed out after the GNU install/reinstall succeeded.",
+        "On the tested NixOS 26.05 host, the generic Linux Node executable hit the NixOS stub loader; r2 reports the exit diagnostics and preserves the prior current pointer.",
         "Fresh whole-application acceptance remains open; October 9 Rust repairs are not included."
       ],
       "installer": {
-        "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/checkpoint-20261008-c0016d4f4f-linux-x64/install-linux-x64-8baa4a60be98ee4e.py",
-        "sha256": "8baa4a60be98ee4e41e26c3b1cf0d4800e8ec4b8c80758128f38c19a06c799c9",
-        "bytes": 46973
+        "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009-r2/install-linux-x64-e11fcc271fc3a8fe.py",
+        "sha256": "e11fcc271fc3a8feb676b9f8c383bbf5bdc215578ffc399774819184908ed071",
+        "bytes": 49954
       },
       "archive": {
         "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/checkpoint-20261008-c0016d4f4f-linux-x64/nudox-linux-x86_64-c0016d4f4f.tar.gz",

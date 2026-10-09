@@ -55,6 +55,141 @@ class InstallerMetadataTests(unittest.TestCase):
 
 
 class InstallerFilesystemTests(unittest.TestCase):
+    @staticmethod
+    def _sdk_fixture(root):
+        contents = {
+            "share/nudox/typescript/node/bin/node": b"fixture node executable",
+            "share/nudox/typescript/node/LICENSE": b"node license",
+            "share/nudox/typescript/node_modules/typescript/package.json": b'{"version":"5.9.3"}',
+            "share/nudox/typescript/node_modules/typescript/bin/tsc": b"fixture tsc",
+            "share/nudox/typescript/node_modules/typescript/lib/typescript.js": b"fixture TypeScript API",
+            "share/nudox/typescript/node_modules/typescript/LICENSE.txt": b"TypeScript license",
+            "share/nudox/typescript/node_modules/typescript/ThirdPartyNoticeText.txt": b"notices",
+        }
+        records = {}
+        for relative, payload in contents.items():
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(payload)
+            records[relative] = {"kind": "file", "sha256": hashlib.sha256(payload).hexdigest(),
+                                 "size_bytes": len(payload)}
+        node_relative = "share/nudox/typescript/node/bin/node"
+        os.chmod(root / node_relative, 0o755)
+        return {"schema": "nudox.typescript-sdk.v1", "bundled": True,
+                "root": "share/nudox/typescript", "files": records,
+                "node": {"packaged_path": node_relative,
+                         "packaged_sha256": records[node_relative]["sha256"]},
+                "node_version": "v24.18.0", "typescript_version": "5.9.3"}
+
+    def test_sdk_probe_preserves_nixos_stub_failure_instead_of_claiming_version_mismatch(self):
+        diagnostic = ("Could not start dynamically linked executable: /prefix/node\n"
+                      "NixOS cannot run dynamically linked executables intended for generic\n"
+                      "linux environments out of the box. For more information, see:\n"
+                      "https://nix.dev/permalink/stub-ld\n")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            sdk = self._sdk_fixture(root)
+            result = type("ProbeResult", (), {"returncode": 127, "stdout": "", "stderr": diagnostic})()
+            with patch.object(installer.subprocess, "run", return_value=result) as run:
+                with self.assertRaises(installer.InstallError) as raised:
+                    installer.verify_typescript_sdk(root, {"typescript_sdk": sdk})
+            run.assert_called_once()
+            message = str(raised.exception)
+            self.assertIn("Node --version", message)
+            self.assertIn("returncode=127", message)
+            self.assertIn("stdout=<empty>", message)
+            self.assertIn(repr(diagnostic), message)
+            self.assertIn("loader reports that generic Linux dynamically linked executables are unsupported", message)
+            self.assertNotIn("reported version=", message)
+
+    def test_sdk_probe_reports_an_actual_recorded_version_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            sdk = self._sdk_fixture(root)
+            result = type("ProbeResult", (), {"returncode": 0, "stdout": "v24.18.1\n", "stderr": ""})()
+            with patch.object(installer.subprocess, "run", return_value=result):
+                with self.assertRaises(installer.InstallError) as raised:
+                    installer.verify_typescript_sdk(root, {"typescript_sdk": sdk})
+            message = str(raised.exception)
+            self.assertIn("expected='v24.18.0'", message)
+            self.assertIn("reported version='v24.18.1'", message)
+            self.assertIn("returncode=0", message)
+            self.assertIn("stderr=<empty>", message)
+            self.assertNotIn("NixOS", message)
+
+    def test_sdk_probe_timeout_keeps_partial_output_in_diagnostic(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            sdk = self._sdk_fixture(root)
+            timeout = installer.subprocess.TimeoutExpired(
+                ["node", "--version"], 15, output=b"partial stdout", stderr=b"partial stderr")
+            with patch.object(installer.subprocess, "run", side_effect=timeout):
+                with self.assertRaises(installer.InstallError) as raised:
+                    installer.verify_typescript_sdk(root, {"typescript_sdk": sdk})
+            message = str(raised.exception)
+            self.assertIn("timed out after 15 seconds", message)
+            self.assertIn("returncode=unavailable", message)
+            self.assertIn("stdout='partial stdout'", message)
+            self.assertIn("stderr='partial stderr'", message)
+
+    def test_sdk_probe_failure_clips_rendered_diagnostics_and_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            sdk = self._sdk_fixture(root)
+            sdk["node_version"] = "expected-version-" + "e" * 5000
+            result = type("ProbeResult", (), {"returncode": 127, "stdout": "o" * 5000,
+                                               "stderr": "s" * 5000})()
+            with patch.object(installer.subprocess, "run", return_value=result):
+                with self.assertRaises(installer.InstallError) as raised:
+                    installer.verify_typescript_sdk(root, {"typescript_sdk": sdk})
+            message = str(raised.exception)
+            self.assertLess(len(message), 3 * installer._SDK_PROBE_OUTPUT_LIMIT + 1024)
+            self.assertIn("returncode=127", message)
+            self.assertEqual(message.count("<truncated>"), 3)
+
+    def test_sdk_probe_refusal_leaves_existing_install_pointer_and_marker_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prefix = Path(directory).resolve()
+            managed_root = prefix / "lib/nudox"
+            old_release = managed_root / "versions/checkpoint-20261008-aaaaaaaaaa-linux-x64"
+            old_release.mkdir(parents=True, mode=0o700)
+            marker = {"version": "0.2.0", "tag": "checkpoint-20261008-aaaaaaaaaa-linux-x64",
+                      "source_sha": "a" * 40, "asset": "nudox-linux-x86_64-aaaaaaaaaa.tar.gz",
+                      "sha256": "c" * 64}
+            marker_path = old_release / ".installed-release.json"
+            marker_path.write_text(json.dumps(marker, sort_keys=True) + "\n")
+            current = managed_root / "current"
+            current.symlink_to("versions/" + old_release.name)
+            old_marker_bytes = marker_path.read_bytes()
+            old_target = os.readlink(current)
+            incoming = {"version": "0.2.1", "tag": "checkpoint-20261009-bbbbbbbbbb-linux-x64",
+                        "source_sha": "b" * 40, "asset": "nudox-linux-x86_64-bbbbbbbbbb.tar.gz"}
+            manifest = {"sha256": "d" * 64}
+            archive = prefix / "unused.tar.gz"
+            archive.write_bytes(b"fixture archive placeholder")
+            diagnostic = ("Could not start dynamically linked executable: /stage/node\n"
+                          "NixOS cannot run dynamically linked executables intended for generic\n"
+                          "linux environments out of the box. For more information, see:\n"
+                          "https://nix.dev/permalink/stub-ld\n")
+            result = type("ProbeResult", (), {"returncode": 127, "stdout": "", "stderr": diagnostic})()
+            saved_umask = os.umask(0o077)
+            try:
+                with patch.object(installer, "safe_extract") as extract, \
+                     patch.object(installer, "verify_package", side_effect=lambda stage, _entry, _manifest:
+                                   installer.verify_typescript_sdk(stage, {"typescript_sdk": self._sdk_fixture(stage)})), \
+                     patch.object(installer.subprocess, "run", return_value=result):
+                    with self.assertRaisesRegex(installer.InstallError, "returncode=127"):
+                        installer.install(prefix, incoming, manifest, archive)
+            finally:
+                os.umask(saved_umask)
+            extract.assert_called_once()
+            self.assertTrue(current.is_symlink())
+            self.assertEqual(os.readlink(current), old_target)
+            self.assertEqual(marker_path.read_bytes(), old_marker_bytes)
+            self.assertFalse((managed_root / "versions" / incoming["tag"]).exists())
+            self.assertEqual(list((managed_root / "versions").glob(".staging-*")), [])
+            self.assertFalse((prefix / "bin/nudox").exists())
+
     def test_reuse_marker_refuses_links_fifos_and_oversize_without_runtime_execution(self):
         for kind in ("symlink", "fifo", "oversize"):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
