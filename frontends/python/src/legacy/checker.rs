@@ -32,15 +32,20 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+#[path = "source_intake.rs"]
+mod source_intake;
+pub use source_intake::{PythonSourceDecodeFault, decode_python_source};
+
 #[path = "project.rs"]
 mod project;
 #[path = "project_native.rs"]
 mod project_native;
 pub use project::{
     DefinitionTarget, NativePythonProducerIdentity, NativePythonProjectAuthority,
-    PythonProjectControl, PythonProjectCoverageGap, PythonProjectCoverageGapKind,
-    PythonProjectDiagnostic, PythonProjectFingerprint, PythonProjectReport, PythonProjectSource,
-    PythonProjectWitness, PythonTypeProjectionFault, is_ignored_python_source_directory,
+    PythonProjectBytesSource, PythonProjectControl, PythonProjectCoverageGap,
+    PythonProjectCoverageGapKind, PythonProjectDiagnostic, PythonProjectFingerprint,
+    PythonProjectReport, PythonProjectSource, PythonProjectSourceStatus, PythonProjectWitness,
+    PythonTypeProjectionFault, is_ignored_python_source_directory,
 };
 
 use std::path::{Path, PathBuf};

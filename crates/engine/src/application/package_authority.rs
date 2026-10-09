@@ -29,7 +29,8 @@ use backend_frontend_java::legacy::harness::{
     Harness, HarnessError, HarnessRequest, JavaSource, JdkToolchain,
 };
 use backend_frontend_python::legacy::checker::{
-    NativePythonProjectAuthority, PythonProjectControl, PythonProjectReport, PythonProjectSource,
+    NativePythonProjectAuthority, PythonProjectBytesSource, PythonProjectControl,
+    PythonProjectReport, PythonProjectSource,
 };
 use backend_frontend_python::legacy::{
     CheckerError as PyreflyError, CheckerReport as PythonReport, ExtractionError, Pyrefly, extract,
@@ -317,7 +318,7 @@ pub fn enter_package_authority<'request, 'config>(
 pub(crate) fn enter_python_project_authority(
     request: PackageAuthorityRequest<'_, '_>,
     package_name: &str,
-    sources: &[PythonProjectSource<'_>],
+    sources: &[PythonProjectBytesSource<'_>],
 ) -> Result<PythonProjectReport, PackageAuthorityError> {
     checkpoint(
         request.control,
@@ -358,7 +359,7 @@ pub(crate) fn enter_python_project_authority(
     };
     require_native_python_toolchain(authority, resolved.identity)?;
     let report = authority
-        .analyze_project(
+        .analyze_project_bytes(
             request.package_root,
             package_name,
             sources,

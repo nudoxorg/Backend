@@ -429,7 +429,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::super::super::Workspace;
-    use super::super::PythonProjectSource;
+    use super::super::PythonProjectBytesSource;
     use super::*;
 
     fn control(cancelled: &AtomicBool) -> PythonProjectControl<'_> {
@@ -627,9 +627,9 @@ mod tests {
             Err(CheckerError::Deadline { .. })
         ));
 
-        let selected = [PythonProjectSource {
+        let selected = [PythonProjectBytesSource {
             relative_path: "module.py",
-            source: "",
+            source: b"",
         }];
         let layout = CapturedProjectLayout::new(&private.path, &original.path, &selected)?;
         std::fs::create_dir_all(layout.source_root())?;
@@ -772,9 +772,9 @@ mod tests {
 
         let original = Workspace::create()?;
         let private = Workspace::create()?;
-        let selected = [PythonProjectSource {
+        let selected = [PythonProjectBytesSource {
             relative_path: "api.py",
-            source: "",
+            source: b"",
         }];
         let layout = CapturedProjectLayout::new(&private.path, &original.path, &selected)?;
         std::fs::create_dir_all(layout.source_root())?;
@@ -1041,9 +1041,9 @@ mod tests {
         );
         let original = Workspace::create()?;
         let private = Workspace::create()?;
-        let selected = [PythonProjectSource {
+        let selected = [PythonProjectBytesSource {
             relative_path: "src/module.py",
-            source: "",
+            source: b"",
         }];
         let layout = CapturedProjectLayout::new(&private.path, &original.path, &selected)?;
         std::fs::create_dir_all(layout.source_root().join("src"))?;
@@ -1087,9 +1087,9 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let original = Workspace::create()?;
         let private = Workspace::create()?;
-        let selected = [PythonProjectSource {
+        let selected = [PythonProjectBytesSource {
             relative_path: "module.py",
-            source: "",
+            source: b"",
         }];
         let layout = CapturedProjectLayout::new(&private.path, &original.path, &selected)?;
         std::fs::create_dir_all(layout.source_root())?;
@@ -1180,9 +1180,9 @@ mod tests {
         let original = Workspace::create()?;
         let private = Workspace::create()?;
         let outside = Workspace::create()?;
-        let selected = [PythonProjectSource {
+        let selected = [PythonProjectBytesSource {
             relative_path: "module.py",
-            source: "",
+            source: b"",
         }];
         let layout = CapturedProjectLayout::new(&private.path, &original.path, &selected)?;
         std::fs::create_dir_all(layout.source_root())?;

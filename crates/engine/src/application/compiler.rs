@@ -26,9 +26,7 @@ use backend_compile::{
     EmbeddingNormalization, EmbeddingPurpose, RustCargoWorkspaceFactsV1,
 };
 use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
-use backend_frontend_python::legacy::checker::{
-    CheckerError as PythonCheckerError, PythonProjectSource,
-};
+use backend_frontend_python::legacy::checker::CheckerError as PythonCheckerError;
 use backend_frontend_rust::legacy::{
     RustAnalysisControl, RustAuthorityError, RustWorkspaceEditorBufferObserver, RustWorkspaceFile,
     RustWorkspaceReadFrontierObserver, RustWorkspaceSessionKey, RustWorkspaceSessionLane,
@@ -380,6 +378,12 @@ pub struct PackageSource<'source> {
 pub enum PackageSourceCoverageGapCause {
     /// Rust-analyzer found the source in the package VFS but outside every active Cargo target.
     RustSourceOutsideActiveCargoTarget,
+    /// Exact Python source was captured but its grammar rejected semantic lowering.
+    PythonSourceSyntaxUnavailable,
+    /// Exact Python source was captured but its declared codec was unavailable.
+    PythonSourceEncodingUnavailable,
+    /// Native solved dependencies reach unavailable captured Python resources.
+    PythonSourceDependencyUnavailable,
 }
 
 /// Exact source retained in the input frontier but omitted from semantic lowering.
@@ -388,9 +392,29 @@ pub struct PackageSourceCoverageGap {
     source: SourceAuthority,
     relative_path: Box<str>,
     cause: PackageSourceCoverageGapCause,
+    python_source_status:
+        Option<backend_frontend_python::legacy::checker::PythonProjectSourceStatus>,
+    native_python_diagnostics:
+        Box<[backend_frontend_python::legacy::checker::PythonProjectDiagnostic]>,
 }
 
 impl PackageSourceCoverageGap {
+    /// Exact per-file Python intake refusal, including raw coordinate codec faults.
+    #[must_use]
+    pub fn python_source_status(
+        &self,
+    ) -> Option<&backend_frontend_python::legacy::checker::PythonProjectSourceStatus> {
+        self.python_source_status.as_ref()
+    }
+
+    /// Native diagnostics preserved for this unavailable Python resource.
+    #[must_use]
+    pub fn native_python_diagnostics(
+        &self,
+    ) -> &[backend_frontend_python::legacy::checker::PythonProjectDiagnostic] {
+        &self.native_python_diagnostics
+    }
+
     /// Returns the exact source identity and byte length committed by the package input frontier.
     #[must_use]
     pub const fn source(&self) -> SourceAuthority {
@@ -420,6 +444,14 @@ impl<'source> PackageSource<'source> {
         relative_path: &'source str,
         source: &'source str,
     ) -> Result<Self, PackageSourceSetError> {
+        Self::validate_path(relative_path)?;
+        Ok(Self {
+            relative_path,
+            source,
+        })
+    }
+
+    pub(super) fn validate_path(relative_path: &str) -> Result<(), PackageSourceSetError> {
         let path = Path::new(relative_path);
         let normalized = !relative_path.is_empty()
             && !relative_path.contains('\\')
@@ -430,10 +462,7 @@ impl<'source> PackageSource<'source> {
         if !normalized {
             return Err(PackageSourceSetError::InvalidPath);
         }
-        Ok(Self {
-            relative_path,
-            source,
-        })
+        Ok(())
     }
 
     /// Returns the normalized package-relative source path.
@@ -456,6 +485,9 @@ pub struct PackageSourceSet<'source> {
     package_target: CompilerPackageTargetV2,
     package_root: &'source Path,
     sources: &'source [PackageSource<'source>],
+    python_raw_sources: Option<
+        &'source [backend_frontend_python::legacy::checker::PythonProjectBytesSource<'source>],
+    >,
     input_claim: Option<SemanticInputWitness>,
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
     go_authority_witness: Option<&'source GoPackageAuthorityWitness>,
@@ -525,10 +557,50 @@ impl<'source> PackageSourceSet<'source> {
             package_target: package_target.clone(),
             package_root,
             sources,
+            python_raw_sources: None,
             input_claim: None,
             embedding_provisioning_failure: None,
             go_authority_witness: None,
         })
+    }
+
+    pub(super) fn with_python_raw_sources(
+        mut self,
+        raw_sources: &'source [backend_frontend_python::legacy::checker::PythonProjectBytesSource<'source>],
+    ) -> Result<Self, PackageSourceSetError> {
+        if !matches!(
+            self.request.target.profile,
+            backend_semantic::vocabulary::LanguageProfile::Python(_)
+        ) {
+            return Err(PackageSourceSetError::RawSourceProfileMismatch);
+        }
+        if raw_sources.is_empty() || raw_sources.len() > crate::application::MAX_MANIFEST_ENTRIES {
+            return Err(PackageSourceSetError::Cardinality {
+                observed: raw_sources.len(),
+                maximum: crate::application::MAX_MANIFEST_ENTRIES,
+            });
+        }
+        if raw_sources
+            .windows(2)
+            .any(|pair| pair[0].relative_path >= pair[1].relative_path)
+        {
+            return Err(PackageSourceSetError::Order);
+        }
+        for raw in raw_sources {
+            PackageSource::validate_path(raw.relative_path)?;
+        }
+        for decoded in self.sources {
+            let raw = raw_sources
+                .binary_search_by_key(&decoded.relative_path, |raw| raw.relative_path)
+                .ok()
+                .map(|index| &raw_sources[index])
+                .ok_or(PackageSourceSetError::RawSourceMismatch)?;
+            if raw.source != decoded.source.as_bytes() {
+                return Err(PackageSourceSetError::RawSourceMismatch);
+            }
+        }
+        self.python_raw_sources = Some(raw_sources);
+        Ok(self)
     }
 
     /// Attaches an opaque input-manifest claim to the exact admitted source frontier.
@@ -590,13 +662,23 @@ fn unit_source_matches(unit: &CompilationUnitKeyV2, relative_path: &str) -> bool
 fn package_source_input_witness(package: &PackageSourceSet<'_>) -> SemanticInputWitness {
     let mut input = blake3::Hasher::new();
     input.update(b"backend.compiler.package-source-frontier.v1\0");
-    for source in package.compilation_sources() {
-        let path = source.relative_path().as_bytes();
-        let contents = source.source().as_bytes();
-        input.update(&(path.len() as u64).to_be_bytes());
-        input.update(path);
-        input.update(&(contents.len() as u64).to_be_bytes());
-        input.update(contents);
+    if let Some(raw_sources) = package.python_raw_sources {
+        for source in raw_sources {
+            let path = source.relative_path.as_bytes();
+            input.update(&(path.len() as u64).to_be_bytes());
+            input.update(path);
+            input.update(&(source.source.len() as u64).to_be_bytes());
+            input.update(source.source);
+        }
+    } else {
+        for source in package.compilation_sources() {
+            let path = source.relative_path().as_bytes();
+            let contents = source.source().as_bytes();
+            input.update(&(path.len() as u64).to_be_bytes());
+            input.update(path);
+            input.update(&(contents.len() as u64).to_be_bytes());
+            input.update(contents);
+        }
     }
     let root = *input.finalize().as_bytes();
     SemanticInputWitness::claimed_state(root, ScopeRoot::from_bytes(root), Coverage::Partial)
@@ -659,6 +741,12 @@ fn stage_embedding_artifact(
 /// Package-source-frontier admission failure.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum PackageSourceSetError {
+    /// Raw source resources may only enter the explicit Python intake lane.
+    #[error("raw source resources require the Python profile")]
+    RawSourceProfileMismatch,
+    /// The decoded and raw frontiers did not describe the same exact bytes.
+    #[error("decoded source differs from the retained raw Python frontier")]
+    RawSourceMismatch,
     /// Package roots must have host-independent absolute identity.
     #[error("package source root is relative")]
     RelativeRoot,
@@ -2293,14 +2381,20 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     path: first_source.relative_path.into(),
                     terminal: Box::new(terminal),
                 })?;
-            let sources = package
-                .sources
-                .iter()
-                .map(|source| PythonProjectSource {
-                    relative_path: source.relative_path,
-                    source: source.source,
-                })
-                .collect::<Vec<_>>();
+            let sources = if let Some(raw) = package.python_raw_sources {
+                raw.to_vec()
+            } else {
+                package
+                    .sources
+                    .iter()
+                    .map(|source| {
+                        backend_frontend_python::legacy::checker::PythonProjectBytesSource {
+                            relative_path: source.relative_path,
+                            source: source.source.as_bytes(),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            };
             let first_source_path = package.package_root.join(first_source.relative_path);
             Some(
                 super::package_authority::enter_python_project_authority(
@@ -2331,6 +2425,18 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         } else {
             None
         };
+        if python_project.is_none()
+            && package.python_raw_sources.is_some_and(|sources| {
+                sources.iter().any(|source| {
+                    backend_frontend_python::legacy::checker::decode_python_source(source.source)
+                        .is_err()
+                })
+            })
+        {
+            return Err(PackageSemanticError::Capacity {
+                lane: "unavailable Python byte intake requires native project authority",
+            });
+        }
         // Captured configuration and actual producer facts must affect identity,
         // including direct callers whose source-only fallback claim omits config.
         let mut plane_execution_seed = if let Some(project) = python_project.as_ref() {
@@ -2356,7 +2462,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         } else {
             plane_execution_seed
         };
-        let source_count = package.compilation_sources().count();
+        let source_count = package
+            .python_raw_sources
+            .map_or_else(|| package.compilation_sources().count(), |raw| raw.len());
         if target.profile.language() == backend_semantic::vocabulary::Language::Rust
             && let Some(configuration) = self.package_authority.rust
         {
@@ -2482,6 +2590,53 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             .try_reserve_exact(source_count)
             .map_err(PackageSemanticError::Allocation)?;
         let mut coverage_gaps = Vec::new();
+        if let (Some(project), Some(raw_sources)) =
+            (python_project.as_ref(), package.python_raw_sources)
+        {
+            for raw in raw_sources {
+                if package
+                    .sources
+                    .binary_search_by_key(&raw.relative_path, |source| source.relative_path)
+                    .is_ok()
+                {
+                    continue;
+                }
+                let status = project.source_status(raw.relative_path).ok_or(
+                    PackageSemanticError::Capacity {
+                        lane: "raw Python resource status",
+                    },
+                )?;
+                if !matches!(
+                    status,
+                    backend_frontend_python::legacy::checker::PythonProjectSourceStatus::UnavailableEncoding(_)
+                ) {
+                    return Err(PackageSemanticError::Capacity {
+                        lane: "raw Python resource has unexpected decoded status",
+                    });
+                }
+                let byte_len = u32::try_from(raw.source.len()).map_err(|_| {
+                    PackageSemanticError::Capacity {
+                        lane: "raw Python source extent",
+                    }
+                })?;
+                coverage_gaps.push(PackageSourceCoverageGap {
+                    source: SourceAuthority {
+                        identity: ContentId::<SourceFactDomain>::from_canonical_bytes(raw.source),
+                        byte_len,
+                    },
+                    relative_path: raw.relative_path.into(),
+                    cause: PackageSourceCoverageGapCause::PythonSourceEncodingUnavailable,
+                    python_source_status: Some(status.clone()),
+                    native_python_diagnostics: project
+                        .diagnostics()
+                        .iter()
+                        .filter(|diagnostic| diagnostic.relative_path.as_ref() == raw.relative_path)
+                        .cloned()
+                        .collect(),
+                });
+            }
+        }
+
         let mut image_plan = Vec::new();
         image_plan
             .try_reserve_exact(source_count)
@@ -2733,6 +2888,43 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     path: source.relative_path.into(),
                     terminal: Box::new(terminal),
                 })?;
+            if let Some(project) = python_project.as_ref() {
+                use backend_frontend_python::legacy::checker::PythonProjectSourceStatus;
+                let status = project.source_status(source.relative_path).ok_or(
+                    PackageSemanticError::Capacity {
+                        lane: "Python project source admission status",
+                    },
+                )?;
+                let cause = match status {
+                    PythonProjectSourceStatus::Analyzed => None,
+                    PythonProjectSourceStatus::UnavailableSyntax => {
+                        Some(PackageSourceCoverageGapCause::PythonSourceSyntaxUnavailable)
+                    }
+                    PythonProjectSourceStatus::UnavailableEncoding(_) => {
+                        Some(PackageSourceCoverageGapCause::PythonSourceEncodingUnavailable)
+                    }
+                    PythonProjectSourceStatus::UnavailableDependency { .. } => {
+                        Some(PackageSourceCoverageGapCause::PythonSourceDependencyUnavailable)
+                    }
+                };
+                if let Some(cause) = cause {
+                    coverage_gaps.push(PackageSourceCoverageGap {
+                        source: source_authority,
+                        relative_path: source.relative_path.into(),
+                        cause,
+                        python_source_status: Some(status.clone()),
+                        native_python_diagnostics: project
+                            .diagnostics()
+                            .iter()
+                            .filter(|diagnostic| {
+                                diagnostic.relative_path.as_ref() == source.relative_path
+                            })
+                            .cloned()
+                            .collect(),
+                    });
+                    continue;
+                }
+            }
             let toolchain = self
                 .toolchain_for_package(application_request, typescript_toolchain)
                 .map_err(|cause| toolchain_terminal(source_authority, application_request, cause))
@@ -2839,6 +3031,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         source: source_authority,
                         relative_path: source.relative_path.into(),
                         cause: PackageSourceCoverageGapCause::RustSourceOutsideActiveCargoTarget,
+                        python_source_status: None,
+                        native_python_diagnostics: Box::new([]),
                     });
                     continue;
                 }
@@ -5498,6 +5692,61 @@ mod tests {
                 .windows(b"/cache/".len())
                 .any(|window| window == b"/cache/")
         );
+    }
+
+    #[test]
+    fn python_raw_frontier_admission_binds_unavailable_members_and_rejects_mutations() {
+        use backend_frontend_python::legacy::checker::PythonProjectBytesSource;
+        let request = PackageCompileRequest::new(
+            GenerateTarget {
+                correlation: CorrelationId(1),
+                profile: LanguageProfile::Python(
+                    backend_semantic::vocabulary::PythonVersion::Python314,
+                ),
+                stage: Stage::LowerIr,
+            },
+            PackageUrl::parse("pkg:pypi/intake-fixture@1.0.0").unwrap(),
+        )
+        .unwrap();
+        let root = host_path("/python-raw-frontier");
+        let decoded = [PackageSource::new("good.py", "answer = 42\n").unwrap()];
+        let raw = [
+            PythonProjectBytesSource {
+                relative_path: "good.py",
+                source: b"answer = 42\n",
+            },
+            PythonProjectBytesSource {
+                relative_path: "latin.py",
+                source: b"# coding: latin-1\nvalue = '\xe9'\n",
+            },
+        ];
+        let package = PackageSourceSet::new(&request, root, &decoded)
+            .unwrap()
+            .with_python_raw_sources(&raw)
+            .unwrap();
+        assert_eq!(package.python_raw_sources.unwrap().len(), 2);
+        let raw_input = super::package_source_input_witness(&package);
+        let decoded_input = super::package_source_input_witness(
+            &PackageSourceSet::new(&request, root, &decoded).unwrap(),
+        );
+        assert_ne!(raw_input.input_root(), decoded_input.input_root());
+        let mismatched = [PythonProjectBytesSource {
+            relative_path: "good.py",
+            source: b"changed = 42\n",
+        }];
+        assert!(matches!(
+            PackageSourceSet::new(&request, root, &decoded)
+                .unwrap()
+                .with_python_raw_sources(&mismatched),
+            Err(PackageSourceSetError::RawSourceMismatch)
+        ));
+        let duplicate = [raw[0], raw[0]];
+        assert!(matches!(
+            PackageSourceSet::new(&request, root, &decoded)
+                .unwrap()
+                .with_python_raw_sources(&duplicate),
+            Err(PackageSourceSetError::Order)
+        ));
     }
 
     #[test]

@@ -6,11 +6,42 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use backend_frontend_python::legacy::checker::{
-    NativePythonProjectAuthority, PYTHON_NATIVE_PROJECT_SOURCE_REVISION, PythonProjectControl,
-    PythonProjectSource, SymbolOutcome, is_ignored_python_source_directory,
+    NativePythonProjectAuthority, PYTHON_NATIVE_PROJECT_SOURCE_REVISION, PythonProjectBytesSource,
+    PythonProjectControl, PythonProjectSourceStatus, PythonSourceDecodeFault, SymbolOutcome,
+    is_ignored_python_source_directory,
 };
 use backend_semantic::vocabulary::PythonVersion;
 use serde_json::json;
+
+fn source_status_json(status: &PythonProjectSourceStatus) -> serde_json::Value {
+    match status {
+        PythonProjectSourceStatus::Analyzed => json!({"kind":"analyzed"}),
+        PythonProjectSourceStatus::UnavailableSyntax => json!({"kind":"unavailable-syntax"}),
+        PythonProjectSourceStatus::UnavailableDependency { dependencies } => {
+            json!({"kind":"unavailable-dependency","dependencies":dependencies})
+        }
+        PythonProjectSourceStatus::UnavailableEncoding(fault) => {
+            let fault = match fault {
+                PythonSourceDecodeFault::SourceExtent { actual } => {
+                    json!({"kind":"source-extent","bytes":actual})
+                }
+                PythonSourceDecodeFault::UnsupportedCodec { codec, span } => {
+                    json!({"kind":"unsupported-codec","codec":codec,"span":{"start":span.start,"end":span.end}})
+                }
+                PythonSourceDecodeFault::ConflictingBom { codec, span } => {
+                    json!({"kind":"conflicting-bom","codec":codec,"span":{"start":span.start,"end":span.end}})
+                }
+                PythonSourceDecodeFault::InvalidUtf8 { span } => {
+                    json!({"kind":"invalid-utf8","span":{"start":span.start,"end":span.end}})
+                }
+                PythonSourceDecodeFault::InvalidAscii { span } => {
+                    json!({"kind":"invalid-ascii","span":{"start":span.start,"end":span.end}})
+                }
+            };
+            json!({"kind":"unavailable-encoding","fault":fault})
+        }
+    }
+}
 
 fn files(root: &Path, directory: &Path, output: &mut Vec<PathBuf>) -> std::io::Result<()> {
     for entry in std::fs::read_dir(directory)? {
@@ -54,13 +85,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|path| {
             Ok((
                 path.to_str().ok_or("non-UTF8 source path")?.to_owned(),
-                std::fs::read_to_string(root.join(path))?,
+                std::fs::read(root.join(path))?,
             ))
         })
         .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
     let sources = owned
         .iter()
-        .map(|(path, source)| PythonProjectSource {
+        .map(|(path, source)| PythonProjectBytesSource {
             relative_path: path,
             source,
         })
@@ -69,7 +100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut passes = Vec::new();
     for pass in 0..2 {
         let started = Instant::now();
-        let report = checker.analyze_project(
+        let report = checker.analyze_project_bytes(
             &root,
             &args[2],
             &sources,
@@ -95,7 +126,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => None,
             }).collect::<Vec<_>>();
             let inferences = module.inferences.iter().map(|inference| json!({"span":{"start":inference.site.start,"end":inference.site.end},"site":format!("{:?}",inference.kind),"type":format!("{:?}",inference.observed)})).collect::<Vec<_>>();
-            modules.push(json!({"path":source.relative_path,"definitions":definitions,"inferences":inferences}));
+            modules.push(json!({"path":source.relative_path,"source_status":source_status_json(report.source_status(source.relative_path).ok_or("missing raw source admission status")?),"definitions":definitions,"inferences":inferences}));
         }
         let mut diagnostic_kinds = BTreeMap::<&str, usize>::new();
         let mut diagnostic_severities = BTreeMap::<&str, usize>::new();
@@ -121,7 +152,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         serde_json::to_string_pretty(
             &json!({"schema":"python-native-project-comparison.v1","package":args[2],"native_source_revision":PYTHON_NATIVE_PROJECT_SOURCE_REVISION,
         "selected_profile":"Python314","scope":"native authority only; no public CLI/MCP or precise read-set purity claim",
-        "source_frontier":sources.iter().map(|source| json!({"path":source.relative_path,"bytes":source.source.len(),"blake3":blake3::hash(source.source.as_bytes()).to_hex().to_string()})).collect::<Vec<_>>(),"passes":passes})
+        "source_frontier":sources.iter().map(|source| json!({"path":source.relative_path,"bytes":source.source.len(),"blake3":blake3::hash(source.source).to_hex().to_string()})).collect::<Vec<_>>(),"passes":passes})
         )?
     );
     Ok(())

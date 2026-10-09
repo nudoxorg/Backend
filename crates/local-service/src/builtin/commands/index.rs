@@ -2227,7 +2227,7 @@ fn prepare_deferred_compile(
     for source in sources {
         let profile = compile_profile(context.source_root, &source);
         by_profile.entry(profile).or_default().push(
-            OwnedPackageSource::from_string(&source.relative_path, source.source)
+            OwnedPackageSource::from_bytes(&source.relative_path, source.source)
                 .map_err(|error| BuiltinModelError(error.to_string()))?,
         );
     }
@@ -3024,7 +3024,7 @@ fn compile_semantic_publications(
             .or_default()
             .insert(portable_relative_path(Path::new(&source.relative_path)));
         by_profile.entry(profile).or_default().push(
-            OwnedPackageSource::from_string(&source.relative_path, source.source)
+            OwnedPackageSource::from_bytes(&source.relative_path, source.source)
                 .map_err(|error| BuiltinModelError(error.to_string()))?,
         );
     }
@@ -3759,6 +3759,23 @@ fn admit_local_compile(
                 gap.source().byte_len,
                 gap.cause(),
             );
+            if let Some(status) = gap.python_source_status() {
+                eprintln!(
+                    "locald Python source admission: path={} status={status:?}",
+                    gap.relative_path(),
+                );
+                for diagnostic in gap.native_python_diagnostics() {
+                    eprintln!(
+                        "locald native Python diagnostic: path={} span={}..{} kind={} severity={} message={}",
+                        diagnostic.relative_path,
+                        diagnostic.span.start,
+                        diagnostic.span.end,
+                        diagnostic.kind,
+                        diagnostic.severity,
+                        diagnostic.message,
+                    );
+                }
+            }
         }
         let completed = u32::try_from(staged.artifacts().len())
             .ok()

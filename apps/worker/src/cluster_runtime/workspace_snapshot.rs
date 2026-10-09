@@ -262,15 +262,15 @@ fn materialize_unix(
             let source_len =
                 usize::try_from(*length).map_err(|_| ClusterWorkerError::InputBounds)?;
             file.seek(SeekFrom::Start(0)).map_err(operation)?;
-            let mut source = String::new();
+            let mut source = Vec::new();
             source.try_reserve(source_len).map_err(operation)?;
             file.take(length.saturating_add(1))
-                .read_to_string(&mut source)
+                .read_to_end(&mut source)
                 .map_err(operation)?;
             if source.len() as u64 != *length {
                 return Err(ClusterWorkerError::InvalidInputClosure);
             }
-            sources.push(OwnedPackageSource::from_string(path, source).map_err(operation)?);
+            sources.push(OwnedPackageSource::from_bytes(path, source).map_err(operation)?);
         }
     }
     if sources.is_empty() || total_bytes > max_input_bytes {
@@ -873,15 +873,15 @@ fn materialize_windows(
             let source_len =
                 usize::try_from(*length).map_err(|_| ClusterWorkerError::InputBounds)?;
             file.seek(SeekFrom::Start(0)).map_err(operation)?;
-            let mut source = String::new();
+            let mut source = Vec::new();
             source.try_reserve(source_len).map_err(operation)?;
             file.take(length.saturating_add(1))
-                .read_to_string(&mut source)
+                .read_to_end(&mut source)
                 .map_err(operation)?;
             if source.len() as u64 != *length {
                 return Err(ClusterWorkerError::InvalidInputClosure);
             }
-            sources.push(OwnedPackageSource::from_string(path, source).map_err(operation)?);
+            sources.push(OwnedPackageSource::from_bytes(path, source).map_err(operation)?);
         }
     }
     if sources.is_empty() || total_bytes > max_input_bytes {

@@ -27,9 +27,9 @@ use ruff_text_size::Ranged as SyntaxRanged;
 
 use super::project::{
     CandidateWitness, CapturedBaselines, CapturedProjectLayout, DefinitionTarget, DirectoryWitness,
-    PythonProjectControl, PythonProjectCoverageGap, PythonProjectCoverageGapKind,
-    PythonProjectDiagnostic, PythonProjectSource, PythonTypeProjectionFault,
-    SourceDirectoryWitness, checkpoint, project_error,
+    PythonProjectBytesSource, PythonProjectControl, PythonProjectCoverageGap,
+    PythonProjectCoverageGapKind, PythonProjectDiagnostic, PythonProjectSource,
+    PythonTypeProjectionFault, SourceDirectoryWitness, checkpoint, project_error,
 };
 use super::{
     CheckerError, CheckerReport, ImportResolution, Inference, InferenceSite, InferredType,
@@ -41,6 +41,7 @@ use crate::legacy::{
 
 pub(super) struct NativeProjectResult {
     pub(super) modules: BTreeMap<Box<str>, CheckerReport>,
+    pub(super) unavailable_dependencies: BTreeMap<Box<str>, Box<[Box<str>]>>,
     pub(super) configuration_fingerprint: [u8; 32],
     pub(super) candidates: Vec<CandidateWitness>,
     pub(super) diagnostics: Vec<PythonProjectDiagnostic>,
@@ -54,24 +55,25 @@ pub(super) fn analyze(
     original_root: &Path,
     package: &str,
     sources: &[PythonProjectSource<'_>],
+    raw_sources: &[PythonProjectBytesSource<'_>],
     syntax: &BTreeMap<&str, ModuleFacts>,
+    rejected: &BTreeMap<&str, crate::legacy::RejectedSyntax>,
     baselines: &CapturedBaselines,
     profile: backend_semantic::vocabulary::PythonVersion,
     control: PythonProjectControl<'_>,
 ) -> Result<NativeProjectResult, CheckerError> {
     checkpoint(control)?;
     let mirror = layout.source_root();
-    let source_manifest = sources
+    let source_manifest = raw_sources
         .iter()
         .map(|source| {
-            let identity =
-                backend_semantic::ir::SourceIdentity::from_bytes(source.source.as_bytes())
-                    .ok_or_else(|| {
-                        project_error(
-                            source.relative_path,
-                            "selected source extent exceeds IR bounds",
-                        )
-                    })?;
+            let identity = backend_semantic::ir::SourceIdentity::from_bytes(source.source)
+                .ok_or_else(|| {
+                    project_error(
+                        source.relative_path,
+                        "selected source extent exceeds IR bounds",
+                    )
+                })?;
             Ok((source.relative_path.to_owned(), *identity.identity))
         })
         .collect::<Result<Vec<_>, CheckerError>>()?;
@@ -89,12 +91,12 @@ pub(super) fn analyze(
     let (finder, configuration_fingerprint) = captured_finder(
         layout,
         original_root,
-        sources,
+        raw_sources,
         baselines,
         NativeVersion::new(3, minor, 0),
         control,
     )?;
-    let handles = sources
+    let raw_handles = raw_sources
         .iter()
         .map(|source| {
             let path = ModulePath::filesystem(mirror.join(source.relative_path));
@@ -103,11 +105,20 @@ pub(super) fn analyze(
             config.handle_from_module_path(path)
         })
         .collect::<Vec<_>>();
+    let handles_by_path = raw_sources
+        .iter()
+        .zip(&raw_handles)
+        .map(|(source, handle)| (source.relative_path, handle))
+        .collect::<BTreeMap<_, _>>();
+    let handles = sources
+        .iter()
+        .map(|source| (*handles_by_path[source.relative_path]).clone())
+        .collect::<Vec<_>>();
     let mut imports = BTreeMap::new();
     let mut candidates = BTreeMap::new();
     let mut compiled_imports = BTreeSet::new();
     let mut roots = BTreeSet::new();
-    for handle in &handles {
+    for handle in &raw_handles {
         let config = finder.python_file(handle.module_kind(), handle.path());
         for root in config.search_path().chain(config.site_package_path()) {
             let original = layout
@@ -120,19 +131,27 @@ pub(super) fn analyze(
         roots,
         original_root,
         mirror,
-        sources[0].relative_path,
+        raw_sources[0].relative_path,
         control,
     )?;
     let mut coverage_gaps = Vec::new();
     for (source, handle) in sources.iter().zip(&handles) {
         checkpoint(control)?;
-        let parsed =
-            crate::legacy::parse_module(source.source, profile).map_err(|source_error| {
-                CheckerError::ProjectSyntax {
-                    path: source.relative_path.into(),
-                    source: Box::new(source_error),
-                }
-            })?;
+        let parsed;
+        let module_syntax = if let Some(rejection) = rejected.get(source.relative_path) {
+            // Recovery syntax is used only to witness possible import reads, never
+            // to certify declarations, definitions or type facts for this file.
+            rejection.parsed.syntax()
+        } else {
+            parsed =
+                crate::legacy::parse_module(source.source, profile).map_err(|source_error| {
+                    CheckerError::ProjectSyntax {
+                        path: source.relative_path.into(),
+                        source: Box::new(source_error),
+                    }
+                })?;
+            parsed.syntax()
+        };
         let mut collector = ImportCollector {
             module: handle.module(),
             is_init: source.relative_path.ends_with("/__init__.py")
@@ -144,7 +163,7 @@ pub(super) fn analyze(
             load_aliases: BTreeMap::new(),
             collect_imports: true,
         };
-        if let ruff_python_ast::Mod::Module(module) = parsed.syntax() {
+        if let ruff_python_ast::Mod::Module(module) = module_syntax {
             collector.visit_body(&module.body);
             collector.collect_imports = false;
             collector.visit_body(&module.body);
@@ -277,6 +296,44 @@ pub(super) fn analyze(
             ),
         ));
     }
+    // Recovery answers from an unavailable resource must not leak precise
+    // authority through otherwise valid importing files. Use this committed
+    // State's exact Handle dependency graph, preserving configured path/style
+    // selection; no textual module-name matching supplies the reverse closure.
+    let unavailable_paths = raw_sources
+        .iter()
+        .filter(|source| !syntax.contains_key(source.relative_path))
+        .map(|source| source.relative_path)
+        .collect::<BTreeSet<_>>();
+    let selected_native_paths = raw_sources
+        .iter()
+        .zip(&raw_handles)
+        .map(|(source, handle)| (handle.path().as_path(), source.relative_path))
+        .collect::<BTreeMap<_, _>>();
+    let mut unavailable_dependencies = BTreeMap::<Box<str>, BTreeSet<Box<str>>>::new();
+    for loaded in read.handles() {
+        checkpoint(control)?;
+        let Some(path) = selected_native_paths
+            .get(loaded.path().as_path())
+            .filter(|path| unavailable_paths.contains(**path))
+        else {
+            continue;
+        };
+        let unavailable_path: Box<str> = (*path).into();
+        for dependent in read.get_transitive_rdeps(loaded) {
+            checkpoint(control)?;
+            let Some(dependent_path) = selected_native_paths
+                .get(dependent.path().as_path())
+                .filter(|path| syntax.contains_key(**path))
+            else {
+                continue;
+            };
+            unavailable_dependencies
+                .entry((*dependent_path).into())
+                .or_default()
+                .insert(unavailable_path.clone());
+        }
+    }
     let selected = sources
         .iter()
         .map(|source| (source.relative_path, source.source))
@@ -331,7 +388,39 @@ pub(super) fn analyze(
                 "native selected module differs from captured bytes",
             ));
         }
-        let facts = &syntax[source.relative_path];
+        if unavailable_dependencies.contains_key(source.relative_path) {
+            modules.insert(source.relative_path.into(), CheckerReport::default());
+            coverage_gaps.push(PythonProjectCoverageGap {
+                relative_path: source.relative_path.into(),
+                span: Span {
+                    start: 0,
+                    end: source.source.len() as u32,
+                },
+                kind: PythonProjectCoverageGapKind::UnavailableDependency,
+            });
+            continue;
+        }
+        let Some(facts) = syntax.get(source.relative_path) else {
+            // This exact decoded source still ran through the native parser, so
+            // its native diagnostics below remain available. Recovered syntax
+            // must never become precise semantic authority for a rejected file.
+            if !rejected.contains_key(source.relative_path) {
+                return Err(project_error(
+                    source.relative_path,
+                    "source admission status is missing",
+                ));
+            }
+            modules.insert(source.relative_path.into(), CheckerReport::default());
+            coverage_gaps.push(PythonProjectCoverageGap {
+                relative_path: source.relative_path.into(),
+                span: Span {
+                    start: 0,
+                    end: source.source.len() as u32,
+                },
+                kind: PythonProjectCoverageGapKind::UnavailableSyntax,
+            });
+            continue;
+        };
         let annotated_returns = annotated_function_returns(facts, control)?;
         let native_ast = read.get_ast(handle);
         let mut inferences = Vec::new();
@@ -697,14 +786,11 @@ pub(super) fn analyze(
     checkpoint(control)?;
     for error in read.get_errors(&handles).collect_display_errors() {
         checkpoint(control)?;
-        let Ok(path) = error.path().as_path().strip_prefix(mirror) else {
-            continue;
-        };
-        let Some(path) = path.to_str().filter(|path| selected.contains_key(*path)) else {
+        let Some(path) = selected_native_paths.get(error.path().as_path()) else {
             continue;
         };
         diagnostics.push(PythonProjectDiagnostic {
-            relative_path: path.into(),
+            relative_path: (*path).into(),
             span: Span {
                 start: error.range().start().to_u32(),
                 end: error.range().end().to_u32(),
@@ -716,6 +802,10 @@ pub(super) fn analyze(
     }
     Ok(NativeProjectResult {
         modules,
+        unavailable_dependencies: unavailable_dependencies
+            .into_iter()
+            .map(|(path, dependencies)| (path, dependencies.into_iter().collect()))
+            .collect(),
         configuration_fingerprint,
         candidates: candidates.into_values().collect(),
         diagnostics,
@@ -952,7 +1042,7 @@ impl<'syntax> Visitor<'syntax> for ImportCollector {
 fn captured_finder(
     layout: &CapturedProjectLayout,
     original_root: &Path,
-    sources: &[PythonProjectSource<'_>],
+    sources: &[PythonProjectBytesSource<'_>],
     baselines: &CapturedBaselines,
     version: NativeVersion,
     control: PythonProjectControl<'_>,
