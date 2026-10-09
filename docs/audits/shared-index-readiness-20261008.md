@@ -1,3 +1,67 @@
+## 2026-10-09 source checkpoints and real installed reads
+
+The native source-read contract, owned app-state repair, cold query preparation,
+and Python diagnostics are open as reviewed source checkpoints:
+[114](https://dev.nudox.org/git/Nudox/Backend/pulls/114),
+[115](https://dev.nudox.org/git/Nudox/Backend/pulls/115),
+[116](https://dev.nudox.org/git/Nudox/Backend/pulls/116), and
+[117](https://dev.nudox.org/git/Nudox/Backend/pulls/117).
+Their native validation remains **UNRUN**. PR117 includes the exact PR116
+postimages and the Python fixes; it must be integrated as a joined DTO 26 cohort,
+not as a standalone claim of live DTO 25 compatibility. Historical journal
+admission remains explicit and separate from live reply admission.
+
+Root independently verified all 16 cold-preparation postimages, 14 Python atom
+postimages, the composed native projection file, and conservation of every
+other canonical file/mode. The lock adds one already resolved native TOML edge.
+The planned 64 Python controls plus 16 readiness controls are not test results.
+Earlier actual 47-control evidence belongs to 62ce, whose real pip coordinate,
+PyPA configuration, mypy 60-second and Buildbot oracle failures remain retained.
+[Composition evidence](python-current26-composition-source-review-20261009.json).
+
+[PR118](https://dev.nudox.org/git/Nudox/Backend/pulls/118) is merged into
+canonical `634abfefc4`. The strict Go native control on 30f23e8 passed **1 passed, 0 failed, 0 ignored** in 38.41 seconds.
+Root verified its actual direct wait, fresh compiler artifact, complete 18,030
+Git blobs, and 11 retained evidence files. Its five Go source postimages match
+the reviewed canonical replay; retained image hashes are post-run evidence.
+It proves two complete capture events around one cold-helper authority request,
+not Task/Caddy publication, actual loader-spawn counts or product latency.
+[Scoped native evidence](go-strict-closure-native-evidence-20261009.json).
+
+Root used the existing installed HTTPie CLI and MCP against real source.
+Eight CLI read commands returned valid JSON with exit 0; the six compiler call
+reference spans all select the actual Environment identifier on disk. A fresh
+MCP graph continuation succeeded immediately. Its ten outward foreign targets
+are distinct from the six incoming calls; the retained native image confirms
+their foreign classification. Generic labels still hide their captured names. An older continuation was
+rejected as expired or belonging to another authority; these observations do
+not establish a paging bug. Search emitted a 10,247-byte continuation, and first
+reads remained slow. Producing Git identity for the installed executable is not
+independently established, so these runs do not validate current canonical or
+any open PR. They do not prove fresh ingest or vector/embedding search.
+[Installed read observations](installed-httpie-read-observations-20261009.json).
+
+The installed owner retired with an unknown cause/status. Passive CLI health
+reported its missing endpoint; the next MCP status implicitly bootstrapped a
+replacement and recovered the same persisted 7,618-row revision. Root did not
+kill the owner or request indexing. The CLI failure exposed a current source
+error: generic command affordances convert global --project flags into a
+coordinate for an invalid MCP health call. A separate typed recovery repair is
+in progress.
+
+Adversarial GUI source review blocked draft01: eight retries ended around 11.75
+seconds, while each late retry could receive another 30-second transport bound.
+The successor must cancel at the original deadline, check readiness near that
+deadline and preserve exact basis/generation/owner authority through navigation.
+The existing installed GUI also reproduced unconditional library absence copy
+during a failed read. That copy is being changed to reflect admitted pending,
+failure and captured coverage; no new live GUI rendering is proved here.
+
+New native work is held because h16001mac cannot provide the fresh sample
+required by the current whole-fleet guard. Its interrupted GUI build remains
+unknown. A conservative Linux-only admission exception has been asked for and
+has not been granted; no missing-host capacity or successful build is inferred.
+
 ## 2026-10-09 MCP transport checkpoint: exact emitted byte accounting
 
 MCP HTTP and stdio now admit responses using the exact escaped JSON bytes and

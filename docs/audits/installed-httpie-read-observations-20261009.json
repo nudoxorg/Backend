@@ -1,0 +1,197 @@
+{
+  "scope": "Existing installed HTTPie owner only; producing Git revision is not independently established. These observations do not validate current canonical or open PRs.",
+  "full_packet": {
+    "path": "/private/tmp/nudox-root-installed-httpie-paging-and-exact-references-20261009.json",
+    "sha256": "ca22aa8e2d0fc67e33e3a5c781750306851f67f99653b90688bef85aa8e1a0f0",
+    "bytes": 53014
+  },
+  "immediate_graph_pages": {
+    "started_utc": "2026-10-09T14:04:58.972Z",
+    "first_ms": 1137,
+    "second_ms": 1304,
+    "first_is_error": false,
+    "second_is_error": false
+  },
+  "physical_reference_verification": [
+    {
+      "path": "httpie/core.py",
+      "start": 1187,
+      "end": 1198,
+      "source_sha256": "12a78934cd277bdba722574319048213d417c9bc549145ca8bd851c123444d5b",
+      "selected_bytes": "Environment",
+      "line": 36
+    },
+    {
+      "path": "httpie/core.py",
+      "start": 5070,
+      "end": 5081,
+      "source_sha256": "12a78934cd277bdba722574319048213d417c9bc549145ca8bd851c123444d5b",
+      "selected_bytes": "Environment",
+      "line": 148
+    },
+    {
+      "path": "httpie/manager/__main__.py",
+      "start": 977,
+      "end": 988,
+      "source_sha256": "51f9ac8086346b87d841b5000eeeb42bfaefd95f77da3f9d19cf182a77bb8d6d",
+      "selected_bytes": "Environment",
+      "line": 32
+    },
+    {
+      "path": "httpie/output/processing.py",
+      "start": 703,
+      "end": 714,
+      "source_sha256": "0a37a9939fd6c57c5a203cf0e4b1e71e4ebc51a30b23035a2bc51cb98923b633",
+      "selected_bytes": "Environment",
+      "line": 29
+    },
+    {
+      "path": "httpie/output/streams.py",
+      "start": 3410,
+      "end": 3421,
+      "source_sha256": "11e5101d4b5375083d3c08ce52edf34cddf7d8d0e9b0b1a0c4a2b68ca2ea016d",
+      "selected_bytes": "Environment",
+      "line": 117
+    },
+    {
+      "path": "tests/test_windows.py",
+      "start": 456,
+      "end": 467,
+      "source_sha256": "b797b21453b54b1e8d155af9cb8af4c30e1fa51938d2efa9ba634c14b3606230",
+      "selected_bytes": "Environment",
+      "line": 15
+    }
+  ],
+  "known_limits": [
+    "First status took11980ms and source-backed search5053ms through the connector; these are end-to-end tool timings, not isolated engine benchmarks.",
+    "A search continuation occupied10247bytes.",
+    "An older graph continuation expired or lost authority; immediate fresh continuation succeeded.",
+    "The installed read replies substitute a locator-derived key. Current canonical source already contains the selected-identity repair; its runtime result is unverified.",
+    "The existing installed owner reports semantic/vector coverage unconfigured."
+  ],
+  "no_owner_restart_or_index_mutation": true,
+  "cli_reads": {
+    "scope": "Existing installed CLI, producing Git source not independently established; not current canonical or open-PR validation. Read-only commands may use existing normal owner bootstrap if it retires; no index/remove command sent.",
+    "binary": {
+      "path": "/Users/mileswirht/.local/lib/nudox/versions/checkpoint-20261006-a659d5d181-macos-arm64/bin/backend-cli",
+      "sha256": "5a522b1238f52cd9d876f23b269674df4d5a36b6887f5ad5b2752088e8e8ea2d",
+      "bytes": 34398048
+    },
+    "full_receipt": {
+      "path": "/private/tmp/nudox-root-installed-httpie-cli-read-suite-20261009.json",
+      "sha256": "523c4c28e2f6d02f715d3d1116620bfed523ea41afef76ce40af85985ab05658",
+      "bytes": 77432
+    },
+    "calls": [
+      {
+        "argv": [
+          "--json",
+          "--passive",
+          "health"
+        ],
+        "elapsed_ms": 206,
+        "exit_code": 0,
+        "json_answer": "status"
+      },
+      {
+        "argv": [
+          "--json",
+          "packages"
+        ],
+        "elapsed_ms": 25,
+        "exit_code": 0,
+        "json_answer": "shelf"
+      },
+      {
+        "argv": [
+          "--json",
+          "search",
+          "Environment",
+          "--limit",
+          "5"
+        ],
+        "elapsed_ms": 2944,
+        "exit_code": 0,
+        "json_answer": "records"
+      },
+      {
+        "argv": [
+          "--json",
+          "resolve",
+          "Environment",
+          "--limit",
+          "5"
+        ],
+        "elapsed_ms": 29,
+        "exit_code": 0,
+        "json_answer": "records"
+      },
+      {
+        "argv": [
+          "--json",
+          "show",
+          "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::ee415fc203e1cb2ba7464c299efee7d6accc6b5ccdcbcedc6a878b43c65cf29d::Environment"
+        ],
+        "elapsed_ms": 1455,
+        "exit_code": 0,
+        "json_answer": "page"
+      },
+      {
+        "argv": [
+          "--json",
+          "source",
+          "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::ee415fc203e1cb2ba7464c299efee7d6accc6b5ccdcbcedc6a878b43c65cf29d::Environment"
+        ],
+        "elapsed_ms": 33,
+        "exit_code": 0,
+        "json_answer": "page"
+      },
+      {
+        "argv": [
+          "--json",
+          "references",
+          "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::ee415fc203e1cb2ba7464c299efee7d6accc6b5ccdcbcedc6a878b43c65cf29d::Environment"
+        ],
+        "elapsed_ms": 1386,
+        "exit_code": 0,
+        "json_answer": "product"
+      },
+      {
+        "argv": [
+          "--json",
+          "graph",
+          "/Users/mileswirht/Downloads/nudox-demo-httpie::semantic::ee415fc203e1cb2ba7464c299efee7d6accc6b5ccdcbcedc6a878b43c65cf29d::Environment"
+        ],
+        "elapsed_ms": 1258,
+        "exit_code": 0,
+        "json_answer": "records"
+      }
+    ]
+  },
+  "cli_content_checks": {
+    "all_stdout_valid_json": true,
+    "exact_source_coordinate_retained": true,
+    "reference_records": 6,
+    "plain_graph_records": 11,
+    "search_records": 5,
+    "resolve_records": 5,
+    "identity_limit": "Installed search selected747bcffd while show/source selected1dcc2a81; current source already repairs this.",
+    "not_proved": [
+      "fresh ingest",
+      "semantic embedding search",
+      "all tools",
+      "current canonical",
+      "new installers",
+      "hundreds of real projects"
+    ]
+  },
+  "owner_retirement_observation": {
+    "old_pid": 63808,
+    "observed_state": "defunct; cause and exit status unknown, not owned by this root",
+    "passive_health_result": "exit1 missing endpoint before MCP read; original output retained in tool transcript only",
+    "mcp_status_after": "implicit normal owner bootstrap succeeded; same f560e5be revision7618rows",
+    "replacement_pid": 39376,
+    "parent": 7496,
+    "no_root_kill_or_index_request": true
+  }
+}
