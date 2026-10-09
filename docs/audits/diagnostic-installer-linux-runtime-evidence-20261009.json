@@ -1,0 +1,253 @@
+{
+  "schema": "nudox.diagnostic-installer-runtime-audit.v1",
+  "reviewed_at_utc": "2026-10-09T21:28:00Z",
+  "native_product_acceptance": false,
+  "scope": "real anonymous cold installation and only bounded SDK version entrypoint probes, on NixOS26.05; not an Ubuntu host or a current compiler/index/GUI run",
+  "cold_install": {
+    "anonymous_public_download": true,
+    "archive_verification": "Reached package verification after pinned manifest/archive checks; the installer\u2019s archive download validates expected byte count and SHA-256 before extraction.",
+    "cold_install": {
+      "elapsed_seconds": 17.960479332,
+      "ended_utc": "2026-10-09T21:08:04.106042253Z",
+      "exit_code": 1,
+      "phase": "cold",
+      "started_utc": "2026-10-09T21:07:46.144498347Z"
+    },
+    "entrypoint_command": "public_command=curl -fsSL https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009/install.py | python3 - --prefix /tmp/nudox-diagnostic-prefix.KZxB04PE",
+    "first_failure": "nudox diagnostic mirror: installed SDK does not reproduce its recorded Node/Compiler API identity",
+    "host": "ilo",
+    "partial_prefix_inventory": "partial-prefix-inventory.json",
+    "platform": "NixOS 26.05 (Yarara), x86_64, glibc 2.42",
+    "prefix": "/tmp/nudox-diagnostic-prefix.KZxB04PE",
+    "prefix_mode": "0700",
+    "probe_refusal": "The installer did not publish a current pointer. No retry, loader override, direct binary probe, or post-hoc bypass was attempted.",
+    "public_downloaded_hashes": {
+      "channel.json": {
+        "bytes": 2864,
+        "sha256": "9480c80cdf2643641090e7b92cf1e4adabc03129d7f85139fa4dae3d6849920e"
+      },
+      "cold-public-entrypoint.py": {
+        "bytes": 13137,
+        "sha256": "a0ef6ed94b1456483ce652809533cdbf007f42c9c8950bad3d67177ce0c87130"
+      },
+      "downloaded-bootstrap.py": {
+        "bytes": 13137,
+        "sha256": "a0ef6ed94b1456483ce652809533cdbf007f42c9c8950bad3d67177ce0c87130"
+      },
+      "downloaded-linux-manifest.json": {
+        "bytes": 698,
+        "sha256": "384ab3802efd256752f39fd8e3d79ace7af9e3ccf72797c71577327cb2535b24"
+      },
+      "downloaded-pinned-linux-installer.py": {
+        "bytes": 46973,
+        "sha256": "8baa4a60be98ee4e41e26c3b1cf0d4800e8ec4b8c80758128f38c19a06c799c9"
+      }
+    },
+    "public_expected_archive": {
+      "bytes": 133556631,
+      "sha256": "b394e10203d02898b20140f0f9f9869aa8412e6e288fb8d8e25ac01469df7a05",
+      "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/checkpoint-20261008-c0016d4f4f-linux-x64/nudox-linux-x86_64-c0016d4f4f.tar.gz"
+    },
+    "reinstall": {
+      "reason": "cold install stopped when the pinned SDK Node/TypeScript identity check refused",
+      "status": "not-run"
+    },
+    "remote_paths": {
+      "prefix": "/tmp/nudox-diagnostic-prefix.KZxB04PE",
+      "proof": "/tmp/nudox-diagnostic-proof.j3UEK3nX"
+    },
+    "schema": "nudox.diagnostic-installer.ilo-proof.v1",
+    "scope": "packaging-only; no compiler, indexing, local daemon, MCP stdio session, GUI, or full application acceptance",
+    "source_sha": "c0016d4f4fc9b0f0a452c7c9556954e2287948b3"
+  },
+  "cold_stdout_stderr": "Diagnostic mirror; whole-project acceptance is not established.\nKnown failure: Ubuntu 24.04+ / glibc 2.39+ only; October 8 diagnostic binaries.\nKnown failure: Original GNU install/reinstall passed; packed native runtime control timed out.\nKnown failure: Fresh whole-application acceptance remains open; October 9 Rust repairs are not included.\nnudox diagnostic mirror: installed SDK does not reproduce its recorded Node/Compiler API identity\n",
+  "sdk_probes": [
+    {
+      "actual_stdout_stripped": "",
+      "argv": [
+        "/tmp/nudox-diagnostic-proof.j3UEK3nX/sdk-diagnostic/extract/node",
+        "--version"
+      ],
+      "elapsed_seconds": 0.100803251,
+      "exception": null,
+      "exit_code": 127,
+      "expected": "v24.18.0",
+      "matches_expected": false,
+      "name": "node_version",
+      "stderr": "Could not start dynamically linked executable: /tmp/nudox-diagnostic-proof.j3UEK3nX/sdk-diagnostic/extract/node\nNixOS cannot run dynamically linked executables intended for generic\nlinux environments out of the box. For more information, see:\nhttps://nix.dev/permalink/stub-ld\n",
+      "stderr_bytes": 277,
+      "stderr_sha256": "8e4030885d8e0c559f93253556a1c9e7fd3b986d93c060c1da1b3b13038cab9a",
+      "stdout": "",
+      "stdout_bytes": 0,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "timeout_seconds": 15
+    },
+    {
+      "actual_stdout_stripped": "",
+      "argv": [
+        "/tmp/nudox-diagnostic-proof.j3UEK3nX/sdk-diagnostic/extract/node",
+        "-e",
+        "process.stdout.write(require(process.argv[1]).version)",
+        "/tmp/nudox-diagnostic-proof.j3UEK3nX/sdk-diagnostic/extract/typescript.js"
+      ],
+      "elapsed_seconds": 0.000534379,
+      "exception": null,
+      "exit_code": 127,
+      "expected": "5.9.3",
+      "matches_expected": false,
+      "name": "typescript_api_version",
+      "stderr": "Could not start dynamically linked executable: /tmp/nudox-diagnostic-proof.j3UEK3nX/sdk-diagnostic/extract/node\nNixOS cannot run dynamically linked executables intended for generic\nlinux environments out of the box. For more information, see:\nhttps://nix.dev/permalink/stub-ld\n",
+      "stderr_bytes": 277,
+      "stderr_sha256": "8e4030885d8e0c559f93253556a1c9e7fd3b986d93c060c1da1b3b13038cab9a",
+      "stdout": "",
+      "stdout_bytes": 0,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "timeout_seconds": 15
+    }
+  ],
+  "archive_fetch": {
+    "actual": {
+      "bytes": 133556631,
+      "sha256": "b394e10203d02898b20140f0f9f9869aa8412e6e288fb8d8e25ac01469df7a05"
+    },
+    "elapsed_seconds": 1.123067091,
+    "ended_utc": "2026-10-09T21:10:58.172597053Z",
+    "exit_code": 0,
+    "expected": {
+      "bytes": 133556631,
+      "sha256": "b394e10203d02898b20140f0f9f9869aa8412e6e288fb8d8e25ac01469df7a05"
+    },
+    "matches_pin": true,
+    "phase": "public diagnostic archive fetch for isolated SDK failure diagnosis",
+    "started_utc": "2026-10-09T21:10:57.049582281Z",
+    "target": "remote private ILO proof directory; archive not copied to local workstation",
+    "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/checkpoint-20261008-c0016d4f4f-linux-x64/nudox-linux-x86_64-c0016d4f4f.tar.gz"
+  },
+  "root_independent_sdk_rehash": {
+    "sampled_at_utc": "2026-10-09T21:25:03.753902Z",
+    "host": "ilo",
+    "method": "Root bounded1MiB-scratch SSH file hashing, stable dev/inode/size/mtime before and after, existing realized absolute Python path, no product execution",
+    "node": {
+      "bytes": 123664064,
+      "sha256": "2e6b83d2392fcce11ce591193b7c2e7e8583c838d6df9665e94e628e0639da25"
+    },
+    "typescript": {
+      "bytes": 9112572,
+      "sha256": "3ae902c92cc44dace175c0e69e13a4b0899f6983c6121d76b9ab8dd5795e7675"
+    }
+  },
+  "diagnosis": "both packaged Node probes exited127 with the NixOS generic-Linux stub-loader diagnostic; neither observed a Node/Compiler API version; this is not a TypeScript version mismatch",
+  "transaction": "cold install refused before current pointer/release marker/aliases were published; managed reinstall not run after refusal",
+  "raw_hashes_independently_verified_by_root": {
+    "nudox-diagnostic-proof.j3UEK3nX/assets.json": {
+      "bytes": 2189,
+      "sha256": "64bb8ba46cff38be472ec207be12174f404e4dd67a6e272a7f52002ba8cb3106"
+    },
+    "nudox-diagnostic-proof.j3UEK3nX/channel.json": {
+      "bytes": 2864,
+      "sha256": "9480c80cdf2643641090e7b92cf1e4adabc03129d7f85139fa4dae3d6849920e"
+    },
+    "nudox-diagnostic-proof.j3UEK3nX/channel.sha256": {
+      "bytes": 116,
+      "sha256": "085efca606588823d36da7cef8b263d2223f09c118e742088d8920a76da63c46"
+    },
+    "nudox-diagnostic-proof.j3UEK3nX/cold-public-entrypoint.py": {
+      "bytes": 13137,
+      "sha256": "a0ef6ed94b1456483ce652809533cdbf007f42c9c8950bad3d67177ce0c87130"
+    },
+    "nudox-diagnostic-proof.j3UEK3nX/cold-timing.json": {
+      "bytes": 175,
+      "sha256": "d40848f781f0775a2721a9757a77fd4faeba4e4544162b0c90b27316299c6232"
+    },
+    "nudox-diagnostic-proof.j3UEK3nX/cold.log": {
+      "bytes": 442,
+      "sha256": "75523d8bc4732fee586f4b23d27a5eb05924bce14e1956f394cf7e114cc2fa6d"
+    },
+    "nudox-diagnostic-proof.j3UEK3nX/command.txt": {
+      "bytes": 196,
+      "sha256": "b68e859c34cd3285649b997562647d6e21d8ef159a14596734716b77d4241713"
+    },
+    "nudox-diagnostic-proof.j3UEK3nX/downloaded-bootstrap.py": {
+      "bytes": 13137,
+      "sha256": "a0ef6ed94b1456483ce652809533cdbf007f42c9c8950bad3d67177ce0c87130"
+    },
+    "nudox-diagnostic-proof.j3UEK3nX/downloaded-linux-manifest.json": {
+      "bytes": 698,
+      "sha256": "384ab3802efd256752f39fd8e3d79ace7af9e3ccf72797c71577327cb2535b24"
+    },
+    "nudox-diagnostic-proof.j3UEK3nX/downloaded-pinned-linux-installer.py": {
+      "bytes": 46973,
+      "sha256": "8baa4a60be98ee4e41e26c3b1cf0d4800e8ec4b8c80758128f38c19a06c799c9"
+    },
+    "nudox-diagnostic-proof.j3UEK3nX/host.txt": {
+      "bytes": 1128,
+      "sha256": "c9025d7bcb410648b802cb699ede45495cb03c97ea3011f0571e3507fb03d1ab"
+    },
+    "nudox-diagnostic-proof.j3UEK3nX/partial-prefix-inventory.json": {
+      "bytes": 1663,
+      "sha256": "b3aa31466bc296053dee943c8104547485f05b7cfb9433858ffdfe48d82c0fb6"
+    },
+    "nudox-diagnostic-proof.j3UEK3nX/prefix-path.txt": {
+      "bytes": 38,
+      "sha256": "951dd013f4ae364f26722482f6b7534b64d8eaaf768273d54cb88a239ab8634f"
+    },
+    "nudox-diagnostic-proof.j3UEK3nX/proof-path.txt": {
+      "bytes": 37,
+      "sha256": "6e09386e388f793dc9d833dd11dc3988cccaeb39f7f2a2fc4fec83feec6e69ea"
+    },
+    "nudox-diagnostic-proof.j3UEK3nX/public-small-artifact-hashes.txt": {
+      "bytes": 342,
+      "sha256": "4bb427f17ed88ef650e069d586214a7b4837a8c4aa45904d4ae7c425a1f630ac"
+    },
+    "nudox-diagnostic-proof.j3UEK3nX/receipt.json": {
+      "bytes": 2731,
+      "sha256": "1d7359fc61698b254b937d8fbf30c2c825a34809f48e28aed5a766dd96d24242"
+    },
+    "nudox-diagnostic-proof.j3UEK3nX/source-pin.txt": {
+      "bytes": 52,
+      "sha256": "2b2fb84c43a7f498c1ae346a6c7486a9698b366b22d145d557c2ae6ba8f3f03f"
+    },
+    "sdk-diagnostic/archive-download-receipt.json": {
+      "bytes": 754,
+      "sha256": "105a635698836a13ad19b4629cb6cb5e026319615b36179db3181717cdb0dc6d"
+    },
+    "sdk-diagnostic/archive-download.log": {
+      "bytes": 194,
+      "sha256": "66fad2e42e5ed81777bc1f5e384bc7f1222bd4446bd319a36c4ee3b22f87c6db"
+    },
+    "sdk-diagnostic/extract/build-manifest.json": {
+      "bytes": 799,
+      "sha256": "41e957d4f6318dcf2110029d68e229d851fb5f3b7f8904004380eb8a721074b5"
+    },
+    "sdk-diagnostic/extract/packaging-manifest.json": {
+      "bytes": 40336,
+      "sha256": "63df22ff504313f1e296e40514ccd87d5617422ce63f7a21ee981a30dcf4f5bf"
+    },
+    "sdk-diagnostic/extract/typescript-package.json": {
+      "bytes": 3561,
+      "sha256": "4532f4524fee211a60447f20f049bb5e4a8078d939edd4e194a3c4de006b1f07"
+    },
+    "sdk-diagnostic/followup-receipt.json": {
+      "bytes": 11623,
+      "sha256": "c0f36b4f1892dd496b10d0319ee92a5a2ec5f1cbf5be07c6a8cc9cd9300904e6"
+    },
+    "sdk-diagnostic/library-hashes.json": {
+      "bytes": 1734,
+      "sha256": "e9534927766ac11d24295c3b352705005649666bdf613233b0b18a84173fdcfd"
+    },
+    "sdk-diagnostic/probe-results.json": {
+      "bytes": 7813,
+      "sha256": "7f7c62ac80b6f628bf266d61ced8e8d4a07d05233dc39f237b8104c4d3161019"
+    },
+    "sdk-diagnostic/sdk-metadata.json": {
+      "bytes": 5802,
+      "sha256": "e2673a37dbf71785ff9113ea1df989b55cf5b87eb15ac23ac8899af5b0ba0eb6"
+    }
+  },
+  "open_gates": [
+    "Ubuntu24.04 cold/reinstall acceptance not run in this packet",
+    "matching current canonical binaries absent",
+    "all-tool new real-project CLI/MCP/index/GUI acceptance not established",
+    "embeddings/history/corpus/native source gates remain open"
+  ]
+}
