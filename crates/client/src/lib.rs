@@ -60,10 +60,12 @@ use backend_library::{
     SymbolAddress, SymbolKey, ViewProjectionError, ViewStateRoot, WireCertificate, WireClaim,
     WireSchema, encode_id, package_key, symbol_key,
 };
+mod index_operation;
 pub use backend_replication::SelectedGenerationStamp as SelectedStamp;
 use backend_replication::{
     LocalControlError, LocalControlLimits, ReplicationError, read_frame, write_frame,
 };
+pub use index_operation::{index_with_journal, surface_with_index_journal};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{Read, Write};
@@ -1146,7 +1148,11 @@ impl Session {
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
         if self.prepared_query.is_some() {
-            return self.resume_prepared_graph(SymbolAddress::selected(symbol), limit, continuation);
+            return self.resume_prepared_graph(
+                SymbolAddress::selected(symbol),
+                limit,
+                continuation,
+            );
         }
         let revision = self.revision()?;
         let certificate = selected_symbol_certificate(revision.certificate, symbol);
@@ -1585,7 +1591,10 @@ impl Session {
     ) -> Result<ReplyDto, ClientError> {
         let portable = matches!(
             &command,
-            Command::Search(_) | Command::Name(_) | Command::GraphQuery(_) | Command::GraphPage { .. }
+            Command::Search(_)
+                | Command::Name(_)
+                | Command::GraphQuery(_)
+                | Command::GraphPage { .. }
         )
         .then(|| (command.clone(), certificate.clone()));
         let reply = require_command_success(self.send(command, certificate)?)?;
@@ -1785,9 +1794,19 @@ fn configure_request_with_timeouts(
     read_timeout: Duration,
     mutation_timeout: Duration,
 ) -> Result<(), ClientError> {
-    let timeout = match backend_library::command_spec(request.command.id()).mutation {
-        CommandMutation::Write => mutation_timeout,
-        CommandMutation::Read => read_timeout,
+    // These mutations acknowledge accepted work; they do not await its
+    // publication. An interrupted acknowledgement leaves the caller's exact
+    // durable operation claim available for reconciliation.
+    let timeout = match &request.command {
+        Command::Surface(
+            SurfaceCommand::IndexStart { .. }
+            | SurfaceCommand::IndexOperationStart { .. }
+            | SurfaceCommand::IndexCancel { .. },
+        ) => read_timeout,
+        _ => match backend_library::command_spec(request.command.id()).mutation {
+            CommandMutation::Write => mutation_timeout,
+            CommandMutation::Read => read_timeout,
+        },
     };
     configure_timeout(stream, timeout)
 }
@@ -2129,6 +2148,30 @@ mod tests {
                 .stream
                 .read_timeout()
                 .expect("rearmed read timeout"),
+            Some(CLIENT_REQUEST_TIMEOUT)
+        );
+
+        let accepted = CommandDto::new(
+            3,
+            Command::Surface(SurfaceCommand::IndexOperationStart {
+                operation_key: IndexOperationKey::from_bytes([0x51; 32]).expect("durable key"),
+                package: PackageReference::parse("/tmp/project").expect("package"),
+                execution_intent: CompileExecutionIntent::Interactive,
+            }),
+        );
+        configure_request(&transport.stream, &accepted).expect("acceptance rearm");
+        assert_eq!(
+            transport
+                .stream
+                .read_timeout()
+                .expect("acceptance read bound"),
+            Some(CLIENT_REQUEST_TIMEOUT)
+        );
+        assert_eq!(
+            transport
+                .stream
+                .write_timeout()
+                .expect("acceptance write bound"),
             Some(CLIENT_REQUEST_TIMEOUT)
         );
         let _ = std::fs::remove_file(path);

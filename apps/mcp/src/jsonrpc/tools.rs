@@ -216,6 +216,37 @@ pub(super) fn validate_registry_arguments(
             validate_scalar(*spec, value)?;
         }
     }
+    for field in arguments.keys() {
+        if !grammar
+            .positional()
+            .iter()
+            .chain(grammar.options())
+            .any(|spec| spec.json_name() == field)
+        {
+            return Err(Fault::usage(
+                field.clone(),
+                format!("{} takes no argument called `{field}`", grammar.name()),
+            ));
+        }
+    }
+    for spec in grammar
+        .positional()
+        .iter()
+        .chain(grammar.options())
+        .filter(|spec| spec.is_required())
+    {
+        if !arguments.contains_key(spec.json_name()) {
+            return Err(Fault::usage(
+                spec.json_name(),
+                format!(
+                    "{} requires `arguments.{}`: {}",
+                    grammar.tool(),
+                    spec.json_name(),
+                    spec.help()
+                ),
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -325,6 +356,10 @@ fn index_start_tool() -> Value {
                     "enum": ["interactive", "background"],
                     "default": "interactive"
                 },
+                "operation_key": {
+                    "type": "string", "pattern": "^[0-9a-f]{64}$",
+                    "description": "Optional caller-persisted durable key for exact replay and status reconciliation across owner restarts."
+                },
                 "detail": detail_property(INDEX_START_TOOL)
             },
             "required": ["package"],
@@ -339,11 +374,15 @@ fn index_progress_tool() -> Value {
     job_tool(
         INDEX_PROGRESS_TOOL,
         "Index Progress",
-        "Read one immediate, bounded observation of an owner-issued indexing ticket. Pass the exact ticket returned by backend.index_start and the previous next_sequence; pending, terminal, and unknown-after-restart/retention are distinct states.",
+        "Read one immediate, bounded observation of an owner-issued indexing ticket or durable operation_key returned by backend.index. Ticket unknown-after-restart, operation unknown, unresolved, active and published evidence are distinct states.",
         json!({
             "type": "object",
             "properties": {
                 "ticket": ticket_schema(),
+                "operation_key": {
+                    "type": "string", "pattern": "^[0-9a-f]{64}$",
+                    "description": "Saved operation key; use instead of ticket to reconcile durable owner evidence across process restarts."
+                },
                 "after_sequence": {
                     "type": "integer",
                     "minimum": 0,
@@ -352,7 +391,10 @@ fn index_progress_tool() -> Value {
                 },
                 "detail": detail_property(INDEX_PROGRESS_TOOL)
             },
-            "required": ["ticket"],
+            "oneOf": [
+                {"required": ["ticket"], "not": {"required": ["operation_key"]}},
+                {"required": ["operation_key"], "not": {"anyOf": [{"required": ["ticket"]}, {"required": ["after_sequence"]}]}}
+            ],
             "additionalProperties": false
         }),
         true,
@@ -408,12 +450,13 @@ fn index_job_output_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
+            "fault": {"type": "object"},
             "surface": {
                 "type": "object",
                 "properties": {
                     "result": {
                         "type": "string",
-                        "enum": ["index-started", "index-progress", "index-cancellation"]
+                        "enum": ["index-started", "index-progress", "index-cancellation", "index-operation-started", "index-operation-status"]
                     },
                     "data": { "type": "object" },
                     "index_job": {
@@ -429,7 +472,8 @@ fn index_job_output_schema() -> Value {
                         "additionalProperties": false
                     }
                 },
-                "required": ["result", "data", "index_job"],
+                "required": ["result", "data"],
+                "allOf": [{"if": {"properties": {"result": {"enum": ["index-started", "index-progress", "index-cancellation"]}}}, "then": {"required": ["index_job"]}}],
                 "additionalProperties": false
             }
         },
@@ -487,7 +531,9 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
         let mut argument = property(*spec);
         if grammar.tool() == "backend.index" && spec.name() == "path" {
             argument["minLength"] = json!(1);
-            argument["description"] = json!("Required repository path. Pass the repository's absolute path; MCP never defaults this operand to its working directory.");
+            argument["description"] = json!(
+                "Required repository path. Pass the repository's absolute path; MCP never defaults this operand to its working directory."
+            );
         }
         properties.insert(spec.json_name().to_owned(), argument);
         if spec.is_required() || (grammar.tool() == "backend.index" && spec.name() == "path") {

@@ -325,6 +325,16 @@ impl Engine for Fake {
             return Ok(reply);
         }
         match command {
+            SurfaceCommand::IndexStart { package, .. } => {
+                self.index_paths.push(package.as_str().to_owned());
+                if self.offline {
+                    return Err(unreachable());
+                }
+                Ok(SurfaceReply::IndexStarted(IndexStartResult::Started {
+                    ticket: IndexJobTicket::new(std::num::NonZeroU64::MIN, [7; 16], package),
+                    stage: backend_library::IndexJobStage::Scanning,
+                }))
+            }
             SurfaceCommand::IndexSearch { cursor, .. } if self.surface_index_search_pages => {
                 self.surface_index_search_seen
                     .push(cursor.as_ref().map(|cursor| cursor.as_str().to_owned()));
@@ -1445,7 +1455,14 @@ fn owner_index_job_tools_advertise_exact_tickets_and_immediate_progress() {
     assert_eq!(start["annotations"]["readOnlyHint"], false);
 
     let progress = tool_named(tools, INDEX_PROGRESS_TOOL);
-    assert_eq!(progress["inputSchema"]["required"], json!(["ticket"]));
+    assert_eq!(
+        progress["inputSchema"]["oneOf"][0]["required"],
+        json!(["ticket"])
+    );
+    assert_eq!(
+        progress["inputSchema"]["oneOf"][1]["required"],
+        json!(["operation_key"])
+    );
     assert_eq!(
         progress["inputSchema"]["properties"]["ticket"]["oneOf"][0]["properties"]["owner_epoch"]["minItems"],
         16
@@ -1457,7 +1474,7 @@ fn owner_index_job_tools_advertise_exact_tickets_and_immediate_progress() {
     assert_eq!(progress["annotations"]["readOnlyHint"], true);
     assert_eq!(
         progress["outputSchema"]["properties"]["surface"]["required"],
-        json!(["result", "data", "index_job"])
+        json!(["result", "data"])
     );
 
     let cancel = tool_named(tools, INDEX_CANCEL_TOOL);
@@ -1482,6 +1499,53 @@ fn owner_index_job_tools_advertise_exact_tickets_and_immediate_progress() {
             .unwrap_or_default()
             .contains("not terminal")
     );
+}
+
+#[test]
+fn keyed_index_progress_preserves_durable_owner_evidence_and_rejects_mixed_identities() {
+    let key = backend_library::IndexOperationKey::from_bytes([0x51; 32]).expect("key");
+    let observation = backend_library::IndexOperationObservation::Known(
+        backend_library::IndexOperationStatus::new(
+            key,
+            PackageReference::parse(PROJECT).expect("package"),
+            CompileExecutionIntent::Interactive,
+            backend_library::IndexOperationState::Accepted,
+        ),
+    );
+    let mut server = ready(Fake {
+        surface_reply: Some(SurfaceReply::IndexOperationStatus(observation.clone())),
+        ..Fake::default()
+    });
+    let result = call(
+        &mut server,
+        INDEX_PROGRESS_TOOL,
+        &json!({"operation_key":key}),
+    );
+    assert_eq!(result["isError"], false);
+    assert_eq!(
+        result["structuredContent"]["surface"]["result"],
+        "index-operation-status"
+    );
+    assert_eq!(
+        result["structuredContent"]["surface"]["data"],
+        serde_json::to_value(&observation).expect("typed evidence")
+    );
+    assert_eq!(
+        server.product.surface_commands,
+        [SurfaceCommand::IndexOperationStatus { operation_key: key }]
+    );
+    assert!(text_of(&result).contains("accepted"));
+    assert!(!text_of(&result).contains("index operation published"));
+    for input in [
+        json!({"operation_key":key,"ticket":ticket_value(&index_job_ticket())}),
+        json!({"operation_key":key,"after_sequence":0}),
+        json!({"operation_key":"00".repeat(32)}),
+    ] {
+        let mut server = ready(Fake::default());
+        let result = call(&mut server, INDEX_PROGRESS_TOOL, &input);
+        assert_eq!(result["isError"], true);
+        assert!(server.product.surface_commands.is_empty());
+    }
 }
 
 #[test]
@@ -2033,6 +2097,30 @@ fn registry_schema_primitive_types_are_enforced_before_the_product_boundary() {
     );
     assert_eq!(accepted["isError"], false);
     assert_eq!(server.product.probe_calls, 1);
+}
+
+#[test]
+fn missing_required_mcp_argument_names_the_tool_field_not_cli_usage() {
+    let mut server = ready(Fake::default());
+    for (arguments, operand, expected_detail) in [
+        (json!({}), "query", "arguments.query"),
+        (json!({"unknown":"x"}), "unknown", "takes no argument"),
+        (
+            json!({"query":7,"unknown":"x"}),
+            "query",
+            "must be a string",
+        ),
+    ] {
+        let result = call(&mut server, "backend.search", &arguments);
+        assert_eq!(result["isError"], true, "{arguments}");
+        assert_eq!(result["structuredContent"]["answer"], "fault");
+        assert_eq!(result["structuredContent"]["slug"], "usage");
+        assert_eq!(result["structuredContent"]["operand"], operand);
+        let message = text_of(&result);
+        assert!(message.contains(expected_detail), "{message}");
+        assert!(!message.contains("usage: backend search"), "{message}");
+    }
+    assert_eq!(server.product.probe_calls, 0);
 }
 
 #[test]
@@ -3390,8 +3478,9 @@ fn graph_continuation_round_trip_is_bounded_and_authorized() {
             .to_owned();
         let preview = text_of(&first);
         assert!(
-            preview
-                .contains("Continue `backend.query` with the same `query`, `variables`, and `limit`")
+            preview.contains(
+                "Continue `backend.query` with the same `query`, `variables`, and `limit`"
+            )
         );
         assert!(preview.contains("copy `structuredContent.nextCursor` into `arguments.cursor`"));
         assert!(preview.contains(&format!("`{cursor}`")));
@@ -3427,9 +3516,7 @@ fn graph_page_text_does_not_treat_cancellation_or_missing_cursor_as_limit_advice
     assert!(!cancelled_text.contains("more rows"));
 
     let more_without_token = GraphQueryPage {
-        terminal: PageTerminal::More(PageContinuation::from_cursor(
-            backend_library::Cursor::new(),
-        )),
+        terminal: PageTerminal::More(PageContinuation::from_cursor(backend_library::Cursor::new())),
         ..cancelled
     };
     let unavailable_text = super::graph_page_text(&more_without_token, None);
@@ -4345,10 +4432,12 @@ fn direct_and_generic_graph_routes_preserve_typed_domain_and_protocol_failures()
 fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_same_mcp_wire_result()
  {
     use backend_library::{
-        IndexJobOutcome, IndexJobPartialPublication, IndexOperationProfileRefusal,
+        IndexJobOutcome, IndexJobPartialPublication, IndexOperationFailureReason,
+        IndexOperationKey, IndexOperationObservation, IndexOperationProfileRefusal,
         IndexOperationPublicationReceipt, IndexOperationSemanticCoverage,
         IndexOperationSemanticProfileState, IndexOperationSemanticUnavailableReason,
-        IndexOperationSourceProfile, IndexSourceCaptureSummary, SemanticLanguageProfile,
+        IndexOperationSourceCaptureReceipt, IndexOperationSourceProfile, IndexOperationState,
+        IndexOperationStatus, IndexSourceCaptureSummary, ProductText, SemanticLanguageProfile,
     };
     // This tests closed serialization and caller admission, not an actual
     // compiler generation. The view carries no complete-coverage authority.
@@ -4470,6 +4559,138 @@ fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_s
         assert!(text.contains("NUDOX_TSC"));
         assert_context_bounded(&wire);
         assert_eq!(server.product.surface_commands.len(), 1);
+    }
+    let expected_cause = backend_present::product_view(&reply)
+        .fault()
+        .expect("legacy partial fault")
+        .cause()
+        .sentence()
+        .to_owned();
+    let key = IndexOperationKey::from_bytes([0x41; 32]).expect("durable key");
+    let capture = IndexOperationSourceCaptureReceipt::from_checked_parts(
+        key,
+        partial.source_capture.commit_identity,
+        partial.source_capture.workspace_root,
+        partial.source_capture.workspace_sequence,
+        partial.source_capture.profiles.clone(),
+    )
+    .expect("exact durable source receipt");
+    let partial_status = IndexOperationStatus::new(
+        key,
+        partial.package.clone(),
+        CompileExecutionIntent::Interactive,
+        IndexOperationState::PartiallyPublished {
+            receipt: partial.receipt.clone(),
+            refused_profiles: partial.refused_profiles.clone(),
+        },
+    )
+    .with_source_capture(Some(capture));
+    for (status, is_error) in [
+        (partial_status.clone(), true),
+        (
+            IndexOperationStatus::new(
+                key,
+                partial.package.clone(),
+                CompileExecutionIntent::Interactive,
+                IndexOperationState::Accepted,
+            ),
+            false,
+        ),
+        (
+            IndexOperationStatus::new(
+                key,
+                partial.package.clone(),
+                CompileExecutionIntent::Interactive,
+                IndexOperationState::Failed {
+                    reason: IndexOperationFailureReason::Cancelled,
+                    detail: ProductText::from_static("cancelled before commit"),
+                    compiler_failure: None,
+                },
+            ),
+            false,
+        ),
+    ] {
+        let operation = IndexOperationObservation::Known(status);
+        for started in [false, true] {
+            let (command, reply, name, arguments) = if started {
+                (
+                    SurfaceCommand::IndexOperationStart {
+                        operation_key: key,
+                        package: partial.package.clone(),
+                        execution_intent: CompileExecutionIntent::Interactive,
+                    },
+                    SurfaceReply::IndexOperationStarted(operation.clone()),
+                    INDEX_START_TOOL,
+                    json!({"package":partial.package.as_str(), "operation_key":key.to_hex()}),
+                )
+            } else {
+                (
+                    SurfaceCommand::IndexOperationStatus { operation_key: key },
+                    SurfaceReply::IndexOperationStatus(operation.clone()),
+                    INDEX_PROGRESS_TOOL,
+                    json!({"operation_key":key.to_hex()}),
+                )
+            };
+            let dto = ReplyDto::new(702, CommandReply::Surface(reply.clone()));
+            let bytes = serde_json::to_vec(&dto).expect("actual durable backend wire");
+            let decoded = backend_library::decode_reply_body(&bytes).expect("durable wire decode");
+            backend_library::admit_reply(
+                &backend_library::CommandDto::new(702, backend_library::Command::Surface(command)),
+                &decoded,
+            )
+            .expect("exact operation, package and intent admission before projection");
+            for detail in ["summary", "full"] {
+                let mut arguments = arguments.clone();
+                arguments["detail"] = json!(detail);
+                let mut server = ready(Fake {
+                    surface_reply: Some(reply.clone()),
+                    ..Fake::default()
+                });
+                let wire = request(
+                    &mut server,
+                    "tools/call",
+                    &json!({"name":name, "arguments":arguments}),
+                );
+                assert!(wire.get("error").is_none(), "{wire}");
+                assert_eq!(wire["result"]["isError"], is_error, "{wire}");
+                let content = &wire["result"]["structuredContent"];
+                assert_eq!(
+                    content["surface"]["data"],
+                    serde_json::to_value(&operation).expect("complete exact operation")
+                );
+                if is_error {
+                    let fault = backend_present::product_view(&reply);
+                    assert_eq!(
+                        fault
+                            .fault()
+                            .expect("durable partial fault")
+                            .cause()
+                            .sentence(),
+                        expected_cause
+                    );
+                    assert_eq!(content["fault"]["slug"], "partially-published");
+                    assert!(
+                        content["fault"]["partial_publication"].is_null(),
+                        "no manufactured legacy source tuple"
+                    );
+                    assert_eq!(
+                        content["surface"]["data"]["detail"]["source_capture"],
+                        serde_json::to_value(&partial_status.source_capture)
+                            .expect("retained exact capture")
+                    );
+                    let text = text_of(&wire["result"]);
+                    assert!(
+                        text.contains("python: published 236 source files with Complete coverage")
+                    );
+                    assert!(text.contains("typescript: unavailable"));
+                    assert!(text.contains("Set NUDOX_TSC"));
+                    assert!(text.contains(&key.to_hex()));
+                } else {
+                    assert!(content["fault"].is_null());
+                }
+                assert_context_bounded(&wire);
+            }
+        }
     }
 }
 

@@ -402,11 +402,19 @@ impl IndexJobProjection {
     pub fn poll_affordance(&self) -> Option<crate::Affordance> {
         let (ticket, after_sequence) = match self {
             Self::Started(IndexStartResult::Started { ticket, .. }) => (ticket, 0),
-            Self::Progress(IndexJobObservation::Pending(page)) => (&page.ticket, page.next_sequence),
-            Self::Cancellation(IndexCancelReceipt { ticket, status: IndexCancelStatus::Requested }) => (ticket, 0),
+            Self::Progress(IndexJobObservation::Pending(page)) => {
+                (&page.ticket, page.next_sequence)
+            }
+            Self::Cancellation(IndexCancelReceipt {
+                ticket,
+                status: IndexCancelStatus::Requested,
+            }) => (ticket, 0),
             _ => return None,
         };
-        Some(crate::Affordance::PollIndex { ticket: ticket.clone(), after_sequence })
+        Some(crate::Affordance::PollIndex {
+            ticket: ticket.clone(),
+            after_sequence,
+        })
     }
 
     /// Returns the exact ticket carried by this job result, when available.
@@ -648,7 +656,9 @@ impl ProductView {
         let terminal = match &index_job {
             IndexJobProjection::Started(IndexStartResult::Terminal(terminal))
             | IndexJobProjection::Terminal(terminal)
-            | IndexJobProjection::Progress(IndexJobObservation::Terminal(terminal)) => Some(terminal),
+            | IndexJobProjection::Progress(IndexJobObservation::Terminal(terminal)) => {
+                Some(terminal)
+            }
             IndexJobProjection::Cancellation(receipt) => match &receipt.status {
                 IndexCancelStatus::Terminal(terminal) => Some(terminal),
                 IndexCancelStatus::Requested | IndexCancelStatus::Unknown => None,
@@ -658,13 +668,20 @@ impl ProductView {
         if let Some(terminal) = terminal {
             let operand = Operand::Text(index_ticket_json(&terminal.ticket));
             self.fault = match &terminal.outcome {
-                IndexJobOutcome::PartiallyPublished(partial) => Some(Fault::partial_publication(partial, operand)),
-                IndexJobOutcome::RefusedWithCompilerFailure { failure, .. } => Some(Fault::compiler_refusal(failure, operand)),
-                IndexJobOutcome::Refused(detail) | IndexJobOutcome::Failed(detail) => Some(Fault::new(
-                    crate::FaultSlug::Rejected, operand,
-                    crate::Cause::new(crate::CauseSlug::Refused, detail.as_str()),
-                    crate::Affordance::None,
-                )),
+                IndexJobOutcome::PartiallyPublished(partial) => {
+                    Some(Fault::partial_publication(partial, operand))
+                }
+                IndexJobOutcome::RefusedWithCompilerFailure { failure, .. } => {
+                    Some(Fault::compiler_refusal(failure, operand))
+                }
+                IndexJobOutcome::Refused(detail) | IndexJobOutcome::Failed(detail) => {
+                    Some(Fault::new(
+                        crate::FaultSlug::Rejected,
+                        operand,
+                        crate::Cause::new(crate::CauseSlug::Refused, detail.as_str()),
+                        crate::Affordance::None,
+                    ))
+                }
                 IndexJobOutcome::Published | IndexJobOutcome::Cancelled => None,
             };
         }
@@ -676,6 +693,58 @@ impl ProductView {
         mut self,
         index_operation: backend_library::IndexOperationObservation,
     ) -> Self {
+        if let backend_library::IndexOperationObservation::Known(status) = &index_operation {
+            match &status.state {
+                backend_library::IndexOperationState::Active { ticket, stage } => {
+                    self = self.with_index_job(IndexJobProjection::Started(
+                        IndexStartResult::Started {
+                            ticket: ticket.clone(),
+                            stage: *stage,
+                        },
+                    ));
+                }
+                backend_library::IndexOperationState::PartiallyPublished {
+                    receipt,
+                    refused_profiles,
+                } => {
+                    self.fault = Some(Fault::partial_publication_facts(
+                        &status.package,
+                        receipt,
+                        status
+                            .source_capture
+                            .as_ref()
+                            .map_or(&[], |capture| capture.profiles()),
+                        refused_profiles,
+                        Operand::Text(status.operation_key.to_hex()),
+                    ));
+                }
+                backend_library::IndexOperationState::Failed {
+                    reason,
+                    detail,
+                    compiler_failure,
+                } => {
+                    let operand = Operand::Text(status.operation_key.to_hex());
+                    self.fault = compiler_failure
+                        .as_ref()
+                        .map(|failure| Fault::compiler_refusal(failure, operand.clone()))
+                        .or_else(|| {
+                            (*reason != backend_library::IndexOperationFailureReason::Cancelled)
+                                .then(|| {
+                                    Fault::new(
+                                        crate::FaultSlug::Rejected,
+                                        operand,
+                                        crate::Cause::new(
+                                            crate::CauseSlug::Refused,
+                                            detail.as_str(),
+                                        ),
+                                        crate::Affordance::None,
+                                    )
+                                })
+                        });
+                }
+                _ => {}
+            }
+        }
         self.index_operation = Some(index_operation);
         self
     }
@@ -794,16 +863,25 @@ pub fn product_view(reply: &SurfaceReply) -> ProductView {
 
 /// Attaches the caller's package to metadata failures without inventing SDK causes.
 #[must_use]
-pub fn product_view_for_command(command: &backend_library::SurfaceCommand, reply: &SurfaceReply) -> ProductView {
+pub fn product_view_for_command(
+    command: &backend_library::SurfaceCommand,
+    reply: &SurfaceReply,
+) -> ProductView {
     let mut view = product_view(reply);
     if let backend_library::SurfaceCommand::Dependencies { package }
-        | backend_library::SurfaceCommand::Dependents { package } = command
+    | backend_library::SurfaceCommand::Dependents { package } = command
         && let Some(fault) = view.fault.take()
     {
-        view.fault = Some(fault.about(Operand::Coordinate(crate::Coordinate::new(package.as_str())))
-            .with_affordance(crate::Affordance::UseCommand {
-                name: "package", args: Box::new([package.as_str().to_owned()]),
-            }));
+        view.fault = Some(
+            fault
+                .about(Operand::Coordinate(crate::Coordinate::new(
+                    package.as_str(),
+                )))
+                .with_affordance(crate::Affordance::UseCommand {
+                    name: "package",
+                    args: Box::new([package.as_str().to_owned()]),
+                }),
+        );
     }
     view
 }
@@ -1169,8 +1247,12 @@ fn index_terminal_view(terminal: &IndexJobTerminal) -> ProductView {
         tags.push(detail.to_owned());
     }
     if let IndexJobOutcome::PartiallyPublished(partial) = &terminal.outcome {
-        tags.push(Fault::partial_publication(partial, Operand::Text(index_ticket_json(&terminal.ticket)))
-            .cause().sentence().to_owned());
+        tags.push(
+            Fault::partial_publication(partial, Operand::Text(index_ticket_json(&terminal.ticket)))
+                .cause()
+                .sentence()
+                .to_owned(),
+        );
     }
     if let IndexJobOutcome::RefusedWithCompilerFailure { failure, .. } = &terminal.outcome {
         let fault =
@@ -3860,13 +3942,25 @@ mod tests {
         let job = view.index_job().expect("typed job projection");
         assert_eq!(job.ticket(), Some(&ticket));
         let markdown = crate::markdown::product(&view);
-        let action = markdown.split("poll with `").nth(1).expect("executable poll")
-            .split('`').next().expect("complete action");
+        let action = markdown
+            .split("poll with `")
+            .nth(1)
+            .expect("executable poll")
+            .split('`')
+            .next()
+            .expect("complete action");
         let action: serde_json::Value = serde_json::from_str(action).expect("actual poll JSON");
-        assert_eq!(action, job.poll_affordance().expect("poll").tool_call().expect("tool"));
+        assert_eq!(
+            action,
+            job.poll_affordance()
+                .expect("poll")
+                .tool_call()
+                .expect("tool")
+        );
         assert_eq!(action["arguments"]["after_sequence"], 5);
-        let roundtrip: backend_library::IndexJobTicket = serde_json::from_value(
-            action["arguments"]["ticket"].clone()).expect("exact owner ticket");
+        let roundtrip: backend_library::IndexJobTicket =
+            serde_json::from_value(action["arguments"]["ticket"].clone())
+                .expect("exact owner ticket");
         assert_eq!(roundtrip, ticket);
         assert!(crate::markdown::product(&view).contains(&job.ticket_json().expect("ticket")));
 

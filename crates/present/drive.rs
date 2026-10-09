@@ -192,6 +192,20 @@ pub trait Engine {
     ///
     /// Returns the transport or admission failure the endpoint produced.
     fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError>;
+
+    /// Accepts or reconciles an index request. Product adapters bind this to
+    /// the shared client's durable caller journal; in-memory engines may use
+    /// the existing immediate ticket contract without filesystem state.
+    fn index(
+        &mut self,
+        package: backend_library::PackageReference,
+        execution_intent: CompileExecutionIntent,
+    ) -> Result<SurfaceReply, ClientError> {
+        self.surface(SurfaceCommand::IndexStart {
+            package,
+            execution_intent,
+        })
+    }
 }
 
 /// One answer, in the shared presentation vocabulary.
@@ -280,12 +294,12 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
         }
         Request::Shelf => shelf(engine),
         Request::Status => status(engine),
-        Request::Index(path) => intent(engine, path, Some(CompileExecutionIntent::Interactive)),
+        Request::Index(path) => index(engine, path, CompileExecutionIntent::Interactive),
         Request::IndexWithExecutionIntent {
             path,
             execution_intent,
-        } => intent(engine, path, Some(*execution_intent)),
-        Request::Remove(path) => intent(engine, path, None),
+        } => index(engine, path, *execution_intent),
+        Request::Remove(path) => remove(engine, path),
         Request::Page(at) => page(engine, at).map(Box::new).map(Answer::Page),
         Request::Source(at) => source(engine, at),
         Request::Neighbourhood {
@@ -412,32 +426,31 @@ fn status(engine: &mut dyn Engine) -> Result<Answer, Fault> {
     let report = engine
         .health()
         .map_err(|error| Fault::from_client_error(&error, Operand::Whole))?;
-    Ok(Answer::Status(Box::new(Status::from_health_reply(&report, None))))
+    Ok(Answer::Status(Box::new(Status::from_health_reply(
+        &report, None,
+    ))))
 }
 
-fn intent(
+fn index(
     engine: &mut dyn Engine,
     path: &str,
-    add: Option<CompileExecutionIntent>,
+    execution_intent: CompileExecutionIntent,
 ) -> Result<Answer, Fault> {
-    let reply = read(
-        engine,
-        match add {
-            Some(CompileExecutionIntent::Interactive) => Probe::Index(path),
-            Some(execution_intent) => Probe::IndexWithExecutionIntent {
-                path,
-                execution_intent,
-            },
-            None => Probe::Remove(path),
-        },
-    )?;
-    let (heading, accepted) = match reply.reply {
-        CommandReply::Added(id) if add.is_some() => ("index", id),
-        CommandReply::Removed(id) if add.is_none() => ("remove", id),
-        _ => return Err(shape("index")),
+    let package = backend_library::PackageReference::parse(path.to_owned())
+        .map_err(|error| Fault::admission(error, Operand::Path(path.to_owned())))?;
+    let reply = engine
+        .index(package, execution_intent)
+        .map_err(|error| Fault::from_client_error(&error, Operand::Path(path.to_owned())))?;
+    Ok(Answer::Product(Box::new(crate::product_view(&reply))))
+}
+
+fn remove(engine: &mut dyn Engine, path: &str) -> Result<Answer, Fault> {
+    let reply = read(engine, Probe::Remove(path))?;
+    let CommandReply::Removed(accepted) = reply.reply else {
+        return Err(shape("remove"));
     };
     Ok(Answer::Product(Box::new(accepted_view(
-        heading, path, accepted,
+        "remove", path, accepted,
     ))))
 }
 
@@ -523,7 +536,9 @@ fn surface(engine: &mut dyn Engine, command: &SurfaceCommand) -> Result<Answer, 
     let reply = engine
         .surface(command.clone())
         .map_err(|error| Fault::from_client_error(&error, Operand::Whole))?;
-    Ok(Answer::Product(Box::new(crate::product_view_for_command(command, &reply))))
+    Ok(Answer::Product(Box::new(crate::product_view_for_command(
+        command, &reply,
+    ))))
 }
 
 fn snapshot(engine: &mut dyn Engine, probe: Probe<'_>, what: &str) -> Result<ViewSnapshot, Fault> {

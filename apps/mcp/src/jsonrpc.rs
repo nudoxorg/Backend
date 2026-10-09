@@ -104,11 +104,11 @@ pub(super) trait Product: Engine {
 /// this crate. Its bodies carry no judgement: every arm forwards one probe to
 /// the matching session method, and every decision about which probes an answer
 /// needs is made once, in the shared driver.
-pub(super) struct SessionProduct(Session);
+pub(super) struct SessionProduct(Session, backend_runtime::WorkspacePaths);
 
 impl SessionProduct {
-    pub(super) const fn new(session: Session) -> Self {
-        Self(session)
+    pub(super) const fn new(session: Session, paths: backend_runtime::WorkspacePaths) -> Self {
+        Self(session, paths)
     }
 
     fn into_session(self) -> Session {
@@ -117,6 +117,15 @@ impl SessionProduct {
 }
 
 impl Engine for SessionProduct {
+    fn index(
+        &mut self,
+        package: PackageReference,
+        execution_intent: CompileExecutionIntent,
+    ) -> Result<SurfaceReply, ClientError> {
+        backend_client::index_with_journal(&self.1, package, execution_intent, |command| {
+            self.0.surface(command)
+        })
+    }
     fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
         self.0.revision().map(|revision| revision.root)
     }
@@ -161,7 +170,9 @@ impl Engine for SessionProduct {
     }
 
     fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
-        self.0.surface(command)
+        backend_client::surface_with_index_journal(&self.1, command, |command| {
+            self.0.surface(command)
+        })
     }
 }
 
@@ -241,7 +252,7 @@ impl reconnect::Endpoint for SessionEndpoint {
         if let Some(state) = state {
             session.restore_continuation_state(state);
         }
-        Ok(SessionProduct::new(session))
+        Ok(SessionProduct::new(session, self.paths.clone()))
     }
 
     fn retire(&mut self, previous: Self::Product) {
@@ -799,7 +810,10 @@ impl<P: Product> Server<P> {
     ) -> Result<Value, RpcError> {
         let command = match name {
             INDEX_START_TOOL => {
-                no_extra(arguments, &["package", "execution_intent", "detail"])?;
+                no_extra(
+                    arguments,
+                    &["package", "execution_intent", "operation_key", "detail"],
+                )?;
                 let spelling = string(arguments, "package")?.to_owned();
                 let package = PackageReference::parse(spelling)
                     .map_err(|error| RpcError::invalid(error.to_string()))?;
@@ -810,13 +824,46 @@ impl<P: Product> Server<P> {
                             RpcError::invalid("execution_intent must be interactive or background")
                         })?,
                 };
-                SurfaceCommand::IndexStart {
-                    package,
-                    execution_intent,
+                match arguments.get("operation_key") {
+                    Some(key) => SurfaceCommand::IndexOperationStart {
+                        operation_key:
+                            serde_json::from_value::<backend_library::IndexOperationKey>(
+                                key.clone(),
+                            )
+                            .map_err(|error| RpcError::invalid(format!("operation_key: {error}")))?,
+                        package,
+                        execution_intent,
+                    },
+                    None => SurfaceCommand::IndexStart {
+                        package,
+                        execution_intent,
+                    },
                 }
             }
             INDEX_PROGRESS_TOOL => {
-                no_extra(arguments, &["ticket", "after_sequence", "detail"])?;
+                no_extra(
+                    arguments,
+                    &["ticket", "after_sequence", "operation_key", "detail"],
+                )?;
+                if let Some(key) = arguments.get("operation_key") {
+                    if arguments.contains_key("ticket") || arguments.contains_key("after_sequence")
+                    {
+                        return Err(RpcError::invalid(
+                            "use either operation_key or ticket with after_sequence",
+                        ));
+                    }
+                    let operation_key =
+                        serde_json::from_value::<backend_library::IndexOperationKey>(key.clone())
+                            .map_err(|error| RpcError::invalid(format!("operation_key: {error}")))?;
+                    let command = SurfaceCommand::IndexOperationStatus { operation_key };
+                    let reply = self.product.surface(command.clone()).map_err(|error| {
+                        RpcError::from_fault(&Fault::from_client_error(
+                            &error,
+                            surface_error_operand(&command),
+                        ))
+                    })?;
+                    return self.surface_reply_result(&command, &reply, detail, context);
+                }
                 let ticket = index_job_ticket(arguments)?;
                 let after_sequence = match arguments.get("after_sequence") {
                     None => 0,
@@ -1610,7 +1657,8 @@ impl RpcError {
                 backend_present::Operand::Argument("cursor".to_owned()),
             )),
             detail: Some(
-                "the continuation belongs to an older immutable revision; restart the query".to_owned(),
+                "the continuation belongs to an older immutable revision; restart the query"
+                    .to_owned(),
             ),
             structured: None,
         }

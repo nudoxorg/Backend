@@ -7,10 +7,8 @@
 //! same exit code table.
 //!
 //! Startup can return a typed pending observation before any command is sent.
-//! `index` also reports readiness progress. When someone is
-//! watching, it rewrites a single readiness line in place until the lanes
-//! agree, so the honest answer — this takes time — is visible rather than
-//! implied by silence.
+//! `index` returns the owner's exact acceptance and progress identity. The
+//! client does not hold that acknowledgement until global readiness settles.
 
 use crate::invoke::{self, SURFACE_VERB};
 use crate::options::{self, Options};
@@ -22,10 +20,8 @@ use backend_present::{Request, lower, lower_surface_json};
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-/// How long `index` watches readiness before handing the reader the line.
-const PROGRESS_LIMIT: Duration = Duration::from_secs(20);
 /// One command invocation waits for the shared owner under the runtime's
 /// existing bounded cold-start deadline. Progress is reported on stderr; if
 /// the deadline expires, the original command remains explicitly unsent.
@@ -61,7 +57,11 @@ pub fn main_entry() -> ExitCode {
     match run_words(&words, &options) {
         Ok((output, outcome)) => {
             let written = emit(&output);
-            if written == ExitCode::SUCCESS { outcome } else { written }
+            if written == ExitCode::SUCCESS {
+                outcome
+            } else {
+                written
+            }
         }
         Err(fault) => report(&fault, &options),
     }
@@ -130,7 +130,8 @@ fn run_words(words: &[String], options: &Options) -> Result<(String, ExitCode), 
             let _ = writeln!(
                 stderr,
                 "local startup: starting (this platform uses the existing synchronous setup)"
-            ).and_then(|()| stderr.flush());
+            )
+            .and_then(|()| stderr.flush());
             backend_runtime::ensure_locald(&workspace)
         }
     };
@@ -169,10 +170,7 @@ fn run_words(words: &[String], options: &Options) -> Result<(String, ExitCode), 
     })?;
     // Startup is a single bounded wait; the planned command is submitted once,
     // only after an endpoint connection succeeded.
-    let answer = run::execute(&mut session, &request)?;
-    if let Request::Index(path) = &request {
-        watch_readiness(&mut session, path, options);
-    }
+    let answer = run::execute_in_workspace(&mut session, &request, &workspace)?;
     render_admitted_answer(&session, &answer, options)
         .map(|output| (output, render::answer_exit_code(&answer)))
 }
@@ -296,39 +294,6 @@ fn workspace(options: &Options) -> Result<backend_runtime::WorkspacePaths, Fault
             Affordance::None,
         )
     })
-}
-
-/// Rewrites one readiness line while an index request settles.
-fn watch_readiness(session: &mut Session, path: &str, options: &Options) {
-    if options.is_machine() || !options::stderr_is_terminal() {
-        return;
-    }
-    let deadline = Instant::now() + PROGRESS_LIMIT;
-    let mut stderr = std::io::stderr().lock();
-    let name = PathBuf::from(path).file_name().map_or_else(
-        || path.to_owned(),
-        |name| name.to_string_lossy().into_owned(),
-    );
-    while Instant::now() < deadline {
-        let Ok(report) = session.health() else {
-            break;
-        };
-        let status = backend_present::Status::from_report(&report, None);
-        let line = format!("\r\u{1b}[2K{} {}", name, status.coverage().render());
-        if stderr
-            .write_all(line.as_bytes())
-            .and_then(|()| stderr.flush())
-            .is_err()
-        {
-            return;
-        }
-        if status.readiness() == "ready" {
-            break;
-        }
-        std::thread::yield_now();
-    }
-    let _ = stderr.write_all(b"\r\x1b[2K");
-    let _ = stderr.flush();
 }
 
 fn emit(output: &str) -> ExitCode {

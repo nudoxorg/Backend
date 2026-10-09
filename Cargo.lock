@@ -949,12 +949,15 @@ version = "0.2.0"
 dependencies = [
  "backend-engine",
  "backend-library",
+ "backend-platform",
  "backend-replication",
+ "backend-runtime",
  "backend-semantic",
  "base64 0.22.1",
  "blake3",
  "flate2",
  "hashlink",
+ "serde",
  "serde_json",
  "tokio",
 ]

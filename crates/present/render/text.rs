@@ -593,12 +593,30 @@ pub fn product(view: &ProductView, theme: Theme) -> String {
 }
 
 fn index_job_footer(view: &ProductView, lines: &mut Lines, theme: Theme) {
+    if let Some(observation) = view.index_operation() {
+        let key = match observation {
+            backend_library::IndexOperationObservation::Known(status) => status.operation_key,
+            backend_library::IndexOperationObservation::Unknown { operation_key }
+            | backend_library::IndexOperationObservation::OutsideReceiptWindow {
+                operation_key,
+                ..
+            } => *operation_key,
+        };
+        lines.push(theme.paint(
+            Style::Dim,
+            &format!("  Saved operation; backend index_progress --operation-key {key}"),
+        ));
+    }
     let Some(job) = view.index_job() else {
         return;
     };
     if let Some(next) = job.poll_affordance().and_then(|step| step.shell()) {
-        if matches!(job, IndexJobProjection::Cancellation(_)) && let Some(ticket) = job.ticket_json() {
-            lines.push(format!("  cancellation was requested; cancellation ticket: {ticket}"));
+        if matches!(job, IndexJobProjection::Cancellation(_))
+            && let Some(ticket) = job.ticket_json()
+        {
+            lines.push(format!(
+                "  cancellation was requested; cancellation ticket: {ticket}"
+            ));
         }
         lines.push(theme.paint(Style::Dim, &format!("  Operation in flight; {next}")));
         return;

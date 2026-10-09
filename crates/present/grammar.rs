@@ -1182,12 +1182,20 @@ pub const GRAMMARS: [CommandGrammar; 53] = [
             ArgumentKind::PackageReference,
             "Local package path or exact version-pinned package URL.",
         )],
-        options: &[ArgumentSpec::optional_with_json_name(
-            "execution-intent",
-            "execution_intent",
-            ArgumentKind::ExecutionIntent,
-            "Compilation class; defaults to interactive.",
-        )],
+        options: &[
+            ArgumentSpec::optional_with_json_name(
+                "execution-intent",
+                "execution_intent",
+                ArgumentKind::ExecutionIntent,
+                "Compilation class; defaults to interactive.",
+            ),
+            ArgumentSpec::optional_with_json_name(
+                "operation-key",
+                "operation_key",
+                ArgumentKind::Text,
+                "Optional caller-persisted durable operation key; replay the exact same request and key after interrupted delivery.",
+            ),
+        ],
         when: "Use to start owner-managed indexing without holding this client open; keep the exact returned ticket for progress or cancellation.",
     },
     CommandGrammar {
@@ -1218,17 +1226,25 @@ pub const GRAMMARS: [CommandGrammar; 53] = [
         name: "index_progress",
         tool: "backend.index_progress",
         aliases: &[],
-        positional: &[ArgumentSpec::required(
+        positional: &[ArgumentSpec::optional(
             "ticket",
             ArgumentKind::IndexJobTicket,
             "Exact JSON ticket returned by index_start; quote it as one shell argument and do not edit its id, epoch, or package.",
         )],
-        options: &[ArgumentSpec::optional_with_json_name(
-            "after-sequence",
-            "after_sequence",
-            ArgumentKind::Sequence,
-            "Return events after this sequence; use next_sequence from the previous observation.",
-        )],
-        when: "Use for one immediate bounded observation; unknown means the ticket is outside the current owner's active or retained set.",
+        options: &[
+            ArgumentSpec::optional_with_json_name(
+                "after-sequence",
+                "after_sequence",
+                ArgumentKind::Sequence,
+                "Return events after this sequence; use next_sequence from the previous observation.",
+            ),
+            ArgumentSpec::optional_with_json_name(
+                "operation-key",
+                "operation_key",
+                ArgumentKind::Text,
+                "Durable operation key returned by add; use this instead of a ticket to reconcile across owner restarts.",
+            ),
+        ],
+        when: "Use for one immediate bounded observation of an exact ticket or durable operation key. Unknown and unresolved observations do not establish publication.",
     },
 ];
