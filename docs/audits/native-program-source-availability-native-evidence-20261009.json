@@ -1,0 +1,969 @@
+{
+  "schema": "nudox.native-program-availability.checkpoint.v1",
+  "reviewed_utc": "2026-10-09T00:35:50.376537+00:00",
+  "canonical_base": "0b3a105c318d985a0e85f31904378ec7c737456d",
+  "source_replay": {
+    "worktree": "/private/tmp/sol61-native-program-availability-canonical0b3a-20261009",
+    "commit": "4be8bbe712407623ece0f69bafbccf3be35a25d8",
+    "tree": "80bfe4c3f8ad4b1b576be5278e8a9ef3e4c8a07d",
+    "base": "0b3a105c318d985a0e85f31904378ec7c737456d",
+    "base_tree": "8f8d48af9b599cdb7e5d33f05df4b8af7272312a",
+    "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+    "clean": true
+  },
+  "original_cohort": {
+    "passed": 27,
+    "failed": 1,
+    "ignored": 0,
+    "source": {
+      "commit": "9d1fe32a5fd4511e6ccb14960d772d11bf29bbb3",
+      "tree": "501917eb03afa814384aeed287923977bed43205",
+      "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+      "clean": true
+    }
+  },
+  "corrected_fixture_supplement": {
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "source": {
+      "commit": "8cfd92a481b8afac3b5cc9007d19e907fe2a8080",
+      "tree": "114a90c353665219caf051abfa667715b0d599b2",
+      "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+      "clean": true
+    }
+  },
+  "scope": "27 original passes plus one corrected-fixture supplement; not a single 28-pass cohort. Production bytes unchanged between those test epochs.",
+  "root_independent_checks": {
+    "raw_receipt_hashes": 22,
+    "raw_log_hashes": 44,
+    "actual_unique_success_names": 28,
+    "exact_26_postimages_and_entire_source_tree": true,
+    "cargo_lock_unchanged": true
+  },
+  "tested_source_postimages": [
+    {
+      "path": "crates/engine/src/application/compiler.rs",
+      "canonical_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "a61aa74318f010327a37cdd00f21ba1553e82d76"
+      },
+      "reviewed_4262_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "a61aa74318f010327a37cdd00f21ba1553e82d76"
+      },
+      "canonical_preimage_matches_original": true,
+      "replayed_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "0a4616125b0a80614d9e8e43da6ae5612babba25"
+      },
+      "tested_8cfd_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "0a4616125b0a80614d9e8e43da6ae5612babba25"
+      },
+      "postimage_matches_tested": true,
+      "bytes": 238908,
+      "sha256": "a5742bb426a81c6c40b9a32d1d2039f3c64ec6dbc4b14b5c3b28e5a4861b1fc2"
+    },
+    {
+      "path": "crates/engine/src/application/runtime.rs",
+      "canonical_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "b15f963728f9ee935f702408ac63c43f5dd846dc"
+      },
+      "reviewed_4262_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "b15f963728f9ee935f702408ac63c43f5dd846dc"
+      },
+      "canonical_preimage_matches_original": true,
+      "replayed_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "ecdbf1f48a3fdb59a7a10344ad6ebca423136b3e"
+      },
+      "tested_8cfd_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "ecdbf1f48a3fdb59a7a10344ad6ebca423136b3e"
+      },
+      "postimage_matches_tested": true,
+      "bytes": 239751,
+      "sha256": "5657f596b2e310d2caa62e82dee1863d2f06ef017633420c1b45b8b52a2633b7"
+    },
+    {
+      "path": "crates/local-service/src/builtin.rs",
+      "canonical_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "6e226b4f61f3efcb2f640e60cc9023911fe478d9"
+      },
+      "reviewed_4262_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "6e226b4f61f3efcb2f640e60cc9023911fe478d9"
+      },
+      "canonical_preimage_matches_original": true,
+      "replayed_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "be0c45ad7a054ae5bcadf6afa4a81b11c5f040c5"
+      },
+      "tested_8cfd_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "be0c45ad7a054ae5bcadf6afa4a81b11c5f040c5"
+      },
+      "postimage_matches_tested": true,
+      "bytes": 117200,
+      "sha256": "270e6b1296a52dae405430f5258e877045e18626033b8edc6a30bd902febdc17"
+    },
+    {
+      "path": "crates/local-service/src/builtin/commands/fixtures/ripgrep-installed-c001/COPYING",
+      "canonical_preimage": null,
+      "reviewed_4262_preimage": null,
+      "canonical_preimage_matches_original": true,
+      "replayed_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "bb9c20a094e41b7632d63bcff20c0b4b95e80777"
+      },
+      "tested_8cfd_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "bb9c20a094e41b7632d63bcff20c0b4b95e80777"
+      },
+      "postimage_matches_tested": true,
+      "bytes": 126,
+      "sha256": "01c266bced4a434da0051174d6bee16a4c82cf634e2679b6155d40d75012390f"
+    },
+    {
+      "path": "crates/local-service/src/builtin/commands/fixtures/ripgrep-installed-c001/LICENSE-MIT",
+      "canonical_preimage": null,
+      "reviewed_4262_preimage": null,
+      "canonical_preimage_matches_original": true,
+      "replayed_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "3b0a5dc09c1e16357459ddc9182a50f360f3cdba"
+      },
+      "tested_8cfd_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "3b0a5dc09c1e16357459ddc9182a50f360f3cdba"
+      },
+      "postimage_matches_tested": true,
+      "bytes": 1081,
+      "sha256": "0f96a83840e146e43c0ec96a22ec1f392e0680e6c1226e6f3ba87e0740af850f"
+    },
+    {
+      "path": "crates/local-service/src/builtin/commands/fixtures/ripgrep-installed-c001/README.md",
+      "canonical_preimage": null,
+      "reviewed_4262_preimage": null,
+      "canonical_preimage_matches_original": true,
+      "replayed_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "300df757a2e035b1c91b4142b5516e684ef41f9d"
+      },
+      "tested_8cfd_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "300df757a2e035b1c91b4142b5516e684ef41f9d"
+      },
+      "postimage_matches_tested": true,
+      "bytes": 1555,
+      "sha256": "3b5fb30caf31ce7ccac2b3d9ec413d4da7ca6c644694ba9eb79815aef495d6d5"
+    },
+    {
+      "path": "crates/local-service/src/builtin/commands/fixtures/ripgrep-installed-c001/UNLICENSE",
+      "canonical_preimage": null,
+      "reviewed_4262_preimage": null,
+      "canonical_preimage_matches_original": true,
+      "replayed_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "68a49daad8ff7e35068f2b7a97d643aab440eaec"
+      },
+      "tested_8cfd_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "68a49daad8ff7e35068f2b7a97d643aab440eaec"
+      },
+      "postimage_matches_tested": true,
+      "bytes": 1211,
+      "sha256": "7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c"
+    },
+    {
+      "path": "crates/local-service/src/builtin/commands/fixtures/ripgrep-installed-c001/actual-compilation-manifest.bin",
+      "canonical_preimage": null,
+      "reviewed_4262_preimage": null,
+      "canonical_preimage_matches_original": true,
+      "replayed_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "85b833dc54ec4ee1399da6a994477ff147e1f2f9"
+      },
+      "tested_8cfd_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "85b833dc54ec4ee1399da6a994477ff147e1f2f9"
+      },
+      "postimage_matches_tested": true,
+      "bytes": 47096,
+      "sha256": "07a4af529054bc79e4bc16cfe9d7525f2790ab4807989151a1da937ac857a79b"
+    },
+    {
+      "path": "crates/local-service/src/builtin/commands/fixtures/ripgrep-installed-c001/main-semantic-image.bin",
+      "canonical_preimage": null,
+      "reviewed_4262_preimage": null,
+      "canonical_preimage_matches_original": true,
+      "replayed_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "483be80101752e569b48638f4613e9104e9ee395"
+      },
+      "tested_8cfd_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "483be80101752e569b48638f4613e9104e9ee395"
+      },
+      "postimage_matches_tested": true,
+      "bytes": 63739,
+      "sha256": "a728481ee4653726848cdd8a94efba24a31017bb4062f2a7ab27e5f01b366e09"
+    },
+    {
+      "path": "crates/local-service/src/builtin/commands/fixtures/ripgrep-installed-c001/parse-semantic-image.bin",
+      "canonical_preimage": null,
+      "reviewed_4262_preimage": null,
+      "canonical_preimage_matches_original": true,
+      "replayed_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "d30dc3181bdd5ff16ccbd17036d2cadfd6b19fed"
+      },
+      "tested_8cfd_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "d30dc3181bdd5ff16ccbd17036d2cadfd6b19fed"
+      },
+      "postimage_matches_tested": true,
+      "bytes": 75253,
+      "sha256": "ee55dca461f4246af2e2319afae24b328f01626480994a9030a135113d717cf2"
+    },
+    {
+      "path": "crates/local-service/src/builtin/commands/fixtures/ripgrep-installed-c001/provenance.json",
+      "canonical_preimage": null,
+      "reviewed_4262_preimage": null,
+      "canonical_preimage_matches_original": true,
+      "replayed_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "94b36f922c25d3e1e0e79bad3e3e481045419c3f"
+      },
+      "tested_8cfd_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "94b36f922c25d3e1e0e79bad3e3e481045419c3f"
+      },
+      "postimage_matches_tested": true,
+      "bytes": 3933,
+      "sha256": "c3ec538dee6fbfda4a9afaf3bd01b8f55ebd3f3e90341e673e6dec759c96a9d5"
+    },
+    {
+      "path": "crates/local-service/src/builtin/commands/selected_source_references_tests.rs",
+      "canonical_preimage": null,
+      "reviewed_4262_preimage": null,
+      "canonical_preimage_matches_original": true,
+      "replayed_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "2de0e8347a2477cad48ca9fbcf25f7cee7509b04"
+      },
+      "tested_8cfd_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "2de0e8347a2477cad48ca9fbcf25f7cee7509b04"
+      },
+      "postimage_matches_tested": true,
+      "bytes": 42795,
+      "sha256": "f764a6896581a13694162f9f681a54fc78f00f4d6c1059c8eba27ac3f07c5b33"
+    },
+    {
+      "path": "crates/local-service/src/builtin/commands/semantic_query.rs",
+      "canonical_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "7fea502c0c931284d681daea879a6d6842c33607"
+      },
+      "reviewed_4262_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "7fea502c0c931284d681daea879a6d6842c33607"
+      },
+      "canonical_preimage_matches_original": true,
+      "replayed_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "5fc90f45903a838e006f9afc6f69cd6a8e43606f"
+      },
+      "tested_8cfd_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "5fc90f45903a838e006f9afc6f69cd6a8e43606f"
+      },
+      "postimage_matches_tested": true,
+      "bytes": 417713,
+      "sha256": "944379b0eb81bac6b14f83a88e51e895f8da83a8f824efb48d7a27432f9e573f"
+    },
+    {
+      "path": "crates/local-service/src/builtin/generation_residence.rs",
+      "canonical_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "90c1768a5bf9231340d1ce8412dea599304d6b8e"
+      },
+      "reviewed_4262_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "90c1768a5bf9231340d1ce8412dea599304d6b8e"
+      },
+      "canonical_preimage_matches_original": true,
+      "replayed_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "50b54b20cfef599d6022e16a17982b3ada020fca"
+      },
+      "tested_8cfd_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "50b54b20cfef599d6022e16a17982b3ada020fca"
+      },
+      "postimage_matches_tested": true,
+      "bytes": 109268,
+      "sha256": "1a79b8b080a5b23cdf7337634008459c22c2bca7b2236ab64d80982cc8e38945"
+    },
+    {
+      "path": "crates/local-service/src/builtin/lanes.rs",
+      "canonical_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "cf24dfe51085a73fce6ccd8042f21503b1406e16"
+      },
+      "reviewed_4262_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "cf24dfe51085a73fce6ccd8042f21503b1406e16"
+      },
+      "canonical_preimage_matches_original": true,
+      "replayed_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "19a5db562b8c63c56393d41a045a2df343741f72"
+      },
+      "tested_8cfd_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "19a5db562b8c63c56393d41a045a2df343741f72"
+      },
+      "postimage_matches_tested": true,
+      "bytes": 6956,
+      "sha256": "00ce0933baaf5778967c477e1d3b2a4cb1d26856255077a61ad621aba299ce61"
+    },
+    {
+      "path": "crates/local-service/src/builtin/semantic_authority.rs",
+      "canonical_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "a6075c4d0be91d9f5769bc490542fcc0895f287d"
+      },
+      "reviewed_4262_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "a6075c4d0be91d9f5769bc490542fcc0895f287d"
+      },
+      "canonical_preimage_matches_original": true,
+      "replayed_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "7d270e2ef212580637f6f8ee58314be11e592df6"
+      },
+      "tested_8cfd_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "7d270e2ef212580637f6f8ee58314be11e592df6"
+      },
+      "postimage_matches_tested": true,
+      "bytes": 228786,
+      "sha256": "90d112d0eb765f9b4ad319c7229c370b5aa1a5da48e1edf2ceace72148f90330"
+    },
+    {
+      "path": "crates/local-service/src/builtin/view_build/call_join.rs",
+      "canonical_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "7bc74aaca8cf8b61e2e7f047de382ab6ee1679ef"
+      },
+      "reviewed_4262_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "7bc74aaca8cf8b61e2e7f047de382ab6ee1679ef"
+      },
+      "canonical_preimage_matches_original": true,
+      "replayed_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "b7874a77c4ee7c2168cc51970f22766c0f456c8a"
+      },
+      "tested_8cfd_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "b7874a77c4ee7c2168cc51970f22766c0f456c8a"
+      },
+      "postimage_matches_tested": true,
+      "bytes": 103861,
+      "sha256": "ebbbf05292b8b6476a570a3f35154638c0ebfb9802aad50231ecba52d5183f49"
+    },
+    {
+      "path": "crates/local-service/src/builtin/view_build/mod.rs",
+      "canonical_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "2f49a6e4f55cea6d5de292d64662b77e73fa62ac"
+      },
+      "reviewed_4262_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "2f49a6e4f55cea6d5de292d64662b77e73fa62ac"
+      },
+      "canonical_preimage_matches_original": true,
+      "replayed_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "0e93ebe0d0b328e4f03345a980df060ad3f9947c"
+      },
+      "tested_8cfd_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "0e93ebe0d0b328e4f03345a980df060ad3f9947c"
+      },
+      "postimage_matches_tested": true,
+      "bytes": 113216,
+      "sha256": "3ff1909908b412c4bdeb8c73c496eff8e11cea37baf8b117d5cd13e81f521ec1"
+    },
+    {
+      "path": "crates/local-service/src/builtin/view_build/query.rs",
+      "canonical_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "d1ab41c2d555909999dc3274414670aba1310d4f"
+      },
+      "reviewed_4262_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "d1ab41c2d555909999dc3274414670aba1310d4f"
+      },
+      "canonical_preimage_matches_original": true,
+      "replayed_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "3b238d90f8187a230fbb8f601dade285e43af8f6"
+      },
+      "tested_8cfd_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "3b238d90f8187a230fbb8f601dade285e43af8f6"
+      },
+      "postimage_matches_tested": true,
+      "bytes": 32466,
+      "sha256": "a4fd56bc2de04c8ccf851011fa6c460643821e66dd99fa525a1ae2f3f0cb97a7"
+    },
+    {
+      "path": "crates/local-service/src/builtin/view_build/semantic.rs",
+      "canonical_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "06b8688284aee5f8e7c0df056bda9149d2889cdd"
+      },
+      "reviewed_4262_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "06b8688284aee5f8e7c0df056bda9149d2889cdd"
+      },
+      "canonical_preimage_matches_original": true,
+      "replayed_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "9211cc083bf1b9d9f131c0b74c6a85abc568b30a"
+      },
+      "tested_8cfd_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "9211cc083bf1b9d9f131c0b74c6a85abc568b30a"
+      },
+      "postimage_matches_tested": true,
+      "bytes": 70435,
+      "sha256": "9d0f4256a87ae3aecc574fe1f2d11fbcf9bcc977894462c9e29a06c6162b7e92"
+    },
+    {
+      "path": "crates/local-service/src/builtin/view_build/source_availability.rs",
+      "canonical_preimage": null,
+      "reviewed_4262_preimage": null,
+      "canonical_preimage_matches_original": true,
+      "replayed_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "59aa5a23d9d41b7f87e16481d14b7b222a9cc680"
+      },
+      "tested_8cfd_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "59aa5a23d9d41b7f87e16481d14b7b222a9cc680"
+      },
+      "postimage_matches_tested": true,
+      "bytes": 13227,
+      "sha256": "6ec919be8a40d1acbb506afa1c1a7efbb687989540ffe8fb4503149456159cfc"
+    },
+    {
+      "path": "crates/semantic/src/ir/mod.rs",
+      "canonical_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "c39c50a18c71098d4fe107899d2fcc3093ec010b"
+      },
+      "reviewed_4262_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "c39c50a18c71098d4fe107899d2fcc3093ec010b"
+      },
+      "canonical_preimage_matches_original": true,
+      "replayed_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "11d65fae245926aa6ed7ea6f84d32f383c0c09a2"
+      },
+      "tested_8cfd_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "11d65fae245926aa6ed7ea6f84d32f383c0c09a2"
+      },
+      "postimage_matches_tested": true,
+      "bytes": 20824,
+      "sha256": "41744245f7ff54c410011b19b79ec0529d961a518619d888ab7dbd00b69402c0"
+    },
+    {
+      "path": "crates/semantic/src/ir/native_program_sources.rs",
+      "canonical_preimage": null,
+      "reviewed_4262_preimage": null,
+      "canonical_preimage_matches_original": true,
+      "replayed_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "6b514a79ad69f25d191911bbd5c1207b16fddb63"
+      },
+      "tested_8cfd_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "6b514a79ad69f25d191911bbd5c1207b16fddb63"
+      },
+      "postimage_matches_tested": true,
+      "bytes": 15813,
+      "sha256": "b2b8dce6ca5ca27886e7547575dbe14a4c6d1356e17ac93d4354567608fb4149"
+    },
+    {
+      "path": "extensions/turso/src/authority/envelope.rs",
+      "canonical_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "3f0eb36e3105c2516f54ed7ad95fd82fbe12491c"
+      },
+      "reviewed_4262_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "3f0eb36e3105c2516f54ed7ad95fd82fbe12491c"
+      },
+      "canonical_preimage_matches_original": true,
+      "replayed_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "198f360e9648c164edbc63865b4d41af67c931ea"
+      },
+      "tested_8cfd_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "198f360e9648c164edbc63865b4d41af67c931ea"
+      },
+      "postimage_matches_tested": true,
+      "bytes": 130184,
+      "sha256": "36b45663b6b0f9fc2826643aee298e77a6a0216c40a25dad2a08e7677de6a762"
+    },
+    {
+      "path": "extensions/turso/src/authority/mod.rs",
+      "canonical_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "cdd61103f00baae2ab0fb0ad1a5cd90c7464a06b"
+      },
+      "reviewed_4262_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "cdd61103f00baae2ab0fb0ad1a5cd90c7464a06b"
+      },
+      "canonical_preimage_matches_original": true,
+      "replayed_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "71c1d4454faf4a9bfde9ff3914b3bd34bf112b4f"
+      },
+      "tested_8cfd_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "71c1d4454faf4a9bfde9ff3914b3bd34bf112b4f"
+      },
+      "postimage_matches_tested": true,
+      "bytes": 121011,
+      "sha256": "d052bb4260afcf2c483f134740b9cff2c72cc2d3b4ff2767d539b7aa315d36b7"
+    },
+    {
+      "path": "extensions/turso/src/lib.rs",
+      "canonical_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "482bac8cd2050440495209cbd1bf13d4a66be32c"
+      },
+      "reviewed_4262_preimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "482bac8cd2050440495209cbd1bf13d4a66be32c"
+      },
+      "canonical_preimage_matches_original": true,
+      "replayed_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "ff8d79df3403fbe4fec98a1c178dce6356194cd9"
+      },
+      "tested_8cfd_postimage": {
+        "mode": "100644",
+        "kind": "blob",
+        "blob": "ff8d79df3403fbe4fec98a1c178dce6356194cd9"
+      },
+      "postimage_matches_tested": true,
+      "bytes": 4617,
+      "sha256": "0c93bfb1b9abc23d5502597807a3c287c5402274c79eec9f1dd483c27f339b2a"
+    }
+  ],
+  "gates": [
+    {
+      "remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-native-program-availability-0a853-native28-20261008/run-0-native_manifest_codec-attempt01/receipt.json",
+      "sha256": "30d9d2a7b7edb90ae5ac9c35c8ea0f3ba1a6edc6f1218988c52f4f30c34ee1fe",
+      "source": {
+        "commit": "9d1fe32a5fd4511e6ccb14960d772d11bf29bbb3",
+        "tree": "501917eb03afa814384aeed287923977bed43205",
+        "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+        "clean": true
+      },
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-native-program-availability-0a853-native28-20261008/build-0-semantic-lib-attempt01/images/semantic-lib",
+        "sha256": "739eb9cb8f44bdc344567dd403d6be5a3933b17fea504c8d11d4cc8566dda5b2",
+        "bytes": 36013296,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_semantic-9018ee7f88fb3a7f"
+      },
+      "accepted": true,
+      "exit": 0,
+      "test_summaries": [
+        [
+          "ok",
+          "2",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-native-program-availability-0a853-native28-20261008/run-0-native_manifest_producer-attempt01/receipt.json",
+      "sha256": "5e832bb5198915321107fa31ace488381570d3808f39ac54789c7a434dfe0a3f",
+      "source": {
+        "commit": "8cfd92a481b8afac3b5cc9007d19e907fe2a8080",
+        "tree": "114a90c353665219caf051abfa667715b0d599b2",
+        "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+        "clean": true
+      },
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-native-program-availability-0a853-native28-20261008/build-0-engine-lib-attempt02/images/engine-lib",
+        "sha256": "66b7095c441c07069e8212f9bdee1c829af044d18d5633bfa6e9c15a8183d5a3",
+        "bytes": 461578208,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_engine-d8f1fd294bc12763"
+      },
+      "accepted": true,
+      "exit": 0,
+      "test_summaries": [
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-native-program-availability-0a853-native28-20261008/run-1-native_manifest_metadata-attempt01/receipt.json",
+      "sha256": "5ba6a14dbbe8b79023d75758f2b852516713aa54a56a31cf95c08fbab9c0cd93",
+      "source": {
+        "commit": "9d1fe32a5fd4511e6ccb14960d772d11bf29bbb3",
+        "tree": "501917eb03afa814384aeed287923977bed43205",
+        "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+        "clean": true
+      },
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-native-program-availability-0a853-native28-20261008/build-1-turso-lib-attempt01/images/turso-lib",
+        "sha256": "20f51a0c2755cc60fe7992985a25fea7b80db65aade95d9e87ecbe4f25fff328",
+        "bytes": 99334648,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_extension_turso-76532cd048681b0d"
+      },
+      "accepted": true,
+      "exit": 0,
+      "test_summaries": [
+        [
+          "ok",
+          "3",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-native-program-availability-0a853-native28-20261008/run-2-native_manifest_producer-attempt01/receipt.json",
+      "sha256": "e594091477645c9dfc37ada342bd488936cc4284a9689eaa2da1e416777633ae",
+      "source": {
+        "commit": "9d1fe32a5fd4511e6ccb14960d772d11bf29bbb3",
+        "tree": "501917eb03afa814384aeed287923977bed43205",
+        "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+        "clean": true
+      },
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-native-program-availability-0a853-native28-20261008/build-2-engine-lib-attempt01/images/engine-lib",
+        "sha256": "2763f140e9b526eac61e7594f87eac9c3956132012989b4792e7d9dc47891224",
+        "bytes": 461597232,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_engine-d8f1fd294bc12763"
+      },
+      "accepted": false,
+      "exit": 101,
+      "test_summaries": [
+        [
+          "FAILED",
+          "0",
+          "1",
+          "0"
+        ]
+      ]
+    },
+    {
+      "remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-native-program-availability-0a853-native28-20261008/run-3-native_manifest_residence-attempt01/receipt.json",
+      "sha256": "4be4724b1922b8c59ef296153a2ea7a2c489a5dafc208acb56285af90e4df64f",
+      "source": {
+        "commit": "9d1fe32a5fd4511e6ccb14960d772d11bf29bbb3",
+        "tree": "501917eb03afa814384aeed287923977bed43205",
+        "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+        "clean": true
+      },
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-native-program-availability-0a853-native28-20261008/build-3-service-lib-attempt02/images/service-lib",
+        "sha256": "ee47be2d9fd7a38c107f596c2e2f9668f1083b2937f75b705c4c3e1612cb16af",
+        "bytes": 725838200,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_local_service-fb339fe309d09189"
+      },
+      "accepted": true,
+      "exit": 0,
+      "test_summaries": [
+        [
+          "ok",
+          "2",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-native-program-availability-0a853-native28-20261008/run-4-availability-attempt01/receipt.json",
+      "sha256": "337177cc567cb33cb0adea25ac814f8dd4d82d8f4f89b8e96872e290866a7626",
+      "source": {
+        "commit": "9d1fe32a5fd4511e6ccb14960d772d11bf29bbb3",
+        "tree": "501917eb03afa814384aeed287923977bed43205",
+        "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+        "clean": true
+      },
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-native-program-availability-0a853-native28-20261008/build-3-service-lib-attempt02/images/service-lib",
+        "sha256": "ee47be2d9fd7a38c107f596c2e2f9668f1083b2937f75b705c4c3e1612cb16af",
+        "bytes": 725838200,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_local_service-fb339fe309d09189"
+      },
+      "accepted": true,
+      "exit": 0,
+      "test_summaries": [
+        [
+          "ok",
+          "6",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-native-program-availability-0a853-native28-20261008/run-5-projection_scope-attempt01/receipt.json",
+      "sha256": "9d04e1a7a211d13aa7fd0a2d0b333aa4871a97448c0c3d4bfd3d747ebbd62d0f",
+      "source": {
+        "commit": "9d1fe32a5fd4511e6ccb14960d772d11bf29bbb3",
+        "tree": "501917eb03afa814384aeed287923977bed43205",
+        "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+        "clean": true
+      },
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-native-program-availability-0a853-native28-20261008/build-3-service-lib-attempt02/images/service-lib",
+        "sha256": "ee47be2d9fd7a38c107f596c2e2f9668f1083b2937f75b705c4c3e1612cb16af",
+        "bytes": 725838200,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_local_service-fb339fe309d09189"
+      },
+      "accepted": true,
+      "exit": 0,
+      "test_summaries": [
+        [
+          "ok",
+          "2",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-native-program-availability-0a853-native28-20261008/run-6-proof_guards-attempt01/receipt.json",
+      "sha256": "f2156b8b4f079ac188da60669e37d5dd63e8703ded06d1023e7bf4e7f88a6a29",
+      "source": {
+        "commit": "9d1fe32a5fd4511e6ccb14960d772d11bf29bbb3",
+        "tree": "501917eb03afa814384aeed287923977bed43205",
+        "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+        "clean": true
+      },
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-native-program-availability-0a853-native28-20261008/build-3-service-lib-attempt02/images/service-lib",
+        "sha256": "ee47be2d9fd7a38c107f596c2e2f9668f1083b2937f75b705c4c3e1612cb16af",
+        "bytes": 725838200,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_local_service-fb339fe309d09189"
+      },
+      "accepted": true,
+      "exit": 0,
+      "test_summaries": [
+        [
+          "ok",
+          "4",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-native-program-availability-0a853-native28-20261008/run-7-legacy_controls-attempt01/receipt.json",
+      "sha256": "88cc99b21cd508a1b70d5b2540031109c1bc7ba38c3190bd4fa48ff44173efce",
+      "source": {
+        "commit": "9d1fe32a5fd4511e6ccb14960d772d11bf29bbb3",
+        "tree": "501917eb03afa814384aeed287923977bed43205",
+        "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+        "clean": true
+      },
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-native-program-availability-0a853-native28-20261008/build-3-service-lib-attempt02/images/service-lib",
+        "sha256": "ee47be2d9fd7a38c107f596c2e2f9668f1083b2937f75b705c4c3e1612cb16af",
+        "bytes": 725838200,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_local_service-fb339fe309d09189"
+      },
+      "accepted": true,
+      "exit": 0,
+      "test_summaries": [
+        [
+          "ok",
+          "5",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "remote_path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-native-program-availability-0a853-native28-20261008/run-8-current_worker_read_and_residence_controls-attempt01/receipt.json",
+      "sha256": "314d83ec4f32bb103d3af96ccf392107bd6c681d23cb043a638cb12f393fc2f3",
+      "source": {
+        "commit": "9d1fe32a5fd4511e6ccb14960d772d11bf29bbb3",
+        "tree": "501917eb03afa814384aeed287923977bed43205",
+        "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+        "clean": true
+      },
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-native-program-availability-0a853-native28-20261008/build-3-service-lib-attempt02/images/service-lib",
+        "sha256": "ee47be2d9fd7a38c107f596c2e2f9668f1083b2937f75b705c4c3e1612cb16af",
+        "bytes": 725838200,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_local_service-fb339fe309d09189"
+      },
+      "accepted": true,
+      "exit": 0,
+      "test_summaries": [
+        [
+          "ok",
+          "3",
+          "0",
+          "0"
+        ]
+      ]
+    }
+  ],
+  "passed_names": [
+    "application::compiler::tests::native_program_sources_capture_bound_libraries_and_exact_package_mapping",
+    "authority::envelope::tests::file_store_verifier_reopens_exact_envelope_and_rejects_extra_member",
+    "authority::envelope::tests::native_program_metadata_preserves_legacy_identity_and_binds_exact_cas_object",
+    "authority::envelope::tests::typed_publication_binds_plane_generation_to_exact_image_bytes",
+    "builtin::commands::semantic_query::project_call_tests::project_references_go_import_retarget_names_the_caller",
+    "builtin::commands::semantic_query::project_call_tests::project_references_rust_module_retarget_names_the_caller",
+    "builtin::commands::semantic_query::project_call_tests::project_references_structural_does_not_duplicate_semantic_site",
+    "builtin::commands::semantic_query::selected_source_references_tests::historical_ripgrep_selected_images_keep_the_unbound_call_unbound",
+    "builtin::commands::semantic_query::selected_source_references_tests::missing_or_unavailable_sibling_profile_restricts_only_its_language",
+    "builtin::commands::semantic_query::selected_source_references_tests::partial_artifacts_refuse_changed_missing_unidentified_and_foreign_sources",
+    "builtin::commands::semantic_query::selected_source_references_tests::partial_full_program_witness_survives_unrelated_image_omission_but_not_source_change",
+    "builtin::commands::semantic_query::selected_source_references_tests::partial_program_cannot_borrow_another_programs_same_source_target_image",
+    "builtin::commands::semantic_query::selected_source_references_tests::partial_selected_artifacts_answer_local_references_in_four_languages",
+    "builtin::generation_residence::tests::identical_image_claims_keep_different_selected_program_members_separate",
+    "builtin::generation_residence::tests::native_program_membership_is_shared_and_charged_to_the_resident_byte_budget",
+    "builtin::generation_residence::tests::preparation_capture_keeps_bounded_images_and_independent_eviction",
+    "builtin::generation_residence::tests::preparation_reuses_real_selected_publication_bytes_and_structural_proofs",
+    "builtin::semantic_authority::tests::persisted_coverage_cannot_override_selected_count_evidence",
+    "builtin::semantic_authority::tests::real_multifile_rust_publication_joins_each_image_recipe_to_its_own_source",
+    "builtin::view_build::call_join::python_native_call_tests::native_python_relative_function_calls_join_exact_sources_and_reject_unproven_targets",
+    "builtin::view_build::call_join::tsz_source_coordinate_tests::duplicate_exact_source_targets_refuse_the_join",
+    "builtin::view_build::call_join::tsz_source_coordinate_tests::native_tsz_join_requires_exact_program_source_span_and_kind",
+    "builtin::view_build::call_join::tsz_source_coordinate_tests::native_tsz_source_call_retargets_to_exact_captured_declaration",
+    "builtin::view_build::call_join::tsz_source_coordinate_tests::partial_scope_refuses_name_joins_and_preserves_independent_complete_lanes",
+    "builtin::view_build::semantic::tests::partial_artifacts_retain_structural_inventory_and_distinct_identities",
+    "builtin::view_build::tests::an_unavailable_publication_types_the_structural_cause_with_its_reason",
+    "ir::native_program_sources::tests::full_program_manifest_closes_version_identity_mapping_and_extent",
+    "ir::native_program_sources::tests::full_program_manifest_retains_library_members_and_canonical_identity"
+  ],
+  "full_native_proof": {
+    "path": "/private/tmp/sol61-native-program-availability-native28-20261008/native28-final-proof.json",
+    "sha256": "1809761206b5473a030da3b2576808b6b07ceef819b4d58094f59980988e6240"
+  },
+  "source_replay_receipt": {
+    "path": "/private/tmp/sol61-native-program-availability-canonical0b3a-review-20261009/source-receipt.json",
+    "sha256": "b2abff9b01c0c61070c27fa187c4d563fa89d46f796dc206ace99862d5689a39"
+  },
+  "literal_final_return": {
+    "path": "/private/tmp/sol61-native-program-availability-native28-20261008/final-return-native28.json",
+    "sha256": "cc2bb94b72ff4d9f0d549484144149838016afbcfe2d497a0b5783f5f8154736"
+  },
+  "limitations": [
+    "Combined canonical native replay and current installed CLI/MCP/GUI remain unrun.",
+    "Historical ripgrep fixture demonstrates an unavailable reference; it is not a new installed success.",
+    "No all-tool, broad-corpus, installer or production-readiness claim."
+  ]
+}

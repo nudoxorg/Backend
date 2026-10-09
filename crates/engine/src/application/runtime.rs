@@ -4396,7 +4396,17 @@ fn queue_package_sources(
         image_cap,
         embedding_payload_max,
         embedding_scratch_max,
-    );
+    )
+    .and_then(|bytes| {
+        // One bounded full-program witness is staged once for a TS invocation,
+        // independently of how many per-source semantic images it emits.
+        let program_bytes = if facts.language == Language::TypeScript {
+            backend_semantic::ir::MAX_NATIVE_PROGRAM_MANIFEST_BYTES
+        } else {
+            0
+        };
+        bytes.checked_add(program_bytes)
+    });
     let Some(reservation_bytes) = reservation_bytes else {
         response.send_error(PackageSemanticRuntimeError::Runtime(
             facts.terminal(CompilerRuntimeCause::StagedOutputReservationOverflow),

@@ -34,7 +34,30 @@ pub(crate) fn semantic_qualified_mentionable(kind: ItemKind) -> bool {
     )
 }
 
+/// Name/scope retargeting needs the complete publication scope. Exact native
+/// coordinates retain their own program/source/declaration proof in either case.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::builtin) enum RetargetingScope {
+    CompletePublication,
+    SelectedArtifacts,
+}
+
+fn may_resolve_scope(
+    image: &SemanticImageView<'_>,
+    scopes: &BTreeMap<backend_semantic::vocabulary::Language, RetargetingScope>,
+) -> bool {
+    match image.image_facts().provenance {
+        ImageProvenance::Captured { recipe, .. } => scopes
+            .get(&recipe.profile.language())
+            .map_or(scopes.is_empty(), |scope| {
+                *scope == RetargetingScope::CompletePublication
+            }),
+        ImageProvenance::Unavailable => scopes.is_empty(),
+    }
+}
+
 pub(crate) struct ProjectCallableIndex {
+    scopes: BTreeMap<backend_semantic::vocabulary::Language, RetargetingScope>,
     by_path_name: BTreeMap<(String, String), Vec<DeclarationIdentity>>,
     by_owner_name: BTreeMap<(String, String), Vec<DeclarationIdentity>>,
     mention_by_path_name_kind: BTreeMap<(String, String, ItemKind), Vec<DeclarationIdentity>>,
@@ -43,6 +66,8 @@ pub(crate) struct ProjectCallableIndex {
     tsz_source_coordinates:
         BTreeMap<(String, [u8; 32], u32, u32, ItemKind), Vec<DeclarationIdentity>>,
     tsz_program_identity: Option<[u8; 32]>,
+    proven_tsz_coordinates:
+        BTreeMap<([u8; 32], String, [u8; 32], u32, u32, ItemKind), Vec<DeclarationIdentity>>,
     python_program_identity: Option<[u8; 32]>,
 }
 
@@ -62,6 +87,73 @@ impl ProjectCallableIndex {
     pub(crate) fn build_from_views(
         images: &[&SemanticImageView<'_>],
     ) -> Result<Self, BuiltinModelError> {
+        Self::build_from_views_with_scope(images, &BTreeMap::new())
+    }
+
+    pub(in crate::builtin) fn build_from_views_with_scope(
+        images: &[&SemanticImageView<'_>],
+        scopes: &BTreeMap<backend_semantic::vocabulary::Language, RetargetingScope>,
+    ) -> Result<Self, BuiltinModelError> {
+        Self::build_from_views_with_programs(images, scopes, &[], true)
+    }
+
+    pub(in crate::builtin) fn build_from_views_with_programs(
+        images: &[&SemanticImageView<'_>],
+        scopes: &BTreeMap<backend_semantic::vocabulary::Language, RetargetingScope>,
+        programs: &[&super::source_availability::CurrentNativeProgram],
+        legacy_image_program: bool,
+    ) -> Result<Self, BuiltinModelError> {
+        let mut proven_tsz_coordinates = BTreeMap::<_, Vec<DeclarationIdentity>>::new();
+        let mut program_members = BTreeMap::<_, Vec<_>>::new();
+        for program in programs {
+            let sources = program.sources();
+            let mappings = sources
+                .sources()
+                .filter_map(|row| row.package_path.map(|path| (path, row)))
+                .collect::<BTreeMap<_, _>>();
+            for image in program.images() {
+                let view = image.reopen().map_err(|error| {
+                    BuiltinModelError(format!("reopen owning native program image: {error}"))
+                })?;
+                let ImageProvenance::Captured {
+                    source,
+                    recipe,
+                    scope,
+                    ..
+                } = view.image_facts().provenance
+                else {
+                    return Err(BuiltinModelError(
+                        "owning native program image has no provenance".to_owned(),
+                    ));
+                };
+                let path = view
+                    .atom(scope.path)
+                    .and_then(|path| std::str::from_utf8(path).ok())
+                    .ok_or_else(|| {
+                        BuiltinModelError("native program image path is invalid".to_owned())
+                    })?;
+                let row = mappings.get(path).ok_or_else(|| {
+                    BuiltinModelError("native program image has no package mapping".to_owned())
+                })?;
+                if row.source != source || sources.toolchain() != recipe.toolchain {
+                    return Err(BuiltinModelError(
+                        "native program image differs from its owning membership".to_owned(),
+                    ));
+                }
+                program_members
+                    .entry(super::source_availability::NativeProgramImageBacking::of(
+                        image.as_ref(),
+                    ))
+                    .or_default()
+                    .push((
+                        sources.program(),
+                        row.program_path,
+                        path.to_owned(),
+                        source.identity,
+                        recipe.toolchain,
+                    ));
+            }
+        }
         let mut by_path_name = BTreeMap::<(String, String), Vec<DeclarationIdentity>>::new();
         let mut by_owner_name = BTreeMap::<(String, String), Vec<DeclarationIdentity>>::new();
         let mut mention_by_path_name_kind =
@@ -99,7 +191,7 @@ impl ProjectCallableIndex {
         let python_program_identity = python_manifest_complete
             .then(|| python_program_identity(&python_source_manifest))
             .flatten();
-        let tsz_program_identity = manifest_complete
+        let tsz_program_identity = (manifest_complete && legacy_image_program)
             .then(|| typescript_program_identity(&source_manifest))
             .flatten();
         for image in images {
@@ -109,6 +201,9 @@ impl ProjectCallableIndex {
                 ImageProvenance::Captured { source, .. } => Some(*source.identity),
                 ImageProvenance::Unavailable => None,
             };
+            let owning_programs = program_members.get(
+                &super::source_availability::NativeProgramImageBacking::of(image.as_ref()),
+            );
             let session = DocumentationSession::new(image);
             for entity in session.canonical_entities() {
                 let entity = entity.map_err(|error| {
@@ -133,6 +228,40 @@ impl ProjectCallableIndex {
                             .or_default()
                             .push(identity);
                     }
+                }
+                if let (ImageProvenance::Captured { source, recipe, .. }, Some(span)) =
+                    (image.image_facts().provenance, entity.entity.source)
+                {
+                    if image.atom(span.file()) == Some(path.as_bytes()) {
+                        if let Some(members) = owning_programs {
+                            for (program, native_path, package_path, member_source, toolchain) in
+                                members
+                            {
+                                if package_path != &path
+                                    || *member_source != source.identity
+                                    || *toolchain != recipe.toolchain
+                                {
+                                    continue;
+                                }
+                                proven_tsz_coordinates
+                                    .entry((
+                                        *program,
+                                        (*native_path).to_owned(),
+                                        *source.identity,
+                                        span.start(),
+                                        span.end(),
+                                        entity.entity.kind,
+                                    ))
+                                    .or_default()
+                                    .push(identity);
+                            }
+                        }
+                    }
+                }
+                // Partial targets remain available to exact-coordinate joins.
+                // They cannot enter a different complete lane's name-based index.
+                if !may_resolve_scope(image, scopes) {
+                    continue;
                 }
                 // Anonymous callables participate in exact source-span joins,
                 // but their structural anchors are never identifier spellings.
@@ -212,6 +341,7 @@ impl ProjectCallableIndex {
             }
         }
         Ok(Self {
+            scopes: scopes.clone(),
             by_path_name,
             by_owner_name,
             mention_by_path_name_kind,
@@ -219,8 +349,13 @@ impl ProjectCallableIndex {
             value_by_owner_name_kind,
             tsz_source_coordinates,
             tsz_program_identity,
+            proven_tsz_coordinates,
             python_program_identity,
         })
+    }
+
+    fn may_resolve_scope(&self, image: &SemanticImageView<'_>) -> bool {
+        may_resolve_scope(image, &self.scopes)
     }
 
     pub(crate) fn resolve(
@@ -272,6 +407,17 @@ impl ProjectCallableIndex {
         coordinate: TypeScriptSourceCoordinate<'_>,
         kind: ItemKind,
     ) -> Option<DeclarationIdentity> {
+        if let Some(matches) = self.proven_tsz_coordinates.get(&(
+            coordinate.program,
+            coordinate.path.to_owned(),
+            coordinate.source,
+            coordinate.declaration_start,
+            coordinate.declaration_end,
+            kind,
+        )) {
+            let unique = matches.iter().copied().collect::<BTreeSet<_>>();
+            return (unique.len() == 1).then(|| *unique.first().expect("one exact coordinate"));
+        }
         self.resolve_source_coordinate(coordinate, kind, self.tsz_program_identity)
     }
 
@@ -652,6 +798,9 @@ pub(crate) fn foreign_package_call_retarget(
     {
         return Ok(Some(identity));
     }
+    if !callable_index.may_resolve_scope(image) {
+        return Ok(None);
+    }
     if matches!(image.image_facts().provenance,
         ImageProvenance::Captured { recipe, .. }
             if matches!(recipe.profile, backend_semantic::vocabulary::LanguageProfile::Python(_)))
@@ -717,6 +866,9 @@ pub(crate) fn foreign_namespace_call_retarget(
     external: ExternalId,
     callable_index: &ProjectCallableIndex,
 ) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
+    if !callable_index.may_resolve_scope(image) {
+        return Ok(None);
+    }
     let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
         return Ok(None);
     };
@@ -741,6 +893,9 @@ pub(crate) fn foreign_namespace_field_retarget(
     external: ExternalId,
     index: &ProjectCallableIndex,
 ) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
+    if !index.may_resolve_scope(image) {
+        return Ok(None);
+    }
     let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
         return Ok(None);
     };
@@ -794,6 +949,9 @@ pub(crate) fn foreign_package_mention_retarget(
     project_paths: &BTreeSet<String>,
     index: &ProjectCallableIndex,
 ) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
+    if !index.may_resolve_scope(image) {
+        return Ok(None);
+    }
     let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
         return Ok(None);
     };
@@ -831,6 +989,9 @@ pub(crate) fn foreign_package_import_mention_retarget(
     project_paths: &BTreeSet<String>,
     index: &ProjectCallableIndex,
 ) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
+    if !index.may_resolve_scope(image) {
+        return Ok(None);
+    }
     let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
         return Ok(None);
     };
@@ -866,6 +1027,9 @@ pub(crate) fn foreign_qualified_type_mention_retarget(
     external: ExternalId,
     index: &ProjectCallableIndex,
 ) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
+    if !index.may_resolve_scope(image) {
+        return Ok(None);
+    }
     let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
         return Ok(None);
     };
@@ -930,6 +1094,9 @@ pub(crate) fn foreign_package_field_static_constant_retarget(
     project_paths: &BTreeSet<String>,
     index: &ProjectCallableIndex,
 ) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
+    if !index.may_resolve_scope(image) {
+        return Ok(None);
+    }
     let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
         return Ok(None);
     };
@@ -972,6 +1139,9 @@ pub(crate) fn foreign_package_field_function_retarget(
     project_paths: &BTreeSet<String>,
     index: &ProjectCallableIndex,
 ) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
+    if !index.may_resolve_scope(image) {
+        return Ok(None);
+    }
     let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
         return Ok(None);
     };
@@ -1014,6 +1184,9 @@ pub(crate) fn foreign_package_field_retarget(
     project_paths: &BTreeSet<String>,
     index: &ProjectCallableIndex,
 ) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
+    if !index.may_resolve_scope(image) {
+        return Ok(None);
+    }
     let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
         return Ok(None);
     };
@@ -1094,6 +1267,9 @@ pub(crate) fn foreign_namespace_value_retarget(
     external: ExternalId,
     index: &ProjectCallableIndex,
 ) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
+    if !index.may_resolve_scope(image) {
+        return Ok(None);
+    }
     let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
         return Ok(None);
     };
@@ -1129,6 +1305,9 @@ pub(crate) fn foreign_package_value_retarget(
     project_paths: &BTreeSet<String>,
     index: &ProjectCallableIndex,
 ) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
+    if !index.may_resolve_scope(image) {
+        return Ok(None);
+    }
     let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
         return Ok(None);
     };
@@ -1172,6 +1351,9 @@ pub(crate) fn foreign_package_function_value_retarget(
     project_paths: &BTreeSet<String>,
     index: &ProjectCallableIndex,
 ) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
+    if !index.may_resolve_scope(image) {
+        return Ok(None);
+    }
     let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
         return Ok(None);
     };
@@ -1352,6 +1534,7 @@ mod tsz_source_coordinate_tests {
     fn index(program: [u8; 32], source: [u8; 32]) -> ProjectCallableIndex {
         let target = identity(19);
         ProjectCallableIndex {
+            scopes: BTreeMap::new(),
             by_path_name: BTreeMap::new(),
             by_owner_name: BTreeMap::new(),
             mention_by_path_name_kind: BTreeMap::new(),
@@ -1368,6 +1551,7 @@ mod tsz_source_coordinate_tests {
                 vec![target],
             )]),
             tsz_program_identity: Some(program),
+            proven_tsz_coordinates: BTreeMap::new(),
             python_program_identity: None,
         }
     }
@@ -1648,6 +1832,144 @@ mod tsz_source_coordinate_tests {
     }
 
     #[test]
+    fn partial_scope_refuses_name_joins_and_preserves_independent_complete_lanes()
+    -> Result<(), String> {
+        fn scope_image(
+            profile: LanguageProfile,
+            tool: NativeTool,
+            coordinate: &str,
+        ) -> Result<Vec<u8>, String> {
+            let source = SourceIdentity::from_bytes(b"scope fixture").ok_or("source length")?;
+            let recipe = CompileRecipeFact::derive(
+                profile,
+                Stage::LowerIr,
+                tool,
+                source.identity,
+                ContentId::<ToolchainDomain>::from_canonical_bytes(b"scope fixture tool"),
+            );
+            let package =
+                PackageUrl::parse(coordinate.to_owned()).map_err(|error| format!("{error:?}"))?;
+            let mut builder = IrBuilder::new();
+            builder
+                .set_image_provenance_for_package(source, recipe, &package, "source")
+                .map_err(|error| error.to_string())?;
+            let ecosystem = builder
+                .intern_atom(b"fixture")
+                .map_err(|error| error.to_string())?;
+            let namespace = builder
+                .intern_atom(b"Owner")
+                .map_err(|error| error.to_string())?;
+            let display = builder
+                .intern_atom(b"target")
+                .map_err(|error| error.to_string())?;
+            builder
+                .intern_external(ExternalTarget::Foreign(ForeignExternalTarget {
+                    identity: ExternalDeclarationIdentity {
+                        foreign: ForeignDeclarationId::from_raw([9; 16]),
+                        variant: VariantAvailability::Unavailable,
+                    },
+                    origin: ForeignTargetOrigin::Namespace {
+                        ecosystem,
+                        namespace,
+                    },
+                    path: display,
+                    display,
+                    kind: Some(ItemKind::Function),
+                }))
+                .map_err(|error| error.to_string())?;
+            let ir = builder.finish().map_err(|error| error.to_string())?;
+            let mut bytes =
+                vec![0; full_semantic_image_len(&ir).map_err(|error| error.to_string())?];
+            encode_full_semantic_image(&ir, &mut bytes).map_err(|error| error.to_string())?;
+            Ok(bytes)
+        }
+        let program = [4; 32];
+        let source = [8; 32];
+        let target = identity(19);
+        let mut index = index(program, source);
+        index
+            .by_owner_name
+            .insert(("Owner".to_owned(), "target".to_owned()), vec![target]);
+        let rust_bytes = scope_image(
+            LanguageProfile::Rust(backend_semantic::vocabulary::RustEdition::Rust2024),
+            NativeTool::Rustc,
+            "pkg:cargo/fixture@1.0.0",
+        )?;
+        let go_bytes = scope_image(
+            LanguageProfile::Go(backend_semantic::vocabulary::GoVersion::Go125),
+            NativeTool::GoCompiler,
+            "pkg:golang/fixture@1.0.0",
+        )?;
+        let rust = SemanticImageView::reopen(&rust_bytes).map_err(|error| error.to_string())?;
+        let go = SemanticImageView::reopen(&go_bytes).map_err(|error| error.to_string())?;
+        let external = rust
+            .canonical_externals()
+            .next()
+            .ok_or("rust external absent")?
+            .0;
+        assert_eq!(
+            super::foreign_namespace_call_retarget(&rust, external, &index)
+                .map_err(|error| error.to_string())?,
+            Some(target)
+        );
+        // The missing Rust sibling may contain another Owner.target. A single
+        // surviving candidate cannot certify scope-wide uniqueness.
+        index.scopes.insert(
+            backend_semantic::vocabulary::Language::Rust,
+            super::RetargetingScope::SelectedArtifacts,
+        );
+        index.scopes.insert(
+            backend_semantic::vocabulary::Language::Go,
+            super::RetargetingScope::CompletePublication,
+        );
+        assert_eq!(
+            super::foreign_namespace_call_retarget(&rust, external, &index)
+                .map_err(|error| error.to_string())?,
+            None
+        );
+        let go_external = go
+            .canonical_externals()
+            .next()
+            .ok_or("go external absent")?
+            .0;
+        assert_eq!(
+            super::foreign_namespace_call_retarget(&go, go_external, &index)
+                .map_err(|error| error.to_string())?,
+            Some(target),
+            "an unrelated language hole cannot suppress a complete lane"
+        );
+        index.scopes.insert(
+            backend_semantic::vocabulary::Language::TypeScript,
+            super::RetargetingScope::SelectedArtifacts,
+        );
+        assert_eq!(
+            index.resolve_tsz_source_coordinate(
+                coordinate(program, source, 41, 82),
+                ItemKind::Function,
+            ),
+            Some(target),
+            "exact coordinate proof is independent of scope-name inference"
+        );
+        assert_eq!(
+            index.resolve_tsz_source_coordinate(
+                coordinate([5; 32], source, 41, 82),
+                ItemKind::Function,
+            ),
+            None
+        );
+        index.tsz_source_coordinates.clear();
+        assert_eq!(
+            index.resolve_tsz_source_coordinate(
+                coordinate(program, source, 41, 82),
+                ItemKind::Function,
+            ),
+            None,
+            "a missing target artifact cannot answer a cross-source reference"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn duplicate_exact_source_targets_refuse_the_join() {
         let program = [4; 32];
         let source = [8; 32];
@@ -1791,6 +2113,39 @@ mod tsz_source_coordinate_tests {
         )
         .map_err(|error| error.to_string())?;
         assert_eq!(referenced, Some(service_identity));
+
+        let service_view =
+            SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
+        let scopes = BTreeMap::from([(
+            backend_semantic::vocabulary::Language::TypeScript,
+            super::RetargetingScope::SelectedArtifacts,
+        )]);
+        let partial_index = ProjectCallableIndex::build_from_views_with_scope(
+            &[&service_view, &caller_image],
+            &scopes,
+        )
+        .map_err(|error| error.to_string())?;
+        assert_eq!(
+            join_project_call(
+                &caller_image,
+                LinkKind::MethodCall,
+                external_call,
+                "src/app.controller.ts",
+                &paths,
+                &partial_index,
+                &published,
+            )
+            .map_err(|error| error.to_string())?,
+            Some(service_identity)
+        );
+        assert_eq!(
+            partial_index.resolve(
+                &BTreeSet::from(["src/app.service.ts".to_owned(),]),
+                "getHello"
+            ),
+            None,
+            "a Partial target cannot leak through another complete lane's name index"
+        );
 
         let edited_service = service.replace("return ''", "return 'edited'");
         let (edited_service_bytes, edited_identity) =

@@ -244,6 +244,7 @@ pub(crate) fn admitted_coverage() -> Result<CoverageWitness, BuiltinModelError> 
 /// language scope.
 pub(super) struct ActivatedProductSemantics {
     images: Arc<[backend_library::interface::SemanticImageSnapshot]>,
+    native_program_sources: Option<Arc<backend_semantic::ir::NativeProgramSourceManifest>>,
 }
 
 impl ActivatedProductSemantics {
@@ -264,19 +265,23 @@ fn load_semantic_publication(
     claim: backend_engine::builtin::SemanticPublicationClaim,
     generations: &mut SemanticGenerationResidence,
 ) -> Result<ActivatedProductSemantics, BuiltinModelError> {
-    let images = if generations.has_selected_loader() {
+    let (images, native_program_sources) = if generations.has_selected_loader() {
         generations.load_selected(key, claim)?
     } else {
-        generations.load(claim, || {
+        let images = generations.load(claim, || {
             compiler
                 .activate_semantic_generation(key.profile(), claim.manifest(), claim.binding())
                 .map(|activated| activated.images)
                 .map_err(|error| {
                     BuiltinModelError(format!("activate semantic publication: {error}"))
                 })
-        })?
+        })?;
+        (images, None)
     };
-    Ok(ActivatedProductSemantics { images })
+    Ok(ActivatedProductSemantics {
+        images,
+        native_program_sources,
+    })
 }
 
 pub(in crate::builtin) fn activate_semantic_publication(

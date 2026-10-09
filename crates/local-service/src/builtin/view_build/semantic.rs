@@ -15,7 +15,7 @@ use super::structural::{
 };
 use super::{
     MAX_SEMANTIC_DOCUMENT_BYTES, MAX_SEMANTIC_SIGNATURE_BYTES, MAX_SEMANTIC_TYPE_DEPTH, STALE_NOTE,
-    semantic_profile_is_complete,
+    SourceAvailability, semantic_profile_is_complete,
 };
 use backend_engine::application::{
     DocumentationFragment, DocumentationSession, LocalCompilerClient,
@@ -76,6 +76,7 @@ pub(crate) fn rows_for_indexed_sources(
             "workspace package rows exceed the rebuild row bound".to_owned(),
         ));
     }
+    let available = SourceAvailability::of(sources)?;
     let current_paths = profile_source_paths(sources)?;
     let current_identities = profile_source_identities(sources)?;
     let sites = StructuralSites::of(sources)?;
@@ -86,6 +87,7 @@ pub(crate) fn rows_for_indexed_sources(
         &current_paths,
         &current_identities,
         &sites,
+        &available,
         initial,
         MAX_REBUILD_PACKAGES - sources.projects.len(),
         foreign,
@@ -280,6 +282,15 @@ impl<'a> SourceRowProjection<'a> {
             return Err(BuiltinModelError(
                 "complete source-facts count differs from its structural plan".to_owned(),
             ));
+        }
+        if profile.is_some_and(|profile| {
+            self.targets.partial_artifacts.contains(&(
+                project.package.to_bytes(),
+                profile,
+                path.to_owned(),
+            ))
+        }) {
+            self.ledger.record(path, FileLane::Mixed);
         }
         Ok(())
     }
@@ -490,6 +501,12 @@ struct SemanticRows {
 /// the selected publication rows before row projection starts.
 #[derive(Default)]
 pub(super) struct SemanticTargets {
+    /// Current artifacts without a complete file inventory; structural rows remain.
+    partial_artifacts: BTreeSet<(
+        [u8; 32],
+        backend_semantic::vocabulary::LanguageProfile,
+        String,
+    )>,
     /// Targets whose selected publication is a terminal unavailable cause.
     pub(super) unavailable: BTreeMap<
         ([u8; 32], backend_semantic::vocabulary::LanguageProfile),
@@ -529,6 +546,7 @@ fn semantic_rows(
     current_paths: &ProfileSourcePaths,
     current_identities: &ProfileSourceIdentities,
     sites: &StructuralSites<'_>,
+    available: &SourceAvailability,
     initial: &ViewRoot,
     row_capacity: usize,
     foreign: ForeignPublication,
@@ -594,11 +612,7 @@ fn semantic_rows(
                 *key.package_key().as_bytes(),
                 super::super::ingest::lane_profile(key.profile()),
             );
-            let ProductSemanticPublicationRecord::Published {
-                coverage: backend_engine::builtin::SemanticPublicationCoverage::Complete,
-                claim,
-            } = record
-            else {
+            let ProductSemanticPublicationRecord::Published { coverage, claim } = record else {
                 if let ProductSemanticPublicationRecord::Unavailable(reason) = record {
                     targets.unavailable.entry(target).or_insert(*reason);
                 }
@@ -611,6 +625,7 @@ fn semantic_rows(
             })?;
             let activated =
                 super::super::load_semantic_publication(compiler, key, *claim, generations)?;
+            let activated = available.select(key, *coverage, activated, residence)?;
             // An image already admitted for this publication key keeps its
             // path and source identity. Row projection is reused when the
             // freshness overlay is already resident.
@@ -624,8 +639,7 @@ fn semantic_rows(
                 key.coordinate().as_str(),
             );
             let mut opened = Vec::new();
-            let mut pending = activated.images();
-            while let Some((image, rest)) = pending.split_first() {
+            for image in activated.images() {
                 match super::image_rows::open_compiled_snapshot(image, admission, residence)? {
                     super::image_rows::CompiledImage::Opened {
                         path,
@@ -647,7 +661,6 @@ fn semantic_rows(
                     }
                     resident => opened.push(resident),
                 }
-                pending = rest;
             }
             let mut compiled_sources = BTreeMap::new();
             for image in &opened {
@@ -688,10 +701,21 @@ fn semantic_rows(
                 // current file compiled from its path no longer hashes to an
                 // image's own source identity. A legacy scan without persisted
                 // identities falls back to the coarse path-set comparison.
-                let stale = match decision.compiled.get(&path) {
+                let stale = matches!(
+                    coverage,
+                    backend_engine::builtin::SemanticPublicationCoverage::Complete
+                ) && match decision.compiled.get(&path) {
                     Some(compiled) => decision.image_stale(&path, *compiled),
                     None => decision.path_sets_differ,
                 };
+                if matches!(
+                    coverage,
+                    backend_engine::builtin::SemanticPublicationCoverage::Partial(_)
+                ) {
+                    targets
+                        .partial_artifacts
+                        .insert((target.0, target.1, path.clone()));
+                }
                 // Each source path is grouped before projection, so all
                 // semantic fragments for this file share one bounded facts
                 // visit. The owned declarations are dropped before the next
@@ -753,11 +777,17 @@ fn semantic_rows(
                     }
                 }
             }
-            complete.insert((
-                project.package.to_bytes(),
-                super::super::ingest::lane_profile(key.profile()),
-            ));
-            if !decision.stale_paths.is_empty() {
+            if matches!(
+                coverage,
+                backend_engine::builtin::SemanticPublicationCoverage::Complete
+            ) {
+                complete.insert(target);
+            }
+            if matches!(
+                coverage,
+                backend_engine::builtin::SemanticPublicationCoverage::Complete
+            ) && !decision.stale_paths.is_empty()
+            {
                 stale_paths.insert(target, decision.stale_paths.clone());
                 for path in &decision.stale_paths {
                     ledger.record(
@@ -1521,6 +1551,123 @@ mod tests {
     use super::publication_seek_bounds;
     use std::collections::BTreeMap;
     use std::sync::Arc;
+
+    #[test]
+    fn partial_artifacts_retain_structural_inventory_and_distinct_identities() -> Result<(), String>
+    {
+        use super::*;
+        use backend_compile::SourceDeclaration;
+        let package = backend_engine::package_key("fixture");
+        let project_key = package.to_bytes();
+        let path = "src/partial.rs";
+        let file_key = product_source_file_key(project_key, path);
+        // The artifact need not contain every structural declaration. Keeping
+        // both rows prevents available positive facts from claiming absence.
+        let declarations = [
+            SourceDeclaration::at_path(
+                path,
+                "Same",
+                backend_compile::DeclarationKind::Function,
+                1,
+                "fn Same()",
+                "",
+            )?,
+            SourceDeclaration::at_path(
+                path,
+                "Unlowered",
+                backend_compile::DeclarationKind::Function,
+                2,
+                "fn Unlowered()",
+                "",
+            )?,
+        ];
+        let record = super::super::super::ProductSourceRecord::file(
+            project_key,
+            path,
+            backend_engine::SourceLanguage::Rust,
+            [1; 32],
+            [2; 32],
+            Vec::from(declarations),
+        )?;
+        let sources = IndexedSources {
+            projects: BTreeMap::from([(
+                project_key,
+                IndexedProject {
+                    package,
+                    label: "fixture".to_owned(),
+                    files: Arc::from([file_key]),
+                },
+            )]),
+            files: vec![(file_key, record)],
+            cargo_aliases: BTreeMap::new(),
+            source_snapshot: None,
+        };
+        let (initial, _) =
+            super::super::super::initial_view().map_err(|error| error.to_string())?;
+        let mut targets = SemanticTargets::default();
+        targets.partial_artifacts.insert((
+            project_key,
+            backend_semantic::vocabulary::LanguageProfile::Rust(
+                backend_semantic::vocabulary::RustEdition::Rust2024,
+            ),
+            path.to_owned(),
+        ));
+        let complete = BTreeSet::new();
+        let plan =
+            StructuralProjectionPlan::of(&sources, &complete).map_err(|error| error.to_string())?;
+        let mut projection = SourceRowProjection::new(
+            &initial,
+            &sources,
+            16,
+            &targets,
+            &plan,
+            std::path::Path::new("/tmp"),
+        )
+        .map_err(|error| error.to_string())?;
+        projection
+            .append_file(
+                file_key,
+                &sources.files[0].1,
+                &complete,
+                &ProfileStalePaths::new(),
+            )
+            .map_err(|error| error.to_string())?;
+        let ledger = projection.take_ledger();
+        let identity = DeclarationIdentity {
+            family: backend_semantic::ir::DeclarationFamilyId::from_raw([7; 16]),
+            variant: backend_semantic::ir::VariantFingerprint::from_raw([8; 16]),
+        };
+        let native_id = RowId::Symbol(semantic_symbol(package, identity));
+        let native_label = semantic_coordinate("fixture", identity, "Same");
+        let rows = projection
+            .finish(vec![Row::in_package(
+                native_id,
+                initial.basis(),
+                package,
+                native_label.clone(),
+            )])
+            .map_err(|error| error.to_string())?;
+        assert_eq!(ledger.file_lane(path), Some(FileLane::Mixed));
+        assert!(!ledger.all_semantic_fresh());
+        let structural = rows
+            .iter()
+            .find(|row| row.label == "fixture::src/partial.rs:1::Same")
+            .ok_or("same-named structural row was suppressed")?;
+        assert_ne!(structural.id, native_id);
+        assert!(
+            rows.iter()
+                .any(|row| row.label == native_label && row.id == native_id)
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.label == "fixture::src/partial.rs:2::Unlowered")
+        );
+        assert!(
+            complete.is_empty(),
+            "mixed rows never promote publication coverage"
+        );
+        Ok(())
+    }
 
     #[test]
     fn skip_seeks_one_package_inside_a_full_publication_relation() {

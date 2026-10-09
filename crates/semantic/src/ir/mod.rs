@@ -25,6 +25,7 @@ pub mod lineage_match;
 #[cfg(feature = "mmap")]
 mod mapping;
 mod model;
+mod native_program_sources;
 mod prepared;
 mod range;
 mod reader;
@@ -348,6 +349,12 @@ pub use view::OccurrenceFault as OccurrenceViewFault;
 pub use view::{
     Atom, AtomCursor, DirectoryFault, EntityCursor, FragmentError, FragmentView, SectionKind,
     SemanticDataFault, TypeNodeCursor, WireField,
+};
+
+pub use native_program_sources::{
+    MAX_NATIVE_PROGRAM_MANIFEST_BYTES, MAX_NATIVE_PROGRAM_SOURCES, NativeProgramSource,
+    NativeProgramSourceManifest, NativeProgramSourceManifestError,
+    NativeProgramSourceManifestSchema, NativeProgramSourceRef,
 };
 
 pub use wire::{FRAGMENT_MAGIC, FRAGMENT_SCHEMA};

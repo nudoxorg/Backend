@@ -1,0 +1,96 @@
+{
+  "scope": "Historical actual installed c001 artifacts; not a current E2E result or a complete-file proof.",
+  "source_commit": "3fce3b5bb0236da2df6d99672afb8a719642eca7",
+  "source_tree": "856ed9162d23416ee7dc5f4389975b54ca062f60",
+  "runtime_commit": "c0016d4f4fc9b0f0a452c7c9556954e2287948b3",
+  "captured_source_count": 110,
+  "selected_manifest_artifact_count": 107,
+  "license": "See COPYING, LICENSE-MIT and UNLICENSE copied from the pinned source.",
+  "source_witnesses": [
+    {
+      "path": "crates/core/flags/parse.rs",
+      "bytes": 17793,
+      "sha256": "c2a3375396800a6c8d8e00d98c321d5caf3c91f7938fd90eafb4e82ea95b5ca5",
+      "source_identity": "0e5092485cb14fa9a1efabead5e3ed3bea057cec8e35c4828f987873ace4425f",
+      "manifest_entry": {
+        "ordinal": 68,
+        "bytes": 17793,
+        "semantic_image_identity": "0919fba845c2ac3fc848af9d7094857ff845d889c6c012b82d1b8d730ac38f91",
+        "semantic_image_bytes": 75253
+      },
+      "image_object": {
+        "object_id": "db76a10e15155be437bce4bbc57d012c445a0eacf3618adcddaa4f9b48333efb",
+        "semantic_image_identity": "0919fba845c2ac3fc848af9d7094857ff845d889c6c012b82d1b8d730ac38f91",
+        "bytes": 75253
+      }
+    },
+    {
+      "path": "crates/core/index/disabled.rs",
+      "bytes": 320,
+      "sha256": "a679181596d9770082e4fde9d15172da3371fd07c1de25ccba4cf45dd656ab22",
+      "source_identity": "0e205524b04cb8c5cbb71dea962d97aff8262a260856477db297e9fc60566ca4",
+      "manifest_entry": null
+    },
+    {
+      "path": "crates/core/main.rs",
+      "bytes": 18681,
+      "sha256": "21c10c3b35114543b90f38f27fd9102703a099bd504db950e1f10d2739b1444c",
+      "source_identity": "0ec3e41da37a278314f750764d73dac966b34200a0c10d7e2b4dc38b7a23faca",
+      "manifest_entry": {
+        "ordinal": 67,
+        "bytes": 18681,
+        "semantic_image_identity": "0919dc5a02d74135c4562e10b1a465d02c186e6d5a3fa2dd1848b008ffdbc438",
+        "semantic_image_bytes": 63739
+      },
+      "image_object": {
+        "object_id": "46772866f5a4352f778c68c80fd5a214b3074beabef0b9e99ce72bd9caa3a93d",
+        "semantic_image_identity": "0919dc5a02d74135c4562e10b1a465d02c186e6d5a3fa2dd1848b008ffdbc438",
+        "bytes": 63739
+      }
+    },
+    {
+      "path": "crates/searcher/src/testutil.rs",
+      "bytes": 27568,
+      "sha256": "34055e71ee830bdc897686554a3be65499150e1d67a7d4cde45d7bf9aa9e9e2b",
+      "source_identity": "0e7ce415bc0cdd1c1e1690d614b82533bd3e9052471c0e7734436cd2f5dce369",
+      "manifest_entry": null
+    },
+    {
+      "path": "fuzz/fuzz_targets/fuzz_glob.rs",
+      "bytes": 509,
+      "sha256": "c57fbc71025d53b7dc5ece7f340f54eadf48e4e9289b16b1db096d14111d722c",
+      "source_identity": "0e225933ca009d88d0486406038d910c4d2b56a2c652dcdfc5cdf20c9387730f",
+      "manifest_entry": null
+    }
+  ],
+  "retained_files": {
+    "main-semantic-image.bin": {
+      "bytes": 63739,
+      "sha256": "a728481ee4653726848cdd8a94efba24a31017bb4062f2a7ab27e5f01b366e09"
+    },
+    "parse-semantic-image.bin": {
+      "bytes": 75253,
+      "sha256": "ee55dca461f4246af2e2319afae24b328f01626480994a9030a135113d717cf2"
+    },
+    "actual-compilation-manifest.bin": {
+      "bytes": 47096,
+      "sha256": "07a4af529054bc79e4bc16cfe9d7525f2790ab4807989151a1da937ac857a79b"
+    }
+  },
+  "known_call": {
+    "source_path": "crates/core/main.rs",
+    "source_line": 45,
+    "span": [
+      1575,
+      1580
+    ],
+    "target_path": "crates/core/flags/parse.rs",
+    "target_line": 49,
+    "target_name_span": [
+      1480,
+      1485
+    ],
+    "target_binding": "Foreign Universe cargo flags::parse, VariantUnavailable; cannot be promoted to a local exact target."
+  },
+  "provenance_limit": "Original offline fixed-offset observation was diagnostic only. Regression code uses current existing Rust codecs; its native execution must be reported separately. Manifest membership is tested, not a reopened original State or full closure-binding claim."
+}

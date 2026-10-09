@@ -12,7 +12,7 @@ use super::snapshot::{
     semantic_confidence, semantic_declaration_identity, semantic_link_evidence, semantic_link_kind,
 };
 use backend_engine::application::{DocumentationSession, LocalCompilerClient};
-use backend_engine::builtin::{ProductSemanticPublicationRecord, SemanticPublicationCoverage};
+use backend_engine::builtin::ProductSemanticPublicationRecord;
 use backend_semantic::ir::{DeclarationIdentity, LinkKind, LinkTarget, SemanticReader};
 use futures_util::StreamExt as _;
 use std::collections::BTreeSet;
@@ -172,39 +172,38 @@ pub(super) fn execute_semantic_graph(
     };
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let sources = read_package_sources(&snapshot, package)?;
+    let available = view_build::SourceAvailability::of(&sources)?;
     let view = library.view();
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic graph relation: {error}")))?;
     let mut activations = Vec::new();
     let mut publication_bindings = Vec::new();
-    let mut image_slots = Vec::<(usize, usize)>::new();
+    let mut profile_scopes = std::collections::BTreeMap::new();
     for_package_publications(&relation, package, &sources, "graph", |key, record| {
-        let ProductSemanticPublicationRecord::Published {
-            coverage: SemanticPublicationCoverage::Complete,
-            claim,
-        } = record
-        else {
+        view_build::SourceAvailability::record_publication_scope(&mut profile_scopes, key, record);
+        let ProductSemanticPublicationRecord::Published { coverage, claim } = record else {
             return Ok(());
         };
         let binding = claim.binding();
         let activated =
             activate_semantic_publication(compiler, key, *claim, generations, image_rows)?;
-        let activation_index = activations.len();
-        activations.push(activated);
+        activations.push(available.select(key, *coverage, activated, image_rows)?);
         publication_bindings.push(binding);
-        for image_index in 0..activations[activation_index].images().len() {
-            image_slots.push((activation_index, image_index));
-        }
         Ok(())
     })?;
     let mut source_binding = None;
-    for (activation_index, image_index) in &image_slots {
-        let image = activations[*activation_index].images()[*image_index]
-            .reopen()
-            .map_err(|error| BuiltinModelError(format!("reopen semantic graph image: {error}")))?;
-        if semantic_entity_for_symbol(&image, package, source_symbol)?.is_some() {
-            source_binding = Some(publication_bindings[*activation_index]);
+    for (activation, binding) in activations.iter().zip(&publication_bindings) {
+        for image in activation.images() {
+            let image = image.reopen().map_err(|error| {
+                BuiltinModelError(format!("reopen semantic graph image: {error}"))
+            })?;
+            if semantic_entity_for_symbol(&image, package, source_symbol)?.is_some() {
+                source_binding = Some(*binding);
+                break;
+            }
+        }
+        if source_binding.is_some() {
             break;
         }
     }
@@ -214,13 +213,13 @@ pub(super) fn execute_semantic_graph(
     let project_paths = project_paths_for_package(&sources, package);
     let mut relations = project_semantic_graph_relations(
         &activations,
-        &image_slots,
         view,
         package,
         source_symbol,
         source_id,
         include_incoming,
         &project_paths,
+        &available.retargeting_scopes(package, &profile_scopes),
     )?;
     let pairs = if package_indexed_in_sources(&sources, package) {
         structural_calls.coordinate_pairs(&sources, package)?
@@ -477,6 +476,9 @@ fn project_semantic_graph_relations_from_bytes(
         source_id,
         include_incoming,
         project_paths,
+        &std::collections::BTreeMap::new(),
+        &[],
+        true,
     )
 }
 
@@ -488,9 +490,20 @@ fn project_opened_semantic_graph(
     source_id: backend_engine::RowId,
     include_incoming: bool,
     project_paths: &BTreeSet<String>,
+    scope: &std::collections::BTreeMap<
+        backend_semantic::vocabulary::Language,
+        view_build::RetargetingScope,
+    >,
+    programs: &[&view_build::CurrentNativeProgram],
+    legacy_image_program: bool,
 ) -> Result<BTreeSet<backend_engine::GraphRelation>, BuiltinModelError> {
     let image_refs = images.iter().collect::<Vec<_>>();
-    let callable_index = ProjectCallableIndex::build_from_views(&image_refs)?;
+    let callable_index = ProjectCallableIndex::build_from_views_with_programs(
+        &image_refs,
+        scope,
+        programs,
+        legacy_image_program,
+    )?;
     let published = published_identities_from_views(images)?;
     let mut relations = BTreeSet::new();
     for image in images {
@@ -579,24 +592,25 @@ fn project_opened_semantic_graph(
 }
 
 fn project_semantic_graph_relations(
-    activations: &[super::super::ActivatedProductSemantics],
-    image_slots: &[(usize, usize)],
+    activations: &[view_build::SelectedSourceArtifacts],
     view: &backend_engine::ViewRoot,
     package: backend_engine::PackageKey,
     symbol: backend_engine::SymbolKey,
     source_id: backend_engine::RowId,
     include_incoming: bool,
     project_paths: &BTreeSet<String>,
+    scope: &std::collections::BTreeMap<
+        backend_semantic::vocabulary::Language,
+        view_build::RetargetingScope,
+    >,
 ) -> Result<BTreeSet<backend_engine::GraphRelation>, BuiltinModelError> {
-    let mut opened = Vec::with_capacity(image_slots.len());
-    for (activation_index, image_index) in image_slots {
-        opened.push(
-            activations[*activation_index].images()[*image_index]
-                .reopen()
-                .map_err(|error| {
-                    BuiltinModelError(format!("reopen semantic graph image: {error}"))
-                })?,
-        );
+    let mut opened = Vec::new();
+    for activation in activations {
+        for image in activation.images() {
+            opened.push(image.reopen().map_err(|error| {
+                BuiltinModelError(format!("reopen semantic graph image: {error}"))
+            })?);
+        }
     }
     project_opened_semantic_graph(
         &opened,
@@ -606,6 +620,14 @@ fn project_semantic_graph_relations(
         source_id,
         include_incoming,
         project_paths,
+        scope,
+        &activations
+            .iter()
+            .filter_map(|activation| activation.program())
+            .collect::<Vec<_>>(),
+        !activations
+            .iter()
+            .any(|activation| activation.has_program_manifest()),
     )
 }
 
@@ -643,6 +665,9 @@ fn project_reference_facts_from_bytes(
         project_paths,
         structural_pairs,
         None,
+        &std::collections::BTreeMap::new(),
+        &[],
+        true,
     )
 }
 
@@ -656,6 +681,12 @@ fn project_opened_reference_facts(
     // The package's source root, where a name-matched call's file is read
     // to place it; `None` places none.
     root: Option<&std::path::Path>,
+    scope: &std::collections::BTreeMap<
+        backend_semantic::vocabulary::Language,
+        view_build::RetargetingScope,
+    >,
+    programs: &[&view_build::CurrentNativeProgram],
+    legacy_image_program: bool,
 ) -> Result<Vec<backend_engine::ReferenceFact>, BuiltinModelError> {
     let image_refs = images.iter().collect::<Vec<_>>();
     let mut files = std::collections::BTreeMap::new();
@@ -663,7 +694,12 @@ fn project_opened_reference_facts(
     for image in images {
         append_reference_facts(package, image, target_symbol, &mut facts)?;
     }
-    let callable_index = ProjectCallableIndex::build_from_views(&image_refs)?;
+    let callable_index = ProjectCallableIndex::build_from_views_with_programs(
+        &image_refs,
+        scope,
+        programs,
+        legacy_image_program,
+    )?;
     let target_row_id = backend_engine::RowId::Symbol(target_symbol);
     let mut published = BTreeSet::new();
     for image in images {
@@ -889,25 +925,15 @@ fn project_opened_reference_facts(
     Ok(facts)
 }
 
-/// Answers "where is this declaration used" from the semantic occurrence
-/// plane, falling back to the structural lane when the package has no
-/// complete semantic publication.
+/// Answers references from selected artifacts, preserving each fact's target,
+/// authority and source span. Partial artifacts must match the current source;
+/// unrelated unavailable sources do not suppress their positive facts. Exact
+/// cross-source native coordinates retain their program/source/declaration
+/// proof, while scope-based retargeting requires Complete coverage.
 ///
-/// The queried coordinate resolves against the published view; the selected
-/// complete publications of its package are then asked for every occurrence
-/// that targets the declaration, and the catalog names each site. Sites,
-/// targets, and provenance (relation kind, authority class, and the captured
-/// source span) all survive to the reply; nothing is reduced to bare
-/// adjacency.
-///
-/// A package with no complete semantic publication (a workspace member the
-/// compiler has not admitted, for instance) cannot answer this way: there is
-/// no image to walk. `execute_structural_references` answers instead, from
-/// same-file and import-resolved call text; every fact it produces carries
-/// [`backend_engine::SemanticConfidence::Syntactic`], so a caller can tell a
-/// path match from a compiler-verified one apart. Typed relations (the rose)
-/// have no structural analogue and still refuse the query outright in that
-/// case — only references falls back.
+/// Structural facts remain explicitly syntactic. If no selected publication
+/// exists, the structural reference path answers alone. Neither path certifies
+/// that an empty result is a complete inventory of a Partial package.
 pub(super) fn execute_references(
     structural_calls: &mut view_build::StructuralCallResidence,
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
@@ -942,45 +968,37 @@ pub(super) fn execute_references(
     };
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let sources = read_package_sources(&snapshot, package)?;
+    let available = view_build::SourceAvailability::of(&sources)?;
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| {
             BuiltinModelError(format!("open semantic references relation: {error}"))
         })?;
     let mut activations = Vec::new();
-    let mut image_slots = Vec::<(usize, usize)>::new();
     let mut publication_found = false;
+    let mut profile_scopes = std::collections::BTreeMap::new();
     for_package_publications(&relation, package, &sources, "references", |key, record| {
-        let ProductSemanticPublicationRecord::Published {
-            coverage: SemanticPublicationCoverage::Complete,
-            claim,
-        } = record
-        else {
+        view_build::SourceAvailability::record_publication_scope(&mut profile_scopes, key, record);
+        let ProductSemanticPublicationRecord::Published { coverage, claim } = record else {
             return Ok(());
         };
         publication_found = true;
         let activated =
             activate_semantic_publication(compiler, key, *claim, generations, image_rows)?;
-        let activation_index = activations.len();
-        activations.push(activated);
-        for image_index in 0..activations[activation_index].images().len() {
-            image_slots.push((activation_index, image_index));
-        }
+        activations.push(available.select(key, *coverage, activated, image_rows)?);
         Ok(())
     })?;
     if !publication_found {
         return execute_structural_references(structural_calls, daemon, target);
     }
     let project_paths = project_paths_for_package(&sources, package);
-    let mut opened = Vec::with_capacity(image_slots.len());
-    for (activation_index, image_index) in &image_slots {
-        opened.push(
-            activations[*activation_index].images()[*image_index]
-                .reopen()
-                .map_err(|error| {
-                    BuiltinModelError(format!("reopen semantic references image: {error}"))
-                })?,
-        );
+    let mut opened = Vec::new();
+    for activation in &activations {
+        for image in activation.images() {
+            opened.push(image.reopen().map_err(|error| {
+                BuiltinModelError(format!("reopen semantic references image: {error}"))
+            })?);
+        }
     }
     let pairs = if package_indexed_in_sources(&sources, package) {
         structural_calls.coordinate_pairs(&sources, package)?
@@ -999,6 +1017,14 @@ pub(super) fn execute_references(
         &project_paths,
         &pairs,
         root.as_deref(),
+        &available.retargeting_scopes(package, &profile_scopes),
+        &activations
+            .iter()
+            .filter_map(|activation| activation.program())
+            .collect::<Vec<_>>(),
+        !activations
+            .iter()
+            .any(|activation| activation.has_program_manifest()),
     )?;
     let references = library.references(target, &facts).map_err(|error| {
         BuiltinModelError(format!("project references through the catalog: {error}"))
@@ -11123,3 +11149,7 @@ mod references_tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "selected_source_references_tests.rs"]
+mod selected_source_references_tests;

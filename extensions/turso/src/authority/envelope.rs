@@ -36,6 +36,7 @@ const MAGIC: &[u8] = b"BACKEND_COMPILER_PUBLICATION_ENVELOPE\0";
 const ENVELOPE_VERSION: u16 = 4;
 const METADATA_MAGIC: &[u8] = b"BACKEND_COMPILER_PUBLICATION_METADATA\0";
 const METADATA_VERSION: u16 = 4;
+const PROGRAM_METADATA_VERSION: u16 = 5;
 const MAX_PROFILE_BYTES: usize = 256;
 const MAX_MEMBER_IDS: usize = 100_000;
 const MAX_MANIFEST_BYTES: usize =
@@ -58,6 +59,57 @@ pub const COMPILER_PUBLICATION_METADATA_SCHEMA: SchemaIdentity =
     SchemaIdentity::new(0x7a, 0xc002, 4);
 /// Schema identity for one complete semantic image in the selected publication pack.
 pub const COMPILER_SEMANTIC_IMAGE_SCHEMA: SchemaIdentity = SchemaIdentity::new(0x7a, 0xc003, 1);
+
+/// Schema of witness-bearing metadata. Legacy metadata remains byte-identical v4.
+pub const COMPILER_PROGRAM_METADATA_SCHEMA: SchemaIdentity = SchemaIdentity::new(0x7a, 0xc002, 5);
+/// Exact schema of one full native program source-membership object.
+pub const NATIVE_PROGRAM_SOURCE_MANIFEST_SCHEMA: SchemaIdentity =
+    SchemaIdentity::new(0x7a, 0xc009, 1);
+
+/// A small immutable CAS reference, never a repeated source list in metadata.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CompilerProgramSourceMember {
+    object_id: AuthorityHash,
+    program: AuthorityHash,
+    byte_length: u32,
+}
+impl CompilerProgramSourceMember {
+    /// Binds an already admitted CAS object to its validated canonical membership.
+    pub fn from_verified_object(
+        object: VerifiedObjectEnvelope,
+        sources: &backend_semantic::ir::NativeProgramSourceManifest,
+    ) -> Result<Self, CompilerEnvelopeError> {
+        let key = ObjectKey::<backend_semantic::ir::NativeProgramSourceManifestSchema>::from_value(
+            sources.as_bytes(),
+        );
+        if object.schema() != NATIVE_PROGRAM_SOURCE_MANIFEST_SCHEMA
+            || object.key() != key.as_bytes()
+            || object.payload_len() != sources.as_bytes().len() as u64
+        {
+            return Err(CompilerEnvelopeError::NativeProgramSources);
+        }
+        Ok(Self {
+            object_id: *object.id().as_bytes(),
+            program: sources.program(),
+            byte_length: sources.as_bytes().len() as u32,
+        })
+    }
+    /// Exact CAS member identity.
+    #[must_use]
+    pub const fn object_id(&self) -> &AuthorityHash {
+        &self.object_id
+    }
+    /// Independently verified full native program identity.
+    #[must_use]
+    pub const fn program(&self) -> &AuthorityHash {
+        &self.program
+    }
+    /// Bounded canonical payload length.
+    #[must_use]
+    pub const fn byte_length(&self) -> u32 {
+        self.byte_length
+    }
+}
 
 /// One semantic image's FileStore identity and compiler authority facts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -198,6 +250,7 @@ pub struct CompilerPublicationMetadata {
     images: Box<[CompilerImageMember]>,
     versioned_planes: Option<VersionedPlaneMetadata>,
     semantic_catalog_root: Option<AuthorityHash>,
+    native_program_sources: Option<CompilerProgramSourceMember>,
 }
 
 impl CompilerPublicationMetadata {
@@ -291,7 +344,34 @@ impl CompilerPublicationMetadata {
                 .as_ref()
                 .map(|planes| *planes.catalog_root().as_bytes()),
             versioned_planes,
+            native_program_sources: None,
         })
+    }
+
+    /// Adds an exact bounded program object to this compiler closure.
+    pub fn with_native_program_sources(
+        mut self,
+        member: CompilerProgramSourceMember,
+    ) -> Result<Self, CompilerEnvelopeError> {
+        if metadata_member_ids(&self).len() >= MAX_MEMBER_IDS {
+            return Err(CompilerEnvelopeError::MemberCount);
+        }
+        self.native_program_sources = Some(member);
+        Ok(self)
+    }
+
+    /// Optional full native program proof; absence grants no additional authority.
+    #[must_use]
+    pub const fn native_program_sources(&self) -> Option<&CompilerProgramSourceMember> {
+        self.native_program_sources.as_ref()
+    }
+
+    fn schema(&self) -> SchemaIdentity {
+        if self.native_program_sources.is_some() {
+            COMPILER_PROGRAM_METADATA_SCHEMA
+        } else {
+            COMPILER_PUBLICATION_METADATA_SCHEMA
+        }
     }
 
     /// Typed compiler manifest identity.
@@ -389,10 +469,18 @@ impl CompilerPublicationMetadata {
                 + self
                     .versioned_planes
                     .as_ref()
-                    .map_or(0, |planes| 4 + planes.canonical_bytes().len()),
+                    .map_or(0, |planes| 4 + planes.canonical_bytes().len())
+                + usize::from(self.native_program_sources.is_some()) * 68,
         );
         output.extend_from_slice(METADATA_MAGIC);
-        output.extend_from_slice(&METADATA_VERSION.to_le_bytes());
+        output.extend_from_slice(
+            &if self.native_program_sources.is_some() {
+                PROGRAM_METADATA_VERSION
+            } else {
+                METADATA_VERSION
+            }
+            .to_le_bytes(),
+        );
         let manifest_length = u32::try_from(self.manifest_bytes.len()).unwrap_or(u32::MAX);
         output.extend_from_slice(&manifest_length.to_le_bytes());
         output.extend_from_slice(&self.manifest_bytes);
@@ -415,14 +503,24 @@ impl CompilerPublicationMetadata {
                 output.extend_from_slice(&bytes);
             }
         }
+        if let Some(member) = self.native_program_sources {
+            output.extend_from_slice(&member.object_id);
+            output.extend_from_slice(&member.program);
+            output.extend_from_slice(&member.byte_length.to_le_bytes());
+        }
         output
     }
 
     /// Returns the typed FileStore metadata object.
     #[must_use]
     pub fn typed_object(&self) -> TypedObject {
-        let key = ObjectKey::<CompilerPublicationMetadataSchema>::from_value(self);
-        TypedObject::from_value(&key, self)
+        if self.native_program_sources.is_some() {
+            let key = ObjectKey::<CompilerProgramMetadataSchema>::from_value(self);
+            TypedObject::from_value(&key, self)
+        } else {
+            let key = ObjectKey::<CompilerPublicationMetadataSchema>::from_value(self);
+            TypedObject::from_value(&key, self)
+        }
     }
 
     /// Returns the content-addressed metadata object ID.
@@ -442,7 +540,8 @@ impl CompilerPublicationMetadata {
         if input.take(METADATA_MAGIC.len())? != METADATA_MAGIC {
             return Err(CompilerEnvelopeError::MetadataMagic);
         }
-        if input.u16()? != METADATA_VERSION {
+        let version = input.u16()?;
+        if !matches!(version, METADATA_VERSION | PROGRAM_METADATA_VERSION) {
             return Err(CompilerEnvelopeError::MetadataVersion);
         }
         let manifest_length =
@@ -480,6 +579,22 @@ impl CompilerPublicationMetadata {
             }
             _ => return Err(CompilerEnvelopeError::VersionedPlaneMetadata),
         };
+        let native_program_sources = if version == PROGRAM_METADATA_VERSION {
+            let member = CompilerProgramSourceMember {
+                object_id: input.array::<32>()?,
+                program: input.array::<32>()?,
+                byte_length: input.u32()?,
+            };
+            if member.byte_length == 0
+                || member.byte_length as usize
+                    > backend_semantic::ir::MAX_NATIVE_PROGRAM_MANIFEST_BYTES
+            {
+                return Err(CompilerEnvelopeError::NativeProgramSources);
+            }
+            Some(member)
+        } else {
+            None
+        };
         if !input.is_empty() {
             return Err(CompilerEnvelopeError::TrailingBytes);
         }
@@ -489,12 +604,15 @@ impl CompilerPublicationMetadata {
         {
             return Err(CompilerEnvelopeError::MemberOrder);
         }
-        let metadata = Self::new_with_versioned_planes(
+        let mut metadata = Self::new_with_versioned_planes(
             &manifest_bytes,
             binding_bytes,
             images,
             versioned_planes,
         )?;
+        if let Some(member) = native_program_sources {
+            metadata = metadata.with_native_program_sources(member)?;
+        }
         if metadata.canonical_bytes() != bytes {
             return Err(CompilerEnvelopeError::NonCanonical);
         }
@@ -918,11 +1036,19 @@ pub fn reopen_selected_compiler_publication(
         .get(metadata_id)
         .map_err(|error| format!("{error:?}"))?
         .ok_or_else(|| "selected compiler metadata disappeared from its closure".to_owned())?;
-    if metadata_object.schema() != COMPILER_PUBLICATION_METADATA_SCHEMA {
+    if !matches!(
+        metadata_object.schema(),
+        COMPILER_PUBLICATION_METADATA_SCHEMA | COMPILER_PROGRAM_METADATA_SCHEMA
+    ) {
         return Err("selected compiler metadata has the wrong schema".to_owned());
     }
     let metadata = CompilerPublicationMetadata::decode(metadata_object.bytes())
         .map_err(|error| error.to_string())?;
+    if metadata_object.schema() != metadata.schema()
+        || metadata.object_id() != *metadata_object.id().as_bytes()
+    {
+        return Err("compiler metadata version differs from its typed object".to_owned());
+    }
     envelope
         .validate_metadata(&metadata)
         .map_err(|error| error.to_string())?;
@@ -984,11 +1110,19 @@ pub fn reopen_selected_compiler_metadata(
         .get(metadata_id)
         .map_err(|error| format!("read selected compiler metadata: {error:?}"))?
         .ok_or_else(|| "selected compiler metadata disappeared from its closure".to_owned())?;
-    if metadata_object.schema() != COMPILER_PUBLICATION_METADATA_SCHEMA {
+    if !matches!(
+        metadata_object.schema(),
+        COMPILER_PUBLICATION_METADATA_SCHEMA | COMPILER_PROGRAM_METADATA_SCHEMA
+    ) {
         return Err("selected compiler metadata has the wrong schema".to_owned());
     }
     let metadata = CompilerPublicationMetadata::decode(metadata_object.bytes())
         .map_err(|error| error.to_string())?;
+    if metadata_object.schema() != metadata.schema()
+        || metadata.object_id() != *metadata_object.id().as_bytes()
+    {
+        return Err("compiler metadata version differs from its typed object".to_owned());
+    }
     envelope
         .validate_metadata(&metadata)
         .map_err(|error| error.to_string())?;
@@ -1108,12 +1242,17 @@ impl DurableClosureVerifier for FileStoreCompilerPublicationVerifier<'_, '_, '_>
             .ok_or_else(|| {
                 "compiler publication metadata disappeared from its closure".to_owned()
             })?;
-        if metadata_object.schema() != COMPILER_PUBLICATION_METADATA_SCHEMA {
+        if !matches!(
+            metadata_object.schema(),
+            COMPILER_PUBLICATION_METADATA_SCHEMA | COMPILER_PROGRAM_METADATA_SCHEMA
+        ) {
             return Err("compiler metadata object has the wrong schema".to_owned());
         }
         let observed_metadata = CompilerPublicationMetadata::decode(metadata_object.bytes())
             .map_err(|error| error.to_string())?;
-        if observed_metadata != *self.expected_metadata
+        if metadata_object.schema() != observed_metadata.schema()
+            || observed_metadata.object_id() != *metadata_object.id().as_bytes()
+            || observed_metadata != *self.expected_metadata
             || observed_metadata.binding_identity != observed.logical_generation
             || metadata_member_ids(&observed_metadata).as_slice() != observed.member_ids.as_ref()
         {
@@ -1140,6 +1279,9 @@ fn metadata_member_ids(metadata: &CompilerPublicationMetadata) -> Vec<AuthorityH
         .map_or(0, VersionedPlaneMetadata::segment_count);
     let mut members = Vec::with_capacity(metadata.images.len() + plane_count + 1);
     members.push(metadata.object_id());
+    if let Some(member) = metadata.native_program_sources() {
+        members.push(*member.object_id());
+    }
     members.extend(metadata.images.iter().map(|image| image.object_id));
     if let Some(planes) = &metadata.versioned_planes {
         members.extend(
@@ -1166,10 +1308,80 @@ fn metadata_member_count(
         .ok_or(CompilerEnvelopeError::MemberCount)
 }
 
+/// Reopens only the selected closure's exact program member and validates its identity.
+pub fn reopen_native_program_sources(
+    closure: &backend_store::DurableManifest,
+    metadata: &CompilerPublicationMetadata,
+) -> Result<Option<backend_semantic::ir::NativeProgramSourceManifest>, String> {
+    let Some(member) = metadata.native_program_sources() else {
+        return Ok(None);
+    };
+    let id = closure
+        .admit_claim(UntrustedObjectId::from_bytes(*member.object_id()))
+        .map_err(|e| format!("admit native program source member: {e:?}"))?
+        .ok_or_else(|| "native program source member is absent from selected closure".to_owned())?;
+    let object = closure
+        .get(id)
+        .map_err(|e| format!("read native program source member: {e:?}"))?
+        .ok_or_else(|| "native program source member disappeared".to_owned())?;
+    if object.schema() != NATIVE_PROGRAM_SOURCE_MANIFEST_SCHEMA
+        || object.bytes().len() != member.byte_length() as usize
+    {
+        return Err("native program source schema or extent mismatch".to_owned());
+    }
+    let sources = backend_semantic::ir::NativeProgramSourceManifest::decode(object.bytes())
+        .map_err(|e| e.to_string())?;
+    if sources.program() != *member.program() {
+        return Err("native program membership identity mismatch".to_owned());
+    }
+    Ok(Some(sources))
+}
+
+fn verify_native_program_image(
+    bytes: &[u8],
+    program: Option<&backend_semantic::ir::NativeProgramSourceManifest>,
+    mappings: Option<&std::collections::BTreeMap<&str, backend_semantic::ir::SourceIdentity>>,
+) -> Result<(), String> {
+    use backend_semantic::ir::{
+        ImageProvenance, SemanticCoreReader, SemanticImageView, SemanticReader,
+    };
+    let Some(program) = program else {
+        return Ok(());
+    };
+    let view = SemanticImageView::reopen(bytes).map_err(|e| e.to_string())?;
+    let ImageProvenance::Captured {
+        source,
+        recipe,
+        scope,
+        ..
+    } = view.image_facts().provenance
+    else {
+        return Err("program image has no captured provenance".to_owned());
+    };
+    let path = view
+        .atom(scope.path)
+        .and_then(|p| std::str::from_utf8(p).ok())
+        .ok_or_else(|| "program image path is invalid".to_owned())?;
+    if recipe.profile.language() != backend_semantic::vocabulary::Language::TypeScript
+        || recipe.toolchain != program.toolchain()
+        || mappings.and_then(|mappings| mappings.get(path)) != Some(&source)
+    {
+        return Err("program member differs from compiler image source or recipe".to_owned());
+    }
+    Ok(())
+}
+
 fn verify_semantic_image_members(
     manifest: &backend_store::DurableManifest,
     metadata: &CompilerPublicationMetadata,
 ) -> Result<(), String> {
+    let program = reopen_native_program_sources(manifest, metadata)?;
+    let mappings = program.as_ref().map(|program| {
+        program
+            .sources()
+            .filter_map(|row| row.package_path.map(|path| (path, row.source)))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    });
     for expected in metadata.images() {
         let object_id = manifest
             .admit_claim(UntrustedObjectId::from_bytes(*expected.object_id()))
@@ -1186,6 +1398,7 @@ fn verify_semantic_image_members(
                 "compiler semantic image schema or length differs from metadata".to_owned(),
             );
         }
+        verify_native_program_image(object.bytes(), program.as_ref(), mappings.as_ref())?;
         let (observed, typed) = CompilerImageMember::from_bytes_for_ordinal(
             expected.artifact_ordinal(),
             object.bytes(),
@@ -1354,6 +1567,13 @@ fn copy_semantic_image_members(
     images
         .try_reserve_exact(metadata.images().len())
         .map_err(|_| "compiler image inventory allocation failed".to_owned())?;
+    let program = reopen_native_program_sources(manifest, metadata)?;
+    let mappings = program.as_ref().map(|program| {
+        program
+            .sources()
+            .filter_map(|row| row.package_path.map(|path| (path, row.source)))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    });
     for expected in metadata.images() {
         let object_id = manifest
             .admit_claim(UntrustedObjectId::from_bytes(*expected.object_id()))
@@ -1370,6 +1590,7 @@ fn copy_semantic_image_members(
                 "compiler semantic image schema or length differs from metadata".to_owned(),
             );
         }
+        verify_native_program_image(object.bytes(), program.as_ref(), mappings.as_ref())?;
         let (observed, typed) = CompilerImageMember::from_bytes_for_ordinal(
             expected.artifact_ordinal(),
             object.bytes(),
@@ -1476,6 +1697,8 @@ pub enum CompilerEnvelopeError {
     MetadataMismatch,
     /// The optional versioned-plane metadata flag or length is malformed.
     VersionedPlaneMetadata,
+    /// A full native program object has invalid schema, extent or membership.
+    NativeProgramSources,
     /// The canonical versioned-plane metadata is invalid.
     VersionedPlane(VersionedPlaneError),
 }
@@ -1625,6 +1848,17 @@ impl Schema for CompilerPublicationMetadataSchema {
 
     type Value = CompilerPublicationMetadata;
 
+    fn encode(value: &Self::Value, output: &mut Vec<u8>) {
+        output.extend_from_slice(&value.canonical_bytes());
+    }
+}
+
+struct CompilerProgramMetadataSchema;
+impl Schema for CompilerProgramMetadataSchema {
+    const DOMAIN: u8 = COMPILER_PROGRAM_METADATA_SCHEMA.domain();
+    const TYPE: u16 = COMPILER_PROGRAM_METADATA_SCHEMA.ty();
+    const VERSION: u8 = COMPILER_PROGRAM_METADATA_SCHEMA.version();
+    type Value = CompilerPublicationMetadata;
     fn encode(value: &Self::Value, output: &mut Vec<u8>) {
         output.extend_from_slice(&value.canonical_bytes());
     }
@@ -1832,6 +2066,88 @@ mod tests {
     fn compiler_image_from_bytes(bytes: &[u8]) -> (CompilerImageMember, TypedObject) {
         let identity = SemanticImageIdentity::from_encoded_bytes(bytes);
         CompilerImageMember::from_bytes(bytes, *identity.as_ref()).expect("valid image member")
+    }
+
+    #[test]
+    fn native_program_metadata_preserves_legacy_identity_and_binds_exact_cas_object() {
+        use backend_semantic::ir::{
+            NativeProgramSource, NativeProgramSourceManifest, NativeProgramSourceManifestSchema,
+            SourceIdentity,
+        };
+        let (image, _) = compiler_image();
+        let old = metadata(image);
+        let old_bytes = old.canonical_bytes();
+        let old_id = old.object_id();
+        let reopened = CompilerPublicationMetadata::decode(&old_bytes).expect("v4 metadata");
+        assert_eq!(reopened.canonical_bytes(), old_bytes);
+        assert_eq!(reopened.object_id(), old_id);
+        assert!(reopened.native_program_sources().is_none());
+        assert_eq!(
+            reopened.typed_object().schema(),
+            COMPILER_PUBLICATION_METADATA_SCHEMA
+        );
+        let sources = NativeProgramSourceManifest::from_sources(
+            ContentId::from_canonical_bytes(b"compiler"),
+            vec![NativeProgramSource {
+                program_path: "workspace/main.ts".into(),
+                package_path: Some("main.ts".into()),
+                source: SourceIdentity::from_bytes(b"export {};").expect("source"),
+            }],
+        )
+        .expect("manifest");
+        let object = TypedObject::from_value(
+            &ObjectKey::<NativeProgramSourceManifestSchema>::from_value(sources.as_bytes()),
+            sources.as_bytes(),
+        );
+        let directory = scratch_store();
+        let store = FileStore::open(&directory, 1024 * 1024).expect("CAS");
+        store
+            .write_object(&object)
+            .expect("write full program once");
+        let verified = store
+            .verify_object_claim(UntrustedObjectId::from_bytes(*object.id().as_bytes()))
+            .expect("verified member");
+        let member = CompilerProgramSourceMember::from_verified_object(verified, &sources)
+            .expect("exact object");
+        let current = old
+            .with_native_program_sources(member)
+            .expect("v5 membership");
+        let bytes = current.canonical_bytes();
+        assert_eq!(
+            bytes.len(),
+            old_bytes.len() + 68,
+            "metadata retains only the small object reference"
+        );
+        assert_eq!(
+            CompilerPublicationMetadata::decode(&bytes).expect("v5 roundtrip"),
+            current
+        );
+        assert_eq!(
+            current.typed_object().schema(),
+            COMPILER_PROGRAM_METADATA_SCHEMA
+        );
+        assert!(metadata_member_ids(&current).contains(member.object_id()));
+        let edited = NativeProgramSourceManifest::from_sources(
+            sources.toolchain(),
+            vec![NativeProgramSource {
+                program_path: "workspace/main.ts".into(),
+                package_path: Some("main.ts".into()),
+                source: SourceIdentity::from_bytes(b"changed").expect("source"),
+            }],
+        )
+        .expect("changed membership");
+        assert_eq!(
+            CompilerProgramSourceMember::from_verified_object(verified, &edited),
+            Err(CompilerEnvelopeError::NativeProgramSources)
+        );
+        let mut future = bytes;
+        future[METADATA_MAGIC.len()..METADATA_MAGIC.len() + 2].copy_from_slice(&6u16.to_le_bytes());
+        assert_eq!(
+            CompilerPublicationMetadata::decode(&future),
+            Err(CompilerEnvelopeError::MetadataVersion)
+        );
+        drop(store);
+        std::fs::remove_dir_all(directory).expect("cleanup");
     }
 
     #[test]

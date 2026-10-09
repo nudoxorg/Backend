@@ -1,10 +1,10 @@
 //! Typed source-to-document row projection.
 //!
-//! This module is the enforcement point of the two-lane answer contract
-//! (`super::lanes`): published semantic images are projected first, files
-//! their profile covers keep no structural rows, files without complete
-//! coverage fall back to the tree-sitter baseline, and a stale publication
-//! answers semantic and typed stale rather than being silently replaced.
+//! This module enforces the two-lane contract (`super::lanes`). Complete
+//! semantic publications retain their existing semantic-only/stale policy.
+//! Partial publications contribute current selected artifacts' positive facts
+//! alongside structural declarations; available bytes never certify a whole
+//! file inventory or promote package coverage to Complete.
 
 mod call_join;
 #[cfg(test)]
@@ -24,6 +24,7 @@ mod query;
 #[cfg(test)]
 mod search_ranking_native;
 mod semantic;
+mod source_availability;
 mod structural;
 
 /// Human-readable spelling; anonymous anchors remain identity evidence.
@@ -40,6 +41,7 @@ pub(super) fn semantic_display_name(
     }
 }
 
+pub(in crate::builtin) use call_join::RetargetingScope;
 pub(crate) use call_join::{
     ProjectCallableIndex, foreign_namespace_call_retarget, foreign_package_call_retarget,
     join_project_field, join_project_mention, join_project_value, project_paths_for_package,
@@ -55,6 +57,9 @@ pub(super) use identity::{external_semantic_symbol, semantic_symbol};
 pub(super) use query::semantic_query_corpus;
 pub(crate) use semantic::compiled_source_path;
 pub(super) use semantic::{ForeignPublication, rows_for_indexed_sources};
+pub(in crate::builtin) use source_availability::{
+    CurrentNativeProgram, SelectedSourceArtifacts, SourceAvailability,
+};
 pub(crate) use structural::{
     StructuralCallResidence, structural_call_graph_relations_mapped,
     structural_call_graph_relations_resident, structural_call_span, structural_file_span,
