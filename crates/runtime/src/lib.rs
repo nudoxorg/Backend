@@ -86,6 +86,13 @@ const AUTHORITY_INITIALIZATION_LOCK: &str = "authority-initialize.lock";
 /// command that was already working. A live child is evidence that startup is
 /// progressing, so waiting on it is not the same act as waiting on nothing.
 const LIVE_START_TIMEOUT: Duration = Duration::from_secs(90);
+/// The bounded interval a command-bearing surface may wait for the existing
+/// owner to publish its endpoint before returning an unsent-command result.
+///
+/// A command invocation uses this once: if its candidate loses the workspace
+/// owner lease, it waits for the winner instead of asking the user to retry
+/// and spawning another contender.
+pub const COMMAND_STARTUP_TIMEOUT: Duration = LIVE_START_TIMEOUT;
 /// A checked owner-lease contender must await the already-opening winner.
 /// This is distinct from a failed owner composition or an unavailable profile.
 pub const OWNER_CONTENDED_EXIT_CODE: u8 = 75;

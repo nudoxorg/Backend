@@ -26,10 +26,12 @@ use std::time::{Duration, Instant};
 
 /// How long `index` watches readiness before handing the reader the line.
 const PROGRESS_LIMIT: Duration = Duration::from_secs(20);
-/// Initial CLI response budget; this never extends the shared owner's lifetime.
+/// One command invocation waits for the shared owner under the runtime's
+/// existing bounded cold-start deadline. Progress is reported on stderr; if
+/// the deadline expires, the original command remains explicitly unsent.
 #[cfg(unix)]
-const STARTUP_RESPONSE_BUDGET: Duration = Duration::from_secs(2);
-/// EX_TEMPFAIL: startup remains pending, and no command was submitted.
+const STARTUP_COMMAND_BUDGET: Duration = backend_runtime::COMMAND_STARTUP_TIMEOUT;
+/// EX_TEMPFAIL: the bounded owner wait ended before a command was submitted.
 #[cfg(unix)]
 const EXIT_STARTUP_PENDING: u8 = 75;
 
@@ -107,7 +109,7 @@ fn run_words(words: &[String], options: &Options) -> Result<(String, ExitCode), 
         {
             match backend_runtime::start_locald(
                 &workspace,
-                STARTUP_RESPONSE_BUDGET,
+                STARTUP_COMMAND_BUDGET,
                 startup_progress,
             ) {
                 Ok(backend_runtime::LocaldStartup::Ready(endpoint)) => Ok(endpoint),
@@ -165,6 +167,8 @@ fn run_words(words: &[String], options: &Options) -> Result<(String, ExitCode), 
             Operand::Path(endpoint.to_string_lossy().into_owned()),
         )
     })?;
+    // Startup is a single bounded wait; the planned command is submitted once,
+    // only after an endpoint connection succeeded.
     let answer = run::execute(&mut session, &request)?;
     if let Request::Index(path) = &request {
         watch_readiness(&mut session, path, options);

@@ -1,0 +1,143 @@
+{
+  "schema": "nudox-root-current-trio-audit-v1",
+  "source": {
+    "commit": "a3247f4a14ceabadf1f978e9b24b1ec48d47694a",
+    "lock_sha256": "b45bb9a10382c70e6888b220e82061d038b886a5235978f9442c6483229bb1dd",
+    "status": "",
+    "tree": "7a29509343c9b7624a3aad9c1ecf5c5e8adb5e68"
+  },
+  "tracked_blobs_independently_verified": 18016,
+  "blob_bytes": 466968431,
+  "gitlinks": {
+    "server/index/turso": [
+      "160000",
+      "052ad81a7dbb6efed34ea482ae6c7e2e6f6682e0"
+    ]
+  },
+  "gates": [
+    {
+      "number": 0,
+      "receipt_sha256": "46f5230a488da71b8f2a16579cc9169c6a5ef7b741c2760126444d7f5c3b3e5f",
+      "stdout_sha256": "4dcb92f1de7ce56930d4abced7c4ff9964ce5277c445ff94899cbdbc6a296319",
+      "stderr_sha256": "250c66be2f603f9b4f66e706a131b85ff044b8e69b80a46520e52a3d83da5963"
+    },
+    {
+      "number": 1,
+      "receipt_sha256": "3422fe2748426ba6b971efe2faa716763f05eeea35c7920e6008e72494f9e0eb",
+      "stdout_sha256": "75927c354617e15b31c991449111944f6180ead1ab12efcba041df04ebf21569",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "number": 2,
+      "receipt_sha256": "eafc683e5fac0d28fea2393c08867f2d4a7f5d1a92fc266094c47168ab1f7979",
+      "stdout_sha256": "938be457dbd5158090221958358ff422e500adeaac78b776660268c2c8cf2667",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "number": 3,
+      "receipt_sha256": "4b043e2b5274c65cd0dda73c42a449685869b612123a59d1c91598e3e7f48c43",
+      "stdout_sha256": "7beaff1a1269ba525581489195bfad17c6a7bba27badb3815532a83056668746",
+      "stderr_sha256": "5daf7d85a6349c7e0e37086e1122a405b64858fc9cdabfd7652041acbc82f07e"
+    },
+    {
+      "number": 4,
+      "receipt_sha256": "6267c66894f87c375bf449d1ad1b67d0b3adbacb809ff577acbe2a83464989ea",
+      "stdout_sha256": "aa23e64c1fa2aaa07a36007f215ebe26ab4d79330a68e86280eaa5a117248a91",
+      "stderr_sha256": "9e05e19c18e9a40fe74eb4f2d369e8a95e500438d842961bcfc2cf4a2067a436"
+    }
+  ],
+  "native_controls": 1,
+  "normal_debug_artifacts": [
+    {
+      "bytes": 1204846896,
+      "cargo_stdout_sha256": "aa23e64c1fa2aaa07a36007f215ebe26ab4d79330a68e86280eaa5a117248a91",
+      "device": 66309,
+      "fresh": false,
+      "inode": 6881070,
+      "label": "current source DEBUG executables; not a packaged release",
+      "mode": 448,
+      "name": "backend-mcp",
+      "package": "backend-mcp",
+      "package_id": "path+file:///root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/apps/mcp#backend-mcp@0.2.0",
+      "path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/target/debug/backend-mcp",
+      "preserved_path": "/root/sol61-qa13-fullcurrenta324-trio-attempt01-20261009/current-debug-bin/backend-mcp",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 1,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": false
+      },
+      "sha256": "08c8fa705ffbc97406b1c8c9a5b2a39460b0b5d59c5163b264b4b970d3f90362",
+      "source": {
+        "commit": "a3247f4a14ceabadf1f978e9b24b1ec48d47694a",
+        "lock_sha256": "b45bb9a10382c70e6888b220e82061d038b886a5235978f9442c6483229bb1dd",
+        "status": "",
+        "tree": "7a29509343c9b7624a3aad9c1ecf5c5e8adb5e68"
+      }
+    },
+    {
+      "bytes": 1375643600,
+      "cargo_stdout_sha256": "aa23e64c1fa2aaa07a36007f215ebe26ab4d79330a68e86280eaa5a117248a91",
+      "device": 66309,
+      "fresh": false,
+      "inode": 6881076,
+      "label": "current source DEBUG executables; not a packaged release",
+      "mode": 448,
+      "name": "backend-cli",
+      "package": "backend-cli",
+      "package_id": "path+file:///root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/apps/cli#backend-cli@0.2.0",
+      "path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/target/debug/backend-cli",
+      "preserved_path": "/root/sol61-qa13-fullcurrenta324-trio-attempt01-20261009/current-debug-bin/backend-cli",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 1,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": false
+      },
+      "sha256": "ce292fc06df6351d2248f29a638fa31f982059b3053af877dd484d04ac84413c",
+      "source": {
+        "commit": "a3247f4a14ceabadf1f978e9b24b1ec48d47694a",
+        "lock_sha256": "b45bb9a10382c70e6888b220e82061d038b886a5235978f9442c6483229bb1dd",
+        "status": "",
+        "tree": "7a29509343c9b7624a3aad9c1ecf5c5e8adb5e68"
+      }
+    },
+    {
+      "bytes": 1673392072,
+      "cargo_stdout_sha256": "aa23e64c1fa2aaa07a36007f215ebe26ab4d79330a68e86280eaa5a117248a91",
+      "device": 66309,
+      "fresh": false,
+      "inode": 6881073,
+      "label": "current source DEBUG executables; not a packaged release",
+      "mode": 448,
+      "name": "backend-locald",
+      "package": "backend-locald",
+      "package_id": "path+file:///root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/apps/locald#backend-locald@0.2.0",
+      "path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/target/debug/backend-locald",
+      "preserved_path": "/root/sol61-qa13-fullcurrenta324-trio-attempt01-20261009/current-debug-bin/backend-locald",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 1,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": false
+      },
+      "sha256": "fc2001a44a959d99da635e9d3dbbd9147f09218d15e5dc6019027fbc9e746c7b",
+      "source": {
+        "commit": "a3247f4a14ceabadf1f978e9b24b1ec48d47694a",
+        "lock_sha256": "b45bb9a10382c70e6888b220e82061d038b886a5235978f9442c6483229bb1dd",
+        "status": "",
+        "tree": "7a29509343c9b7624a3aad9c1ecf5c5e8adb5e68"
+      }
+    }
+  ],
+  "return_receipt_sha256": "d97687616f46496b8427c6e741497d53200b955c392d864d35b2b41f688589d2",
+  "limitations": [
+    "Only one endpoint-contender control, not application readiness.",
+    "Debug Linux binaries; not installed or a packaged release.",
+    "Fresh public add exceeded 180 seconds; runtime gates remain open.",
+    "Artifact SHA values are remote sealed values, not a local download of multi-GiB binaries."
+  ]
+}
