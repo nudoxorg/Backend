@@ -1,0 +1,149 @@
+{
+  "schema": "nudox.root-parser-span-native-audit.v1",
+  "source": "8f82165eb5cdfd37e8f46d7b4ec407b3342726d7",
+  "tree": "6fd5b8ca9865d163ec636cf0b1d432fee28ae7a2",
+  "canonical_preimages_compared_to": "364f8b6d222c462810730b9440113be242183915",
+  "paths": [
+    {
+      "path": "third_party/tsz/crates/tsz-parser/src/parser/speculation.rs",
+      "canonical_blob": "8f5ff480c3e688d2e3573395a451e02cc043454c",
+      "source_blob": "02f0b31c5849ebad1427a10548e0683aa1019e24",
+      "postimage_sha256": "758f66dcaf3dba3af5890341907a83037ba1384f05a0462f9b1b1caa42b773e0"
+    },
+    {
+      "path": "third_party/tsz/crates/tsz-parser/src/parser/state_declarations_modules.rs",
+      "canonical_blob": "65e70c5cb8e852464bfbb1cadbfb12a66e45a305",
+      "source_blob": "691bf07abf012b3ff5befd1672b6cd259dbac6af",
+      "postimage_sha256": "cf1b4e5cd2ffade97a2e8fae28cb68f05c5f2704f1c2d53d5e5a243e8111bb61"
+    },
+    {
+      "path": "third_party/tsz/crates/tsz-parser/src/parser/state_tests.rs",
+      "canonical_blob": "230338547e126c8ba4fb9e3d3d29ffcb5fb1ef30",
+      "source_blob": "5cb994139ee738f1392cc91e2152ed20803a883e",
+      "postimage_sha256": "6bbf19b9921f474e4cd3e478aeb56a5ff4aea453242a2c5d61a34d67e7027890"
+    }
+  ],
+  "gates": [
+    {
+      "name": "tsz-canonical108-module-span-8f821-six-attempt01",
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0,
+      "fresh": false,
+      "pid": 57358,
+      "image_sha256": "0d110a86788837ad6376962e018d6dd2f8eda6cf467dbc17976f2286d969437a",
+      "supplemental_lock_sha256": "bfa39ffc4cdbf4fccbfa53b2e178abc7853d4a178995b3ae4146b189a4297fa0",
+      "files": {
+        "test-results.json": {
+          "bytes": 1179,
+          "sha256": "3ace562ac1c741aa8663dbb220b8391b6e43365521ab175492967901f30216a6"
+        },
+        "fresh-fleet.json": {
+          "bytes": 23302,
+          "sha256": "76cca51e267d545a8f24594b4c6e5032d1047d5df63da045d898595d01b5aef6"
+        },
+        "errors.json": {
+          "bytes": 3,
+          "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+        },
+        "executable-binding.json": {
+          "bytes": 1841,
+          "sha256": "8df566b76ac093b328f97bb58847f002b6be5dac71c59c10ec4a5e59f287d530"
+        },
+        "native.stdout": {
+          "bytes": 48874,
+          "sha256": "78ba37b21bc219b65813e519e13797475581f45fd52e836cf379039e34b8421e"
+        },
+        "managed-provenance.json": {
+          "bytes": 5157,
+          "sha256": "dc08218b051c6f54fd7324698186bb9c0dee070323262c97ac13b546bca3afae"
+        },
+        "launch.json": {
+          "bytes": 1707,
+          "sha256": "4a79535d6a5c89c6e6a8948f2696243c05ed2c3e7dd456ea293133a76a99b9bb"
+        },
+        "receipt.json": {
+          "bytes": 2495,
+          "sha256": "b1a25471b0c5bd5bc81bb32e9bcef295dcde1f486b6ead7a3bfb039e6d977eb4"
+        },
+        "native.stderr": {
+          "bytes": 1815,
+          "sha256": "651440cf71fff3097d9e84927ba29941225f3d677e80dfa98cea0bc680700f98"
+        }
+      }
+    },
+    {
+      "name": "tsz-canonical108-module-span-8f821-speculation-attempt01",
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0,
+      "fresh": true,
+      "pid": 60905,
+      "image_sha256": "0d110a86788837ad6376962e018d6dd2f8eda6cf467dbc17976f2286d969437a",
+      "supplemental_lock_sha256": "bfa39ffc4cdbf4fccbfa53b2e178abc7853d4a178995b3ae4146b189a4297fa0",
+      "files": {
+        "test-results.json": {
+          "bytes": 1107,
+          "sha256": "6433737d9e3f3d265820eec32ade23c7b9bd962382b6ca5bc8d4d8dd618ecd74"
+        },
+        "fresh-fleet.json": {
+          "bytes": 26730,
+          "sha256": "96315b09523789711b6c6d626973af45d4bacee2c614f3657aa48519f1e87b11"
+        },
+        "errors.json": {
+          "bytes": 3,
+          "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+        },
+        "executable-binding.json": {
+          "bytes": 1840,
+          "sha256": "9d157df37d4cb94e004fd085c0dff60adda442935db311191e202a7d0d8e7c9b"
+        },
+        "native.stdout": {
+          "bytes": 48758,
+          "sha256": "70f9bf2f2ba598b5cbac0a4c066ed501bb6b4093a94285342db3444b877f939c"
+        },
+        "managed-provenance.json": {
+          "bytes": 5157,
+          "sha256": "07583597bd5c21cbed1b000a853b03fb094c91c625cb9ffe53dcc3f07eafcda2"
+        },
+        "launch.json": {
+          "bytes": 1734,
+          "sha256": "89f7981ecf6de0c133089ac782308dc556ad125ee14c507b9eb269327ae32bf5"
+        },
+        "receipt.json": {
+          "bytes": 2522,
+          "sha256": "24ab370c2449707e2960d8727e5a241945659276b3d843523376b0af0543dc9e"
+        },
+        "native.stderr": {
+          "bytes": 443,
+          "sha256": "a7b70233281865296b92b179f6bb66bc843fefe1d36c51c90083a9c95b8e48c9"
+        }
+      }
+    }
+  ],
+  "independent_remote_readback": {
+    "source": "8f82165eb5cdfd37e8f46d7b4ec407b3342726d7",
+    "tree": "6fd5b8ca9865d163ec636cf0b1d432fee28ae7a2",
+    "status": "",
+    "image": {
+      "path": "/Users/rmccrar6/codex-worktrees/sol61-tsz-module-span-native-8f8216-20261009/.local/build/parser-span/.nudox-cargo/slot-0/debug/deps/tsz_parser-688ca1bd99eba151",
+      "sha256": "0d110a86788837ad6376962e018d6dd2f8eda6cf467dbc17976f2286d969437a",
+      "bytes": 9800568
+    },
+    "root_lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+    "supplemental_lock_sha256": "bfa39ffc4cdbf4fccbfa53b2e178abc7853d4a178995b3ae4146b189a4297fa0",
+    "format": "Mach-O 64-bit executable arm64"
+  },
+  "raw_manifest_sha256": "061bc3e198748756c23a66a01209b1c63d1ab5a43c15cd90da39ff21d9f76607",
+  "claims": {
+    "parser_span_tests": 6,
+    "existing_speculation_tests": 6,
+    "next_application_replay": false,
+    "composed_typescript_integration": false,
+    "release_package": false
+  },
+  "preserved_red": {
+    "prior_3f20_zero_test_compile": true,
+    "prior_7ccb_next_replay": true
+  }
+}
