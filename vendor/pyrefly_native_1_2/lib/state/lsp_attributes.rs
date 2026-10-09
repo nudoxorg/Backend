@@ -5,9 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use pyrefly_python::ast::Ast;
 use pyrefly_python::docstring::Docstring;
-use pyrefly_python::module::Module;
 use ruff_python_ast::Expr;
 use ruff_python_ast::ModModule;
 use ruff_python_ast::Stmt;
@@ -28,11 +26,7 @@ pub(crate) struct AttributeContext {
 }
 
 impl AttributeContext {
-    pub(crate) fn from_module(
-        module: &Module,
-        target_range: TextRange,
-    ) -> Option<AttributeContext> {
-        let ast = Ast::parse(module.contents(), module.source_type()).0;
+    pub(crate) fn from_ast(ast: &ModModule, target_range: TextRange) -> Option<AttributeContext> {
         let mut parents = Vec::new();
         Self::from_body(ast.body.as_slice(), &mut parents, target_range)
     }
