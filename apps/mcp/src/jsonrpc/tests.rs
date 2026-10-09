@@ -36,6 +36,10 @@ const MISSING: &str = "/abs/polyglot::src/lib.rs:999::nothing";
 struct Fake {
     /// When set, every probe reports the endpoint as unreachable.
     offline: bool,
+    /// A registered project with no published declarations has no outline.
+    empty_outline: bool,
+    /// Keep genuine outline transport/proof failures distinct from absence.
+    outline_error: Option<ClientError>,
     /// Optional graph rows used to exercise the complete-page admission cap.
     graph_rows: Option<Box<[GraphQueryRow]>>,
     /// Identity-free typed failed reply from the direct graph-page route.
@@ -244,21 +248,31 @@ impl Engine for Fake {
             }
             Probe::Search { .. } => CommandReply::Search(snapshot(vec![declaration_row()])),
             Probe::Names { .. } => CommandReply::Names(snapshot(vec![declaration_row()])),
-            Probe::Outline(_) => CommandReply::Outline(
-                Outline::new(
-                    package_key(PROJECT),
-                    view_state_root(&[]),
-                    OutlineNode {
-                        symbol: symbol_key(MODULE),
-                        children: vec![OutlineNode {
-                            symbol: symbol_key(DECLARATION),
-                            children: Box::new([]),
-                        }]
-                        .into_boxed_slice(),
-                    },
+            Probe::Outline(_) => {
+                if let Some(error) = self.outline_error.take() {
+                    return Err(error);
+                }
+                if self.empty_outline {
+                    return Err(ClientError::CommandFailed(
+                        backend_library::CommandFailure::NotFound,
+                    ));
+                }
+                CommandReply::Outline(
+                    Outline::new(
+                        package_key(PROJECT),
+                        view_state_root(&[]),
+                        OutlineNode {
+                            symbol: symbol_key(MODULE),
+                            children: vec![OutlineNode {
+                                symbol: symbol_key(DECLARATION),
+                                children: Box::new([]),
+                            }]
+                            .into_boxed_slice(),
+                        },
+                    )
+                    .with_extent(OutlineExtent::Complete),
                 )
-                .with_extent(OutlineExtent::Complete),
-            ),
+            }
             Probe::OutlinePage { .. } => CommandReply::ProjectionPage(ProjectionPage {
                 snapshot: snapshot(vec![module_row(), declaration_row()]),
                 terminal: PageTerminal::Complete,
@@ -340,6 +354,19 @@ impl Engine for Fake {
                 }))
             }
             SurfaceCommand::Subscriptions => Ok(SurfaceReply::Subscriptions(Box::new([]))),
+            SurfaceCommand::TreeOpen {
+                subject,
+                parent,
+                title,
+                opener,
+            } => Ok(SurfaceReply::TreeOpened(backend_library::TreeNodeRecord {
+                id: backend_library::TreeNodeId::new(std::num::NonZeroU64::MIN),
+                parent,
+                subject,
+                title: title.unwrap_or_else(|| ProductText::new("fixture node").expect("title")),
+                opener,
+                active: true,
+            })),
             SurfaceCommand::References { target } => Ok(SurfaceReply::References {
                 target,
                 references: Box::new([backend_library::ReferenceRecord {
@@ -518,7 +545,7 @@ impl Product for Fake {
 fn ready(product: Fake) -> Server<Fake> {
     let mut server = Server::with_authority(product, PROJECT.to_owned(), [9; 32]);
     server
-        .handle(br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#)
+        .handle(br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#)
         .expect("initialize response");
     assert!(
         server
@@ -2627,14 +2654,18 @@ fn resources_are_the_same_markdown_their_tools_return() {
             .all(|resource| resource["mimeType"] == "text/markdown"),
         "{listed}"
     );
+    let templates = request(&mut server, "resources/templates/list", &json!({}));
     assert!(
-        resources
+        templates["result"]["resourceTemplates"]
+            .as_array()
+            .expect("templates")
             .iter()
-            .any(|resource| resource["uri"] == "backend://outline/backend%3A%2F%2F".to_owned() + "")
-            || resources.iter().any(|resource| resource["uri"]
-                .as_str()
-                .is_some_and(|uri| uri.starts_with("backend://outline/"))),
-        "the shelf contributes one outline resource per project: {listed}"
+            .any(|template| template["uriTemplate"] == "backend://outline/{path}"),
+        "outlines remain addressable without claiming they exist: {templates}"
+    );
+    assert_eq!(
+        server.product.probe_calls, 0,
+        "metadata needs no owner read"
     );
     assert!(
         resources
@@ -2770,9 +2801,139 @@ fn a_missing_resource_is_refused_rather_than_guessed() {
     assert_eq!(response["error"]["code"], -32002);
 }
 
+#[test]
+fn outline_resource_templates_preserve_readable_and_absent_projects() {
+    let uri = "backend://outline/%2Fabs%2Fpolyglot";
+    let mut published = ready(Fake::default());
+    let readable = request(&mut published, "resources/read", &json!({"uri": uri}));
+    assert!(
+        readable["result"]["contents"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("ferris")),
+        "{readable}"
+    );
+
+    let mut empty = ready(Fake {
+        empty_outline: true,
+        ..Fake::default()
+    });
+    let listed = request(&mut empty, "resources/list", &json!({}));
+    let resources = listed["result"]["resources"].as_array().expect("list");
+    assert!(
+        !resources.iter().any(|resource| resource["uri"] == uri),
+        "{listed}"
+    );
+    assert!(
+        resources
+            .iter()
+            .any(|resource| resource["uri"] == "backend://workspace/current")
+    );
+    let missing = request(&mut empty, "resources/read", &json!({"uri": uri}));
+    assert_eq!(missing["error"]["code"], -32002, "{missing}");
+    assert_eq!(missing["error"]["data"]["kind"], "not-found", "{missing}");
+    assert!(
+        missing["error"]["data"]["detail"]
+            .as_str()
+            .is_some_and(|text| text.contains("no outline is published")),
+        "{missing}"
+    );
+}
+
+#[test]
+fn resource_discovery_needs_no_owner_and_outline_reads_preserve_protocol_failure() {
+    let mut offline = ready(Fake {
+        offline: true,
+        ..Fake::default()
+    });
+    for method in ["resources/list", "resources/templates/list"] {
+        let listed = request(&mut offline, method, &json!({}));
+        assert!(listed.get("error").is_none(), "{listed}");
+    }
+    assert_eq!(offline.product.probe_calls, 0);
+    let mut server = ready(Fake {
+        outline_error: Some(ClientError::Protocol("invalid outline proof".to_owned())),
+        ..Fake::default()
+    });
+    let read = request(
+        &mut server,
+        "resources/read",
+        &json!({
+            "uri": "backend://outline/%2Fabs%2Fpolyglot"
+        }),
+    );
+    assert_eq!(read["error"]["code"], -32603, "{read}");
+    assert_eq!(read["error"]["data"]["kind"], "protocol", "{read}");
+}
+
+#[test]
+fn tree_open_routes_record_the_initialized_mcp_client() {
+    let mut server = ready(Fake::default());
+    let opened = call(
+        &mut server,
+        "backend.tree_open",
+        &json!({
+            "subject": "declaration", "value": DECLARATION
+        }),
+    );
+    assert_eq!(opened["isError"], false, "{opened}");
+    let [
+        SurfaceCommand::TreeOpen {
+            opener: TreeOpener::Mcp(client),
+            ..
+        },
+    ] = server.product.surface_commands.as_slice()
+    else {
+        panic!("typed MCP opener");
+    };
+    assert_eq!(client.as_str(), "test");
+    assert!(text_of(&opened).contains("mcp"), "{opened}");
+    let mut raw_command = server.product.surface_commands[0].clone();
+    let SurfaceCommand::TreeOpen { opener, .. } = &mut raw_command else {
+        panic!("tree open")
+    };
+    *opener = TreeOpener::Cli;
+    let opened = call(&mut server, SURFACE_TOOL, &json!({"command": raw_command}));
+    assert_eq!(opened["isError"], false, "{opened}");
+    assert!(
+        server
+            .product
+            .surface_commands
+            .iter()
+            .all(|command| matches!(
+                command, SurfaceCommand::TreeOpen { opener: TreeOpener::Mcp(client), .. }
+                if client.as_str() == "test"
+            ))
+    );
+}
+
 // ---------------------------------------------------------------------------
 // protocol
 // ---------------------------------------------------------------------------
+
+#[test]
+fn initialize_negotiates_only_the_library_supported_protocols() {
+    for (offered, expected) in [
+        ("2025-06-18", "2025-06-18"),
+        ("2025-03-26", "2025-03-26"),
+        ("2025-11-25", MCP_PROTOCOL_VERSION),
+        ("2026-07-28", MCP_PROTOCOL_VERSION),
+    ] {
+        let mut server = Server::with_authority(Fake::default(), PROJECT.to_owned(), [9; 32]);
+        let response = request(
+            &mut server,
+            "initialize",
+            &json!({
+                "protocolVersion": offered, "capabilities": {},
+                "clientInfo": {"name": "qa13", "version": "1"}
+            }),
+        );
+        assert_eq!(
+            response["result"]["protocolVersion"], expected,
+            "{response}"
+        );
+        assert_eq!(server.product.probe_calls, 0);
+    }
+}
 
 #[test]
 fn initialized_notification_cannot_bypass_initialize() {
@@ -2837,7 +2998,10 @@ fn the_handshake_reports_the_stable_protocol_and_its_instructions() {
     let initialized = server
         .handle(br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#)
         .expect("initialize response");
-    assert_eq!(initialized["result"]["protocolVersion"], STABLE_PROTOCOL);
+    assert_eq!(
+        initialized["result"]["protocolVersion"],
+        MCP_PROTOCOL_VERSION
+    );
     let instructions = initialized["result"]["instructions"]
         .as_str()
         .unwrap_or_default();
@@ -2873,7 +3037,7 @@ fn the_handshake_reports_the_stable_protocol_and_its_instructions() {
 }
 
 #[test]
-fn the_mcp_context_exposes_a_project_and_launch_directory_mismatch() {
+fn an_explicit_project_is_active_even_when_the_launch_directory_differs() {
     let mut server = Server::with_invocation_context(
         Fake::default(),
         PROJECT.to_owned(),
@@ -2891,9 +3055,11 @@ fn the_mcp_context_exposes_a_project_and_launch_directory_mismatch() {
         "{instructions}"
     );
     assert!(
-        instructions.contains("configuration mismatch"),
+        instructions.contains("selected project is active"),
         "{instructions}"
     );
+    assert!(instructions.contains("process working directory: /another/checkout"));
+    assert!(!instructions.contains("configuration mismatch"));
 
     assert!(
         server
@@ -2909,7 +3075,11 @@ fn the_mcp_context_exposes_a_project_and_launch_directory_mismatch() {
         .as_str()
         .unwrap_or_default();
     assert!(text.contains("selected project: /abs/polyglot"), "{text}");
-    assert!(text.contains("configuration mismatch"), "{text}");
+    assert!(text.contains("selected project is active"), "{text}");
+    assert!(!text.contains("configuration mismatch"), "{text}");
+    let indexed = call(&mut server, "backend.index", &json!({"path": PROJECT}));
+    assert_eq!(indexed["isError"], false, "{indexed}");
+    assert_eq!(server.product.index_paths, [PROJECT]);
 }
 
 #[test]
@@ -2954,27 +3124,46 @@ fn bounded_response_serialization_preserves_the_calling_request_id() {
 #[test]
 fn continuation_authority_binds_context_and_owner_payload() {
     let server = Server::with_authority(Fake::default(), PROJECT.to_owned(), [7; 32]);
-    let token = server.sign_cursor_token("pc1-owner-issued", b"query-a");
+    let token = server
+        .sign_cursor_token("pc1-owner-issued", b"query-a")
+        .expect("admitted key");
     assert_eq!(
-        server.verify_cursor_token(&token, b"query-a").as_deref(),
+        server
+            .verify_cursor_token(&token, b"query-a")
+            .expect("admitted key")
+            .as_deref(),
         Some("pc1-owner-issued")
     );
     // Verification is deliberately replayable: retrying a read page is safe,
     // while the MAC still prevents moving that page to another authority
     // context. This is the property a reconnecting MCP client needs.
     assert_eq!(
-        server.verify_cursor_token(&token, b"query-a").as_deref(),
+        server
+            .verify_cursor_token(&token, b"query-a")
+            .expect("admitted key")
+            .as_deref(),
         Some("pc1-owner-issued")
     );
-    assert!(server.verify_cursor_token(&token, b"query-b").is_none());
+    assert!(
+        server
+            .verify_cursor_token(&token, b"query-b")
+            .expect("admitted key")
+            .is_none()
+    );
     let mut tampered = token.clone();
     let final_byte = tampered.pop().expect("MAC byte");
     tampered.push(if final_byte == '0' { '1' } else { '0' });
-    assert!(server.verify_cursor_token(&tampered, b"query-a").is_none());
+    assert!(
+        server
+            .verify_cursor_token(&tampered, b"query-a")
+            .expect("admitted key")
+            .is_none()
+    );
     let other_workspace = Server::with_authority(Fake::default(), "/other".to_owned(), [8; 32]);
     assert!(
         other_workspace
             .verify_cursor_token(&token, b"query-a")
+            .expect("admitted key")
             .is_none()
     );
     // Restarting with the persisted authority accepts the token; rotation
@@ -2982,18 +3171,35 @@ fn continuation_authority_binds_context_and_owner_payload() {
     // workspace and query context.
     let restarted = Server::with_authority(Fake::default(), PROJECT.to_owned(), [7; 32]);
     assert_eq!(
-        restarted.verify_cursor_token(&token, b"query-a").as_deref(),
+        restarted
+            .verify_cursor_token(&token, b"query-a")
+            .expect("admitted key")
+            .as_deref(),
         Some("pc1-owner-issued")
     );
     let rotated = Server::with_authority(Fake::default(), PROJECT.to_owned(), [9; 32]);
-    assert!(rotated.verify_cursor_token(&token, b"query-a").is_none());
-    let expired =
-        server.sign_cursor_token_at(unix_seconds().saturating_sub(1), "pc1-old", b"query-a");
-    assert!(server.verify_cursor_token(&expired, b"query-a").is_none());
-    let expires_now = server.sign_cursor_token_at(unix_seconds(), "pc1-now", b"query-a");
+    assert!(
+        rotated
+            .verify_cursor_token(&token, b"query-a")
+            .expect("admitted key")
+            .is_none()
+    );
+    let expired = server
+        .sign_cursor_token_at(unix_seconds().saturating_sub(1), "pc1-old", b"query-a")
+        .expect("admitted key");
+    assert!(
+        server
+            .verify_cursor_token(&expired, b"query-a")
+            .expect("admitted key")
+            .is_none()
+    );
+    let expires_now = server
+        .sign_cursor_token_at(unix_seconds(), "pc1-now", b"query-a")
+        .expect("admitted key");
     assert!(
         server
             .verify_cursor_token(&expires_now, b"query-a")
+            .expect("admitted key")
             .is_none()
     );
 }
@@ -3458,7 +3664,7 @@ fn index_search_cursor_round_trips_between_servers_with_the_same_workspace_autho
             ..Fake::default()
         });
         match mismatch {
-            "authority" => other.cursor_secret = [8; 32],
+            "authority" => other.cursor_secret = [8; 32].into(),
             "project" => other.project = "/other-project".to_owned(),
             _ => unreachable!(),
         }
@@ -3545,7 +3751,7 @@ fn index_search_tool_cursor_rejects_context_changes_and_raw_owner_tokens() {
             "limit" => arguments["limit"] = json!(2),
             "detail" => arguments["detail"] = json!("full"),
             "project" => server.project = "/other-project".to_owned(),
-            "authority" => server.cursor_secret = [8; 32],
+            "authority" => server.cursor_secret = [8; 32].into(),
             "tamper" => {
                 let token = arguments["cursor"].as_str().expect("cursor token");
                 let mut changed = token.to_owned();
@@ -3561,11 +3767,15 @@ fn index_search_tool_cursor_rejects_context_changes_and_raw_owner_tokens() {
                     context_arguments.as_object().expect("tool arguments"),
                     Detail::Summary,
                 );
-                arguments["cursor"] = json!(server.sign_cursor_token_at(
-                    unix_seconds().saturating_sub(1),
-                    "maven-owner-v4",
-                    &context
-                ));
+                arguments["cursor"] = json!(
+                    server
+                        .sign_cursor_token_at(
+                            unix_seconds().saturating_sub(1),
+                            "maven-owner-v4",
+                            &context
+                        )
+                        .expect("admitted key")
+                );
             }
             "raw" => arguments["cursor"] = json!("maven-owner-v4"),
             _ => unreachable!(),
@@ -3714,7 +3924,7 @@ fn surface_index_search_cursor_binds_query_limit_project_and_detail() {
             "limit" => command["limit"] = json!(2),
             "detail" => detail = "full",
             "project" => server.project = "/other-project".to_owned(),
-            "authority" => server.cursor_secret = [8; 32],
+            "authority" => server.cursor_secret = [8; 32].into(),
             "tamper" => {
                 let token = command["cursor"].as_str().expect("cursor token");
                 let mut changed = token.to_owned();
@@ -3729,11 +3939,15 @@ fn surface_index_search_cursor_binds_query_limit_project_and_detail() {
                     .expect("surface arguments");
                 let context =
                     continuation_context(PROJECT, SURFACE_TOOL, context_arguments, Detail::Summary);
-                command["cursor"] = json!(server.sign_cursor_token_at(
-                    unix_seconds().saturating_sub(1),
-                    "maven-owner-v4",
-                    &context
-                ));
+                command["cursor"] = json!(
+                    server
+                        .sign_cursor_token_at(
+                            unix_seconds().saturating_sub(1),
+                            "maven-owner-v4",
+                            &context
+                        )
+                        .expect("admitted key")
+                );
             }
             "raw" => command["cursor"] = json!("maven-owner-v4"),
             _ => unreachable!(),
@@ -4257,4 +4471,217 @@ fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_s
         assert_context_bounded(&wire);
         assert_eq!(server.product.surface_commands.len(), 1);
     }
+}
+
+/// Real private state for deferred cursor-authority admission. No owner is
+/// started: token authentication itself is the behavior under test.
+struct LazyAuthorityFixture {
+    root: std::path::PathBuf,
+    project: std::path::PathBuf,
+    paths: backend_runtime::WorkspacePaths,
+}
+
+impl LazyAuthorityFixture {
+    fn new() -> Self {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("fixture clock")
+            .as_nanos();
+        let base = if cfg!(unix) {
+            std::path::PathBuf::from("/tmp")
+        } else {
+            std::env::temp_dir()
+        };
+        let name = format!("mcp-lazy-{}-{nonce:x}", std::process::id());
+        let root = base.join(&name);
+        let project = base.join(format!("{name}-project"));
+        // /tmp is deliberately other-writable: it is not an admissible
+        // application-data parent. Own a private fixture parent first, then
+        // let the real WorkspacePaths admission create its state child.
+        std::fs::create_dir(&root).expect("owned fixture parent");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+                .expect("private fixture parent permissions");
+        }
+        #[cfg(windows)]
+        backend_platform::win32::security::restrict_to_current_user(&root)
+            .expect("private fixture parent ACL");
+        std::fs::create_dir(&project).expect("fixture project");
+        let paths = backend_runtime::WorkspacePaths::discover(
+            Some(project.clone()),
+            Some(root.join("state")),
+            None,
+        )
+        .expect("selected fixture workspace");
+        Self {
+            root,
+            project,
+            paths,
+        }
+    }
+}
+
+impl Drop for LazyAuthorityFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+        let _ = std::fs::remove_dir_all(&self.project);
+    }
+}
+
+#[test]
+fn lazy_cursor_authority_is_durable_once_and_replayable_in_a_fresh_server() {
+    let fixture = LazyAuthorityFixture::new();
+    let authority = CursorAuthority::workspace(&fixture.paths);
+    let first = Server::with_authority(Fake::default(), PROJECT.to_owned(), authority.clone());
+    assert!(!fixture.paths.data().exists());
+    let token = first
+        .sign_cursor_token("pc1-real-owner-token", b"same-request")
+        .expect("first cursor durably admits its authority");
+    let persisted = read_authority_secret(fixture.paths.authority_secret()).expect("durable key");
+    assert_eq!(authority.key().expect("same admitted authority"), persisted);
+    let second = Server::with_authority(
+        Fake::default(),
+        PROJECT.to_owned(),
+        CursorAuthority::workspace(&fixture.paths),
+    );
+    assert_eq!(
+        second
+            .verify_cursor_token(&token, b"same-request")
+            .expect("cold process reads durable authority")
+            .as_deref(),
+        Some("pc1-real-owner-token")
+    );
+    assert_eq!(
+        read_authority_secret(fixture.paths.authority_secret()).expect("unchanged authority"),
+        persisted
+    );
+}
+
+#[test]
+fn lazy_cursor_authority_retries_after_repair_without_process_key_fallback() {
+    let fixture = LazyAuthorityFixture::new();
+    std::fs::write(fixture.paths.data(), b"not a workspace directory")
+        .expect("unavailable durable workspace");
+    let authority = CursorAuthority::workspace(&fixture.paths);
+    let server = Server::with_authority(Fake::default(), PROJECT.to_owned(), authority.clone());
+    let first = server
+        .sign_cursor_token("pc1-owner-token", b"query")
+        .expect_err("a durable authority refusal must not mint an ephemeral cursor");
+    assert_eq!(first.kind, "transport");
+    assert!(
+        first
+            .detail
+            .as_deref()
+            .is_some_and(|detail| !detail.is_empty())
+    );
+    let repeated = server
+        .sign_cursor_token("pc1-owner-token", b"query")
+        .expect_err("the unchanged failure retains its original cause");
+    assert_eq!(repeated.detail, first.detail);
+    std::fs::remove_file(fixture.paths.data()).expect("retire unavailable fixture");
+    let token = server
+        .sign_cursor_token("pc1-owner-token", b"query")
+        .expect("repaired workspace can admit its first durable authority");
+    let persisted = read_authority_secret(fixture.paths.authority_secret()).expect("durable key");
+    assert_eq!(authority.key().expect("admitted authority"), persisted);
+    assert_eq!(
+        server
+            .verify_cursor_token(&token, b"query")
+            .expect("durable token")
+            .as_deref(),
+        Some("pc1-owner-token")
+    );
+}
+
+#[test]
+fn simultaneous_lazy_cursor_admission_uses_one_durable_identity() {
+    let fixture = LazyAuthorityFixture::new();
+    let shared = CursorAuthority::workspace(&fixture.paths);
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+    let workers = (0..8)
+        .map(|index| {
+            let authority = if index % 2 == 0 {
+                shared.clone()
+            } else {
+                CursorAuthority::workspace(&fixture.paths)
+            };
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                authority.key().expect("simultaneous durable admission")
+            })
+        })
+        .collect::<Vec<_>>();
+    let persisted = workers
+        .into_iter()
+        .map(|worker| worker.join().expect("admission worker"))
+        .collect::<Vec<_>>();
+    let durable = read_authority_secret(fixture.paths.authority_secret()).expect("durable key");
+    assert!(persisted.into_iter().all(|key| key == durable));
+    assert_eq!(shared.key().expect("stable shared authority"), durable);
+}
+
+#[test]
+fn malformed_or_expired_cursor_does_not_admit_a_workspace_authority() {
+    let fixture = LazyAuthorityFixture::new();
+    let server = Server::with_authority(
+        Fake::default(),
+        PROJECT.to_owned(),
+        CursorAuthority::workspace(&fixture.paths),
+    );
+    for token in [
+        "not-a-cursor",
+        "mcp1-0-b3duZXI-00000000000000000000000000000000",
+    ] {
+        assert!(
+            server
+                .verify_cursor_token(token, b"query")
+                .expect("invalid input")
+                .is_none()
+        );
+    }
+    assert!(!fixture.paths.data().exists());
+}
+
+#[test]
+fn cold_cursor_verification_never_initializes_authority_for_a_forged_token() {
+    let fixture = LazyAuthorityFixture::new();
+    let authority = CursorAuthority::workspace(&fixture.paths);
+    let server = Server::with_authority(Fake::default(), PROJECT.to_owned(), authority.clone());
+    let future = unix_seconds().saturating_add(900);
+    for token in [
+        format!("mcp1-{future}-cGMxLWZvcmdlZA-{}", "00".repeat(16)),
+        format!("mcp1-{future}-cGMxLWZvcmdlZA-not-a-canonical-mac"),
+        format!("mcp1-{future}-invalid*base64-{}", "00".repeat(16)),
+    ] {
+        assert!(
+            server
+                .verify_cursor_token(&token, b"query")
+                .expect("read-only verification")
+                .is_none()
+        );
+        assert!(
+            !fixture.paths.data().exists(),
+            "untrusted continuation cannot provision an authority"
+        );
+    }
+    assert!(
+        authority
+            .verification_key()
+            .expect("missing durable key")
+            .is_none()
+    );
+    let token = server
+        .sign_cursor_token("pc1-valid", b"query")
+        .expect("actual signing request can admit a durable key");
+    assert_eq!(
+        server
+            .verify_cursor_token(&token, b"query")
+            .expect("post-sign verification")
+            .as_deref(),
+        Some("pc1-valid")
+    );
+    assert!(fixture.paths.authority_secret().is_file());
 }

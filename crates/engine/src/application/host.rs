@@ -887,8 +887,14 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 std::process::id(),
                 first.saturating_add(offset)
             ));
-            match fs::create_dir(&candidate) {
-                Ok(()) => return Ok(candidate),
+            let name = candidate
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or(LocalCompilerHostError::DataRootUnavailable)?;
+            let created = backend_platform::DirectoryCapability::open(&parent)
+                .and_then(|parent| parent.create_private_dir(name));
+            match created {
+                Ok(_) => return Ok(candidate),
                 Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {}
                 Err(source) => {
                     return Err(LocalCompilerHostError::CreateDirectory {
@@ -940,6 +946,33 @@ mod tests {
         GoVersion, LanguageProfile, PythonVersion, RustEdition, Stage, TypeScriptSource,
     };
     use std::ffi::OsString;
+
+    #[cfg(unix)]
+    #[test]
+    fn compiler_private_directory_creation_ignores_umask_0002() {
+        const CHILD: &str = "NUDOX_COMPILER_PRIVATE_DIRECTORY_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            use std::os::unix::fs::MetadataExt;
+            rustix::process::umask(rustix::fs::Mode::from_bits_truncate(0o002));
+            let fixture = PrivateTestDirectory::create("compiler-private-creation").expect("fixture");
+            let root = fixture.path().join("compiler");
+            create_directory(LocalHostDirectory::DataRoot, &root).expect("compiler root");
+            for (role, name) in [(LocalHostDirectory::Artifacts, "artifacts"), (LocalHostDirectory::Journal, "journal")] {
+                create_directory(role, &root.join(name)).expect("private compiler directory");
+                assert_eq!(fs::metadata(root.join(name)).expect("mode").mode() & 0o777, 0o700);
+            }
+            let host = LocalCompilerHost::new(InspectionEnvironment(root.clone()), LocalHostDiscovery::ExplicitOnly);
+            let native = host.create_native_work(&root).expect("private native work");
+            for path in [&root, &root.join("native-work"), &native] {
+                assert_eq!(fs::metadata(path).expect("mode").mode() & 0o777, 0o700);
+            }
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .arg("compiler_private_directory_creation_ignores_umask_0002").arg("--nocapture")
+            .env(CHILD, "1").output().expect("umask child");
+        assert!(output.status.success(), "compiler mode child failed: {output:?}");
+    }
 
     struct InspectionEnvironment(PathBuf);
 

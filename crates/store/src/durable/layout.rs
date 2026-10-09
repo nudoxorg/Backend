@@ -71,17 +71,43 @@ impl StorePublicationAuthority {
     /// filesystem failures.
     pub fn acquire(lock_path: impl AsRef<Path>) -> Result<Self, PublicationAuthorityError> {
         let lock_path = lock_path.as_ref().to_owned();
-        if let Some(parent) = lock_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| PublicationAuthorityError::Io(error.to_string()))?;
-        }
-        let lock_file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&lock_path)
+        let parent = lock_path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let name = lock_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                PublicationAuthorityError::Io("authority path has no final name".to_owned())
+            })?;
+        let directory =
+            backend_platform::OwnedWorkspaceDirectory::open(parent).map_err(|error| {
+                PublicationAuthorityError::Io(format!("{}: {error}", parent.display()))
+            })?;
+        let capability = backend_platform::DirectoryCapability::open(directory.path())
             .map_err(|error| PublicationAuthorityError::Io(error.to_string()))?;
+        let lock_file = capability
+            .open_file_read_write(name, true)
+            .map_err(|error| {
+                PublicationAuthorityError::Io(format!("{}: {error}", lock_path.display()))
+            })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = lock_file
+                .metadata()
+                .map_err(|error| PublicationAuthorityError::Io(error.to_string()))?;
+            if metadata.uid() != rustix::process::geteuid().as_raw() || metadata.nlink() != 1 {
+                return Err(PublicationAuthorityError::Io(format!(
+                    "{}: authority is not a current-user-owned single-link regular file",
+                    lock_path.display()
+                )));
+            }
+            rustix::fs::fchmod(&lock_file, rustix::fs::Mode::from_bits_truncate(0o600)).map_err(
+                |error| PublicationAuthorityError::Io(format!("{}: {error}", lock_path.display())),
+            )?;
+        }
         match lock_file.try_lock() {
             Ok(()) => Ok(Self {
                 inner: Arc::new(PublicationAuthorityInner {

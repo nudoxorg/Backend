@@ -432,6 +432,60 @@ fn a_fault_names_its_operand_its_cause_and_its_next_step() {
 }
 
 #[test]
+fn absent_outline_repair_uses_the_real_command_on_each_surface() {
+    let fault = Fault::unpublished_outline("/abs/source folder");
+    assert_eq!(
+        fault.affordance().shell().as_deref(),
+        Some("nudox add '/abs/source folder'")
+    );
+    assert_eq!(
+        fault.affordance().tool_call(),
+        Some(serde_json::json!({
+            "name": "backend.index", "arguments": {"path": "/abs/source folder"}
+        }))
+    );
+    assert!(fault.cause().sentence().contains("no outline is published"));
+    let empty = Shelf::new(KeyTag::from_key(&[0; 32]), Vec::new());
+    assert!(text::shelf(&empty, Theme::plain()).contains("nudox add <PATH>"));
+}
+
+#[test]
+fn tree_open_lowering_preserves_the_calling_surface_without_changing_the_subject() {
+    let mut invocation = Invocation::new(grammar_for("tree-open").expect("tree grammar"));
+    invocation.push("declaration");
+    invocation.push(DECLARATION);
+    let Request::Surface(cli) = lower(&invocation, PROJECT).expect("CLI request") else {
+        panic!("surface command")
+    };
+    let client = backend_library::ProductText::new("qa13").expect("client name");
+    let Request::Surface(mcp) = lower_with_opener(
+        &invocation,
+        PROJECT,
+        &backend_library::TreeOpener::Mcp(client.clone()),
+    )
+    .expect("MCP request") else {
+        panic!("surface command")
+    };
+    let backend_library::SurfaceCommand::TreeOpen {
+        subject, opener, ..
+    } = *cli
+    else {
+        panic!("CLI tree open")
+    };
+    assert_eq!(opener, backend_library::TreeOpener::Cli);
+    let backend_library::SurfaceCommand::TreeOpen {
+        subject: other,
+        opener,
+        ..
+    } = *mcp
+    else {
+        panic!("MCP tree open")
+    };
+    assert_eq!(subject, other);
+    assert_eq!(opener, backend_library::TreeOpener::Mcp(client));
+}
+
+#[test]
 fn a_display_string_never_becomes_an_admitted_command_failure() {
     let operand = Operand::Coordinate(Coordinate::new(DECLARATION));
     for message in [

@@ -393,8 +393,8 @@ mod tests {
     /// How another build's view journal differs from the one this build writes.
     #[derive(Clone, Copy)]
     enum Journal {
-        /// Its snapshots carry a view of an older wire version: the
-        /// `unsupported view DTO version` refusal.
+        /// Its snapshots carry a persisted envelope outside the maintained
+        /// journal grammar, rather than an accepted historical wire version.
         WireVersion,
         /// Its frames are of another journal format.
         FrameFormat,
@@ -428,10 +428,19 @@ mod tests {
                     rewritten += 1;
                 }
                 Journal::WireVersion => {
+                    const INCOMPATIBLE_PERSISTED_VIEW_VERSION: u16 = 20;
+                    assert!(
+                        backend_library::JournalViewGrammarV3::from_checked_container(header[8])
+                            .expect("the fixture uses this journal container")
+                            .check_envelope_version(INCOMPATIBLE_PERSISTED_VIEW_VERSION)
+                            .is_err(),
+                        "the negative fixture must use an incompatible persisted envelope"
+                    );
                     let mut envelope: serde_json::Value =
                         serde_json::from_slice(&payload).expect("a JSON envelope");
                     if let Some(view) = envelope.get_mut("view").filter(|view| !view.is_null()) {
-                        view["version"] = serde_json::json!(backend_library::DTO_VERSION - 1);
+                        view["version"] =
+                            serde_json::json!(INCOMPATIBLE_PERSISTED_VIEW_VERSION);
                         payload = serde_json::to_vec(&envelope).expect("envelope");
                         header[10..18].copy_from_slice(&(payload.len() as u64).to_be_bytes());
                         header[18..50].copy_from_slice(blake3::hash(&payload).as_bytes());
@@ -511,6 +520,52 @@ mod tests {
         assert!(service.is_running(), "the owner is serving");
         service.close().expect("clean shutdown");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_workspace_permissions_recover_before_set_aside_and_cold_reopen() {
+        const CHILD: &str = "NUDOX_LEGACY_WORKSPACE_PERMISSIONS_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+                .arg("legacy_workspace_permissions_recover_before_set_aside_and_cold_reopen")
+                .arg("--nocapture").env(CHILD, "1").output().expect("umask child");
+            assert!(output.status.success(), "legacy permission child failed: {output:?}");
+            return;
+        }
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        rustix::process::umask(rustix::fs::Mode::from_bits_truncate(0o002));
+        fn legacy_directories(path: &Path) {
+            for entry in std::fs::read_dir(path).expect("fixture entries") {
+                let entry = entry.expect("fixture entry");
+                if entry.file_type().expect("fixture kind").is_dir() {
+                    legacy_directories(&entry.path());
+                    std::fs::set_permissions(entry.path(), std::fs::Permissions::from_mode(0o775)).expect("legacy mode");
+                }
+            }
+        }
+        for state_mode in [0o664, 0o600] {
+            let (root, config) = state_from_another_build("legacy-permissions");
+            let workspace = config.workspace.clone();
+            let old_journal = std::fs::read(workspace.join("workspace.journal")).expect("old journal");
+            legacy_directories(&workspace);
+            std::fs::set_permissions(workspace.join("OWNER.state"), std::fs::Permissions::from_mode(state_mode)).expect("owner state mode");
+            let service = EmbeddedLocalService::start_replacing_state_from_another_build(config.clone())
+                .expect("legacy modes reach old-build recognition and replacement");
+            let archived = service.state_set_aside().expect("old build kept").to_path_buf();
+            assert_eq!(std::fs::read(archived.join("workspace.journal")).expect("kept journal"), old_journal);
+            assert!(service.is_running());
+            for path in ["objects", "objects/packs", "compiler", "compiler/artifacts", "compiler/journal", "compiler/native-work", "semantic-objects", "forge", "registry"] {
+                assert_eq!(std::fs::metadata(workspace.join(path)).expect("created directory mode").mode() & 0o777, 0o700, "{path}");
+            }
+            assert_eq!(std::fs::metadata(workspace.join("OWNER.state")).expect("state mode").mode() & 0o777, 0o600);
+            service.close().expect("close repaired owner");
+            let cold = EmbeddedLocalService::start_replacing_state_from_another_build(config).expect("cold reopened repaired workspace");
+            assert!(cold.state_set_aside().is_none(), "current state is retained on cold open");
+            assert!(cold.is_running());
+            cold.close().expect("close cold owner");
+            let _ = std::fs::remove_dir_all(root);
+        }
     }
 
     #[test]

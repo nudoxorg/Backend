@@ -149,6 +149,8 @@ mod diagnostic;
 #[path = "builtin/registry.rs"]
 mod registry;
 use registry::RegistryGateway;
+#[path = "builtin/workspace_admission.rs"]
+mod workspace_admission;
 #[path = "builtin/forge_gateway.rs"]
 mod forge_gateway;
 use crate::discovery::DiscoveryGateway;
@@ -1774,6 +1776,20 @@ pub(crate) fn compose_owner(
         relation_registry,
     )
     .map_err(|error| embedded_host::owner_open_refusal(&config.workspace, error))?;
+    let workspace_admission = daemon
+        .engine()
+        .daemon()
+        .owner()
+        .directory_admission()
+        .map_err(|error| {
+            embedded_host::owner_open_refusal(
+                &config.workspace,
+                crate::LocaldError::Workspace(error),
+            )
+        })?;
+    workspace_admission::admit_local_owner_directories(&workspace_admission).map_err(|error| {
+        ProcessError::Profile(format!("admit local workspace directory: {error}"))
+    })?;
     let compiler_root = config.workspace.join("compiler");
     backend_platform::durable::ensure_private_directory(&compiler_root)
         .map_err(|error| ProcessError::Profile(format!("open private compiler state: {error}")))?;
@@ -1995,7 +2011,7 @@ pub(crate) fn compose_owner(
     }
     let published_roots = published.roots;
     let projection_path = config.workspace.join(backend_extension_turso::FILE_NAME);
-    let mut sql_projection =
+    let sql_projection =
         sql_projection::open_current(&projection_path, &daemon).map_err(|error| {
             ProcessError::Profile(format!(
                 "open Turso projection {}: {error}",
@@ -2087,46 +2103,19 @@ pub(crate) fn compose_owner(
         // worker is offline.
         replication.start_reconnect();
     }
-    let mut registry = RegistryGateway::open(
+    let registry = RegistryGateway::open_with_workspace_admission(
         &config.registry,
         config.workspace.join("registry"),
         &config.advisory,
+        workspace_admission,
     )
     .map_err(|error| ProcessError::Profile(format!("open registry owner: {error}")))?;
-    if let Some(registry) = registry.as_mut() {
-        // Opening the gateway composes its source owners lazily. Load their
-        // durable catalog before reading dependency facts so cold projection
-        // repair sees the same graph inputs as an ordinary command.
-        let graph_base =
-            sql_projection::GraphBase::capture(&sql_projection, &daemon).map_err(|error| {
-                ProcessError::Profile(format!("capture package graph revision: {error}"))
-            })?;
-        let catalog = registry.catalog_projection().map_err(|error| {
-            ProcessError::Profile(format!(
-                "open registry catalog for graph projection: {error}"
-            ))
-        })?;
-        let facts = backend_library::CheckedPackageGraphFacts::from_borrowed_facts(
-            catalog.dependency_facts().iter(),
-            config.package_graph_limits,
-        )
-        .map_err(|error| ProcessError::Profile(format!("check package graph seed: {error}")))?;
-        if !registry
-            .validate_resident_projection(&catalog)
-            .map_err(|error| {
-                ProcessError::Profile(format!("validate package graph source: {error}"))
-            })?
-        {
-            return Err(ProcessError::Profile(
-                "registry source changed before initial package graph publication".to_owned(),
-            ));
-        }
-        graph_base
-            .synchronize(&mut sql_projection, &facts)
-            .map_err(|error| {
-                ProcessError::Profile(format!("align package graph projection: {error}"))
-            })?;
-    }
+    // Local owner readiness does not certify a registry catalog. A fresh SQL
+    // namespace keeps its explicit unavailable graph seed. Catalog-dependent
+    // commands capture that SQL revision, admit all configured source facts,
+    // and revalidate the selected catalog before publishing a checked graph.
+    // This also applies on reopen: CommandAdapter has no resident dependency
+    // proof until that first command, even if SQL retains an older graph.
     let product_state = ProductState::open(config.workspace.join("product-state.json"))
         .map_err(|error| ProcessError::Profile(format!("open product state: {error}")))?;
     let forge = ForgeGateway::open(config.workspace.join("forge"), config.forge.clone())

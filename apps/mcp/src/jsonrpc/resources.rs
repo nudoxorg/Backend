@@ -12,11 +12,11 @@
 //! lift them straight out of the card and execute them against a live index —
 //! the card cannot promise a query the engine will not run.
 
-use super::codec::{empty_cursor, object, percent_decode, percent_encode, string};
+use super::codec::{empty_cursor, object, percent_decode, string};
 use super::tools::catalog_markdown;
 use super::{RpcError, answer_for};
 use backend_present::{
-    Answer, DEFAULT_RESPONSE_BUDGET_BYTES, Detail, Engine, Request, encode_serializable, markdown,
+    DEFAULT_RESPONSE_BUDGET_BYTES, Detail, Engine, Request, encode_serializable, markdown,
     oversized_fault,
 };
 use serde::Serialize;
@@ -161,11 +161,12 @@ pub(super) fn worked_queries(card: &str) -> Vec<&str> {
     queries
 }
 
-/// Lists workspace status, query guidance, the route catalog, and one outline
-/// per project.
-pub(super) fn list_resources(engine: &mut dyn Engine, params: &Value) -> Result<Value, RpcError> {
+/// Lists stable resource addresses without opening the workspace owner.
+/// Project outlines are discoverable through the URI template: a package on
+/// the shelf does not prove that an outline is published at this revision.
+pub(super) fn list_resources(params: &Value) -> Result<Value, RpcError> {
     empty_cursor(params)?;
-    let mut resources = vec![
+    let resources = vec![
         json!({
             "uri": WORKSPACE_URI,
             "name": "workspace-status",
@@ -188,19 +189,6 @@ pub(super) fn list_resources(engine: &mut dyn Engine, params: &Value) -> Result<
             "mimeType": MARKDOWN
         }),
     ];
-    let Answer::Shelf(shelf) = answer_for(engine, &Request::Shelf)? else {
-        return encode_result("resources", ResourceBody { resources });
-    };
-    resources.extend(shelf.entries().iter().map(|entry| {
-        let coordinate = entry.identity().coordinate().as_str();
-        json!({
-            "uri": format!("backend://outline/{}", percent_encode(coordinate)),
-            "name": entry.identity().name(),
-            "title": format!("{} outline", entry.identity().name()),
-            "description": "The package's containment tree, named and pinned to this revision.",
-            "mimeType": MARKDOWN
-        })
-    }));
     encode_result("resources", ResourceBody { resources })
 }
 
@@ -221,7 +209,7 @@ pub(super) fn list_resource_templates(params: &Value) -> Result<Value, RpcError>
             "uriTemplate": "backend://outline/{path}",
             "name": "project-outline",
             "title": "Project outline",
-            "description": "One package outline selected by project path.",
+            "description": "An outline selected by project path when declarations are published; otherwise resources/read returns resource-not-found.",
             "mimeType": MARKDOWN
         }
     ] }),

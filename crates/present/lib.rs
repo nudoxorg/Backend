@@ -92,7 +92,8 @@ pub use budget::{
     encode_answer, encode_serializable, encode_value, estimate_tokens, oversized_fault,
 };
 pub use call::{
-    DEFAULT_LIMIT, Invocation, Request, SURFACE_VERB, decode_index_job_ticket, lower, lower_surface_json, row_for,
+    DEFAULT_LIMIT, Invocation, Request, SURFACE_VERB, decode_index_job_ticket, lower,
+    lower_surface_json, lower_with_opener, row_for,
 };
 pub use coverage::{
     CoverageLine, LaneCoverage, LaneShards, LaneState, RowCount as CoverageRows, lane_name,

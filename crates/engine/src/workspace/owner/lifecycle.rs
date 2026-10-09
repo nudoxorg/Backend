@@ -160,6 +160,16 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
             .map_err(WorkspaceError::store)?
             .with_relation::<crate::workspace::catalog::CatalogPayloadRefRelation>()
             .map_err(WorkspaceError::store)?;
+        let admission = lease.directory_admission();
+        for relative in [
+            "objects",
+            "objects/packs",
+            "objects/objects",
+            "objects/closures",
+            "objects/nodes",
+        ] {
+            admission.admit(relative).map_err(WorkspaceError::io)?;
+        }
         let store = Arc::new(
             FileStore::open_with_registry(
                 directory.join("objects"),
@@ -356,6 +366,43 @@ mod tests {
         let head = WorkspaceHead::genesis_with_registry(manifest, closure, &registry)
             .expect("product genesis");
         (head, registry)
+    }
+
+    #[test]
+    fn directory_admission_requires_the_original_writer_to_be_held() {
+        let (genesis, registry) = product_genesis();
+        let directory = std::env::temp_dir().join(format!(
+            "backend-engine-owner-directory-admission-{}",
+            std::process::id(),
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let mut owner =
+            WorkspaceOwner::open_with_registry(&directory, ColdStartModel, genesis, registry)
+                .expect("open physical workspace owner");
+        owner
+            .directory_admission()
+            .expect("held original writer admits directories")
+            .admit("before-transfer")
+            .expect("admit private child before transfer");
+        assert!(directory.join("before-transfer").is_dir());
+
+        let writer = owner.reserve_writer().expect("transfer original writer");
+        assert!(matches!(
+            owner.directory_admission(),
+            Err(WorkspaceError::WriterReserved)
+        ));
+        assert!(!directory.join("during-transfer").exists());
+        owner
+            .return_unselected_writer(writer)
+            .expect("return original unselected writer");
+        owner
+            .directory_admission()
+            .expect("returned original writer admits directories")
+            .admit("after-transfer")
+            .expect("admit private child after transfer");
+        assert!(directory.join("after-transfer").is_dir());
+        drop(owner);
+        std::fs::remove_dir_all(directory).expect("remove owner admission fixture");
     }
 
     #[test]

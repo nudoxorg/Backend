@@ -318,6 +318,19 @@ fn query_cursor(invocation: &Invocation, query: Request) -> Result<Request, Faul
 ///
 /// Returns a typed fault naming the operand the engine cannot admit.
 pub fn lower(invocation: &Invocation, project: &str) -> Result<Request, Fault> {
+    lower_with_opener(invocation, project, &TreeOpener::Cli)
+}
+
+/// Lowers an invocation while retaining the surface that opened a tree node.
+///
+/// # Errors
+///
+/// Returns the same typed operand admission faults as [`lower`].
+pub fn lower_with_opener(
+    invocation: &Invocation,
+    project: &str,
+    opener: &TreeOpener,
+) -> Result<Request, Fault> {
     let grammar = invocation.grammar();
     let Some(spec) = grammar.spec() else {
         return Err(Fault::usage(
@@ -417,7 +430,9 @@ pub fn lower(invocation: &Invocation, project: &str) -> Result<Request, Fault> {
             admit(&SurfaceCommand::CargoPackageReadmeLink { request })
                 .map(|command| Request::Surface(Box::new(command)))
         }
-        _ => surface(invocation, spec.id).map(|command| Request::Surface(Box::new(command))),
+        _ => {
+            surface(invocation, spec.id, opener).map(|command| Request::Surface(Box::new(command)))
+        }
     }
 }
 
@@ -612,7 +627,11 @@ fn option_node(invocation: &Invocation, name: &str) -> Result<Option<TreeNodeId>
     })
 }
 
-fn surface(invocation: &Invocation, id: CommandId) -> Result<SurfaceCommand, Fault> {
+fn surface(
+    invocation: &Invocation,
+    id: CommandId,
+    opener: &TreeOpener,
+) -> Result<SurfaceCommand, Fault> {
     let command = match id {
         CommandId::Advisory => SurfaceCommand::Advisory {
             package: package(invocation, 0)?,
@@ -794,7 +813,7 @@ fn surface(invocation: &Invocation, id: CommandId) -> Result<SurfaceCommand, Fau
         CommandId::PackageProfile => SurfaceCommand::PackageProfile {
             package: package(invocation, 0)?,
         },
-        _ => return home_or_session(invocation, id),
+        _ => return home_or_session(invocation, id, opener),
     };
     admit(&command)
 }
@@ -843,7 +862,11 @@ fn override_evidence(invocation: &Invocation) -> Result<Option<OverrideEvidence>
     }))
 }
 
-fn home_or_session(invocation: &Invocation, id: CommandId) -> Result<SurfaceCommand, Fault> {
+fn home_or_session(
+    invocation: &Invocation,
+    id: CommandId,
+    opener: &TreeOpener,
+) -> Result<SurfaceCommand, Fault> {
     let command = match id {
         CommandId::Subscribe => SurfaceCommand::Subscribe {
             package: package(invocation, 0)?,
@@ -887,7 +910,7 @@ fn home_or_session(invocation: &Invocation, id: CommandId) -> Result<SurfaceComm
             subject: subject(invocation)?,
             parent: option_node(invocation, "parent")?,
             title: optional_text(invocation, "title")?,
-            opener: TreeOpener::Cli,
+            opener: opener.clone(),
         },
         CommandId::TreeClose => SurfaceCommand::TreeClose {
             node: node(invocation, 0)?,

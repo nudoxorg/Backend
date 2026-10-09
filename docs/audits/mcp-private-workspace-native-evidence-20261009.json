@@ -1,0 +1,655 @@
+{
+  "schema": "nudox.root-mcp-private-workspace-native-audit.v1",
+  "native_source": {
+    "commit": "3544a31083ff0ac078afaed23b8061dd899c099d",
+    "lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+    "status": "",
+    "tree": "0e348d9e99747804d4e2db23f7b2c4cd3e4baec4"
+  },
+  "passed": 141,
+  "failed": 0,
+  "ignored": 0,
+  "exact_names": [
+    "builtin::commands::adapter::tests::absent_catalog_reads_keep_typed_failure_through_the_real_adapter_and_wire",
+    "builtin::commands::adapter::tests::project_graph_reads_keep_absence_and_stale_basis_typed",
+    "builtin::registry::tests::cold_local_health_keeps_registry_receipts_unopened_and_graph_unavailable",
+    "builtin::registry::tests::first_catalog_command_and_cold_reopen_publish_all_configured_source_facts",
+    "builtin::registry::tests::unavailable_catalog_does_not_block_local_health_or_publish_empty_facts_and_can_recover",
+    "builtin::view_journal::tests::journal_v3_known_snapshots_events_chain_to_current_without_replacing_history",
+    "embedded::tests::a_view_journal_another_build_wrote_is_state_from_another_build_and_is_set_aside",
+    "http::tests::automatic_http_token_is_private_and_survives_restart_without_rotation",
+    "http::tests::bind_proof_rejects_non_loopback_addresses",
+    "http::tests::bound_http_answers_pending_before_blocked_durable_authentication_and_admits_afterward",
+    "http::tests::concurrent_http_initializers_admit_one_complete_credential",
+    "http::tests::failed_http_authentication_retains_first_cause_and_admits_no_sessions",
+    "http::tests::token_comparison_includes_length",
+    "http::tests::unavailable_authentication_response_keeps_an_oversized_request_id_bounded",
+    "http::tests::unsafe_or_oversized_http_token_files_refuse_without_replacing_or_echoing_bytes",
+    "jsonrpc::reconnect::tests::a_mutating_surface_command_is_not_repeated",
+    "jsonrpc::reconnect::tests::a_mutation_reconnects_without_being_sent_twice",
+    "jsonrpc::reconnect::tests::a_product_fault_does_not_reconnect",
+    "jsonrpc::reconnect::tests::a_read_reconnects_and_returns_its_reply",
+    "jsonrpc::reconnect::tests::a_second_disconnect_parks_the_replacement_for_the_next_call",
+    "jsonrpc::reconnect::tests::daemon_restart_io_kinds_are_reconnectable_but_configuration_errors_are_not",
+    "jsonrpc::reconnect::tests::deterministic_idle_gap_matrix_reconnects_only_after_the_timeout",
+    "jsonrpc::reconnect::tests::every_read_only_surface_variant_is_repeatable",
+    "jsonrpc::reconnect::tests::failed_reconnect_does_not_reuse_the_dead_lease",
+    "jsonrpc::reconnect::tests::reconnect_transfers_the_retired_product_to_the_endpoint",
+    "jsonrpc::reconnect::tests::revision_health_and_graph_query_all_recover",
+    "jsonrpc::reconnect::tests::the_call_after_a_refused_mutation_succeeds",
+    "jsonrpc::tests::a_document_call_returns_the_markdown_page_and_the_typed_answer",
+    "jsonrpc::tests::a_malformed_operand_names_the_argument_and_the_closed_set",
+    "jsonrpc::tests::a_missing_resource_is_refused_rather_than_guessed",
+    "jsonrpc::tests::a_refused_surface_operation_reports_its_typed_cause",
+    "jsonrpc::tests::a_search_call_leads_with_honest_coverage_then_two_lines_per_record",
+    "jsonrpc::tests::adapter_errors_keep_continuation_transport_refusal_separate_from_compiler_facts",
+    "jsonrpc::tests::adapter_errors_keep_valid_json_and_coordinate_protocol_strings_unproven",
+    "jsonrpc::tests::adapter_errors_preserve_typed_compiler_facts_at_exact_boundaries",
+    "jsonrpc::tests::advertised_registry_lookups_reach_the_typed_product_commands",
+    "jsonrpc::tests::an_affordance_is_the_exact_next_tool_call_an_agent_can_paste",
+    "jsonrpc::tests::an_explicit_project_is_active_even_when_the_launch_directory_differs",
+    "jsonrpc::tests::an_outline_call_is_a_tree_of_names_never_bare_digests",
+    "jsonrpc::tests::an_unknown_coordinate_is_refused_with_the_operand_and_a_next_tool_call",
+    "jsonrpc::tests::an_unknown_tool_is_a_protocol_error_not_a_result",
+    "jsonrpc::tests::an_unreachable_endpoint_is_a_fault_with_the_retry_affordance",
+    "jsonrpc::tests::authenticated_continuation_decode_preserves_domain_and_server_fault_distinctions",
+    "jsonrpc::tests::blocking_owner_await_is_not_exposed_over_mcp",
+    "jsonrpc::tests::cancellation_notifications_are_silent_and_do_not_poison_the_session",
+    "jsonrpc::tests::cold_cursor_verification_never_initializes_authority_for_a_forged_token",
+    "jsonrpc::tests::combined_budget_shortens_only_the_readable_preview_with_explicit_provenance",
+    "jsonrpc::tests::continuation_authority_binds_context_and_owner_payload",
+    "jsonrpc::tests::continuation_context_binds_workspace_query_limit_and_detail",
+    "jsonrpc::tests::copied_ticket_string_uses_the_object_decoder_and_preserves_the_owner_ticket",
+    "jsonrpc::tests::deeply_nested_json_is_rejected_before_tool_admission",
+    "jsonrpc::tests::default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapshots",
+    "jsonrpc::tests::dependency_refusal_marks_tool_failure_and_keeps_the_exact_requested_package",
+    "jsonrpc::tests::direct_and_generic_graph_routes_preserve_typed_domain_and_protocol_failures",
+    "jsonrpc::tests::document_and_source_tools_advertise_their_useful_default_detail",
+    "jsonrpc::tests::every_metadata_route_stays_within_the_context_budget",
+    "jsonrpc::tests::every_registry_row_is_reachable_as_exactly_one_tool",
+    "jsonrpc::tests::generic_surface_dependency_refusal_keeps_exact_package_action_and_typed_fault",
+    "jsonrpc::tests::generic_surface_progress_and_cancel_keep_the_request_ticket_projection",
+    "jsonrpc::tests::graph_continuation_round_trip_is_bounded_and_authorized",
+    "jsonrpc::tests::graph_page_text_does_not_treat_cancellation_or_missing_cursor_as_limit_advice",
+    "jsonrpc::tests::graph_query_limits_are_rejected_before_the_product_boundary",
+    "jsonrpc::tests::high_fanout_graph_and_surface_pages_refuse_atomically",
+    "jsonrpc::tests::index_cancel_preserves_terminal_races_and_rejects_fabricated_tickets",
+    "jsonrpc::tests::index_progress_distinguishes_prior_owner_tickets_and_terminal_refusals",
+    "jsonrpc::tests::index_progress_maximum_owner_page_fits_the_combined_mcp_result_budget",
+    "jsonrpc::tests::index_progress_returns_bounded_events_and_the_exact_next_sequence",
+    "jsonrpc::tests::index_requires_its_advertised_path_before_owner_admission",
+    "jsonrpc::tests::index_search_cursor_cannot_cross_between_named_and_generic_mcp_tools",
+    "jsonrpc::tests::index_search_cursor_round_trips_between_servers_with_the_same_workspace_authority",
+    "jsonrpc::tests::index_search_tool_cursor_rejects_context_changes_and_raw_owner_tokens",
+    "jsonrpc::tests::index_search_tool_round_trips_mcp_cursors_at_summary_and_full_detail",
+    "jsonrpc::tests::index_start_keeps_the_exact_owner_ticket_and_routes_purls_to_the_owner_job_api",
+    "jsonrpc::tests::index_tool_advertises_and_validates_execution_intent",
+    "jsonrpc::tests::initialize_negotiates_only_the_library_supported_protocols",
+    "jsonrpc::tests::initialized_notification_cannot_bypass_initialize",
+    "jsonrpc::tests::lazy_cursor_authority_is_durable_once_and_replayable_in_a_fresh_server",
+    "jsonrpc::tests::lazy_cursor_authority_retries_after_repair_without_process_key_fallback",
+    "jsonrpc::tests::malformed_call_tool_envelopes_and_unknown_routes_remain_rpc_errors",
+    "jsonrpc::tests::malformed_or_expired_cursor_does_not_admit_a_workspace_authority",
+    "jsonrpc::tests::mcp_text_is_the_same_shared_markdown_the_cli_renders",
+    "jsonrpc::tests::missing_index_path_returns_actionable_structured_usage_before_owner_work",
+    "jsonrpc::tests::newline_codec_is_bounded_and_compact",
+    "jsonrpc::tests::newline_codec_rejects_malformed_and_oversized_jsonrpc_frames",
+    "jsonrpc::tests::outline_resource_templates_preserve_readable_and_absent_projects",
+    "jsonrpc::tests::oversized_signed_index_search_cursor_projection_is_refused_without_truncation",
+    "jsonrpc::tests::owner_index_job_tools_advertise_exact_tickets_and_immediate_progress",
+    "jsonrpc::tests::partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_same_mcp_wire_result",
+    "jsonrpc::tests::recognized_tools_share_typed_missing_input_results_before_any_owner_call",
+    "jsonrpc::tests::registry_lookup_tools_are_advertised_with_bounded_typed_inputs",
+    "jsonrpc::tests::registry_schema_primitive_types_are_enforced_before_the_product_boundary",
+    "jsonrpc::tests::resource_discovery_needs_no_owner_and_outline_reads_preserve_protocol_failure",
+    "jsonrpc::tests::resources_are_the_same_markdown_their_tools_return",
+    "jsonrpc::tests::semantic_shapes_actual_jsonrpc_preserves_full_view_in_summary_and_full",
+    "jsonrpc::tests::semantic_shapes_jsonrpc_refuses_oversized_view_without_dropping_required_facts",
+    "jsonrpc::tests::semantic_versions_jsonrpc_keeps_true_oversize_refusals_atomic",
+    "jsonrpc::tests::semantic_versions_jsonrpc_preserves_captured_semver_and_matches_the_cli_projection",
+    "jsonrpc::tests::simultaneous_lazy_cursor_admission_uses_one_durable_identity",
+    "jsonrpc::tests::stale_graph_roots_are_reported_as_a_restartable_cursor_error",
+    "jsonrpc::tests::stale_named_index_search_cursor_is_a_restartable_refusal",
+    "jsonrpc::tests::stale_surface_index_search_cursor_is_reported_as_restartable",
+    "jsonrpc::tests::status_is_a_rollup_a_reader_can_hold_not_a_capability_dump",
+    "jsonrpc::tests::surface_errors_keep_valid_compiler_json_and_coordinates_as_unproven_protocol",
+    "jsonrpc::tests::surface_errors_preserve_typed_compiler_facts_across_all_job_routes",
+    "jsonrpc::tests::surface_index_search_cursor_binds_query_limit_project_and_detail",
+    "jsonrpc::tests::surface_index_search_cursor_round_trips_through_the_mcp_projection",
+    "jsonrpc::tests::the_handshake_reports_the_stable_protocol_and_its_instructions",
+    "jsonrpc::tests::the_packages_call_states_readiness_for_every_project",
+    "jsonrpc::tests::the_query_card_carries_worked_queries_over_the_declared_schema",
+    "jsonrpc::tests::the_references_tool_serves_occurrence_sites_with_source_spans",
+    "jsonrpc::tests::the_session_list_hides_the_surface_escape_hatch",
+    "jsonrpc::tests::the_session_tool_list_leads_with_packages_and_index",
+    "jsonrpc::tests::the_surface_escape_hatch_returns_the_typed_reply_and_a_readable_block",
+    "jsonrpc::tests::the_typed_query_lane_reports_its_terminal_and_revision",
+    "jsonrpc::tests::tool_catalog_names_callable_routes_without_advertising_unready_surfaces",
+    "jsonrpc::tests::tree_open_routes_record_the_initialized_mcp_client",
+    "jsonrpc::tests::wire_budget_metadata_counts_the_complete_escaped_jsonrpc_line",
+    "process::tests::stdio_metadata_answers_when_durable_workspace_admission_is_unavailable",
+    "process::tests::stdio_metadata_does_not_initialize_a_new_workspace",
+    "process::tests::stdio_returns_correlated_mcp_error_when_owner_startup_fails",
+    "tests::absent_outline_repair_uses_the_real_command_on_each_surface",
+    "tests::certified_framed_dispatch_admits_identity_before_presentation",
+    "tests::embedded_client_rejects_an_intent_for_another_package_before_execution",
+    "tests::endpoint_error_extracts_correlation_without_admitting_claims",
+    "tests::endpoint_error_keeps_a_valid_request_id",
+    "tests::framed_dispatch_preserves_cli_reply_shape",
+    "tests::frames_are_bounded_and_round_trip",
+    "tests::graph_requests_retain_their_revision_for_endpoint_admission",
+    "tests::health_cannot_be_claimed_without_a_producer_certificate",
+    "tests::in_process_client_does_not_cache_replies",
+    "tests::injected_transport_checks_basis_and_freshness",
+    "tests::malformed_request_gets_a_framed_reply",
+    "tests::mcp_admission_bounds_requests_and_replies",
+    "tests::mcp_outer_frame_matches_the_canonical_local_codec",
+    "tests::replies_must_match_the_requested_command_shape",
+    "tests::request_encoding_rejects_a_certificate_for_another_package",
+    "tests::tree_open_lowering_preserves_the_calling_surface_without_changing_the_subject",
+    "tests::unix_endpoint_path_is_bounded",
+    "tests::unix_transport_consumes_producer_certified_success_without_expected_cache",
+    "tests::unix_transport_executes_one_correlated_request",
+    "tests::unix_transport_rejects_digest_only_identity_success"
+  ],
+  "raw_log_hash_count": 46,
+  "gates": [
+    {
+      "gate": 0,
+      "kind": "compile-only",
+      "receipt_sha256": "7d2245cedf46c9f7127ee7f568eb50cf57e74eb2f3d5fc8128c84b4e601b3c73",
+      "stdout_sha256": "90b03dded4557f0a66df97706f7025bdf1e86b4edad70bc0b756a6ef4accf0ef",
+      "stderr_sha256": "1eb02759fdccddb24251ddf13b373aca97793a816ca4d0a5697578fc6f36f5f9",
+      "elapsed_seconds": 363.6515553749632,
+      "summaries": []
+    },
+    {
+      "gate": 1,
+      "kind": "inventory",
+      "receipt_sha256": "dd9b3ce48a7940d2c82093bbfee9942c224fa18e1b3e29d62f2e12660f73a8db",
+      "stdout_sha256": "d370e4e61bcf2a7b049d8b1d194942ecba9935971894ad387c59a13145bdee0a",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "elapsed_seconds": 1.2151318000396714,
+      "summaries": []
+    },
+    {
+      "gate": 2,
+      "kind": "native",
+      "receipt_sha256": "a5689b72484216569e4badd531e4e57ee28c2f28c98d36a9fb3420a045f28efc",
+      "stdout_sha256": "2ff7002b0ce928be0c43575aab17ec269fbaa9b1ad1ae455736771cec031d051",
+      "stderr_sha256": "2eef3bb00ee7fd0edcd64cf19b67b54b60863f1fd0ce65704c3ec1b3ed3c0597",
+      "elapsed_seconds": 10.932538569904864,
+      "summaries": [
+        {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 132
+        }
+      ]
+    },
+    {
+      "gate": 3,
+      "kind": "compile-only",
+      "receipt_sha256": "353b801b0cef38b37c99e57f804c1b925d9219c7f43e7d6922ab9ad9397bfa5a",
+      "stdout_sha256": "454437da62400a9c7c49b693e1318aa314c5302630cfb104ca57bb3a4435d986",
+      "stderr_sha256": "fdf18e3975e6c10cb6e3084d1c1000a0d7e1da10f6f01b02d51fc7c4e12d2a58",
+      "elapsed_seconds": 282.50189049798064,
+      "summaries": []
+    },
+    {
+      "gate": 4,
+      "kind": "inventory",
+      "receipt_sha256": "2daf5891a49cf55a52a7ce8d136d13ff915b8587fd61f890b9834bcef86c52b6",
+      "stdout_sha256": "51c27080fec2cea2f419fd30accd5260ca4f99f3dafc46bb802ed1eb147fbf40",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "elapsed_seconds": 1.9523218260146677,
+      "summaries": []
+    },
+    {
+      "gate": 5,
+      "kind": "inventory",
+      "receipt_sha256": "6fc324ad22ac978f384b07631480375f34b9b2590d497bd4c0c109ddf18c048f",
+      "stdout_sha256": "76f2f2073a9c1a430b1772b894c819f54cd8f24acb5cab39c54c62c884bb3f17",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "elapsed_seconds": 4.007219922030345,
+      "summaries": []
+    },
+    {
+      "gate": 6,
+      "kind": "native",
+      "receipt_sha256": "b2804e9860183dd508c4b76559fd08d4292b43971162f68f7def89c43dff7e91",
+      "stdout_sha256": "ec7c0b4841a1d636bfffab3da94cfd901fcef7544b4a0bb76094420a5679c214",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "elapsed_seconds": 1.436425511026755,
+      "summaries": [
+        {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        }
+      ]
+    },
+    {
+      "gate": 7,
+      "kind": "native",
+      "receipt_sha256": "712adb4d66910d6d167bfe03faf8b11ce269fa9286566e8d044c34d1ef35c5a3",
+      "stdout_sha256": "fc4d3af1922162d65711e14f7551da756701306c2b01a909eed08b5befa83b80",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "elapsed_seconds": 4.481730230967514,
+      "summaries": [
+        {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        }
+      ]
+    },
+    {
+      "gate": 8,
+      "kind": "compile-only",
+      "receipt_sha256": "e7cafb0dbb34bad353843d094318940301f33934930e7b2ecc27e2660475a026",
+      "stdout_sha256": "6161e9af12558e7dc0c3d85a261c44ae17d40c21f8849ab659d6dee3eb5bf067",
+      "stderr_sha256": "a16e8d402292b36155d71d8e6bf29b4c461675b5ceb02d5d79012009a3bfed04",
+      "elapsed_seconds": 399.8579652030021,
+      "summaries": []
+    },
+    {
+      "gate": 9,
+      "kind": "inventory",
+      "receipt_sha256": "dbfb08387e165f34ed7421108748477472ba4e9d8907e7bb5ff7b9d63520207b",
+      "stdout_sha256": "fc6fa914d1e2b8e03964296cac7d89011d15935df00c734c21c8e0244f404647",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "elapsed_seconds": 0.7557859930675477,
+      "summaries": []
+    },
+    {
+      "gate": 10,
+      "kind": "inventory",
+      "receipt_sha256": "1bf5c625625df7d3ce06ce26e18a85cf813efe75716931972d7893e9d55ba039",
+      "stdout_sha256": "e069f3770cab4e5a3c26949cab2dbbd043aa8069a674c8ba71cbb392cdbb9327",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "elapsed_seconds": 0.23829212202690542,
+      "summaries": []
+    },
+    {
+      "gate": 11,
+      "kind": "inventory",
+      "receipt_sha256": "97e8841f7fd6bfc0bd75993de36ae33ba1a14d1894adacd46bb3f3b4e3f8e5a1",
+      "stdout_sha256": "e97406775de37811a2d937e60e9c2e2fcd11414d4f41f3a832b66d2e7676e00f",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "elapsed_seconds": 0.26445317396428436,
+      "summaries": []
+    },
+    {
+      "gate": 12,
+      "kind": "inventory",
+      "receipt_sha256": "808ef366d617d881bc8c7b1b2b0ae43e3c552c20c646cc39935d11d2c3ec3b58",
+      "stdout_sha256": "37e1f98763c3342e40d23f9306a6617cb9033957c8a46378ddd0a5665460cda6",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "elapsed_seconds": 1.1178384859813377,
+      "summaries": []
+    },
+    {
+      "gate": 13,
+      "kind": "inventory",
+      "receipt_sha256": "13148c26f7eee929fccf59f6cc189fd280e9b2f2a23be512de43db95cb9327fd",
+      "stdout_sha256": "f8b7f4ef41927b8894f3d090f5ef97e9609c3aa6c72bae3bf49fe75cedbb0e5a",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "elapsed_seconds": 0.1327745009912178,
+      "summaries": []
+    },
+    {
+      "gate": 14,
+      "kind": "inventory",
+      "receipt_sha256": "a910280d4f8f2cc5a82aa2fa89a29737d186c9a6f9319c51dba35fbc06f151bb",
+      "stdout_sha256": "57bf7eb6a640095dea48e44a1780246e2b8d6f98d4e5195fef3b87ed92a08aff",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "elapsed_seconds": 0.08558841096237302,
+      "summaries": []
+    },
+    {
+      "gate": 15,
+      "kind": "inventory",
+      "receipt_sha256": "c5e2b69aaf73127da00276ac5c9d67755084b0ae3b662ff01887bb0424bdf39c",
+      "stdout_sha256": "867aec71c7a3a2b9bafce0fe9240d3e424bf6ed32d1ca4569ff648109b1b6b83",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "elapsed_seconds": 2.130051980027929,
+      "summaries": []
+    },
+    {
+      "gate": 16,
+      "kind": "native",
+      "receipt_sha256": "1ea0c20fab4b4d53ac41621995ac2e090a4774a7cb190fb761875f0bf7bfe6af",
+      "stdout_sha256": "047b3b657001b9f634080ae781d28af8214040b2dd937c4205bbf2b0ba7238e6",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "elapsed_seconds": 44.368302688002586,
+      "summaries": [
+        {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        }
+      ]
+    },
+    {
+      "gate": 17,
+      "kind": "native",
+      "receipt_sha256": "e3a71a2ebc059fa1f2d403209174745194c5986979e3d76db07972752eaace44",
+      "stdout_sha256": "08875992fa53272ca39b98885bed37a742f6390049d13dffa1c3bf0613f75fbf",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "elapsed_seconds": 2.0612222680356354,
+      "summaries": [
+        {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        }
+      ]
+    },
+    {
+      "gate": 18,
+      "kind": "native",
+      "receipt_sha256": "a44eafa004c431ecb36bfac7234eca43e15a3220eaff6cc13a2bbd6d254d6924",
+      "stdout_sha256": "64909b205b88f96592c61f7ee8f5b6a8ccb39e65a9a1c08f764ae2a1d240ea23",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "elapsed_seconds": 145.97643017501105,
+      "summaries": [
+        {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        }
+      ]
+    },
+    {
+      "gate": 19,
+      "kind": "native",
+      "receipt_sha256": "a255f61c6b50dcafa726b1cd48fdab10dd709437f9cf29c814fae41d5122589f",
+      "stdout_sha256": "84c28e8d167e2a82e48965eb35b3d48b1868d0bc6f602dec48a87e586489e202",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "elapsed_seconds": 124.96001821605023,
+      "summaries": [
+        {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        }
+      ]
+    },
+    {
+      "gate": 20,
+      "kind": "native",
+      "receipt_sha256": "fbe0ba12ffe4cdfb903828b09c239f75a0cb7224fb5084503a815d1fdc109d66",
+      "stdout_sha256": "113fd55170c4154a08162e09098260381a9d9a927f2efeef58a76113db61b63f",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "elapsed_seconds": 7.244363014004193,
+      "summaries": [
+        {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        }
+      ]
+    },
+    {
+      "gate": 21,
+      "kind": "native",
+      "receipt_sha256": "137e9af0908660b6b5700f0cfe44ecd18303c27e7246a0807d5701c25717cffd",
+      "stdout_sha256": "480a8eac527cf09bb471855d642c2de020894d85a9ae0c7973008b7bdf04382d",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "elapsed_seconds": 80.60857159702573,
+      "summaries": [
+        {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        }
+      ]
+    },
+    {
+      "gate": 22,
+      "kind": "native",
+      "receipt_sha256": "ee49dc1d7ab1d5a0c44a07575ffe3ac76f8b2157908046c2a730dd67fdafb13a",
+      "stdout_sha256": "c821b75cf8ad6f0e10141a7c07aa9d05e895383e0804f33a26c6c49677820363",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "elapsed_seconds": 159.99873448396102,
+      "summaries": [
+        {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        }
+      ]
+    }
+  ],
+  "literal_retirement_sha256": "ebc8401a242b78888dfad3a44531e2da74fd60176d89b5b40b9aa52f4c4b2f21",
+  "administrative_source_epoch_retained": true,
+  "ultimate_original23b9_restoration_pending": true,
+  "previous_reds": "original139PASS/3FAIL retained",
+  "prior_engine_writer_test": "2840 separately PASS; not part of fresh141 cohort",
+  "canonical_replay": {
+    "automatic_additive_join": {
+      "exact_change_to_parent": "add WorkspaceDirectoryAdmission to existing workspace reexport; all current DTO25 lockfile exports retained",
+      "path": "crates/engine/src/lib.rs"
+    },
+    "bundle": {
+      "path": "/private/tmp/sol61-qa13-current-dto25-replay-review.bundle",
+      "sha256": "b82c2cd6a59a731b2c04231d9ece41b892bf2c4577defa2ccdeec16d7b350e7a"
+    },
+    "cargo_lock_sha256": "b45bb9a10382c70e6888b220e82061d038b886a5235978f9442c6483229bb1dd",
+    "clean": true,
+    "commit": "8b023a27c62563367153b034a817478cd86b31c3",
+    "conflicts": [],
+    "native_scope": "current joined source UNRUN; predecessor3544 actual141PASS and standalone6495 Mac40PASS remain qualified",
+    "outside_entries_byte_exact_parent": true,
+    "outside_entries_count": 17989,
+    "parent": "409128fc0c8db1e880b85ba083fed50557e27ffc",
+    "parent_tree": "d194b476b76b7e07e976b9963e92884e024f575e",
+    "patch": {
+      "path": "/private/tmp/sol61-qa13-current-dto25-replay-full-review.patch",
+      "sha256": "ce61a398eeb00f3fa62645dd840bf54b7694d89cabfe8237c3a9d41e0f5f51bd"
+    },
+    "paths": [
+      {
+        "byte_identical_reviewed_bb262_postimage": true,
+        "bytes": 40327,
+        "path": "apps/mcp/src/http.rs",
+        "sha256": "7cab728e6c7d2f8055678b218dac8a751133cb9e348dad3efa7116d04a297025",
+        "tree_entry": "100644 blob aab4445240b3dee217c6c3f02e51df1b2b27792a"
+      },
+      {
+        "byte_identical_reviewed_bb262_postimage": true,
+        "bytes": 72739,
+        "path": "apps/mcp/src/jsonrpc.rs",
+        "sha256": "f17e56b5d28dd047a348d9a6374902bb9f19714cf427ac83c1eeb8451acda3ac",
+        "tree_entry": "100644 blob 4dc9383977f4a61418d2ade04200a05747fb4113"
+      },
+      {
+        "byte_identical_reviewed_bb262_postimage": true,
+        "bytes": 4120,
+        "path": "apps/mcp/src/jsonrpc/cursor_authority.rs",
+        "sha256": "65e092ba20e24a60945e91adebf7eee6b0c11e4423d6b0746929fa4e5a563b31",
+        "tree_entry": "100644 blob bc4859d2f91528b5e92ff247321b5e994c9b4c22"
+      },
+      {
+        "byte_identical_reviewed_bb262_postimage": true,
+        "bytes": 9308,
+        "path": "apps/mcp/src/jsonrpc/resources.rs",
+        "sha256": "3200a90982458bf8920fd1ea1a686a7b26cef4d1ce58a0d5ebf162e5c83807ca",
+        "tree_entry": "100644 blob ca1fc4b9760c04cbbc0d91829581eee7f28339d7"
+      },
+      {
+        "byte_identical_reviewed_bb262_postimage": true,
+        "bytes": 173067,
+        "path": "apps/mcp/src/jsonrpc/tests.rs",
+        "sha256": "51fb3ac517b4cee7015a6b5526805d860d538874e2cb5c1982951ebf081f5e38",
+        "tree_entry": "100644 blob 2c27a219d14e39e0b14d60bc89b33215d63b480c"
+      },
+      {
+        "byte_identical_reviewed_bb262_postimage": true,
+        "bytes": 18254,
+        "path": "apps/mcp/src/process.rs",
+        "sha256": "2dfa2ef538b61db1e7f0453270b29df707e440cd51a179704ce63e1c2eedddb5",
+        "tree_entry": "100644 blob 3875cc9d5f346d7e0a5f0b2f206aa19f53c739c4"
+      },
+      {
+        "byte_identical_reviewed_bb262_postimage": true,
+        "bytes": 55507,
+        "path": "crates/engine/src/application/host.rs",
+        "sha256": "058040ea4f47d56c4b7b8b49de0794573d48cfee35c5271d1c47d6c7be814c8e",
+        "tree_entry": "100644 blob 2b0908b0c450e1ef721d247a1162f6af6b934685"
+      },
+      {
+        "byte_identical_reviewed_bb262_postimage": true,
+        "bytes": 148272,
+        "path": "crates/engine/src/application/host/paths.rs",
+        "sha256": "0f4d8aa4ab3ff48d749f57c223ee3b094e2935aecdc245e4037214ff2288d6ef",
+        "tree_entry": "100644 blob c490670f03a8d0e6dd928cc0670fcca98b5dfe9c"
+      },
+      {
+        "byte_identical_reviewed_bb262_postimage": false,
+        "bytes": 42719,
+        "path": "crates/engine/src/lib.rs",
+        "sha256": "0353f25881f2562766182eaafc9eaa547743a2fcbf3068bd1fbd1769155cf2eb",
+        "tree_entry": "100644 blob 6a828480eeb2f78f0bcee26b5f7b91b0b845a0d9"
+      },
+      {
+        "byte_identical_reviewed_bb262_postimage": true,
+        "bytes": 1767,
+        "path": "crates/engine/src/workspace/mod.rs",
+        "sha256": "b987f53230c7b2e692fc26070642584d5938f43f4af8b62a8347a67f7d060899",
+        "tree_entry": "100644 blob 16d51c810e9c772f8626dff517466b20935fbfb1"
+      },
+      {
+        "byte_identical_reviewed_bb262_postimage": true,
+        "bytes": 30491,
+        "path": "crates/engine/src/workspace/owner/lease.rs",
+        "sha256": "0e88580357b7744a4daf904babab1fa9c100a80d160daef877a90107f5d2f6f7",
+        "tree_entry": "100644 blob 9d6c8965882b12f82968c3192b82a22053208698"
+      },
+      {
+        "byte_identical_reviewed_bb262_postimage": true,
+        "bytes": 18879,
+        "path": "crates/engine/src/workspace/owner/lifecycle.rs",
+        "sha256": "632e02da235f27c27e7bf4e164861440de3f09391567294f644dc5611069b71e",
+        "tree_entry": "100644 blob 4c6352acec180f93a8ae3fcd2a479d3e96998ecd"
+      },
+      {
+        "byte_identical_reviewed_bb262_postimage": true,
+        "bytes": 5489,
+        "path": "crates/engine/src/workspace/owner/mod.rs",
+        "sha256": "14704827c249518ff2723938cc95064e7e5e8ee14dcae91566a1d9c92f7e24e6",
+        "tree_entry": "100644 blob ed7caa31c0d7c821614eb84098ba09f7b03651de"
+      },
+      {
+        "byte_identical_reviewed_bb262_postimage": true,
+        "bytes": 3671,
+        "path": "crates/local-service/Cargo.toml",
+        "sha256": "ce6962952be7c9c456c82d37f35c1f746f7a4c28a60512fad72a7c846d2f485a",
+        "tree_entry": "100644 blob a56ae2301c775227b984fb2e083ae446beea4d28"
+      },
+      {
+        "byte_identical_reviewed_bb262_postimage": true,
+        "bytes": 117004,
+        "path": "crates/local-service/src/builtin.rs",
+        "sha256": "9f082ae15062de84043faeff9d0a8b26bb14abe0fdf9c55320fcfd76e4cd4456",
+        "tree_entry": "100644 blob d1496b37e63035f20b68d707bf901242be8062f4"
+      },
+      {
+        "byte_identical_reviewed_bb262_postimage": true,
+        "bytes": 388996,
+        "path": "crates/local-service/src/builtin/commands/adapter.rs",
+        "sha256": "aad9831d9121d4bc606e63c7e4b9a1e4fd56ac7147182fb76ac4c017d3c4787b",
+        "tree_entry": "100644 blob 67649fcb0c46b455d37361967b24459208f9596c"
+      },
+      {
+        "byte_identical_reviewed_bb262_postimage": true,
+        "bytes": 246142,
+        "path": "crates/local-service/src/builtin/registry.rs",
+        "sha256": "a7449a12cb111ac6f267b483f60b91037ce3fc96b0927333ab861db7faf73a20",
+        "tree_entry": "100644 blob 31dc760620216f43ab5630b5491b536f82f1c3c1"
+      },
+      {
+        "byte_identical_reviewed_bb262_postimage": true,
+        "bytes": 1399,
+        "path": "crates/local-service/src/builtin/workspace_admission.rs",
+        "sha256": "ed0fab2347c61261f12e443546ee99bbaf6e6ae106ecd082ab722280b13fbaf1",
+        "tree_entry": "100644 blob 4fd8cfe714ee27124de99bbf290b7344169f1767"
+      },
+      {
+        "byte_identical_reviewed_bb262_postimage": true,
+        "bytes": 29271,
+        "path": "crates/local-service/src/embedded.rs",
+        "sha256": "db670f221e4b4321248211a70df35563d9e562f464944b95d94cf88b05243ff9",
+        "tree_entry": "100644 blob e322ebc3ad64774242ccbd8a099fb0b265326e86"
+      },
+      {
+        "byte_identical_reviewed_bb262_postimage": true,
+        "bytes": 104863,
+        "path": "crates/platform/directory.rs",
+        "sha256": "5a6950e9cd7ed8b2e4f0da0ccb722f413ea2b25f0fc424da882a2fc2c166fef4",
+        "tree_entry": "100644 blob 3f17efe35a5bd1d3224b8e4d8faa7b80b0c2a518"
+      },
+      {
+        "byte_identical_reviewed_bb262_postimage": true,
+        "bytes": 36485,
+        "path": "crates/present/call.rs",
+        "sha256": "3e8432d0ef2991502df59a20c4dd0277e2ef0dccb967385a74d05f395828401c",
+        "tree_entry": "100644 blob 92e4ac58dddbd5007464ddb41d574668bdb6602d"
+      },
+      {
+        "byte_identical_reviewed_bb262_postimage": true,
+        "bytes": 33391,
+        "path": "crates/present/fault.rs",
+        "sha256": "c51b0fcf3a22beca8f7bac2ec7f19cb1444f089b3e17d0fce3854822ac393a3e",
+        "tree_entry": "100644 blob d49ee4dc9829080f1f54ec55e3d06999bcb45aee"
+      },
+      {
+        "byte_identical_reviewed_bb262_postimage": true,
+        "bytes": 6684,
+        "path": "crates/present/lib.rs",
+        "sha256": "e426ed03d1c4c14a88a9959446d7eee92fda43360b9a47f150d490a60cec2655",
+        "tree_entry": "100644 blob c2a644231317f049b3adf0804a0a164d8562db5e"
+      },
+      {
+        "byte_identical_reviewed_bb262_postimage": true,
+        "bytes": 23572,
+        "path": "crates/present/render/text.rs",
+        "sha256": "70c7fb3f75c2985a7d6377c6e897ab566913dfed6ba513a9245b972cf6e23a2d",
+        "tree_entry": "100644 blob 6faf36f2774923783ba63ca8c6d79350b524b71f"
+      },
+      {
+        "byte_identical_reviewed_bb262_postimage": true,
+        "bytes": 58885,
+        "path": "crates/present/tests.rs",
+        "sha256": "06ea198c8e64b774f4ab0142a8d32871ed5f580d947ec075c4575aa7f4b59e1d",
+        "tree_entry": "100644 blob 4761205472f8a5efce65f61d765cdbf346837c23"
+      },
+      {
+        "byte_identical_reviewed_bb262_postimage": true,
+        "bytes": 1176,
+        "path": "crates/store/Cargo.toml",
+        "sha256": "59fdb0c536df249fc72bb7197f7b3a0dcf5c63e1226b582db770b9af07d016e3",
+        "tree_entry": "100644 blob 1fdf6f767916176ed3cbb9b8fe11099a14ee73e5"
+      },
+      {
+        "byte_identical_reviewed_bb262_postimage": true,
+        "bytes": 19075,
+        "path": "crates/store/src/durable/layout.rs",
+        "sha256": "e4e5fae885df2c0d7701bfe111eb69272607b333f01d6f208b0844ae8a479972",
+        "tree_entry": "100644 blob 76170becf453d21db7c1728d5cca5bc3ededceb3"
+      }
+    ],
+    "reviewed_atom": "bb2623d358864131d19719d14a49940f13ce5a6b",
+    "schema": "sol61.qa13-current-dto25-canonical-replay.v1",
+    "scope_count": 27,
+    "tree": "396a0f704c7c9688726202bae3955676b44d257d",
+    "worktree": "/private/tmp/sol61-qa13-current-dto25-replay-20261009"
+  },
+  "limitations": [
+    "Native141 isolatedLinux3544; canonical DTO25 replay native/installed public acceptance UNRUN",
+    "No all55 MCP positive-operand public acceptance claim",
+    "TLS acquisition diagnostic excluded from canonical production atom"
+  ],
+  "root_replay_formatting": "Only the additive WorkspaceDirectoryAdmission reexport is line-wrapped; code is the reviewed current DTO25 additive join."
+}

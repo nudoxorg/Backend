@@ -294,7 +294,10 @@ impl Affordance {
     pub fn shell(&self) -> Option<String> {
         match self {
             Self::Retry => Some("re-run the same command".to_owned()),
-            Self::Reindex { path } => Some(format!("backend index {}", crate::shell::quote_argument(path))),
+            Self::Reindex { path } => Some(format!(
+                "nudox add {}",
+                crate::shell::quote_argument(path)
+            )),
             Self::OpenFolder { path } => Some(format!("open {}", crate::shell::quote_argument(path))),
             Self::UseCommand { name, args } => {
                 let mut line = format!("backend {name}");

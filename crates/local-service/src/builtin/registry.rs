@@ -48,6 +48,7 @@ const MAX_RUSTSEC_TREE_DEPTH: usize = 64;
 /// Durable registry state attached to one local owner loop.
 pub(super) struct RegistryGateway {
     sources: RegistrySourceSet,
+    workspace_admission: Option<backend_engine::WorkspaceDirectoryAdmission>,
     slots: BTreeMap<(RegistryId, bool), RegistrySlot>,
     config: RegistryConfig,
     workspace_root: PathBuf,
@@ -855,6 +856,19 @@ impl RegistryGateway {
             .map_err(|error| error.to_string())
     }
 
+    pub(super) fn open_with_workspace_admission(
+        config: &RegistryConfig,
+        root: impl AsRef<Path>,
+        advisory_config: &AdvisoryConfig,
+        admission: backend_engine::WorkspaceDirectoryAdmission,
+    ) -> Result<Option<Self>, RegistryGatewayOpenError> {
+        let mut gateway = Self::open(config, root, advisory_config)?;
+        if let Some(gateway) = gateway.as_mut() {
+            gateway.workspace_admission = Some(admission);
+        }
+        Ok(gateway)
+    }
+
     /// Composes the source set without opening a network connection or source
     /// owner. Each owner is opened on the first catalog read or acquisition.
     pub(super) fn open(
@@ -907,6 +921,7 @@ impl RegistryGateway {
         let shared_objects = shared_objects.path().to_path_buf();
         Ok(Some(Self {
             sources: config.sources.clone(),
+            workspace_admission: None,
             slots: BTreeMap::new(),
             config: config.clone(),
             workspace_root,
@@ -1478,6 +1493,19 @@ impl RegistryGateway {
             .is_none_or(|slot| slot.service.is_none());
         if needs_open {
             let endpoint = source.endpoint_for_owner();
+            if let Some(admission) = &self.workspace_admission {
+                let path = backend_engine::registry::storage_root(&self.source_root, &endpoint);
+                let relative = path.strip_prefix(&self.workspace_root).map_err(|_| {
+                    RegistryAddError::Acquisition(AcquisitionError::InvalidConfiguration)
+                })?;
+                admission
+                    .admit(Path::new("registry").join(relative))
+                    .map_err(|error| RegistryAddError::Acquisition(AcquisitionError::Io(error)))?;
+                for child in ["snapshots", "deltas", "records", "heads", "temps"] {
+                    admission.admit(format!("registry/registry-acquisition/product-receipts/{child}"))
+                        .map_err(|error| RegistryAddError::Acquisition(AcquisitionError::Io(error)))?;
+                }
+            }
             let (owner, _) = backend_engine::registry::RegistryOwner::open_with_shared_objects(
                 &self.source_root,
                 endpoint,
@@ -5666,5 +5694,260 @@ mod tests {
             "rejected archive left a temporary staging directory"
         );
         let _ = fs::remove_dir_all(root);
+    }
+    fn local_startup_config(
+        root: &Path,
+        registry: RegistryConfig,
+    ) -> crate::process::ProcessConfig {
+        let project = root.join("project");
+        fs::create_dir(&project).expect("isolated startup project");
+        let paths = backend_runtime::WorkspacePaths::discover(
+            Some(project),
+            Some(root.join("workspace")),
+            Some(root.join("owner.sock")),
+        )
+        .expect("selected startup workspace");
+        paths.initialize().expect("durable owner authority");
+        let mut config = crate::process::ProcessConfig::parse([
+            "--workspace".to_owned(),
+            paths.data().to_string_lossy().into_owned(),
+            "--endpoint".to_owned(),
+            paths.endpoint().to_string_lossy().into_owned(),
+            "--registry-offline".to_owned(),
+            "--registry-discovery-offline".to_owned(),
+            "--advisory-offline".to_owned(),
+            "--forge-offline".to_owned(),
+        ])
+        .expect("bounded offline owner configuration");
+        config.profile = "builtin".to_owned();
+        config.worker_endpoint = None;
+        config.authority_secret = Some(paths.authority_secret().to_path_buf());
+        config.compiler_environment = Some(
+            backend_engine::application::ClosedLocalHostEnvironmentSnapshot::from_paths(
+                std::iter::empty::<(backend_engine::application::LocalHostVariable, PathBuf)>(),
+            )
+            .expect("closed absent compiler roles; no compiler runs"),
+        );
+        config.registry = registry;
+        config.registry.policy = AcquisitionPolicy::Offline;
+        config.registry.sources = config.registry.sources.offline();
+        config.advisory = advisory_config(None);
+        config.advisory.offline = true;
+        config.discovery.sources.clear();
+        config
+    }
+
+    #[cfg(any(unix, windows))]
+    fn startup_command(
+        service: &crate::embedded::EmbeddedLocalService,
+        id: u64,
+        command: backend_library::Command,
+    ) -> Result<backend_library::CommandReply, backend_client::ClientError> {
+        let request = backend_library::CommandDto::new(id, command);
+        let mut transport = backend_client::UnixCommandTransport::connect(service.endpoint())?;
+        // The real client authenticates the listener's process peer before
+        // admitting the owner's coverage certificate. A bare decoder cannot
+        // establish that authority from reply bytes alone.
+        let reply = backend_client::CommandTransport::request(&mut transport, request.clone())?;
+        backend_library::admit_reply(&request, &reply).expect("exact request/reply admission");
+        Ok(reply.reply)
+    }
+
+    fn selected_graph_witness(workspace: &Path) -> Option<[u8; 32]> {
+        futures_executor::block_on(async {
+            let projection = backend_extension_turso::TursoProjection::open(
+                workspace.join(backend_extension_turso::FILE_NAME),
+            )
+            .await
+            .expect("read exact selected SQL namespace");
+            projection
+                .package_graph_revision()
+                .await
+                .expect("selected graph state")
+                .facts_witness()
+        })
+    }
+
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn cold_local_health_keeps_registry_receipts_unopened_and_graph_unavailable() {
+        let root = ScratchDirectory(scratch());
+        let config = local_startup_config(&root.0, registry_config("http://127.0.0.1:9".into()));
+        let receipts = config
+            .workspace
+            .join("registry/registry-acquisition/product-receipts");
+        let owner = crate::embedded::EmbeddedLocalService::start(config.clone())
+            .expect("local owner composes and serves authenticated clients");
+        assert!(
+            !receipts.exists(),
+            "local readiness must not open source receipt stores"
+        );
+        assert!(matches!(
+            startup_command(&owner, 1, backend_library::Command::Health)
+                .expect("actual local health"),
+            backend_library::CommandReply::Readiness(_)
+        ));
+        assert_eq!(selected_graph_witness(&config.workspace), None);
+        assert!(
+            !receipts.exists(),
+            "health must not promote unavailable catalog to an empty complete graph"
+        );
+    }
+
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn unavailable_catalog_does_not_block_local_health_or_publish_empty_facts_and_can_recover() {
+        let root = ScratchDirectory(scratch());
+        let config = local_startup_config(&root.0, registry_config("http://127.0.0.1:9".into()));
+        let registry_root = config.workspace.join("registry");
+        backend_platform::durable::ensure_private_directory(&registry_root)
+            .expect("private registry fixture");
+        let acquisition = registry_root.join("registry-acquisition");
+        backend_platform::durable::ensure_private_directory(&acquisition)
+            .expect("private acquisition parent fixture");
+        let unavailable = acquisition.join("product-receipts");
+        fs::write(&unavailable, b"not a receipt directory")
+            .expect("unavailable acquisition fixture");
+        let owner = crate::embedded::EmbeddedLocalService::start(config.clone())
+            .expect("source-specific failure must not prevent local readiness");
+        assert!(matches!(
+            startup_command(&owner, 1, backend_library::Command::Health)
+                .expect("actual local health"),
+            backend_library::CommandReply::Readiness(_)
+        ));
+        assert_eq!(selected_graph_witness(&config.workspace), None);
+        let package = backend_library::PackageReference::parse("pkg:cargo/not-published@1.0.0")
+            .expect("package query");
+        let query = backend_library::Command::Surface(backend_library::SurfaceCommand::Package {
+            package: package.clone(),
+        });
+        let first = startup_command(&owner, 2, query.clone())
+            .expect("the listener returns the correlated catalog refusal");
+        assert!(
+            matches!(first, backend_library::CommandReply::Error(_)),
+            "actual catalog admission must refuse"
+        );
+        assert_eq!(
+            fs::read(&unavailable).expect("refused path unchanged"),
+            b"not a receipt directory"
+        );
+        assert_eq!(
+            selected_graph_witness(&config.workspace),
+            None,
+            "failed source admission publishes no fabricated empty graph"
+        );
+        fs::remove_file(&unavailable).expect("repair source-specific state");
+        let repaired = startup_command(&owner, 3, query)
+            .expect("repaired catalog can be admitted; package may remain absent");
+        assert_eq!(
+            repaired,
+            backend_library::CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
+                format!(
+                    "package {} does not match any indexed local manifest",
+                    package.as_str()
+                )
+            )),
+            "repaired catalog retains the exact requested package's absence"
+        );
+        assert!(
+            selected_graph_witness(&config.workspace).is_some(),
+            "all configured source owners are now admitted before graph publication"
+        );
+    }
+
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn first_catalog_command_and_cold_reopen_publish_all_configured_source_facts() {
+        let root = ScratchDirectory(scratch());
+        let alpha_listener = TcpListener::bind(("127.0.0.1", 0)).expect("alpha registry fixture");
+        let beta_listener = TcpListener::bind(("127.0.0.1", 0)).expect("beta registry fixture");
+        let mut registry = registry_config(format!(
+            "http://{}",
+            alpha_listener.local_addr().expect("alpha address")
+        ));
+        let beta = backend_engine::registry::RegistrySource::new(
+            backend_engine::registry::RegistryEndpoint::new(
+                backend_library::RegistryEcosystem::Npm,
+                format!(
+                    "http://{}",
+                    beta_listener.local_addr().expect("beta address")
+                ),
+            )
+            .expect("beta source endpoint"),
+        )
+        .with_native(false);
+        registry.sources = registry
+            .sources
+            .with_source(beta)
+            .expect("two configured ecosystem authorities");
+        let alpha_archive = b"authenticated alpha source bytes".to_vec();
+        let beta_archive = b"authenticated beta source bytes".to_vec();
+        let alpha_server = local_registry_server(
+            alpha_listener,
+            single_package_feed("alpha", "1.0.0", &alpha_archive, &"07".repeat(32)),
+            alpha_archive.clone(),
+        );
+        let beta_server = local_registry_server(
+            beta_listener,
+            single_package_feed("beta", "1.0.0", &beta_archive, &"08".repeat(32)),
+            beta_archive.clone(),
+        );
+        let alpha = PackageCoordinate::parse("pkg:cargo/alpha@1.0.0").expect("alpha coordinate");
+        let beta = PackageCoordinate::parse("pkg:npm/beta@1.0.0").expect("beta coordinate");
+        let config = local_startup_config(&root.0, registry.clone());
+        let registry_root = config.workspace.join("registry");
+        let mut publisher =
+            RegistryGateway::open(&registry, &registry_root, &advisory_config(None))
+                .expect("source publisher")
+                .expect("configured sources");
+        assert_eq!(
+            publisher.acquire(&alpha).expect("publish alpha"),
+            alpha_archive
+        );
+        assert_eq!(
+            publisher.acquire(&beta).expect("publish beta"),
+            beta_archive
+        );
+        alpha_server.join().expect("alpha requests retired");
+        beta_server.join().expect("beta requests retired");
+        let expected = publisher
+            .catalog_projection()
+            .expect("complete selected catalog");
+        assert_eq!(expected.dependency_facts().len(), 2);
+        assert_ne!(
+            expected.dependency_facts()[0].0.authority,
+            expected.dependency_facts()[1].0.authority
+        );
+        let expected_witness = backend_library::CheckedPackageGraphFacts::from_borrowed_facts(
+            expected.dependency_facts().iter(),
+            crate::process::default_package_graph_limits(),
+        )
+        .expect("full checked source facts")
+        .witness();
+        drop(expected);
+        drop(publisher);
+        for cold in [false, true] {
+            let owner = crate::embedded::EmbeddedLocalService::start(config.clone())
+                .expect("local owner opens without eager catalog admission");
+            assert_eq!(
+                selected_graph_witness(&config.workspace),
+                cold.then_some(expected_witness),
+                "fresh graph unavailable; cold graph is retained without a new completeness claim"
+            );
+            let reply = startup_command(
+                &owner,
+                10,
+                backend_library::Command::Surface(backend_library::SurfaceCommand::Package {
+                    package: backend_library::PackageReference::parse(alpha.as_str())
+                        .expect("alpha package"),
+                }),
+            )
+            .expect("first actual catalog command validates sources before answering");
+            assert!(matches!(reply, backend_library::CommandReply::Surface(_)));
+            assert_eq!(
+                selected_graph_witness(&config.workspace),
+                Some(expected_witness)
+            );
+        }
     }
 }

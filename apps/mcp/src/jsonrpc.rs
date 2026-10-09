@@ -20,17 +20,18 @@
 //!   next tool call an agent can paste back.
 
 use backend_client::{ClientError, Session};
+use backend_library::protocol::mcp::{MCP_PROTOCOL_VERSION, negotiate_version};
 use backend_library::{
     AdmittedGraphQueryInput, CompileExecutionIntent, GraphQueryPage, GraphQueryRow, GraphValue,
     HealthReport, IndexJobTicket, IndexSearchCursor, IndexSearchPage, PackageReference,
-    PageContinuation, PageTerminal, ReplyDto, SurfaceCommand, SurfaceReply, ViewStateRoot,
-    encode_id,
+    PageContinuation, PageTerminal, ProductText, ReplyDto, SurfaceCommand, SurfaceReply,
+    TreeOpener, ViewStateRoot, encode_id,
 };
 use backend_present::{
     Answer, BudgetExceeded, ContinuationCursor, ContinuationTarget, CursorTarget,
     DEFAULT_RESPONSE_BUDGET_BYTES, Detail, ESTIMATED_BYTES_PER_TOKEN, Engine, Fault, Invocation,
     Probe, Request, answer_paged, bounded_text, encode_answer, encode_serializable,
-    estimate_tokens, fault_value, lower, markdown, oversized_fault, record_list,
+    estimate_tokens, fault_value, lower_with_opener, markdown, oversized_fault, record_list,
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{
@@ -39,11 +40,11 @@ use serde::{
 };
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
-#[cfg(unix)]
-use std::io::Read;
 use std::io::{self, BufRead, Write};
 
 mod codec;
+mod cursor_authority;
+pub(super) use cursor_authority::CursorAuthority;
 mod reconnect;
 mod resources;
 mod tools;
@@ -59,8 +60,6 @@ use tools::{
 #[cfg(feature = "token-budget")]
 pub(crate) use tools::token_budget_tools as token_budget_tools_projection;
 
-const STABLE_PROTOCOL: &str = "2025-11-25";
-const CANDIDATE_PROTOCOL: &str = "2026-07-28";
 const SERVER_NAME: &str = "backend";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -295,7 +294,7 @@ const fn is_disconnect_kind(kind: io::ErrorKind) -> bool {
 pub(super) fn serve_stdio(
     paths: &backend_runtime::WorkspacePaths,
     project: String,
-    cursor_secret: [u8; 32],
+    cursor_secret: CursorAuthority,
     reader: &mut impl BufRead,
     writer: &mut impl Write,
 ) -> io::Result<()> {
@@ -322,7 +321,8 @@ pub(super) struct Server<P> {
     working_directory: Option<String>,
     handshake: HandshakeState,
     protocol: &'static str,
-    cursor_secret: [u8; 32],
+    opener: Option<TreeOpener>,
+    cursor_secret: CursorAuthority,
 }
 
 /// MCP's initialization handshake is a protocol state, not a boolean.
@@ -338,7 +338,11 @@ enum HandshakeState {
 }
 
 impl<P: Product> Server<P> {
-    pub(super) fn with_authority(product: P, project: String, cursor_secret: [u8; 32]) -> Self {
+    pub(super) fn with_authority(
+        product: P,
+        project: String,
+        cursor_secret: impl Into<CursorAuthority>,
+    ) -> Self {
         Self::with_invocation_context(product, project, None, cursor_secret)
     }
 
@@ -346,15 +350,16 @@ impl<P: Product> Server<P> {
         product: P,
         project: String,
         working_directory: Option<String>,
-        cursor_secret: [u8; 32],
+        cursor_secret: impl Into<CursorAuthority>,
     ) -> Self {
         Self {
             product,
             project,
             working_directory,
             handshake: HandshakeState::AwaitInitialize,
-            protocol: STABLE_PROTOCOL,
-            cursor_secret,
+            protocol: MCP_PROTOCOL_VERSION,
+            opener: None,
+            cursor_secret: cursor_secret.into(),
         }
     }
 
@@ -445,7 +450,7 @@ impl<P: Product> Server<P> {
             "ping" => Ok(json!({})),
             "tools/list" => list_tools(params),
             "tools/call" => self.call_tool(params),
-            "resources/list" => resources::list_resources(&mut self.product, params),
+            "resources/list" => resources::list_resources(params),
             "resources/templates/list" => resources::list_resource_templates(params),
             "resources/read" => self.read_resource(params),
             "prompts/list" => list_prompts(params),
@@ -457,10 +462,13 @@ impl<P: Product> Server<P> {
     fn initialize(&mut self, params: &Value) -> Result<Value, RpcError> {
         let params = object(params)?;
         let offered = string(params, "protocolVersion")?;
-        self.protocol = match offered {
-            CANDIDATE_PROTOCOL => CANDIDATE_PROTOCOL,
-            _ => STABLE_PROTOCOL,
-        };
+        let client = object(params.get("clientInfo").ok_or_else(|| {
+            RpcError::invalid_argument("clientInfo", "initialize requires clientInfo")
+        })?)?;
+        let client_name = ProductText::new(string(client, "name")?)
+            .map_err(|error| RpcError::invalid_argument("clientInfo.name", error.to_string()))?;
+        self.protocol = negotiate_version(Some(offered));
+        self.opener = Some(TreeOpener::Mcp(client_name));
         self.handshake = HandshakeState::AwaitInitializedNotification;
         Ok(json!({
             "protocolVersion": self.protocol,
@@ -483,7 +491,6 @@ impl<P: Product> Server<P> {
     /// index.
     fn instructions(&self) -> String {
         let project = bounded_text(&self.project);
-        let directory = self.working_directory.as_deref().map(bounded_text);
         let mut instructions = String::with_capacity(INSTRUCTIONS.len() + project.len() + 400);
         instructions.push_str(INSTRUCTIONS);
         instructions.push_str(
@@ -494,26 +501,11 @@ impl<P: Product> Server<P> {
              `claude mcp get nudox`. Use `backend.package` for one pinned registry package and \
              `backend.index_search` for a name-first registry lookup.",
         );
-        instructions.push_str("\n\nMCP workspace selection:\n- selected project: ");
-        instructions.push_str(&project);
+        instructions.push_str("\n\n");
+        instructions.push_str(&self.instructions_context());
         instructions.push_str(
             "\n- when this path is not the repository you were asked about, pass that repository's absolute path to backend.index",
         );
-        match directory.as_deref() {
-            Some(directory) if directory != project => {
-                instructions.push_str("\n- process working directory: ");
-                instructions.push_str(directory);
-                instructions.push_str(
-                    "\n- status: configuration mismatch; use the selected project path when interpreting relative coordinates",
-                );
-            }
-            Some(directory) => {
-                instructions.push_str("\n- process working directory: ");
-                instructions.push_str(directory);
-                instructions.push_str("\n- status: configuration matches");
-            }
-            None => instructions.push_str("\n- process working directory: unavailable"),
-        }
         instructions
     }
 
@@ -552,17 +544,17 @@ impl<P: Product> Server<P> {
 
     fn instructions_context(&self) -> String {
         let mut context = String::from("## MCP workspace selection\n\n- selected project: ");
-        context.push_str(&self.project);
+        context.push_str(&bounded_text(&self.project));
         match self.working_directory.as_deref() {
             Some(directory) if directory != self.project => {
                 context.push_str("\n- process working directory: ");
-                context.push_str(directory);
-                context.push_str("\n- status: configuration mismatch");
+                context.push_str(&bounded_text(directory));
+                context.push_str("\n- status: selected project is active; the process working directory may differ\n- relative coordinates use the selected project path");
             }
             Some(directory) => {
                 context.push_str("\n- process working directory: ");
-                context.push_str(directory);
-                context.push_str("\n- status: configuration matches");
+                context.push_str(&bounded_text(directory));
+                context.push_str("\n- status: selected project is active");
             }
             None => context.push_str("\n- process working directory: unavailable"),
         }
@@ -669,9 +661,10 @@ impl<P: Product> Server<P> {
         } else {
             command_arguments.remove("cursor");
         }
+        let opener = self.opener()?;
         let planned = validate_registry_arguments(grammar, &command_arguments)
             .and_then(|()| Invocation::from_json(grammar, &command_arguments))
-            .and_then(|invocation| lower(&invocation, &self.project));
+            .and_then(|invocation| lower_with_opener(&invocation, &self.project, opener));
         match planned {
             Ok(request) => match answer_paged(&mut self.product, &request, continuation) {
                 Ok(answer) => self.rendered(
@@ -689,6 +682,11 @@ impl<P: Product> Server<P> {
             },
             Err(fault) => Err(RpcError::from_fault(&fault)),
         }
+    }
+    fn opener(&self) -> Result<&TreeOpener, RpcError> {
+        self.opener
+            .as_ref()
+            .ok_or_else(|| RpcError::new(-32002, "Server not initialized"))
     }
     fn query_tool(
         &mut self,
@@ -764,6 +762,9 @@ impl<P: Product> Server<P> {
             .ok_or_else(|| RpcError::invalid("command must be a tagged surface object"))?;
         let mut command = serde_json::from_value::<SurfaceCommand>(encoded)
             .map_err(|error| RpcError::invalid(format!("command: {error}")))?;
+        if let SurfaceCommand::TreeOpen { opener, .. } = &mut command {
+            *opener = self.opener()?.clone();
+        }
         if matches!(&command, SurfaceCommand::IndexAwait { .. }) {
             return Err(RpcError::invalid(
                 "IndexAwait can block on owner work; use IndexProgress for immediate bounded polling",
@@ -932,8 +933,10 @@ impl<P: Product> Server<P> {
             .as_str()
             .filter(|token| !token.is_empty())
             .ok_or_else(|| RpcError::invalid("cursor must be a non-empty opaque string"))?;
-        let owner_token = self.verify_cursor_token(token, context).ok_or_else(|| {
-            RpcError::invalid("cursor is unknown, expired, or belongs to another workspace authority")
+        let owner_token = self.verify_cursor_token(token, context)?.ok_or_else(|| {
+            RpcError::invalid(
+                "cursor is unknown, expired, or belongs to another workspace authority",
+            )
         })?;
         self.product
             .decode_continuation(&owner_token)
@@ -966,7 +969,7 @@ impl<P: Product> Server<P> {
         token: &str,
         context: &[u8],
     ) -> Result<IndexSearchCursor, RpcError> {
-        let owner_token = self.verify_cursor_token(token, context).ok_or_else(|| {
+        let owner_token = self.verify_cursor_token(token, context)?.ok_or_else(|| {
             RpcError::invalid(
                 "cursor is unknown, expired, or belongs to another workspace authority",
             )
@@ -1003,44 +1006,65 @@ impl<P: Product> Server<P> {
                 })?,
             ContinuationCursor::IndexSearch(cursor) => cursor.as_str().to_owned(),
         };
-        Ok(self.sign_cursor_token(&owner_token, context))
+        self.sign_cursor_token(&owner_token, context)
     }
 
-    fn sign_cursor_token(&self, owner_token: &str, context: &[u8]) -> String {
+    fn sign_cursor_token(&self, owner_token: &str, context: &[u8]) -> Result<String, RpcError> {
         self.sign_cursor_token_at(unix_seconds().saturating_add(900), owner_token, context)
     }
 
-    fn sign_cursor_token_at(&self, expiry: u64, owner_token: &str, context: &[u8]) -> String {
+    fn sign_cursor_token_at(
+        &self,
+        expiry: u64,
+        owner_token: &str,
+        context: &[u8],
+    ) -> Result<String, RpcError> {
         let encoded_owner = URL_SAFE_NO_PAD.encode(owner_token.as_bytes());
         let body = format!("{expiry}-{encoded_owner}");
-        let mac = self.cursor_mac(&body, context);
-        format!("mcp1-{body}-{}", hex_bytes(&mac.as_bytes()[..16]))
+        let key = self.cursor_secret.key()?;
+        let mac = Self::cursor_mac(&key, &body, context);
+        Ok(format!("mcp1-{body}-{}", hex_bytes(&mac.as_bytes()[..16])))
     }
 
-    fn verify_cursor_token(&self, token: &str, context: &[u8]) -> Option<String> {
-        let body = token.strip_prefix("mcp1-")?;
-        let (body, encoded_mac) = body.rsplit_once('-')?;
-        let (expiry, encoded_owner) = body.split_once('-')?;
-        let expiry = expiry.parse::<u64>().ok()?;
-        // Treat the expiry second as closed: a token is valid strictly before
-        // its deadline. This avoids a one-second replay window at the exact
-        // boundary and makes rotation/expiry tests deterministic.
-        if expiry <= unix_seconds() {
-            return None;
+    fn verify_cursor_token(&self, token: &str, context: &[u8]) -> Result<Option<String>, RpcError> {
+        let parsed = (|| {
+            let body = token.strip_prefix("mcp1-")?;
+            let (body, encoded_mac) = body.rsplit_once('-')?;
+            let (expiry, encoded_owner) = body.split_once('-')?;
+            let expiry = expiry.parse::<u64>().ok()?;
+            // The expiry second is closed. Malformed and expired input needs
+            // no durable authority and must not initialize a fresh workspace.
+            (expiry > unix_seconds()).then_some((body, encoded_mac, encoded_owner))
+        })();
+        let Some((body, encoded_mac, encoded_owner)) = parsed else {
+            return Ok(None);
+        };
+        if encoded_mac.len() != 32
+            || !encoded_mac
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Ok(None);
         }
-        let expected = self.cursor_mac(body, context);
+        let Some(owner) = decode_cursor_owner(encoded_owner) else {
+            return Ok(None);
+        };
+        let Some(key) = self.cursor_secret.verification_key()? else {
+            return Ok(None);
+        };
+        let expected = Self::cursor_mac(&key, body, context);
         if encoded_mac != hex_bytes(&expected.as_bytes()[..16]) {
-            return None;
+            return Ok(None);
         }
-        decode_cursor_owner(encoded_owner)
+        Ok(Some(owner))
     }
 
-    fn cursor_mac(&self, body: &str, context: &[u8]) -> blake3::Hash {
+    fn cursor_mac(key: &[u8; 32], body: &str, context: &[u8]) -> blake3::Hash {
         let mut payload = Vec::with_capacity(body.len() + context.len() + 1);
         payload.extend_from_slice(body.as_bytes());
         payload.push(0);
         payload.extend_from_slice(context);
-        blake3::keyed_hash(&self.cursor_secret, &payload)
+        blake3::keyed_hash(key, &payload)
     }
 
     fn rendered(
@@ -1137,41 +1161,6 @@ pub(super) fn read_authority_secret(path: &std::path::Path) -> Result<[u8; 32], 
             path.display()
         )
     })
-}
-
-pub(super) fn cursor_secret(paths: &backend_runtime::WorkspacePaths) -> Result<[u8; 32], String> {
-    match backend_engine::read_authority_secret(paths.authority_secret()) {
-        Ok(secret) => Ok(secret),
-        Err(backend_engine::AuthoritySecretError::Io(io::ErrorKind::NotFound)) => {
-            // Preserve the normal durable key for a new workspace. If private
-            // state cannot be initialized, a process-only random key is still
-            // sufficient to authenticate this MCP process's cursors while an
-            // unavailable owner is being reported through JSON-RPC. Such
-            // cursors naturally expire when this process exits.
-            match paths.initialize() {
-                Ok(()) => read_authority_secret(paths.authority_secret()),
-                Err(_) => process_cursor_secret(),
-            }
-        }
-        Err(error) => Err(format!(
-            "cannot admit MCP authority secret {}: {error}",
-            paths.authority_secret().display()
-        )),
-    }
-}
-
-fn process_cursor_secret() -> Result<[u8; 32], String> {
-    let mut secret = [0_u8; 32];
-    #[cfg(unix)]
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut source| source.read_exact(&mut secret))
-        .map_err(|error| format!("cannot create process MCP cursor authority: {error}"))?;
-    #[cfg(windows)]
-    backend_platform::win32::random::fill(&mut secret)
-        .map_err(|error| format!("cannot create process MCP cursor authority: {error}"))?;
-    #[cfg(not(any(unix, windows)))]
-    return Err("MCP cursor authority is unsupported on this platform".to_owned());
-    Ok(secret)
 }
 
 fn unix_seconds() -> u64 {
@@ -1629,12 +1618,18 @@ impl RpcError {
     /// Lowers one shared fault into the JSON-RPC error a resource read reports.
     fn from_fault(fault: &Fault) -> Self {
         Self {
-            code: if fault.slug().is_usage() {
+            code: if fault.slug() == backend_present::FaultSlug::NotFound {
+                -32002
+            } else if fault.slug().is_usage() {
                 -32602
             } else {
                 -32603
             },
-            message: "Backend request failed",
+            message: if fault.slug() == backend_present::FaultSlug::NotFound {
+                "Resource not found"
+            } else {
+                "Backend request failed"
+            },
             kind: fault.slug().as_str(),
             detail: Some(bounded_text(&markdown::fault(fault))),
             structured: Some(fault_value(fault)),

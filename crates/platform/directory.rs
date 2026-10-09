@@ -1396,7 +1396,8 @@ impl OwnedWorkspaceDirectory {
             .unwrap_or(Path::new("."));
         let parent = DirectoryCapability::open(parent_path)?;
         validate_workspace_parent(&parent)?;
-        let directory = parent.open_or_create_private_dir(name)?;
+        let directory = parent.open_or_create_private_dir(name)
+            .map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", path.display())))?;
         let workspace = Self { path, directory };
         workspace.verify_path()?;
         Ok(workspace)
@@ -1405,9 +1406,11 @@ impl OwnedWorkspaceDirectory {
     /// Opens or creates a private direct child relative to this pinned
     /// workspace directory.
     pub fn child(&self, name: &str) -> io::Result<Self> {
-        let directory = self.directory.open_or_create_private_dir(name)?;
+        let path = self.path.join(name);
+        let directory = self.directory.open_or_create_private_dir(name)
+            .map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", path.display())))?;
         let workspace = Self {
-            path: self.path.join(name),
+            path,
             directory,
         };
         workspace.verify_path()?;
