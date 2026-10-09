@@ -3,6 +3,7 @@ use super::super::{
     MAX_REBUILD_BYTES, MAX_REBUILD_PACKAGES, ProjectionLedger, SemanticFreshness, StructuralCause,
     WorkspaceSnapshot,
 };
+use super::call_join::foreign_display_name;
 use super::identity::{
     declaration_family, declaration_kind, external_semantic_symbol, semantic_coordinate,
     semantic_identity, semantic_symbol,
@@ -1234,28 +1235,29 @@ pub(super) fn project_image_rows(
             let LinkTarget::External(target) = link.target else {
                 continue;
             };
-            external.push(
+            external.push((
                 ExternalTargetIdentity::capture(image, target).map_err(|error| {
                     BuiltinModelError(format!(
                         "identify project semantic external target: {error}"
                     ))
                 })?,
-            );
+                target,
+            ));
         }
         // A documentation link to an external declaration (`[`f64::NAN`]`)
         // targets the same external row a graph link would. Without that row
         // the link dangles: its target has no claim in the view's
         // certificate, and the owner could not reopen its own view journal
         // ("snapshot row document: missing producer key commitment").
-        external.extend(
-            content
-                .documentation_targets
-                .iter()
-                .map(|(identity, _)| *identity),
-        );
-        for identity in external {
+        external.extend(content.documentation_targets.iter().copied());
+        for (identity, target) in external {
             let symbol = external_semantic_symbol(project.package, image_identity, identity);
-            let label = "external semantic target";
+            // The captured spelling is presentation only. Keep the exact
+            // scoped external identity and do not infer a local declaration,
+            // source site, kind, or package membership from its name.
+            let label = foreign_display_name(image, target)?
+                .unwrap_or_else(|| "external semantic target".to_owned());
+            let label_bytes = label.len();
             let preimage = backend_engine::encode_id(
                 identity
                     .in_scope(project.package.to_bytes(), image_identity)
@@ -1268,7 +1270,7 @@ pub(super) fn project_image_rows(
                         BuiltinModelError(format!("external row identity preimage: {error}"))
                     })?,
                 duplicate: DuplicatePolicy::Skip,
-                charges: vec![Charge::Sub(label.len())],
+                charges: vec![Charge::Sub(label_bytes)],
             });
         }
     }
