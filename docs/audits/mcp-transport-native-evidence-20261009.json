@@ -1,0 +1,718 @@
+{
+  "schema": "nudox.root.mcp-transport-native143.v1",
+  "utc": "2026-10-09T13:15:28.127682+00:00",
+  "tested_source": {
+    "commit": "5a06a6f3d9bc4a6760a686356174cb48599ad514",
+    "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+    "status": "",
+    "tree": "7f02b81c43e54a9429289deca22538dac282a272"
+  },
+  "transport_atom": "0aeec9dda25fd1ceb25df0294b139a9f7c595606",
+  "raw_archive_sha256": "91f0ac51ef4c9ede2305fc3b69c19ab569e4dd04ca6b5ba0deb8a8e1189a7e55",
+  "raw_members_rehashed": 43,
+  "raw_member_pins": [
+    {
+      "path": "admission-validator.py",
+      "sha256": "7ea49805865189ffd0e763cfb8ba5573595d1fbb417999cd4df745e6cc1ccfc8",
+      "bytes": 5283
+    },
+    {
+      "path": "compiler-observations.json",
+      "sha256": "31193d9b678eb4f5829f487fa52d1e98ea510e280c5e4bf6b2ab9cc176e13235",
+      "bytes": 3035625
+    },
+    {
+      "path": "entry.json",
+      "sha256": "7f5c2b32305fd2c7ebddad22768cfcc784d6b98193abe1252d39d98664cfc7b3",
+      "bytes": 467
+    },
+    {
+      "path": "gate-00/current-group.json",
+      "sha256": "eecc84c74dbf188c4f2d6ee6a479ddf963439aa762c9c05afce6310cac17e8e3",
+      "bytes": 1032
+    },
+    {
+      "path": "gate-00/diagnostics.json",
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "bytes": 3
+    },
+    {
+      "path": "gate-00/launch.json",
+      "sha256": "89229050e14bbfcf52e907300124da3358224bbc7afdafe25540bacd1fb84625",
+      "bytes": 2564
+    },
+    {
+      "path": "gate-00/receipt.json",
+      "sha256": "e426cc76d9a246249a3a3b535fec58db017c27b08dcc7467799a4f0e963b826c",
+      "bytes": 5284
+    },
+    {
+      "path": "gate-00/stderr",
+      "sha256": "30adc36aac6a134014f36c7ba26b21d7b721e926e2c1b5e228d65471ec049fca",
+      "bytes": 5052424
+    },
+    {
+      "path": "gate-00/stdout",
+      "sha256": "ac53a626865ba24a2f77f5160e8d7f674671a449c8759514c305f935508edcd4",
+      "bytes": 1315008
+    },
+    {
+      "path": "gate-00-admission-envelope.json",
+      "sha256": "2cea7e69a277d927c6a0f3be7a8ce72936a4f697ca118f9def77fef46b0100a1",
+      "bytes": 27486
+    },
+    {
+      "path": "gate-00-admission-request.json",
+      "sha256": "89559d009cd77398637639df4fe6c1959c889aa00faecf411397ac43619d9b4f",
+      "bytes": 437
+    },
+    {
+      "path": "gate-01/actual-companion.json",
+      "sha256": "6259ab875b4adda03a49675c3d051e74b53a5218ebc64004f13ce352f14ebeee",
+      "bytes": 1687
+    },
+    {
+      "path": "gate-01/current-group.json",
+      "sha256": "2c161ed927719d9d6adfc007965563798c7ab9d370508b2802a9a3492d7fcf38",
+      "bytes": 922
+    },
+    {
+      "path": "gate-01/diagnostics.json",
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "bytes": 3
+    },
+    {
+      "path": "gate-01/launch.json",
+      "sha256": "501fa8229ac29e499d9045d891e34302a7434b602dcd512dc486beb5f6fd612d",
+      "bytes": 3601
+    },
+    {
+      "path": "gate-01/receipt.json",
+      "sha256": "6d7cf23e44177403c68c702f809431ef49e49901bac02885710b02e18f96cdd0",
+      "bytes": 6798
+    },
+    {
+      "path": "gate-01/stderr",
+      "sha256": "3c0dce090ecd90d19e2ee449e9f815dfaecdec0c9375cbb6b20bec60db2b59fd",
+      "bytes": 2229298
+    },
+    {
+      "path": "gate-01/stdout",
+      "sha256": "72323f6031c10afccd9d857930991968fe646f40e688eebf973c32769cfc58e7",
+      "bytes": 911528
+    },
+    {
+      "path": "gate-01-admission-envelope.json",
+      "sha256": "b8c8cd9cfa3719fb81c4ed1ad7c5a93b24c4f8b24ed29976ab6474e76a3e7813",
+      "bytes": 23113
+    },
+    {
+      "path": "gate-01-admission-request.json",
+      "sha256": "570274d7e3789ac3328082808d2435a956e804ad818840c844ce2552863744b3",
+      "bytes": 437
+    },
+    {
+      "path": "gate-02/current-group.json",
+      "sha256": "ec5835e54a9a3a1466e155f7583d9eac3ded1615d6794dcd83ed2b66b668a581",
+      "bytes": 923
+    },
+    {
+      "path": "gate-02/diagnostics.json",
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "bytes": 3
+    },
+    {
+      "path": "gate-02/launch.json",
+      "sha256": "568c0a57de47137100be41ff8c1316e093862a5ef3e989c8f8f925b9dfc8afee",
+      "bytes": 2743
+    },
+    {
+      "path": "gate-02/receipt.json",
+      "sha256": "2695dea2f78393533832d5802a4e4a74a5a4e88d9f850d7e925933afc65e7912",
+      "bytes": 5567
+    },
+    {
+      "path": "gate-02/stderr",
+      "sha256": "8700a4acbda11f465b9b2a4790d6e382169ec0163309ddb258d1a400827c2897",
+      "bytes": 2039401
+    },
+    {
+      "path": "gate-02/stdout",
+      "sha256": "1fb07e9825e5412d8e5c9fbbf5e259e742ab907271f063365f8bc71f4a8ec7ab",
+      "bytes": 892475
+    },
+    {
+      "path": "gate-02-admission-envelope.json",
+      "sha256": "7cd3addcea69e6ea25427896d8557e64239cbb3c7f12358e89fd197e05f302bb",
+      "bytes": 29790
+    },
+    {
+      "path": "gate-02-admission-request.json",
+      "sha256": "1878f4627527014a5ae03caa1bdbbfa7671e17c42043baf65c77bdb40852978d",
+      "bytes": 437
+    },
+    {
+      "path": "gate-03/diagnostics.json",
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "bytes": 3
+    },
+    {
+      "path": "gate-03/launch.json",
+      "sha256": "bd4e0deef26c00f16f10141dec26e699199ac0dd6b7a6ce123d0e5cedc9e29c5",
+      "bytes": 2777
+    },
+    {
+      "path": "gate-03/receipt.json",
+      "sha256": "00be0e5df0bf325d46364017fb1e6ffd688d9c6ac111ac4d86d60cd0de4a1ef1",
+      "bytes": 5600
+    },
+    {
+      "path": "gate-03/stderr",
+      "sha256": "d3a2886d646dde53cbf2adf54808f63745f98ae73471121bcc09e66190f4237e",
+      "bytes": 2020441
+    },
+    {
+      "path": "gate-03/stdout",
+      "sha256": "844bac8aa69ee00621acd553d91df1576f3c8892bc608ffb8c17fba17df67ea9",
+      "bytes": 893347
+    },
+    {
+      "path": "gate-03-admission-envelope.json",
+      "sha256": "6fdd41d627d8edd04a3b5b1b4103a31079c8bec88cd75dfa6f82dcaef9945ce9",
+      "bytes": 26944
+    },
+    {
+      "path": "gate-03-admission-request.json",
+      "sha256": "f69d1a007d520bed972c5fb07f51e4fe5abd48056628d2e646a8648cf692b991",
+      "bytes": 437
+    },
+    {
+      "path": "independent-native-supervisor.py",
+      "sha256": "96e011731af6dd760815ea552dd86769ba1e6b0c9e42b13d5a32fb1e3de2998d",
+      "bytes": 14053
+    },
+    {
+      "path": "initial-admission.json",
+      "sha256": "49680322a7e7f4448e4a36a421689acbb6df422a68732b8c1db0444ae06b401f",
+      "bytes": 22608
+    },
+    {
+      "path": "inputs-after/full-source.json",
+      "sha256": "5acf7275f2405b155c74ef5e7569a8f80c8b2bdcc1c60d647dc504abc8930459",
+      "bytes": 8230607
+    },
+    {
+      "path": "inputs-before/full-source.json",
+      "sha256": "e1fe775af549a310719cbddc1fb1ea09b79c0dc8bae14c26f76ec379441f3ee6",
+      "bytes": 8230607
+    },
+    {
+      "path": "native-images.json",
+      "sha256": "3efe01cf627ee306a45b76fd827c5b3d3d5b83b99c13754c827eced754357958",
+      "bytes": 5696
+    },
+    {
+      "path": "native-plan.json",
+      "sha256": "b5e7918d9a48646ee727d275630082a46128d2f875aa912a70fcc2cc05db4851",
+      "bytes": 7715
+    },
+    {
+      "path": "own-cache-lifetime.json",
+      "sha256": "f7a7f712a128451b6320ad854b0e7dc66d773f698a3f48921f99cd4a8edd224a",
+      "bytes": 674978
+    },
+    {
+      "path": "return-receipt.json",
+      "sha256": "71cab950b3d261240e81be1b595afcc59f7407a011758786040bd825279b26b5",
+      "bytes": 8070
+    }
+  ],
+  "git_blobs_rehashed": 18030,
+  "git_bytes_rehashed": 467487958,
+  "receipts": [
+    {
+      "gate": "gate-00",
+      "receipt_sha256": "e426cc76d9a246249a3a3b535fec58db017c27b08dcc7467799a4f0e963b826c",
+      "names": [],
+      "summary": [],
+      "elapsed_seconds": 1067.5707648629323
+    },
+    {
+      "gate": "gate-01",
+      "receipt_sha256": "6d7cf23e44177403c68c702f809431ef49e49901bac02885710b02e18f96cdd0",
+      "names": [
+        "http::tests::actual_http_body_accounts_success_refusal_error_and_exact_ceiling",
+        "http::tests::actual_http_oversized_initialize_identity_admits_no_session",
+        "http::tests::automatic_http_token_is_private_and_survives_restart_without_rotation",
+        "http::tests::bind_proof_rejects_non_loopback_addresses",
+        "http::tests::bound_http_answers_pending_before_blocked_durable_authentication_and_admits_afterward",
+        "http::tests::concurrent_http_initializers_admit_one_complete_credential",
+        "http::tests::failed_http_authentication_retains_first_cause_and_admits_no_sessions",
+        "http::tests::token_comparison_includes_length",
+        "http::tests::unavailable_authentication_response_keeps_an_oversized_request_id_bounded",
+        "http::tests::unsafe_or_oversized_http_token_files_refuse_without_replacing_or_echoing_bytes",
+        "jsonrpc::codec::tests::emitted_tool_success_and_refusal_metadata_preserve_escaped_payloads",
+        "jsonrpc::codec::tests::metadata_fixed_point_crosses_decimal_widths_and_the_exact_context_ceiling",
+        "jsonrpc::codec::tests::ordinary_results_protocol_errors_and_fallbacks_share_exact_encoding",
+        "jsonrpc::codec::tests::transport_admission_counts_only_the_framing_it_emits",
+        "jsonrpc::codec::tests::transport_lengths_and_counting_refuse_integer_overflow",
+        "jsonrpc::codec::tests::transport_preview_fitting_preserves_full_structured_page_and_owner_cursor",
+        "jsonrpc::reconnect::tests::a_mutating_surface_command_is_not_repeated",
+        "jsonrpc::reconnect::tests::a_mutation_reconnects_without_being_sent_twice",
+        "jsonrpc::reconnect::tests::a_product_fault_does_not_reconnect",
+        "jsonrpc::reconnect::tests::a_read_reconnects_and_returns_its_reply",
+        "jsonrpc::reconnect::tests::a_second_disconnect_parks_the_replacement_for_the_next_call",
+        "jsonrpc::reconnect::tests::daemon_restart_io_kinds_are_reconnectable_but_configuration_errors_are_not",
+        "jsonrpc::reconnect::tests::deterministic_idle_gap_matrix_reconnects_only_after_the_timeout",
+        "jsonrpc::reconnect::tests::every_read_only_surface_variant_is_repeatable",
+        "jsonrpc::reconnect::tests::failed_reconnect_does_not_reuse_the_dead_lease",
+        "jsonrpc::reconnect::tests::reconnect_transfers_the_retired_product_to_the_endpoint",
+        "jsonrpc::reconnect::tests::revision_health_and_graph_query_all_recover",
+        "jsonrpc::reconnect::tests::the_call_after_a_refused_mutation_succeeds",
+        "jsonrpc::tests::a_document_call_returns_the_markdown_page_and_the_typed_answer",
+        "jsonrpc::tests::a_malformed_operand_names_the_argument_and_the_closed_set",
+        "jsonrpc::tests::a_missing_resource_is_refused_rather_than_guessed",
+        "jsonrpc::tests::a_refused_surface_operation_reports_its_typed_cause",
+        "jsonrpc::tests::a_search_call_leads_with_honest_coverage_then_two_lines_per_record",
+        "jsonrpc::tests::adapter_errors_keep_continuation_transport_refusal_separate_from_compiler_facts",
+        "jsonrpc::tests::adapter_errors_keep_valid_json_and_coordinate_protocol_strings_unproven",
+        "jsonrpc::tests::adapter_errors_preserve_typed_compiler_facts_at_exact_boundaries",
+        "jsonrpc::tests::advertised_registry_lookups_reach_the_typed_product_commands",
+        "jsonrpc::tests::an_affordance_is_the_exact_next_tool_call_an_agent_can_paste",
+        "jsonrpc::tests::an_explicit_project_is_active_even_when_the_launch_directory_differs",
+        "jsonrpc::tests::an_outline_call_is_a_tree_of_names_never_bare_digests",
+        "jsonrpc::tests::an_unknown_coordinate_is_refused_with_the_operand_and_a_next_tool_call",
+        "jsonrpc::tests::an_unknown_tool_is_a_protocol_error_not_a_result",
+        "jsonrpc::tests::an_unreachable_endpoint_is_a_fault_with_the_retry_affordance",
+        "jsonrpc::tests::authenticated_continuation_decode_preserves_domain_and_server_fault_distinctions",
+        "jsonrpc::tests::blocking_owner_await_is_not_exposed_over_mcp",
+        "jsonrpc::tests::bounded_response_serialization_preserves_the_calling_request_id",
+        "jsonrpc::tests::cancellation_notifications_are_silent_and_do_not_poison_the_session",
+        "jsonrpc::tests::cold_cursor_verification_never_initializes_authority_for_a_forged_token",
+        "jsonrpc::tests::combined_budget_shortens_only_the_readable_preview_with_explicit_provenance",
+        "jsonrpc::tests::continuation_authority_binds_context_and_owner_payload",
+        "jsonrpc::tests::continuation_context_binds_workspace_query_limit_and_detail",
+        "jsonrpc::tests::copied_ticket_string_uses_the_object_decoder_and_preserves_the_owner_ticket",
+        "jsonrpc::tests::deeply_nested_json_is_rejected_before_tool_admission",
+        "jsonrpc::tests::default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapshots",
+        "jsonrpc::tests::dependency_refusal_marks_tool_failure_and_keeps_the_exact_requested_package",
+        "jsonrpc::tests::direct_and_generic_graph_routes_preserve_typed_domain_and_protocol_failures",
+        "jsonrpc::tests::document_and_source_tools_advertise_their_useful_default_detail",
+        "jsonrpc::tests::every_metadata_route_stays_within_the_context_budget",
+        "jsonrpc::tests::every_registry_row_is_reachable_as_exactly_one_tool",
+        "jsonrpc::tests::generic_surface_dependency_refusal_keeps_exact_package_action_and_typed_fault",
+        "jsonrpc::tests::generic_surface_progress_and_cancel_keep_the_request_ticket_projection",
+        "jsonrpc::tests::graph_continuation_round_trip_is_bounded_and_authorized",
+        "jsonrpc::tests::graph_page_text_does_not_treat_cancellation_or_missing_cursor_as_limit_advice",
+        "jsonrpc::tests::graph_query_limits_are_rejected_before_the_product_boundary",
+        "jsonrpc::tests::high_fanout_graph_and_surface_pages_refuse_atomically",
+        "jsonrpc::tests::index_cancel_preserves_terminal_races_and_rejects_fabricated_tickets",
+        "jsonrpc::tests::index_progress_distinguishes_prior_owner_tickets_and_terminal_refusals",
+        "jsonrpc::tests::index_progress_maximum_owner_page_fits_the_combined_mcp_result_budget",
+        "jsonrpc::tests::index_progress_returns_bounded_events_and_the_exact_next_sequence",
+        "jsonrpc::tests::index_requires_its_advertised_path_before_owner_admission",
+        "jsonrpc::tests::index_search_cursor_cannot_cross_between_named_and_generic_mcp_tools",
+        "jsonrpc::tests::index_search_cursor_round_trips_between_servers_with_the_same_workspace_authority",
+        "jsonrpc::tests::index_search_tool_cursor_rejects_context_changes_and_raw_owner_tokens",
+        "jsonrpc::tests::index_search_tool_round_trips_mcp_cursors_at_summary_and_full_detail",
+        "jsonrpc::tests::index_start_keeps_the_exact_owner_ticket_and_routes_purls_to_the_owner_job_api",
+        "jsonrpc::tests::index_tool_advertises_and_validates_execution_intent",
+        "jsonrpc::tests::initialize_negotiates_only_the_library_supported_protocols",
+        "jsonrpc::tests::initialized_notification_cannot_bypass_initialize",
+        "jsonrpc::tests::keyed_index_progress_preserves_durable_owner_evidence_and_rejects_mixed_identities",
+        "jsonrpc::tests::lazy_cursor_authority_is_durable_once_and_replayable_in_a_fresh_server",
+        "jsonrpc::tests::lazy_cursor_authority_retries_after_repair_without_process_key_fallback",
+        "jsonrpc::tests::malformed_call_tool_envelopes_and_unknown_routes_remain_rpc_errors",
+        "jsonrpc::tests::malformed_or_expired_cursor_does_not_admit_a_workspace_authority",
+        "jsonrpc::tests::mcp_text_is_the_same_shared_markdown_the_cli_renders",
+        "jsonrpc::tests::missing_index_path_returns_actionable_structured_usage_before_owner_work",
+        "jsonrpc::tests::missing_required_mcp_argument_names_the_tool_field_not_cli_usage",
+        "jsonrpc::tests::newline_codec_is_bounded_and_compact",
+        "jsonrpc::tests::newline_codec_rejects_malformed_and_oversized_jsonrpc_frames",
+        "jsonrpc::tests::outline_resource_templates_preserve_readable_and_absent_projects",
+        "jsonrpc::tests::oversized_signed_index_search_cursor_projection_is_refused_without_truncation",
+        "jsonrpc::tests::owner_index_job_tools_advertise_exact_tickets_and_immediate_progress",
+        "jsonrpc::tests::partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_same_mcp_wire_result",
+        "jsonrpc::tests::recognized_tools_share_typed_missing_input_results_before_any_owner_call",
+        "jsonrpc::tests::registry_lookup_tools_are_advertised_with_bounded_typed_inputs",
+        "jsonrpc::tests::registry_schema_primitive_types_are_enforced_before_the_product_boundary",
+        "jsonrpc::tests::resource_discovery_needs_no_owner_and_outline_reads_preserve_protocol_failure",
+        "jsonrpc::tests::resources_are_the_same_markdown_their_tools_return",
+        "jsonrpc::tests::semantic_shapes_actual_jsonrpc_preserves_full_view_in_summary_and_full",
+        "jsonrpc::tests::semantic_shapes_jsonrpc_refuses_oversized_view_without_dropping_required_facts",
+        "jsonrpc::tests::semantic_versions_jsonrpc_keeps_true_oversize_refusals_atomic",
+        "jsonrpc::tests::semantic_versions_jsonrpc_preserves_captured_semver_and_matches_the_cli_projection",
+        "jsonrpc::tests::simultaneous_lazy_cursor_admission_uses_one_durable_identity",
+        "jsonrpc::tests::stale_graph_roots_are_reported_as_a_restartable_cursor_error",
+        "jsonrpc::tests::stale_named_index_search_cursor_is_a_restartable_refusal",
+        "jsonrpc::tests::stale_surface_index_search_cursor_is_reported_as_restartable",
+        "jsonrpc::tests::status_is_a_rollup_a_reader_can_hold_not_a_capability_dump",
+        "jsonrpc::tests::surface_errors_keep_valid_compiler_json_and_coordinates_as_unproven_protocol",
+        "jsonrpc::tests::surface_errors_preserve_typed_compiler_facts_across_all_job_routes",
+        "jsonrpc::tests::surface_index_search_cursor_binds_query_limit_project_and_detail",
+        "jsonrpc::tests::surface_index_search_cursor_round_trips_through_the_mcp_projection",
+        "jsonrpc::tests::the_handshake_reports_the_stable_protocol_and_its_instructions",
+        "jsonrpc::tests::the_packages_call_states_readiness_for_every_project",
+        "jsonrpc::tests::the_query_card_carries_worked_queries_over_the_declared_schema",
+        "jsonrpc::tests::the_references_tool_serves_occurrence_sites_with_source_spans",
+        "jsonrpc::tests::the_session_list_hides_the_surface_escape_hatch",
+        "jsonrpc::tests::the_session_tool_list_leads_with_packages_and_index",
+        "jsonrpc::tests::the_surface_escape_hatch_returns_the_typed_reply_and_a_readable_block",
+        "jsonrpc::tests::the_typed_query_lane_reports_its_terminal_and_revision",
+        "jsonrpc::tests::tool_catalog_names_callable_routes_without_advertising_unready_surfaces",
+        "jsonrpc::tests::tree_open_routes_record_the_initialized_mcp_client",
+        "jsonrpc::tests::wire_budget_metadata_counts_the_complete_escaped_jsonrpc_line",
+        "process::tests::stdio_metadata_answers_when_durable_workspace_admission_is_unavailable",
+        "process::tests::stdio_metadata_does_not_initialize_a_new_workspace",
+        "process::tests::stdio_returns_correlated_mcp_error_when_owner_startup_fails",
+        "tests::certified_framed_dispatch_admits_identity_before_presentation",
+        "tests::embedded_client_rejects_an_intent_for_another_package_before_execution",
+        "tests::endpoint_error_extracts_correlation_without_admitting_claims",
+        "tests::endpoint_error_keeps_a_valid_request_id",
+        "tests::framed_dispatch_preserves_cli_reply_shape",
+        "tests::frames_are_bounded_and_round_trip",
+        "tests::graph_requests_retain_their_revision_for_endpoint_admission",
+        "tests::health_cannot_be_claimed_without_a_producer_certificate",
+        "tests::in_process_client_does_not_cache_replies",
+        "tests::injected_transport_checks_basis_and_freshness",
+        "tests::malformed_request_gets_a_framed_reply",
+        "tests::mcp_admission_bounds_requests_and_replies",
+        "tests::mcp_outer_frame_matches_the_canonical_local_codec",
+        "tests::replies_must_match_the_requested_command_shape",
+        "tests::request_encoding_rejects_a_certificate_for_another_package",
+        "tests::unix_endpoint_path_is_bounded",
+        "tests::unix_transport_consumes_producer_certified_success_without_expected_cache",
+        "tests::unix_transport_executes_one_correlated_request",
+        "tests::unix_transport_rejects_digest_only_identity_success"
+      ],
+      "summary": [
+        {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 143
+        }
+      ],
+      "elapsed_seconds": 397.6244444020558
+    },
+    {
+      "gate": "gate-02",
+      "receipt_sha256": "2695dea2f78393533832d5802a4e4a74a5a4e88d9f850d7e925933afc65e7912",
+      "names": [
+        "query_continuation::tests::plain_graph_portable_continuation_refuses_foreign_contract_view_and_forgery",
+        "query_continuation::tests::plain_graph_portable_continuation_reopens_exact_page_in_fresh_owner",
+        "query_continuation::tests::plain_graph_selected_address_is_portable_without_becoming_a_canonical_key"
+      ],
+      "summary": [
+        {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 3
+        }
+      ],
+      "elapsed_seconds": 128.62189194001257
+    },
+    {
+      "gate": "gate-03",
+      "receipt_sha256": "00be0e5df0bf325d46364017fb1e6ffd688d9c6ac111ac4d86d60cd0de4a1ef1",
+      "names": [
+        "query_continuation::tests::portable_query_coherently_rederived_authorized_prefix_is_content_proof_not_issue_receipt",
+        "query_continuation::tests::portable_query_compressible_long_proof_preserves_every_canonical_byte",
+        "query_continuation::tests::portable_query_duplicate_json_fields_are_not_normalized_into_a_proof",
+        "query_continuation::tests::portable_query_external_family_text_and_credit_are_exact",
+        "query_continuation::tests::portable_query_fresh_sessions_traverse_names_and_search_without_replay",
+        "query_continuation::tests::portable_query_full_credit_can_export_a_compact_predecessor",
+        "query_continuation::tests::portable_query_intent_only_sequence_progress_keeps_old_proof_valid",
+        "query_continuation::tests::portable_query_malformed_oversized_and_unknown_envelopes_refuse_before_rpc",
+        "query_continuation::tests::portable_query_scope_rebind_same_root_and_selected_root_change_are_refused",
+        "query_continuation::tests::portable_query_tampered_contract_cursor_scope_and_preimage_fields_refuse",
+        "query_continuation::tests::portable_query_terminal_reply_cannot_bypass_a_scope_rebind_between_rpcs"
+      ],
+      "summary": [
+        {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 11
+        }
+      ],
+      "elapsed_seconds": 14.280682810000144
+    }
+  ],
+  "native_images": {
+    "backend-locald": {
+      "bytes": 1678017568,
+      "cargo_artifact": {
+        "executable": "/root/codex-worktrees/sol61-cli-http-native-joined-20261009/.local/target/debug/backend-locald",
+        "features": [],
+        "filenames": [
+          "/root/codex-worktrees/sol61-cli-http-native-joined-20261009/.local/target/debug/backend-locald"
+        ],
+        "fresh": false,
+        "manifest_path": "/root/codex-worktrees/sol61-cli-http-native-joined-20261009/apps/locald/Cargo.toml",
+        "package_id": "path+file:///root/codex-worktrees/sol61-cli-http-native-joined-20261009/apps/locald#backend-locald@0.2.0",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 1,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": false
+        },
+        "reason": "compiler-artifact",
+        "target": {
+          "crate_types": [
+            "bin"
+          ],
+          "doc": true,
+          "doctest": false,
+          "edition": "2024",
+          "kind": [
+            "bin"
+          ],
+          "name": "backend-locald",
+          "src_path": "/root/codex-worktrees/sol61-cli-http-native-joined-20261009/apps/locald/src/main.rs",
+          "test": true
+        }
+      },
+      "device": 66309,
+      "fresh": false,
+      "inode": 9439866,
+      "mode": 448,
+      "path": "/root/codex-worktrees/sol61-cli-http-native-joined-20261009/.local/target/debug/backend-locald",
+      "preserved_path": "/root/sol61-cli-http-native-attempt05-20261009/images/backend-locald",
+      "sha256": "ea312dd88e2cba15d1e69fa3cbcf5504adea25041b4657c5b8cdabdb431f1f15",
+      "source": {
+        "commit": "5a06a6f3d9bc4a6760a686356174cb48599ad514",
+        "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+        "status": "",
+        "tree": "7f02b81c43e54a9429289deca22538dac282a272"
+      }
+    },
+    "backend_client": {
+      "bytes": 1230283992,
+      "cargo_artifact": {
+        "executable": "/root/codex-worktrees/sol61-cli-http-native-joined-20261009/.local/cli-http-role/.nudox-cargo/slot-0/debug/deps/backend_client-7e7b1c0032b2e6a0",
+        "features": [],
+        "filenames": [
+          "/root/codex-worktrees/sol61-cli-http-native-joined-20261009/.local/cli-http-role/.nudox-cargo/slot-0/debug/deps/backend_client-7e7b1c0032b2e6a0"
+        ],
+        "fresh": true,
+        "manifest_path": "/root/codex-worktrees/sol61-cli-http-native-joined-20261009/crates/client/Cargo.toml",
+        "package_id": "path+file:///root/codex-worktrees/sol61-cli-http-native-joined-20261009/crates/client#backend-client@0.2.0",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 1,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        },
+        "reason": "compiler-artifact",
+        "target": {
+          "crate_types": [
+            "lib"
+          ],
+          "doc": true,
+          "doctest": true,
+          "edition": "2024",
+          "kind": [
+            "lib"
+          ],
+          "name": "backend_client",
+          "src_path": "/root/codex-worktrees/sol61-cli-http-native-joined-20261009/crates/client/src/lib.rs",
+          "test": true
+        }
+      },
+      "device": 66309,
+      "fresh": true,
+      "inode": 9440022,
+      "mode": 448,
+      "path": "/root/codex-worktrees/sol61-cli-http-native-joined-20261009/.local/cli-http-role/.nudox-cargo/slot-0/debug/deps/backend_client-7e7b1c0032b2e6a0",
+      "preserved_path": "/root/sol61-cli-http-native-attempt05-20261009/images/backend_client",
+      "sha256": "548398228e66f3cfd13b0299840ff4d81e7b74d3b3924af948d3b8564fc4b79f",
+      "source": {
+        "commit": "5a06a6f3d9bc4a6760a686356174cb48599ad514",
+        "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+        "status": "",
+        "tree": "7f02b81c43e54a9429289deca22538dac282a272"
+      }
+    },
+    "backend_mcp": {
+      "bytes": 1226890832,
+      "cargo_artifact": {
+        "executable": "/root/codex-worktrees/sol61-cli-http-native-joined-20261009/.local/cli-http-role/.nudox-cargo/slot-0/debug/deps/backend_mcp-d9ed216c5e3aef8a",
+        "features": [
+          "default",
+          "token-budget"
+        ],
+        "filenames": [
+          "/root/codex-worktrees/sol61-cli-http-native-joined-20261009/.local/cli-http-role/.nudox-cargo/slot-0/debug/deps/backend_mcp-d9ed216c5e3aef8a"
+        ],
+        "fresh": false,
+        "manifest_path": "/root/codex-worktrees/sol61-cli-http-native-joined-20261009/apps/mcp/Cargo.toml",
+        "package_id": "path+file:///root/codex-worktrees/sol61-cli-http-native-joined-20261009/apps/mcp#backend-mcp@0.2.0",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 1,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        },
+        "reason": "compiler-artifact",
+        "target": {
+          "crate_types": [
+            "lib"
+          ],
+          "doc": true,
+          "doctest": true,
+          "edition": "2024",
+          "kind": [
+            "lib"
+          ],
+          "name": "backend_mcp",
+          "src_path": "/root/codex-worktrees/sol61-cli-http-native-joined-20261009/apps/mcp/src/lib.rs",
+          "test": true
+        }
+      },
+      "device": 66309,
+      "fresh": false,
+      "inode": 9440014,
+      "mode": 448,
+      "path": "/root/codex-worktrees/sol61-cli-http-native-joined-20261009/.local/cli-http-role/.nudox-cargo/slot-0/debug/deps/backend_mcp-d9ed216c5e3aef8a",
+      "preserved_path": "/root/sol61-cli-http-native-attempt05-20261009/images/backend_mcp",
+      "sha256": "b6983839cf23901a96f8a1baed6764ba845c4a3b98698d44584d8a115ed391a5",
+      "source": {
+        "commit": "5a06a6f3d9bc4a6760a686356174cb48599ad514",
+        "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+        "status": "",
+        "tree": "7f02b81c43e54a9429289deca22538dac282a272"
+      }
+    }
+  },
+  "actual_companion": {
+    "bytes": 1678017568,
+    "cargo_artifact": {
+      "executable": "/root/codex-worktrees/sol61-cli-http-native-joined-20261009/.local/target/debug/backend-locald",
+      "features": [],
+      "filenames": [
+        "/root/codex-worktrees/sol61-cli-http-native-joined-20261009/.local/target/debug/backend-locald"
+      ],
+      "fresh": false,
+      "manifest_path": "/root/codex-worktrees/sol61-cli-http-native-joined-20261009/apps/locald/Cargo.toml",
+      "package_id": "path+file:///root/codex-worktrees/sol61-cli-http-native-joined-20261009/apps/locald#backend-locald@0.2.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 1,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": false
+      },
+      "reason": "compiler-artifact",
+      "target": {
+        "crate_types": [
+          "bin"
+        ],
+        "doc": true,
+        "doctest": false,
+        "edition": "2024",
+        "kind": [
+          "bin"
+        ],
+        "name": "backend-locald",
+        "src_path": "/root/codex-worktrees/sol61-cli-http-native-joined-20261009/apps/locald/src/main.rs",
+        "test": true
+      }
+    },
+    "device": 66309,
+    "fresh": false,
+    "inode": 9439866,
+    "mode": 448,
+    "path": "/root/codex-worktrees/sol61-cli-http-native-joined-20261009/.local/target/debug/backend-locald",
+    "preserved_path": "/root/sol61-cli-http-native-attempt05-20261009/images/gate-00-backend-locald",
+    "sha256": "ea312dd88e2cba15d1e69fa3cbcf5504adea25041b4657c5b8cdabdb431f1f15",
+    "source": {
+      "commit": "5a06a6f3d9bc4a6760a686356174cb48599ad514",
+      "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+      "status": "",
+      "tree": "7f02b81c43e54a9429289deca22538dac282a272"
+    }
+  },
+  "transport_correspondence": [
+    {
+      "path": "apps/mcp/src/http.rs",
+      "atom_sha256": "e295c8dcdd9e40e61be6e9a54ed176d75a355bc3f8176bbcda196f7e68f1b6e6",
+      "tested_sha256": "e295c8dcdd9e40e61be6e9a54ed176d75a355bc3f8176bbcda196f7e68f1b6e6",
+      "whole_postimage_identical": true,
+      "exact_transport_change_sequence": true
+    },
+    {
+      "path": "apps/mcp/src/jsonrpc.rs",
+      "atom_sha256": "1fe4ba651c779dfea5c62628b170776867523d600a23d1b9dcd58b8a1873d454",
+      "tested_sha256": "39fe2fb74c9602c1154b7a5f830023031fbbdb0acf586088621b1e283a35145c",
+      "whole_postimage_identical": false,
+      "exact_transport_change_sequence": true
+    },
+    {
+      "path": "apps/mcp/src/jsonrpc/codec.rs",
+      "atom_sha256": "931bc8e34ef2e6f27c054f9eb2ff9ac25448cc3f29062c972b8530159175db3f",
+      "tested_sha256": "931bc8e34ef2e6f27c054f9eb2ff9ac25448cc3f29062c972b8530159175db3f",
+      "whole_postimage_identical": true,
+      "exact_transport_change_sequence": true
+    },
+    {
+      "path": "apps/mcp/src/jsonrpc/tests.rs",
+      "atom_sha256": "55317b25a7a6a9b851db9933c2ff21abaaa6e3ed238b873945856f557518636f",
+      "tested_sha256": "7cd1cc104b8b2917c7d59c04be995b363c933b44fe0e61e08ec95a3f79816dcd",
+      "whole_postimage_identical": false,
+      "exact_transport_change_sequence": true
+    }
+  ],
+  "return_sha256": "71cab950b3d261240e81be1b595afcc59f7407a011758786040bd825279b26b5",
+  "limitations": [
+    "MCP143/client3+11 pass on the joined 5a source, not an isolated 0aee build.",
+    "Two transport files have separately reviewed graph changes in joined5a; exact transport change sequences match.",
+    "Prior CLI47/2 and MCP142/1 failures remain preserved; final558 and genuine Docs runtime are unrun.",
+    "No installed release, GUI or all-tool large-project acceptance."
+  ],
+  "integration": {
+    "base": "041cd247915e9d4aeee22c46477bb91b6ce004f9",
+    "source_checkpoint": "32a922b5ba0428297c7fbe7d7818165bd866db0d",
+    "postimages_match_transport_atom": [
+      "apps/mcp/src/http.rs",
+      "apps/mcp/src/jsonrpc.rs",
+      "apps/mcp/src/jsonrpc/codec.rs",
+      "apps/mcp/src/jsonrpc/tests.rs"
+    ],
+    "all_other_base_paths_unchanged": true
+  },
+  "independent_remote_image_rehash": {
+    "schema": "nudox.root.mcp143.remote-image-rehash.v1",
+    "utc": "2026-10-09T13:23:21.293627+00:00",
+    "host": "ilo",
+    "images": [
+      {
+        "name": "backend-locald",
+        "path": "/root/sol61-cli-http-native-attempt05-20261009/images/backend-locald",
+        "device": 66309,
+        "inode": 9439866,
+        "bytes": 1678017568,
+        "sha256": "ea312dd88e2cba15d1e69fa3cbcf5504adea25041b4657c5b8cdabdb431f1f15"
+      },
+      {
+        "name": "backend_client",
+        "path": "/root/sol61-cli-http-native-attempt05-20261009/images/backend_client",
+        "device": 66309,
+        "inode": 9440022,
+        "bytes": 1230283992,
+        "sha256": "548398228e66f3cfd13b0299840ff4d81e7b74d3b3924af948d3b8564fc4b79f"
+      },
+      {
+        "name": "backend_mcp",
+        "path": "/root/sol61-cli-http-native-attempt05-20261009/images/backend_mcp",
+        "device": 66309,
+        "inode": 9440014,
+        "bytes": 1226890832,
+        "sha256": "b6983839cf23901a96f8a1baed6764ba845c4a3b98698d44584d8a115ed391a5"
+      }
+    ]
+  },
+  "independent_remote_image_rehash_sha256": "e732c162d143bc2c1febe9df2a1619b285c204e694737d1215c6eb8d70620474",
+  "source_audit_sha256": "a7b230d69bdd54d30cb25e7bb7bfd8145027a638cd2a7f7998ff8a900a9a307b"
+}
