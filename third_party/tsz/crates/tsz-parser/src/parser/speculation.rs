@@ -157,6 +157,7 @@ impl<'work> ParserStateCore<'work> {
 mod tests {
     use super::*;
     use crate::parser::node::IdentifierData;
+    use crate::parser::state::ParserState;
     use tsz_common::interner::{AstAtom, IdentText};
     use tsz_scanner::SyntaxKind;
 
