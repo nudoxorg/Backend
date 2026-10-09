@@ -1015,12 +1015,29 @@ pub struct CompilerDiagnosticFacts {
     /// expose it as a stable cause tag while the bounded diagnostic bytes remain
     /// available only through the local-debug accessor.
     pub python_failure: Option<PythonAuthorityFailureKind>,
+    /// Exact captured configuration authority for a Python config refusal.
+    /// Contains no path or source text and survives product serialization.
+    pub python_configuration: Option<PythonConfigurationRefusalFacts>,
     /// Exact TypeScript authority cause; native bytes and paths remain local.
     pub typescript_failure: Option<super::TypeScriptAuthorityFailureKind>,
     /// Exact Go dependency-admission cause; native bytes and paths remain local.
     pub go_failure: Option<super::GoAuthorityFailureKind>,
     /// Zero-filled storage whose prefix through `byte_len` is the exact diagnostic prefix.
     pub bytes: [u8; MAX_NATIVE_DIAGNOSTIC_BYTES],
+}
+
+/// Exact, finite evidence for a refused captured Python configuration.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PythonConfigurationRefusalFacts {
+    /// Central source-fact digest of the original captured configuration bytes.
+    pub source_identity: [u8; 32],
+    /// Exact raw source extent bound to that digest.
+    pub source_byte_len: u32,
+    /// Faults omitted whole when their exact operands exceed the shared budget.
+    pub omitted_faults: u32,
+    /// A retained native message was clipped to the shared diagnostic budget.
+    pub evidence_truncated: bool,
 }
 
 /// Closed, non-sensitive Python checker failure family retained alongside its
@@ -1070,6 +1087,8 @@ pub enum PythonAuthorityFailureKind {
     WorkspaceIoFailed,
     /// Checker returned a span outside the exact selected source bytes.
     InvalidFactSpan,
+    /// Captured user configuration was rejected by the pinned native schema.
+    ConfigurationRefused,
 }
 
 impl PythonAuthorityFailureKind {
@@ -1097,6 +1116,7 @@ impl PythonAuthorityFailureKind {
             Self::CheckerTimeout => "python_checker_timeout",
             Self::WorkspaceIoFailed => "python_workspace_io_failed",
             Self::InvalidFactSpan => "python_invalid_fact_span",
+            Self::ConfigurationRefused => "python_configuration_refused",
         }
     }
 
@@ -1136,6 +1156,7 @@ impl PythonAuthorityFailureKind {
             Self::CheckerTimeout => "Python checker exceeded its process deadline",
             Self::WorkspaceIoFailed => "Python checker workspace I/O failed",
             Self::InvalidFactSpan => "Python checker returned a source span outside captured bytes",
+            Self::ConfigurationRefused => "Python configuration was refused by the native compiler",
         }
     }
 }
@@ -1171,6 +1192,7 @@ impl CompilerDiagnostic {
             observed,
             truncated: truncated || retained != bytes.len(),
             python_failure: None,
+            python_configuration: None,
             typescript_failure: None,
             go_failure: None,
             bytes: output,
@@ -1182,6 +1204,19 @@ impl CompilerDiagnostic {
     #[must_use]
     pub fn with_python_failure(mut self, failure: PythonAuthorityFailureKind) -> Self {
         self.0.python_failure = Some(failure);
+        if failure != PythonAuthorityFailureKind::ConfigurationRefused {
+            self.0.python_configuration = None;
+        }
+        self.0.typescript_failure = None;
+        self.0.go_failure = None;
+        self
+    }
+
+    /// Retains exact config-source evidence and its corresponding closed cause.
+    #[must_use]
+    pub fn with_python_configuration(mut self, facts: PythonConfigurationRefusalFacts) -> Self {
+        self.0.python_configuration = Some(facts);
+        self.0.python_failure = Some(PythonAuthorityFailureKind::ConfigurationRefused);
         self.0.typescript_failure = None;
         self.0.go_failure = None;
         self
@@ -1195,6 +1230,7 @@ impl CompilerDiagnostic {
     ) -> Self {
         self.0.typescript_failure = Some(failure);
         self.0.python_failure = None;
+        self.0.python_configuration = None;
         self.0.go_failure = None;
         self
     }
@@ -1204,6 +1240,7 @@ impl CompilerDiagnostic {
     pub fn with_go_failure(mut self, failure: super::GoAuthorityFailureKind) -> Self {
         self.0.go_failure = Some(failure);
         self.0.python_failure = None;
+        self.0.python_configuration = None;
         self.0.typescript_failure = None;
         self
     }

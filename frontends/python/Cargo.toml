@@ -17,6 +17,7 @@ ruff_text_size = "=0.0.8"
 tree-sitter-python = "=0.25.0"
 serde.workspace = true
 serde_json.workspace = true
+toml_native = { package = "toml", version = "=1.1.5", features = ["preserve_order"] }
 thiserror.workspace = true
 pyrefly = { path = "../../vendor/pyrefly_native_1_2" }
 pyrefly_config = { git = "https://github.com/facebook/pyrefly", rev = "30b5ca5250db9f2d9264d5e889662cf1224a75b7" }

@@ -2592,8 +2592,20 @@ fn package_cause_is_valid(cause: &PackageCompilerFailureCause) -> bool {
         PackageCompilerFailureCause::Authority {
             diagnostic: Some(facts),
             ..
-        } => [facts.python_failure.is_some(), facts.typescript_failure.is_some(),
-            facts.go_failure.is_some()].into_iter().filter(|present| *present).count() <= 1,
+        } => {
+            [
+                facts.python_failure.is_some(),
+                facts.typescript_failure.is_some(),
+                facts.go_failure.is_some(),
+            ]
+            .into_iter()
+            .filter(|present| *present)
+            .count()
+                <= 1
+                && (facts.python_failure
+                    == Some(crate::interface::PythonAuthorityFailureKind::ConfigurationRefused))
+                    == facts.python_configuration.is_some()
+        }
         PackageCompilerFailureCause::Authority {
             diagnostic: None, ..
         } => true,
@@ -6258,6 +6270,116 @@ mod tests {
         assert_eq!(reopened, failure);
         assert_eq!(reopened.kind_tag(), failure.kind_tag());
         assert!(reopened.retained_diagnostic_for_local_debug().is_none());
+    }
+
+    #[test]
+    fn python_configuration_refusal_codec_keeps_source_and_rejects_cause_mismatch() {
+        use crate::interface::{
+            AuthorityDiagnosticClass, AuthorityPhase, CompilerAttempt, CompilerCause,
+            CompilerDiagnostic, CompilerTerminal, PythonAuthorityFailureKind,
+            PythonConfigurationRefusalFacts, SourceAuthority,
+        };
+        let facts = PythonConfigurationRefusalFacts {
+            source_identity: [81; 32],
+            source_byte_len: 75000,
+            omitted_faults: 294,
+            evidence_truncated: true,
+        };
+        let diagnostic = CompilerDiagnostic::from_native(b"private config value", 20, false)
+            .unwrap()
+            .with_python_configuration(facts);
+        let terminal = CompilerTerminal::Compile {
+            attempted: CompilerAttempt {
+                source: SourceAuthority {
+                    identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"module"),
+                    byte_len: 6,
+                },
+                recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"config-refusal"),
+            },
+            cause: CompilerCause::Authority {
+                phase: AuthorityPhase::Resolve,
+                class: AuthorityDiagnosticClass::Authority,
+                diagnostic: Some(diagnostic),
+            },
+        };
+        let failure = PackageCompilerFailure::from_package_terminal("pkg/module.py", &terminal)
+            .unwrap()
+            .unwrap();
+        assert_eq!(failure.kind_tag(), "python_configuration_refused");
+        let encoded = failure.encode_bounded_json().unwrap();
+        assert!(!String::from_utf8_lossy(&encoded).contains("private config value"));
+        let reopened = PackageCompilerFailure::decode_bounded_json(&encoded).unwrap();
+        assert_eq!(reopened, failure);
+        let PackageCompilerFailureCause::Authority {
+            diagnostic: Some(summary),
+            ..
+        } = reopened.cause()
+        else {
+            panic!("authority summary")
+        };
+        assert_eq!(summary.python_configuration, Some(facts));
+        assert_eq!(
+            summary.python_failure,
+            Some(PythonAuthorityFailureKind::ConfigurationRefused)
+        );
+        let original: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        let mut missing = original.clone();
+        missing["cause"]["fault"]["diagnostic"]
+            .as_object_mut()
+            .unwrap()
+            .remove("python_configuration");
+        assert!(
+            PackageCompilerFailure::decode_bounded_json(&serde_json::to_vec(&missing).unwrap())
+                .is_err()
+        );
+        let mut mismatch = original.clone();
+        mismatch["cause"]["fault"]["diagnostic"]["python_failure"] = serde_json::json!("project_panic");
+        mismatch["kind_tag"] = serde_json::json!("python_project_panic");
+        assert!(
+            PackageCompilerFailure::decode_bounded_json(&serde_json::to_vec(&mismatch).unwrap())
+                .is_err()
+        );
+        let mut unknown = original;
+        unknown["cause"]["fault"]["diagnostic"]["python_configuration"]["unadmitted"] =
+            serde_json::json!(true);
+        assert!(
+            PackageCompilerFailure::decode_bounded_json(&serde_json::to_vec(&unknown).unwrap())
+                .is_err()
+        );
+        let cleared = CompilerDiagnostic::from_native(b"x", 1, false)
+            .unwrap()
+            .with_python_configuration(facts)
+            .with_python_failure(PythonAuthorityFailureKind::ProjectPanic);
+        assert!(cleared.python_configuration.is_none());
+        // The persisted profile reader requires decode/re-encode byte equality.
+        // This pre-field cause still omits the optional config facts entirely.
+        let legacy = CompilerTerminal::Compile {
+            attempted: CompilerAttempt {
+                source: SourceAuthority {
+                    identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"legacy"),
+                    byte_len: 6,
+                },
+                recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"legacy-recipe"),
+            },
+            cause: CompilerCause::Authority {
+                phase: AuthorityPhase::TypeCheck,
+                class: AuthorityDiagnosticClass::Type,
+                diagnostic: Some(cleared),
+            },
+        };
+        let legacy_failure = PackageCompilerFailure::from_package_terminal("pkg/legacy.py", &legacy)
+            .unwrap()
+            .unwrap();
+        let legacy_bytes = legacy_failure.encode_bounded_json().unwrap();
+        let legacy_json: serde_json::Value = serde_json::from_slice(&legacy_bytes).unwrap();
+        assert!(
+            legacy_json["cause"]["fault"]["diagnostic"]
+                .get("python_configuration")
+                .is_none()
+        );
+        let legacy_reopened = PackageCompilerFailure::decode_bounded_json(&legacy_bytes).unwrap();
+        assert_eq!(legacy_reopened.encode_bounded_json().unwrap(), legacy_bytes);
+        assert_eq!(legacy_reopened.kind_tag(), "python_project_panic");
     }
 
     #[test]

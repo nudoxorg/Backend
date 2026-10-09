@@ -40,6 +40,9 @@ pub use source_intake::{PythonSourceDecodeFault, decode_python_source};
 mod project;
 #[path = "project_native.rs"]
 mod project_native;
+#[path = "project_configuration.rs"]
+mod project_configuration;
+pub use project_configuration::PythonProjectConfigurationFault;
 pub use project::{
     DefinitionTarget, NativePythonProducerIdentity, NativePythonProjectAuthority,
     PythonProjectBytesSource, PythonProjectControl, PythonProjectCoverageGap,
@@ -156,6 +159,23 @@ pub enum CheckerError {
         path: PathBuf,
         /// Bounded description of the schema failure.
         message: String,
+    },
+    /// A captured native configuration was refused, preserving its exact source
+    /// identity and typed invalid/unsupported options instead of a path-only cause.
+    #[error("native Python configuration source {source_identity:02x?}, bytes={source_byte_len}, omitted={omitted_faults}, clipped={evidence_truncated}: {faults:?}")]
+    ProjectConfiguration {
+        /// Original project configuration path, before the private mirror rebase.
+        path: PathBuf,
+        /// Digest of the exact captured configuration bytes.
+        source_identity: [u8; 32],
+        /// Exact captured configuration source byte count.
+        source_byte_len: u32,
+        /// Faults omitted whole because exact operands exceed the shared budget.
+        omitted_faults: u32,
+        /// Whether any retained native message was clipped to that budget.
+        evidence_truncated: bool,
+        /// Bounded unsupported options and independent native parser refusal.
+        faults: Box<[PythonProjectConfigurationFault]>,
     },
     /// Pyrefly solved different bytes from the selected package source.
     #[error("pyrefly source digest for {path:?}: expected {expected}, observed {observed}")]

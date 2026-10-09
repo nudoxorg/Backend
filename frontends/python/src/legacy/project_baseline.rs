@@ -46,17 +46,15 @@ impl CapturedBaselines {
             // State. It reads only an already captured configuration here.
             let (config, errors) = ConfigFile::from_file(configuration);
             if !errors.is_empty() {
-                return Err(project_error(
-                    &configuration.to_string_lossy(),
-                    &format!(
-                        "native captured configuration errors: {}",
-                        errors
-                            .iter()
-                            .map(|error| error.get_message())
-                            .collect::<Vec<_>>()
-                            .join("; ")
-                    ),
-                ));
+                let relative = configuration
+                    .strip_prefix(layout.source_root())
+                    .map_err(|_| project_error("", "native config is outside the captured mirror"))?;
+                return Err(super::super::project_configuration::configuration_error(
+                    configuration,
+                    &original.join(relative),
+                    &errors,
+                    control,
+                )?);
             }
             let Some(mut path) = config.baseline else {
                 continue;
@@ -637,14 +635,7 @@ mod tests {
         std::fs::write(&config, "search-path = [\n")?;
         let (_, errors) = ConfigFile::from_file(&config);
         assert!(!errors.is_empty());
-        let expected = format!(
-            "native captured configuration errors: {}",
-            errors
-                .iter()
-                .map(|error| error.get_message())
-                .collect::<Vec<_>>()
-                .join("; ")
-        );
+
         match CapturedBaselines::capture(
             &layout,
             &original.path,
@@ -652,9 +643,29 @@ mod tests {
             &mut Vec::new(),
             control(&cancelled),
         ) {
-            Err(CheckerError::ProjectReport { path, message }) => {
-                assert_eq!(path, config);
-                assert_eq!(message, expected);
+            Err(CheckerError::ProjectConfiguration {
+                path,
+                source_identity,
+                source_byte_len,
+                omitted_faults,
+                faults,
+                ..
+            }) => {
+                assert_eq!(path, original.path.join("pyrefly.toml"));
+                let exact = b"search-path = [\n";
+                assert_eq!(
+                    source_identity,
+                    *backend_semantic::ir::SourceIdentity::from_bytes(exact)
+                        .unwrap()
+                        .identity
+                );
+                assert_eq!(source_byte_len as usize, exact.len());
+                assert_eq!(omitted_faults, 0);
+                assert!(faults.iter().any(|fault| matches!(fault,
+                        super::super::super::project_configuration::PythonProjectConfigurationFault::InvalidNativeConfiguration { message, span: Some(_) }
+                        if !message.is_empty()
+                    )));
+                assert_eq!(std::fs::read(&config)?, exact);
             }
             other => panic!("expected exact native configuration error, got {other:?}"),
         }

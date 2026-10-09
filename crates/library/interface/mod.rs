@@ -43,10 +43,10 @@ pub use compiler::{
     NativePrimaryCause, NativeWorkCause, NativeWorkCleanupCause, NativeWorkPhase, NativeWorker,
     NativeWorkerPanic, NativeWorkerPanicClass, NativeWorkerPanicMessage, NestedCompilerFaultFacts,
     OccurrenceFaultFacts, PrepareFaultKind, PublicationAuthority, PublicationCause,
-    PublicationPhase, PythonAuthorityFailureKind, SemanticDataFaultFacts, SemanticImageAccessError,
-    SemanticImageAuthority, SemanticImageSnapshot, SignatureCarrierFaultFacts, SourceAuthority,
-    TypeNodeFaultFacts, UnavailableCompiler, ValidateFaultKind, ValidationFaultFacts,
-    WriteFaultKind,
+    PublicationPhase, PythonAuthorityFailureKind, PythonConfigurationRefusalFacts,
+    SemanticDataFaultFacts, SemanticImageAccessError, SemanticImageAuthority,
+    SemanticImageSnapshot, SignatureCarrierFaultFacts, SourceAuthority, TypeNodeFaultFacts,
+    UnavailableCompiler, ValidateFaultKind, ValidationFaultFacts, WriteFaultKind,
 };
 pub use compiler_typescript::TypeScriptAuthorityFailureKind;
 pub use compiler_go::GoAuthorityFailureKind;
