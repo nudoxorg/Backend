@@ -15,6 +15,32 @@ use backend_library::{
 const PROJECT: &str = "/abs/polyglot";
 const DECLARATION: &str = "/abs/polyglot::src/lib.rs:2::ferris";
 
+#[test]
+fn durable_index_grammars_keep_exact_keys_and_reject_mixed_progress_identities() {
+    let key = backend_library::IndexOperationKey::from_bytes([0x51; 32]).expect("key");
+    let mut start = Invocation::new(grammar_for("index_start").expect("start grammar"));
+    start.push(PROJECT);
+    start.set("operation-key", key.to_hex());
+    assert!(
+        matches!(lower(&start, PROJECT).expect("keyed start"), Request::Surface(command)
+        if matches!(*command, backend_library::SurfaceCommand::IndexOperationStart { operation_key, .. } if operation_key == key))
+    );
+    let mut status = Invocation::new(grammar_for("index_progress").expect("progress grammar"));
+    status.set("operation-key", key.to_hex());
+    status.check().expect("key without ticket");
+    assert!(
+        matches!(lower(&status, PROJECT).expect("keyed read"), Request::Surface(command)
+        if matches!(*command, backend_library::SurfaceCommand::IndexOperationStatus { operation_key } if operation_key == key))
+    );
+    status.set("after-sequence", "0");
+    assert!(lower(&status, PROJECT).is_err());
+    for invalid in ["00".repeat(32), "FF".repeat(32), "51".repeat(31)] {
+        let mut input = Invocation::new(grammar_for("index_progress").expect("grammar"));
+        input.set("operation-key", invalid);
+        assert!(lower(&input, PROJECT).is_err());
+    }
+}
+
 fn basis() -> backend_library::Basis {
     backend_library::Basis::new(view_state_root(&[]), backend_library::object_version(&[]))
 }

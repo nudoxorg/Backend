@@ -18,12 +18,12 @@ use backend_present::{Engine, Fault, Probe, Request};
 pub use backend_present::Answer;
 
 /// One connected local daemon session, seen as the shared driver's engine.
-pub struct SessionEngine<'a>(&'a mut Session);
+pub struct SessionEngine<'a>(&'a mut Session, Option<&'a backend_runtime::WorkspacePaths>);
 
 impl<'a> SessionEngine<'a> {
     /// Borrows one connected session as an engine.
     pub const fn new(session: &'a mut Session) -> Self {
-        Self(session)
+        Self(session, None)
     }
 }
 
@@ -76,7 +76,30 @@ impl Engine for SessionEngine<'_> {
     }
 
     fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
-        self.0.surface(command)
+        match self.1 {
+            Some(paths) => backend_client::surface_with_index_journal(paths, command, |command| {
+                self.0.surface(command)
+            }),
+            None => self.0.surface(command),
+        }
+    }
+
+    fn index(
+        &mut self,
+        package: backend_library::PackageReference,
+        execution_intent: backend_library::CompileExecutionIntent,
+    ) -> Result<SurfaceReply, ClientError> {
+        match self.1 {
+            Some(paths) => {
+                backend_client::index_with_journal(paths, package, execution_intent, |command| {
+                    self.0.surface(command)
+                })
+            }
+            None => self.0.surface(SurfaceCommand::IndexStart {
+                package,
+                execution_intent,
+            }),
+        }
     }
 }
 
@@ -88,6 +111,19 @@ impl Engine for SessionEngine<'_> {
 /// operand the caller supplied already attached.
 pub fn execute(session: &mut Session, request: &Request) -> Result<Answer, Fault> {
     backend_present::answer(&mut SessionEngine::new(session), request)
+}
+
+/// Executes against the frozen runtime attachment, retaining default index
+/// claims across command exits, interrupted delivery and owner restarts.
+///
+/// # Errors
+/// Returns the typed owner, journal or transport fault.
+pub fn execute_in_workspace(
+    session: &mut Session,
+    request: &Request,
+    paths: &backend_runtime::WorkspacePaths,
+) -> Result<Answer, Fault> {
+    backend_present::answer(&mut SessionEngine(session, Some(paths)), request)
 }
 
 /// Returns the exact revision an answer was read at, for a caption.

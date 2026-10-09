@@ -206,6 +206,17 @@ const fn surface_is_repeatable(command: &SurfaceCommand) -> Repeatable {
 }
 
 impl<E: Endpoint> Engine for Reconnecting<E> {
+    fn index(
+        &mut self,
+        package: backend_library::PackageReference,
+        execution_intent: backend_library::CompileExecutionIntent,
+    ) -> Result<SurfaceReply, ClientError> {
+        // The journal owns reconciliation on the next explicit invocation;
+        // a disconnected mutation never submits an automatic replacement.
+        self.attempt(Repeatable::No, |product| {
+            product.index(package.clone(), execution_intent)
+        })
+    }
     fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
         self.attempt(Repeatable::Yes, Engine::revision)
     }

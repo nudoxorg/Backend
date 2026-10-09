@@ -569,18 +569,27 @@ pub fn decode_index_job_ticket(value: &serde_json::Value) -> Result<IndexJobTick
     use serde::Deserialize as _;
     let decode = match value {
         serde_json::Value::Object(_) => IndexJobTicket::deserialize(value),
-        serde_json::Value::String(encoded) if encoded.len() <= backend_library::MAX_COMMAND_TEXT => {
+        serde_json::Value::String(encoded)
+            if encoded.len() <= backend_library::MAX_COMMAND_TEXT =>
+        {
             serde_json::from_str(encoded)
         }
-        _ => return Err(index_ticket_usage("expected an object or its JSON string within the argument byte bound")),
+        _ => {
+            return Err(index_ticket_usage(
+                "expected an object or its JSON string within the argument byte bound",
+            ));
+        }
     };
     decode.map_err(|error| index_ticket_usage(&error.to_string()))
 }
 
 fn index_ticket_usage(detail: &str) -> Fault {
-    Fault::usage("ticket", format!(
-        "pass the exact ticket returned by index_start as an object or its JSON string; keep id, owner_epoch and package unchanged: {detail}"
-    ))
+    Fault::usage(
+        "ticket",
+        format!(
+            "pass the exact ticket returned by index_start as an object or its JSON string; keep id, owner_epoch and package unchanged: {detail}"
+        ),
+    )
 }
 
 fn progress_sequence(invocation: &Invocation) -> Result<u64, Fault> {
@@ -765,6 +774,18 @@ fn surface(
             limit: limit(invocation)?,
             cursor: optional_index_search_cursor(invocation)?,
         },
+        CommandId::IndexStart if invocation.option("operation-key").is_some() => {
+            SurfaceCommand::IndexOperationStart {
+                operation_key: backend_library::IndexOperationKey::parse_hex(
+                    invocation.option("operation-key").unwrap_or_default(),
+                )
+                .map_err(|error| {
+                    Fault::admission(error, Operand::Argument("operation-key".to_owned()))
+                })?,
+                package: package(invocation, 0)?,
+                execution_intent: compile_execution_intent(invocation)?,
+            }
+        }
         CommandId::IndexStart => SurfaceCommand::IndexStart {
             package: package(invocation, 0)?,
             execution_intent: compile_execution_intent(invocation)?,
@@ -772,6 +793,20 @@ fn surface(
         CommandId::IndexAwait => SurfaceCommand::IndexAwait {
             ticket: index_job_ticket(invocation, 0)?,
         },
+        CommandId::IndexProgress if invocation.option("operation-key").is_some() => {
+            if invocation.at(0).is_some() || invocation.option("after-sequence").is_some() {
+                return Err(Fault::usage(
+                    "operation-key",
+                    "use either an operation key or a ticket with its progress sequence",
+                ));
+            }
+            let key = invocation.option("operation-key").unwrap_or_default();
+            SurfaceCommand::IndexOperationStatus {
+                operation_key: backend_library::IndexOperationKey::parse_hex(key).map_err(
+                    |error| Fault::admission(error, Operand::Argument("operation-key".to_owned())),
+                )?,
+            }
+        }
         CommandId::IndexProgress => SurfaceCommand::IndexProgress {
             ticket: index_job_ticket(invocation, 0)?,
             after_sequence: progress_sequence(invocation)?,

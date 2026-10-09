@@ -16,6 +16,8 @@ test-support = []
 [dependencies]
 backend-engine = { path = "../engine" }
 backend-library = { path = "../library" }
+backend-platform = { path = "../platform" }
+backend-runtime = { path = "../runtime" }
 backend-semantic = { path = "../semantic" }
 backend-replication = { path = "../replication" }
 base64.workspace = true
@@ -23,6 +25,7 @@ blake3.workspace = true
 flate2.workspace = true
 hashlink = "=0.12.2"
 serde_json.workspace = true
+serde.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "time"] }
 
 [lints]

@@ -434,9 +434,30 @@ impl Fault {
         partial: &backend_library::IndexJobPartialPublication,
         operand: Operand,
     ) -> Self {
+        let mut fault = Self::partial_publication_facts(
+            &partial.package,
+            &partial.receipt,
+            &partial.source_capture.profiles,
+            &partial.refused_profiles,
+            operand,
+        );
+        fault.partial_publication = Some(partial.clone());
+        fault
+    }
+
+    /// Projects only facts retained by an admitted partial result. Durable
+    /// operations retain their source receipt in the product response; they
+    /// do not carry the legacy producer namespace or source request identity.
+    pub(crate) fn partial_publication_facts(
+        package: &backend_library::PackageReference,
+        receipt: &backend_library::IndexOperationPublicationReceipt,
+        profiles: &[backend_library::IndexOperationSourceProfile],
+        refused_profiles: &[backend_library::IndexOperationProfileRefusal],
+        operand: Operand,
+    ) -> Self {
         use backend_library::IndexOperationSemanticProfileState as State;
         let mut facts = Vec::new();
-        for profile in partial.source_capture.profiles.iter() {
+        for profile in profiles {
             let language = profile.profile.name().unwrap_or("unknown profile");
             match profile.state {
                 State::Published { coverage, .. } => facts.push(format!(
@@ -449,8 +470,7 @@ impl Fault {
                     } else {
                         ""
                     };
-                    let detail = partial
-                        .refused_profiles
+                    let detail = refused_profiles
                         .iter()
                         .find(|refusal| refusal.profile == profile.profile)
                         .and_then(|refusal| refusal.compiler_failure.as_ref())
@@ -468,22 +488,20 @@ impl Fault {
                 }
             }
         }
-        let mut fault = Self::new(
+        Self::new(
             FaultSlug::PartiallyPublished,
             operand,
             Cause::new(
                 CauseSlug::Refused,
                 format!(
                     "Partially published {} at workspace sequence {}. {}. Source and published language profiles are available; refused profiles do not have current semantic coverage",
-                    partial.package.as_str(),
-                    partial.receipt.workspace_sequence(),
+                    package.as_str(),
+                    receipt.workspace_sequence(),
                     facts.join("; "),
                 ),
             ),
             Affordance::None,
-        );
-        fault.partial_publication = Some(partial.clone());
-        fault
+        )
     }
 
     /// Returns a fault with a different affordance, keeping its identity.

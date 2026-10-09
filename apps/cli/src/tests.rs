@@ -1011,6 +1011,186 @@ fn an_admitted_dependency_refusal_keeps_json_evidence_and_a_nonzero_exit() {
 }
 
 #[test]
+fn admitted_durable_partial_matches_ticket_fault_and_cli_exit_without_inventing_source_facts() {
+    use backend_library::{
+        CompileExecutionIntent, IndexJobOutcome, IndexJobPartialPublication, IndexJobTerminal,
+        IndexJobTicket, IndexOperationFailureReason, IndexOperationKey, IndexOperationObservation,
+        IndexOperationProfileRefusal, IndexOperationPublicationReceipt,
+        IndexOperationSemanticCoverage, IndexOperationSemanticProfileState,
+        IndexOperationSemanticUnavailableReason, IndexOperationSourceCaptureReceipt,
+        IndexOperationSourceProfile, IndexOperationState, IndexOperationStatus,
+        IndexSourceCaptureSummary, PackageReference, ProductText, SemanticLanguageProfile,
+        SurfaceReply,
+    };
+    // These are admitted serialization fixtures, not compiler authority.
+    let package = PackageReference::parse("/abs/mixed-docs").expect("package");
+    let key = IndexOperationKey::from_bytes([0x41; 32]).expect("operation key");
+    let py = SemanticLanguageProfile::from_name("python").expect("Python");
+    let ts = SemanticLanguageProfile::from_name("typescript").expect("TypeScript");
+    let mut profiles = vec![
+        IndexOperationSourceProfile {
+            profile: py,
+            source_version: [4; 32],
+            input_digest: [5; 32],
+            observation_sequence: 2,
+            source_count: 236,
+            state: IndexOperationSemanticProfileState::Published {
+                generation: [6; 32],
+                coverage: IndexOperationSemanticCoverage::Complete,
+            },
+        },
+        IndexOperationSourceProfile {
+            profile: ts,
+            source_version: [4; 32],
+            input_digest: [7; 32],
+            observation_sequence: 3,
+            source_count: 626,
+            state: IndexOperationSemanticProfileState::Unavailable {
+                reason: IndexOperationSemanticUnavailableReason::Rejected,
+            },
+        },
+    ];
+    profiles.sort_by_key(|profile| profile.profile);
+    let view = root();
+    let partial = IndexJobPartialPublication {
+        package: package.clone(),
+        receipt: IndexOperationPublicationReceipt::from_published_view(
+            Some([8; 32]),
+            [9; 32],
+            [10; 32],
+            3,
+            &view,
+            backend_library::Cursor::for_view_root(&view),
+        )
+        .expect("receipt"),
+        source_capture: IndexSourceCaptureSummary {
+            producer_package: PackageReference::parse("pkg:cargo/producer@1.0.0")
+                .expect("producer"),
+            request_identity: [1; 32],
+            commit_identity: [2; 32],
+            workspace_root: [3; 32],
+            workspace_sequence: 2,
+            profiles: profiles.into_boxed_slice(),
+        },
+        refused_profiles: vec![IndexOperationProfileRefusal {
+            profile: ts,
+            reason: IndexOperationSemanticUnavailableReason::Rejected,
+            compiler_failure: None,
+        }]
+        .into_boxed_slice(),
+    };
+    let ticket = IndexJobTicket::new(std::num::NonZeroU64::MIN, [11; 16], package.clone());
+    let capture = IndexOperationSourceCaptureReceipt::from_checked_parts(
+        key,
+        partial.source_capture.commit_identity,
+        partial.source_capture.workspace_root,
+        partial.source_capture.workspace_sequence,
+        partial.source_capture.profiles.clone(),
+    )
+    .expect("capture");
+    let status = IndexOperationStatus::new(
+        key,
+        package.clone(),
+        CompileExecutionIntent::Interactive,
+        IndexOperationState::PartiallyPublished {
+            receipt: partial.receipt.clone(),
+            refused_profiles: partial.refused_profiles.clone(),
+        },
+    )
+    .with_source_capture(Some(capture));
+    let operation = IndexOperationObservation::Known(status.clone());
+    let cases = [
+        (
+            SurfaceCommand::IndexAwait {
+                ticket: ticket.clone(),
+            },
+            SurfaceReply::IndexTerminal(IndexJobTerminal {
+                ticket,
+                outcome: IndexJobOutcome::PartiallyPublished(partial.clone()),
+            }),
+        ),
+        (
+            SurfaceCommand::IndexOperationStatus { operation_key: key },
+            SurfaceReply::IndexOperationStatus(operation.clone()),
+        ),
+    ];
+    let mut causes = Vec::new();
+    for (command, reply) in cases {
+        let request = CommandDto::new(901, Command::Surface(command.clone()));
+        let bytes = serde_json::to_vec(&ReplyDto::new(901, CommandReply::Surface(reply)))
+            .expect("wire encoding");
+        let decoded = backend_library::decode_reply_body(&bytes).expect("actual wire decode");
+        backend_library::admit_reply(&request, &decoded).expect("actual request-bound admission");
+        let CommandReply::Surface(reply) = decoded.reply else {
+            panic!("surface reply")
+        };
+        let answer = Answer::Product(Box::new(backend_present::product_view_for_command(
+            &command, &reply,
+        )));
+        assert_eq!(
+            render::answer_exit_code(&answer),
+            ExitCode::from(render::EXIT_REFUSED)
+        );
+        let fault = answer.fault().expect("partial is a fault");
+        assert_eq!(fault.slug(), FaultSlug::PartiallyPublished);
+        causes.push(fault.cause().sentence().to_owned());
+        let json: serde_json::Value = serde_json::from_str(&render::json(&answer)).expect("JSON");
+        assert_eq!(json["fault"]["slug"], "partially-published");
+        assert!(
+            render::answer(&answer, &plain())
+                .contains("refused profiles do not have current semantic coverage")
+        );
+        if matches!(command, SurfaceCommand::IndexOperationStatus { .. }) {
+            assert_eq!(
+                json["index_operation"],
+                serde_json::to_value(&operation).expect("operation")
+            );
+            assert!(
+                json["fault"]["partial_publication"].is_null(),
+                "no fabricated legacy source summary"
+            );
+            assert_eq!(
+                json["index_operation"]["detail"]["source_capture"],
+                serde_json::to_value(&status.source_capture).expect("exact capture")
+            );
+        } else {
+            assert_eq!(
+                json["fault"]["partial_publication"],
+                serde_json::to_value(&partial).expect("legacy receipt")
+            );
+        }
+    }
+    assert_eq!(
+        causes[0], causes[1],
+        "same exact profile facts imply the same refusal guidance"
+    );
+    for state in [
+        IndexOperationState::Accepted,
+        IndexOperationState::Failed {
+            reason: IndexOperationFailureReason::Cancelled,
+            detail: ProductText::from_static("cancelled before commit"),
+            compiler_failure: None,
+        },
+    ] {
+        let command = SurfaceCommand::IndexOperationStatus { operation_key: key };
+        let reply = SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(
+            IndexOperationStatus::new(
+                key,
+                package.clone(),
+                CompileExecutionIntent::Interactive,
+                state,
+            ),
+        ));
+        backend_library::admit_surface_reply(&command, &reply).expect("admitted nonfault state");
+        let answer = Answer::Product(Box::new(backend_present::product_view_for_command(
+            &command, &reply,
+        )));
+        assert!(answer.fault().is_none());
+        assert_eq!(render::answer_exit_code(&answer), ExitCode::SUCCESS);
+    }
+}
+
+#[test]
 fn a_rendered_fault_carries_the_operand_and_the_next_command() {
     let fault = Fault::from_command_failure(
         &backend_library::CommandFailure::NotFound,
