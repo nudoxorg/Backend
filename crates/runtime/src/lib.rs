@@ -297,12 +297,24 @@ impl ApplicationStateRoot {
 }
 
 fn initialize_default_state(state: &ApplicationStateRoot, data: &Path) -> std::io::Result<()> {
-    let application = backend_platform::OwnedWorkspaceDirectory::under_user_data(
+    let application = backend_platform::OwnedWorkspaceDirectory::under_user_data_application(
         &state.anchor,
         state.suffix,
         APPLICATION_DIRECTORY,
     )?;
-    let projects = application.child(PROJECTS_DIRECTORY)?;
+    // These paths are the captured default application layout, never an
+    // explicit workspace or conventional OS data directory. Keep the pinned
+    // parent fences while repairing only each exact owned child.
+    let repair_child = |parent: &backend_platform::OwnedWorkspaceDirectory, name: &str| {
+        parent.verify_path()?;
+        let path = parent.path().join(name);
+        backend_platform::durable::ensure_private_application_directory(&path).map_err(
+            |error| std::io::Error::new(error.kind(), format!("{}: {error}", path.display())),
+        )?;
+        parent.verify_path()?;
+        parent.child(name)
+    };
+    let projects = repair_child(&application, PROJECTS_DIRECTORY)?;
     let name = data
         .file_name()
         .and_then(|name| name.to_str())
@@ -318,7 +330,7 @@ fn initialize_default_state(state: &ApplicationStateRoot, data: &Path) -> std::i
             "default project state is outside the captured application directory",
         ));
     }
-    projects.child(name)?.verify_path()
+    repair_child(&projects, name)?.verify_path()
 }
 /// Selects the repository boundary from any descendant directory. A Git root
 /// wins over nested package manifests so CLI, MCP, and desktop sessions share
@@ -1776,6 +1788,116 @@ mod tests {
                     fs::remove_dir_all(&root).unwrap();
                 }
             }
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn legacy_default_home_app_and_project_modes_recover_on_cold_reopen() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        for suffix in [
+            &["Library", "Application Support"][..],
+            &[".local", "state"][..],
+        ] {
+            let home = test_directory("legacy-default-home");
+            fs::create_dir(&home).unwrap();
+            fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).unwrap();
+            let state = ApplicationStateRoot::new(home.clone(), suffix);
+            let data = normalize_identity(&default_workspace_path(
+                &home.join("project"),
+                &state.path(),
+            ));
+            let paths = WorkspacePaths {
+                project: home.join("project"),
+                data: data.clone(),
+                private_application_root: Some(state.clone()),
+                endpoint: default_endpoint(&data),
+                authority_secret: data.join(AUTHORITY_FILE),
+            };
+            paths
+                .initialize()
+                .expect("empty HOME creates private default state");
+            let credential = fs::read(paths.authority_secret()).unwrap();
+            let credential_inode = fs::metadata(paths.authority_secret()).unwrap().ino();
+            let endpoint = paths.endpoint().to_path_buf();
+            let application = state.path().join(APPLICATION_DIRECTORY);
+            let projects = application.join(PROJECTS_DIRECTORY);
+            fs::write(data.join("kept-index"), b"historical index bytes").unwrap();
+            let unrelated = projects.join("reader-state");
+            fs::create_dir(&unrelated).unwrap();
+            fs::set_permissions(&unrelated, fs::Permissions::from_mode(0o755)).unwrap();
+            for path in [&application, &projects, &data] {
+                fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            for _ in 0..2 {
+                paths
+                    .initialize()
+                    .expect("cold reopen repairs only captured application state");
+                for path in [&application, &projects, &data] {
+                    assert_eq!(fs::metadata(path).unwrap().mode() & 0o777, 0o700);
+                }
+                assert_eq!(fs::read(paths.authority_secret()).unwrap(), credential);
+                assert_eq!(
+                    fs::metadata(paths.authority_secret()).unwrap().ino(),
+                    credential_inode
+                );
+                assert_eq!(paths.endpoint(), endpoint);
+                assert_eq!(
+                    fs::read(data.join("kept-index")).unwrap(),
+                    b"historical index bytes"
+                );
+                assert_eq!(fs::metadata(&unrelated).unwrap().mode() & 0o777, 0o755);
+                assert_eq!(fs::metadata(&home).unwrap().mode() & 0o777, 0o755);
+            }
+            fs::remove_dir_all(home).unwrap();
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn default_owned_repair_refuses_links_and_foreign_application_children() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink};
+        for component in 0..3 {
+            let home = test_directory("default-owned-link");
+            fs::create_dir(&home).unwrap();
+            fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).unwrap();
+            let state = ApplicationStateRoot::new(home.clone(), &[]);
+            let data = normalize_identity(&default_workspace_path(
+                &home.join("project"),
+                &state.path(),
+            ));
+            initialize_default_state(&state, &data).unwrap();
+            let app = home.join(APPLICATION_DIRECTORY);
+            let projects = app.join(PROJECTS_DIRECTORY);
+            let blocked = [&app, &projects, &data][component].to_path_buf();
+            let target = home.join("outside");
+            fs::rename(&blocked, &target).unwrap();
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::write(target.join("kept"), b"outside bytes").unwrap();
+            symlink(&target, &blocked).unwrap();
+            assert!(initialize_default_state(&state, &data).is_err());
+            assert_eq!(fs::metadata(&target).unwrap().mode() & 0o777, 0o755);
+            assert_eq!(fs::read(target.join("kept")).unwrap(), b"outside bytes");
+            fs::remove_dir_all(home).unwrap();
+        }
+        if rustix::process::geteuid().is_root() {
+            let home = test_directory("default-owned-foreign");
+            fs::create_dir(&home).unwrap();
+            fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).unwrap();
+            let state = ApplicationStateRoot::new(home.clone(), &[]);
+            let data = normalize_identity(&default_workspace_path(
+                &home.join("project"),
+                &state.path(),
+            ));
+            let app = home.join(APPLICATION_DIRECTORY);
+            fs::create_dir(&app).unwrap();
+            fs::set_permissions(&app, fs::Permissions::from_mode(0o755)).unwrap();
+            rustix::fs::chown(&app, Some(rustix::fs::Uid::from_raw(1)), None)
+                .expect("foreign-owner fixture");
+            assert!(initialize_default_state(&state, &data).is_err());
+            assert_eq!(fs::metadata(&app).unwrap().mode() & 0o777, 0o755);
+            assert!(!data.exists());
+            fs::remove_dir_all(home).unwrap();
         }
     }
 
