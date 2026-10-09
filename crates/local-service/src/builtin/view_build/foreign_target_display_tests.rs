@@ -10,14 +10,15 @@ use backend_engine::{Row, RowId, SourceAvailability, SourceExcerpt};
 use backend_semantic::ir::{
     BorrowedTree, Confidence, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts, EntityId,
     EntityVersion, ExternalDeclarationIdentity, ExternalId, ExternalTarget, ExternalTargetIdentity,
-    FactAvailability, ForeignDeclarationId, ForeignExternalTarget, ForeignTargetOrigin, IrBuilder,
-    ItemKind, LinkKind, LinkTarget, OccurrenceAuthorityFacts, ParentageAuthority,
-    SemanticCoreReader as _, SemanticImageView, SemanticReader as _, SourceIdentity, TreeEntityId,
-    TreeItemInput, TreeLinkInput, TreeLinkTarget, VariantAvailability, VariantFingerprint,
-    Visibility, encode_full_semantic_image, full_semantic_image_len,
+    FactAvailability, ForeignDeclarationId, ForeignExternalTarget, ForeignTargetOrigin,
+    ImageProvenance, IrBuilder, ItemKind, LinkKind, LinkTarget, OccurrenceAuthorityFacts,
+    ParentageAuthority, SemanticCoreReader as _, SemanticImageView, SemanticReader as _,
+    SourceIdentity, TreeEntityId, TreeItemInput, TreeLinkInput, TreeLinkTarget,
+    VariantAvailability, VariantFingerprint, Visibility, encode_full_semantic_image,
+    full_semantic_image_len,
 };
 use backend_semantic::vocabulary::{
-    CompileRecipeFact, LanguageProfile, NativeTool, PackageUrl, PythonVersion, RustEdition, Stage,
+    CompileRecipeFact, LanguageProfile, NativeTool, PackageUrl, RustEdition, Stage,
 };
 use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
 use std::collections::BTreeSet;
@@ -48,6 +49,17 @@ fn assert_foreign_source_refusal(row: &Row) {
 #[test]
 fn retained_httpie_environment_ten_outgoing_foreign_names_keep_original_native_keys() {
     let image = SemanticImageView::reopen(HTTP_IMAGE).expect("retained original native image");
+    let (source, profile) = match image.image_facts().provenance {
+        ImageProvenance::Captured { source, recipe, .. } => Some((source, recipe.profile)),
+        ImageProvenance::Unavailable => None,
+    }
+    .expect("retained source provenance");
+    assert!(matches!(profile, LanguageProfile::Python(_)));
+    assert_eq!(
+        source.identity,
+        ContentId::<SourceFactDomain>::from_canonical_bytes(HTTP_SOURCE)
+    );
+    assert_eq!(source.byte_len as usize, HTTP_SOURCE.len());
     let session = DocumentationSession::new(&image);
     let environment = session
         .entity(EntityId::new(71))
@@ -76,7 +88,7 @@ fn retained_httpie_environment_ten_outgoing_foreign_names_keep_original_native_k
         &image,
         digest,
         &project,
-        LanguageProfile::Python(PythonVersion::Python314),
+        profile,
         base.basis(),
         false,
         "httpie/context.py",
