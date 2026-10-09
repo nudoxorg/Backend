@@ -141,6 +141,13 @@ def command_links(managed_root: Path) -> dict[str, str]:
     }
     return {name: str(managed_root / "current" / "bin" / binary) for name, binary in binaries.items()}
 
+def _validate_install_directory(path):
+    metadata = path.lstat()
+    if (not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o022):
+        raise InstallError("managed install directory is not a real private owned directory: " + str(path))
+
+
 def _file_identity(value):
     return (value.st_dev, value.st_ino, value.st_size, value.st_uid, value.st_nlink,
             value.st_mode, value.st_mtime_ns, value.st_ctime_ns)
@@ -222,6 +229,7 @@ def check_checkpoint_update(current, incoming, allow_downgrade=False):
 @contextmanager
 def _install_lease(managed_root):
     """Hold one owned inode from checkpoint admission through publication."""
+    _validate_install_directory(managed_root)
     path = managed_root / ".install.lock"
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
     try:
@@ -242,16 +250,19 @@ def _install_lease(managed_root):
 def install(prefix: Path, entry: dict, manifest: dict, archive: Path, *, allow_downgrade: bool = False) -> None:
     os.umask(0o077)
     prefix.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _validate_install_directory(prefix)
     lib_dir = prefix / "lib"
     if lib_dir.is_symlink():
         raise InstallError(f"managed install parent must not be a symlink: {lib_dir}")
     lib_dir.mkdir(mode=0o700, exist_ok=True)
+    _validate_install_directory(lib_dir)
     if not lib_dir.is_dir():
         raise InstallError(f"managed install parent is not a directory: {lib_dir}")
     managed_root = prefix / "lib" / "nudox"
     if managed_root.is_symlink():
         raise InstallError(f"managed install root must not be a symlink: {managed_root}")
     managed_root.mkdir(mode=0o700, exist_ok=True)
+    _validate_install_directory(managed_root)
     if not managed_root.is_dir():
         raise InstallError("managed install root is not a directory")
     with _install_lease(managed_root):

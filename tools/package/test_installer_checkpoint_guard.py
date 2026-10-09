@@ -23,6 +23,18 @@ def marker(platform, date="20261009", source="a" * 40):
 
 
 class GuardTests(unittest.TestCase):
+    def test_existing_shared_install_parents_are_rejected_without_chmod(self):
+        for module in (mac, linux):
+            for relative in ("", "lib", "lib/nudox"):
+                with self.subTest(platform=module.PLATFORM, relative=relative), tempfile.TemporaryDirectory() as temporary:
+                    prefix = Path(temporary).resolve() / "prefix"
+                    (prefix / "lib/nudox").mkdir(parents=True, mode=0o700)
+                    directory = prefix / relative; directory.chmod(0o775)
+                    with self.assertRaisesRegex(module.InstallError, "private owned directory"):
+                        module.install(prefix, {}, {}, prefix / "not-downloaded.tar.gz")
+                    self.assertEqual(directory.stat().st_mode & 0o777, 0o775)
+                    self.assertFalse((prefix / "lib/nudox/.install.lock").exists())
+
     def test_unknown_malformed_and_shared_active_markers_cannot_be_overridden(self):
         for module in (mac, linux):
             for failure in ("unknown", "date", "source", "asset", "extra", "hardlink", "symlink", "writable", "oversize"):
