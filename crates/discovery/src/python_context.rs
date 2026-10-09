@@ -1,6 +1,6 @@
 //! Finite static Python source layout declarations, never packaging code execution.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
 use super::{DiscoveryError, DiscoveryPolicy, SourceSelectionScope};
@@ -194,7 +194,7 @@ impl PythonSourceContext {
 #[derive(Clone, Debug)]
 pub struct PythonSourceContextCapture {
     context: PythonSourceContext,
-    documents: Vec<(PathBuf, Vec<u8>)>,
+    documents: BTreeMap<PathBuf, Vec<u8>>,
     policy: DiscoveryPolicy,
 }
 
@@ -205,7 +205,7 @@ impl PythonSourceContextCapture {
         let policy = policy.source_scope(SourceSelectionScope::Generic);
         let directory = backend_platform::DirectoryCapability::open_read_only_source(root)
             .map_err(|error| context_error(root, &error.to_string()))?;
-        let mut documents = Vec::new();
+        let mut documents = BTreeMap::new();
         let mut total = 0usize;
         for entry in policy.clone().walk(root) {
             let entry = entry?;
@@ -227,7 +227,7 @@ impl PythonSourceContextCapture {
                     "Python source context exceeds aggregate input bounds",
                 ));
             }
-            documents.push((relative.to_owned(), bytes));
+            documents.insert(relative.to_owned(), bytes);
         }
         directory
             .verify_path(root)
@@ -337,6 +337,67 @@ fn context_error(path: &Path, detail: &str) -> DiscoveryError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_validation_is_order_independent_and_retains_exact_document_fences() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "nudox-python-context-order-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join("nested")).expect("root");
+        for (path, bytes) in [
+            ("pyproject.toml", "[tool.pyrefly]\nsearch-path = ['src']\n"),
+            ("nested/pyrefly.toml", "search-path = ['src']\n"),
+            ("nested/.pyrefly.toml", "search-path = ['package']\n"),
+        ] {
+            std::fs::write(root.join(path), bytes).expect("document");
+        }
+        let mut captured = PythonSourceContextCapture::capture(&root, DiscoveryPolicy::default())
+            .expect("capture");
+        let original = captured.documents.clone();
+        captured.documents = captured.documents.into_iter().rev().collect();
+        assert_eq!(captured.documents, original);
+        captured
+            .validate_current(&root)
+            .expect("shuffled insertion");
+
+        let path = root.join("pyproject.toml");
+        let bytes = std::fs::read(&path).expect("original bytes");
+        std::fs::write(&path, b"[tool.pyrefly]\nsearch-path = ['other']\n").expect("changed bytes");
+        assert!(captured.validate_current(&root).is_err());
+        std::fs::write(&path, &bytes).expect("restore exact bytes");
+        captured.validate_current(&root).expect("restored bytes");
+
+        std::fs::write(root.join("pyrefly.toml"), b"search-path = ['new']\n")
+            .expect("new document");
+        assert!(captured.validate_current(&root).is_err());
+        std::fs::remove_file(root.join("pyrefly.toml")).expect("remove new document");
+        std::fs::remove_file(&path).expect("remove original document");
+        assert!(captured.validate_current(&root).is_err());
+        std::fs::write(&path, &bytes).expect("restore document");
+
+        #[cfg(unix)]
+        {
+            std::fs::write(root.join("document.txt"), &bytes).expect("link target");
+            std::fs::remove_file(&path).expect("remove ordinary document");
+            std::os::unix::fs::symlink(root.join("document.txt"), &path).expect("document symlink");
+            assert!(captured.validate_current(&root).is_err());
+            std::fs::remove_file(&path).expect("remove link");
+            std::fs::write(&path, &bytes).expect("restore ordinary document");
+        }
+        let oversized = vec![b' '; MAX_DOCUMENT_BYTES + 1];
+        std::fs::write(&path, oversized).expect("oversized document");
+        assert!(captured.validate_current(&root).is_err());
+        std::fs::write(&path, &bytes).expect("restore bounded document");
+        captured
+            .validate_current(&root)
+            .expect("complete original set");
+        std::fs::remove_dir_all(root).expect("cleanup own fixture");
+    }
 
     #[test]
     fn declared_roots_need_markers_for_generated_descendants() {
