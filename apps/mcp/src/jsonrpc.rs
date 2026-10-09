@@ -44,6 +44,7 @@ use std::io::{self, BufRead, Write};
 
 mod codec;
 mod cursor_authority;
+pub(super) use codec::{ResponseTransport, encode_response, finalize_response};
 pub(super) use cursor_authority::CursorAuthority;
 mod reconnect;
 mod resources;
@@ -374,11 +375,9 @@ impl<P: Product> Server<P> {
         }
     }
 
+    /// Dispatches the semantic reply; the selected transport owns encoding
+    /// and admission of the complete envelope immediately before emission.
     pub(super) fn handle(&mut self, input: &[u8]) -> Option<Value> {
-        self.handle_inner(input).map(bound_rpc_reply)
-    }
-
-    fn handle_inner(&mut self, input: &[u8]) -> Option<Value> {
         let value: Value = match serde_json::from_slice(input) {
             Ok(value) => value,
             Err(error) => {
@@ -1289,20 +1288,20 @@ fn refused(fault: &Fault) -> Value {
     )
 }
 
-/// Context-sized ceiling for one complete JSON-RPC line, including its ID,
-/// text block, typed projection, metadata, and trailing newline.
+/// Context-sized ceiling for one complete encoded JSON-RPC response, including
+/// its ID, text block, typed projection, metadata, and transport framing.
 const MCP_RESULT_BUDGET_BYTES: usize = DEFAULT_RESPONSE_BUDGET_BYTES;
 const PREVIEW_MARKER: &str = "\n\n… readable preview shortened to fit this response; structuredContent contains the complete page and any nextCursor.";
 
 fn serialized_bytes(value: &Value) -> usize {
-    serde_json::to_vec(value).map_or(MCP_RESULT_BUDGET_BYTES.saturating_add(1), |bytes| {
-        bytes.len()
-    })
+    let mut count = codec::ResponseByteCounter::default();
+    serde_json::to_writer(&mut count, value).map_or(usize::MAX, |()| count.bytes())
 }
 
-/// JSON-RPC stdio writes exactly one trailing newline after each response.
-fn framed_serialized_bytes(value: &Value) -> usize {
-    serialized_bytes(value).saturating_add(1)
+fn transport_serialized_bytes(value: &Value, transport: ResponseTransport) -> usize {
+    transport
+        .encoded_len(serialized_bytes(value))
+        .unwrap_or(usize::MAX)
 }
 
 fn bound_route_value(value: Value) -> Result<Value, RpcError> {
@@ -1316,42 +1315,56 @@ fn bound_route_value(value: Value) -> Result<Value, RpcError> {
     })))
 }
 
-fn bound_rpc_reply(value: Value) -> Value {
-    let value = attach_wire_budget(value);
-    let value = if framed_serialized_bytes(&value) > MCP_RESULT_BUDGET_BYTES {
-        fit_tool_preview(value)
+fn bound_rpc_reply(value: Value, transport: ResponseTransport) -> Value {
+    let budget = transport.limit_bytes();
+    let value = attach_wire_budget(value, transport);
+    let value = if transport_serialized_bytes(&value, transport) > budget {
+        fit_tool_preview(value, transport)
     } else {
         value
     };
-    let bytes = framed_serialized_bytes(&value);
-    if bytes <= MCP_RESULT_BUDGET_BYTES {
+    let bytes = transport_serialized_bytes(&value, transport);
+    if bytes <= budget {
         return value;
     }
     let id = value.get("id").cloned().unwrap_or(Value::Null);
-    let fault = oversized_fault(BudgetExceeded {
-        bytes,
-        budget: MCP_RESULT_BUDGET_BYTES,
-    });
-    let fallback = error_reply(
-        id.clone(),
-        -32000,
-        "MCP response exceeds the bounded context budget",
-        Some(json!({
-            "kind": fault.slug().as_str(),
-            "detail": bounded_text(&markdown::fault(&fault)),
-            "structuredContent": fault_value(&fault),
-        })),
-    );
-    if framed_serialized_bytes(&fallback) <= MCP_RESULT_BUDGET_BYTES {
-        fallback
-    } else {
+    // Retain an error's diagnosis when only its caller identity is too large.
+    // HTTP authentication failures enter this same encoding boundary.
+    if value.get("error").is_some() {
+        let mut uncorrelated = value.clone();
+        uncorrelated["id"] = Value::Null;
+        let uncorrelated = attach_wire_budget(uncorrelated, transport);
+        if transport_serialized_bytes(&uncorrelated, transport) <= budget {
+            return uncorrelated;
+        }
+    }
+    let fault = oversized_fault(BudgetExceeded { bytes, budget });
+    let fallback = attach_wire_budget(
         error_reply(
-            // A request ID is normally a scalar, but preserve the hard cap
-            // even if a caller supplied a very large valid JSON string.
-            Value::Null,
+            id.clone(),
             -32000,
             "MCP response exceeds the bounded context budget",
-            None,
+            Some(json!({
+                "kind": fault.slug().as_str(),
+                "detail": bounded_text(&markdown::fault(&fault)),
+                "structuredContent": fault_value(&fault),
+            })),
+        ),
+        transport,
+    );
+    if transport_serialized_bytes(&fallback, transport) <= budget {
+        fallback
+    } else {
+        attach_wire_budget(
+            error_reply(
+                // A request ID is normally a scalar, but preserve the hard cap
+                // even if a caller supplied a very large valid JSON string.
+                Value::Null,
+                -32000,
+                "MCP response exceeds the bounded context budget",
+                None,
+            ),
+            transport,
         )
     }
 }
@@ -1359,7 +1372,8 @@ fn bound_rpc_reply(value: Value) -> Value {
 /// Reclaims only duplicate human-readable text when a large request ID makes
 /// the caller-specific JSON-RPC envelope exceed the budget. Structured rows,
 /// terminal state, and owner cursors stay byte-for-byte intact.
-fn fit_tool_preview(mut value: Value) -> Value {
+fn fit_tool_preview(mut value: Value, transport: ResponseTransport) -> Value {
+    let budget = transport.limit_bytes();
     let Some(current_text) = value
         .get("result")
         .and_then(|result| result.get("content"))
@@ -1376,8 +1390,8 @@ fn fit_tool_preview(mut value: Value) -> Value {
         .unwrap_or(&current_text)
         .to_owned();
     value["result"]["content"][0]["text"] = Value::String(PREVIEW_MARKER.to_owned());
-    let mut best = attach_wire_budget(value.clone());
-    if framed_serialized_bytes(&best) > MCP_RESULT_BUDGET_BYTES {
+    let mut best = attach_wire_budget(value.clone(), transport);
+    if transport_serialized_bytes(&best, transport) > budget {
         return best;
     }
     let mut lower = 0;
@@ -1391,8 +1405,8 @@ fn fit_tool_preview(mut value: Value) -> Value {
         let mut candidate = value.clone();
         candidate["result"]["content"][0]["text"] =
             Value::String(format!("{}{PREVIEW_MARKER}", &prefix[..end]));
-        candidate = attach_wire_budget(candidate);
-        if framed_serialized_bytes(&candidate) <= MCP_RESULT_BUDGET_BYTES {
+        candidate = attach_wire_budget(candidate, transport);
+        if transport_serialized_bytes(&candidate, transport) <= budget {
             lower = midpoint;
             best = candidate;
         } else {
@@ -1402,42 +1416,65 @@ fn fit_tool_preview(mut value: Value) -> Value {
     best
 }
 
-/// Adds exact transport accounting to MCP tool results while preserving the
-/// shared structured projection's own payload budget. The reported value is
-/// fixed-point measured because its decimal size is part of the frame itself.
-fn attach_wire_budget(mut value: Value) -> Value {
-    let is_tool_result = value
-        .get("result")
-        .and_then(Value::as_object)
-        .is_some_and(|result| {
-            result.contains_key("content") && result.contains_key("structuredContent")
-        });
-    if !is_tool_result {
-        return value;
-    }
-    {
-        let result = value["result"].as_object_mut().expect("tool result object");
-        if !result.get("_meta").is_some_and(Value::is_object) {
-            result.insert("_meta".to_owned(), json!({}));
+/// Adds exact transport accounting to result objects and JSON-RPC error data
+/// while preserving the shared structured projection's own payload budget.
+/// The count is fixed-point measured because its digits are part of the frame.
+fn attach_wire_budget(mut value: Value, transport: ResponseTransport) -> Value {
+    let metadata_path: &[&str] = if value.get("result").is_some_and(Value::is_object) {
+        &["result", "_meta", "backend/wireBudget"]
+    } else if value.get("error").is_some_and(Value::is_object) {
+        // JSON-RPC error data is application-owned. Preserve a scalar data
+        // payload, which cannot carry MCP metadata without changing its shape.
+        let error = value["error"].as_object_mut().expect("error object");
+        if !error.contains_key("data") {
+            error.insert("data".to_owned(), json!({}));
         }
-        result["_meta"]["backend/wireBudget"] = json!({
+        if !error["data"].is_object()
+            || error["data"]
+                .get("_meta")
+                .is_some_and(|meta| !meta.is_object())
+        {
+            // Unlike MCP result metadata, arbitrary JSON-RPC error data is
+            // not ours to normalize. Admission still measures its exact frame.
+            return value;
+        }
+        &["error", "data", "_meta", "backend/wireBudget"]
+    } else {
+        return value;
+    };
+    {
+        let mut parent = &mut value;
+        for key in &metadata_path[..metadata_path.len() - 1] {
+            if !parent[*key].is_object() {
+                parent[*key] = json!({});
+            }
+            parent = &mut parent[*key];
+        }
+        // This reserved field belongs to the final transport encoder. Other
+        // object metadata survives; a stale budget cannot describe this frame.
+        parent["backend/wireBudget"] = json!({
             "bytes": 0,
             "estimatedTokens": 0,
             "bytesPerToken": ESTIMATED_BYTES_PER_TOKEN,
-            "limitBytes": MCP_RESULT_BUDGET_BYTES,
-            "scope": "complete_jsonrpc_line"
+            "limitBytes": transport.limit_bytes(),
+            "scope": transport.scope()
         });
     }
-    for _ in 0..8 {
-        let bytes = framed_serialized_bytes(&value);
-        value["result"]["_meta"]["backend/wireBudget"]["bytes"] = json!(bytes);
-        value["result"]["_meta"]["backend/wireBudget"]["estimatedTokens"] =
-            json!(estimate_tokens(bytes));
-        if framed_serialized_bytes(&value) == bytes {
-            break;
+    // Starting at zero makes digit widths monotone. Each pass either fixes
+    // the count or increases a bounded decimal width; include both reported
+    // numbers, existing metadata, escaped JSON and actual transport framing.
+    loop {
+        let bytes = transport_serialized_bytes(&value, transport);
+        let mut budget = &mut value;
+        for key in metadata_path {
+            budget = &mut budget[*key];
+        }
+        budget["bytes"] = json!(bytes);
+        budget["estimatedTokens"] = json!(estimate_tokens(bytes));
+        if transport_serialized_bytes(&value, transport) == bytes {
+            return value;
         }
     }
-    value
 }
 
 /// Serialize the exact bounded response envelope used by `tools/call`.
@@ -1473,9 +1510,12 @@ pub(super) fn token_budget_rpc_response_with_observed(
         "id": id,
         "result": result
     });
-    let response = attach_wire_budget(response);
-    let observed = framed_serialized_bytes(&response);
-    (bound_rpc_reply(response), observed)
+    let response = attach_wire_budget(response, ResponseTransport::StdioLine);
+    let observed = transport_serialized_bytes(&response, ResponseTransport::StdioLine);
+    (
+        bound_rpc_reply(response, ResponseTransport::StdioLine),
+        observed,
+    )
 }
 
 fn tool_result(text: &str, structured: Value, is_error: bool) -> Value {

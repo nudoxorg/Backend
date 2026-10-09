@@ -3,13 +3,16 @@
 //! The transport owns connection/session concerns only. Every request still
 //! enters the same JSON-RPC server and typed product session as stdio MCP.
 
-use crate::jsonrpc::{ReconnectingProduct, Server, disconnected_reconnecting_product};
+use crate::jsonrpc::{
+    ReconnectingProduct, ResponseTransport, Server, disconnected_reconnecting_product,
+    encode_response, finalize_response,
+};
+use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
-use axum::{Json, Router};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{self, Read};
@@ -278,18 +281,7 @@ impl HttpBootstrap {
                     .set(Authentication::Ready(sessions))
                     .is_ok()
                 {
-                    eprintln!(
-                        "backend-mcp: ready {}",
-                        json!({
-                            "transport": "streamable-http",
-                            "url": format!("http://{address}{MCP_PATH}"),
-                            "authorization": source.hint(),
-                            "maxSessions": MAX_SESSIONS,
-                            "maxInFlight": MAX_IN_FLIGHT,
-                            "maxRequestBytes": crate::MAX_MCP_REQUEST_FRAME,
-                            "maxResponseBytes": crate::MAX_MCP_RESPONSE_FRAME,
-                        })
-                    );
+                    eprintln!("backend-mcp: ready {}", ready_event(address, &source));
                 }
                 return;
             }
@@ -372,32 +364,35 @@ impl Sessions {
             self.project.clone(),
             self.cursor_secret.clone(),
         );
-        let reply = server.handle(body);
-        let initialized = reply
-            .as_ref()
-            .and_then(|value| value.get("result"))
-            .is_some();
-        let session_id = self.next_session_id();
-        if initialized {
-            let Ok(mut sessions) = self.live.lock() else {
-                return rpc_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    -32603,
-                    "session store unavailable",
-                );
-            };
-            if sessions.len() >= MAX_SESSIONS {
-                return rpc_error(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    -32000,
-                    "MCP session capacity reached",
-                );
-            }
-            sessions.insert(session_id.clone(), Arc::new(Mutex::new(server)));
-            rpc_response(reply, Some(&session_id))
-        } else {
-            rpc_response(reply, None)
+        let Some(reply) = server.handle(body) else {
+            return rpc_response(None, None);
+        };
+        let Ok(reply) = finalize_response(reply, ResponseTransport::HttpBody) else {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        };
+        if !reply.is_result() {
+            return encoded_json_response(StatusCode::OK, reply.into_bytes());
         }
+        let Ok(mut sessions) = self.live.lock() else {
+            return rpc_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                -32603,
+                "session store unavailable",
+            );
+        };
+        if sessions.len() >= MAX_SESSIONS {
+            return rpc_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                -32000,
+                "MCP session capacity reached",
+            );
+        }
+        let session_id = self.next_session_id();
+        sessions.insert(session_id.clone(), Arc::new(Mutex::new(server)));
+        with_session_header(
+            encoded_json_response(StatusCode::OK, reply.into_bytes()),
+            Some(&session_id),
+        )
     }
 
     fn remove(&self, headers: &HeaderMap) -> Response {
@@ -583,13 +578,7 @@ fn authentication_unavailable(
     } else {
         reply["error"]["data"]["retryAfterSeconds"] = json!(AUTHENTICATION_RETRY_SECONDS);
     }
-    let mut count = ResponseByteCounter::default();
-    if serde_json::to_writer(&mut count, &reply).is_err()
-        || count.bytes > crate::MAX_MCP_RESPONSE_FRAME
-    {
-        reply["id"] = Value::Null;
-    }
-    let mut response = (StatusCode::SERVICE_UNAVAILABLE, Json(reply)).into_response();
+    let mut response = json_response(StatusCode::SERVICE_UNAVAILABLE, reply);
     if cause.is_none() {
         response
             .headers_mut()
@@ -605,53 +594,54 @@ fn canonical_project(path: &Path) -> String {
 }
 
 fn rpc_response(reply: Option<Value>, session: Option<&SessionId>) -> Response {
-    if reply.as_ref().is_some_and(|reply| {
-        let mut count = ResponseByteCounter::default();
-        serde_json::to_writer(&mut count, reply).is_err()
-            || count.bytes > crate::MAX_MCP_RESPONSE_FRAME
-    }) {
-        return rpc_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            -32000,
-            "MCP response exceeds the bounded response frame",
-        );
-    }
-    let mut response = match reply {
-        Some(reply) => (StatusCode::OK, Json(reply)).into_response(),
+    let response = match reply {
+        Some(reply) => json_response(StatusCode::OK, reply),
         None => StatusCode::ACCEPTED.into_response(),
     };
+    with_session_header(response, session)
+}
+
+fn with_session_header(mut response: Response, session: Option<&SessionId>) -> Response {
     if let Some(value) = session.and_then(SessionId::header_value) {
         response.headers_mut().insert(SESSION_HEADER, value);
     }
     response
 }
 
-#[derive(Default)]
-struct ResponseByteCounter {
-    bytes: usize,
+fn encoded_json_response(status: StatusCode, body: Vec<u8>) -> Response {
+    (status, [(header::CONTENT_TYPE, "application/json")], body).into_response()
 }
 
-impl std::io::Write for ResponseByteCounter {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.bytes = self.bytes.saturating_add(bytes.len());
-        Ok(bytes.len())
+fn json_response(status: StatusCode, reply: Value) -> Response {
+    match encode_response(reply, ResponseTransport::HttpBody) {
+        Ok(body) => encoded_json_response(status, body),
+        // Whole-reply admission always supplies a small fallback. If encoding
+        // nevertheless fails, never emit a partial or unmeasured JSON reply.
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
+}
 
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
+fn ready_event(address: SocketAddr, source: &TokenSource) -> Value {
+    json!({
+        "transport": "streamable-http",
+        "url": format!("http://{address}{MCP_PATH}"),
+        "authorization": source.hint(),
+        "maxSessions": MAX_SESSIONS,
+        "maxInFlight": MAX_IN_FLIGHT,
+        "maxRequestBytes": crate::MAX_MCP_REQUEST_FRAME,
+        "maxResponseBytes": ResponseTransport::HttpBody.limit_bytes(),
+    })
 }
 
 fn rpc_error(status: StatusCode, code: i64, message: &str) -> Response {
-    (
+    json_response(
         status,
-        Json(json!({
+        json!({
             "jsonrpc": "2.0",
             "id": null,
             "error": { "code": code, "message": message }
-        })),
+        }),
     )
-        .into_response()
 }
 
 fn unauthorized() -> Response {
@@ -863,9 +853,17 @@ mod tests {
     }
 
     async fn wire_request(address: SocketAddr, authorization: Option<String>) -> String {
+        let body = r#"{"jsonrpc":"2.0","id":7,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"bootstrap-test","version":"1"}}}"#;
+        wire_request_body(address, authorization, body.to_owned()).await
+    }
+
+    async fn wire_request_body(
+        address: SocketAddr,
+        authorization: Option<String>,
+        body: String,
+    ) -> String {
         tokio::task::spawn_blocking(move || {
             use std::io::Write as _;
-            let body = r#"{"jsonrpc":"2.0","id":7,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"bootstrap-test","version":"1"}}}"#;
             let mut connection = std::net::TcpStream::connect_timeout(
                 &address,
                 std::time::Duration::from_secs(2),
@@ -951,7 +949,7 @@ mod tests {
         assert!(pending.to_ascii_lowercase().contains("retry-after: 1\r\n"));
         assert!(!pending.to_ascii_lowercase().contains("mcp-session-id:"));
         let (_, body) = pending.split_once("\r\n\r\n").expect("HTTP body");
-        let pending: Value = serde_json::from_str(body).expect("correlated pending reply");
+        let pending = assert_http_body_accounting(body.as_bytes());
         assert_eq!(pending["id"], 7);
         assert_eq!(pending["error"]["data"]["kind"], "authentication_pending");
         assert!(state.authentication.get().is_none());
@@ -1014,7 +1012,7 @@ mod tests {
             assert!(!response.contains(&secret));
             assert!(!response.to_ascii_lowercase().contains("mcp-session-id:"));
             let (_, body) = response.split_once("\r\n\r\n").expect("HTTP body");
-            let failed: Value = serde_json::from_str(body).expect("failure response");
+            let failed = assert_http_body_accounting(body.as_bytes());
             assert_eq!(failed["id"], 7);
             assert_eq!(failed["error"]["data"]["kind"], "authentication_failed");
             assert_eq!(failed["error"]["data"]["cause"], expected);
@@ -1056,11 +1054,203 @@ mod tests {
         let body = axum::body::to_bytes(response.into_body(), crate::MAX_MCP_RESPONSE_FRAME)
             .await
             .expect("response remains within the product byte bound");
-        let reply: Value = serde_json::from_slice(&body).expect("bounded pending reply");
+        let reply = assert_http_body_accounting(&body);
         assert!(
             reply["id"].is_null(),
             "unreturnable identity cannot overflow the response frame"
         );
         assert_eq!(reply["error"]["data"]["kind"], "authentication_pending");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn actual_http_oversized_initialize_identity_admits_no_session() {
+        let fixture = PrivateTokenFixture::new();
+        let paths = bootstrap_paths(&fixture);
+        let state = Arc::new(HttpBootstrap::new(paths));
+        let listener = tokio::net::TcpListener::bind(LoopbackBind::default().0)
+            .await
+            .expect("HTTP listener");
+        let address = listener.local_addr().expect("bound HTTP address");
+        let token = "test-http-initialize-identity-token";
+        let serving = tokio::spawn(serve_bound(listener, Arc::clone(&state), move |_| {
+            Ok((BearerToken(token.into()), TokenSource::Environment))
+        }));
+        wait_for_authentication(&state).await;
+        let Authentication::Ready(sessions) =
+            state.authentication.get().expect("HTTP authentication")
+        else {
+            panic!("HTTP test authentication failed");
+        };
+        let request = json!({"jsonrpc":"2.0", "id":"x".repeat(backend_present::DEFAULT_RESPONSE_BUDGET_BYTES), "method":"initialize", "params": {
+            "protocolVersion":"2025-11-25", "capabilities":{}, "clientInfo":{"name":"oversized-id-test","version":"1"}
+        }}).to_string();
+        assert!(request.len() <= crate::MAX_MCP_REQUEST_FRAME);
+        for _ in 0..3 {
+            let response =
+                wire_request_body(address, Some(token.to_owned()), request.clone()).await;
+            assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+            let (headers, body) = response
+                .split_once("\r\n\r\n")
+                .expect("HTTP response framing");
+            assert!(!headers.to_ascii_lowercase().contains("mcp-session-id:"));
+            let emitted = assert_http_body_accounting(body.as_bytes());
+            assert_eq!(emitted["error"]["code"], -32000);
+            assert!(emitted["id"].is_null());
+            assert!(sessions.live.lock().expect("session store").is_empty());
+        }
+        let initialized = wire_request(address, Some(token.to_owned())).await;
+        let (headers, body) = initialized
+            .split_once("\r\n\r\n")
+            .expect("successful HTTP initialize");
+        assert!(headers.to_ascii_lowercase().contains("mcp-session-id:"));
+        assert_eq!(assert_http_body_accounting(body.as_bytes())["id"], 7);
+        assert_eq!(sessions.live.lock().expect("session store").len(), 1);
+        let event = ready_event(address, &TokenSource::Environment);
+        assert_eq!(
+            event["maxResponseBytes"],
+            ResponseTransport::HttpBody.limit_bytes()
+        );
+        assert_eq!(
+            event["maxResponseBytes"],
+            backend_present::DEFAULT_RESPONSE_BUDGET_BYTES
+        );
+        assert!(ResponseTransport::HttpBody.limit_bytes() < crate::MAX_MCP_RESPONSE_FRAME);
+        serving.abort();
+        assert!(
+            serving
+                .await
+                .expect_err("test HTTP listener retired")
+                .is_cancelled()
+        );
+    }
+
+    fn assert_http_body_accounting(body: &[u8]) -> Value {
+        assert!(body.len() <= backend_present::DEFAULT_RESPONSE_BUDGET_BYTES);
+        assert_ne!(body.last(), Some(&b'\n'));
+        let reply: Value = serde_json::from_slice(body).expect("complete HTTP JSON body");
+        let budget = if reply.get("result").is_some() {
+            &reply["result"]["_meta"]["backend/wireBudget"]
+        } else {
+            &reply["error"]["data"]["_meta"]["backend/wireBudget"]
+        };
+        assert_eq!(budget["bytes"], body.len());
+        assert_eq!(budget["scope"], "complete_jsonrpc_body");
+        assert_eq!(
+            budget["limitBytes"],
+            ResponseTransport::HttpBody.limit_bytes()
+        );
+        assert_eq!(
+            budget["estimatedTokens"],
+            backend_present::estimate_tokens(body.len())
+        );
+        reply
+    }
+
+    async fn reply_wire_request(address: SocketAddr, reply: Value) -> String {
+        tokio::task::spawn_blocking(move || {
+            use std::io::Write as _;
+            let body = serde_json::to_vec(&reply).expect("test response input");
+            let mut connection = std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_secs(2)).expect("HTTP encoder listener");
+            connection.set_read_timeout(Some(std::time::Duration::from_secs(2))).expect("bounded HTTP read");
+            connection.set_write_timeout(Some(std::time::Duration::from_secs(2))).expect("bounded HTTP write");
+            write!(connection, "POST /mcp HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n", body.len()).expect("HTTP headers");
+            connection.write_all(&body).expect("response fixture");
+            let mut response = String::new();
+            connection.take(128 * 1024).read_to_string(&mut response).expect("complete HTTP response");
+            assert!(response.len() < 128 * 1024);
+            response
+        }).await.expect("HTTP wire observer")
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn actual_http_body_accounts_success_refusal_error_and_exact_ceiling() {
+        let listener = tokio::net::TcpListener::bind(LoopbackBind::default().0)
+            .await
+            .expect("HTTP listener");
+        let address = listener.local_addr().expect("HTTP address");
+        let app = Router::new().route(
+            MCP_PATH,
+            post(|body: Bytes| async move {
+                let reply = serde_json::from_slice(&body).expect("test semantic reply");
+                rpc_response(Some(reply), None)
+            }),
+        );
+        let serving = tokio::spawn(async move { axum::serve(listener, app).await });
+        let structured = json!({"answer":"records", "unicode":"λ אב🙂", "escaped":"\\\"\n", "nextCursor":"owner-cursor"});
+        let base = json!({"jsonrpc":"2.0", "id":"request-אב🙂", "result": {
+            "content":[{"type":"text", "text":"λ אב🙂\n\\\""}],
+            "structuredContent":structured, "isError":false
+        }});
+        let mut refusal = base.clone();
+        refusal["result"]["isError"] = json!(true);
+        let mut boundary = json!({"jsonrpc":"2.0", "id":42, "result":{"payload":""}});
+        let ceiling = backend_present::DEFAULT_RESPONSE_BUDGET_BYTES;
+        let mut padding = ceiling - 512;
+        for _ in 0..8 {
+            boundary["result"]["payload"] = json!("p".repeat(padding));
+            let size = encode_response(boundary.clone(), ResponseTransport::HttpBody)
+                .expect("boundary body")
+                .len();
+            if size == ceiling {
+                break;
+            }
+            // Start below the ceiling because an over-budget candidate would
+            // become a fallback and cannot serve as a boundary measurement.
+            assert!(size < ceiling);
+            padding += ceiling - size;
+        }
+        assert_eq!(
+            encode_response(boundary.clone(), ResponseTransport::HttpBody)
+                .expect("exact boundary")
+                .len(),
+            ceiling
+        );
+        for reply in [
+            base,
+            refusal,
+            json!({"jsonrpc":"2.0", "id":42, "error":{"code":-32601,"message":"unknown method"}}),
+            boundary,
+        ] {
+            let response = reply_wire_request(address, reply.clone()).await;
+            assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+            let (headers, body) = response.split_once("\r\n\r\n").expect("HTTP headers/body");
+            assert!(
+                headers
+                    .to_ascii_lowercase()
+                    .contains("content-type: application/json")
+            );
+            assert!(
+                headers
+                    .to_ascii_lowercase()
+                    .contains(&format!("content-length: {}", body.len()))
+            );
+            let emitted = assert_http_body_accounting(body.as_bytes());
+            assert_eq!(emitted["id"], reply["id"]);
+            if reply["result"].get("structuredContent").is_some() {
+                assert_eq!(emitted["result"]["structuredContent"], structured);
+                assert_eq!(emitted["result"]["isError"], reply["result"]["isError"]);
+            }
+            let line =
+                encode_response(reply, ResponseTransport::StdioLine).expect("same stdio reply");
+            assert_eq!(line.last(), Some(&b'\n'));
+            let stdio: Value = serde_json::from_slice(&line).expect("complete stdio line");
+            let budget = if stdio.get("result").is_some() {
+                &stdio["result"]["_meta"]["backend/wireBudget"]
+            } else {
+                &stdio["error"]["data"]["_meta"]["backend/wireBudget"]
+            };
+            assert_eq!(budget["bytes"], line.len());
+            assert_eq!(budget["scope"], "complete_jsonrpc_line");
+            if body.len() == ceiling {
+                assert_eq!(stdio["error"]["code"], -32000);
+            }
+        }
+        serving.abort();
+        assert!(
+            serving
+                .await
+                .expect_err("test HTTP listener retired")
+                .is_cancelled()
+        );
     }
 }

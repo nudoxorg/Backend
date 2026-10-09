@@ -1,3 +1,27 @@
+## 2026-10-09 MCP transport checkpoint: exact emitted byte accounting
+
+MCP HTTP and stdio now admit responses using the exact escaped JSON bytes and
+transport framing they emit. Structured results and continuation tokens survive
+preview fitting; refusal metadata uses the same encoder. An oversized initialize
+response cannot authorize an HTTP session. The default readiness frame remains
+49,152 bytes; this checkpoint does not increase it.
+
+Root independently checked all 43 raw evidence files, 18,030 producing Git blobs,
+actual compiler events, four process receipts, whole-fleet admission samples,
+source restoration, and the three preserved remote image hashes. The joined
+`5a06a6f3d9bc4a6760a686356174cb48599ad514` source ran **143 MCP tests and
+14 client tests, with zero failures or ignored tests**. Client controls cover
+plain-graph and portable-query continuation; those changes are separate from
+this transport checkpoint. The four transport change sequences match the
+reviewed atom exactly; two whole files also contain graph changes in the tested
+join. This is not an isolated transport or current canonical build result.
+
+Evidence: [source-bound native audit](mcp-transport-native-evidence-20261009.json).
+Previous CLI 47/2 and MCP 142/1 attempts remain retained. Final CLI/help changes,
+genuine Docs CLI/MCP runtime, installed release acceptance and live GUI are
+still pending. New builds remain held while h16001mac cannot supply a fresh
+complete census; its interrupted GUI build has an unknown outcome.
+
 # Shared publication readiness and typed absent reads, 2026-10-08
 
 Source base: `3e466953bda333f083b1b5682350a2844008474b`, plus the independent required-path test expectation correction `90fa90b8bf`. This atom is source-only; no Cargo, daemon, CLI or MCP execution occurred for this successor.
