@@ -1543,6 +1543,37 @@ struct Locked {
     dependencies: Vec<String>,
 }
 
+/// One exact package tuple from Cargo's structured lockfile inventory.
+///
+/// A missing source does not identify a filesystem path or a registry. Callers
+/// must retain that distinction when projecting the tuple into another model.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CargoLockedPackage {
+    /// Cargo package name.
+    pub name: String,
+    /// Exact locked release spelling.
+    pub version: String,
+    /// Cargo's original registry/git source, absent for path packages.
+    pub source: Option<String>,
+}
+
+/// Reads package tuples with the same parser and bounds used by Cargo browsing.
+///
+/// # Errors
+/// Returns [`CargoTreeError::Lockfile`] for malformed or over-budget documents.
+pub fn cargo_locked_packages(lockfile: &str) -> Result<Vec<CargoLockedPackage>, CargoTreeError> {
+    locked_packages(lockfile).map(|packages| {
+        packages
+            .into_iter()
+            .map(|package| CargoLockedPackage {
+                name: package.name,
+                version: package.version,
+                source: package.source,
+            })
+            .collect()
+    })
+}
+
 fn locked_packages(lockfile: &str) -> Result<Vec<Locked>, CargoTreeError> {
     if lockfile.len() > MAX_CARGO_LOCKFILE_BYTES {
         return Err(CargoTreeError::Lockfile(
@@ -1552,6 +1583,9 @@ fn locked_packages(lockfile: &str) -> Result<Vec<Locked>, CargoTreeError> {
     let document: toml::Value = lockfile
         .parse()
         .map_err(|error: toml::de::Error| CargoTreeError::Lockfile(error.to_string()))?;
+    if document.get("version").is_some_and(|version| !matches!(version.as_integer(), Some(1..=4))) {
+        return Err(CargoTreeError::Lockfile("unsupported Cargo.lock schema version".to_owned()));
+    }
     let listed = document
         .get("package")
         .and_then(toml::Value::as_array)

@@ -1926,7 +1926,7 @@ fn json_sequence(value: &serde_json::Value) -> Result<u64, DiscoveryError> {
     }
 }
 
-fn valid_npm_name(value: &str) -> bool {
+pub(crate) fn valid_npm_name(value: &str) -> bool {
     if value.is_empty() || value.len() > 214 || !value.is_ascii() {
         return false;
     }

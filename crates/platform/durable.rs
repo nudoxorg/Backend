@@ -16,7 +16,10 @@ use crate::linkage::{IfUnlinked, Linkage, open_admitted};
 
 #[path = "durable_read.rs"]
 mod read;
-pub use read::{BoundedWriter, read_regular_bounded};
+pub use read::{
+    BoundedWriter, read_regular_bounded, read_regular_bounded_stable,
+    read_regular_bounded_stable_at,
+};
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 

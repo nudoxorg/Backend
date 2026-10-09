@@ -12,6 +12,8 @@ pub(crate) struct ParsedPythonRequirement {
     pub(crate) package_name: String,
     /// The marker cannot apply with no requested extra.
     pub(crate) optional_by_extra: bool,
+    /// Exactly one non-wildcard equality specifier, when the declaration pins a release.
+    pub(crate) pinned_version: Option<String>,
 }
 
 /// Why a requirement cannot safely contribute to a complete package graph.
@@ -264,9 +266,25 @@ pub(crate) fn parse_python_requirement(
 
     let optional_by_extra = !marker_may_apply_without_extra(&parsed.marker)?;
 
+    let pinned_version = match &parsed.version_or_url {
+        Some(pep508_rs::VersionOrUrl::VersionSpecifier(specifiers)) => {
+            let mut items = specifiers.iter();
+            items
+                .next()
+                .filter(|item| {
+                    item.operator().to_string() == "=="
+                        && !item.to_string().contains('*')
+                        && items.next().is_none()
+                })
+                .map(|item| item.version().to_string())
+        }
+        _ => None,
+    };
+
     Ok(ParsedPythonRequirement {
         package_name: parsed.name.as_ref().to_owned(),
         optional_by_extra,
+        pinned_version,
     })
 }
 

@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "fixtures": [
+    {
+      "file": "npm-v1-wave.json",
+      "repository": "servo",
+      "commit": "05af8b592a7f5cf35e58bce10b4cf493a8656c6e",
+      "original_path": "tests/wpt/tests/tools/wave/package-lock.json",
+      "bytes": 1222,
+      "sha256": "11966b5debc49a1f76a049ad406e6e894991ddcc7af50e3cd80c9abffba78c65"
+    },
+    {
+      "file": "npm-v2-trustfall.json",
+      "repository": "trustfall",
+      "commit": "7fc8292a8eb2b5f44487f61467446b61669e59a3",
+      "original_path": "trustfall_wasm/www/package-lock.json",
+      "bytes": 248877,
+      "sha256": "bc42e7902ed1a522a06d9bac8693a22d956cc410ef6f62423188068544c20002"
+    },
+    {
+      "file": "npm-v3-fastify.json",
+      "repository": "backend",
+      "commit": "41882d2c8ba29b2ba4000744740887852622379e",
+      "original_path": "docs/operations/evidence/ilo-fresh-runtime-20261006/dto20-functional-checkpoint-20261006T1242Z/closures/fastify-5.2.1-runtime-closure-attempt02-20261006T1232Z/consumer/package-lock.json",
+      "bytes": 24364,
+      "sha256": "04176318cf177e02faa08261c58fc4f8387c22151ac762e784a6ca77a5225d7e"
+    },
+    {
+      "file": "uv-v1-r3-turso.lock",
+      "repository": "turso",
+      "commit": "052ad81a7dbb6efed34ea482ae6c7e2e6f6682e0",
+      "original_path": "uv.lock",
+      "bytes": 68077,
+      "sha256": "474796e3635bcdc1fb03cb3ce120cc5e43c20821afaa2efd3b38ebba6daa1d78"
+    },
+    {
+      "file": "go-caddy.mod",
+      "repository": "caddy",
+      "commit": "221ebc4503398fa8c87d95a52d43d0d93a6aeef4",
+      "original_path": "go.mod",
+      "bytes": 8385,
+      "sha256": "62fdd786b2f9ced74c818132ebaeba320e25528ed316202902918afa73473b72"
+    }
+  ]
+}

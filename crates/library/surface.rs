@@ -37,6 +37,11 @@ pub use package_compiler_failure::{
 pub const MAX_PRODUCT_TEXT_BYTES: usize = 4096;
 /// Largest row collection in one product request or reply.
 pub const MAX_PRODUCT_ROWS: usize = 256;
+/// Maximum package identities retained in one product project.
+pub const MAX_PROJECT_MEMBERS: usize = 16_384;
+/// Maximum aggregate member/name/source text retained in one project record.
+/// The transport's separate encoded frame bound still applies.
+pub const MAX_PROJECT_MEMBER_PAYLOAD_BYTES: usize = 256 * 1024;
 /// Maximum number of source-file members admitted in one selected Project frontier.
 ///
 /// The engine's canonical Project membership validator uses this same bound;
@@ -4665,6 +4670,38 @@ pub struct ReleaseRecord {
     pub seen: bool,
 }
 
+/// One package/source tuple whose lockfile membership is unresolved.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectUnresolvedLockMember {
+    /// Package name recorded by the selected lockfile.
+    pub name: ProductText,
+    /// Version recorded by the lockfile, absent for unversioned local roots.
+    pub version: Option<ProductText>,
+    /// Recorded source spelling, or a labeled SHA-256 witness when it contains authentication/query material.
+    pub source: Option<ProductText>,
+    /// Why this row cannot become a pinned or proven local project member.
+    pub reason: ProductText,
+}
+
+/// Coverage of an explicitly synchronized lockfile's package membership.
+///
+/// Coverage refers to rows in the selected file. It does not establish an
+/// installed or transitive dependency closure, Go MVS resolution, or the result
+/// of evaluating requirements markers for an active environment.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "kebab-case")]
+pub enum ProjectLockfileMembership {
+    /// Every package row in the selected file has a representable identity;
+    /// format-defined non-package roots are excluded and no unresolved rows remain.
+    Complete,
+    /// Useful members were imported, but these source identities remain unavailable.
+    Partial {
+        /// Exact unavailable package/source tuples; never silently omitted.
+        unresolved: Box<[ProjectUnresolvedLockMember]>,
+    },
+}
+
 /// One durable project folder.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -4675,11 +4712,60 @@ pub struct ProjectRecord {
     pub name: ProjectName,
     /// Optional absolute lockfile path.
     pub lockfile: Option<ProductText>,
+    /// Absent until an explicit sync, including records saved by older builds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lockfile_membership: Option<ProjectLockfileMembership>,
     /// Pinned members in canonical order.
     pub members: Box<[PackageReference]>,
-    /// Indexed Cargo manifest names for members, parallel to `members`.
+    /// Manifest names or admitted package lineage names, parallel to `members`.
     #[serde(default = "empty_product_text_box")]
     pub member_manifest_names: Box<[ProductText]>,
+}
+
+impl ProjectRecord {
+    /// Validates member cardinality, coverage shape and aggregate retained text.
+    pub fn admit(&self) -> Result<(), ProductAdmissionError> {
+        if self.lockfile_membership.is_some() && self.lockfile.is_none() {
+            return Err(ProductAdmissionError::RowBound);
+        }
+        let unresolved = match &self.lockfile_membership {
+            Some(ProjectLockfileMembership::Partial { unresolved }) if !unresolved.is_empty() => {
+                unresolved.as_ref()
+            }
+            Some(ProjectLockfileMembership::Partial { .. }) => {
+                return Err(ProductAdmissionError::RowBound);
+            }
+            _ => &[],
+        };
+        if self.members.len().saturating_add(unresolved.len()) > MAX_PROJECT_MEMBERS
+            || (!self.member_manifest_names.is_empty()
+                && self.member_manifest_names.len() != self.members.len())
+        {
+            return Err(ProductAdmissionError::RowBound);
+        }
+        let mut bytes = self.members.iter().fold(0_usize, |bytes, member| {
+            bytes.saturating_add(member.as_str().len())
+        });
+        bytes = self
+            .member_manifest_names
+            .iter()
+            .fold(bytes, |bytes, name| {
+                bytes.saturating_add(name.as_str().len())
+            });
+        for row in unresolved {
+            bytes = bytes
+                .saturating_add(row.name.as_str().len())
+                .saturating_add(row.version.as_ref().map_or(0, |text| text.as_str().len()))
+                .saturating_add(row.source.as_ref().map_or(0, |text| text.as_str().len()))
+                .saturating_add(row.reason.as_str().len());
+        }
+        if bytes > MAX_PROJECT_MEMBER_PAYLOAD_BYTES
+            || serialized_json_size(self) > crate::MAX_REPLY_BODY / 2
+        {
+            return Err(ProductAdmissionError::TextBound);
+        }
+        Ok(())
+    }
 }
 
 fn empty_product_text_box() -> Box<[ProductText]> {
@@ -5045,6 +5131,15 @@ impl SurfaceReply {
             Err(ProductAdmissionError::RowBound)
         } else {
             match self {
+                Self::Projects(records) => {
+                    for record in records {
+                        record.admit()?;
+                    }
+                }
+                Self::ProjectCreated(record)
+                | Self::ProjectAdded(record)
+                | Self::ProjectRemoved(record)
+                | Self::ProjectSynced(record) => record.admit()?,
                 Self::Explored(rows)
                 | Self::Package(rows)
                 | Self::IndexSearch(rows)
@@ -5485,12 +5580,9 @@ fn release_record_bound(record: &ReleaseRecord) -> usize {
 }
 
 fn project_record_bound(record: &ProjectRecord) -> usize {
-    record.members.iter().fold(
-        fixed_record_bound()
-            .saturating_add(record.name.as_str().len())
-            .saturating_add(optional_text_bound(record.lockfile.as_ref())),
-        |bound, package| bound.saturating_add(package_reference_bound(package)),
-    )
+    // Includes parallel display names and every partial-membership source row,
+    // with JSON escaping, without allocating an encoded copy.
+    fixed_record_bound().saturating_add(serialized_json_size(record))
 }
 
 fn tree_node_record_bound(record: &TreeNodeRecord) -> usize {
@@ -6940,8 +7032,8 @@ mod tests {
         );
         assert_eq!(
             crate::DTO_VERSION,
-            24,
-            "partial publication uses the joined closed wire-24 cohort"
+            25,
+            "partial publication remains in the joined closed wire-25 cohort"
         );
         let command = crate::CommandDto::new(
             61,
@@ -6955,17 +7047,17 @@ mod tests {
         );
         let encoded_reply = serde_json::to_vec(&reply).expect("partial reply envelope");
         let decoded_reply =
-            crate::decode_reply_body(&encoded_reply).expect("wire-24 partial reply");
+            crate::decode_reply_body(&encoded_reply).expect("wire-25 partial reply");
         crate::admit_reply(&command, &decoded_reply).expect("admit exact partial status route");
         assert_eq!(decoded_reply, reply);
         let mut old_peer: serde_json::Value =
             serde_json::from_slice(&encoded_reply).expect("encoded reply fields");
-        for old_version in [22, 23] {
+        for old_version in [22, 23, 24] {
             old_peer["version"] = serde_json::json!(old_version);
             let old_bytes = serde_json::to_vec(&old_peer).expect("old peer version header");
             let error = crate::decode_reply_body(&old_bytes).expect_err("old partial peer refused");
             assert!(error.contains(&format!("reply DTO version {old_version}")));
-            assert!(error.contains("this build supports 24"));
+            assert!(error.contains(&format!("this build supports {}", crate::DTO_VERSION)));
             assert!(error.contains("same build"));
         }
         let mut missing = status.clone();
@@ -7478,3 +7570,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "surface/project_lockfile_tests.rs"]
+mod project_lockfile_tests;

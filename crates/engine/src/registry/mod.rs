@@ -31,7 +31,7 @@ mod router;
 mod transport;
 mod wire;
 
-pub(crate) use discovery::valid_pypi_name;
+pub(crate) use discovery::{valid_npm_name, valid_pypi_name};
 
 /// Coalesces development metadata into the matching runtime edge when both
 /// declarations describe the same source and exact target coordinate.

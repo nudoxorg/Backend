@@ -2699,6 +2699,23 @@ fn project_row(record: &ProjectRecord) -> ProductRecord {
     ];
     if let Some(lockfile) = record.lockfile.as_ref() {
         tags.push(format!("lockfile {}", lockfile.as_str()));
+        match &record.lockfile_membership {
+            None => tags.push("lockfile not synchronized".to_owned()),
+            Some(backend_library::ProjectLockfileMembership::Complete) => {}
+            Some(backend_library::ProjectLockfileMembership::Partial { unresolved }) => {
+                tags.push(format!(
+                    "partial lockfile membership: {} unresolved source(s)",
+                    unresolved.len()
+                ));
+                for row in unresolved {
+                    tags.push(format!(
+                        "unresolved {}: {}",
+                        row.name.as_str(),
+                        row.reason.as_str()
+                    ));
+                }
+            }
+        }
     }
     for name in record.member_manifest_names.iter() {
         tags.push(format!("member {}", name.as_str()));
@@ -4132,3 +4149,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "project_lockfile_tests.rs"]
+mod project_lockfile_tests;

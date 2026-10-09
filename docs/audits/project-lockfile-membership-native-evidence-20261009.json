@@ -1,0 +1,423 @@
+{
+  "schema": "nudox.root-independent-lockfile40-native-audit.v1",
+  "source": {
+    "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+    "clean": true,
+    "commit": "6495e7c0a360a730fb58dee4159a5c6136148c0a",
+    "tree": "f2d1c82d2e60863bb4da7dee91ce89f41290af5b"
+  },
+  "passed": 40,
+  "failed": 0,
+  "ignored": 0,
+  "unique_listed_names": [
+    "builtin::product_state::tests::lockfile_create_validates_before_identity_or_commit_and_sync_rereads_atomically",
+    "builtin::product_state::tests::lockfile_legacy_project_state_is_read_only_until_a_successful_version_two_commit",
+    "builtin::product_state::tests::lockfile_ordinary_large_npm_project_syncs_all_members_with_bounded_reply",
+    "builtin::product_state::tests::lockfile_parent_replacement_cannot_rebind_old_workspace_inventory",
+    "builtin::product_state::tests::lockfile_partial_workspace_rows_persist_without_refusing_registry_members",
+    "builtin::product_state::tests::lockfile_sync_then_manual_membership_changes_reopen_with_parallel_names",
+    "builtin::product_state::tests::lockfile_unimplemented_formats_are_refused_at_create_without_empty_project",
+    "builtin::product_state::tests::lockfile_workspace_symlink_escape_fails_before_project_commit",
+    "durable::read::stable_tests::same_size_held_file_mutation_is_refused_after_read",
+    "durable::read::stable_tests::stable_reader_rejects_fifo_and_symlink_without_waiting_for_a_writer",
+    "durable::read::stable_tests::truncation_and_growth_are_refused_on_the_same_descriptor",
+    "durable::read::stable_tests::unchanged_regular_file_is_admitted_at_exact_bound",
+    "product::project_lockfile_tests::large_project_display_retains_all_names_and_truthful_partial_membership",
+    "project_lockfile::tests::authentic_caddy_multiline_require_inventory_keeps_all_165_modules",
+    "project_lockfile::tests::authentic_npm_versions_preserve_registry_packages_not_integrity_lines",
+    "project_lockfile::tests::authentic_uv_schema_retains_packages_and_actual_workspace_paths",
+    "project_lockfile::tests::cargo_future_schema_is_not_a_complete_current_inventory",
+    "project_lockfile::tests::cargo_preserves_workspace_git_and_alternate_registry_rows_as_partial",
+    "project_lockfile::tests::complete_release_validation_does_not_accept_advisory_abbreviations_or_empty_suffixes",
+    "project_lockfile::tests::go_metadata_directives_are_validated_without_becoming_dependency_members",
+    "project_lockfile::tests::go_multiline_require_replace_exclude_and_retract_are_distinct_facts",
+    "project_lockfile::tests::member_and_raw_json_node_bounds_are_independent_of_unique_registry_payload",
+    "project_lockfile::tests::metadata_package_names_and_install_locations_are_not_requirements_or_traversals",
+    "project_lockfile::tests::npm_aliases_and_sources_do_not_invent_registry_authority",
+    "project_lockfile::tests::npm_omitted_origin_and_uninstalled_peer_rows_remain_explicitly_unresolved",
+    "project_lockfile::tests::npm_refuses_unknown_schema_malformed_duplicate_and_unpinned_rows",
+    "project_lockfile::tests::npm_registry_origin_requires_exact_host_and_matching_release_tarball",
+    "project_lockfile::tests::npm_v1_empty_install_tree_may_omit_dependencies_without_guessing_other_schemas",
+    "project_lockfile::tests::npm_v1_walks_nested_releases_and_v2_uses_only_packages",
+    "project_lockfile::tests::npm_workspace_links_are_paths_and_dangling_links_are_not_complete",
+    "project_lockfile::tests::ordinary_large_lockfile_is_complete_and_resource_bounds_never_truncate",
+    "project_lockfile::tests::outside_python_workspace_sources_are_partial_without_reading_foreign_paths",
+    "project_lockfile::tests::python_toml_uses_schema_and_source_not_incidental_version_fields",
+    "project_lockfile::tests::requirements_use_full_pinned_pep508_and_refuse_ranges_urls_and_options",
+    "project_lockfile::tests::unknown_source_authentication_material_is_not_public_display_data",
+    "surface::project_lockfile_tests::coverage_requires_a_selected_lockfile_source",
+    "surface::project_lockfile_tests::project_display_names_are_empty_or_exactly_parallel_and_legacy_is_readable",
+    "surface::project_lockfile_tests::project_member_count_admits_exact_limit_and_refuses_one_more",
+    "surface::project_lockfile_tests::project_payload_admits_exact_limit_and_refuses_one_more_byte",
+    "surface::project_lockfile_tests::project_reply_accounts_for_names_partial_sources_and_json_escaping"
+  ],
+  "receipts": [
+    {
+      "kind": "build",
+      "gate": 2,
+      "receipt_sha256": "f00aeff7f42a1886f694d45c7da268f4b36e4ae79200219814100b417a0a5000",
+      "stdout_sha256": "a7464d79786c5363b5303272a75daa618ebeebfdb95480dbddf0108ff1144037",
+      "stderr_sha256": "584ef89d235a5e3b4fc80a8163f8dfc56e2c068512efe08b5a163df64735464e",
+      "source": {
+        "commit": "6495e7c0a360a730fb58dee4159a5c6136148c0a",
+        "tree": "f2d1c82d2e60863bb4da7dee91ce89f41290af5b",
+        "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+        "clean": true
+      },
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-project-lockfile-native40-20261009/repair-epoch/build-2-engine-lib-attempt01/images/engine-lib",
+        "sha256": "63b50ea9a7c211b8947d249d27c5a69ae810dc5fe91f3b244a07b093d19469af",
+        "bytes": 462639920,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_engine-d8f1fd294bc12763"
+      },
+      "retained_image_source_closure": null
+    },
+    {
+      "kind": "build",
+      "gate": 3,
+      "receipt_sha256": "18ff7313100382fd1f2f7fb01e506756b4bd2680a12977d60297739b436fb0bf",
+      "stdout_sha256": "70b2c901238efab8fd4d92dbe5c375dc6445d51d401df0e9010fc510ad2298bc",
+      "stderr_sha256": "be88a372720b72b45d0fd25441db620380e663893e9cd9cd43c3b05ca22d0eeb",
+      "source": {
+        "commit": "6495e7c0a360a730fb58dee4159a5c6136148c0a",
+        "tree": "f2d1c82d2e60863bb4da7dee91ce89f41290af5b",
+        "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+        "clean": true
+      },
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-project-lockfile-native40-20261009/repair-epoch/build-3-local-service-lib-attempt01/images/local-service-lib",
+        "sha256": "57a9a2633063e4fd1efd50c99abc3e0347b1f2a291892efa1643c9264b79da17",
+        "bytes": 725133576,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_local_service-fb339fe309d09189"
+      },
+      "retained_image_source_closure": null
+    },
+    {
+      "kind": "build",
+      "gate": 4,
+      "receipt_sha256": "1b4766556b86224ef311b1c3f301b380ebda4bccb249be8352f24a00c0ad2a43",
+      "stdout_sha256": "2a259da7881d7158ef1d7ce62c04e779d46ff56618439bca9ab7c4554216c999",
+      "stderr_sha256": "56d60773bc888343a510648e1a680a7fb757054da55d4b91bcb28427a663a15e",
+      "source": {
+        "commit": "6495e7c0a360a730fb58dee4159a5c6136148c0a",
+        "tree": "f2d1c82d2e60863bb4da7dee91ce89f41290af5b",
+        "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+        "clean": true
+      },
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-project-lockfile-native40-20261009/repair-epoch/build-4-present-lib-attempt01/images/present-lib",
+        "sha256": "a5134b435a567113d2b2c8ad22f6230da9bd0f75db4097685b3b1098f18827ad",
+        "bytes": 131482400,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_present-41c4487a653cba01"
+      },
+      "retained_image_source_closure": null
+    },
+    {
+      "kind": "list",
+      "gate": 0,
+      "receipt_sha256": "6acfde1cee37234d278f6542cdd47622ab90a23df234652e210a27cdef9a9a47",
+      "stdout_sha256": "bf95eca0705894f5a73eacae899ef9aeaeb022e2ab3f9ae601118f1bb93e7f65",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "commit": "6495e7c0a360a730fb58dee4159a5c6136148c0a",
+        "tree": "f2d1c82d2e60863bb4da7dee91ce89f41290af5b",
+        "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+        "clean": true
+      },
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-project-lockfile-native40-20261009/build-0-platform-lib-attempt01/images/platform-lib",
+        "sha256": "348cbc7b37c633273f7b59acb981fe1967dfef4b9130597046fc9a3f1b456654",
+        "bytes": 3372832,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_platform-13d074c9dc81c8ba"
+      },
+      "retained_image_source_closure": {
+        "receipt": {
+          "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-project-lockfile-native40-20261009/build-0-platform-lib-attempt01/receipt.json",
+          "sha256": "05e63aa70f0129e5ddf86dd85cf51c259c732fc90c7e411f1de66327235fc668"
+        },
+        "source": {
+          "commit": "4958ecc6976e5750843e1a38dc0a67a315df48a4",
+          "tree": "1318abbdb609213863bb4133b23460e90fe0d27b",
+          "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+          "clean": true
+        },
+        "source_inputs": {
+          "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-project-lockfile-native40-20261009/build-0-platform-lib-attempt01/source-inputs.json",
+          "sha256": "39504b4b5af7bea6cb569f8252e2275e2a59b93bcb8425279b812101d91c82e5"
+        },
+        "changed_paths": [
+          "crates/engine/src/project_lockfile.rs",
+          "crates/engine/src/project_lockfile/tests.rs"
+        ],
+        "unchanged_dependency_closure_excludes_manifest": "crates/engine/Cargo.toml"
+      }
+    },
+    {
+      "kind": "list",
+      "gate": 1,
+      "receipt_sha256": "7eaf88be7797c22329b4835947e8dde921eafdb9dae0094b3844a5a588e03699",
+      "stdout_sha256": "317b197687a88e5a3192f6e2ad9a976eef13c4c56ed668f958121cc50c62db87",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "commit": "6495e7c0a360a730fb58dee4159a5c6136148c0a",
+        "tree": "f2d1c82d2e60863bb4da7dee91ce89f41290af5b",
+        "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+        "clean": true
+      },
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-project-lockfile-native40-20261009/build-1-library-lib-attempt01/images/library-lib",
+        "sha256": "3f18e35c7b56931c6611dac8a8c05ccc1e2d80976f4c865206e601d7867ec28b",
+        "bytes": 55342592,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_library-2545f8667d6f210c"
+      },
+      "retained_image_source_closure": {
+        "receipt": {
+          "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-project-lockfile-native40-20261009/build-1-library-lib-attempt01/receipt.json",
+          "sha256": "353ad89404073e95d1e4801c480c2db76d58e86e9d23dc913520bcd16f1d88f2"
+        },
+        "source": {
+          "commit": "4958ecc6976e5750843e1a38dc0a67a315df48a4",
+          "tree": "1318abbdb609213863bb4133b23460e90fe0d27b",
+          "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+          "clean": true
+        },
+        "source_inputs": {
+          "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-project-lockfile-native40-20261009/build-1-library-lib-attempt01/source-inputs.json",
+          "sha256": "39504b4b5af7bea6cb569f8252e2275e2a59b93bcb8425279b812101d91c82e5"
+        },
+        "changed_paths": [
+          "crates/engine/src/project_lockfile.rs",
+          "crates/engine/src/project_lockfile/tests.rs"
+        ],
+        "unchanged_dependency_closure_excludes_manifest": "crates/engine/Cargo.toml"
+      }
+    },
+    {
+      "kind": "list",
+      "gate": 2,
+      "receipt_sha256": "dd0da1466b7f6764032338a60e3250a9bfd8bfff9ee614fa1f4c2e9753cb4bd3",
+      "stdout_sha256": "c5904c365ea3cce4f83ab957190bdb148fde621332350113a7beb145a713c71d",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "commit": "6495e7c0a360a730fb58dee4159a5c6136148c0a",
+        "tree": "f2d1c82d2e60863bb4da7dee91ce89f41290af5b",
+        "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+        "clean": true
+      },
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-project-lockfile-native40-20261009/repair-epoch/build-2-engine-lib-attempt01/images/engine-lib",
+        "sha256": "63b50ea9a7c211b8947d249d27c5a69ae810dc5fe91f3b244a07b093d19469af",
+        "bytes": 462639920,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_engine-d8f1fd294bc12763"
+      },
+      "retained_image_source_closure": null
+    },
+    {
+      "kind": "list",
+      "gate": 3,
+      "receipt_sha256": "f22fbfdf0656c8dfb6c361bc009ebb7a0dccd78ea15771188bb4c8383392bc25",
+      "stdout_sha256": "7dad6fb0809a1d041df0c0cfc5cb4fb6fccb30559b850ed604938eb5cd5ee096",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "commit": "6495e7c0a360a730fb58dee4159a5c6136148c0a",
+        "tree": "f2d1c82d2e60863bb4da7dee91ce89f41290af5b",
+        "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+        "clean": true
+      },
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-project-lockfile-native40-20261009/repair-epoch/build-3-local-service-lib-attempt01/images/local-service-lib",
+        "sha256": "57a9a2633063e4fd1efd50c99abc3e0347b1f2a291892efa1643c9264b79da17",
+        "bytes": 725133576,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_local_service-fb339fe309d09189"
+      },
+      "retained_image_source_closure": null
+    },
+    {
+      "kind": "list",
+      "gate": 4,
+      "receipt_sha256": "fabb11d0b39c5a004292e49478a4a8a8c9453f28a9ad7ee2ee97643ec490be9b",
+      "stdout_sha256": "b30e00364fbd47a2eb8f42360f744bba0ffdeb00dccfaa37a3b0febc1365454d",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "commit": "6495e7c0a360a730fb58dee4159a5c6136148c0a",
+        "tree": "f2d1c82d2e60863bb4da7dee91ce89f41290af5b",
+        "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+        "clean": true
+      },
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-project-lockfile-native40-20261009/repair-epoch/build-4-present-lib-attempt01/images/present-lib",
+        "sha256": "a5134b435a567113d2b2c8ad22f6230da9bd0f75db4097685b3b1098f18827ad",
+        "bytes": 131482400,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_present-41c4487a653cba01"
+      },
+      "retained_image_source_closure": null
+    },
+    {
+      "kind": "run",
+      "gate": 0,
+      "receipt_sha256": "bce3d7b62120cfcb55af7ff5e5ae36c3fe6dc77c2c2d4db4553007d5b3a43382",
+      "stdout_sha256": "d0be6d2750428561a078d04a93d740f237b7f4aeb9ad208f7398d4c01a4dcc38",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "commit": "6495e7c0a360a730fb58dee4159a5c6136148c0a",
+        "tree": "f2d1c82d2e60863bb4da7dee91ce89f41290af5b",
+        "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+        "clean": true
+      },
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-project-lockfile-native40-20261009/build-0-platform-lib-attempt01/images/platform-lib",
+        "sha256": "348cbc7b37c633273f7b59acb981fe1967dfef4b9130597046fc9a3f1b456654",
+        "bytes": 3372832,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_platform-13d074c9dc81c8ba"
+      },
+      "retained_image_source_closure": {
+        "receipt": {
+          "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-project-lockfile-native40-20261009/build-0-platform-lib-attempt01/receipt.json",
+          "sha256": "05e63aa70f0129e5ddf86dd85cf51c259c732fc90c7e411f1de66327235fc668"
+        },
+        "source": {
+          "commit": "4958ecc6976e5750843e1a38dc0a67a315df48a4",
+          "tree": "1318abbdb609213863bb4133b23460e90fe0d27b",
+          "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+          "clean": true
+        },
+        "source_inputs": {
+          "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-project-lockfile-native40-20261009/build-0-platform-lib-attempt01/source-inputs.json",
+          "sha256": "39504b4b5af7bea6cb569f8252e2275e2a59b93bcb8425279b812101d91c82e5"
+        },
+        "changed_paths": [
+          "crates/engine/src/project_lockfile.rs",
+          "crates/engine/src/project_lockfile/tests.rs"
+        ],
+        "unchanged_dependency_closure_excludes_manifest": "crates/engine/Cargo.toml"
+      }
+    },
+    {
+      "kind": "run",
+      "gate": 1,
+      "receipt_sha256": "37e4d7835a683a6ba8ea9ed4ba61430c8424b965d2fe50b0965b4d7a5b3f0816",
+      "stdout_sha256": "d5ef9770e39b579a54f3c0c463b197ed3f7b5c9f7d96837402b26370b0d47814",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "commit": "6495e7c0a360a730fb58dee4159a5c6136148c0a",
+        "tree": "f2d1c82d2e60863bb4da7dee91ce89f41290af5b",
+        "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+        "clean": true
+      },
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-project-lockfile-native40-20261009/build-1-library-lib-attempt01/images/library-lib",
+        "sha256": "3f18e35c7b56931c6611dac8a8c05ccc1e2d80976f4c865206e601d7867ec28b",
+        "bytes": 55342592,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_library-2545f8667d6f210c"
+      },
+      "retained_image_source_closure": {
+        "receipt": {
+          "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-project-lockfile-native40-20261009/build-1-library-lib-attempt01/receipt.json",
+          "sha256": "353ad89404073e95d1e4801c480c2db76d58e86e9d23dc913520bcd16f1d88f2"
+        },
+        "source": {
+          "commit": "4958ecc6976e5750843e1a38dc0a67a315df48a4",
+          "tree": "1318abbdb609213863bb4133b23460e90fe0d27b",
+          "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+          "clean": true
+        },
+        "source_inputs": {
+          "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-project-lockfile-native40-20261009/build-1-library-lib-attempt01/source-inputs.json",
+          "sha256": "39504b4b5af7bea6cb569f8252e2275e2a59b93bcb8425279b812101d91c82e5"
+        },
+        "changed_paths": [
+          "crates/engine/src/project_lockfile.rs",
+          "crates/engine/src/project_lockfile/tests.rs"
+        ],
+        "unchanged_dependency_closure_excludes_manifest": "crates/engine/Cargo.toml"
+      }
+    },
+    {
+      "kind": "run",
+      "gate": 2,
+      "receipt_sha256": "e382305624b49dea902fb2e8bc45c980804fdda969167827bd5a50e212390573",
+      "stdout_sha256": "ccbc83032f405c72aad81ebdabbc147abfb13f3ac2197521f0018a1d26befbd0",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "commit": "6495e7c0a360a730fb58dee4159a5c6136148c0a",
+        "tree": "f2d1c82d2e60863bb4da7dee91ce89f41290af5b",
+        "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+        "clean": true
+      },
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-project-lockfile-native40-20261009/repair-epoch/build-2-engine-lib-attempt01/images/engine-lib",
+        "sha256": "63b50ea9a7c211b8947d249d27c5a69ae810dc5fe91f3b244a07b093d19469af",
+        "bytes": 462639920,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_engine-d8f1fd294bc12763"
+      },
+      "retained_image_source_closure": null
+    },
+    {
+      "kind": "run",
+      "gate": 3,
+      "receipt_sha256": "294a9bb562181cbc2a125f3ce53c4d3f1e08a61405297a335fdf31c253adc91d",
+      "stdout_sha256": "5e6c2132c9d112dec6a3d263545fe758c3444d38d162d855c7af3fb6a99af3ac",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "commit": "6495e7c0a360a730fb58dee4159a5c6136148c0a",
+        "tree": "f2d1c82d2e60863bb4da7dee91ce89f41290af5b",
+        "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+        "clean": true
+      },
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-project-lockfile-native40-20261009/repair-epoch/build-3-local-service-lib-attempt01/images/local-service-lib",
+        "sha256": "57a9a2633063e4fd1efd50c99abc3e0347b1f2a291892efa1643c9264b79da17",
+        "bytes": 725133576,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_local_service-fb339fe309d09189"
+      },
+      "retained_image_source_closure": null
+    },
+    {
+      "kind": "run",
+      "gate": 4,
+      "receipt_sha256": "af6a5735d05551dc9c716829c7c4fd0ed5b5f23e4bc184d18aec084e87d8b23f",
+      "stdout_sha256": "d252cbaa08344d37133b4938ceed444a0e246a7c707843ae8eeb96a0c8f8a07b",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "commit": "6495e7c0a360a730fb58dee4159a5c6136148c0a",
+        "tree": "f2d1c82d2e60863bb4da7dee91ce89f41290af5b",
+        "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+        "clean": true
+      },
+      "artifact": {
+        "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-project-lockfile-native40-20261009/repair-epoch/build-4-present-lib-attempt01/images/present-lib",
+        "sha256": "a5134b435a567113d2b2c8ad22f6230da9bd0f75db4097685b3b1098f18827ad",
+        "bytes": 131482400,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_present-41c4487a653cba01"
+      },
+      "retained_image_source_closure": null
+    }
+  ],
+  "raw_logs_hashed": 26,
+  "literal_return_sha256": "41c89d10160befcf498a6cd67ef284a64c3738346d084ea050ad56c911e482fe",
+  "source_input_manifest_sha256": "2b4795d6913b92c844fd918bdfb0e90d18d268c0d61d80934ee9298b7b02364f",
+  "original_failed_cohort": "4958:39PASS/1FAIL preserved",
+  "limitations": [
+    "Darwin isolated6495 native cohort; current canonical join and installed CLI/MCP UNRUN",
+    "Platform/library binaries have explicitly retained unchanged dependency closures; engine/service/presenter are new actual producers",
+    "No Linux/Windows runtime acceptance claim"
+  ],
+  "full_git_input_audit": {
+    "root_independent_full_git_manifest_audit": "6495e7c0a360a730fb58dee4159a5c6136148c0a",
+    "entries": 17993,
+    "byte_hashes_verified": 17992,
+    "gitlinks_verified": 1,
+    "result": "PASS"
+  },
+  "canonical_replay": {
+    "source": "b6f0c8bcdec0124dc419859955cf4f497ad433a1",
+    "base": "f2560587a7c6e4a70fbc6606cded98d7a1a02f23",
+    "tree": "903c36b2715143db3c0342b151fc3f445023c623",
+    "reviewed_postimages_identical": 27,
+    "unrelated_entries_preserved": 17986,
+    "canonical_lock_sha256": "b45bb9a10382c70e6888b220e82061d038b886a5235978f9442c6483229bb1dd",
+    "native_on_join": "UNRUN",
+    "source_patch_sha256": "160ce9680947f6c6f0821a4e96f19908020bf6f6dcef1f13720ce1225eaff490"
+  },
+  "scope": "Selected lockfile membership inventory; completeness scoped to admitted file rows. Not resolved dependency edges, full Go MVS, environment resolution or complete repository coverage."
+}

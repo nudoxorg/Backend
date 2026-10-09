@@ -1,3 +1,13 @@
+Lockfile membership checkpoint — 2026-10-09
+
+The selected lockfile now enters a bounded typed inventory instead of the project synchronizer interpreting JSON/TOML lines as paths. Cargo, npm v1/v2/v3, uv, Poetry and Go module operands retain package identities, contained workspace paths and explicit unresolved evidence. Coverage describes the admitted lockfile rows, not a resolved dependency graph or whole repository. Stable descriptor reads reject symlinks, FIFOs and mid-read changes. Member, text and reply budgets are charged before persistence; refused growth leaves the original state intact.
+
+Isolated Darwin source `6495e7c0a360a730fb58dee4159a5c6136148c0a` passed all 40 controls: engine 22, service 8, schema 5, platform 4 and presenter 1. Root independently matched 13 receipt hashes, 26 complete log hashes, all 40 listed and passing names, 17,993 Git input entries and the literal graph return. The original `4958` cohort remains 39 PASS / 1 FAIL. Its valid multiline source exposed overly strict display admission; the repair admits bounded raw evidence before redaction. Duplicate unresolved identities preserve the first charged record, preventing budget drift. Platform/library artifacts have explicit retained unchanged closures; engine/service/presenter were actual new producers.
+
+The canonical replay retains all 27 reviewed postimages byte for byte and preserves PR97/98/99 plus earlier Rust/startup work. The membership reply advances to DTO 25 with a matching-build hint; CLI, MCP and daemon require one coherent build. Joined canonical, installed binaries, Linux and Windows runtime acceptance remain UNRUN. The full CLI/MCP public observer, compiler finalization race, Go package-load refusal, Python OpenWebUI deadline and GUI diagnostic/retained-content failures remain open. These native controls do not establish release readiness or a hundreds-project first-try claim.
+
+Evidence: [root native audit](../../audits/project-lockfile-membership-native-evidence-20261009.json).
+
 # Production readiness: what still needs attention
 
 ### Compiler-owner diagnostics and current runtime failures — 2026-10-09

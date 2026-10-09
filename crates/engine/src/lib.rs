@@ -54,6 +54,8 @@ pub mod index_build;
 pub mod index_publish;
 pub mod journal;
 pub mod platform;
+/// Pure, format-specific project lockfile admission.
+pub mod project_lockfile;
 pub mod publication;
 /// Static source-attributed Python packaging declarations.
 pub mod python_project;
