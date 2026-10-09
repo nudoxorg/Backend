@@ -92,7 +92,13 @@ use crate::publication::StagedSemanticObjectClaim;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedPackageSource {
     relative_path: Box<str>,
-    source: String,
+    source: OwnedPackageSourceContents,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum OwnedPackageSourceContents {
+    Utf8(String),
+    Raw(Vec<u8>),
 }
 
 impl OwnedPackageSource {
@@ -105,7 +111,7 @@ impl OwnedPackageSource {
         PackageSource::new(relative_path, source)?;
         Ok(Self {
             relative_path: relative_path.into(),
-            source: source.to_owned(),
+            source: OwnedPackageSourceContents::Utf8(source.to_owned()),
         })
     }
 
@@ -118,12 +124,41 @@ impl OwnedPackageSource {
         PackageSource::new(relative_path, &source)?;
         Ok(Self {
             relative_path: relative_path.into(),
+            source: OwnedPackageSourceContents::Utf8(source),
+        })
+    }
+
+    /// Takes exact source bytes without transcoding. Raw resources are admitted only
+    /// after the owning package selects the explicit Python profile.
+    ///
+    /// # Errors
+    /// Returns an error if the package-relative path is not normalized.
+    pub fn from_bytes(relative_path: &str, source: Vec<u8>) -> Result<Self, PackageSourceSetError> {
+        PackageSource::validate_path(relative_path)?;
+        let source = match String::from_utf8(source) {
+            Ok(text) => OwnedPackageSourceContents::Utf8(text),
+            Err(error) => OwnedPackageSourceContents::Raw(error.into_bytes()),
+        };
+        Ok(Self {
+            relative_path: relative_path.into(),
             source,
         })
     }
 
+    fn source_bytes(&self) -> &[u8] {
+        match &self.source {
+            OwnedPackageSourceContents::Utf8(text) => text.as_bytes(),
+            OwnedPackageSourceContents::Raw(bytes) => bytes,
+        }
+    }
+
     fn borrow(&self) -> Result<PackageSource<'_>, PackageSourceSetError> {
-        PackageSource::new(&self.relative_path, &self.source)
+        match &self.source {
+            OwnedPackageSourceContents::Utf8(text) => PackageSource::new(&self.relative_path, text),
+            OwnedPackageSourceContents::Raw(_) => {
+                Err(PackageSourceSetError::RawSourceProfileMismatch)
+            }
+        }
     }
 }
 
@@ -163,8 +198,13 @@ impl OwnedPackageSourceSet {
         package_root: PathBuf,
         sources: Box<[OwnedPackageSource]>,
     ) -> Result<Self, PackageSourceSetError> {
-        let borrowed = borrow_package_sources(&sources)?;
-        PackageSourceSet::new_for_unit(&request, &package_target, &package_root, &borrowed)?;
+        let borrowed = borrow_package_sources(&sources, request.target.profile)?;
+        let package =
+            PackageSourceSet::new_for_unit(&request, &package_target, &package_root, &borrowed)?;
+        if matches!(request.target.profile, LanguageProfile::Python(_)) {
+            let raw = borrow_raw_python_sources(&sources);
+            package.with_python_raw_sources(&raw)?;
+        }
         Ok(Self {
             request,
             package_target,
@@ -196,8 +236,31 @@ impl OwnedPackageSourceSet {
 
 fn borrow_package_sources(
     sources: &[OwnedPackageSource],
+    profile: LanguageProfile,
 ) -> Result<Vec<PackageSource<'_>>, PackageSourceSetError> {
-    sources.iter().map(OwnedPackageSource::borrow).collect()
+    sources
+        .iter()
+        .filter_map(|source| match &source.source {
+            OwnedPackageSourceContents::Raw(_) if matches!(profile, LanguageProfile::Python(_)) => {
+                None
+            }
+            _ => Some(source.borrow()),
+        })
+        .collect()
+}
+
+fn borrow_raw_python_sources(
+    sources: &[OwnedPackageSource],
+) -> Vec<backend_frontend_python::legacy::checker::PythonProjectBytesSource<'_>> {
+    sources
+        .iter()
+        .map(
+            |source| backend_frontend_python::legacy::checker::PythonProjectBytesSource {
+                relative_path: &source.relative_path,
+                source: source.source_bytes(),
+            },
+        )
+        .collect()
 }
 
 /// Exact owned storage paths retained by the compiler worker.
@@ -4780,13 +4843,28 @@ fn run_lane(
                 } else {
                     run_lane_attempt(
                         || {
-                            let sources = borrow_package_sources(&request.sources)?;
+                            let sources = borrow_package_sources(
+                                &request.sources,
+                                request.request.target.profile,
+                            )?;
+                            let raw_sources = if matches!(
+                                request.request.target.profile,
+                                LanguageProfile::Python(_)
+                            ) {
+                                Some(borrow_raw_python_sources(&request.sources))
+                            } else {
+                                None
+                            };
                             let package = PackageSourceSet::new_for_unit(
                                 &request.request,
                                 &request.package_target,
                                 &request.package_root,
                                 &sources,
                             )?;
+                            let package = match raw_sources.as_ref() {
+                                Some(raw_sources) => package.with_python_raw_sources(raw_sources)?,
+                                None => package,
+                            };
                             let package = match go_authority_witness.as_ref() {
                                 Some(witness) => package.with_go_authority_witness(witness),
                                 None => package,
@@ -6232,5 +6310,45 @@ mod rust_request_authority_tests {
             ),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod python_raw_source_ownership_tests {
+    use super::*;
+
+    #[test]
+    fn python_raw_frontier_keeps_unavailable_bytes_and_borrows_utf8_without_copying() {
+        let good = b"answer = 42\n".to_vec();
+        let good_pointer = good.as_ptr();
+        let raw = b"# coding: latin-1\nname = 'caf\xe9'\n".to_vec();
+        let raw_pointer = raw.as_ptr();
+        let sources = [
+            OwnedPackageSource::from_bytes("good.py", good).unwrap(),
+            OwnedPackageSource::from_bytes("latin.py", raw).unwrap(),
+        ];
+        let decoded = borrow_package_sources(
+            &sources,
+            LanguageProfile::Python(backend_semantic::vocabulary::PythonVersion::Python314),
+        )
+        .unwrap();
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].source().as_ptr(), good_pointer);
+        let frontier = borrow_raw_python_sources(&sources);
+        assert_eq!(frontier.len(), 2);
+        assert_eq!(frontier[0].source.as_ptr(), good_pointer);
+        assert_eq!(frontier[1].source.as_ptr(), raw_pointer);
+        assert_eq!(frontier[1].source, b"# coding: latin-1\nname = 'caf\xe9'\n");
+        assert!(matches!(
+            borrow_package_sources(
+                &sources,
+                LanguageProfile::Rust(backend_semantic::vocabulary::RustEdition::Rust2024)
+            ),
+            Err(PackageSourceSetError::RawSourceProfileMismatch)
+        ));
+        assert!(matches!(
+            OwnedPackageSource::from_bytes("../escaped.py", vec![255]),
+            Err(PackageSourceSetError::InvalidPath)
+        ));
     }
 }

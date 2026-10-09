@@ -201,22 +201,22 @@ pub(super) struct CompilerConfigurationFile {
 
 /// Compact source capability retained between baseline parsing and compiler
 /// admission. The compiler rereads this path through `ProjectRoot` and checks
-/// the exact identity before constructing the contiguous text it needs.
+/// the exact identity before constructing its bounded byte owner.
 #[derive(Clone)]
 pub(super) struct CompilerSourceHandle {
     pub(super) relative_path: String,
     pub(super) profile: LanguageProfile,
     pub(super) content: [u8; 32],
-    /// Exact source-fact identity persisted with the corresponding source row.
+    /// Exact source-fact identity bound to the captured bytes, including unavailable rows.
     pub(super) source_fact_identity: SourceFactIdentity,
 }
 
-/// UTF-8 source admitted for one exact semantic authority slot.
+/// Exact source bytes admitted for one semantic authority slot; Python may remain undecoded.
 #[derive(Clone)]
 pub(super) struct CompilerSource {
     pub(super) relative_path: String,
     pub(super) profile: LanguageProfile,
-    pub(super) source: String,
+    pub(super) source: Vec<u8>,
     pub(super) content: [u8; 32],
     /// Exact source-fact identity revalidated during compiler admission.
     pub(super) source_fact_identity: SourceFactIdentity,
@@ -2494,17 +2494,73 @@ fn scan_one(
     // Move the bounded read buffer into its UTF-8 owner to avoid a second
     // per-file source allocation. The scan-wide source, retained-text, row,
     // and in-flight budgets are separate policy limits.
-    let source = String::from_utf8(bytes).map_err(|error| {
-        SourceFault::UnavailableRead(SourceUnavailableReason::NotText, error.as_bytes().len())
-    })?;
+    let source = match String::from_utf8(bytes) {
+        Ok(source) => source,
+        Err(error) if matches!(profile, LanguageProfile::Python(_)) => {
+            // Raw Python resources remain in the independent compiler frontier.
+            // The browsing row stays NotText; native intake records the exact
+            // codec/byte refusal without manufacturing replacement source.
+            let mut unavailable = unavailable_file(
+                root,
+                path,
+                project,
+                frontends,
+                SourceUnavailableReason::NotText,
+                source_bytes,
+            )
+            .map_err(SourceFault::Fatal)?;
+            unavailable.compiler_source = Some(CompilerSourceHandle {
+                relative_path: relative,
+                profile,
+                content,
+                source_fact_identity: SourceFactIdentity::from_canonical_bytes(error.as_bytes()),
+            });
+            unavailable.source_bytes = source_bytes;
+            return Ok(unavailable);
+        }
+        Err(error) => {
+            return Err(SourceFault::UnavailableRead(
+                SourceUnavailableReason::NotText,
+                error.as_bytes().len(),
+            ));
+        }
+    };
     // Structural parsing is an explicit baseline projection for local browsing.
     // Package semantics are compiled and published by the engine application module.
-    let analyzed = frontend
+    let analyzed = match frontend
         .baseline
         .analyze(Path::new(&relative), source.as_bytes())
-        .map_err(|_| {
-            SourceFault::UnavailableRead(SourceUnavailableReason::Unparsed, source_bytes)
-        })?;
+    {
+        Ok(analyzed) => analyzed,
+        Err(_) if matches!(profile, LanguageProfile::Python(_)) => {
+            // Browsing keeps the truthful Unparsed row. The independent native
+            // project still receives these exact decoded bytes so it can retain
+            // parser diagnostics and a source gap without dropping this member.
+            let mut unavailable = unavailable_file(
+                root,
+                path,
+                project,
+                frontends,
+                SourceUnavailableReason::Unparsed,
+                source_bytes,
+            )
+            .map_err(SourceFault::Fatal)?;
+            unavailable.compiler_source = Some(CompilerSourceHandle {
+                relative_path: relative,
+                profile,
+                content,
+                source_fact_identity: SourceFactIdentity::from_canonical_bytes(source.as_bytes()),
+            });
+            unavailable.source_bytes = source_bytes;
+            return Ok(unavailable);
+        }
+        Err(_) => {
+            return Err(SourceFault::UnavailableRead(
+                SourceUnavailableReason::Unparsed,
+                source_bytes,
+            ));
+        }
+    };
     debug_assert_eq!(analyzed.language(), frontend.language());
     debug_assert_eq!(analyzed.content().to_bytes(), content);
     // Facts are produced from the full frontend result before the compact
@@ -2680,8 +2736,8 @@ fn finish_scanned_file(
 }
 
 /// Reopens fresh and reused source handles through [`ProjectRoot`]. Both paths
-/// must still hash to the identity admitted during scanning before contiguous
-/// UTF-8 strings are created for the compiler boundary. The immutable policy
+/// must still hash to the identity admitted during scanning before exact byte
+/// owners enter the compiler boundary. Non-Python sources must remain UTF-8. The immutable policy
 /// comes from the same scan that created these handles; it is never re-read
 /// from the environment midway through an index attempt.
 pub(super) fn admit_compiler_sources_for_scan(
@@ -2794,8 +2850,10 @@ fn materialize_compiler_sources(
             .admit_retained_total(retained_bytes, bytes.len())
             .map_err(|refusal| refusal.to_string())?;
         check_scan_cancellation(cancellation)?;
-        let source =
-            String::from_utf8(bytes).map_err(|_| format!("source {path} is no longer UTF-8"))?;
+        if !matches!(profile, LanguageProfile::Python(_)) && std::str::from_utf8(&bytes).is_err() {
+            return Err(format!("source {path} is no longer UTF-8"));
+        }
+        let source = bytes;
         admitted.push(CompilerSource {
             relative_path: path,
             profile,
@@ -3401,7 +3459,10 @@ mod tests {
         assert_eq!(
             admitted
                 .iter()
-                .map(|source| (source.relative_path.as_str(), source.source.as_str()))
+                .map(|source| (
+                    source.relative_path.as_str(),
+                    std::str::from_utf8(&source.source).expect("UTF-8 fixture")
+                ))
                 .collect::<Vec<_>>(),
             [("edited.rs", edited_v2), ("kept.rs", kept.as_str())]
         );
@@ -4075,7 +4136,7 @@ mod tests {
             admitted[0].source_fact_identity,
             SourceFactIdentity::from_canonical_bytes(source.as_bytes())
         );
-        assert_eq!(admitted[0].source, source);
+        assert_eq!(admitted[0].source.as_slice(), source.as_bytes());
         fs::remove_dir_all(&root).map_err(|error| error.to_string())?;
         Ok(())
     }
@@ -4219,7 +4280,7 @@ mod tests {
             None,
         )?;
         assert_eq!(admitted.len(), 1);
-        assert_eq!(admitted[0].source.as_bytes(), source);
+        assert_eq!(admitted[0].source.as_slice(), source);
         let snapshot = CompilerWorkspaceSnapshot::open(&root)?;
         assert!(snapshot.revalidate()?);
         fs::remove_dir_all(&root).map_err(|error| error.to_string())?;
@@ -4625,7 +4686,10 @@ mod tests {
         assert_eq!(
             admitted
                 .iter()
-                .map(|source| (source.relative_path.as_str(), source.source.as_str()))
+                .map(|source| (
+                    source.relative_path.as_str(),
+                    std::str::from_utf8(&source.source).expect("UTF-8 fixture")
+                ))
                 .collect::<Vec<_>>(),
             [("lib.rs", rust_v2)]
         );
@@ -4727,7 +4791,7 @@ mod tests {
         )?;
         assert_eq!(admitted.len(), 1);
         assert_eq!(admitted[0].relative_path, "old/src/lib.rs");
-        assert_eq!(admitted[0].source, old_v2);
+        assert_eq!(admitted[0].source.as_slice(), old_v2.as_bytes());
         assert_eq!(
             compilation_profile(
                 scratch.as_path(),
@@ -5091,6 +5155,72 @@ mod robustness_tests {
     fn scan(scratch: &Scratch) -> Result<IndexSnapshot, String> {
         let root = scratch.0.to_str().ok_or("non-UTF-8 scratch path")?;
         scan_project(root, [8; 32], &BTreeMap::new())
+    }
+
+    #[test]
+    fn python_unavailable_resources_keep_baseline_rows_and_exact_compiler_frontier()
+    -> Result<(), String> {
+        let scratch = scratch("python-raw-frontier")?;
+        let files: [(&str, &[u8]); 3] = [
+            ("good.py", b"def answer():\n    return 42\n"),
+            ("invalid.pyi", b"x y\n"),
+            ("latin.py", b"# coding: latin-1\nname = 'caf\xe9'\n"),
+        ];
+        for (path, bytes) in files {
+            fs::write(scratch.0.join(path), bytes).map_err(|e| e.to_string())?;
+        }
+        let snapshot = scan(&scratch)?;
+        assert_eq!(
+            retention_of(&snapshot, "invalid.pyi"),
+            Some(DeclarationRetention::Unavailable(
+                SourceUnavailableReason::Unparsed
+            ))
+        );
+        assert_eq!(
+            retention_of(&snapshot, "latin.py"),
+            Some(DeclarationRetention::Unavailable(
+                SourceUnavailableReason::NotText
+            ))
+        );
+        assert!(
+            names_of(&snapshot, "good.py")
+                .iter()
+                .any(|name| name == "answer")
+        );
+        assert_eq!(snapshot.compiler_sources.len(), files.len());
+        for handle in &snapshot.compiler_sources {
+            let bytes = files
+                .iter()
+                .find(|(path, _)| *path == handle.relative_path)
+                .ok_or("compiler handle does not match the retained raw fixture")?
+                .1;
+            assert_eq!(
+                handle.content,
+                typed_of::<InputContentSchema>(bytes).to_bytes()
+            );
+            assert_eq!(
+                handle.source_fact_identity,
+                SourceFactIdentity::from_canonical_bytes(bytes)
+            );
+        }
+        let admitted = admit_compiler_sources_for_scan(
+            &scratch.0,
+            &snapshot.revision_fence,
+            snapshot.compiler_sources,
+            snapshot.reused_compiler_files,
+            snapshot.source_admission_policy,
+            None,
+        )?;
+        assert_eq!(admitted.len(), files.len());
+        for source in &admitted {
+            let bytes = files
+                .iter()
+                .find(|(path, _)| *path == source.relative_path)
+                .ok_or("compiler source does not match the retained raw fixture")?
+                .1;
+            assert_eq!(source.source, bytes);
+        }
+        Ok(())
     }
 
     #[test]

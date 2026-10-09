@@ -12,7 +12,9 @@ use std::time::Instant;
 
 use backend_semantic::vocabulary::PythonVersion;
 
-use super::{CheckerError, CheckerReport, Workspace};
+use super::{
+    CheckerError, CheckerReport, PythonSourceDecodeFault, Workspace, decode_python_source,
+};
 use crate::legacy::{DeclarationKind, Span, extract};
 
 const CONFIG_BYTES: u64 = 1024 * 1024;
@@ -90,7 +92,7 @@ fn native_producer_capture() -> Result<(NativePythonProducerIdentity, FileWitnes
         ))
         .as_bytes(),
     );
-    identity.update(b"root-isolated;named-single-package-import-root.v1;captured-diagnostic-baseline.v1;root-pinned-config-inputs.v1;fresh-state;classdef-declaration+constructor-callee;captured-candidates;depth64;work262144\0");
+    identity.update(b"root-isolated;named-single-package-import-root.v1;captured-diagnostic-baseline.v1;root-pinned-config-inputs.v1;fresh-state;per-file-raw-intake.v1;native-syntax-diagnostics;unavailable-exact-rdeps;classdef-declaration+constructor-callee;captured-candidates;depth64;work262144\0");
     identity.update(digest.as_bytes());
     identity.update(&size.to_be_bytes());
     host.validate_current()?;
@@ -107,6 +109,31 @@ pub struct PythonProjectSource<'source> {
     pub relative_path: &'source str,
     /// Exact selected UTF-8 source bytes.
     pub source: &'source str,
+}
+
+/// Exact raw member of the selected frontier, including unavailable source resources.
+#[derive(Clone, Copy, Debug)]
+pub struct PythonProjectBytesSource<'source> {
+    /// Normalized original package-relative path.
+    pub relative_path: &'source str,
+    /// Exact original bytes; unsupported codecs are retained without replacement text.
+    pub source: &'source [u8],
+}
+
+/// Whether this exact raw source has admitted syntax and native semantic facts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PythonProjectSourceStatus {
+    /// Syntax is admitted; the native report may still contain ordinary unavailable facts.
+    Analyzed,
+    /// Syntax was rejected; native parser diagnostics remain in the project report.
+    UnavailableSyntax,
+    /// No decoded source was admitted for this resource.
+    UnavailableEncoding(PythonSourceDecodeFault),
+    /// Native solved dependencies reach one or more unavailable exact resources.
+    UnavailableDependency {
+        /// Sorted exact captured paths reached through the native dependency graph.
+        dependencies: Box<[Box<str>]>,
+    },
 }
 
 /// Cancellation and deadline shared by the entire project transaction.
@@ -168,11 +195,18 @@ pub struct PythonProjectReport {
     witness: std::sync::Arc<PythonProjectWitness>,
     diagnostics: Box<[PythonProjectDiagnostic]>,
     coverage_gaps: Box<[PythonProjectCoverageGap]>,
+    source_statuses: BTreeMap<Box<str>, PythonProjectSourceStatus>,
 }
 
 /// A dependency operation that the finite native mirror does not certify.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PythonProjectCoverageGapKind {
+    /// Exact source bytes remain captured but its syntax has no admitted semantic authority.
+    UnavailableSyntax,
+    /// Exact raw source bytes remain captured but decoding was explicitly unavailable.
+    UnavailableEncoding,
+    /// Native reverse dependency closure reaches an unavailable resource.
+    UnavailableDependency,
     /// A runtime import primitive may choose modules beyond syntactic imports.
     DynamicImport,
     /// A runtime enumeration primitive may inspect installed module membership.
@@ -190,7 +224,7 @@ pub enum PythonProjectCoverageGapKind {
 pub struct PythonProjectCoverageGap {
     /// Original package-relative source module.
     pub relative_path: Box<str>,
-    /// UTF-8 range of the dependency operation.
+    /// Original raw-byte range of the operation or unavailable resource.
     pub span: Span,
     /// Exact unsupported or unavailable dependency operation family.
     pub kind: PythonProjectCoverageGapKind,
@@ -212,6 +246,12 @@ pub struct PythonProjectDiagnostic {
 }
 
 impl PythonProjectReport {
+    /// Per-file admission status; every selected raw path remains represented.
+    #[must_use]
+    pub fn source_status(&self, relative_path: &str) -> Option<&PythonProjectSourceStatus> {
+        self.source_statuses.get(relative_path)
+    }
+
     /// Partial dependency coverage remains explicit even when native types exist.
     #[must_use]
     pub fn coverage_gaps(&self) -> &[PythonProjectCoverageGap] {
@@ -249,7 +289,7 @@ impl CapturedProjectLayout {
     fn new(
         workspace: &Path,
         original: &Path,
-        sources: &[PythonProjectSource<'_>],
+        sources: &[PythonProjectBytesSource<'_>],
     ) -> Result<Self, CheckerError> {
         if !sources
             .iter()
@@ -799,6 +839,32 @@ impl NativePythonProjectAuthority {
         profile: PythonVersion,
         control: PythonProjectControl<'_>,
     ) -> Result<PythonProjectReport, CheckerError> {
+        let bytes = sources
+            .iter()
+            .map(|source| PythonProjectBytesSource {
+                relative_path: source.relative_path,
+                source: source.source.as_bytes(),
+            })
+            .collect::<Vec<_>>();
+        self.analyze_project_bytes(package_root, package_name, &bytes, profile, control)
+    }
+
+    /// Captures every exact raw member, returning per-file syntax or encoding unavailability.
+    ///
+    /// Decoded invalid syntax is submitted to the native parser for its actual diagnostics,
+    /// but cannot contribute recovered semantic declarations or inferred types. Unsupported
+    /// codecs remain original bytes in the mirror and witness; no dummy text is substituted.
+    ///
+    /// # Errors
+    /// Infrastructure, identity, closure, cancellation and deadline failures still abort.
+    pub fn analyze_project_bytes(
+        &self,
+        package_root: &Path,
+        package_name: &str,
+        raw_sources: &[PythonProjectBytesSource<'_>],
+        profile: PythonVersion,
+        control: PythonProjectControl<'_>,
+    ) -> Result<PythonProjectReport, CheckerError> {
         let control = PythonProjectControl {
             deadline: control.deadline.min(
                 Instant::now()
@@ -823,12 +889,15 @@ impl NativePythonProjectAuthority {
             });
         }
         let workspace = Workspace::create()?;
-        let layout = CapturedProjectLayout::new(&workspace.path, package_root, sources)?;
+        let layout = CapturedProjectLayout::new(&workspace.path, package_root, raw_sources)?;
         let mirror = layout.source_root();
         std::fs::create_dir_all(&mirror).map_err(workspace_error)?;
         let mut paths = BTreeSet::new();
         let mut directories = BTreeSet::from([PathBuf::new()]);
         let mut facts = BTreeMap::new();
+        let mut rejected = BTreeMap::new();
+        let mut source_statuses = BTreeMap::new();
+        let mut sources = Vec::new();
         let (current_producer, host_witness) = native_producer_capture()?;
         if current_producer != self.producer {
             return Err(CheckerError::NativeProducerIdentity {
@@ -844,7 +913,7 @@ impl NativePythonProjectAuthority {
             baselines: CapturedBaselines::default(),
         };
         let mut mirror_witness = Vec::new();
-        for source in sources {
+        for source in raw_sources {
             checkpoint(control)?;
             let path = Path::new(source.relative_path);
             if source.relative_path.is_empty()
@@ -861,12 +930,38 @@ impl NativePythonProjectAuthority {
                     "invalid or duplicate source path",
                 ));
             }
-            let syntax = extract(source.source.as_bytes(), profile).map_err(|source_error| {
-                CheckerError::ProjectSyntax {
-                    path: PathBuf::from(source.relative_path),
-                    source: Box::new(source_error),
-                }
+            u32::try_from(source.source.len()).map_err(|_| {
+                project_error(
+                    source.relative_path,
+                    "selected source extent exceeds IR bounds",
+                )
             })?;
+            let status = match decode_python_source(source.source) {
+                Ok(text) => {
+                    sources.push(PythonProjectSource {
+                        relative_path: source.relative_path,
+                        source: text,
+                    });
+                    match extract(text.as_bytes(), profile) {
+                        Ok(syntax) => {
+                            facts.insert(source.relative_path, syntax);
+                            PythonProjectSourceStatus::Analyzed
+                        }
+                        Err(crate::legacy::ExtractionError::RejectedSyntax { rejection }) => {
+                            rejected.insert(source.relative_path, rejection);
+                            PythonProjectSourceStatus::UnavailableSyntax
+                        }
+                        Err(source_error) => {
+                            return Err(CheckerError::ProjectSyntax {
+                                path: path.into(),
+                                source: Box::new(source_error),
+                            });
+                        }
+                    }
+                }
+                Err(fault) => PythonProjectSourceStatus::UnavailableEncoding(fault),
+            };
+            source_statuses.insert(source.relative_path.into(), status);
             let target = mirror.join(path);
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent).map_err(workspace_error)?;
@@ -875,8 +970,7 @@ impl NativePythonProjectAuthority {
             mirror_witness.push(FileWitness::capture(target)?);
             let original = FileWitness::capture(package_root.join(path))?;
             if let Some((digest, size)) = original.digest
-                && (digest != blake3::hash(source.source.as_bytes())
-                    || size != source.source.len() as u64)
+                && (digest != blake3::hash(source.source) || size != source.source.len() as u64)
             {
                 return Err(project_error(
                     source.relative_path,
@@ -884,7 +978,6 @@ impl NativePythonProjectAuthority {
                 ));
             }
             witness.files.push(original);
-            facts.insert(source.relative_path, syntax);
             let mut parent = path.parent();
             while let Some(directory) = parent {
                 directories.insert(directory.to_path_buf());
@@ -961,8 +1054,10 @@ impl NativePythonProjectAuthority {
                 &layout,
                 package_root,
                 package_name,
-                sources,
+                &sources,
+                raw_sources,
                 &facts,
+                &rejected,
                 &witness.baselines,
                 profile,
                 control,
@@ -977,12 +1072,12 @@ impl NativePythonProjectAuthority {
         witness.baselines.fingerprint(&mut identity);
         hash_field(&mut identity, package_name.as_bytes());
         hash_field(&mut identity, super::profile_tag(profile).as_bytes());
-        let mut selected = sources.iter().collect::<Vec<_>>();
+        let mut selected = raw_sources.iter().collect::<Vec<_>>();
         selected.sort_by_key(|source| source.relative_path);
         for source in selected {
             identity.update(b"selected-source\0");
             hash_field(&mut identity, source.relative_path.as_bytes());
-            hash_field(&mut identity, source.source.as_bytes());
+            hash_field(&mut identity, source.source);
         }
         let mut probes = witness.files.iter().collect::<Vec<_>>();
         probes.sort_by_key(|file| &file.path);
@@ -1021,10 +1116,35 @@ impl NativePythonProjectAuthority {
             file.validate_current()?;
         }
         checkpoint(control)?;
+        for (path, dependencies) in native.unavailable_dependencies {
+            source_statuses.insert(
+                path,
+                PythonProjectSourceStatus::UnavailableDependency { dependencies },
+            );
+        }
+        let mut modules = native.modules;
+        let mut coverage_gaps = native.coverage_gaps;
+        for source in raw_sources {
+            if matches!(
+                source_statuses[source.relative_path],
+                PythonProjectSourceStatus::UnavailableEncoding(_)
+            ) {
+                modules.insert(source.relative_path.into(), CheckerReport::default());
+                coverage_gaps.push(PythonProjectCoverageGap {
+                    relative_path: source.relative_path.into(),
+                    span: Span {
+                        start: 0,
+                        end: source.source.len() as u32,
+                    },
+                    kind: PythonProjectCoverageGapKind::UnavailableEncoding,
+                });
+            }
+        }
         Ok(PythonProjectReport {
-            modules: native.modules,
+            modules,
             diagnostics: native.diagnostics.into_boxed_slice(),
-            coverage_gaps: native.coverage_gaps.into_boxed_slice(),
+            coverage_gaps: coverage_gaps.into_boxed_slice(),
+            source_statuses,
             witness: std::sync::Arc::new(witness),
         })
     }
@@ -1064,9 +1184,9 @@ mod capture_layout_tests {
     fn named_package_capture_maps_only_its_finite_source_anchor() {
         let workspace = std::env::temp_dir().join("owned-python-layout-control");
         let original = std::env::temp_dir().join("original-python-layout-control/mealie");
-        let sources = [PythonProjectSource {
+        let sources = [PythonProjectBytesSource {
             relative_path: "__init__.py",
-            source: "",
+            source: b"",
         }];
         let layout = CapturedProjectLayout::new(&workspace, &original, &sources).unwrap();
         assert_eq!(layout.source_root(), workspace.join("imports/mealie"));
@@ -1107,16 +1227,16 @@ mod capture_layout_tests {
     fn repository_capture_keeps_original_root_law_and_stub_package_leaf() {
         let workspace = std::env::temp_dir().join("owned-python-repository-control");
         let original = std::env::temp_dir().join("original-python-repository-control/mealie");
-        let sources = [PythonProjectSource {
+        let sources = [PythonProjectBytesSource {
             relative_path: "module.py",
-            source: "",
+            source: b"",
         }];
         let flat = CapturedProjectLayout::new(&workspace, &original, &sources).unwrap();
         assert_eq!(flat.source_root(), workspace.join("project"));
         assert_eq!(flat.capture_root(), flat.source_root());
-        let stubs = [PythonProjectSource {
+        let stubs = [PythonProjectBytesSource {
             relative_path: "__init__.pyi",
-            source: "",
+            source: b"",
         }];
         let named = CapturedProjectLayout::new(&workspace, &original, &stubs).unwrap();
         assert_eq!(named.source_root(), workspace.join("imports/mealie"));
