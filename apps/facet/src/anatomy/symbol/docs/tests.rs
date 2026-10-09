@@ -269,8 +269,8 @@ fn compiled_symbol_kinds_and_languages_expose_the_painted_words_at_large_text(
                     "{kind:?}/{lang:?}/{scale}: authored lede"
                 );
                 assert!(
-                    has(&native, "Label", "Nothing in your workspace names it."),
-                    "zero items are said honestly"
+                    has(&native, "Label", "Reference information has not been read."),
+                    "missing reference evidence is not a zero-users claim"
                 );
                 assert!(has(&native, "Heading", "IN YOUR WORKSPACE"));
                 assert!(
@@ -614,6 +614,7 @@ fn actual_usage_locations_code_and_package_filters_are_native_named_controls(
                 approx: false,
             })
             .collect(),
+        evidence: symbol::view::UseEvidence::Reported { reported: 3, readable: 3 },
         elsewhere: None,
     };
     uses.all.push(symbol::view::Use {

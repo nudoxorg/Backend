@@ -152,6 +152,7 @@ pub(crate) fn dossier() -> PackageDossier {
         children: Arc::from(children),
     };
     PackageDossier {
+        project_tree: crate::model::project_browse::ProjectTreeCapability::Unestablished,
         package: package(),
         record: Known::Known(PackageRecord {
             package: package(),
@@ -293,8 +294,7 @@ impl PageReader for Fixture {
                 indexed: Known::Known(Arc::from([IndexedPackage {
                     package: package(),
                     name: Arc::from("present"),
-                    readiness: Readiness::Ready,
-                    verified_registry_release: None,
+                    readiness: Readiness::Ready, verified_registry_release: None,
                 }])),
                 projects: Known::Known(Arc::from([])),
                 explore: Known::Unknown(unknown(GapReason::NotServed)),
@@ -422,6 +422,34 @@ pub(crate) fn rig_with_reads(cx: &mut TestAppContext, route: Option<Route>, widt
     rig_with_engine(cx, route, width, height, pool, RootOnly)
 }
 
+/// Saved projects belong to the actual runtime before its first snapshot is
+/// published. Seeding only DataStore would be undone by the next real intent.
+pub(crate) fn rig_with_saved_projects(cx: &mut TestAppContext, width: f32, height: f32,
+    pool: ReadPool, projects: Arc<[crate::model::WorkspaceProject]>, active: LocalProjectId) -> Rig
+{
+    assert!(projects.iter().any(|project| project.id == active));
+    rig_with_engine_gate_at_root_keep(cx, Some(Route::Orbit(crate::navigation::OrbitRoute::Home)),
+        width, height, pool, RootOnly, None,
+        VersionedRoot::synthetic(backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4),
+        None, Some((projects, active)), RigProjection::Fixture)
+}
+
+/// Real socket reads may wait on the owner's worker while this window still
+/// uses the small graph fixture. Keep that I/O on the unchanged real deadline;
+/// the virtual frame watchdog remains active whenever the reads are idle.
+pub(crate) fn rig_with_owner_reads(
+    cx: &mut TestAppContext,
+    route: Option<Route>,
+    width: f32,
+    height: f32,
+    pool: ReadPool,
+    engine: impl EngineClient,
+) -> Rig {
+    rig_with_engine_gate_at_root_keep(cx, route, width, height, pool, engine, None,
+        VersionedRoot::synthetic(backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4),
+        None, None, RigProjection::FixtureOwnerReads)
+}
+
 /// [`rig_with_reads`] over an engine of the caller's (an index that fails,
 /// say), instead of the one that answers only the root.
 pub(crate) fn rig_with_engine(
@@ -464,7 +492,7 @@ fn rig_with_engine_gate_at_root(
 }
 
 #[derive(Clone, Copy)]
-enum RigProjection { Fixture, IndexedOwner }
+enum RigProjection { Fixture, FixtureOwnerReads, IndexedOwner }
 
 /// The production graph key/read path, without installing TestProjection.
 /// The caller supplies the actual certified service revision and real lanes.
@@ -499,7 +527,7 @@ fn rig_with_engine_gate_at_root_keep(
     gate: Option<OwnerGate>,
     initial_root: VersionedRoot,
     keep: Option<crate::runtime::snapshot::Keep>,
-    initial_project: Option<crate::model::WorkspaceProject>,
+    initial_projects: Option<(Arc<[crate::model::WorkspaceProject]>, LocalProjectId)>,
     projection: RigProjection,
 ) -> Rig {
     let cold = keep.is_some();
@@ -514,9 +542,9 @@ fn rig_with_engine_gate_at_root_keep(
     let _ = std::fs::create_dir_all(&folder);
     let mut workspace = snapshot.workspace().clone();
     workspace.host = LocalProjectId::from_path(&folder).ok();
-    if let Some(project) = initial_project {
-        workspace.active = Some(project.id.clone());
-        workspace.projects = Arc::from([project]);
+    if let Some((projects, active)) = initial_projects {
+        workspace.active = Some(active);
+        workspace.projects = projects;
     }
     snapshot = snapshot.with_workspace(workspace);
     snapshot = snapshot.with_session(SessionState::default());
@@ -575,7 +603,7 @@ fn rig_with_engine_gate_at_root_keep(
         rig.draw();
     } else {
         rig.settle();
-        if matches!(projection, RigProjection::Fixture) {
+        if matches!(projection, RigProjection::Fixture | RigProjection::FixtureOwnerReads) {
             let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
             rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture(root, cx));
         }
@@ -647,7 +675,7 @@ impl Rig {
             // A virtual 28 s frame budget cannot time out 80 ms of real I/O.
             // Keep its real deadline for pending owner work; once no real
             // work is pending, the ordinary frame watchdog applies again.
-            let actual_io = matches!(self.projection, RigProjection::IndexedOwner)
+            let actual_io = matches!(self.projection, RigProjection::IndexedOwner | RigProjection::FixtureOwnerReads)
                 && (reading || root_work);
             if asking && !actual_io {
                 rounds += 1;
@@ -726,6 +754,41 @@ impl Rig {
     }
 }
 
+/// Passive native boundary evidence: reads the existing committed frame and
+/// exact runtime state without drawing, settling, issuing input or reopening
+/// any resource. This cannot supply the missing wake it diagnoses.
+pub(crate) fn native_boundary_evidence(rig: &mut Rig, label: &str) {
+    let runtime = rig.graph.store.read_with(rig.cx, |store, _| {
+        serde_json::json!({
+            "owner": format!("{:?}", store.current_owner_attachment()),
+            "root": format!("{:?}", store.snapshot().key()),
+            "pool": format!("{:?}", store.pool_activity()),
+        })
+    });
+    let root_pending = rig.graph.root.read_with(rig.cx, |root, _| root.has_pending_work());
+    let shell = rig.shell.read_with(rig.cx, |shell, cx| {
+        let (open, scene, live) = shell.diagnostic_drawer_motion(cx);
+        serde_json::json!({
+        "logical_focus": format!("{:?}", shell.focus_state(cx)),
+        "drawer": {"open": open, "raw_live": live,
+            "scene": scene.map(|scene| serde_json::json!({"visible": scene.visible, "moving": scene.moving, "offset": f32::from(scene.offset)}))},
+        "docked_scope": format!("{:?}", shell.shelf_input_scope(false, cx)),
+        "drawer_scope": format!("{:?}", shell.shelf_input_scope(true, cx)),
+        "toggle_admitted": shell.admits_shelf_toggle_scope(shell.local_activation_scope(), cx),
+    })});
+    let route = format!("{:?}", rig.route());
+    let said = rig.said();
+    let native = rig.cx.update(|window, cx| serde_json::json!({
+        "focused": format!("{:?}", window.focused(cx)),
+        "painted": window.painted_texts().iter().map(|text| text.text.to_string()).collect::<Vec<_>>(),
+        "accessibility": window.debug_a11y_tree_json(),
+    }));
+    eprintln!("nudox-native-boundary {}", serde_json::json!({
+        "label": label, "route": route, "runtime": runtime,
+        "root_pending": root_pending, "shell": shell, "said": said, "native": native,
+    }));
+}
+
 /// Bounds from the mounted native accessibility node, rather than a GPUI
 /// debug selector (which an element ID does not create). A requested Click
 /// must be exposed by that same node before a test uses its pointer bounds.
@@ -764,6 +827,9 @@ fn native_bounds_at(
     rig.repaint();
     let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native tree");
     let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
+    assert!(debug_id.is_none() || tree["nodes"].as_object().expect("native nodes").values()
+        .any(|node| node["element_id"].is_string()),
+        "an exact native identity query requires test-support creator metadata; absent instrumentation cannot prove an absent control");
     let mut matching = tree["nodes"].as_object().expect("native nodes").values().filter(|node| {
         node["aria"]["role"].as_str() == Some(role)
             && node["aria"]["label"].as_str() == Some(label)
@@ -968,13 +1034,22 @@ fn native_tree_rig(cx: &mut TestAppContext, gate: Option<OwnerGate>) -> Rig {
     rig
 }
 
-fn click_native_tree(rig: &mut Rig, part: &str) {
+fn click_native_tree(rig: &mut Rig, key: &str) {
     let ledger = crate::shell::anatomy_tests::painted(rig);
     let target = ledger
         .targets
         .iter()
-        .find(|target| target.key.ends_with(part))
-        .unwrap_or_else(|| panic!("mounted Tree target {part:?} was absent"));
+        .find(|target| target.key == key)
+        .unwrap_or_else(|| {
+            native_boundary_evidence(rig, "mounted-tree-control-absent");
+            rig.graph.store.read_with(rig.cx, |store, _| {
+                if let Route::Orbit(crate::navigation::OrbitRoute::Browse(route)) = store.snapshot().route() {
+                    let key = crate::model::browse::BrowseKey::from(route);
+                    eprintln!("nudox-native-boundary tree-resource={:?}", store.pages().browse(&key));
+                }
+            });
+            panic!("mounted Tree target {key:?} was absent; actual mounted targets: {:?}", ledger.targets)
+        });
     let at = point(
         px(target.bounds.x + target.bounds.width / 2.0),
         px(target.bounds.y + target.bounds.height / 2.0),
@@ -988,14 +1063,28 @@ fn click_native_tree(rig: &mut Rig, part: &str) {
 fn native_tree_control_keys() -> (String, String) {
     let project = LocalProjectId::new("/fixture/native-tree").expect("fixture request");
     let (model, package, _) = crate::runtime::store::cargo_context_tests::fixture(&project);
-    let row = model.links.iter().flat_map(|role| role.rows.iter())
+    let (role, row) = model.links.iter().find_map(|role| role.rows.iter()
         .find(|row| row.releases.iter().any(|release|
             matches!(&release.destination, crate::model::browse::TreeDestination::Open(exact) if exact == &package)))
+        .map(|row| (role, row)))
         .expect("production exact package row");
     let release = row.releases.iter().find(|release|
         matches!(&release.destination, crate::model::browse::TreeDestination::Open(exact) if exact == &package))
         .expect("production exact release");
-    (format!("{}/details", row.key), release.key.to_string())
+    // The native probe spells NamedChild identities through ElementId's
+    // Display implementation. Preserve the complete role/row/release address
+    // instead of matching a suffix with a different path separator.
+    let row_id = gpui::ElementId::NamedChild(
+        Arc::new(gpui::ElementId::NamedChild(
+            Arc::new(gpui::ElementId::Name("library".into())),
+            format!("role-{}", role.role.as_str()).into(),
+        )),
+        row.key.clone().into(),
+    );
+    (
+        gpui::ElementId::NamedChild(Arc::new(row_id.clone()), "details".into()).to_string(),
+        gpui::ElementId::NamedChild(Arc::new(row_id), release.key.clone().into()).to_string(),
+    )
 }
 
 fn open_native_tree_release(rig: &mut Rig) {
@@ -1013,7 +1102,7 @@ fn native_tree_return_focused(rig: &mut Rig) -> bool {
     crate::shell::anatomy_tests::painted(rig)
         .targets
         .iter()
-        .any(|target| target.key.ends_with(&release) && target.state.focused)
+        .any(|target| target.key == release && target.state.focused)
 }
 
 fn native_tree_release_mounted(rig: &mut Rig) -> bool {
@@ -1021,7 +1110,7 @@ fn native_tree_release_mounted(rig: &mut Rig) -> bool {
     crate::shell::anatomy_tests::painted(rig)
         .targets
         .iter()
-        .any(|target| target.key.ends_with(&release))
+        .any(|target| target.key == release)
 }
 
 #[gpui::test]
@@ -1064,14 +1153,23 @@ fn mounted_tree_back_return_waits_for_settlement_and_tab_interrupts_it(cx: &mut 
 #[gpui::test]
 fn mounted_tree_back_return_is_cancelled_by_a_new_navigation(cx: &mut TestAppContext) {
     let mut rig = native_tree_rig(cx, None);
-    open_native_tree_release(&mut rig);
-    rig.cx.simulate_keystrokes("secondary-[");
-    rig.frame(16);
+    let source = rig.route();
     let next = Route::Orbit(crate::navigation::OrbitRoute::Browse(
         crate::navigation::BrowseRoute::Tree(
             LocalProjectId::new("/fixture/interrupted-tree").expect("next Tree project"),
         ),
     ));
+    // Disclosure belongs to each Tree route. Establish the destination's
+    // actual mounted release before testing whether an old return can steal
+    // it; a fresh Tree correctly starts with its release list collapsed.
+    rig.go(Intent::Navigate(next.clone()));
+    let (row, _) = native_tree_control_keys();
+    click_native_tree(&mut rig, &row);
+    assert!(native_tree_release_mounted(&mut rig), "the destination's own release is mounted");
+    rig.go(Intent::Navigate(source));
+    open_native_tree_release(&mut rig);
+    rig.cx.simulate_keystrokes("secondary-[");
+    rig.frame(16);
     rig.go(Intent::Navigate(next.clone()));
     assert_eq!(rig.route(), next, "the new Tree replaced the returning visit");
     assert!(native_tree_release_mounted(&mut rig), "the new Tree mounted its own release");
@@ -1446,6 +1544,7 @@ fn unserved_starting_library_keeps_add_folder_mounted_and_actionable(cx: &mut Te
     assert!(!rig.cx.did_prompt_for_paths());
     rig.native_press("enter");
     rig.draw();
+    native_boundary_evidence(&mut rig, "starting-owner-add-folder-enter");
     assert!(rig.cx.did_prompt_for_paths(), "local Add folder still opens while the owner starts");
 }
 
@@ -1562,11 +1661,25 @@ fn failed_owner_settings_first_frame_paints_the_accessible_page(cx: &mut TestApp
         cx.set_global(gpui::TextTrace);
         window.set_a11y_forced(true);
     });
-    gate.publish(OwnerState::Failed(OwnerFault::Host(Arc::from("owner could not start"))));
+    let root_before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let failure = OwnerFault::Host(Arc::from("owner could not start"));
+    gate.publish(OwnerState::Failed(failure.clone()));
     rig.draw();
     rig.repaint();
+    rig.graph.store.read_with(rig.cx, |store, _| {
+        assert_eq!(store.snapshot().key(), root_before, "the failed first reading retains its exact root");
+        assert!(store.snapshot().workspace().projects.is_empty());
+        assert_eq!(store.owner_fault(), Some(failure));
+        let orbit = store.orbit();
+        let crate::core::ResourceTerminal::Fault(error) = orbit.terminal() else {
+            panic!("the first Library reading must carry the same owner failure")
+        };
+        assert_eq!(error.code(), crate::core::FaultCode::Transport);
+        assert_eq!(error.message(), "The index could not start. owner could not start");
+    });
+    native_boundary_evidence(&mut rig, "failed-owner-home-first-frame");
     assert!(rig.cx.update(|window, _| window.painted_texts().iter().any(|text|
-        text.text.to_string().contains("The packages around your projects could not be read"))),
+        text.text.to_string().contains("The Library could not be read."))),
         "the first native frame really paints the failed Home body");
 
     rig.cx.simulate_keystrokes("secondary-,");
@@ -1580,7 +1693,7 @@ fn failed_owner_settings_first_frame_paints_the_accessible_page(cx: &mut TestApp
     });
     assert!(paint.iter().any(|text| text == "Theme") && paint.iter().any(|text| text == "Contrast"),
         "Settings controls paint on the first native frame: {paint:?}");
-    assert!(!paint.iter().any(|text| text.contains("The packages around your projects could not be read")),
+    assert!(!paint.iter().any(|text| text.contains("The Library could not be read.")),
         "the old failed Home cannot remain under the local page: {paint:?}");
     assert!(ax.contains("Appearance") && ax.contains("Theme") && ax.contains("Contrast"),
         "native accessibility and pixels describe the same Settings body: {ax}");
@@ -1600,7 +1713,8 @@ fn failed_owner_inbox_first_frame_paints_the_accessible_page(cx: &mut TestAppCon
     gate.publish(OwnerState::Failed(OwnerFault::Host(Arc::from("owner could not start"))));
     rig.draw();
     rig.repaint();
-    let inbox = native_bounds(&mut rig, "button", "Inbox", true).expect("native Inbox control");
+    native_boundary_evidence(&mut rig, "failed-owner-inbox-origin");
+    let inbox = native_bounds(&mut rig, "Button", "Inbox", true).expect("native Inbox control");
     rig.cx.simulate_click(inbox.center(), Modifiers::default());
     rig.cx.run_until_parked();
     rig.draw_frame();
@@ -1612,10 +1726,18 @@ fn failed_owner_inbox_first_frame_paints_the_accessible_page(cx: &mut TestAppCon
     });
     assert!(paint.iter().any(|text| text.contains("Nothing followed yet")),
         "Inbox's local explanation paints on the first native frame: {paint:?}");
-    assert!(!paint.iter().any(|text| text.contains("The packages around your projects could not be read")),
+    assert!(!paint.iter().any(|text| text.contains("The Library could not be read.")),
         "the old failed Home cannot remain under Inbox: {paint:?}");
     assert!(ax.contains("Nothing followed yet"),
         "native accessibility and pixels describe the same Inbox body: {ax}");
+    let tree: serde_json::Value = serde_json::from_str(&ax).expect("native Inbox JSON");
+    let nodes = tree["nodes"].as_object().expect("native Inbox nodes");
+    assert!(nodes.values().any(|node| node["aria"]["role"] == "Heading"
+        && node["aria"]["label"] == "Inbox" && node["aria"]["level"] == 1),
+        "Inbox exposes its exact level-one native heading: {ax}");
+    assert!(nodes.values().any(|node| node["aria"]["role"] == "Label"
+        && node["aria"]["label"] == "Nothing followed yet. Releases you follow arrive here once the local service publishes a release feed."),
+        "Inbox exposes its full local explanation as a native Label: {ax}");
 }
 
 /// The lead's report: on a symbol page, Tab, J and Space each changed
@@ -3373,7 +3495,7 @@ fn a_replaced_page_leaves_instead_of_vanishing(cx: &mut TestAppContext) {
 /// Local shelf addresses remain useful without lending retained package bytes
 /// permission to open semantic or source controls.
 #[gpui::test]
-fn unavailable_library_project_opens_local_tree_without_semantic_authority(cx: &mut TestAppContext) {
+fn unavailable_library_project_opens_exact_package_without_unadmitted_tree(cx: &mut TestAppContext) {
     let gate = OwnerGate::starting();
     let mut rig = rig_with_engine_gate_at_root(
         cx, None, 1440.0, 900.0, ReadPool::start(2, |_| Fixture).expect("pool"),
@@ -3387,25 +3509,25 @@ fn unavailable_library_project_opens_local_tree_without_semantic_authority(cx: &
     rig.repaint();
     let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
     assert!(targets.native_keys().iter().any(|id| id.starts_with("orbit-project-")), "local project selection remains a native control");
-    assert!(targets.native_keys().iter().any(|id| id.starts_with("orbit-tree-")), "local Tree address stays reachable");
+    assert!(!targets.native_keys().iter().any(|id| id.starts_with("orbit-tree-")), "an unserved owner cannot grant an unread Cargo capability");
     assert!(!targets.native_keys().iter().any(|id| id.starts_with("orbit-package-")), "retained semantic packages remain inert");
     let action = targets.placed().into_iter().find(|(target, _)| target.id.starts_with("orbit-project-"))
         .expect("local project tile").0.action.callback();
     rig.cx.update(|window, cx| action(window, cx));
     rig.draw();
     let snapshot = rig.graph.root.read_with(rig.cx, |root, _| root.snapshot());
-    assert_eq!(snapshot.route(), &Route::Orbit(crate::navigation::OrbitRoute::Browse(crate::navigation::BrowseRoute::Tree(project.clone()))));
+    assert_eq!(snapshot.route(), &super::kit::package_route(&PackageRef::parse(project.as_str()).expect("exact local root")).expect("local Package route"));
     assert_eq!(snapshot.workspace().active.as_ref(), Some(&project));
     assert_eq!(snapshot.workspace().projects[0].request, None, "an outage does not issue an index mutation");
     assert!(!rig.graph.store.read_with(rig.cx, |store, _| store.owner_serving()));
 }
 
-mod publication;
+pub(crate) mod publication;
 
 /// The durable Indexing phase is also the local queue. Paint and native
 /// navigation must not promote it to producer work while its owner is absent.
 #[gpui::test]
-fn lifecycle_native_unsent_queue_paints_consistently_and_keeps_its_tree_address(
+fn lifecycle_native_unsent_queue_paints_consistently_and_keeps_its_project_address(
     cx: &mut TestAppContext,
 ) {
     let gate = OwnerGate::starting();
@@ -3439,13 +3561,12 @@ fn lifecycle_native_unsent_queue_paints_consistently_and_keeps_its_tree_address(
     assert_eq!(row.operation, None);
 
     let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
-    let tree = format!("orbit-tree-{}", project.as_str());
-    assert!(rig.cx.update(|window, cx| targets.focus_native(&tree, window, cx)));
+    assert!(!targets.native_keys().iter().any(|id| id.starts_with("orbit-tree-")), "a queued unserved root has no admitted Cargo capability");
+    let tile = format!("orbit-project-{}", project.as_str());
+    assert!(rig.cx.update(|window, cx| targets.focus_native(&tile, window, cx)));
     rig.native_press("enter");
     rig.draw();
-    assert_eq!(rig.route(), Route::Orbit(crate::navigation::OrbitRoute::Browse(
-        crate::navigation::BrowseRoute::Tree(project.clone()),
-    )));
+    assert_eq!(rig.route(), super::kit::package_route(&PackageRef::parse(project.as_str()).expect("exact local root")).expect("local Package route"));
     rig.keys("secondary-[");
     assert_eq!(rig.route(), Route::Orbit(crate::navigation::OrbitRoute::Home));
     let after = rig.graph.root.read_with(rig.cx, |root, _| root.snapshot());
@@ -3534,7 +3655,7 @@ fn lifecycle_native_partial_receipt_discloses_profiles_and_preserves_navigation(
         Some(gate.clone()),
         VersionedRoot::unserved(),
         None,
-        Some(row.clone()),
+        Some((Arc::from([row.clone()]), project.clone())),
         RigProjection::Fixture,
     );
     rig.cx.update(|window, cx| {
@@ -3589,18 +3710,17 @@ fn lifecycle_native_partial_receipt_discloses_profiles_and_preserves_navigation(
     let targets = rig
         .shell
         .read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
-    let tree = format!("orbit-tree-{}", project.as_str());
+    assert!(!targets.native_keys().iter().any(|id| id.starts_with("orbit-tree-")), "a partial receipt does not grant an unread Cargo capability");
+    let tile = format!("orbit-project-{}", project.as_str());
     assert!(
         rig.cx
-            .update(|window, cx| targets.focus_native(&tree, window, cx))
+            .update(|window, cx| targets.focus_native(&tile, window, cx))
     );
     rig.native_press("enter");
     rig.draw();
     assert_eq!(
         rig.route(),
-        Route::Orbit(crate::navigation::OrbitRoute::Browse(
-            crate::navigation::BrowseRoute::Tree(project.clone())
-        ))
+        super::kit::package_route(&PackageRef::parse(project.as_str()).expect("exact local root")).expect("local Package route")
     );
     rig.keys("secondary-[");
     assert_eq!(

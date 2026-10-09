@@ -1038,3 +1038,60 @@ fn licence_evidence_distinguishes_absence_file_and_failed_or_unresolved_reads() 
     assert_eq!(value.license.known().and_then(LicenseDeclaration::expression), Some("MIT"));
     Ok(())
 }
+
+#[test]
+fn worker_manifest_evidence_does_not_infer_cargo_from_python_or_readme() {
+    use crate::model::project_browse::ProjectTreeCapability;
+    let root = Scratch::new("tree-capability").expect("owned local fixture");
+    let capability = || crate::model::local_package::project_tree_capability(&root.0);
+    std::fs::write(root.0.join("README.md"), "# Full Stack FastAPI Template").expect("readme");
+    std::fs::write(root.0.join("pyproject.toml"), "[project]\nname = \"fastapi-full-stack\"\n").expect("Python manifest");
+    assert_eq!(capability(), ProjectTreeCapability::Unestablished);
+    std::fs::write(root.0.join("Cargo.toml"), "[not-a-cargo-root]\n").expect("unrelated table");
+    assert_eq!(capability(), ProjectTreeCapability::Unestablished);
+    std::fs::write(root.0.join("Cargo.toml"), "invalid = [").expect("malformed");
+    assert_eq!(capability(), ProjectTreeCapability::Unestablished);
+    std::fs::write(root.0.join("Cargo.toml"), "[workspace]\nmembers = []\n").expect("Cargo workspace root");
+    assert_eq!(capability(), ProjectTreeCapability::Cargo);
+    std::fs::write(root.0.join("Cargo.toml"), format!("[workspace]\n#{}", "x".repeat(1024 * 1024))).expect("oversized manifest");
+    assert_eq!(capability(), ProjectTreeCapability::Unestablished, "the existing 1MiB manifest byte bound is preserved");
+}
+
+#[test]
+fn virtual_cargo_root_keeps_tree_capability_without_inventing_package_fields() -> Outcome {
+    use crate::model::pages::{Gap, GapReason, PackageRef};
+    use crate::model::project_browse::{ProjectTreeCapability, project_tree_capability};
+    use crate::runtime::page_mapping::{PackageInputs, package_dossier};
+    let root = Scratch::new("virtual-tree-capability")?;
+    root.write("Cargo.toml", "[workspace]\nmembers = []\n")?;
+    let project = root.project()?;
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let local = LocalPackageLoader::without_cargo()
+        .load_with_cancel(&project, &cancelled)
+        .expect("an uncancelled virtual-root manifest read is retained");
+    assert!(local.version.is_none());
+    assert!(local.description.is_none());
+    assert!(local.readme.is_empty());
+    let capability = super::project_tree_capability(&root.0);
+    assert_eq!(capability, ProjectTreeCapability::Cargo);
+    let package = PackageRef::parse(project.as_str()).map_err(text)?;
+    let no_records = backend_library::SurfaceReply::Package(Box::new([]));
+    let dossier = package_dossier(&PackageInputs {
+        package: &package,
+        records: Ok(&no_records),
+        versions: Ok(&no_records),
+        dependencies: Ok(&no_records),
+        dependents: Ok(&no_records),
+        outline: Err(Gap::new(GapReason::NotRecorded, "no virtual-root outline was captured")),
+        project_tree: capability,
+        local: Some(&local),
+    });
+    assert_eq!(project_tree_capability(&project, Some(&dossier)), ProjectTreeCapability::Cargo);
+    let record = dossier.record.known().expect("the local manifest remains bound");
+    assert!(record.version.known().is_none(), "workspace capability does not invent a package version");
+    assert!(record.description.known().is_none(), "workspace capability does not invent a package description");
+    cancelled.store(true, std::sync::atomic::Ordering::Release);
+    assert!(LocalPackageLoader::without_cargo().load_with_cancel(&project, &cancelled).is_none(),
+        "a withdrawn local read is never published to supply capability");
+    Ok(())
+}

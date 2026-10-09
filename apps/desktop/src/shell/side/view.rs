@@ -19,7 +19,7 @@ use facet::{ActiveFacet as _, Measure, Palette, Space};
 use gpui::{
     AnyElement, App, AppContext as _, AvailableSpace, Bounds, ClickEvent, Context, Element, ElementId, GlobalElementId, Hsla,
     InspectorElementId, InteractiveElement, IntoElement, LayoutId, ListState, ParentElement,
-    Pixels, ScrollHandle, SharedString, Size, StatefulInteractiveElement, Styled, Transformation, Window,
+    Pixels, FocusHandle, ScrollHandle, SharedString, Size, StatefulInteractiveElement, Styled, Transformation, Window,
     div, list, point, px, radians,
 };
 use std::collections::HashSet;
@@ -166,6 +166,11 @@ impl Shelf {
     /// re-renders the zone it leaves and the zone it enters, and this shelf
     /// is being updated by the click that asks.
     fn take_keyboard(&self, window: &Window, cx: &mut Context<Self>) {
+        self.take_keyboard_to(None, window, cx);
+    }
+
+    /// A lens remains mounted while its rows change; retain its native owner inside the drawer's CE focus trap.
+    fn take_keyboard_to(&self, native: Option<FocusHandle>, window: &Window, cx: &mut Context<Self>) {
         let links = self.links.clone();
         let snapshot = links.snapshot(cx);
         let drawer = self.overlay_surface;
@@ -173,12 +178,28 @@ impl Shelf {
         let scope = links.shell.upgrade().and_then(|shell| shell.read(cx).shelf_input_scope(drawer, cx));
         window.defer(cx, move |window, cx| {
             let current = links.snapshot(cx);
+            #[cfg(test)]
+            eprintln!("nudox-shelf-keyboard-handoff {}", serde_json::json!({
+                "route_same": current.route() == snapshot.route(),
+                "overlay_same": current.overlay() == snapshot.overlay(),
+                "visit_same": current.session().reading.current.id == snapshot.session().reading.current.id,
+                "authority_same": current.key().same_authority(snapshot.key()),
+                "attachment_same": links.store.read(cx).current_owner_attachment() == attachment,
+                "captured_scope": format!("{scope:?}"),
+                "current_scope": links.shell.upgrade().map(|shell| format!("{:?}", shell.read(cx).shelf_input_scope(drawer, cx))),
+                "native_focus": format!("{:?}", window.focused(cx)),
+            }));
             if current.route() != snapshot.route() || current.overlay() != snapshot.overlay()
                 || current.session().reading.current.id != snapshot.session().reading.current.id
                 || !current.key().same_authority(snapshot.key())
                 || links.store.read(cx).current_owner_attachment() != attachment { return; }
+            if native.as_ref().is_some_and(|handle| !handle.is_focused(window)
+                || !window.is_focus_handle_mounted(handle)) { return; }
             links.shell(cx, |shell, cx| {
-                if scope.as_ref().is_some_and(|scope| shell.admits_shelf_input_scope(scope, cx)) { shell.take_zone(Zone::Shelf, window, cx); }
+                if scope.as_ref().is_some_and(|scope| shell.admits_shelf_input_scope(scope, cx)) {
+                    shell.take_zone(Zone::Shelf, window, cx);
+                    if let Some(handle) = native { handle.focus(window, cx); }
+                }
             });
         });
     }
@@ -464,25 +485,46 @@ impl Shelf {
     ) -> AnyElement {
         let does = step.does.clone();
         let guard = self.action_guard(cx);
-        div()
+        let visit = self.reading_visit;
+        let focus = self
+            .step_out_focus
+            .borrow_mut()
+            .get_or_insert_with(|| cx.focus_handle().tab_stop(true))
+            .clone();
+        let selected_focus = focus.clone();
+        let shelf = cx.weak_entity();
+        let row = div()
             .id("shelf-crumb")
             .role(gpui::Role::Button)
             .aria_label(step.label.clone())
-            .focusable()
             .flex()
             .items_center()
             .gap(measure.space(Space::Snug))
             .px(measure.space(Space::Roomy))
             .pb(measure.space(Space::Base))
             .cursor_pointer()
+            .focus_visible(|style| style.shadow(vec![
+                gpui::BoxShadow::new(px(0.0), px(0.0), palette.peri.base.hsla())
+                    .spread_radius(px(2.0)).inset(),
+            ]))
             .child(
                 icons::chevron(IconSize::S12, palette.ink3)
                     .size(measure.icon(12.0))
                     .with_transformation(Transformation::rotate(radians(PI))),
             )
-            .child(text(ty::SMALL, measure, palette.ink2).child(step.label.clone()))
-            .on_click(cx.listener(move |shelf, _: &ClickEvent, window, cx| {
-                if !guard(cx) { return; }
+            .child(text(ty::SMALL, measure, palette.ink2).child(step.label.clone()));
+        let row = facet::controls::button::capture_activation_admission(row, guard.clone());
+        facet::controls::button::native_button(row, &focus, move |window, cx| {
+            if !guard(cx) {
+                return;
+            }
+            let _ = shelf.update(cx, |shelf, cx| {
+                if shelf.links.snapshot(cx).session().reading.current.id != visit {
+                    return;
+                }
+                selected_focus.focus(window, cx);
+                // Stepping out replaces this control's scope. The existing
+                // deferred handoff gives the new shelf its keyboard owner.
                 shelf.take_keyboard(window, cx);
                 match &does {
                     StepDoes::Pop => {
@@ -492,8 +534,9 @@ impl Shelf {
                         shelf.links.dispatch(Intent::Navigate(route.clone()), cx)
                     }
                 }
-            }))
-            .into_any_element()
+            });
+        })
+        .into_any_element()
     }
 
     /// The comb's slot under the name (W-Controls' `version_comb`), and away
@@ -583,8 +626,12 @@ impl Shelf {
             .mb(measure.space(Space::Base))
             .border_b_1()
             .border_color(palette.line1.hsla());
-        for lens in Lens::ALL {
+        for (index, lens) in Lens::ALL.into_iter().enumerate() {
             let on = lens == self.lens;
+            // Explicitly tracked handles own their Tab flags; a Div's
+            // tab_index only configures handles created by that Div.
+            let focus = self.lens_focus_handle(index, cx).tab_stop(on)
+                .tab_index(if on { 0 } else { -1 });
             // A lens you are not on says only its chord letter when the room is tight.
             let short = self.form == SideForm::Tight && !on;
             let words = if short {
@@ -597,7 +644,6 @@ impl Shelf {
                 .role(gpui::Role::Tab)
                 .aria_label(lens.label())
                 .aria_selected(on)
-                .focusable()
                 .relative()
                 .flex()
                 .items_center()
@@ -606,6 +652,12 @@ impl Shelf {
                 .py(measure.space(Space::Base))
                 .min_w(px(0.0))
                 .cursor_pointer()
+                // Keyboard focus has an inset ring; the selected lens keeps
+                // its independent underline. Neither changes the hitbox.
+                .focus_visible(|style| style.shadow(vec![
+                    gpui::BoxShadow::new(px(0.0), px(0.0), palette.peri.base.hsla())
+                        .spread_radius(px(2.0)).inset(),
+                ]))
                 // A label gives way (an ellipsis) before the strip overflows the column.
                 .child(
                     text(
@@ -643,17 +695,23 @@ impl Shelf {
                         .bg(palette.peri.base),
                 );
             }
-            // A tab is a control a person points at (the keyboard reaches
-            // lenses by their `G` chords, not by walking): published as a
-            // target, not a stop on the walk.
+            // The selected lens is the strip's one native Tab stop. CE's enclosing
+            // drawer trap owns Tab/Shift-Tab; the strip owns arrows and Home/End.
             let visit = self.reading_visit;
             let guard = self.action_guard(cx);
-            let tab = tab.on_click(cx.listener(move |shelf, _: &ClickEvent, window, cx| {
+            let admit = guard.clone();
+            let shelf = cx.weak_entity();
+            let selected_focus = focus.clone();
+            let tab = facet::controls::button::capture_activation_admission(tab, admit);
+            let tab = facet::controls::button::native_button(tab, &focus, move |window, cx| {
                 if !guard(cx) { return; }
-                if shelf.links.snapshot(cx).session().reading.current.id != visit { return; }
-                shelf.take_keyboard(window, cx);
-                shelf.perform(&Do::Lens(lens), cx);
-            }));
+                let _ = shelf.update(cx, |shelf, cx| {
+                    if shelf.links.snapshot(cx).session().reading.current.id != visit { return; }
+                    selected_focus.focus(window, cx);
+                    shelf.take_keyboard_to(Some(selected_focus.clone()), window, cx);
+                    shelf.perform(&Do::Lens(lens), cx);
+                });
+            }).tab_index(if on { 0 } else { -1 });
             bar = bar.child(
                 self.targets
                     .track(format!("shelf-lens-{}", lens.key()), tab),
@@ -1076,8 +1134,10 @@ impl Shelf {
                 cell = cell.track_focus(&handle);
                 let targets = self.targets.clone();
                 let id = spine_key.clone();
+                let shelf = cx.weak_entity();
                 cell = cell.on_click(move |_: &ClickEvent, window, cx| {
                     if !action.admits(cx) { return; }
+                    if shelf.update(cx, |shelf, cx| shelf.take_keyboard(window, cx)).is_err() { return; }
                     targets.focus(id.clone());
                     action.run(window, cx);
                 });

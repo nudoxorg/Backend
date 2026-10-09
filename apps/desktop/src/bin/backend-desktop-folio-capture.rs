@@ -17,8 +17,9 @@
 //! `NUDOX_FOLIO_ONLY=<substring>` limits the run to matching shots.
 //! `NUDOX_FOLIO_TEXT_SCALE=200` captures the same shots at 200% text; the
 //! default is 100%. Each shot writes a manifest beside its native frames.
-//! Set `NUDOX_FOLIO_BUILD_REVISION` while compiling to embed the source commit
-//! that produced the binary; the manifest also records the checkout at capture.
+//! `NUDOX_FOLIO_BUILD_REVISION` embeds an optional, unverified source label.
+//! Neither that label nor the checkout at capture proves which source produced
+//! the binary; source admission requires an independently verified build receipt.
 
 #![cfg(feature = "visual-harness")]
 #![allow(clippy::expect_used, clippy::panic, clippy::too_many_lines, missing_docs)]
@@ -36,6 +37,7 @@ use backend_desktop::runtime::reads::{PageReader, ReadContext, ReadPool, ReadReq
 use backend_desktop::runtime::store::DataStore;
 use backend_desktop::runtime::{DesktopRuntime, UiEntityGraph};
 use backend_desktop::shell::Shell;
+use backend_desktop::harness::capture_evidence::{CaptureImage, SavedArtifact, source_labels};
 use backend_gui_harness::{AnimationFrame, CaptureError, GpuiCaptureOptions, GuiState, Viewport, capture_gpui_state_with_adapters_result_and_semantics};
 use backend_library::DeclarationKind;
 use gpui::{App, AppContext as _, Entity, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, InputEvent, Window, point, px};
@@ -77,11 +79,6 @@ fn sha256(bytes: &[u8]) -> String {
 fn git_output(args: &[&str]) -> Option<String> {
     let output = Command::new("git").arg("-C").arg(repo()).args(args).output().ok()?;
     output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-}
-
-fn binary_sha256() -> Option<String> {
-    static HASH: OnceLock<Option<String>> = OnceLock::new();
-    HASH.get_or_init(|| std::fs::read(std::env::current_exe().ok()?).ok().map(|bytes| sha256(&bytes))).clone()
 }
 
 fn appearance_name(appearance: AppearancePreference) -> &'static str {
@@ -227,6 +224,7 @@ fn dossier(package: &PackageRef) -> Option<PackageDossier> {
         })
         .collect();
     Some(PackageDossier {
+        project_tree: backend_desktop::model::project_browse::ProjectTreeCapability::Unestablished,
         package: package.clone(),
         record: Known::Known(PackageRecord {
             package: package.clone(),
@@ -358,7 +356,7 @@ fn dispatch(window: &mut Window, cx: &mut App, event: impl InputEvent) {
     window.dispatch_event(event.to_platform_input(), cx);
 }
 
-fn capture(shot: &Shot, key: VersionedRoot, out: &Path) {
+fn capture(shot: &Shot, key: VersionedRoot, out: &Path, capture_image: &CaptureImage) {
     let viewport = Viewport::new(shot.width, shot.height, 1).expect("viewport");
     let frames = shot.frames.iter().enumerate().map(|(index, time)| AnimationFrame { label: format!("f{index:02}-{time}ms"), time_ms: *time }).collect::<Vec<_>>();
     let slot: Rc<RefCell<Option<(UiEntityGraph, Entity<Shell>)>>> = Rc::new(RefCell::new(None));
@@ -468,7 +466,15 @@ fn capture(shot: &Shot, key: VersionedRoot, out: &Path) {
     let mut frame_manifest = Vec::with_capacity(set.frames.len());
     for record in &set.frames {
         let path = if set.frames.len() == 1 { out.join(format!("{}.png", shot.name)) } else { dir.join(format!("{}.png", record.label)) };
-        record.image.save(&path).expect("png");
+        let relative = path.strip_prefix(out).expect("capture beneath output").to_str().expect("capture filename UTF-8");
+        let png = SavedArtifact::png(out, relative, &record.image).expect("png");
+        let native_accessibility = record.native_accessibility.as_ref().map(|evidence| {
+            let relative = path.with_extension("accesskit.json");
+            let relative = relative.strip_prefix(out).expect("capture beneath output").to_str().expect("capture filename UTF-8");
+            let bytes = serde_json::to_vec_pretty(evidence).expect("native accessibility JSON");
+            let artifact = SavedArtifact::write(out, relative, &bytes).expect("native accessibility artifact");
+            serde_json::json!({"frame_number": evidence.frame_number, "artifact": artifact})
+        });
         frame_manifest.push(serde_json::json!({
             "label": record.label,
             "time_ms": record.time_ms,
@@ -476,6 +482,8 @@ fn capture(shot: &Shot, key: VersionedRoot, out: &Path) {
             "width_px": record.image.width(),
             "height_px": record.image.height(),
             "rgba_sha256": sha256(record.image.as_raw()),
+            "png_sha256": png.sha256,
+            "native_accessibility": native_accessibility,
         }));
     }
     let source_root = directory(&shot.package);
@@ -483,10 +491,12 @@ fn capture(shot: &Shot, key: VersionedRoot, out: &Path) {
     let manifest = serde_json::json!({
         "schema": "backend-desktop-folio-capture/v1",
         "renderer": "GPUI native draw",
-        "build_source_revision": option_env!("NUDOX_FOLIO_BUILD_REVISION"),
+        "source_provenance": source_labels(None, option_env!("NUDOX_FOLIO_BUILD_REVISION")),
+        "capture_image": capture_image,
         "checkout_revision_at_capture": git_output(&["rev-parse", "HEAD"]),
+        "checkout_identity_is_producer_proof": false,
         "worktree_dirty_at_capture": git_output(&["status", "--porcelain", "--untracked-files=all"]).is_some_and(|status| !status.is_empty()),
-        "binary_sha256": binary_sha256(),
+        "binary_sha256": capture_image.sha256,
         "data_provenance": {
             "source_root": source_root.as_ref().map(|root| root.to_string_lossy()),
             "source_tree_sha256": source_sha256,
@@ -528,6 +538,8 @@ fn main() {
         }
     };
     let out = PathBuf::from(out);
+    fn main_image_anchor() { std::hint::black_box("folio capture main image"); }
+    let capture_image = CaptureImage::read(main_image_anchor).expect("platform-verified capture executable");
     std::fs::create_dir_all(&out).expect("out");
     let only = std::env::var("NUDOX_FOLIO_ONLY").ok();
     let key = VersionedRoot::from_revision(1, backend_library::Cursor::at(backend_library::view_state_root(&[("folio".to_owned(), "capture".to_owned())]), 4), 0);
@@ -594,7 +606,7 @@ fn main() {
         if only.as_ref().is_some_and(|only| !shot.name.contains(only.as_str())) {
             continue;
         }
-        capture(&shot, key, &out);
+        capture(&shot, key, &out, &capture_image);
     }
 }
 

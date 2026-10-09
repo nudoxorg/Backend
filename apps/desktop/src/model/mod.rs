@@ -9,6 +9,7 @@ pub mod local_package;
 pub mod pages;
 pub mod persistence;
 pub mod project_lifecycle;
+pub mod project_browse;
 pub mod release;
 pub(crate) mod retained_display;
 pub mod selectors;

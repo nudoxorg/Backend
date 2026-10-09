@@ -12,6 +12,23 @@ use std::sync::{Arc, Mutex};
 
 /// Two real project folders remain distinct targets. The tree control opens
 /// the chosen project's typed route, which Back can return from.
+struct SelectedCargoRoots;
+
+impl PageReader for SelectedCargoRoots {
+    fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+        let value = Fixture.read(request, context)?;
+        match (request, value) {
+            (ReadRequest::Package(package), PageValue::Package(mut dossier)) => {
+                dossier.package = package.clone();
+                dossier.project_tree = crate::model::local_package::project_tree_capability(std::path::Path::new(package.as_str()));
+                if let Known::Known(record) = &mut dossier.record { record.package = package.clone(); }
+                Ok(PageValue::Package(dossier))
+            }
+            (_, value) => Ok(value),
+        }
+    }
+}
+
 #[gpui::test]
 fn two_project_tiles_offer_exact_tree_routes_and_back_returns_to_library(cx: &mut TestAppContext) {
     let result = check_two_project_tiles_offer_exact_tree_routes_and_back_returns_to_library(cx);
@@ -26,8 +43,6 @@ fn check_two_project_tiles_offer_exact_tree_routes_and_back_returns_to_library(
     use crate::navigation::{BrowseRoute, Intent};
     use gpui::{Modifiers, point, px};
 
-    let mut rig = super::tests::rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1000.0, 800.0);
-    rig.cx.update(|_, cx| facet::probe::enable(cx));
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize()?;
     let folders = [
         root.join("frontends/rust/fixtures/toml_pin"),
@@ -40,12 +55,25 @@ fn check_two_project_tiles_offer_exact_tree_routes_and_back_returns_to_library(
         Ok(project)
     }).collect::<Result<Vec<_>, crate::core::IdentityError>>()?;
     let chosen = projects[1].id.clone();
-    let snapshot = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
-    let mut workspace = snapshot.workspace().clone();
-    workspace.projects = projects.into();
-    workspace.active = Some(chosen.clone());
-    workspace.host = Some(chosen.clone());
-    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::new(snapshot.with_workspace(workspace)), cx));
+    let mut rig = super::tests::rig_with_saved_projects(cx, 1000.0, 800.0,
+        ReadPool::start(1, |_| SelectedCargoRoots).expect("selected Cargo manifest worker"),
+        projects.into(), chosen.clone());
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    assert_eq!(rig.graph.root.read_with(rig.cx, |root, _| root.snapshot().workspace().clone()),
+        rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().workspace().clone()),
+        "the selected Package visits preserve the same admitted runtime workspace");
+    rig.repaint();
+    let unread = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    assert!(!unread.native_keys().iter().any(|id| id.starts_with("orbit-tree-")), "folder spelling alone grants no Cargo capability");
+    for folder in &folders {
+        let package = PackageRef::parse(folder.to_str().ok_or("fixture path is not UTF-8")?)?;
+        rig.go(Intent::Navigate(super::kit::package_route(&package).ok_or("exact local Package route")?));
+        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.project_tree_capability(&LocalProjectId::from_path(folder).expect("checked local fixture"))),
+            crate::model::project_browse::ProjectTreeCapability::Cargo,
+            "each selected Package worker admits its actual bounded Cargo root manifest");
+    }
+    rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Home)));
+    rig.cx.update(|_, cx| { facet::probe::take(cx); });
     rig.repaint();
     let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
     let targets: Vec<_> = ledger.targets.iter().filter(|target| target.key.starts_with("orbit-tree-")).collect();
@@ -77,8 +105,7 @@ impl PageReader for Growing {
                 .map(|name| IndexedPackage {
                     package: PackageRef::parse(&format!("/cache/src/{name}")).expect("a package"),
                     name: Arc::from(*name),
-                    readiness: Readiness::Ready,
-                    verified_registry_release: None,
+                    readiness: Readiness::Ready, verified_registry_release: None,
                 })
                 .collect::<Vec<_>>();
             return Ok(PageValue::Orbit(OrbitModel {

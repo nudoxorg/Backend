@@ -427,14 +427,16 @@ impl<E: Element> Drawable<E> {
                             if pushed_a11y_node && is_inert_subtree {
                                 window.a11y.nodes.mark_current_inert();
                             }
-                            #[cfg(debug_assertions)]
+                            #[cfg(any(debug_assertions, feature = "test-support"))]
                             if pushed_a11y_node {
-                                let view = window
-                                    .a11y
-                                    .view_type_names
-                                    .get(&window.current_view())
-                                    .copied();
+                                #[cfg(debug_assertions)]
+                                let view = window.a11y.view_type_names.get(&window.current_view()).copied();
+                                #[cfg(not(debug_assertions))]
+                                let view = None;
+                                #[cfg(debug_assertions)]
                                 let source_location = self.element.source_location();
+                                #[cfg(not(debug_assertions))]
+                                let source_location = None;
                                 window.a11y.nodes.record_node_info(
                                     node_id,
                                     crate::window::a11y::debug::NodeDebugInfo {
@@ -468,22 +470,24 @@ impl<E: Element> Drawable<E> {
 
                 if pushed_a11y_node {
                     if let Some(global_id) = global_id.as_ref() {
-                        #[cfg(debug_assertions)]
+                        #[cfg(any(debug_assertions, feature = "test-support"))]
                         let creator = crate::window::a11y::debug::NodeCreator {
-                            view: window
-                                .a11y
-                                .view_type_names
-                                .get(&window.current_view())
-                                .copied(),
+                            #[cfg(debug_assertions)]
+                            view: window.a11y.view_type_names.get(&window.current_view()).copied(),
+                            #[cfg(not(debug_assertions))]
+                            view: None,
                             element_id: global_id.0.last().map(|id| format!("{id:?}")),
+                            #[cfg(debug_assertions)]
                             source_location: self.element.source_location(),
+                            #[cfg(not(debug_assertions))]
+                            source_location: None,
                         };
                         let mut builder = A11ySubtreeBuilder::new(
                             global_id.accesskit_node_id(),
                             &mut window.a11y.nodes,
                         )
                         .inert(is_inert_subtree);
-                        #[cfg(debug_assertions)]
+                        #[cfg(any(debug_assertions, feature = "test-support"))]
                         {
                             builder = builder.with_creator(creator);
                         }

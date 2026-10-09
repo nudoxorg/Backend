@@ -359,6 +359,7 @@ pub struct ProductView {
     heading: String,
     records: Box<[ProductRecord]>,
     note: Option<String>,
+    reference_coverage: Option<backend_library::ReferenceCoverage>,
     fault: Option<Fault>,
     index_search_page: Option<IndexSearchPageInfo>,
     index_job: Option<IndexJobProjection>,
@@ -562,6 +563,12 @@ impl ProductView {
     #[must_use]
     pub fn note(&self) -> Option<&str> {
         self.note.as_deref()
+    }
+
+    /// Completeness evidence retained for reference replies, including zero.
+    #[must_use]
+    pub const fn reference_coverage(&self) -> Option<backend_library::ReferenceCoverage> {
+        self.reference_coverage
     }
 
     /// Returns exact package metadata evidence, separate from acquired records.
@@ -783,6 +790,7 @@ impl ProductView {
             package_source_membership_page: None,
             semantic_data: None,
             package_discovery: None,
+            reference_coverage: None,
         }
     }
 
@@ -801,6 +809,7 @@ impl ProductView {
             package_source_membership_page: None,
             semantic_data: None,
             package_discovery: None,
+            reference_coverage: None,
         }
     }
 
@@ -817,6 +826,7 @@ impl ProductView {
             package_source_membership_page: None,
             semantic_data: None,
             package_discovery: None,
+            reference_coverage: None,
         }
     }
 
@@ -833,6 +843,7 @@ impl ProductView {
             package_source_membership_page: None,
             semantic_data: None,
             package_discovery: None,
+            reference_coverage: None,
         }
     }
 
@@ -849,6 +860,7 @@ impl ProductView {
             package_source_membership_page: None,
             semantic_data: None,
             package_discovery: None,
+            reference_coverage: None,
         }
     }
 }
@@ -892,10 +904,15 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         SurfaceReply::Read(records) => {
             ProductView::rows("read", records.iter().map(declaration_row).collect())
         }
-        SurfaceReply::References { target, references } => ProductView::rows(
-            format!("references to {}", target.as_str()).as_str(),
-            references.iter().map(reference_row).collect(),
-        ),
+        SurfaceReply::References { target, references } => {
+            let mut view = ProductView::rows(
+                format!("references to {}", target.as_str()).as_str(),
+                references.iter().map(reference_row).collect(),
+            );
+            view.reference_coverage = reply.reference_coverage();
+            view.note = view.reference_coverage.map(|coverage| coverage.explanation().to_owned());
+            view
+        },
         SurfaceReply::Diff(records) => {
             ProductView::rows("diff", records.iter().map(diff_row).collect())
         }

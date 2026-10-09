@@ -43,6 +43,6 @@ pub use store::{Capacity, Generation, Landing, PageStore, PageValue, ReadFailure
 pub use symbol::{
     Arrival, DocEntry, DocFragment, DocSection, DocSections, Excerpt, FileSpan, Member, Members,
     MembersCoverage, MethodGroup, NameLinkCoverage, OutlinePosition, SectionKind, Receiver,
-    ReferenceScope, ReferenceSite, Relation, RelationKind, Rose, SignatureText, SignatureToken,
+    ReferenceObservation, ReferenceScope, ReferenceSite, Relation, RelationKind, Rose, SignatureText, SignatureToken,
     SourceLocation, SourceSite, SymbolLink, SymbolPage, TokenClass,
 };

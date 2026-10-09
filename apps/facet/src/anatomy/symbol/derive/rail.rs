@@ -2,12 +2,12 @@
 //! do, its releases, and how we know its types.
 
 use super::super::facts::Facts;
-use super::super::view::{Cap, CapMark, Kind, Outcomes, Rail, Release, Sibling, SourceAt};
+use super::super::view::{Cap, CapMark, Kind, Outcomes, Rail, Release, Sibling, SourceAt, TypeEvidence};
 use super::callable::callable;
 use super::known::{Chip, Std};
 
 /// The rail for a page.
-pub(super) fn rail(facts: &Facts, untyped: bool) -> Rail {
+pub(super) fn rail(facts: &Facts, type_evidence: TypeEvidence) -> Rail {
     let source = facts.site.as_ref().map(|site| SourceAt {
         file: site.file.clone(),
         line: site.line,
@@ -29,12 +29,7 @@ pub(super) fn rail(facts: &Facts, untyped: bool) -> Rail {
         can: caps(facts),
         releases,
         across: facts.across.clone(),
-        how: untyped.then(|| {
-            format!(
-                "{} declares no types here. What the page shows is read from its docs and its code; a dotted underline marks each one.",
-                facts.package
-            )
-        }),
+        type_evidence,
     }
 }
 
@@ -184,7 +179,7 @@ mod tests {
             beside("to_string", Kind::Function, Some("pub fn to_string<T>(value: &T) -> Result<String>")),
             beside("Map", Kind::Struct, None),
         ];
-        let rail = rail(&f, false);
+        let rail = rail(&f, TypeEvidence::Declared);
         let names: Vec<&str> = rail.siblings.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"from_reader") && names.contains(&"from_slice"), "{names:?}");
         let slice = rail.siblings.iter().find(|s| s.name == "from_slice").expect("from_slice");
@@ -201,7 +196,7 @@ mod tests {
     fn a_sibling_that_shares_nothing_says_its_kind_and_one_that_shares_a_tail_says_its_head() {
         let mut f = Facts::new("read_settings", Kind::Function, Lang::Rust, "toml_pin");
         f.beside = vec![beside("Settings", Kind::Struct, None), beside("read_settings", Kind::Function, None), beside("project_name", Kind::Function, None), beside("write_settings", Kind::Function, None)];
-        let rail = rail(&f, false);
+        let rail = rail(&f, TypeEvidence::Declared);
         let said = |name: &str| rail.siblings.iter().find(|s| s.name == name).map(|s| s.differs.clone()).unwrap_or_else(|| panic!("{name} is beside it"));
         assert_eq!(said("Settings"), Kind::Struct.word());
         assert_eq!(said("project_name"), Kind::Function.word());
@@ -212,7 +207,7 @@ mod tests {
     fn traits_become_chips_and_unknown_ones_keep_their_name() {
         let mut f = Facts::new("Value", Kind::Enum, Lang::Rust, "serde_json");
         f.implements = vec![("Clone".into(), true), ("PartialEq".into(), true), ("Eq".into(), true), ("Serialize".into(), false), ("FromIterator".into(), false)];
-        let caps = rail(&f, false).can;
+        let caps = rail(&f, TypeEvidence::Declared).can;
         assert_eq!(caps.iter().map(|c| c.word.as_str()).collect::<Vec<_>>(), ["copies", "compares with ==", "serde can write it", "FromIterator"]);
         assert_eq!(caps[3].mark, CapMark::Other);
     }

@@ -12,4 +12,4 @@ pub use ids::{
     ResourceIdentity, RowId, VersionedRoot,
 };
 pub use ports::{ActionCatalog, IntentDispatcher, SnapshotReadModel};
-pub use state::{Activity, ErrorValue, FaultCode, Resource, ResourceTerminal, UnavailableReason};
+pub use state::{Activity, ErrorValue, FaultCode, QueryPreparation, Resource, ResourceTerminal, UnavailableReason};

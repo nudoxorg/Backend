@@ -13,7 +13,7 @@
 
 use super::permit::ReadId;
 use super::{Delivery, Priority, ReadOutcome};
-use crate::model::pages::PageKey;
+use crate::model::pages::{Generation, PageKey};
 use crate::runtime::actor::CancellationToken;
 use std::collections::{BTreeSet, VecDeque};
 use std::num::NonZeroUsize;
@@ -121,6 +121,13 @@ impl Outbox {
             .filter(|outcome| matches(outcome))
             .map(|outcome| outcome.permit.id())
             .collect()
+    }
+
+    /// Called while the pool queue is held, so a terminal publication cannot
+    /// interleave between this decision and exact-generation revocation.
+    pub(super) fn has_terminal(&self, key: &PageKey, generation: Generation) -> bool {
+        self.lock().iter().any(|outcome|
+            outcome.key == *key && outcome.generation == generation && outcome.is_terminal())
     }
 
     /// Removes every undelivered outcome `matches` selects. The caller drops

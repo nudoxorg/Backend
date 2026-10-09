@@ -2656,6 +2656,7 @@ fn the_references_tool_serves_occurrence_sites_with_source_spans() {
     );
     assert_eq!(result["isError"], false);
     let rendered = text_of(&result);
+    assert!(rendered.contains("Reference coverage has not been established"), "{rendered}");
     assert!(
         rendered.contains("pkg::semantic::caller"),
         "the referencing site must be named: {rendered}"

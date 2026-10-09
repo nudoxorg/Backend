@@ -1570,6 +1570,32 @@ class NativeMotionTests(unittest.TestCase):
             self.assertIn("receipt HEAD/tree differs", "; ".join(result["reasons"]))
             self.assertIn("compiler run did not finish", "; ".join(result["reasons"]))
 
+    def test_capture_image_and_agreeing_labels_cannot_replace_a_build_receipt(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            binary = directory / "desktop"
+            binary.write_bytes(b"observed running image")
+            source = {"path": str(directory), "head": "requested-head", "tree": "requested-tree",
+                      "status_porcelain": "", "cargo_lock_sha256": "requested-lock"}
+            unbound = motion.compiler_admission(None, binary, source)
+            self.assertEqual(unbound["state"], "UnprovenBinarySource")
+            self.assertIn("no compiler receipt supplied", unbound["reasons"])
+            # Even exact image bytes and agreeing caller/embedded/checkout labels
+            # cannot masquerade as the completed compiler receipt.
+            labels = directory / "labels.json"
+            labels.write_text(json.dumps({
+                "capture_image": {"current_exe_path": str(binary), "sha256": motion.sha256(binary),
+                                  "bytes": binary.stat().st_size},
+                "source_provenance": {"requested_source_label": source["head"],
+                                      "embedded_source_label": source["head"],
+                                      "source_binding": {"state": "Unestablished"}},
+                "checkout_revision_at_capture": source["head"],
+            }))
+            claimed = motion.compiler_admission(labels, binary, source)
+            self.assertEqual(claimed["state"], "UnprovenBinarySource")
+            self.assertIn("receipt HEAD/tree differs", "; ".join(claimed["reasons"]))
+            self.assertIn("compiler run did not finish", "; ".join(claimed["reasons"]))
+
     def test_candidate_source_identity_is_separate_from_the_recorder_checkout(self):
         with tempfile.TemporaryDirectory() as root:
             candidate = Path(root) / "candidate"
@@ -1630,6 +1656,11 @@ class NativeMotionTests(unittest.TestCase):
             path.write_text(json.dumps(altered))
             self.assertIn("binary SHA is not",
                           "; ".join(motion.compiler_admission(path, binary, source)["reasons"]))
+            path.write_text(json.dumps(receipt))
+            binary.write_bytes(b"different image at the same claimed launch path")
+            wrong_image = motion.compiler_admission(path, binary, source)
+            self.assertEqual(wrong_image["state"], "UnprovenBinarySource")
+            self.assertIn("binary SHA is not", "; ".join(wrong_image["reasons"]))
 
     def test_preserved_copy_needs_exact_source_and_artifact_mapping(self):
         with tempfile.TemporaryDirectory() as root:

@@ -74,9 +74,25 @@ pub(super) fn body(
             facet::browse::find::ReadAdmission::Failed(
                 "The Find reply belongs to another exact query; its results cannot be shown here.".into(),
             )
+        } else if owner_serving && let Some(preparation) = resource.query_preparation()
+            && preparation.basis.matches(ctx.links.snapshot(cx).key().root()) {
+            facet::browse::find::ReadAdmission::Retained(format!("{} Previous results, if shown, are read-only.", preparation.words()).into())
         } else { find_admission(&reading) };
         let source = FindActionSource::new(route, ctx, cx);
         let mut actions = find_actions(ctx, cx, &source);
+        let preparation_key = PageKey::Browse(key.clone());
+        if let Some(token) = ctx.links.store.read(cx).preparation_token(&preparation_key) {
+            let pending_source = source.clone();
+            actions.check_again = Some(Rc::new(move |window, cx| {
+                if !pending_source.visit.local(cx)
+                    || pending_source.links.snapshot(cx).route() != &pending_source.visit.route
+                    || pending_source.links.snapshot(cx).overlay().is_some() {
+                    find_action_notice("That query is no longer the current Find reading.", window, cx);
+                    return;
+                }
+                pending_source.links.store.update(cx, |store, cx| store.check_preparation(preparation_key.clone(), &token, cx));
+            }));
+        }
         if matches!(resource.terminal(), ResourceTerminal::Fault(_)) {
             actions.retry = Some(Rc::new(move |window, cx| {
                 if let Err(reason) = source.failed_retry(cx) {
@@ -574,6 +590,7 @@ fn find_actions(
     facet::browse::find::Actions {
         acquire,
         retry: None,
+        check_again: None,
         scroll: ctx.reader_scroll.clone(),
         initial_held: ctx.find_held.clone(),
         persist_held: Rc::new(move |held, cx| {

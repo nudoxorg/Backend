@@ -76,6 +76,15 @@ pub enum Refused {
     Superseded,
 }
 
+/// The atomic preparation-expiry decision, not worker-retirement evidence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PreparationExpiry {
+    /// A posted terminal remains queued for ordinary bounded landing.
+    TerminalReady,
+    /// Exact unfinished admission was fenced; cancellation was notified.
+    Expired,
+}
+
 impl From<AdmissionFailure> for Refused {
     fn from(value: AdmissionFailure) -> Self {
         match value {
@@ -163,6 +172,7 @@ struct QueuedRead {
 #[derive(Debug)]
 struct Preparing {
     key: PageKey,
+    generation: Generation,
     cancel: CancellationToken,
 }
 
@@ -413,6 +423,7 @@ impl Shared {
             if retry {
                 queue.preparing.push(Preparing {
                     key: key.clone(),
+                    generation,
                     cancel: token.clone(),
                 });
             }
@@ -544,6 +555,34 @@ impl Shared {
             .withdraw(|outcome| stale.contains(&outcome.permit.id()));
         drop((removed, withdrawn, preparing));
         found
+    }
+
+    /// A preparation deadline preserves any already-posted terminal. The
+    /// queue -> outbox decision excludes finish's publication handoff; only
+    /// this exact generation is revoked when no terminal has won admission.
+    pub(super) fn expire_preparation(&self, key: &PageKey, generation: Generation) -> PreparationExpiry {
+        let (removed, running, preparing, stale) = {
+            let mut queue = self.queue();
+            if self.outbox.has_terminal(key, generation) { return PreparationExpiry::TerminalReady; }
+            let removed = queue.extract(|queued| queued.job.key == *key && queued.job.generation == generation);
+            let running = queue.revoke_running(|running| running.key == *key && running.generation == generation);
+            let preparing = queue.extract_preparing(|ticket| ticket.key == *key && ticket.generation == generation);
+            let mut stale = self.outbox.ids(|outcome| outcome.key == *key
+                && outcome.generation == generation && !outcome.is_terminal());
+            stale.extend(running.iter().map(|(read, _)| *read));
+            (removed, running, preparing, stale)
+        };
+        // Callbacks and large payload drops never hold either pool lock.
+        // Reentrant later generations are outside these captured identities.
+        for token in removed.iter().map(|queued| &queued.job.cancel)
+            .chain(running.iter().map(|(_, token)| token))
+            .chain(preparing.iter().map(|ticket| &ticket.cancel)) { token.cancel(); }
+        let withdrawn = self.outbox.withdraw(|outcome|
+            stale.contains(&outcome.permit.id()) && !outcome.is_terminal());
+        drop((removed, withdrawn, preparing));
+        // A later finish is necessarily Cancelled under the revoked queue
+        // record. Its terminal remains queued for ordinary bounded landing.
+        PreparationExpiry::Expired
     }
 
     /// Takes the next job `worker` may run, without waiting.
@@ -746,13 +785,17 @@ impl Queue {
     /// Transfer ticket ownership to the caller, so even its key/token drop
     /// takes place after releasing queue and cancelling callbacks.
     fn withdraw_preparing(&mut self, key: &PageKey) -> Vec<Preparing> {
+        self.extract_preparing(|ticket| ticket.key == *key)
+    }
+
+    fn extract_preparing(&mut self, matches: impl Fn(&Preparing) -> bool) -> Vec<Preparing> {
         let mut tickets = Vec::new();
         let mut index = 0;
         while index < self.preparing.len() {
             if self
                 .preparing
                 .get(index)
-                .is_some_and(|ticket| ticket.key == *key)
+                .is_some_and(&matches)
             {
                 tickets.push(self.preparing.remove(index));
             } else {
@@ -875,6 +918,18 @@ impl ReadPool {
     /// Takes the wake receiver; the store's UI task awaits it.
     pub fn take_wake(&mut self) -> Option<WakeReceiver> {
         self.wake.take()
+    }
+
+    /// An owned preparation timer shares the existing coalescing UI wake;
+    /// it does not add another foreground consumer or polling loop.
+    pub(crate) fn wake_sender(&self) -> WakeSender {
+        self.shared.wake.clone()
+    }
+
+    /// Atomically preserves an already-posted terminal or cancels only the
+    /// expired generation, including a ticket awaiting its second phase.
+    pub(crate) fn expire_preparation(&self, key: &PageKey, generation: Generation) -> PreparationExpiry {
+        self.shared.expire_preparation(key, generation)
     }
 
     /// Returns the number of workers.

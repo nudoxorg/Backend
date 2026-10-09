@@ -157,7 +157,7 @@ pub fn read(site: &Site, reader: &Reader) -> Use {
 /// Reads every site into the page's uses.
 #[must_use]
 pub fn read_all(sites: &[Site], reader: &Reader) -> Uses {
-    Uses { all: sites.iter().map(|site| read(site, reader)).collect(), elsewhere: None }
+    Uses { all: sites.iter().map(|site| read(site, reader)).collect(), evidence: super::super::view::UseEvidence::Reported { reported: sites.len(), readable: sites.len() }, elsewhere: None }
 }
 
 fn starts_import(text: &str) -> bool {

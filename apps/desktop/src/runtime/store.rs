@@ -32,6 +32,19 @@ mod dependencies;
 mod keeper;
 mod owner_link;
 mod publication;
+mod query_preparation;
+#[cfg(test)]
+mod query_preparation_tests;
+pub(crate) use query_preparation::PreparationToken;
+use query_preparation::{Attempt, Budget, Due, PreparationReads};
+
+/// One explicit graph-open interest. Allocation identity prevents an old
+/// deferred release from cancelling a later same-query open.
+#[derive(Clone)]
+pub(crate) struct GraphQueryInterest {
+    query: SearchQuery,
+    identity: Arc<()>,
+}
 #[cfg(test)]
 mod owner_read_tests;
 
@@ -45,7 +58,7 @@ use self::owner_link::{OwnerLink, OwnerPhase};
 use super::actor::CancellationToken;
 use super::owner::{OwnerFault, OwnerGate};
 pub use super::reads::PoolLoad;
-use super::reads::{Delivery, Evicted, Priority, ReadJob, ReadPool, ReadRequest};
+use super::reads::{Delivery, Evicted, PreparationExpiry, Priority, ReadJob, ReadPool, ReadRequest};
 use super::snapshot::{Keep, kept_keys};
 use crate::core::{
     ErrorValue, FaultCode, Resource, ResourceAdmission, ResourceTerminal, UnavailableReason,
@@ -64,6 +77,9 @@ use std::sync::Arc;
 /// One snapshot branch, as named by a change event.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Branch {
+    /// Serving eligibility or the admitted owner attachment changed. This
+    /// can move at the same producer root without any page stamp movement.
+    Owner,
     /// The producer root advanced (page data from older roots is refreshed).
     Root,
     /// The content route changed.
@@ -215,6 +231,11 @@ pub struct DataStore {
     /// Keys whose in-flight job is a prefetch.
     prefetching: BTreeSet<PageKey>,
     wake_task: Option<Task<()>>,
+    preparation_reads: PreparationReads,
+    preparation_task: Option<Task<()>>,
+    /// Explicit event-owned auxiliary readers; render cannot acquire these.
+    ask_query: Option<SearchQuery>,
+    graph_query: Option<GraphQueryInterest>,
     stats: StoreStats,
     graph_focus: Option<super::graph_focus::GraphFocus>,
     /// The one visit-scoped notice (§15 ruling 1), for any route: an
@@ -400,6 +421,10 @@ impl DataStore {
             focused: BTreeSet::new(),
             prefetching: BTreeSet::new(),
             wake_task: None,
+            preparation_reads: PreparationReads::default(),
+            preparation_task: None,
+            ask_query: None,
+            graph_query: None,
             stats: StoreStats::default(),
             graph_focus: None,
             tour: None,
@@ -554,12 +579,15 @@ impl DataStore {
 
     pub(crate) fn set_close_paused(&mut self, paused: bool, cx: &mut Context<Self>) {
         self.close_paused = paused;
+        self.schedule_preparation(cx);
         if !paused { self.drain(cx); }
     }
 
     pub(crate) fn commit_close(&mut self) -> super::worker_finish::WorkerFinish {
         self.close_committed = true;
         self.close_paused = true;
+        self.preparation_task = None;
+        self.preparation_reads.clear();
         self.pool
             .as_mut()
             .map(ReadPool::take_finish)
@@ -620,6 +648,12 @@ impl DataStore {
     #[must_use]
     pub fn owner_serving(&self) -> bool {
         self.owner.is_current_serving()
+    }
+
+    /// Preserve the live typed owner failure even when immutable predecessor
+    /// pages stay resident and their terminal read value is unchanged.
+    pub(crate) fn owner_fault(&self) -> Option<OwnerFault> {
+        self.owner.current_fault()
     }
 
     /// Visible auxiliary readers also revalidate a superseded observation.
@@ -703,6 +737,36 @@ impl DataStore {
         }
         if old.session().hand != snapshot.session().hand {
             changed.push(Branch::Hand);
+        }
+        if changed.contains(&Branch::Root) {
+            self.preparation_task = None;
+            self.preparation_reads.clear();
+        }
+        if changed.contains(&Branch::Route) {
+            self.preparation_task = None;
+            let requests = self.preparation_reads.keys();
+            self.preparation_reads.clear();
+            // A new visit cannot inherit an old visit's automatic retry,
+            // even when both routes happen to display the same query key.
+            let pending = self.pages.keys().into_iter().filter(|key|
+                self.pages.query_preparation(key).is_some()).collect::<Vec<_>>();
+            for key in pending { self.cancel_key(&key, cx); }
+            for key in requests { self.cancel_key(&key, cx); }
+        }
+        if changed.contains(&Branch::Route) || changed.contains(&Branch::Overlay) {
+            if changed.contains(&Branch::Route) || snapshot.overlay().is_some() {
+                if let Some(interest) = self.graph_query.take() {
+                    self.cancel_auxiliary_query(&interest.query, cx);
+                }
+            }
+            if snapshot.overlay() != Some(crate::navigation::Overlay::CommandPalette) {
+                if let Some(query) = self.ask_query.take() {
+                    self.cancel_auxiliary_query(&query, cx);
+                }
+            }
+            let hidden = self.pages.keys().into_iter().filter(|key|
+                self.pages.query_preparation(key).is_some() && !self.preparation_visible(key)).collect::<Vec<_>>();
+            for key in hidden { self.cancel_key(&key, cx); }
         }
         for branch in &changed {
             self.emit(StoreEvent::Snapshot(*branch), cx);
@@ -804,6 +868,7 @@ impl DataStore {
             self.cancel_key(&key, cx);
         }
         for key in keys {
+            self.resume_preparation(&key);
             if self.holds_revoked_body_read(&key) {
                 // A titlebar can retain the same key after an overlay hides
                 // its body. That does not transfer the body's replacement
@@ -901,13 +966,25 @@ impl DataStore {
     /// Stop a query Ask no longer displays, unless the current page still
     /// owns that same read (for example, Ask opened over Find).
     pub fn cancel_unfocused_search(&mut self, query: &SearchQuery, cx: &mut Context<Self>) {
+        if self.ask_query.as_ref() == Some(query) { self.ask_query = None; }
+        self.cancel_auxiliary_query(query, cx);
+    }
+
+    fn cancel_auxiliary_query(&mut self, query: &SearchQuery, cx: &mut Context<Self>) {
         let key = PageKey::Search(query.clone());
-        if !self.focused.contains(&key) {
+        if !self.preparation_visible(&key) {
             self.cancel_key(&key, cx);
         }
     }
 
     fn cancel_key(&mut self, key: &PageKey, cx: &mut Context<Self>) {
+        self.preparation_reads.remove(key);
+        self.schedule_preparation(cx);
+        if self.pages.query_preparation(key).is_some() {
+            let before = self.pages.stamp(key);
+            self.pages.revoke_owner_read(key);
+            self.emit_moved(key.clone(), before, cx);
+        }
         if self.pages.inflight(key).is_none() {
             return;
         }
@@ -923,6 +1000,8 @@ impl DataStore {
 
     /// Fetches a page again even when it is current (retry after a fault).
     pub fn retry(&mut self, key: PageKey, cx: &mut Context<Self>) {
+        self.preparation_reads.remove(&key);
+        self.schedule_preparation(cx);
         match self.owner.phase() {
             OwnerPhase::Serving => {}
             // "Try again" on a page the owner could not serve asks the owner
@@ -1044,8 +1123,19 @@ impl DataStore {
         affinity: Option<usize>,
         cx: &mut Context<Self>,
     ) {
+        self.submit_attempt(key, request, generation, priority, affinity,
+            Budget::new(cx.background_executor().now()), None, cx);
+    }
+
+    fn submit_attempt(&mut self, key: PageKey, request: ReadRequest, generation: Generation,
+        priority: Priority, affinity: Option<usize>, budget: Budget,
+        preparation: Option<crate::core::QueryPreparation>, cx: &mut Context<Self>) {
         if self.close_paused { return; }
-        let Some(pool) = &self.pool else {
+        self.preparation_reads.remove(&key);
+        let owner = self.current_owner_attachment();
+        let retry_request = request.clone();
+        let cancel = CancellationToken::new();
+        if self.pool.is_none() {
             // No read lane: say so once instead of leaving the page working.
             let landing = self.pages.land(
                 &key,
@@ -1059,16 +1149,32 @@ impl DataStore {
                 self.emit(StoreEvent::Resource(key), cx);
             }
             return;
-        };
+        }
+        if matches!(retry_request, ReadRequest::Search(_) | ReadRequest::SearchMore { .. }
+            | ReadRequest::Browse(crate::model::browse::BrowseKey::Find(_)))
+            && let Some(owner) = owner {
+            self.preparation_reads.record(key.clone(), Attempt::new(generation,
+                self.snapshot.key(), owner, retry_request, affinity, budget, preparation, cancel.clone()));
+            // submit can enqueue this retry before running a displaced
+            // read's unlocked cancellation callback. Publish and arm this
+            // exact token before either admission or callback handoff; a
+            // stalled foreground turn cannot extend its original budget.
+            self.schedule_preparation(cx);
+        }
+        let Some(pool) = &self.pool else { return; };
         super::trace::mark("read.submit", format_args!("{key:?} {priority:?}"));
         let admitted = pool.submit(ReadJob {
             key: key.clone(),
             request,
             generation,
             priority,
-            cancel: CancellationToken::new(),
+            cancel: cancel.clone(),
             affinity,
         });
+        if admitted.is_err() {
+            self.preparation_reads.remove_generation(&key, generation);
+            self.schedule_preparation(cx);
+        }
         match admitted {
             Ok(admitted) => {
                 self.stats.submitted = self.stats.submitted.saturating_add(1);
@@ -1114,6 +1220,8 @@ impl DataStore {
     /// route shows, is fetched now, at that root.
     pub(crate) fn owner_ready(&mut self, cx: &mut Context<Self>) {
         let answer = self.owner.prepare_answer();
+        let changed = answer.attachment_changed || !self.owner.is_serving();
+        let retry_changed = self.owner.retry_publication_changed();
         if answer.attachment_changed {
             // The watcher may see only the new Ready. Completed bytes from
             // the previous same-root attachment still need a fresh read.
@@ -1123,6 +1231,9 @@ impl DataStore {
         keys.extend(self.focused.iter().cloned());
         for key in keys {
             self.ensure(key, cx);
+        }
+        if changed || retry_changed {
+            self.emit(StoreEvent::Snapshot(Branch::Owner), cx);
         }
     }
 
@@ -1135,6 +1246,7 @@ impl DataStore {
         // producer root. Quiet snapshot reads keep their last painted value.
         let repeated =
             matches!(self.owner.phase(), OwnerPhase::Failed(previous) if previous == fault);
+        let retry_changed = self.owner.retry_publication_changed();
         self.revoke_owner_reads_for_failure(repeated.then_some(fault), cx);
         let mut keys = self.owner.failed(fault.clone());
         keys.extend(self.focused.iter().cloned());
@@ -1172,6 +1284,9 @@ impl DataStore {
         if unchanged_notice {
             self.emit(StoreEvent::Snapshot(Branch::GraphFocus), cx);
         }
+        if !repeated || retry_changed {
+            self.emit(StoreEvent::Snapshot(Branch::Owner), cx);
+        }
     }
 
     fn revoke_inflight(&mut self, cx: &mut Context<Self>) {
@@ -1199,6 +1314,8 @@ impl DataStore {
         repeated: Option<&OwnerFault>,
         cx: &mut Context<Self>,
     ) {
+        self.preparation_task = None;
+        self.preparation_reads.clear();
         let settled_faults = repeated.map(|fault| {
             (
                 owner_failure_value(fault),
@@ -1226,8 +1343,10 @@ impl DataStore {
     /// The owner is starting (again): pages asked from now on are held.
     pub(crate) fn owner_starting(&mut self, cx: &mut Context<Self>) {
         let changed = self.owner.starting();
+        let retry_changed = self.owner.retry_publication_changed();
         self.revoke_owner_reads(cx);
-        if changed {
+        if changed || retry_changed {
+            self.emit(StoreEvent::Snapshot(Branch::Owner), cx);
             cx.notify();
         }
     }
@@ -1273,22 +1392,38 @@ impl DataStore {
                     Landing::Unchanged => {}
                 },
                 Delivery::Terminal(result) => {
+                    // A gate can revoke a same-root attachment before its UI
+                    // watcher runs. A preparation refusal cannot schedule work
+                    // through that retired attachment.
+                    let current_generation = self.pages.inflight(&key) == Some(generation);
+                    let result = if current_generation && matches!(result, Err(ReadFailure::Cancelled)) {
+                        self.preparation_reads.expired_result(&key, generation)
+                            .map_or(result, |preparation| Err(ReadFailure::QueryPreparation(preparation)))
+                    } else { result };
                     if self.pages.inflight(&key) == Some(generation) {
                         self.prefetching.remove(&key);
                     }
                     match self.pages.land(&key, generation, result) {
                         Landing::Applied => {
+                            if let Some(preparation) = self.pages.query_preparation(&key) && self.preparation_visible(&key) {
+                                self.preparation_reads.awaiting(&key, generation, self.pages.stamp(&key), preparation,
+                                    cx.background_executor().now());
+                            } else {
+                                self.preparation_reads.remove(&key);
+                            }
                             applied += 1;
                             self.stats.landed = self.stats.landed.saturating_add(1);
                             save |= kept_keys(self.snapshot.route()).contains(&key);
                             self.emit(StoreEvent::Resource(key), cx);
                         }
                         Landing::Unchanged => {
+                            self.preparation_reads.remove(&key);
                             super::trace::mark("read.same", format_args!("{key:?}"));
                             self.stats.landed = self.stats.landed.saturating_add(1);
                             save |= kept_keys(self.snapshot.route()).contains(&key);
                         }
                         Landing::Superseded => {
+                            if current_generation { self.preparation_reads.remove(&key); }
                             self.stats.superseded = self.stats.superseded.saturating_add(1)
                         }
                     }
@@ -1298,7 +1433,151 @@ impl DataStore {
         if save {
             self.keeper.save_at_rest(cx);
         }
+        self.advance_preparation(cx);
+        self.schedule_preparation(cx);
         applied
+    }
+
+    fn preparation_visible(&self, key: &PageKey) -> bool {
+        // A covered Reader does not drive preparation. Ask and an explicitly
+        // admitted graph open can own their separate current Search query.
+        (self.snapshot.overlay().is_none() && self.focused.contains(key))
+            || matches!(key, PageKey::Search(query) if
+                (self.snapshot.overlay() == Some(crate::navigation::Overlay::CommandPalette) && self.ask_query.as_ref() == Some(query))
+                || (self.snapshot.overlay().is_none() && self.graph_query.as_ref().is_some_and(|interest| &interest.query == query)))
+    }
+
+    pub(crate) fn observe_ask_query(&mut self, query: Option<SearchQuery>, cx: &mut Context<Self>) {
+        if query.is_some() && self.snapshot.overlay() != Some(crate::navigation::Overlay::CommandPalette) { return; }
+        let previous = std::mem::replace(&mut self.ask_query, query.clone());
+        if let Some(previous) = previous && query.as_ref() != Some(&previous) {
+            self.cancel_auxiliary_query(&previous, cx);
+        }
+        let Some(query) = query else { return; };
+        self.resume_preparation(&PageKey::Search(query.clone()));
+        self.ensure(PageKey::Search(query), cx);
+    }
+
+    pub(crate) fn observe_graph_query(&mut self, query: SearchQuery, cx: &mut Context<Self>) -> Option<GraphQueryInterest> {
+        if self.snapshot.overlay().is_some() { return None; }
+        if let Some(previous) = self.graph_query.take() { self.cancel_auxiliary_query(&previous.query, cx); }
+        let interest = GraphQueryInterest { query: query.clone(), identity: Arc::new(()) };
+        self.graph_query = Some(interest.clone());
+        self.resume_preparation(&PageKey::Search(query.clone()));
+        self.ensure(PageKey::Search(query), cx);
+        Some(interest)
+    }
+
+    /// Only a navigation/draft/open event can resume a preparation that was
+    /// read while inactive. Repeated paints and exhausted budgets cannot.
+    fn resume_preparation(&mut self, key: &PageKey) {
+        if self.pages.query_preparation(key).is_some()
+            && self.preparation_reads.token(key).is_none()
+            && self.preparation_visible(key) {
+            self.pages.revoke_owner_read(key);
+        }
+    }
+
+    pub(crate) fn release_graph_query(&mut self, interest: &GraphQueryInterest, cx: &mut Context<Self>) {
+        if !self.graph_query.as_ref().is_some_and(|current| Arc::ptr_eq(&current.identity, &interest.identity)) { return; }
+        self.graph_query = None;
+        self.cancel_auxiliary_query(&interest.query, cx);
+    }
+
+    pub(crate) fn preparation_token(&self, key: &PageKey) -> Option<PreparationToken> {
+        let token = self.preparation_reads.token(key)?;
+        (self.preparation_visible(key) && self.snapshot.key().same_authority(token.root)
+            && self.admits_owner_attachment(&token.owner) && token.owner.is_current()
+            && self.pages.inflight(key).is_none() && self.pages.stamp(key) == token.stamp
+            && self.pages.query_preparation(key).is_some()).then_some(token)
+    }
+
+    pub(crate) fn check_preparation(&mut self, key: PageKey, token: &PreparationToken, cx: &mut Context<Self>) {
+        self.retry_preparation(key, token, true, cx);
+        self.schedule_preparation(cx);
+    }
+
+    fn retry_preparation(&mut self, key: PageKey, token: &PreparationToken, manual: bool, cx: &mut Context<Self>) {
+        if self.close_paused || self.preparation_token(&key).as_ref() != Some(token) {
+            // A stale gesture must not remove the newer generation's timer.
+            return;
+        }
+        let Some(attempt) = self.preparation_reads.take(&key, token) else { return; };
+        if !manual && !attempt.budget.allows(cx.background_executor().now()) {
+            self.preparation_reads.record(key, attempt);
+            return;
+        }
+        let Some(generation) = self.begin_read(&key, true, Priority::Normal, cx) else { return; };
+        self.submit_attempt(key.clone(), attempt.request, generation, Priority::Normal,
+            attempt.affinity, if manual { Budget::new(cx.background_executor().now()) } else { attempt.budget.advanced() }, attempt.preparation, cx);
+        self.emit(StoreEvent::Resource(key), cx);
+    }
+
+    fn schedule_preparation(&mut self, cx: &mut Context<Self>) {
+        self.preparation_task = None;
+        let executor = cx.background_executor().clone();
+        let mut deadlines = self.preparation_reads.deadline_cancellations();
+        let now = executor.now();
+        let delay = if self.close_paused {
+            // A close dialogue pauses admission, not the original bound of
+            // an already-owned RPC. No retry wake is needed while paused.
+            deadlines.iter().map(|(deadline, _, _)| deadline.saturating_duration_since(now)).min()
+        } else { self.preparation_reads.next_delay(now) };
+        let Some(delay) = delay else { return; };
+        let Some(wake) = self.pool.as_ref().map(ReadPool::wake_sender) else { return; };
+        self.preparation_task = Some(executor.clone().spawn(async move {
+            let mut next = Some(now + delay);
+            while let Some(at) = next {
+                executor.timer(at.saturating_duration_since(executor.now())).await;
+                // The finite captured deadline list stays guarded even if
+                // the UI cannot process the first retry wake. Replacing this
+                // task on a normal landing captures the successor's tokens.
+                let now = executor.now();
+                deadlines.retain(|(deadline, expired, cancel)| {
+                    if *deadline > now { return true; }
+                    expired.store(true, std::sync::atomic::Ordering::Release);
+                    cancel.cancel();
+                    false
+                });
+                wake.wake();
+                next = deadlines.iter().map(|(deadline, _, _)| *deadline).min();
+            }
+        }));
+    }
+
+    fn advance_preparation(&mut self, cx: &mut Context<Self>) {
+        // Called by the existing read wake after completed outcomes land.
+        // Success or real failure delivered before expiry wins admission.
+        for due in self.preparation_reads.due(cx.background_executor().now()) {
+            match due {
+                Due::Retry(key, token) => {
+                    if self.preparation_token(&key).as_ref() == Some(&token) {
+                        self.retry_preparation(key, &token, false, cx);
+                    } else { self.preparation_reads.take(&key, &token); }
+                }
+                Due::Deadline(key, attempt) => self.expire_preparation(key, attempt, cx),
+            }
+        }
+    }
+
+    fn expire_preparation(&mut self, key: PageKey, attempt: Attempt, cx: &mut Context<Self>) {
+        if !self.preparation_visible(&key) || !self.snapshot.key().same_authority(attempt.root)
+            || !self.admits_owner_attachment(&attempt.owner) || !attempt.owner.is_current() { return; }
+        let Some(preparation) = attempt.preparation else { return; };
+        if self.pages.inflight(&key) == Some(attempt.generation) {
+            if self.pool.as_ref().is_some_and(|pool|
+                pool.expire_preparation(&key, attempt.generation) == PreparationExpiry::TerminalReady) {
+                // A previous bounded batch could leave this completed reply
+                // in the outbox. Its rearmed ordinary wake will land it.
+                self.preparation_reads.awaiting_terminal(key, attempt);
+                return;
+            }
+            // The actual pool cancellation wakes the worker's transport
+            // interrupt. A late outcome cannot acquire this idle generation.
+            if self.pages.land(&key, attempt.generation, Err(ReadFailure::QueryPreparation(preparation))) != Landing::Applied { return; }
+            self.emit(StoreEvent::Resource(key.clone()), cx);
+        } else if self.pages.inflight(&key).is_some() || self.pages.query_preparation(&key).is_none() { return; }
+        self.preparation_reads.exhausted(key.clone(), attempt, self.pages.stamp(&key));
     }
 
     /// Returns the visible-state stamp of one page slot.
@@ -1423,6 +1702,37 @@ impl DataStore {
         self.pages.search(query)
     }
 
+    /// Dependency-tree routing uses only exact current resource evidence.
+    /// A retained page or revoked owner cannot grant a fresh Cargo route.
+    #[must_use]
+    pub fn project_tree_capability(&self, project: &crate::core::LocalProjectId) -> crate::model::project_browse::ProjectTreeCapability {
+        use crate::model::project_browse::{ProjectTreeCapability, project_tree_capability};
+        if !self.snapshot.workspace().projects.iter().any(|current|
+            &current.id == project && current.phase != crate::model::ProjectPhase::Missing) {
+            return ProjectTreeCapability::Unestablished;
+        }
+        let Ok(package) = PackageRef::parse(project.as_str()) else { return ProjectTreeCapability::Unestablished; };
+        let dossier = self.package(&package);
+        let dossier = admit_resource(&dossier, self.snapshot.key(), self.owner_serving());
+        project_tree_capability(project, dossier.current_value())
+    }
+
+    /// Current selected-package evidence indexed once for Shelf/Orbit joins.
+    /// This visits only the bounded page cache, never all roots on disk and
+    /// never the Orbit inventory once for every project.
+    #[must_use]
+    pub fn project_tree_capabilities(&self) -> std::collections::BTreeMap<crate::core::LocalProjectId, crate::model::project_browse::ProjectTreeCapability> {
+        let root = self.snapshot.key();
+        let serving = self.owner_serving();
+        self.pages.package_resources().filter_map(|(package, resource)| {
+            if !package.is_local() { return None; }
+            let project = crate::core::LocalProjectId::new(package.as_str()).ok()?;
+            let admitted = admit_resource(resource, root, serving);
+            let capability = crate::model::project_browse::project_tree_capability(&project, admitted.current_value());
+            (capability != crate::model::project_browse::ProjectTreeCapability::Unestablished).then_some((project, capability))
+        }).collect()
+    }
+
     /// Returns the Orbit model.
     #[must_use]
     pub fn orbit(&self) -> Resource<OrbitModel> {
@@ -1443,9 +1753,10 @@ impl DataStore {
 }
 
 fn owner_failure_value(fault: &OwnerFault) -> ErrorValue {
-    ErrorValue::new(
+    ErrorValue::with_diagnostic(
         FaultCode::Transport,
-        format!("The index could not start. {fault}"),
+        "The index could not start. ",
+        &fault.to_string(),
     )
 }
 
@@ -1601,6 +1912,98 @@ mod tests {
             backend_library::view_state_root(&[("store".to_owned(), "tests".to_owned())]),
             5,
         )))
+    }
+
+    #[gpui::test]
+    fn owner_eligibility_wakes_cached_consumers_without_resource_or_root_movement(cx: &mut TestAppContext) {
+        use crate::model::ServiceMode;
+        use crate::runtime::owner::{OwnerGate, OwnerState};
+        let snapshot = snapshot();
+        let root = snapshot.key();
+        let gate = OwnerGate::ready(root, ServiceMode::Attached);
+        let owner = gate.clone();
+        let store = cx.update(|cx| cx.new(|_| {
+            let mut store = DataStore::new(snapshot, None);
+            store.owner = OwnerLink::behind(owner);
+            store
+        }));
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let sink = Rc::clone(&events);
+        let _subscription = cx.update(|cx| cx.subscribe(&store, move |_, event: &StoreEvent, _| {
+            sink.borrow_mut().push(event.clone());
+        }));
+        let former = store.read_with(cx, |store, _| store.current_owner_attachment()).expect("initial admitted attachment");
+        gate.publish(OwnerState::Starting);
+        store.update(cx, DataStore::owner_starting);
+        assert!(store.read_with(cx, |store, _| store.current_owner_attachment()).is_none());
+        gate.publish(OwnerState::Ready { key: root, mode: ServiceMode::Attached });
+        store.update(cx, DataStore::owner_ready);
+        store.read_with(cx, |store, _| {
+            assert_eq!(store.snapshot().key(), root);
+            assert!(store.current_owner_attachment().is_some());
+            assert!(!store.admits_owner_attachment(&former));
+            assert_eq!(store.stats.submitted, 0);
+        });
+        cx.run_until_parked();
+        assert_eq!(*events.borrow(), [StoreEvent::Snapshot(Branch::Owner), StoreEvent::Snapshot(Branch::Owner)]);
+        events.borrow_mut().clear();
+        store.update(cx, DataStore::owner_ready);
+        cx.run_until_parked();
+        assert!(events.borrow().is_empty(), "unchanged Ready is silent");
+        // The watcher may coalesce Starting away. Exact attachment movement
+        // still independently invalidates the old cached capability.
+        gate.publish(OwnerState::Starting);
+        gate.publish(OwnerState::Ready { key: root, mode: ServiceMode::Attached });
+        store.update(cx, DataStore::owner_ready);
+        cx.run_until_parked();
+        assert_eq!(*events.borrow(), [StoreEvent::Snapshot(Branch::Owner)]);
+    }
+
+    #[gpui::test]
+    fn empty_owner_failure_and_identical_retry_replacement_emit_the_owner_branch(cx: &mut TestAppContext) {
+        use crate::model::ServiceMode;
+        use crate::runtime::owner::{OwnerGate, OwnerState};
+        let snapshot = snapshot();
+        let root = snapshot.key();
+        let gate = OwnerGate::ready(root, ServiceMode::Attached);
+        let owner = gate.clone();
+        let store = cx.update(|cx| cx.new(|_| {
+            let mut store = DataStore::new(snapshot, None);
+            store.owner = OwnerLink::behind(owner);
+            store
+        }));
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let sink = Rc::clone(&events);
+        let _subscription = cx.update(|cx| cx.subscribe(&store, move |_, event: &StoreEvent, _| {
+            sink.borrow_mut().push(event.clone());
+        }));
+        let fault = OwnerFault::Lost("same owner failure".into());
+        gate.publish(OwnerState::Failed(fault.clone()));
+        store.update(cx, |store, cx| store.owner_failed(&fault, cx));
+        cx.run_until_parked();
+        assert!(events.borrow().iter().any(|event| event.is_branch(Branch::Owner)));
+        let (former, notice) = store.read_with(cx, |store, _| {
+            assert_eq!(store.snapshot().key(), root);
+            assert!(store.focused().is_empty());
+            assert_eq!(store.stats.submitted, 0);
+            (store.current_owner_retry().expect("first Retry capability"), store.notice().cloned())
+        });
+        events.borrow_mut().clear();
+        gate.publish(OwnerState::Failed(fault.clone()));
+        store.update(cx, |store, cx| store.owner_failed(&fault, cx));
+        cx.run_until_parked();
+        store.read_with(cx, |store, _| {
+            assert_eq!(store.notice().cloned(), notice, "identical display words need no new Notice");
+            assert_ne!(store.current_owner_retry(), Some(former));
+            assert_eq!(store.stats.submitted, 0);
+        });
+        assert_eq!(events.borrow().iter().filter(|event| event.is_branch(Branch::Owner)).count(), 1,
+            "exact Retry replacement independently wakes cached consumers");
+        assert!(!events.borrow().iter().any(|event| matches!(event, StoreEvent::Resource(_))));
+        events.borrow_mut().clear();
+        store.update(cx, |store, cx| store.owner_failed(&fault, cx));
+        cx.run_until_parked();
+        assert!(!events.borrow().iter().any(|event| event.is_branch(Branch::Owner)), "same observed failure/capability stays silent");
     }
 
     fn rig(cx: &mut TestAppContext, workers: usize) -> Rig {

@@ -61,7 +61,7 @@ fn peek_of(key: &PageKey, label: &SharedString, store: &DataStore) -> Peek {
         path: symbol.identity().to_string().into(),
         signature: page.signature.known().map(sig),
         sentence,
-        uses: page.references.known().map(|sites| sites.len()),
+        uses: page.references.known().map(|sites| sites.reported_count()),
         ..SymbolPeek::default()
     })
 }

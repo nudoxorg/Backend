@@ -364,7 +364,7 @@ impl A11y {
             frame,
             &self.node_bounds,
         );
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "test-support"))]
         self.debug.capture_node_info(&self.nodes.node_info);
         update
     }
@@ -394,7 +394,7 @@ pub struct A11ySubtreeBuilder<'a> {
     inert: bool,
     /// Provenance of the real element whose `a11y_synthetic_children` is
     /// running.
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "test-support"))]
     creator: debug::NodeCreator,
 }
 
@@ -404,12 +404,12 @@ impl<'a> A11ySubtreeBuilder<'a> {
             parent_id,
             nodes,
             inert: false,
-            #[cfg(debug_assertions)]
+            #[cfg(any(debug_assertions, feature = "test-support"))]
             creator: debug::NodeCreator::default(),
         }
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "test-support"))]
     pub(crate) fn with_creator(mut self, creator: debug::NodeCreator) -> Self {
         self.creator = creator;
         self
@@ -443,7 +443,7 @@ impl<'a> A11ySubtreeBuilder<'a> {
         } else {
             self.nodes.push_leaf(id, node)
         };
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "test-support"))]
         if pushed {
             self.nodes.record_node_info(
                 id,
@@ -501,7 +501,7 @@ pub(crate) struct A11yNodeBuilder {
     parents: FxHashMap<NodeId, NodeId>,
     pending_active_descendants: Vec<NodeId>,
     focus_context: NativeFocusFrameContext,
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "test-support"))]
     node_info: FxHashMap<NodeId, debug::NodeDebugInfo>,
 }
 
@@ -518,7 +518,7 @@ impl A11yNodeBuilder {
             parents: FxHashMap::default(),
             pending_active_descendants: Vec::new(),
             focus_context: NativeFocusFrameContext::default(),
-            #[cfg(debug_assertions)]
+            #[cfg(any(debug_assertions, feature = "test-support"))]
             node_info: FxHashMap::default(),
         }
     }
@@ -564,8 +564,9 @@ impl A11yNodeBuilder {
         false
     }
 
-    /// Records provenance for a node already pushed this frame. Debug builds only.
-    #[cfg(debug_assertions)]
+    /// Records creator metadata for a node already pushed this frame.
+    /// Available in debug and test-support builds; never alters native semantics.
+    #[cfg(any(debug_assertions, feature = "test-support"))]
     pub(crate) fn record_node_info(&mut self, id: NodeId, info: debug::NodeDebugInfo) {
         self.node_info.insert(id, info);
     }
@@ -678,7 +679,7 @@ impl A11yNodeBuilder {
         self.ids_stack.clear();
         self.nodes_stack.clear();
         self.seen_ids.clear();
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "test-support"))]
         self.node_info.clear();
         let mut root_node = accesskit::Node::new(accesskit::Role::Window);
         if let Some(title) = window_title {

@@ -27,6 +27,26 @@ impl AskScene {
     pub fn visible(self) -> bool {
         self.phase.is_some()
     }
+
+    pub fn background(self, columns_moving: bool, input_allowed: bool) -> BackgroundPresentation {
+        if columns_moving || matches!(self.phase, Some(StackPhase::Entering | StackPhase::Leaving)) {
+            BackgroundPresentation::Moving
+        } else if input_allowed {
+            BackgroundPresentation::Interactive
+        } else {
+            BackgroundPresentation::Covered
+        }
+    }
+}
+
+/// The sampled shell frame owns both the Reader's settlement and input gate.
+/// An open, settled Ask may cover a settled page; an entering or leaving plate
+/// cannot advertise that page as settled while its clearance still moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BackgroundPresentation {
+    Moving,
+    Covered,
+    Interactive,
 }
 
 #[derive(Default)]
@@ -37,6 +57,11 @@ pub(super) struct AskPresentation {
 }
 
 impl AskPresentation {
+    #[cfg(test)]
+    pub(super) fn diagnostic_scene(&self, cx: &App) -> (Option<AskScene>, bool) {
+        (self.last, self.motion.is_live(cx))
+    }
+
     /// The previous painted scene owns keyboard admission between an overlay
     /// close event and the next frame. It releases background keys only after
     /// a sampled frame has actually dropped the last exit pixel.

@@ -140,6 +140,8 @@ pub(super) struct Inputs<'a> {
     pub dossier: Option<ResourceAdmission<'a, PackageDossier>>,
     /// The Orbit model.
     pub orbit: ResourceAdmission<'a, OrbitModel>,
+    /// Current exact-project dependency destinations, prepared from admitted resources.
+    pub project_trees: std::collections::BTreeMap<crate::core::LocalProjectId, crate::model::project_browse::ProjectTreeCapability>,
     /// The declaration the reader is on.
     pub current: Option<SymbolRef>,
     /// The release data of this package.
@@ -445,7 +447,8 @@ fn library(inputs: &Inputs<'_>) -> Listing {
                 item.trailing = Trailing::Words(project.lifecycle().label().into());
             }
             let mut rows = vec![Row::Item(item)];
-            if project.phase != crate::model::ProjectPhase::Missing {
+            if project.phase != crate::model::ProjectPhase::Missing
+                && inputs.project_trees.get(&project.id).copied().unwrap_or_default().destination(&project.id).is_some() {
                 let mut tree = Item::new(
                     RowId::ProjectTree(project.id.clone()),
                     1,
@@ -460,6 +463,14 @@ fn library(inputs: &Inputs<'_>) -> Listing {
             rows
         })
     };
+    // Missing aggregate capabilities are facts about an admitted reading,
+    // never a substitute explanation for a pending or failed owner read.
+    let lens_note = |coverage: &str| admission_note(&inputs.orbit).unwrap_or_else(|| {
+        orbit.and_then(|model| model.indexed.gap()).map_or_else(
+            || SharedString::from(coverage.to_owned()),
+            |gap| format!("The library reading is incomplete. {}", gap_words(gap)).into(),
+        )
+    });
     let mut rows = Vec::new();
     match inputs.lens {
         Lens::Contents => {
@@ -521,10 +532,7 @@ fn library(inputs: &Inputs<'_>) -> Listing {
             }
         }
         Lens::UsedBy => {
-            rows.push(Row::Note("Library usage relationships are not indexed. Open a saved project's dependency tree to inspect its packages.".into()));
-            if let Some(note) = admission_note(&inputs.orbit) {
-                rows.push(Row::Note(note));
-            }
+            rows.push(Row::Note(lens_note("This reading does not include library-wide usage relationships. Open a saved project's dependency tree to inspect its packages.")));
             if projects == 0 {
                 rows.push(Row::Note("There are no saved projects.".into()));
             } else {
@@ -532,14 +540,11 @@ fn library(inputs: &Inputs<'_>) -> Listing {
                 rows.extend(project_rows());
             }
         }
-        Lens::Versions => rows.push(Row::Note(
-            "Newer releases across the library are not indexed yet.".into(),
-        )),
+        Lens::Versions => rows.push(Row::Note(lens_note(
+            "This reading does not include library-wide release comparisons. Choose a package to read its captured releases.",
+        ))),
         Lens::RestsOn => {
-            rows.push(Row::Note("Library dependency relationships are not indexed. Choose a package to read its dependencies.".into()));
-            if let Some(note) = admission_note(&inputs.orbit) {
-                rows.push(Row::Note(note));
-            }
+            rows.push(Row::Note(lens_note("This reading does not include library-wide dependency relationships. Choose a package to read its dependencies.")));
         }
     }
     Listing {
@@ -1187,6 +1192,7 @@ mod tests {
             dossier: dossier
                 .map(|resource| crate::core::admit_resource(resource, current, serving)),
             orbit: crate::core::admit_resource(orbit, current, serving),
+            project_trees: std::collections::BTreeMap::new(),
             current: None,
             diffs: None,
             settings: None,
@@ -1286,14 +1292,17 @@ mod tests {
             Resource::not_yet(),
             Resource::error(FaultCode::Transport, "offline index"),
         ] {
-            for lens in [Lens::RestsOn, Lens::UsedBy] {
+            for lens in [Lens::Versions, Lens::RestsOn, Lens::UsedBy] {
                 let listed = fact_listing(None, &resource, root, true, lens, false, "");
                 assert_eq!(listed.head.counts.expect("counts").of(lens), None);
                 let said = words(&listed);
-                assert!(
-                    said.iter()
-                        .any(|words| words.contains("relationships are not indexed"))
-                );
+                assert!(!said.iter().any(|words| words.contains("not indexed")), "{said:?}");
+                let expected = match resource.activity() {
+                    crate::core::Activity::NotYet => "not complete",
+                    _ if matches!(resource.terminal(), ResourceTerminal::Fault(_)) => "offline index",
+                    _ => "This reading does not include library-wide",
+                };
+                assert!(said.iter().any(|words| words.contains(expected)), "{said:?}");
                 assert!(!said.iter().any(|words| words.contains("rests on nothing")
                     || words.contains("uses the library yet")));
                 if matches!(resource.terminal(), ResourceTerminal::Fault(_)) {
@@ -1409,8 +1418,7 @@ mod tests {
         crate::model::pages::IndexedPackage {
             name: package.display_name().into(),
             package,
-            readiness: crate::model::pages::Readiness::Ready,
-            verified_registry_release: None,
+            readiness: crate::model::pages::Readiness::Ready, verified_registry_release: None,
         }
     }
 

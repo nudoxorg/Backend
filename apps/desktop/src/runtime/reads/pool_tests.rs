@@ -1631,10 +1631,12 @@ fn another_unwind_removes_only_its_exact_preparing_ticket() {
         let mut queue = shared.queue();
         queue.preparing.push(Preparing {
             key: key("same"),
+            generation: job("same", 1, Priority::Normal).generation,
             cancel: retired.clone(),
         });
         queue.preparing.push(Preparing {
             key: key("same"),
+            generation: job("same", 2, Priority::Normal).generation,
             cancel: newer.clone(),
         });
     }
@@ -1992,4 +1994,194 @@ fn exact_running_revocation_precedes_interrupt_callbacks_and_terminal_admission(
     drop(terminal);
     assert_eq!(shared.load().held, Held::default());
     assert!(shared.load().is_idle());
+}
+
+
+#[test]
+fn preparation_expiry_preserves_success_and_real_fault_when_terminal_handoff_wins() {
+    for fault in [false, true] {
+        let (wake, _receiver) = wake_channel();
+        let shared = Arc::new(Shared::new(1, limits(1, 0), wake));
+        let request = job("preparation-terminal", 1, Priority::Normal);
+        let generation = request.generation;
+        let token = request.cancel.clone();
+        assert!(shared.submit(request).is_ok());
+        let Some(read) = shared.try_start(0) else { panic!("the exact read must start"); };
+        let result = if fault { Err(ReadFailure::Fault(ErrorValue::new(FaultCode::Protocol, "actual preparation failed"))) }
+            else { Ok(health(67)) };
+        let expected = Delivery::Terminal(result.clone());
+        let held_outbox = shared.outbox.hold_for_test();
+        let finishing = shared.clone();
+        let worker = std::thread::spawn(move || finishing.finish(read, result));
+        wait::until("terminal handoff owns queue while blocked on outbox", || shared.queue.try_lock().is_err());
+        let expiring = shared.clone();
+        let (started, observed) = mpsc::channel();
+        let (done, completed) = mpsc::channel();
+        let expiry = std::thread::spawn(move || {
+            assert!(started.send(()).is_ok());
+            assert!(done.send(expiring.expire_preparation(&key("preparation-terminal"), generation)).is_ok());
+        });
+        assert_eq!(observed.recv_timeout(wait::HUNG), Ok(()));
+        assert!(matches!(completed.try_recv(), Err(mpsc::TryRecvError::Empty)), "expiry cannot split terminal handoff's queue ownership");
+        drop(held_outbox);
+        assert!(worker.join().is_ok(), "terminal publisher must retire");
+        assert_eq!(completed.recv_timeout(wait::HUNG), Ok(PreparationExpiry::TerminalReady), "the posted terminal owns ordinary landing precedence");
+        assert!(expiry.join().is_ok(), "expiry observer must retire");
+        assert!(!token.is_cancelled(), "already posted terminal is not withdrawn or newly cancelled");
+        token.cancel(); // the independent background deadline can fire later
+        assert_eq!(shared.expire_preparation(&key("preparation-terminal"), generation), PreparationExpiry::TerminalReady,
+            "a later deadline-token flag cannot reclassify an already posted terminal");
+        let batch = shared.take(ALL);
+        assert_eq!(batch.outcomes.len(), 1);
+        assert_eq!(batch.outcomes[0].delivery, expected);
+        drop(batch);
+        assert_eq!(shared.load().held, Held::default());
+    }
+}
+
+#[test]
+fn preparation_expiry_before_terminal_handoff_cancels_only_the_expired_generation() {
+    for fault in [false, true] {
+        let (wake, _receiver) = wake_channel();
+        let shared = Arc::new(Shared::new(2, limits(3, 0), wake));
+        let request = job("preparation-late", 1, Priority::Normal);
+        let generation = request.generation;
+        let old_token = request.cancel.clone();
+        assert!(shared.submit(request).is_ok());
+        let Some(read) = shared.try_start(0) else { panic!("expired read must start"); };
+        let result = if fault { Err(ReadFailure::Fault(ErrorValue::new(FaultCode::Protocol, "late real fault"))) }
+            else { Ok(health(68)) };
+        let (parked, observed) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let finishing = shared.clone();
+        let worker = std::thread::spawn(move || finishing.finish_impl(read, result, move || {
+            assert!(parked.send(()).is_ok());
+            assert_eq!(released.recv_timeout(wait::HUNG), Ok(()));
+        }));
+        assert_eq!(observed.recv_timeout(wait::HUNG), Ok(()));
+        assert_eq!(shared.expire_preparation(&key("preparation-late"), generation), PreparationExpiry::Expired);
+        assert!(old_token.is_cancelled());
+        let successor = job("preparation-late", 2, Priority::Normal);
+        let newer_generation = successor.generation;
+        let newer_token = successor.cancel.clone();
+        assert!(shared.submit(successor).is_ok());
+        assert_eq!(shared.expire_preparation(&key("preparation-late"), generation), PreparationExpiry::Expired, "old expiry cannot cancel a queued successor");
+        assert!(!newer_token.is_cancelled());
+        let Some(newer) = shared.try_start(1) else { panic!("the successor must start independently"); };
+        shared.finish(newer, Ok(health(69)));
+        assert_eq!(shared.expire_preparation(&key("preparation-late"), generation), PreparationExpiry::Expired, "old expiry cannot withdraw the successor's terminal");
+        assert!(!newer_token.is_cancelled());
+        assert!(release.send(()).is_ok());
+        assert!(worker.join().is_ok(), "delayed terminal publisher must retire");
+        let batch = shared.take(ALL);
+        assert_eq!(batch.outcomes.len(), 2);
+        assert!(batch.outcomes.iter().any(|outcome| outcome.generation == generation
+            && outcome.delivery == Delivery::Terminal(Err(ReadFailure::Cancelled))), "expiry won exact queue admission before the delayed terminal");
+        assert!(batch.outcomes.iter().any(|outcome| outcome.generation == newer_generation
+            && outcome.delivery == Delivery::Terminal(Ok(health(69)))), "successor's result remains independently admissible");
+        drop(batch);
+        assert_eq!(shared.load().held, Held::default());
+    }
+}
+
+#[test]
+fn preparation_expiry_withdraws_only_partials_and_runs_interrupt_callbacks_unlocked() {
+    let (wake, _receiver) = wake_channel();
+    let shared = Arc::new(Shared::new(2, limits(3, 0), wake));
+    let request = job("preparation-partial", 1, Priority::Normal);
+    let generation = request.generation;
+    let token = request.cancel.clone();
+    assert!(shared.submit(request).is_ok());
+    let Some(read) = shared.try_start(0) else { panic!("partial read must start"); };
+    shared.post_partial(&read, health(70));
+    assert_eq!(shared.load().undelivered, 1);
+    let callback_pool = shared.clone();
+    let guard = token.on_cancel(move || {
+        assert_callback_locks_are_free(&callback_pool);
+        assert!(callback_pool.submit(job("preparation-partial", 2, Priority::Normal)).is_ok());
+        let Some(newer) = callback_pool.try_start(1) else { panic!("callback successor must run"); };
+        callback_pool.finish(newer, Ok(health(71)));
+    });
+    assert_eq!(shared.expire_preparation(&key("preparation-partial"), generation), PreparationExpiry::Expired);
+    assert!(token.is_cancelled());
+    assert!(shared.outbox.audit().iter().all(|outcome| !outcome.partial), "exact partial was withdrawn after cancellation");
+    shared.finish(read, Ok(health(72)));
+    let batch = shared.take(ALL);
+    assert_eq!(batch.outcomes.len(), 2);
+    assert!(batch.outcomes.iter().any(|outcome| rows(&outcome.delivery) == Some(71)), "unlocked callback's same-key successor survives cleanup");
+    assert!(batch.outcomes.iter().any(|outcome| outcome.generation == generation
+        && outcome.delivery == Delivery::Terminal(Err(ReadFailure::Cancelled))));
+    drop((batch, guard));
+    assert_eq!(shared.load().held, Held::default());
+}
+
+
+#[test]
+fn preparation_expiry_fences_the_actual_second_admission_phase_before_it_can_enqueue() {
+    let (wake, _receiver) = wake_channel();
+    let shared = Arc::new(Shared::new(1, limits(1, 0), wake));
+    let original = job("preparation-ticket", 1, Priority::Normal);
+    let original_token = original.cancel.clone();
+    assert!(shared.submit(original).is_ok());
+    let Some(read) = shared.try_start(0) else { panic!("original read must start"); };
+    shared.post_partial(&read, health(73));
+    let original = Arc::new(Mutex::new(Some(read)));
+    let waiting = job("preparation-ticket", 2, Priority::Normal);
+    let waiting_generation = waiting.generation;
+    let waiting_token = waiting.cancel.clone();
+    let callback_pool = Arc::downgrade(&shared);
+    let callback_worker = Arc::downgrade(&original);
+    let (done, completed) = mpsc::channel();
+    let guard = original_token.on_cancel(move || {
+        let Some(shared) = callback_pool.upgrade() else { panic!("pool must remain alive"); };
+        assert_callback_locks_are_free(&shared);
+        assert!(shared.queue().preparing.iter().any(|ticket|
+            ticket.key == key("preparation-ticket") && ticket.generation == waiting_generation));
+        assert_eq!(shared.expire_preparation(&key("preparation-ticket"), waiting_generation), PreparationExpiry::Expired);
+        let Some(original) = callback_worker.upgrade() else { panic!("worker must remain alive"); };
+        let Some(read) = original.lock().unwrap_or_else(PoisonError::into_inner).take() else { panic!("the old worker still owns its read"); };
+        shared.finish(read, Ok(health(74)));
+        assert!(done.send(()).is_ok(), "callback assertions must reach the caller");
+    });
+    assert_eq!(shared.submit(waiting), Err(Refused::Superseded), "expired ticket cannot reacquire returned capacity in phase two");
+    assert_eq!(completed.recv_timeout(wait::HUNG), Ok(()));
+    assert!(waiting_token.is_cancelled());
+    assert!(shared.load().is_idle());
+    assert_eq!(shared.load().held, Held::default());
+    let newer = job("preparation-ticket", 3, Priority::Normal);
+    let newer_token = newer.cancel.clone();
+    assert!(shared.submit(newer).is_ok(), "a new generation remains admissible");
+    assert!(!newer_token.is_cancelled());
+    assert!(shared.cancel(&key("preparation-ticket")));
+    drop(guard);
+    assert_eq!(shared.load().held, Held::default());
+}
+
+#[test]
+fn preparation_expiry_removes_only_the_exact_ticket_without_relying_on_a_background_token() {
+    let (wake, _receiver) = wake_channel();
+    let shared = Shared::new(1, limits(2, 0), wake);
+    let expired = job("preparation-exact-ticket", 1, Priority::Normal);
+    let newer = job("preparation-exact-ticket", 2, Priority::Normal);
+    {
+        let mut queue = shared.queue();
+        queue.preparing.push(Preparing { key: expired.key.clone(), generation: expired.generation, cancel: expired.cancel.clone() });
+        queue.preparing.push(Preparing { key: newer.key.clone(), generation: newer.generation, cancel: newer.cancel.clone() });
+    }
+    assert!(!expired.cancel.is_cancelled());
+    assert!(!newer.cancel.is_cancelled());
+    assert_eq!(shared.expire_preparation(&expired.key, expired.generation), PreparationExpiry::Expired);
+    assert!(expired.cancel.is_cancelled());
+    assert!(!newer.cancel.is_cancelled(), "old expiry cannot touch the newer same-key ticket");
+    {
+        let mut queue = shared.queue();
+        assert_eq!(queue.preparing.len(), 1);
+        assert!(queue.take_preparing(&expired.cancel).is_none(), "expired phase two has no ticket to consume");
+        let Some(ticket) = queue.take_preparing(&newer.cancel) else { panic!("newer phase two must retain its exact ticket"); };
+        assert_eq!(ticket.generation, newer.generation);
+        drop(queue);
+        drop(ticket);
+    }
+    assert!(shared.load().is_idle());
+    assert_eq!(shared.load().held, Held::default());
 }

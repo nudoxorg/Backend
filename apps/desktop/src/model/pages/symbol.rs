@@ -26,13 +26,42 @@ pub struct SymbolPage {
     pub members: Known<Members>,
     /// Relations for the rose, grouped by direction.
     pub rose: Rose,
-    /// Use sites of this declaration.
-    pub references: Known<Arc<[ReferenceSite]>>,
+    /// The authority's bounded reference observation; a returned zero does
+    /// not establish complete usage coverage.
+    pub references: Known<ReferenceObservation>,
     /// The lines your workspace uses it on, read with the page (never guessed).
     #[serde(default)]
     pub workspace: Arc<[super::UseLine]>,
     /// Where the declaration sits in its package outline.
     pub outline: Known<OutlinePosition>,
+}
+
+/// A bounded reference reply. Knowing this observation is different from
+/// knowing every use of the declaration. The wire reply exposes no complete
+/// coverage proof; this type intentionally offers no complete/known-empty
+/// constructor. Transparent serialization preserves existing saved pages.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct ReferenceObservation(Arc<[ReferenceSite]>);
+
+impl ReferenceObservation {
+    /// Retains exactly the admitted records, without upgrading their coverage.
+    #[must_use]
+    pub fn new(reported: Arc<[ReferenceSite]>) -> Self { Self(reported) }
+
+    /// The shared reply contract provides no complete coverage proof.
+    #[must_use]
+    pub const fn coverage(&self) -> backend_library::ReferenceCoverage {
+        backend_library::ReferenceCoverage::Unestablished
+    }
+
+    /// Recorded sites only, never a complete set of all uses.
+    #[must_use]
+    pub fn reported_sites(&self) -> &[ReferenceSite] { &self.0 }
+
+    /// Number of records returned, not the total number of uses.
+    #[must_use]
+    pub fn reported_count(&self) -> usize { self.0.len() }
 }
 
 /// A signature as text plus classified, linkable token spans.
@@ -421,4 +450,19 @@ pub struct OutlinePosition {
     pub siblings: Arc<[DeclRef]>,
     /// Index of the declaration inside `siblings`.
     pub index: Option<usize>,
+}
+
+#[cfg(test)]
+mod reference_observation_tests {
+    use super::ReferenceObservation;
+
+    #[test]
+    fn saved_empty_references_remain_a_bounded_observation_without_a_coverage_upgrade() {
+        // The prior saved-page field encoded an array. Reading that array
+        // must retain the records, without inventing complete empty coverage.
+        let observation: ReferenceObservation = serde_json::from_str("[]").expect("legacy array");
+        assert_eq!(observation.reported_count(), 0);
+        assert!(observation.reported_sites().is_empty());
+        assert_eq!(serde_json::to_string(&observation).expect("array"), "[]");
+    }
 }

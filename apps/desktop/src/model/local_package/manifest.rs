@@ -41,6 +41,10 @@ pub(super) struct Manifest {
     features: BTreeMap<String, Vec<String>>,
 }
 
+impl Manifest {
+    pub(super) fn is_cargo_root(&self) -> bool { self.package.is_some() || self.workspace.is_some() }
+}
+
 #[derive(Deserialize, Default)]
 struct ManifestPackage {
     name: Option<String>,

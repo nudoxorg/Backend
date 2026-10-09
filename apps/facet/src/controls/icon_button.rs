@@ -4,7 +4,7 @@
 //! **on** tints it mint (the shelf is open, the filter is set); keyboard
 //! focus doubles the bevel in periwinkle.
 
-use super::button::{Handler, sunk, wire};
+use super::button::{ActivationAdmission, Handler, capture_activation_admission, sunk, wire};
 use super::{clear, muted};
 use super::kbd::key_badge;
 use super::state::{Look, Touch, hover_zone, track};
@@ -55,6 +55,7 @@ pub struct IconButton {
     look: Look,
     measure: Measure,
     on_click: Option<Handler>,
+    admission: Option<ActivationAdmission>,
 }
 
 /// A medium, off icon button showing `icon`, named `label` (its tooltip and
@@ -77,6 +78,7 @@ pub fn icon_button(
         look: Look::LIVE,
         measure: *measure,
         on_click: None,
+        admission: None,
     }
 }
 
@@ -126,6 +128,14 @@ impl IconButton {
     #[must_use]
     pub fn label(&self) -> &SharedString {
         &self.label
+    }
+
+    /// Admit the current mounted owner before pointer focus and again when
+    /// a native pointer, keyboard, or AX action activates.
+    #[must_use]
+    pub fn when_current(mut self, admit: ActivationAdmission) -> Self {
+        self.admission = Some(admit);
+        self
     }
 
     /// Click, Enter and Space.
@@ -231,7 +241,25 @@ impl RenderOnce for IconButton {
             .aria_label(self.label.clone())
             .aria_disabled(self.disabled)
             .opacity(if self.disabled { 0.42 } else { 1.0 });
-        let plate = if active { wire(plate, &touch, self.on_click) } else { plate };
+        let plate = if active {
+            let activate = self.on_click.map(|activate| {
+                if let Some(admit) = &self.admission {
+                    let admit = admit.clone();
+                    Rc::new(move |window: &mut Window, cx: &mut gpui::App| {
+                        if admit(cx) { activate(window, cx); }
+                    }) as Handler
+                } else {
+                    activate
+                }
+            });
+            let plate = wire(plate, &touch, activate);
+            let plate = if let Some(admit) = self.admission {
+                capture_activation_admission(plate, admit)
+            } else { plate };
+            plate
+        } else {
+            plate
+        };
         // The label is the button's tooltip (an icon says nothing until it is
         // named): it rises after a rest, like every tip.
         hover_zone(plate.tip(self.label), &touch, chamfer, active)

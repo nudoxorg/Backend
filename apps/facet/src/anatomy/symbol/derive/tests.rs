@@ -125,7 +125,7 @@ fn a_python_page_is_read_from_its_docs_and_says_so() {
     let call = view.call.as_ref().expect("a call");
     assert!(call.ports.iter().all(|p| p.ty.origin == Origin::Code || p.ty.origin == Origin::Docs));
     assert_eq!(call.fails.as_ref().map(|f| f.word), Some(FailWord::Raises));
-    assert!(view.rail.how.as_deref().is_some_and(|how| how.contains("read from its docs")));
+    assert!(view.rail.type_evidence.explanation().is_some_and(|how| how.contains("read from its docs")));
 }
 
 #[test]
@@ -138,7 +138,7 @@ fn a_typescript_declaration_keeps_its_declared_types() {
     assert_eq!(call.ports[0].ty.word, "anything");
     assert!(!call.ports[0].ty.origin.dotted());
     assert_eq!(call.ports[1].joint, Joint::Optional);
-    assert!(view.rail.how.is_none(), "declared types need no note");
+    assert!(view.rail.type_evidence.explanation().is_none(), "declared types need no note");
 }
 
 #[test]

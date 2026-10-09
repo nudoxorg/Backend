@@ -81,7 +81,7 @@ fn packages_block(env: &Env<'_>, uses: &Uses, ui: &Ui, n: usize) -> AnyElement {
     if let Some(note) = &uses.elsewhere {
         body.push(wrapped(env, &Key::of(Part::RailPackage).field(Slot::Elsewhere), note.clone(), roles::RAIL_SAY, i.ink2));
     } else if packages.is_empty() {
-        body.push(said(env, &Key::of(Part::RailPackage).field(Slot::None), "None of them use it.", roles::RAIL_SAY, i.ink3));
+        body.push(wrapped(env, &Key::of(Part::RailPackage).field(Slot::None), uses.evidence.notice(), roles::RAIL_SAY, i.ink3));
     } else {
         for (k, entry) in packages.iter().take(9).enumerate() {
             let key = Key::of(Part::RailPackage).at(k);
@@ -109,6 +109,9 @@ fn packages_block(env: &Env<'_>, uses: &Uses, ui: &Ui, n: usize) -> AnyElement {
         if packages.len() > 9 {
             body.push(said(env, &Key::of(Part::RailPackage).field(Slot::More), format!("and {} more", packages.len() - 9), roles::RAIL_SAY, i.ink3));
         }
+    }
+    if !packages.is_empty() && uses.elsewhere.is_none() {
+        body.push(wrapped(env, &Key::of(Part::RailPackage).field(Slot::Note), uses.evidence.notice(), roles::RAIL_SAY, i.ink3));
     }
     block(env, n, if uses.elsewhere.is_some() { "Where it's used" } else { "Your packages that use it" }, body)
 }
@@ -165,8 +168,8 @@ pub(super) fn rail(env: &Env<'_>, rail: &Rail, uses: &Uses, ui: &Ui) -> Vec<AnyE
         let key = Key::of(Part::Block).field(Slot::Across);
         out.push(block(env, out.len(), "Across releases", vec![div().flex().items_center().gap(env.k(8.0)).child(dots).child(div().min_w_0().flex_1().child(wrapped(env, &key, words, roles::RAIL_SAY, i.ink2))).into_any_element()]));
     }
-    if let Some(how) = &rail.how {
-        out.push(block(env, out.len(), "How we know", vec![wrapped(env, &Key::of(Part::Block).field(Slot::How), how.clone(), roles::RAIL_SAY, i.amber)]));
+    if let Some(how) = rail.type_evidence.explanation() {
+        out.push(block(env, out.len(), "How we know", vec![wrapped(env, &Key::of(Part::Block).field(Slot::How), how.to_owned(), roles::RAIL_SAY, i.amber)]));
     }
     out
 }

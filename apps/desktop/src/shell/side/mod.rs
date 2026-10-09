@@ -44,7 +44,7 @@ pub(crate) use row::TESTS_ROW;
 pub(crate) mod twin;
 
 use super::focus::{Act, Target, Targets};
-use super::root::ShelfNativeSurface;
+use super::root::{ShelfInputScope, ShelfNativeSurface};
 use super::kit::HoverIntent;
 use super::region::{Links, Region, RegionCore};
 use crate::model::AppSnapshot;
@@ -638,6 +638,10 @@ pub(crate) struct Shelf {
     /// opens on its contents, the same book keeps the lens across its pages
     /// and across the releases it is read at.
     lens: Lens,
+    /// Stable native owners for the compound lens strip, outside the virtual row registry.
+    lens_focus: std::cell::RefCell<[Option<FocusHandle>; 4]>,
+    step_out_focus: std::cell::RefCell<Option<FocusHandle>>,
+    lens_input_scope: Option<ShelfInputScope>,
     lens_book: Option<SharedString>,
     /// Groups the person opened or closed by hand.
     folds: Folds,
@@ -680,6 +684,16 @@ pub(crate) struct Shelf {
 }
 
 impl Shelf {
+    #[cfg(test)]
+    pub(super) fn diagnostic_narrow_value(&self) -> &str {
+        self.narrow.query()
+    }
+
+    #[cfg(test)]
+    pub(super) fn diagnostic_is_library_scope(&self) -> bool {
+        matches!(self.crumbs.shown(), Scope::Library)
+    }
+
     #[cfg(test)]
     pub(super) fn diagnostic_restore_ticket(&self) -> Option<u64> {
         match &self.layout.restore {
@@ -760,6 +774,9 @@ impl Shelf {
             followed: Place::of(&route),
             reading_visit: store.snapshot().session().reading.current.id,
             lens: shelf_lens(store.snapshot().session().reading.current.presentation.controls().shelf.lens),
+            lens_focus: Default::default(),
+            step_out_focus: Default::default(),
+            lens_input_scope: None,
             lens_book: Place::of(&route).book,
             folds: Folds::from_reading(&store.snapshot().session().reading.current.presentation.controls().shelf),
             narrow: Narrow::from_text(store.snapshot().session().reading.current.presentation.controls().shelf.narrow.as_ref().map_or("", |text| text.as_str())),
@@ -902,6 +919,7 @@ impl Shelf {
             book: &book,
             dossier: dossier.as_ref().map(|resource| crate::core::admit_resource(resource, snapshot.key(), store.owner_serving())),
             orbit: crate::core::admit_resource(&orbit, snapshot.key(), store.owner_serving()),
+            project_trees: store.project_tree_capabilities(),
             current,
             diffs,
             settings,
@@ -978,11 +996,17 @@ impl Shelf {
             Do::Fold(id) => self.flip(id.clone(), cx),
             Do::Lens(lens) => self.set_lens(*lens, cx),
             Do::Release(at) => self.links.dispatch(Intent::SetRelease(at.clone()), cx),
-            Do::Project(id) | Do::ProjectTree(id) => {
+            Do::Project(id) => {
+                let destination = PackageRef::parse(id.as_str()).ok().and_then(|package| crate::shell::kit::package_route(&package));
                 self.links.dispatch(Intent::ActivateProject(id.clone()), cx);
-                self.links.dispatch(Intent::Navigate(Route::Orbit(crate::navigation::OrbitRoute::Browse(
-                    crate::navigation::BrowseRoute::Tree(id.clone()),
-                ))), cx);
+                if let Some(destination) = destination { self.links.dispatch(Intent::Navigate(destination), cx); }
+            }
+            Do::ProjectTree(id) => {
+                let destination = self.links.store.read(cx).project_tree_capability(id).destination(id);
+                if let Some(destination) = destination {
+                    self.links.dispatch(Intent::ActivateProject(id.clone()), cx);
+                    self.links.dispatch(Intent::Navigate(destination), cx);
+                }
             }
             Do::Settings(page) => self.links.dispatch(Intent::OpenSettings(*page), cx),
             Do::Via(name) => {
@@ -1093,12 +1117,74 @@ impl Shelf {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if let Some(at) = self.focused_lens(window) {
+            if !self.lens_input_scope.as_ref().is_some_and(|scope| self.links.shell.upgrade()
+                .is_some_and(|shell| shell.read(cx).admits_shelf_input_scope(scope, cx))) { return false; }
+            let stroke = &event.keystroke;
+            if !stroke.modifiers.modified() {
+                let next = match stroke.key.as_str() {
+                    "left" | "up" => Some((at + Lens::ALL.len() - 1) % Lens::ALL.len()),
+                    "right" | "down" => Some((at + 1) % Lens::ALL.len()),
+                    "home" => Some(0),
+                    "end" => Some(Lens::ALL.len() - 1),
+                    _ => None,
+                };
+                if let Some(next) = next {
+                    let lens = Lens::ALL[next];
+                    self.perform(&Do::Lens(lens), cx);
+                    self.lens_focus_handle(next, cx).focus(window, cx);
+                    return true;
+                }
+            }
+            // Native Enter/Space activate the tab; ordinary and shifted typing still narrow this shelf.
+            if !matches!(stroke.key.as_str(), "enter" | "space" | "tab") {
+                let used = self.key(stroke, window, cx);
+                if used && self.lens != Lens::ALL[at] {
+                    let selected = Lens::ALL.iter().position(|lens| *lens == self.lens).expect("known lens");
+                    self.lens_focus_handle(selected, cx).focus(window, cx);
+                }
+                return used;
+            }
+            return false;
+        }
         if !self.owns_keyboard(event, window, cx) {
             return false;
         }
         self.key(&event.keystroke, window, cx)
     }
 
+    fn lens_focus_handle(&self, index: usize, cx: &mut App) -> FocusHandle {
+        self.lens_focus.borrow_mut()[index]
+            .get_or_insert_with(|| cx.focus_handle())
+            .clone()
+    }
+
+    fn focused_lens(&self, window: &Window) -> Option<usize> {
+        self.lens_focus.borrow().iter().position(|handle| {
+            handle.as_ref().is_some_and(|handle| {
+                handle.is_focused(window) && window.is_focus_handle_mounted(handle)
+            })
+        })
+    }
+
+    pub(crate) fn contains_chrome_native_handle(
+        &self,
+        handle: &FocusHandle,
+        window: &Window,
+    ) -> bool {
+        self.input_surface.is_some_and(|surface| {
+            matches!(
+                surface,
+                ShelfNativeSurface::Docked | ShelfNativeSurface::Drawer
+            )
+        }) && window.is_focus_handle_mounted(handle)
+            && (self.step_out_focus.borrow().as_ref() == Some(handle)
+                || self
+                    .lens_focus
+                    .borrow()
+                    .iter()
+                    .any(|saved| saved.as_ref() == Some(handle)))
+    }
     /// Whether this keystroke is the sidebar's: its zone is the active one,
     /// the shelf is on screen, and the focus is not in a place that owns
     /// the letters (a text input, a menu, the graph, hint mode).
@@ -2102,9 +2188,9 @@ impl Render for Shelf {
             rows,
             matched,
         } = self.listing(&snapshot, cx);
-        self.input_surface = self.links.shell.upgrade()
-            .and_then(|shell| shell.read(cx).shelf_input_scope(self.overlay_surface, cx))
-            .map(|scope| scope.surface());
+        self.lens_input_scope = self.links.shell.upgrade()
+            .and_then(|shell| shell.read(cx).shelf_input_scope(self.overlay_surface, cx));
+        self.input_surface = self.lens_input_scope.as_ref().map(|scope| scope.surface());
         let row_surface = self.input_surface.filter(|surface|
             matches!(surface, ShelfNativeSurface::Docked | ShelfNativeSurface::Drawer));
         let weak = cx.weak_entity();
@@ -2261,7 +2347,7 @@ impl Shelf {
             .find(|item| item.is_target())
         {
             Some(first) if self.input_surface != Some(ShelfNativeSurface::Spine)
-                && (!self.narrow.is_empty() || self.via.is_some()) => {
+                && (self.targets.is_active() || !self.narrow.is_empty() || self.via.is_some()) => {
                 self.targets.focus(first.key.clone())
             }
             _ => self.targets.clear_focus(),

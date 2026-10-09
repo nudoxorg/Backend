@@ -4802,6 +4802,26 @@ pub struct TreeNodeRecord {
     pub active: bool,
 }
 
+/// Completeness of the references actually served by the shared command.
+/// The current reply is bounded and carries no exhaustive semantic-coverage
+/// certificate. A successful zero is an observation, never proof of no uses.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReferenceCoverage {
+    /// The authority has not established complete use coverage.
+    Unestablished,
+}
+
+impl ReferenceCoverage {
+    /// Shared readable meaning for CLI and MCP, independent of record count.
+    #[must_use]
+    pub const fn explanation(self) -> &'static str {
+        match self {
+            Self::Unestablished => "Reference coverage has not been established; reported sites do not prove the absence of other uses.",
+        }
+    }
+}
+
 /// Typed result algebra for durable product commands.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "result", content = "data", rename_all = "kebab-case")]
@@ -4935,6 +4955,15 @@ pub enum SurfaceReply {
 }
 
 impl SurfaceReply {
+    /// Coverage follows the reply contract, never the number of returned rows.
+    #[must_use]
+    pub const fn reference_coverage(&self) -> Option<ReferenceCoverage> {
+        match self {
+            Self::References { .. } => Some(ReferenceCoverage::Unestablished),
+            _ => None,
+        }
+    }
+
     /// Returns the exact command identity required by this reply.
     #[must_use]
     pub const fn id(&self) -> CommandId {

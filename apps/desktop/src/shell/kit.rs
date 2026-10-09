@@ -299,6 +299,12 @@ pub(crate) fn indexed_result_route(
             .then(|| package_route(package))
             .flatten();
     }
+    // Local product labels are valid package pages, but do not establish a
+    // declaration namespace. An indexed declaration must name a pinned PURL
+    // or an absolute producer root, independent of this viewer's host OS.
+    if !indexed_package_namespace(package) {
+        return None;
+    }
     if !matches!(symbol.identity().shape(),
         backend_present::IdentityShape::Module
             | backend_present::IdentityShape::Declaration
@@ -309,6 +315,32 @@ pub(crate) fn indexed_result_route(
     symbol.as_str().strip_prefix(package.as_str())
         .filter(|tail| tail.starts_with("::"))
         .and_then(|_| symbol_view_route(package.as_str(), symbol, view, None))
+}
+
+fn indexed_package_namespace(package: &crate::model::pages::PackageRef) -> bool {
+    match package.reference() {
+        backend_library::PackageReference::Purl(_) => true,
+        backend_library::PackageReference::Local(root) => {
+            let root = root.as_str();
+            // Canonical Unix roots and the producer's supported Windows
+            // local-drive roots. NativePath checks encoding only; the Win32
+            // ProjectRoot grammar additionally excludes UNC/device roots and
+            // requires normal components. Preserve verbatim drive spelling.
+            if root.starts_with('/') {
+                return !root.starts_with("//")
+                    && root.split('/').all(|part| part != "." && part != "..");
+            }
+            let drive = root.strip_prefix("\\\\?\\").unwrap_or(root);
+            if !matches!(drive.as_bytes(), [letter, b':', b'/' | b'\\', ..] if letter.is_ascii_alphabetic()) {
+                return false;
+            }
+            let mut parts = drive[3..].split(['\\', '/']).filter(|part| !part.is_empty());
+            let ordinary = |part: &str| !matches!(part, "." | "..")
+                && !part.contains([':', '*', '?', '<', '>', '|', '"'])
+                && !part.ends_with([' ', '.']);
+            parts.next().is_some_and(ordinary) && parts.all(ordinary)
+        }
+    }
 }
 
 /// Admit a search row using both the producer's package claim and the

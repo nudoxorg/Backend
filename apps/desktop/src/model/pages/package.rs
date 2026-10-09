@@ -10,6 +10,10 @@ use std::sync::Arc;
 pub struct PackageDossier {
     /// The package asked for.
     pub package: PackageRef,
+    /// Current worker-read local manifest capability. Saved pages cannot
+    /// restore it; the root manifest must be read again.
+    #[serde(skip)]
+    pub project_tree: crate::model::project_browse::ProjectTreeCapability,
     /// Headline record (registry release or local manifest).
     pub record: Known<PackageRecord>,
     /// Recorded releases, newest first when the producer orders them.

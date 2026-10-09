@@ -184,8 +184,8 @@ pub fn symbol_text(page: &SymbolPage) -> String {
     relations(&mut out, "  implemented by", &page.rose.implemented_by);
     match &page.references {
         Known::Known(sites) => {
-            let _ = writeln!(out, "  references ({}):", sites.len());
-            for site in sites.iter() {
+            let _ = writeln!(out, "  reported references ({}; completeness unestablished):", sites.reported_count());
+            for site in sites.reported_sites() {
                 let _ = writeln!(
                     out,
                     "    - {} {} · {} · {} · {}",

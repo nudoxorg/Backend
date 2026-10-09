@@ -33,6 +33,7 @@ pub(super) fn body(
     let live = ctx.links.store.read(cx);
     let orbit = live.orbit();
     let owner_serving = live.owner_serving();
+    let project_trees = live.project_tree_capabilities();
     drop(live);
     let admission = admit_resource(&orbit, snapshot.key(), owner_serving);
     let indexed = admission
@@ -72,18 +73,13 @@ pub(super) fn body(
         // gets everywhere else (`package_route`, reused as-is). Parsing can
         // fail for a path the engine would refuse; then the tile still
         // activates the project, it just has nowhere further to go.
-        let project_route = PackageRef::parse(&project.path)
+        let project_route = PackageRef::parse(project.id.as_str())
             .ok()
             .and_then(|package| package_route(&package));
-        let tree_route = Route::Orbit(OrbitRoute::Browse(BrowseRoute::Tree(project.id.clone())));
-        // A durable folder is still selectable when the index is absent.
-        // Opening its local Tree address grants no source or semantic controls;
-        // those require the Tree's own current owner-backed read receipts.
-        let destination = if owner_serving {
-            project_route
-        } else {
-            (project.phase != crate::model::ProjectPhase::Missing).then(|| tree_route.clone())
-        };
+        let tree_route = project_trees.get(&project.id).copied().unwrap_or_default().destination(&project.id);
+        // Choosing a project opens its package page independently of the
+        // optional Cargo-only dependency producer and indexing readiness.
+        let destination = project_route;
         let project_openable = destination.is_some();
         let tree_id: SharedString = format!("orbit-tree-{}", project.id.as_str()).into();
         let tree_links = ctx.links.clone();
@@ -97,11 +93,12 @@ pub(super) fn body(
             }) {
                 return;
             }
+            let Some(current_destination) = tree_links.store.read(cx).project_tree_capability(&tree_project).destination(&tree_project) else { return; };
             let leaving = snapshot.route().clone();
             tree_recall.focus(tree_leave_id.clone());
             tree_recall.remember_leave(leaving, tree_leave_id.clone());
             tree_links.dispatch(Intent::ActivateProject(tree_project.clone()), cx);
-            tree_links.dispatch(Intent::Navigate(tree_route.clone()), cx);
+            tree_links.dispatch(Intent::Navigate(current_destination), cx);
         });
         let tree_action = ctx.target_local_action(tree_act, cx);
         let tree_act = tree_action.callback();
@@ -144,7 +141,7 @@ pub(super) fn body(
             source: None,
         });
         let tile_focus = ctx.native_handle(&id, cx);
-        if project.phase != crate::model::ProjectPhase::Missing {
+        if project.phase != crate::model::ProjectPhase::Missing && tree_route.is_some() {
             ctx.targets.push(Target {
                 id: tree_id.clone(),
                 label: format!("{} dependency tree", project.label).into(),
@@ -153,7 +150,7 @@ pub(super) fn body(
                 source: None,
             });
         }
-        let tree_focus = (project.phase != crate::model::ProjectPhase::Missing)
+        let tree_focus = (project.phase != crate::model::ProjectPhase::Missing && tree_route.is_some())
             .then(|| ctx.native_handle(&tree_id, cx))
             .flatten();
         let state = ctx.say(project.lifecycle().label());
@@ -201,7 +198,7 @@ pub(super) fn body(
             .items_center()
             .gap(measure.space(Space::Snug))
             .child(tile);
-        if project.phase != crate::model::ProjectPhase::Missing {
+        if project.phase != crate::model::ProjectPhase::Missing && tree_route.is_some() {
             let label = ctx.say("Dependency tree ›");
             let tree_face = native_control(
                 tree_id.clone(),

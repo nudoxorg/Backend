@@ -14,7 +14,7 @@ use crate::shell::kit::{pending, quiet, text};
 use crate::shell::reader::Reader;
 use facet::paint::{Bevel, Chamfer, cut};
 use facet::tokens::ty;
-use facet::{Set as _, Space};
+use facet::Space;
 use gpui::{Context, InteractiveElement, ParentElement, SharedString, Styled, div, px};
 use std::rc::Rc;
 
@@ -165,6 +165,7 @@ pub(crate) fn not_ready<T>(
             vec![Leaf::new(hero), Leaf::new(lines)]
         }
         Shown::Fault(error) => {
+            let heading = ctx.say(format!("{what} could not be read."));
             let message = ctx.say(error.message().to_owned());
             let code = ctx.say(fault_code(error.code()));
             let links = ctx.links.clone();
@@ -178,6 +179,27 @@ pub(crate) fn not_ready<T>(
             let mut control = facet::controls::button(id.clone(), "Try again", &measure)
                 .primary().on_click(move |window, cx| act(window, cx));
             if let Some(focus) = focus { control = control.focus_handle(focus); }
+            let mut actions = div()
+                .flex()
+                .items_center()
+                .flex_wrap()
+                .gap(measure.space(Space::Roomy))
+                .child(ctx.targets.track(id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control)))
+                .child(text(ty::MONO_SMALL, &measure, palette.ink3).keyed(format!("fault-code-{key:?}"))
+                    .role(gpui::Role::Label).aria_label(code.clone()).child(code));
+            if let Some(detail) = error.diagnostic_detail() {
+                let detail = detail.to_owned();
+                let label = if error.diagnostic_was_truncated() { "Copy bounded diagnostic" } else { "Copy diagnostic" };
+                let id: SharedString = format!("copy-fault-diagnostic-{key:?}").into();
+                let act: Act = Rc::new(move |_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(detail.clone())));
+                let target = ctx.target_local_action(act, cx);
+                let act = target.callback();
+                ctx.targets.push(Target { id: id.clone(), label: label.into(), action: target.clone(), peek: None, source: None });
+                let mut control = facet::controls::button(id.clone(), label, &measure)
+                    .ghost().on_click(move |window, cx| act(window, cx));
+                if let Some(focus) = ctx.native_handle(&id, cx) { control = control.focus_handle(focus); }
+                actions = actions.child(ctx.targets.track(id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control)));
+            }
             let plate = cut()
                 .chamfer(Chamfer::Md)
                 .bevel(Bevel::Coral)
@@ -186,18 +208,11 @@ pub(crate) fn not_ready<T>(
                 .flex()
                 .flex_col()
                 .gap(measure.space(Space::Base))
-                .child(text(ty::HEAD, &measure, palette.ink0).child(format!("{what} could not be read.")))
-                .child(text(ty::BODY, &measure, palette.ink2).child(message))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(measure.space(Space::Roomy))
-                        .child(
-                            ctx.targets.track(id, div().key_context(crate::shell::keys::NATIVE_CONTROL).child(control)),
-                        )
-                        .child(div().set(ty::MONO_SMALL, &measure).text_color(palette.ink3.hsla()).child(code)),
-                );
+                .child(text(ty::HEAD, &measure, palette.ink0).keyed(format!("fault-heading-{key:?}"))
+                    .role(gpui::Role::Heading).aria_label(heading.clone()).child(heading))
+                .child(text(ty::BODY, &measure, palette.ink2).keyed(format!("fault-message-{key:?}"))
+                    .role(gpui::Role::Label).aria_label(message.clone()).child(message))
+                .child(actions);
             vec![Leaf::new(plate)]
         }
         Shown::Unavailable(reason, detail) => {
@@ -214,8 +229,10 @@ pub(crate) fn not_ready<T>(
                     .flex()
                     .flex_col()
                     .gap(measure.space(Space::Base))
-                    .child(text(ty::TITLE, &measure, palette.ink1).child(SharedString::from(what.to_owned())))
-                    .child(quiet(line, &measure, palette)),
+                    .child(text(ty::TITLE, &measure, palette.ink1).keyed(format!("unavailable-heading-{key:?}"))
+                        .role(gpui::Role::Heading).aria_label(what.to_owned()).child(SharedString::from(what.to_owned())))
+                    .child(quiet(line.clone(), &measure, palette).keyed(format!("unavailable-message-{key:?}"))
+                        .role(gpui::Role::Label).aria_label(line)),
             )]
         }
     }
@@ -233,3 +250,6 @@ pub(crate) fn fault_code(code: FaultCode) -> String {
     };
     format!("READ-{name}")
 }
+
+#[cfg(test)]
+mod native_tests;

@@ -167,6 +167,16 @@ fn local_target_action(links: &Links, act: super::focus::Act, cx: &App) -> Targe
     TargetAction::new(local_target_admission(links, cx), act)
 }
 
+fn shelf_toggle_target_action(links: &Links, act: super::focus::Act, cx: &App) -> TargetAction {
+    let shell = links.shell.clone();
+    let scope = shell.upgrade().map(|shell| shell.read(cx).local_activation_scope());
+    let admit = Rc::new(move |app: &mut App| {
+        scope.is_some_and(|scope| shell.upgrade().is_some_and(|shell|
+            shell.read(app).admits_shelf_toggle_scope(scope, app)))
+    });
+    TargetAction::new(admit, act)
+}
+
 fn jump_target_action(action: JumpAction, links: &Links, targets: &Targets, cx: &App) -> TargetAction {
     let admit: Rc<dyn Fn(&mut App) -> bool> = match &action {
         JumpAction::Ask => local_target_admission(links, cx),
@@ -281,13 +291,15 @@ impl Render for Titlebar {
         let act: super::focus::Act = Rc::new(move |window, cx| {
             toggle_links.shell(cx, |shell, cx| shell.toggle_shelf(window, cx));
         });
-        let target_action = local_target_action(&self.links, act, cx);
+        let target_action = shelf_toggle_target_action(&self.links, act, cx);
         let act = target_action.callback();
+        let admission = target_action.clone();
         self.targets.push(Target { id: id.clone(), label: "Toggle the shelf".into(), action: target_action, peek: None, source: None });
         left = left.child(
             self.targets.track(
                 id.clone(),
                 facet::controls::icon_button(id, Icon::SideL, "Toggle the shelf", &measure)
+                    .when_current(Rc::new(move |cx| admission.admits(cx)))
                     .on(shelf_on)
                     .key("⌘\\")
                     .on_click(move |window, cx| act(window, cx)),

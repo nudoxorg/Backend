@@ -20,6 +20,262 @@ fn root() -> VersionedRoot {
 }
 
 #[test]
+fn query_preparation_keeps_exact_predecessor_and_rejects_stale_foreign_and_unrelated_reads() {
+    let query = SearchQuery::new("RelationLabel", 50).expect("query");
+    let key = PageKey::Search(query.clone());
+    let mut store = PageStore::default();
+    let value = read(&ReadRequest::for_key(&key));
+    assert_eq!(land(&mut store, &key, value.clone()), Landing::Applied);
+    let before = store.search(&query);
+    let allocation = before.loaded_arc().cloned().expect("retained search");
+    let preparation = crate::core::QueryPreparation {
+        basis: root().root().into(), state: backend_library::QueryPreparationState::Preparing,
+    };
+    let old = store.begin_forced(&key, root()).expect("mint").expect("generation");
+    let current = store.begin_forced(&key, root()).expect("mint").expect("generation");
+    assert_eq!(store.land(&key, old, Err(ReadFailure::QueryPreparation(preparation))), Landing::Superseded);
+    assert_eq!(store.inflight(&key), Some(current));
+    assert_eq!(store.land(&key, current, Err(ReadFailure::QueryPreparation(preparation))), Landing::Applied);
+    let awaiting = store.search(&query);
+    assert_eq!(awaiting.query_preparation(), Some(preparation));
+    assert!(Arc::ptr_eq(awaiting.loaded_arc().expect("same search"), &allocation));
+    assert_eq!(awaiting.value_root(), before.value_root());
+    assert!(store.inflight(&key).is_none(), "the refused RPC releases its generation");
+    assert_eq!(store.begin(&key, root()), Ok(None), "paints never retry preparation");
+    assert!(store.revoke_owner_read(&key));
+    assert!(store.search(&query).query_preparation().is_none());
+    let current = store.begin(&key, root()).expect("mint").expect("generation");
+    let foreign = crate::core::QueryPreparation {
+        basis: backend_library::view_state_root(&[("foreign".into(), "basis".into())]).into(),
+        state: backend_library::QueryPreparationState::Retiring,
+    };
+    assert_eq!(store.land(&key, current, Err(ReadFailure::QueryPreparation(foreign))), Landing::Applied);
+    assert!(matches!(store.search(&query).terminal(), ResourceTerminal::Fault(error) if error.code() == FaultCode::Protocol));
+    assert!(store.search(&query).query_preparation().is_none());
+    let unrelated = PageKey::Symbol(symbol("RelationLabel"));
+    let generation = store.begin(&unrelated, root()).expect("mint").expect("generation");
+    assert_eq!(store.land(&unrelated, generation, Err(ReadFailure::QueryPreparation(preparation))), Landing::Applied);
+    assert!(matches!(store.symbol(&symbol("RelationLabel")).terminal(), ResourceTerminal::Fault(error) if error.code() == FaultCode::Protocol));
+    let generation = store.begin_forced(&key, root()).expect("mint").expect("generation");
+    assert_eq!(store.land(&key, generation, Ok(value)), Landing::Applied);
+    assert!(store.search(&query).query_preparation().is_none());
+    assert_eq!(store.search(&query).activity(), Activity::Rest);
+}
+
+#[test]
+fn an_awaiting_find_keeps_its_model_without_promoting_a_completed_display_capture() {
+    let Some(query) = SearchQuery::new("RelationLabel", 50) else { panic!("the authored query must parse"); };
+    let browse = crate::model::browse::BrowseKey::Find(query.clone());
+    let key = PageKey::Browse(browse.clone());
+    let route = crate::navigation::Route::Orbit(crate::navigation::OrbitRoute::Browse(
+        crate::navigation::BrowseRoute::Find(query.clone()),
+    ));
+    let mut pages = PageStore::default();
+    let PageValue::Search(search) = read(&ReadRequest::Search(query.clone())) else { panic!("the authored fixture must return Search facts"); };
+    let answers = Known::Known(search);
+    let package_coverage = Known::Known(());
+    let prepared = Arc::new(crate::runtime::browse_views::prepare_find(query.text.as_ref(), &answers, &[], &package_coverage));
+    let value = PageValue::Browse(crate::model::browse::BrowseValue::Find(Arc::new(crate::model::browse::FindModel {
+        answers, packages: Arc::from([]), package_coverage, prepared,
+    })));
+    assert_eq!(land(&mut pages, &key, value), Landing::Applied);
+    let Some(allocation) = pages.browse(&browse).loaded_arc().cloned() else { panic!("the completed Find model must exist"); };
+    assert!(crate::runtime::snapshot::DisplayCapture::select(&pages, &route, root()).is_some());
+    let Ok(Some(generation)) = pages.begin_forced(&key, root()) else { panic!("the recheck must mint its generation"); };
+    let preparation = crate::core::QueryPreparation {
+        basis: root().root().into(), state: backend_library::QueryPreparationState::Preparing,
+    };
+    assert_eq!(pages.land(&key, generation, Err(ReadFailure::QueryPreparation(preparation))), Landing::Applied);
+    let awaiting = pages.browse(&browse);
+    assert!(awaiting.loaded_arc().is_some_and(|retained| Arc::ptr_eq(retained, &allocation)));
+    assert!(crate::runtime::snapshot::DisplayCapture::select(&pages, &route, root()).is_none(),
+        "retained awaiting bytes are not evidence of a completed current display");
+}
+
+fn diagnostic_fault() -> ErrorValue {
+    let detail = format!(
+        "open compiler owner: {}caused by: journal root cause 日本語\0",
+        "intermediate 原因\t".repeat(90)
+    );
+    ErrorValue::with_diagnostic(
+        FaultCode::Persistence,
+        "The index could not start. ",
+        &detail,
+    )
+}
+
+#[test]
+fn a_current_fault_keeps_full_diagnostic_without_promoting_revoked_page_bytes() {
+    let reference = symbol("RelationLabel");
+    let key = PageKey::Symbol(reference.clone());
+    let value = read(&ReadRequest::for_key(&key));
+    let mut store = PageStore::default();
+    assert_eq!(land(&mut store, &key, value.clone()), Landing::Applied);
+    let retained = store
+        .symbol(&reference)
+        .loaded_arc()
+        .expect("last-good page")
+        .clone();
+    let old = store
+        .begin_forced(&key, root())
+        .expect("admission")
+        .expect("old owner read");
+    assert!(store.revoke_owner_read(&key));
+    let current_root = root().with_generation(2);
+    let current = store
+        .begin(&key, current_root)
+        .expect("admission")
+        .expect("new owner read");
+    let fault = diagnostic_fault();
+    assert!(
+        fault
+            .diagnostic_detail()
+            .is_some_and(|detail| detail.len() > 512)
+    );
+    let before = store.symbol(&reference);
+    let stamp = store.stamp(&key);
+    assert_eq!(
+        store.land(&key, old, Err(ReadFailure::Fault(fault.clone()))),
+        Landing::Superseded
+    );
+    assert_eq!(
+        store.land(
+            &PageKey::Symbol(symbol("other-address")),
+            current,
+            Err(ReadFailure::Fault(fault.clone()))
+        ),
+        Landing::Superseded
+    );
+    assert_eq!(
+        store.symbol(&reference),
+        before,
+        "rejected fault cannot replace body or diagnostic"
+    );
+    assert_eq!(store.stamp(&key), stamp);
+    assert_eq!(store.inflight(&key), Some(current));
+
+    assert_eq!(
+        store.land(&key, current, Err(ReadFailure::Fault(fault.clone()))),
+        Landing::Applied
+    );
+    let failed = store.symbol(&reference);
+    assert_eq!(failed.terminal(), &ResourceTerminal::Fault(fault.clone()));
+    assert_eq!(failed.activity(), Activity::Stopped);
+    assert_eq!(
+        failed.value_root(),
+        Some(root()),
+        "failure never rebases retained bytes"
+    );
+    assert!(Arc::ptr_eq(
+        failed.loaded_arc().expect("retained page"),
+        &retained
+    ));
+    assert!(!failed.is_loaded());
+    assert!(
+        store.is_owner_read_revoked(&key),
+        "diagnostic retention admits no current owner capability"
+    );
+    assert!(store.idle_fault_at(&key, current_root, &fault));
+    assert!(!store.idle_fault_at(&key, root(), &fault));
+    assert_eq!(
+        store.begin(&key, current_root),
+        Ok(None),
+        "terminal failure waits for explicit Retry"
+    );
+
+    let retry = store
+        .begin_forced(&key, current_root)
+        .expect("admission")
+        .expect("explicit Retry");
+    assert_eq!(store.land(&key, retry, Ok(value)), Landing::Applied);
+    let loaded = store.symbol(&reference);
+    assert_eq!(
+        loaded.terminal(),
+        &ResourceTerminal::Complete,
+        "successful publication clears the entire fault"
+    );
+    assert_eq!(loaded.activity(), Activity::Rest);
+    assert_eq!(loaded.value_root(), Some(current_root));
+    assert!(!store.is_owner_read_revoked(&key));
+    assert!(!store.idle_fault_at(&key, current_root, &fault));
+}
+
+#[test]
+fn cancelling_a_retry_keeps_typed_diagnostic_and_rejects_its_late_fault() {
+    let reference = symbol("RelationLabel");
+    let key = PageKey::Symbol(reference.clone());
+    let mut store = PageStore::default();
+    land(&mut store, &key, read(&ReadRequest::for_key(&key)));
+    let generation = store
+        .begin_forced(&key, root())
+        .expect("admission")
+        .expect("failed read");
+    let fault = diagnostic_fault();
+    assert_eq!(
+        store.land(&key, generation, Err(ReadFailure::Fault(fault.clone()))),
+        Landing::Applied
+    );
+    assert!(store.revoke_owner_read(&key));
+    let retry = store
+        .begin(&key, root())
+        .expect("admission")
+        .expect("renewed owner read");
+    let retained = store
+        .symbol(&reference)
+        .loaded_arc()
+        .expect("predecessor")
+        .clone();
+    assert_eq!(store.cancel(&key), Some(retry));
+    let cancelled = store.symbol(&reference);
+    assert_eq!(
+        cancelled.terminal(),
+        &ResourceTerminal::Fault(fault.clone())
+    );
+    assert_eq!(
+        cancelled.activity(),
+        Activity::Waiting,
+        "cancelled revoked bytes remain waiting predecessors"
+    );
+    assert_eq!(cancelled.value_root(), Some(root()));
+    assert!(Arc::ptr_eq(
+        cancelled.loaded_arc().expect("retained page"),
+        &retained
+    ));
+    assert!(store.is_owner_read_revoked(&key));
+    let stamp = store.stamp(&key);
+    assert_eq!(
+        store.land(
+            &key,
+            retry,
+            Err(ReadFailure::Fault(ErrorValue::new(
+                FaultCode::Transport,
+                "late cancelled failure"
+            )))
+        ),
+        Landing::Superseded
+    );
+    assert_eq!(store.symbol(&reference), cancelled);
+    assert_eq!(store.stamp(&key), stamp);
+
+    let next = store
+        .begin(&key, root())
+        .expect("admission")
+        .expect("cancellation permits a new read");
+    assert_ne!(next, retry);
+    assert_eq!(
+        store.land(&key, next, Err(ReadFailure::Cancelled)),
+        Landing::Applied
+    );
+    assert_eq!(
+        store.symbol(&reference),
+        cancelled,
+        "producer cancellation has the same retained-error law"
+    );
+    assert_eq!(store.inflight(&key), None);
+    assert!(store.begin(&key, root()).expect("admission").is_some());
+}
+
+#[test]
 fn visible_idle_browse_slot_survives_an_entirely_running_cache_until_route_release() {
     use crate::model::browse::BrowseKey;
     use crate::core::LocalProjectId;

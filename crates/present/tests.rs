@@ -1518,6 +1518,25 @@ fn a_references_reply_renders_sites_with_their_provenance() {
 }
 
 #[test]
+fn empty_reference_replies_preserve_unknown_coverage_in_shared_cli_mcp_projection() {
+    let reply = backend_library::SurfaceReply::References {
+        target: backend_library::ProductText::new("fastapi-full-stack::backend/app/core/security.py:22::create_access_token").expect("target"),
+        references: Box::new([]),
+    };
+    let view = product_view(&reply);
+    assert!(view.records().is_empty());
+    assert_eq!(view.reference_coverage(), Some(backend_library::ReferenceCoverage::Unestablished));
+    assert_eq!(view.note(), Some(backend_library::ReferenceCoverage::Unestablished.explanation()));
+    let dto = serde_json::to_value(crate::ProductDto::new(&view)).expect("shared projection");
+    assert_eq!(dto["reference_coverage"], "unestablished");
+    assert!(dto["note"].as_str().expect("coverage note").contains("do not prove the absence"));
+    // The original wire shape stays compatible; coverage is projected from
+    // its explicit bounded contract rather than invented from empty records.
+    let wire = serde_json::to_value(&reply).expect("wire");
+    assert_eq!(wire["data"]["references"], serde_json::json!([]));
+}
+
+#[test]
 fn advisory_reply_renders_typed_coverage_and_decision() {
     let reply =
         backend_library::SurfaceReply::Advisory(backend_library::AdvisoryPackageDto::unknown());

@@ -87,6 +87,18 @@ pub struct LocalPackage {
     pub members: usize,
 }
 
+/// Reads only the bounded root manifest, without starting Cargo or walking
+/// members. A failed/missing/malformed read provides no tree capability.
+/// This belongs on the existing page worker, never the native render thread.
+pub(crate) fn project_tree_capability(root: &Path) -> crate::model::project_browse::ProjectTreeCapability {
+    use crate::model::project_browse::ProjectTreeCapability;
+    if manifest::read_manifest(&root.join("Cargo.toml")).is_some_and(|manifest| manifest.is_cargo_root()) {
+        ProjectTreeCapability::Cargo
+    } else {
+        ProjectTreeCapability::Unestablished
+    }
+}
+
 /// The reader that produced a [`LocalPackage`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LocalPackageSource {

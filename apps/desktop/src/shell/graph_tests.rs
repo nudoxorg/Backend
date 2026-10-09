@@ -303,6 +303,31 @@ fn t_on_world_over_a_package_starts_its_tour_with_nothing_focused(cx: &mut TestA
 /// Source-fixture rows reconstructed from Run19's two physical files. These
 /// are not claimed to be a decoded owner response. They exercise the exact
 /// production row mapper and identity adapter, then real native activation.
+/// This fixture owns one immutable producer root. An owner-readiness probe
+/// observes that root; it cannot manufacture a new cursor and thereby retire
+/// the independently installed projection while testing attachment renewal.
+struct CanaryOwnerRoot;
+
+impl crate::runtime::actor::EngineClient for CanaryOwnerRoot {
+    fn execute(&mut self, request: &crate::runtime::actor::EngineRequest)
+        -> Result<crate::runtime::actor::EngineDto, crate::runtime::actor::EngineFault>
+    {
+        use crate::runtime::actor::{EngineDto, EngineFault, EngineRequest};
+        match request {
+            EngineRequest::Root { request, basis, .. } => Ok(EngineDto::Root {
+                request: *request,
+                basis: *basis,
+                key: *basis,
+                revision: basis.revision(),
+                delta: None,
+                project: None,
+                catalog: None,
+            }),
+            _ => Err(EngineFault::Cancelled),
+        }
+    }
+}
+
 fn canary_native_rig(cx: &mut TestAppContext, width: f32, scale: f32, appearance: facet::tokens::Appearance) -> (Rig, crate::runtime::owner::OwnerGate) {
     use backend_library::{Basis, DeclarationKind, Row, RowId, SourceAvailability, SourceLocation, object_version, symbol_key, view_state_root};
     use facet::graph::{Module, Package, World};
@@ -314,7 +339,7 @@ fn canary_native_rig(cx: &mut TestAppContext, width: f32, scale: f32, appearance
     let launch_root = VersionedRoot::synthetic(view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4);
     let gate = crate::runtime::owner::OwnerGate::ready(launch_root, crate::model::ServiceMode::Attached);
     let mut rig = super::tests::rig_with_engine_gate(cx, None, width, 900.0,
-        ReadPool::start(2, |_| super::tests::Fixture).expect("fixture pool"), super::tests::RootOnly, Some(gate.clone()));
+        ReadPool::start(2, |_| super::tests::Fixture).expect("fixture pool"), CanaryOwnerRoot, Some(gate.clone()));
     let preference = match appearance {
         facet::tokens::Appearance::Abyss => crate::model::AppearancePreference::Abyss,
         facet::tokens::Appearance::Glacier => crate::model::AppearancePreference::Glacier,
@@ -322,9 +347,9 @@ fn canary_native_rig(cx: &mut TestAppContext, width: f32, scale: f32, appearance
     rig.go(Intent::SetAppearance(preference));
     let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
     rig.go(Intent::ZoomTo { display, percent: (scale * 100.0) as u16 });
-    // Startup admits the owner and RootOnly can publish a newer cursor before
-    // this fixture is installed. The projection must bind to the same exact
-    // authority the current Reader will request, not the launch gate's key.
+    // Startup, the owner gate and the installed graph must agree on this
+    // exact producer root. Attachment renewal exercises a new owner lifetime,
+    // not an unrelated mutation of the fixture's producer cursor.
     let root = rig.graph.store.read_with(rig.cx, |store, _| {
         assert!(store.current_owner_attachment().is_some(), "canary needs a serving owner attachment");
         store.snapshot().key()
@@ -332,6 +357,7 @@ fn canary_native_rig(cx: &mut TestAppContext, width: f32, scale: f32, appearance
     let model_root = rig.graph.root.read_with(rig.cx, |model, _| model.snapshot().key());
     assert!(root.same_authority(model_root), "canary store/model authority diverged before projection: store={root:?}, model={model_root:?}");
     assert_eq!(root.root(), launch_root.root(), "canary startup changed the certified fixture root");
+    assert!(root.same_authority(launch_root), "canary readiness cannot invent a producer publication");
     let package = PackageRef::parse("/fixture/real-rust-canary").expect("package");
     let basis = Basis::new(view_state_root(&[]), object_version(b"Run19 source fixture"));
     let mut exact = BTreeMap::new();
@@ -402,15 +428,10 @@ fn real_canary_shape_has_native_exact_selection_at_each_text_scale(cx: &mut Test
 }
 
 fn graph_native_evidence(rig: &mut Rig) -> String {
-    #[cfg(debug_assertions)]
-    {
-        let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
-        let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx));
-        return rig.cx.update(|window, cx| format!("focus={:?}; {}; graph={}", window.focused(cx),
-            reader.read(cx).graph_native_diagnostic(cx), graph.as_ref().map_or_else(|| "not mounted".into(), |graph| graph.read(cx).native_focus_diagnostic(window, cx))));
-    }
-    #[cfg(not(debug_assertions))]
-    { let _ = rig; "native diagnostic requires debug assertions".into() }
+    let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
+    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx));
+    rig.cx.update(|window, cx| format!("focus={:?}; {}; graph={}", window.focused(cx),
+        reader.read(cx).graph_native_diagnostic(cx), graph.as_ref().map_or_else(|| "not mounted".into(), |graph| graph.read(cx).native_focus_diagnostic(window, cx))))
 }
 
 fn graph_native_inventory(rig: &mut Rig) -> (Option<String>, Vec<serde_json::Value>) {
@@ -773,6 +794,8 @@ fn mounted_graph_recovers_from_owner_renewal_without_navigation_or_forced_redraw
     assert_eq!(rig.route(), Route::World);
     assert!(rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_attachment()).is_some());
     let mounted = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx));
+    super::tests::native_boundary_evidence(&mut rig, "graph-owner-renewal-before-frame");
+    eprintln!("nudox-native-boundary graph-report={}", rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)));
     assert!(mounted.is_some(), "the same visible route must remount after admission without an external wake");
     let mounted = mounted.expect("remounted graph");
     assert_ne!(mounted.entity_id(), before,

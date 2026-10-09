@@ -2,8 +2,9 @@
 //!
 //! [`A11yDebug`] retains the last [`TreeUpdate`] sent to the platform adapter so
 //! it can be serialized on demand (see
-//! [`crate::Window::debug_a11y_tree_json`]). In `cfg(debug_assertions)` builds,
-//! we capture extra info.
+//! [`crate::Window::debug_a11y_tree_json`]). Debug and `test-support` builds
+//! retain creator metadata for exact native-control identity checks;
+//! ordinary release builds omit it.
 
 use accesskit::{Action, NodeId, TreeUpdate};
 use collections::FxHashMap;
@@ -27,7 +28,7 @@ struct CapturedFrame {
     scale_factor: f32,
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "test-support"))]
 #[derive(Clone, Default)]
 pub(crate) struct NodeDebugInfo {
     /// Whether the node was synthesized via
@@ -45,7 +46,7 @@ pub(crate) struct NodeDebugInfo {
     pub source_location: Option<&'static core::panic::Location<'static>>,
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "test-support"))]
 #[derive(Clone, Default)]
 pub(crate) struct NodeCreator {
     pub view: Option<&'static str>,
@@ -66,7 +67,7 @@ pub(crate) struct A11yDebug {
     /// Window-space bounds of every node in the last update, retained because
     /// the live map is cleared at the start of each frame.
     last_node_bounds: FxHashMap<NodeId, Bounds<Pixels>>,
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "test-support"))]
     last_node_info: FxHashMap<NodeId, NodeDebugInfo>,
 }
 
@@ -111,7 +112,7 @@ impl A11yDebug {
         self.frame_number
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "test-support"))]
     pub(crate) fn capture_node_info(&mut self, node_info: &FxHashMap<NodeId, NodeDebugInfo>) {
         self.last_node_info = node_info.clone();
     }
@@ -132,7 +133,7 @@ impl A11yDebug {
                 .get(id)
                 .cloned()
                 .unwrap_or_else(|| id.0.to_string());
-            #[cfg(debug_assertions)]
+            #[cfg(any(debug_assertions, feature = "test-support"))]
             let provenance = self
                 .last_node_info
                 .get(id)
@@ -145,7 +146,7 @@ impl A11yDebug {
                     synthetic: info.synthetic.then_some(true),
                 })
                 .unwrap_or_default();
-            #[cfg(not(debug_assertions))]
+            #[cfg(not(any(debug_assertions, feature = "test-support")))]
             let provenance = NodeProvenance::default();
             let value = node_to_json(
                 *id,

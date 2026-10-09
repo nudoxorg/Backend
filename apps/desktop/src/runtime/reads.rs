@@ -28,6 +28,7 @@ pub use outbox::Batch;
 use permit::PermitShare;
 pub use permit::{Held, ReadLimits, Saturation};
 pub use pool::{Admitted, Evicted, ReadLoad, ReadPool, Refused};
+pub(crate) use pool::PreparationExpiry;
 
 use super::actor::CancellationToken;
 use super::liveness::{report_if_dead, transport_break};
@@ -64,6 +65,8 @@ const OUTLINE_ROWS: usize = 8_000;
 const OUTLINE_BYTES: usize = 12 * 1024 * 1024;
 /// Explore page size for the Orbit catalog.
 const EXPLORE_LIMIT: u16 = 64;
+/// Existing desktop query/read transport budget, also bounding preparation retries.
+pub(super) const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// Shared UI landing/fairness turn: at most eight outcomes per poll.
 pub(super) const LANDING_BUDGET: std::num::NonZeroUsize =
     std::num::NonZeroUsize::MIN.saturating_add(7);
@@ -483,7 +486,7 @@ impl SessionEngine {
                 match Session::connect_with_timeouts(
                     &self.endpoint,
                     Duration::from_secs(1),
-                    Duration::from_secs(30),
+                    READ_TIMEOUT,
                 ) {
                     Ok(session) => {
                         self.session = Some(session);
@@ -809,6 +812,9 @@ impl<E: ReadEngine> PageReader for SessionReader<E> {
 /// Lowers a client failure of the page's primary read.
 #[must_use]
 pub fn failure(error: &ClientError) -> ReadFailure {
+    if let ClientError::CommandFailed(CommandFailure::QueryPreparation { basis, state }) = error {
+        return ReadFailure::QueryPreparation(crate::core::QueryPreparation { basis: *basis, state: *state });
+    }
     let code = match error {
         ClientError::CommandFailed(CommandFailure::NotFound) => FaultCode::Missing,
         ClientError::CommandFailed(_) | ClientError::Protocol(_) | ClientError::IncoherentView => {
@@ -1132,7 +1138,7 @@ fn compose_symbol(
     // Your own files at each use's span: read here, on the worker, so the page
     // lands with its lines and nothing reads them again on the UI thread.
     if let Some(sites) = page.references.known() {
-        page.workspace = super::workspace_lines::read(sites, &super::workspace_lines::OnDisk);
+        page.workspace = super::workspace_lines::read(sites.reported_sites(), &super::workspace_lines::OnDisk);
     }
     Ok(PageValue::Symbol(page))
 }
@@ -1636,6 +1642,15 @@ fn compose_package(
         // supply this project's name, version, and license.
         .and_then(|project| loader.load_with_cancel(&project, context.cancel.flag()));
     check(context.cancel)?;
+    // Capability belongs to this selected package read. Never scan all
+    // Orbit roots: unopened projects have no manifest evidence or Tree action.
+    // The helper reads at most 1MiB and does not walk members/start Cargo.
+    let project_tree = if package.is_local() {
+        crate::model::local_package::project_tree_capability(Path::new(package.as_str()))
+    } else {
+        crate::model::project_browse::ProjectTreeCapability::Unestablished
+    };
+    check(context.cancel)?;
     // Every part failing the same way means the package itself is unknown.
     if let (Err(error), None) = (&records, &local)
         && matches!(
@@ -1647,6 +1662,7 @@ fn compose_package(
     }
     context.publish(PageValue::Package(page_mapping::package_dossier(
         &PackageInputs {
+            project_tree,
             package,
             records: records.as_ref(),
             versions: versions.as_ref(),
@@ -1660,6 +1676,7 @@ fn compose_package(
     check(context.cancel)?;
     Ok(PageValue::Package(page_mapping::package_dossier(
         &PackageInputs {
+            project_tree,
             package,
             records: records.as_ref(),
             versions: versions.as_ref(),
@@ -1684,9 +1701,9 @@ fn compose_search(
                 limit: query.limit,
             },
             continuation,
-        )
-        .map_err(|error| failure(&error))?;
+        );
     check(context.cancel)?;
+    let reply = reply.map_err(|error| failure(&error))?;
     let semantic_search = reply.semantic_search_status();
     match reply.reply {
         CommandReply::Search(snapshot) => {
@@ -1711,6 +1728,7 @@ fn compose_find(
         Some(query) => match compose_search(engine, query, None, context) {
             Ok(page) => Known::Known(page),
             Err(ReadFailure::Cancelled) => return Err(ReadFailure::Cancelled),
+            Err(error @ ReadFailure::QueryPreparation(_)) => return Err(error),
             Err(error) => Known::Unknown(Gap::new(GapReason::ReadFailed, format!("{error:?}"))),
         },
         None => Known::unknown(
@@ -1883,6 +1901,39 @@ mod tests {
     use std::sync::Condvar;
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn preparation_is_typed_and_find_does_not_fabricate_a_read_failed_gap() {
+        struct PreparingEngine {
+            basis: backend_library::ViewRevision,
+            state: backend_library::QueryPreparationState,
+            cancel: CancellationToken,
+            cancel_on_reply: bool,
+        }
+        impl Engine for PreparingEngine {
+            fn revision(&mut self) -> Result<ViewStateRoot, ClientError> { Err(ClientError::IncoherentView) }
+            fn health(&mut self) -> Result<HealthReport, ClientError> { Err(ClientError::IncoherentView) }
+            fn probe(&mut self, probe: Probe<'_>) -> Result<ReplyDto, ClientError> {
+                assert!(matches!(probe, Probe::Search { .. }), "Find must stop before reading companion facts");
+                if self.cancel_on_reply { self.cancel.cancel(); }
+                Err(ClientError::CommandFailed(CommandFailure::QueryPreparation { basis: self.basis, state: self.state }))
+            }
+            fn surface(&mut self, _: SurfaceCommand) -> Result<SurfaceReply, ClientError> { panic!("no companions while preparing") }
+        }
+        let basis = view_state_root(&[("query".into(), "preparation".into())]).into();
+        let query = SearchQuery::new("RelationLabel", 50).expect("query");
+        let outlines = OutlineCache::default();
+        for state in [backend_library::QueryPreparationState::Preparing, backend_library::QueryPreparationState::Retiring] {
+            let cancel = CancellationToken::new();
+            let context = ReadContext { worker: 0, cancel: &cancel, outlines: &outlines, progress: None };
+            let mut engine = PreparingEngine { basis, state, cancel: cancel.clone(), cancel_on_reply: false };
+            let preparation = crate::core::QueryPreparation { basis, state };
+            assert_eq!(failure(&ClientError::CommandFailed(CommandFailure::QueryPreparation { basis, state })), ReadFailure::QueryPreparation(preparation));
+            assert_eq!(compose_find(&mut engine, Some(&query), &context), Err(ReadFailure::QueryPreparation(preparation)));
+            engine.cancel_on_reply = true;
+            assert_eq!(compose_find(&mut engine, Some(&query), &context), Err(ReadFailure::Cancelled), "cancel wins over a late refusal");
+        }
+    }
 
     struct ExactRegistryTree {
         root: PathBuf,

@@ -271,7 +271,7 @@ pub use surface::{
     PackageTypeCellFact, PackageTypeScriptProjectionFaultFacts, PackageTypeTagFact,
     ProductAdmissionError, ProductText, ProjectId, ProjectLockfileMembership, ProjectName,
     ProjectRecord, ProjectSelector, ProjectUnresolvedLockMember,
-    ReferenceRecord, RegistryDiscoveryAdvisory, RegistryDiscoveryCandidate,
+    ReferenceCoverage, ReferenceRecord, RegistryDiscoveryAdvisory, RegistryDiscoveryCandidate,
     RegistryDiscoveryCompleteness, RegistryDiscoveryFreshness, RegistryDiscoveryMetadata,
     RegistryDiscoveryStanding, RegistryDownloadCount, RegistryEcosystem, RegistryEvidenceFacet,
     RegistryFactAvailability, RegistryMetadata, RegistryNegativeFactKind,

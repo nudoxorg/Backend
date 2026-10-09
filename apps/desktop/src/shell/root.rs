@@ -180,6 +180,7 @@ pub struct Shell {
     pins: Entity<Pins>,
     ask: Entity<Ask>,
     ask_presentation: AskPresentation,
+    drawer_presentation: super::drawer_presentation::DrawerPresentation,
     motion: Motion,
     zen: bool,
     /// The hand's Row rung is open (H, or the foot's marks).
@@ -360,6 +361,7 @@ impl Shell {
             pins,
             ask,
             ask_presentation: AskPresentation::default(),
+            drawer_presentation: super::drawer_presentation::DrawerPresentation::default(),
             motion: Motion::new(),
             zen: false,
             hand_open: false,
@@ -1071,6 +1073,7 @@ impl Shell {
         self.page_input_generation = self.page_input_generation.and_then(|generation| generation.checked_add(1));
         if matches!(change, InputOwnerChange::Structure) || self.page_input_generation.is_none() {
             self.local_native_input = gpui::NativeActivationScope::new(cx.entity_id(), self.page_input_generation);
+            self.titlebar.update(cx, |_, cx| cx.notify());
         }
         // Cached columns need fresh callbacks when native scene ownership changes.
         // An old callback retains its old scope; only a new paint gets this epoch.
@@ -1283,6 +1286,9 @@ impl Shell {
     /// ⌘\: the shelf opens or closes; on a window too narrow to hold it the
     /// full shelf opens over the reader instead.
     pub(crate) fn toggle_shelf(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // This persistent control owns the drawer's direction. It can reverse
+        // an exit while Reader and shelf-row input remain behind that plate.
+        if !self.shelf_toggle_input_allowed(cx) { return; }
         self.advance_transient_generation();
         if self.frame.is_some_and(|frame| frame.shelf_overlays) {
             self.advance_page_input_generation(InputOwnerChange::Structure, cx);
@@ -1388,8 +1394,10 @@ impl Shell {
                 targets.admits_hint(&id, targets.hint_frame()));
             let owns = match focus {
                 Some(handle) if handle == &self.focus || handle == &self.drawer_focus => logical,
-                Some(handle) => targets.contains_native_handle(handle)
-                    && window.is_focus_handle_mounted(handle),
+                Some(handle) => (targets.contains_native_handle(handle)
+                    && window.is_focus_handle_mounted(handle))
+                    || if self.shelf_over_open { self.shelf_over.read(cx).contains_chrome_native_handle(handle, window) }
+                        else { self.shelf.read(cx).contains_chrome_native_handle(handle, window) },
                 None => logical,
             };
             if !owns { return Zone::Reader; }
@@ -1403,13 +1411,15 @@ impl Shell {
             && self.available_zone(self.zone, window.focused(cx).as_ref(), window, cx) == self.zone { return; }
         let focused = window.focused(cx);
         let hidden_owner = focused.as_ref().is_some_and(|handle|
-            self.with_zone(cx, |targets| targets.contains_native_handle(handle)));
+            self.with_zone(cx, |targets| targets.contains_native_handle(handle))
+                || (self.zone == Zone::Shelf
+                    && self.shelf.read(cx).contains_chrome_native_handle(handle, window)));
         let needs_native_owner = focused.is_none() || self.focus.is_focused(window) || hidden_owner
             || focused.as_ref().is_some_and(|handle| !window.is_focus_handle_mounted(handle));
         self.set_zone(Zone::Reader, cx);
         // Preserve any other mounted native owner, including a floating pin
-        // or titlebar control. Only the old custom hand or an orphaned handle
-        // moves to the Reader's persistent Shell owner.
+        // or titlebar control. Retiring Shelf rows and chrome, the old custom
+        // hand and orphaned handles move to the Reader's persistent Shell owner.
         if !self.ask_open && !self.shelf_over_open && self.background_input_allowed()
             && self.links.snapshot(cx).overlay() != Some(Overlay::AddProject)
             && !super::titlebar::menu_open(window, cx) && !window.has_focused_input(cx)
@@ -1483,6 +1493,21 @@ impl Shell {
             self.set_zone(Zone::Reader, cx);
             if already_reader && changed { self.notify_zone(Zone::Reader, cx); }
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn diagnostic_drawer_narrow_value(&self, cx: &App) -> String {
+        self.shelf_over.read(cx).diagnostic_narrow_value().to_owned()
+    }
+
+    #[cfg(test)]
+    pub(super) fn diagnostic_drawer_is_library_scope(&self, cx: &App) -> bool {
+        self.shelf_over.read(cx).diagnostic_is_library_scope()
+    }
+
+    #[cfg(test)]
+    pub(super) fn drawer_contains_native_focus(&self, window: &Window, cx: &App) -> bool {
+        self.shelf_over_open && self.drawer_focus.contains_focused(window, cx)
     }
 
     /// A custom navigation zone shares the shell's persistent native focus
@@ -1940,6 +1965,23 @@ impl Shell {
         !self.drawer_departing && !self.ask_presentation.blocks_background_input(self.ask_open)
     }
 
+    fn shelf_toggle_input_allowed(&self, cx: &App) -> bool {
+        !self.ask_open && !self.ask_presentation.blocks_background_input(self.ask_open)
+            && !matches!(self.links.snapshot(cx).overlay(), Some(Overlay::CommandPalette | Overlay::AddProject))
+    }
+
+    #[cfg(test)]
+    pub(super) fn diagnostic_cover_motion(&self, cx: &App) -> (Option<AskScene>, bool, bool, bool, bool) {
+        let (scene, ask_moving) = self.ask_presentation.diagnostic_scene(cx);
+        (scene, ask_moving, self.motion.is_live(cx), self.drawer_departing, self.background_input_allowed())
+    }
+
+    #[cfg(test)]
+    pub(super) fn diagnostic_drawer_motion(&self, cx: &App) -> (bool, Option<super::drawer_presentation::DrawerScene>, bool) {
+        let (scene, live) = self.drawer_presentation.diagnostic_scene(cx);
+        (self.shelf_over_open, scene, live)
+    }
+
     pub(crate) const fn focus_return_generation(&self) -> Option<u64> {
         self.transient_generation
     }
@@ -1955,6 +1997,11 @@ impl Shell {
 
     pub(crate) fn admits_local_activation_scope(&self, scope: gpui::NativeActivationScope, cx: &App) -> bool {
         self.local_native_input == scope && self.page_input_allowed(cx)
+            && matches!(scope, gpui::NativeActivationScope::Active { .. })
+    }
+
+    pub(crate) fn admits_shelf_toggle_scope(&self, scope: gpui::NativeActivationScope, cx: &App) -> bool {
+        self.local_native_input == scope && self.shelf_toggle_input_allowed(cx)
             && matches!(scope, gpui::NativeActivationScope::Active { .. })
     }
 
@@ -2558,9 +2605,10 @@ impl Render for Shell {
             self.drawer_focus.focus(window, cx);
         }
         let drawer = f32::from(frame.drawer);
-        let over_x = self.motion.animate("over-x", if over { 0.0 } else { -drawer }, spec::SETTLE, window, cx).min(columns_cap);
+        let drawer_scene = self.drawer_presentation.sample(over, frame.drawer, window, cx);
+        let over_x = f32::from(drawer_scene.offset).min(columns_cap);
 
-        self.drawer_departing = !over && over_x > -drawer + 0.5;
+        self.drawer_departing = !over && drawer_scene.visible;
         if !over && !self.drawer_departing {
             if let Some(saved) = self.drawer_return.take() {
                 self.shelf_over.update(cx, |shelf, _| shelf.targets.set_active(false));
@@ -2586,7 +2634,8 @@ impl Render for Shell {
         self.ask_results_mounted = ask_scene.live_results;
         let background_input_allowed = !self.ask_open && !over && self.background_input_allowed()
             && snapshot.overlay() != Some(Overlay::AddProject);
-        self.reader.update(cx, |reader, cx| reader.set_ask_scene(ask_scene.geometry, background_input_allowed, cx));
+        let background = ask_scene.background(self.motion.is_live(cx) || drawer_scene.moving, background_input_allowed);
+        self.reader.update(cx, |reader, cx| reader.set_ask_scene(ask_scene.geometry, background, cx));
 
         let mut context = KeyContext::new_with_defaults();
         context.add(CONTEXT);
@@ -2695,7 +2744,7 @@ impl Render for Shell {
             .on_action(cx.listener(|shell, _: &keys::Zen, window, cx| shell.with_background_input(|shell| {
                 shell.toggle_zen(window, cx);
             })))
-            .on_action(cx.listener(|shell, _: &keys::ToggleShelf, window, cx| shell.with_background_input(|shell| shell.toggle_shelf(window, cx))))
+            .on_action(cx.listener(|shell, _: &keys::ToggleShelf, window, cx| shell.toggle_shelf(window, cx)))
             .on_action(cx.listener(|shell, _: &keys::NextZone, window, cx| shell.with_background_input(|shell| shell.cycle_zone(true, window, cx))))
             .on_action(cx.listener(|shell, _: &keys::PrevZone, window, cx| shell.with_background_input(|shell| shell.cycle_zone(false, window, cx))))
             .on_action(cx.listener(|shell, _: &gpui_component::Tab, window, cx| shell.graph_component_tab(true, window, cx)))
@@ -2776,7 +2825,7 @@ impl Render for Shell {
         } else if self.hand_open {
             self.hand_open = false;
         }
-        if over || over_x > -drawer + 0.5 {
+        if drawer_scene.visible {
             // The drawer's scrim: the page dims as the shelf slides over it,
             // and a click on the strip of page left beside it puts it away. The
             // whole is a deferred draw above the page's own (a fanned hand of
@@ -3691,6 +3740,248 @@ mod responsive_shelf_scene_tests {
     }
 
     #[gpui::test]
+    fn closed_native_drawer_stays_absent_and_reader_interactive_through_zoom_and_resize(cx: &mut gpui::TestAppContext) {
+        let route = super::super::tests::page_route("RelationLabel");
+        let mut rig = super::super::tests::rig(cx, Some(route.clone()), 400.0, 900.0);
+        let shell = rig.shell.clone();
+        rig.cx.update(|window, cx| {
+            window.set_a11y_forced(true);
+            cx.set_global(gpui::TextTrace);
+            let focus = shell.read(cx).focus.clone();
+            focus.focus(window, cx);
+        });
+        rig.settle();
+        let focus = rig.cx.update(|window, cx| window.focused(cx));
+        assert!(focus.is_some());
+        let assert_closed = |rig: &mut super::super::tests::Rig| {
+            let (shelf, departing, settled, interactive) = shell.read_with(rig.cx, |shell, cx| {
+                let reader = shell.reader.read(cx);
+                (shell.frame.expect("sampled native layout").shelf, shell.drawer_departing,
+                    reader.native_motion_settled(), reader.native_input_allowed())
+            });
+            assert_eq!(shelf, ShelfMode::Hidden, "no visible structural column changes in this control");
+            assert!(!departing, "an unopened drawer cannot manufacture a departure or scrim");
+            assert!(settled && interactive, "offscreen retargeting cannot disable the visible Reader");
+            let native = rig.cx.update(|window, cx| {
+                assert_eq!(window.focused(cx), focus, "hidden layout changes preserve the current keyboard owner");
+                assert!(window.focused(cx).is_some_and(|focus| window.is_focus_handle_mounted(&focus)));
+                window.debug_a11y_tree_json().expect("committed native Reader frame")
+            });
+            let tree: serde_json::Value = serde_json::from_str(&native).expect("native JSON");
+            assert!(!tree["nodes"].as_object().expect("native nodes").values().any(|node|
+                node["aria"]["role"] == "Dialog" && node["aria"]["label"] == "Library shelf"),
+                "no native drawer exists until the user opens one");
+            assert_eq!(rig.route(), route);
+        };
+        assert_closed(&mut rig);
+        for percent in [200_u16, 100, 200] {
+            let display = shell.read_with(rig.cx, |shell, _| shell.display_key());
+            rig.graph.root.update(rig.cx, |root, cx| root.dispatch(Intent::ZoomTo { display, percent }, cx));
+            rig.frame(16);
+            assert_closed(&mut rig);
+        }
+        for width in [500.0, 360.0, 400.0] {
+            rig.cx.simulate_resize(gpui::size(px(width), px(900.0)));
+            rig.frame(16);
+            assert_closed(&mut rig);
+        }
+    }
+
+    #[gpui::test]
+    fn native_titlebar_shelf_toggle_reverses_departure_and_rejects_a_held_old_press(cx: &mut gpui::TestAppContext) {
+        for percent in [100_u16, 200] {
+            let mut rig = super::super::tests::rig(cx,
+                Some(super::super::tests::page_route("RelationLabel")), 400.0, 900.0);
+            let shell = rig.shell.clone();
+            let display = shell.read_with(rig.cx, |shell, _| shell.display_key());
+            rig.go(Intent::ZoomTo { display, percent });
+            let toggle = |rig: &mut super::super::tests::Rig| {
+                super::super::tests::native_bounds(rig, "Button", "Toggle the shelf", true)
+                    .expect("the one persistent native shelf control")
+            };
+            let open = |rig: &mut super::super::tests::Rig| shell.read_with(rig.cx, |shell, _| shell.shelf_over_open);
+            rig.native_press("secondary-\\");
+            rig.frame(160);
+            assert!(open(&mut rig));
+            let close = toggle(&mut rig);
+            // A fresh pointer reverses opening motion; Reader input stays off.
+            rig.cx.simulate_click(close.center(), gpui::Modifiers::none());
+            rig.frame(64);
+            assert!(!open(&mut rig));
+            assert!(!shell.read_with(rig.cx, |shell, cx| shell.reader.read(cx).native_input_allowed()));
+            // A second held press cannot acquire a new meaning through a
+            // keyboard close/reopen pair without an intervening pointer-down.
+            let held = toggle(&mut rig);
+            rig.cx.simulate_mouse_down(held.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            rig.native_press("secondary-\\");
+            rig.frame(16);
+            assert!(open(&mut rig));
+            rig.native_press("escape");
+            rig.frame(16);
+            rig.cx.simulate_mouse_up(held.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            rig.frame(0);
+            assert!(!open(&mut rig), "the new scoped callback cannot inherit the held old press");
+            let reopen = toggle(&mut rig);
+            rig.cx.simulate_click(reopen.center(), gpui::Modifiers::none());
+            rig.frame(0);
+            assert!(open(&mut rig), "a fresh native pointer reverses departure");
+            assert!(!shell.read_with(rig.cx, |shell, cx| shell.reader.read(cx).native_input_allowed()));
+            rig.native_press("escape");
+            rig.settle();
+            assert!(!open(&mut rig));
+            assert!(shell.read_with(rig.cx, |shell, cx| shell.reader.read(cx).native_input_allowed()));
+        }
+    }
+
+    #[gpui::test]
+    fn native_shelf_toggle_respects_modal_ownership_then_accepts_a_fresh_press(cx: &mut gpui::TestAppContext) {
+        for percent in [100_u16, 200] {
+            for (intent, overlay) in [(Intent::OpenCommandPalette, Overlay::CommandPalette), (Intent::OpenAddProject, Overlay::AddProject)] {
+                let mut rig = super::super::tests::rig(cx,
+                    Some(super::super::tests::page_route("RelationLabel")), 400.0, 900.0);
+                let shell = rig.shell.clone();
+                let display = shell.read_with(rig.cx, |shell, _| shell.display_key());
+                rig.go(Intent::ZoomTo { display, percent });
+                let bounds = super::super::tests::native_bounds(&mut rig, "Button", "Toggle the shelf", true)
+                    .expect("the persistent native shelf control before its modal cover");
+                // Snapshot ownership applies before the first modal paint too.
+                rig.graph.root.update(rig.cx, |root, cx| root.dispatch(intent, cx));
+                assert!(!shell.read_with(rig.cx, |shell, cx| shell.shelf_toggle_input_allowed(cx)));
+                rig.native_press("secondary-\\");
+                rig.settle();
+                let focus = rig.cx.update(|window, cx| window.focused(cx));
+                assert!(focus.is_some(), "the mounted modal owns native focus");
+                let assert_covered = |rig: &mut super::super::tests::Rig, stage: &str| {
+                    super::super::tests::native_boundary_evidence(rig, &format!("modal Shelf {percent}% {overlay:?} {stage}"));
+                    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()), Some(overlay));
+                    assert!(!shell.read_with(rig.cx, |shell, cx| shell.shelf_over_open
+                        || shell.admits_shelf_toggle_scope(shell.local_activation_scope(), cx)));
+                    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focus,
+                        "a denied shelf toggle cannot steal the modal's focus");
+                };
+                assert_covered(&mut rig, "initial");
+                rig.native_press("secondary-\\");
+                rig.frame(0);
+                assert_covered(&mut rig, "after keyboard");
+                rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+                rig.frame(0);
+                assert_covered(&mut rig, "after pointer");
+                rig.native_press("escape");
+                rig.frame(0);
+                assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()), None);
+                if overlay == Overlay::CommandPalette {
+                    assert!(!shell.read_with(rig.cx, |shell, cx| shell.shelf_toggle_input_allowed(cx)),
+                        "Ask's still-painted exit retains its input ownership");
+                    rig.native_press("secondary-\\");
+                    rig.frame(0);
+                    rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+                    rig.frame(0);
+                    assert!(!shell.read_with(rig.cx, |shell, _| shell.shelf_over_open));
+                }
+                rig.settle();
+                assert!(shell.read_with(rig.cx, |shell, cx| shell.shelf_toggle_input_allowed(cx)));
+                let fresh = super::super::tests::native_bounds(&mut rig, "Button", "Toggle the shelf", true)
+                    .expect("the uncovered persistent control has a fresh native action");
+                rig.cx.simulate_click(fresh.center(), gpui::Modifiers::none());
+                rig.frame(0);
+                assert!(shell.read_with(rig.cx, |shell, _| shell.shelf_over_open));
+                rig.native_press("escape");
+                rig.settle();
+                assert!(!shell.read_with(rig.cx, |shell, _| shell.shelf_over_open));
+                assert!(shell.read_with(rig.cx, |shell, cx| shell.reader.read(cx).native_input_allowed()));
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn native_drawer_reentry_keeps_spring_velocity_then_retires_its_hidden_tail(cx: &mut gpui::TestAppContext) {
+        for percent in [100_u16, 200] {
+            let mut rig = super::super::tests::rig(cx,
+                Some(super::super::tests::page_route("RelationLabel")), 400.0, 900.0);
+            let shell = rig.shell.clone();
+            let display = shell.read_with(rig.cx, |shell, _| shell.display_key());
+            rig.go(Intent::ZoomTo { display, percent });
+            rig.cx.update(|window, cx| {
+                window.set_a11y_forced(true);
+                let focus = shell.read(cx).focus.clone();
+                focus.focus(window, cx);
+            });
+            shell.update(rig.cx, |shell, cx| { shell.drawer_presentation.start_spring_control(); cx.notify(); });
+            rig.repaint();
+            let focus = rig.cx.update(|window, cx| window.focused(cx));
+            // The unchanged FACET spring is the exact value/velocity oracle
+            // while any native drawer pixels remain mounted.
+            let assert_spring = |rig: &mut super::super::tests::Rig, stage: &str, active: bool| {
+                let (actual, departing, background, phase, offset, moving) = shell.read_with(rig.cx, |shell, cx| {
+                    let scene = shell.drawer_presentation.diagnostic_scene(cx).0.expect("sampled drawer");
+                    (shell.shelf_over_open, shell.drawer_departing, shell.background_input_allowed(),
+                        shell.reader.read(cx).diagnostic_background_presentation(), f32::from(scene.offset), scene.moving)
+                });
+                eprintln!("native drawer {percent}% {stage}: open={actual} expected={active} departing={departing} background={background} phase={phase:?} offset={offset} moving={moving}");
+                assert_eq!(actual, active, "native drawer {percent}% {stage}");
+                let expected = shell.read_with(rig.cx, |shell, _| shell.drawer_presentation.spring_control_value().expect("reference sampled in actual Shell render"));
+                let scene = shell.read_with(rig.cx, |shell, cx| shell.drawer_presentation.diagnostic_scene(cx).0.expect("sampled drawer"));
+                assert!(scene.visible && scene.moving, "the continuity control retains actual moving drawer pixels");
+                assert_eq!(f32::from(scene.offset), expected, "mounted close/re-entry preserves the exact original spring value and velocity");
+                assert!(!shell.read_with(rig.cx, |shell, cx| shell.reader.read(cx).native_input_allowed()));
+            };
+            rig.native_press("secondary-\\");
+            rig.frame(0);
+            assert_spring(&mut rig, "open-0ms", true);
+            rig.frame(160);
+            assert_spring(&mut rig, "open-160ms", true);
+            rig.native_press("escape");
+            rig.frame(0);
+            assert_spring(&mut rig, "close-0ms", false);
+            rig.frame(64);
+            assert_spring(&mut rig, "close-64ms", false);
+            rig.native_press("secondary-\\");
+            rig.frame(0);
+            assert_spring(&mut rig, "reopen-0ms", true);
+            rig.frame(16);
+            assert_spring(&mut rig, "reopen-16ms", true);
+            rig.native_press("escape");
+            rig.frame(0);
+            let mut elapsed = 0;
+            while shell.read_with(rig.cx, |shell, cx| shell.drawer_presentation.diagnostic_scene(cx).0.expect("sampled drawer").visible) {
+                assert!(!shell.read_with(rig.cx, |shell, cx| shell.reader.read(cx).native_input_allowed()));
+                assert!(elapsed < 1500, "native drawer exit must release within the interaction budget");
+                rig.frame(16);
+                elapsed += 16;
+            }
+            eprintln!("native drawer {percent}% cancelled close/re-entry exit released at {elapsed}ms");
+            let assert_absent = |rig: &mut super::super::tests::Rig| {
+                let (scene, raw_live, interactive) = shell.read_with(rig.cx, |shell, cx| {
+                    let (scene, live) = shell.drawer_presentation.diagnostic_scene(cx);
+                    (scene.expect("sampled drawer"), live, shell.reader.read(cx).native_input_allowed())
+                });
+                assert!(!scene.visible && !scene.moving && !raw_live && interactive,
+                    "an absent drawer clears its unchanged-target spring before the following frame");
+                assert_eq!(scene.offset, -shell.read_with(rig.cx, |shell, _| shell.frame.expect("native frame").drawer));
+                let native = rig.cx.update(|window, cx| {
+                    assert_eq!(window.focused(cx), focus);
+                    assert!(focus.as_ref().is_some_and(|focus| window.is_focus_handle_mounted(focus)));
+                    window.debug_a11y_tree_json().expect("committed native frame")
+                });
+                let tree: serde_json::Value = serde_json::from_str(&native).expect("native JSON");
+                assert!(!tree["nodes"].as_object().expect("nodes").values().any(|node|
+                    node["aria"]["role"] == "Dialog" && node["aria"]["label"] == "Library shelf"));
+            };
+            for _ in 0..10 {
+                rig.frame(16);
+                assert_absent(&mut rig);
+            }
+            for new_width in [360.0, 500.0, 400.0] {
+                rig.cx.simulate_resize(gpui::size(px(new_width), px(900.0)));
+                for _ in 0..10 {
+                    rig.frame(16);
+                    assert_absent(&mut rig);
+                }
+            }
+        }
+    }
+
+    #[gpui::test]
     fn native_shelf_press_cannot_survive_unpainted_toggle_pairs(cx: &mut gpui::TestAppContext) {
         for percent in [100_u16, 200] {
             for zen in [false, true] {
@@ -3705,8 +3996,9 @@ mod responsive_shelf_scene_tests {
                 let old = scope(&mut rig, false);
                 rig.cx.simulate_mouse_down(rests.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
                 let renders = rig.shell.read_with(rig.cx, |shell, _| shell.renders);
-                // Actual action dispatch, not direct callbacks or seeded state;
-                // the two ownership transitions have no intervening draw.
+                // Both real action transitions happen synchronously before
+                // draining queued paints; measure that boundary itself.
+                let shell = rig.shell.clone();
                 rig.cx.update(|window, cx| {
                     if zen {
                         window.dispatch_action(Box::new(keys::Zen), cx);
@@ -3715,9 +4007,9 @@ mod responsive_shelf_scene_tests {
                         window.dispatch_action(Box::new(keys::ToggleShelf), cx);
                         window.dispatch_action(Box::new(keys::ToggleShelf), cx);
                     }
+                    assert_eq!(shell.read(cx).renders, renders, "pair must exercise the no-paint boundary");
                 });
                 rig.cx.run_until_parked();
-                assert_eq!(rig.shell.read_with(rig.cx, |shell, _| shell.renders), renders, "pair must exercise the no-paint boundary");
                 assert!(!admitted(&mut rig, &old), "unpainted ownership cycle retires the old receipt");
                 rig.cx.simulate_mouse_up(rests.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
                 rig.settle();
@@ -3793,9 +4085,26 @@ mod responsive_shelf_scene_tests {
             rig.settle();
             assert!(selected_tab(&mut rig, "Rests on"), "new scene callbacks remain live");
             let column = scope(&mut rig, false);
+            let shell = rig.shell.clone();
+            rig.cx.update(|window, cx| {
+                let owner = shell.read(cx);
+                let frame = owner.frame.expect("actual native layout frame");
+                let focused = window.focused(cx).expect("clicked tab owns native focus");
+                assert!(owner.shelf.read(cx).contains_chrome_native_handle(&focused, window));
+                assert_eq!(f32::from(window.viewport_size().width), 1440.0 * scale);
+                assert_eq!(f32::from(frame.room.width()), 1440.0 * scale);
+                assert_eq!(frame.room.scale(), scale);
+                eprintln!("responsive-native-chrome-owner percent={percent} viewport={:?} room={:?} dock={:?} surface={:?} focus={focused:?}",
+                    window.viewport_size(), frame.room, frame.dock, column.surface());
+            });
             rig.keys("secondary-\\");
             assert_eq!(scope(&mut rig, false).surface(), ShelfNativeSurface::Spine);
             assert!(!admitted(&mut rig, &column), "settings shelf close changes native surface");
+            assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).0, Zone::Reader);
+            assert!(rig.cx.update(|window, cx| {
+                let owner = shell.read(cx);
+                owner.focus.is_focused(window) && window.is_focus_handle_mounted(&owner.focus)
+            }), "retiring a focused tab leaves a mounted Shell owner for the next native shortcut");
             rig.keys("secondary-\\");
             assert_eq!(scope(&mut rig, false).surface(), ShelfNativeSurface::Docked);
             assert!(!admitted(&mut rig, &column), "settings shelf reopen cannot revive its old column");
@@ -3836,8 +4145,15 @@ mod responsive_shelf_scene_tests {
             let after = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
             assert!(after.route() != before.route() || after.session().reading.current.presentation != before.session().reading.current.presentation,
                 "actual Spine click must activate its typed row, not be rejected as hidden: {id}/{label}");
+            assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).0, Zone::Shelf,
+                "the mounted Spine row takes the same scoped keyboard handoff as the full Shelf");
             resize(&mut rig, 360.0 * scale);
+            assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).0, Zone::Reader);
+            assert!(rig.cx.update(|window, cx| window.focused(cx)
+                .is_some_and(|focus| window.is_focus_handle_mounted(&focus))),
+                "hiding the Spine cannot strand native keyboard dispatch on its retired control");
             rig.keys("secondary-\\");
+            super::super::tests::native_boundary_evidence(&mut rig, &format!("responsive Shelf {percent}% after Spine {id}/{label} and first drawer open"));
             let drawer = scope(&mut rig, true);
             let used = super::super::tests::native_bounds(&mut rig, "Tab", "Used by", true).expect("current drawer tab");
             rig.cx.simulate_click(used.center(), gpui::Modifiers::none());
@@ -3849,6 +4165,7 @@ mod responsive_shelf_scene_tests {
             resize(&mut rig, 360.0 * scale);
             rig.keys("secondary-\\");
             assert!(!admitted(&mut rig, &drawer), "reopen cannot revive an automatically closed drawer");
+            super::super::tests::native_boundary_evidence(&mut rig, &format!("responsive Shelf {percent}% after automatic close and drawer reopen"));
             let fresh = scope(&mut rig, true);
             assert_eq!(fresh.surface(), ShelfNativeSurface::Drawer);
             let rests = super::super::tests::native_bounds(&mut rig, "Tab", "Rests on", true).expect("fresh drawer tab");
@@ -4031,12 +4348,19 @@ mod responsive_shelf_scene_tests {
             rig.repaint();
             let query = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("Find native tree");
             let tree: serde_json::Value = serde_json::from_str(&query).expect("tree");
-            let role = tree["nodes"].as_object().expect("nodes").values().find(|node| node["aria"]["label"] == "Find query")
-                .and_then(|node| node["aria"]["role"].as_str()).expect("mounted query role").to_owned();
-            let query = super::super::tests::native_bounds(&mut rig, &role, "Find query", true).expect("actual Find query");
+            let node = tree["nodes"].as_object().expect("nodes").values().find(|node| node["aria"]["label"] == "Find query")
+                .expect("mounted Find query");
+            assert_eq!(node["aria"]["role"], "TextInput");
+            let actions = node["aria"]["on_action"].as_array().expect("native input actions");
+            for action in ["Focus", "SetValue"] {
+                assert!(actions.iter().any(|value| value.as_str() == Some(action)), "Find input lacks {action}: {node}");
+            }
+            let query = super::super::tests::native_bounds(&mut rig, "TextInput", "Find query", false).expect("actual Find query pointer bounds");
             rig.cx.simulate_click(query.center(), gpui::Modifiers::none());
+            assert!(rig.cx.update(|window, cx| window.has_focused_input(cx)), "real pointer focuses the mounted Find input");
             rig.cx.simulate_input("local unsent draft");
             let focused = rig.cx.update(|window, cx| window.focused(cx));
+            assert!(focused.is_some());
             gate.publish(OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
             // Repaint before the editing debounce commits the query route.
             rig.cx.run_until_parked();

@@ -83,6 +83,9 @@ pub(super) struct OwnerLink {
     gate: Option<OwnerGate>,
     /// Ready publication whose reads this store currently admits.
     served_epoch: Option<Epoch>,
+    /// Retry capability last exposed through the store's owner branch. Gate
+    /// publications can rotate it while retaining identical failed words.
+    observed_retry: Option<OwnerRetryAttachment>,
     /// Pages asked for while the owner starts, fetched once it answers.
     held: BTreeSet<PageKey>,
 }
@@ -90,7 +93,7 @@ pub(super) struct OwnerLink {
 impl OwnerLink {
     /// An owner that is already answering (the harness and tests).
     pub(super) const fn serving() -> Self {
-        Self { phase: OwnerPhase::Serving, gate: None, served_epoch: None, held: BTreeSet::new() }
+        Self { phase: OwnerPhase::Serving, gate: None, served_epoch: None, observed_retry: None, held: BTreeSet::new() }
     }
 
     /// The link to the owner `gate` says it is now.
@@ -101,7 +104,8 @@ impl OwnerLink {
             OwnerState::Failed(fault) => OwnerPhase::Failed(fault),
         };
         let served_epoch = gate.ready_epoch();
-        Self { phase, gate: Some(gate), served_epoch, held: BTreeSet::new() }
+        let observed_retry = gate.retry_generation().map(|generation| OwnerRetryAttachment { gate: gate.clone(), generation });
+        Self { phase, gate: Some(gate), served_epoch, observed_retry, held: BTreeSet::new() }
     }
 
     pub(super) const fn phase(&self) -> &OwnerPhase {
@@ -153,6 +157,15 @@ impl OwnerLink {
     pub(super) fn current_retry_attachment(&self) -> Option<OwnerRetryAttachment> {
         let gate = self.gate.as_ref()?;
         Some(OwnerRetryAttachment { gate: gate.clone(), generation: gate.retry_generation()? })
+    }
+
+    /// Records exact retry capability movement independently of words or
+    /// resource stamps; calling twice without a gate change stays silent.
+    pub(super) fn retry_publication_changed(&mut self) -> bool {
+        let current = self.current_retry_attachment();
+        let changed = current != self.observed_retry;
+        self.observed_retry = current;
+        changed
     }
 
     pub(super) fn retry_at(&mut self, expected: &OwnerRetryAttachment, key: PageKey) -> bool {

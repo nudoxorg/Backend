@@ -8,6 +8,7 @@
 
 mod callable;
 mod docs;
+mod evidence;
 mod known;
 mod rail;
 mod shape;
@@ -32,10 +33,10 @@ pub fn compile(facts: &Facts) -> View {
         Some(derived) => (Some(derived.call), derived.generics),
         None => (None, Vec::new()),
     };
-    let untyped = facts.lang.undeclared() || call.as_ref().is_some_and(|call| call.ports.iter().any(|p| p.ty.origin.dotted()));
     let fails = call.as_ref().and_then(|call| fails_section(facts, call, &generics));
     let shape = shape::shape(facts);
     let verbs = shape::verbs(facts);
+    let type_evidence = evidence::types(call.as_ref(), &generics, shape.as_ref());
     View {
         head: Head { kind: facts.kind, path: facts.path.clone(), lang: facts.lang, name: facts.name.clone(), lede: docs::lede(facts) },
         call,
@@ -44,7 +45,7 @@ pub fn compile(facts: &Facts) -> View {
         fails,
         shape,
         verbs,
-        rail: rail::rail(facts, untyped),
+        rail: rail::rail(facts, type_evidence),
     }
 }
 

@@ -65,7 +65,7 @@ pub(super) fn page(identity: DeclRef, sig: &str, doc: Option<&str>, made_of: Vec
             other: Arc::from([]),
         }),
         rose: Rose { up: Known::Known(Arc::from([])), down: Known::Known(Arc::from([])), left: Known::Unknown(gap()), right: Known::Known(Arc::from([])), implemented_by: Known::Known(Arc::from([])) },
-        references: Known::Known(Arc::from([])),
+        references: Known::Known(crate::model::pages::ReferenceObservation::new(Arc::from([]))),
         workspace: Arc::from([]),
         outline,
         identity,
@@ -703,4 +703,97 @@ fn the_generic_card_rises_after_the_rest_and_is_gone_after_the_pointer_leaves(cx
     let gone = until(&mut rig, 8, 1200, |ledger| !ledger.texts.iter().any(|t| t.key.starts_with("s6-card-gen-"))).expect("the card never went");
     eprintln!("HOVER-CARD: gone {gone} ms after the pointer left");
     assert!(gone <= 600, "a card the pointer left goes: {gone} ms");
+}
+
+// These are controlled projections of the pinned FastAPI e99fbaeb source,
+// not a substitute for a current live producer run of that project.
+#[derive(Clone, Copy)]
+enum FastApiReferences { Unavailable, Zero, Unreadable, Readable }
+
+struct FastApiPage { name: &'static str, references: FastApiReferences }
+
+#[cfg(feature = "visual-harness")]
+pub(crate) fn fastapi_unavailable_capture(name: &'static str) -> Result<(Route, ReadPool), String> {
+    let (file, line) = match name {
+        "read_items" => ("backend/app/api/routes/items.py", 14),
+        "create_access_token" => ("backend/app/core/security.py", 22),
+        _ => return Err("unknown pinned FastAPI capture declaration".to_owned()),
+    };
+    Ok((route(file, line, name), ReadPool::start(1, move |_| FastApiPage {
+        name, references: FastApiReferences::Unavailable,
+    }).map_err(|error| error.to_string())?))
+}
+impl PageReader for FastApiPage {
+    fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+        let ReadRequest::Symbol(_) = request else { return Fixture.read(request, context); };
+        let (file, line, signature) = if self.name == "read_items" {
+            ("backend/app/api/routes/items.py", 14, "def read_items(session: SessionDep, current_user: CurrentUser, skip: int = 0, limit: int = 100) -> Any:")
+        } else {
+            ("backend/app/core/security.py", 22, "def create_access_token(subject: str | Any, expires_delta: timedelta) -> str:")
+        };
+        let mut page = page(decl(file, line, self.name, DeclarationKind::Function), signature, None, vec![], vec![], vec![]);
+        use crate::model::pages::{ReferenceObservation, ReferenceScope, ReferenceSite};
+        page.references = match self.references {
+            FastApiReferences::Unavailable => Known::unknown(GapReason::NoSemanticPublication, "1937 fact groups unavailable"),
+            FastApiReferences::Zero => Known::Known(ReferenceObservation::new(Arc::from([]))),
+            FastApiReferences::Unreadable | FastApiReferences::Readable => Known::Known(ReferenceObservation::new(Arc::from([ReferenceSite {
+                site: decl("backend/app/api/routes/login.py", 24, "login_access_token", DeclarationKind::Function),
+                relation: SemanticLinkKind::Calls, confidence: backend_library::SemanticConfidence::Compiler,
+                span: Known::unknown(GapReason::NotCaptured, "controlled local-line omission"), scope: ReferenceScope::Local,
+            }]))),
+        };
+        if matches!(self.references, FastApiReferences::Readable) {
+            page.workspace = Arc::from([place("fastapi-full-stack", "backend/app/api/routes/login.py", 39,
+                "        access_token=security.create_access_token(", "create_access_token", SemanticLinkKind::Calls)]);
+        }
+        Ok(PageValue::Symbol(page))
+    }
+}
+
+#[gpui::test]
+fn native_fastapi_annotations_and_reference_gaps_never_paint_false_absence(cx: &mut TestAppContext) {
+    use facet::anatomy::symbol::view::UseEvidence;
+    for (name, file, line) in [
+        ("read_items", "backend/app/api/routes/items.py", 14),
+        ("create_access_token", "backend/app/core/security.py", 22),
+    ] {
+        for (references, evidence) in [
+            (FastApiReferences::Unavailable, UseEvidence::Unavailable),
+            (FastApiReferences::Zero, UseEvidence::Reported { reported: 0, readable: 0 }),
+            (FastApiReferences::Unreadable, UseEvidence::Reported { reported: 1, readable: 0 }),
+            (FastApiReferences::Readable, UseEvidence::Reported { reported: 1, readable: 1 }),
+        ] {
+            // Only the security function has this actual source caller.
+            if name == "read_items" && matches!(references, FastApiReferences::Readable | FastApiReferences::Unreadable) { continue; }
+            let pool = ReadPool::start(1, move |_| FastApiPage { name, references }).expect("controlled FastAPI read");
+            let mut rig = rig_with_reads(cx, Some(route(file, line, name)), 1440.0, 2400.0, pool);
+            rig.cx.update(|window, cx| { window.set_a11y_forced(true); facet::probe::enable(cx); });
+            rig.settle();
+            for (width, percent) in [(1440.0, 100), (720.0, 200)] {
+                let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+                rig.go(crate::navigation::Intent::ZoomTo { display, percent });
+                resize(&mut rig, width, 2400.0);
+                let ledger = now(&mut rig);
+                assert!(ledger.texts.iter().any(|text| text.content == evidence.notice()), "{name}/{width}/{percent}: actual painted coverage notice");
+                for text in &ledger.texts {
+                    assert!(!["Nothing in your workspace names it", "None of them use it", "declares no types here"].iter().any(|false_claim| text.content.contains(false_claim)), "{name}: {}", text.content);
+                }
+                assert!(!ledger.texts.iter().any(|text| text.key.ends_with("-how")), "written Python annotations need no inferred-types explanation");
+                let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("mounted native tree");
+                let native: serde_json::Value = serde_json::from_str(&json).expect("native JSON");
+                let nodes = native["nodes"].as_object().expect("native nodes");
+                if !nodes.values().any(|node| node["aria"]["role"] == "Heading" && node["aria"]["label"] == name) {
+                    crate::shell::tests::native_boundary_evidence(&mut rig, &format!("FastAPI heading missing: {name}/{width}/{percent}/{evidence:?}"));
+                }
+                assert!(nodes.values().any(|node| node["aria"]["role"] == "Heading" && node["aria"]["label"] == name));
+                assert!(nodes.values().any(|node| node["aria"]["role"] == "Label" && node["aria"]["label"] == evidence.notice()), "native coverage equals painted coverage");
+                let expected = if name == "read_items" { ["SessionDep", "CurrentUser", "Any"] } else { ["str | Any", "timedelta", "str"] };
+                for annotation in expected { assert!(ledger.texts.iter().any(|text| text.content == annotation), "{name}: actual written {annotation}"); }
+                if matches!(references, FastApiReferences::Readable) {
+                    assert!(ledger.texts.iter().any(|text| text.content == "backend/app/api/routes/login.py:39"));
+                    assert!(nodes.values().any(|node| node["aria"]["role"] == "Link" && node["aria"]["label"] == "backend/app/api/routes/login.py:39"));
+                }
+            }
+        }
+    }
 }

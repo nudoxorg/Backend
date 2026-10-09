@@ -843,6 +843,9 @@ pub struct ProductDto {
     /// The one-line note, when the reply carried a scalar answer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// Coverage of the bounded reference reply, never inferred from row count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_coverage: Option<backend_library::ReferenceCoverage>,
     /// Why the configured feed does not publish this fact.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fault: Option<FaultDto>,
@@ -950,6 +953,7 @@ impl ProductDto {
                 })
                 .collect(),
             note: view.note().map(ToOwned::to_owned),
+            reference_coverage: view.reference_coverage(),
             fault: view.fault().map(FaultDto::new),
             index_search_page: view
                 .index_search_page()

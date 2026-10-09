@@ -45,6 +45,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 pub mod journey;
+/// Image identity and byte provenance for controlled renderer captures.
+pub mod capture_evidence;
 mod install;
 mod refusals;
 mod startup;

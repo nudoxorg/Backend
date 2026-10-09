@@ -49,7 +49,7 @@ pub struct SymbolPeek {
     pub signature: Option<Sig>,
     /// One sentence, prose markup.
     pub sentence: Option<SharedString>,
-    /// How many times your code uses it.
+    /// Number of reported use sites; this is not complete usage coverage.
     pub uses: Option<usize>,
     /// In how many of your files.
     pub files: Option<usize>,
@@ -380,7 +380,7 @@ fn symbol_sections(symbol: &SymbolPeek, show: Show, measure: &Measure, palette: 
         && let Some(uses) = symbol.uses
     {
         let count = uses.to_string();
-        out.push(fact(id("uses"), &[(count.as_str(), true), (" uses in your code", false)], measure, palette));
+        out.push(fact(id("uses"), &[(count.as_str(), true), (" reported use sites", false)], measure, palette));
     }
     if show.deep {
         let mut more = div().flex().flex_col().gap(k(measure, 10.0)).pt(k(measure, 4.0));
@@ -400,7 +400,7 @@ fn symbol_sections(symbol: &SymbolPeek, show: Show, measure: &Measure, palette: 
                     div()
                         .set(COUNT, measure)
                         .text_color(palette.ink2.hsla())
-                        .child(reading::text(id("files-count"), format!("{uses} uses · {files} files"), Intent::Reading(ReadingRole::Fact))),
+                        .child(reading::text(id("files-count"), format!("{uses} reported use sites · {files} files"), Intent::Reading(ReadingRole::Fact))),
                 );
             }
             more = more

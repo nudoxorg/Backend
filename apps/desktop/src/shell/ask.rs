@@ -193,12 +193,37 @@ enum SubmissionOutcome {
     Superseded,
 }
 
+#[derive(Clone)]
+enum SearchPressDestination {
+    Row(Route),
+    AllResults,
+}
+
+/// Every native search control captures its painted draft and destination.
+#[derive(Clone)]
+struct SearchPressTarget {
+    query: SearchQuery,
+    revision: u64,
+    destination: SearchPressDestination,
+}
+
+/// Feedback for one native pointer press cannot activate a retired Link.
+struct PressedResult {
+    target: SearchPressTarget,
+    root: VersionedRoot,
+    attachment: Option<crate::runtime::store::OwnerAttachment>,
+    revoked: bool,
+}
+
 /// The query surface.
 pub(crate) struct Ask {
     links: Links,
     input: Entity<InputState>,
     draft: QueryDraft,
+    /// Only a draft whose typing debounce finished may renew a visible read.
+    query_settled: bool,
     refusal: Option<SubmitRefusal>,
+    pressed_result: Option<PressedResult>,
     /// Invalidates callbacks painted for an earlier editor draft, even when
     /// a later draft happens to reuse the same query text.
     revision: Rc<Cell<u64>>,
@@ -214,6 +239,7 @@ pub(crate) struct Ask {
     /// Native focus belongs to the typed destination, not its current row.
     row_focus: Vec<(Route, usize, FocusHandle)>,
     all_focus: FocusHandle,
+    preparation_focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -233,15 +259,26 @@ impl Ask {
         let landed = cx.subscribe(&store, |ask: &mut Self, _, event: &StoreEvent, cx| {
             let search_changed = matches!((event, ask.draft.query()),
                 (StoreEvent::Resource(PageKey::Search(query)), Some(mine)) if query == mine);
-            if search_changed || event.is_branch(Branch::Root) {
+            if search_changed || event.is_branch(Branch::Root) || event.is_branch(Branch::GraphFocus)
+                || event.is_branch(Branch::Owner) || event.is_branch(Branch::Route) {
+                ask.mark_revoked_press(cx);
+                if search_changed || event.is_branch(Branch::Owner) || event.is_branch(Branch::Root) || event.is_branch(Branch::Route) {
+                    ask.ensure_current_query(cx);
+                }
                 cx.notify();
+            }
+            if event.is_branch(Branch::Overlay)
+                && ask.links.snapshot(cx).overlay() != Some(Overlay::CommandPalette) {
+                ask.pressed_result = None;
             }
         });
         Self {
             links,
             input,
             draft: QueryDraft::Blank,
+            query_settled: false,
             refusal: None,
+            pressed_result: None,
             revision: Rc::new(Cell::new(0)),
             selected: 0,
             walked: false,
@@ -251,6 +288,7 @@ impl Ask {
             scroll_request: None,
             row_focus: Vec::new(),
             all_focus: cx.focus_handle().tab_stop(true),
+            preparation_focus: cx.focus_handle().tab_stop(true),
             _subscriptions: vec![typed, landed],
         }
     }
@@ -271,13 +309,12 @@ impl Ask {
         self.walked = false;
         self.reset_result_scroll();
         self.refusal = None;
-        let previous = self.draft.query().cloned();
+        self.pressed_result = None;
         self.draft = QueryDraft::Blank;
+        self.query_settled = false;
         self.revision.set(self.revision.get().wrapping_add(1));
         self.pending = None;
-        if let Some(query) = previous {
-            self.links.store.update(cx, |store, cx| store.cancel_unfocused_search(&query, cx));
-        }
+        self.links.store.update(cx, |store, cx| store.observe_ask_query(None, cx));
         self.input.update(cx, |input, cx| {
             input.set_value("", window, cx);
         });
@@ -286,6 +323,7 @@ impl Ask {
 
     fn typed(&mut self, text: String, cx: &mut Context<Self>) {
         self.refusal = None;
+        self.pressed_result = None;
         let draft = QueryDraft::parse(&text);
         if draft == self.draft {
             return;
@@ -298,29 +336,40 @@ impl Ask {
             self.links.dispatch(Intent::EndPreview, cx);
         }
         self.walked = false;
-        let previous = self.draft.query().cloned();
         self.draft = draft;
+        self.query_settled = false;
         self.revision.set(self.revision.get().wrapping_add(1));
         self.pending = None;
-        if let Some(query) = previous {
-            self.links.store.update(cx, |store, cx| store.cancel_unfocused_search(&query, cx));
-        }
+        self.links.store.update(cx, |store, cx| store.observe_ask_query(None, cx));
         cx.notify();
         if plate_changed {
             self.links.shell(cx, |_, cx| cx.notify());
         }
-        let Some(query) = self.draft.query().cloned() else {
+        let Some(_) = self.draft.query() else {
             return;
         };
-        let store = self.links.store.clone();
+        let revision = self.revision.get();
         // Latest wins: a newer keystroke drops this timer, and the store
         // supersedes an older query's read.
-        self.pending = Some(cx.spawn(async move |_, cx| {
+        self.pending = Some(cx.spawn(async move |ask, cx| {
             cx.background_executor().timer(SETTLE).await;
-            let _ = cx.update(|cx| {
-                store.update(cx, |store, cx| store.ensure(PageKey::Search(query), cx));
+            let _ = ask.update(cx, |ask, cx| {
+                if ask.revision.get() != revision { return; }
+                ask.query_settled = true;
+                ask.ensure_current_query(cx);
             });
         }));
+    }
+
+    /// Ask is outside the route-focused key set. Its current visible draft
+    /// must hold while Starting and renew after owner or root replacement.
+    /// The store keeps repeated start/landing notifications idempotent.
+    fn ensure_current_query(&self, cx: &mut Context<Self>) {
+        if !self.query_settled
+            || self.links.snapshot(cx).overlay() != Some(Overlay::CommandPalette) { return; }
+        let Some(query) = self.draft.query().cloned() else { return; };
+        if !current_input_query(&self.input, &query, cx) { return; }
+        self.links.store.update(cx, |store, cx| { store.observe_ask_query(Some(query), cx); });
     }
 
     /// The modal's editor and mounted links are its native keyboard owners.
@@ -328,6 +377,7 @@ impl Ask {
         self.input.read(cx).focus_handle(cx).is_focused(window)
             || self.row_focus.iter().any(|(_, _, handle)| handle.is_focused(window))
             || self.all_focus.is_focused(window)
+            || self.preparation_focus.is_focused(window)
     }
 
     /// Moves the selection and shows the row's place in the reader.
@@ -380,6 +430,9 @@ impl Ask {
         }
         let mut targets = Vec::with_capacity(choices.len() + 2);
         targets.push((None, self.input.read(cx).focus_handle(cx)));
+        if self.preparation_check_available(cx) {
+            targets.push((None, self.preparation_focus.clone()));
+        }
         for (index, choice) in choices.iter().enumerate() {
             if let Some((_, _, handle)) = self.row_focus.iter().find(|(route, occurrence, _)| {
                 choice.route.as_ref() == Some(route) && choice.route_occurrence == *occurrence
@@ -436,10 +489,11 @@ impl Ask {
 
     /// Returns true when a focused destination vanished from the mounted plate.
     fn sync_row_focus(&mut self, choices: &[Choice], all_mounted: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let lost_focus = self.row_focus.iter().any(|(route, occurrence, handle)| {
+        let lost_destination = self.row_focus.iter().any(|(route, occurrence, handle)| {
             handle.is_focused(window)
                 && !choices.iter().any(|choice| choice.route.as_ref() == Some(route) && choice.route_occurrence == *occurrence)
         }) || (!all_mounted && self.all_focus.is_focused(window));
+        let lost_focus = lost_destination || (self.preparation_focus.is_focused(window) && !self.preparation_check_available(cx));
         self.row_focus.retain(|(route, occurrence, _)| {
             choices.iter().any(|choice| choice.route.as_ref() == Some(route) && choice.route_occurrence == *occurrence)
         });
@@ -455,11 +509,18 @@ impl Ask {
             self.scroll_request = None;
             let editor = self.input.read(cx).focus_handle(cx);
             editor.focus(window, cx);
-            self.selected = 0;
-            self.walked = false;
+            if lost_destination {
+                self.selected = 0;
+                self.walked = false;
+            }
             cx.notify();
         }
         lost_focus
+    }
+
+    fn preparation_check_available(&self, cx: &App) -> bool {
+        self.draft.query().is_some_and(|query|
+            self.links.store.read(cx).preparation_token(&PageKey::Search(query.clone())).is_some())
     }
 
     /// ↵: keeps the place the walk is showing, or opens the chosen row.
@@ -494,6 +555,7 @@ impl Ask {
     }
 
     fn complete_submission(&mut self, outcome: SubmissionOutcome, cx: &mut Context<Self>) {
+        self.pressed_result = None;
         match outcome {
             SubmissionOutcome::Navigate(route) => self.links.dispatch(Intent::Navigate(route), cx),
             SubmissionOutcome::CommitPreview => {
@@ -503,6 +565,61 @@ impl Ask {
             SubmissionOutcome::Refused(reason) => { self.refusal = Some(reason); cx.notify(); }
             SubmissionOutcome::Superseded => {}
         }
+    }
+
+    fn capture_native_press(&mut self, target: &SearchPressTarget, cx: &App) {
+        if target.revision == self.revision.get()
+            && self.links.snapshot(cx).overlay() == Some(Overlay::CommandPalette)
+            && current_input_query(&self.input, &target.query, cx)
+            && current_press_target(&self.links, target, cx)
+        {
+            let store = self.links.store.read(cx);
+            self.pressed_result = Some(PressedResult {
+                target: target.clone(),
+                root: store.snapshot().key(),
+                attachment: store.current_owner_attachment(),
+                revoked: false,
+            });
+        }
+    }
+
+    /// A native Link may be unmounted between press and release. Keep its
+    /// cancellation intact, but explain the lost authority in the current Ask.
+    fn mark_revoked_press(&mut self, cx: &App) {
+        let Some(pressed) = self.pressed_result.as_ref() else {
+            return;
+        };
+        if pressed.target.revision != self.revision.get()
+            || self.draft.query() != Some(&pressed.target.query)
+            || self.links.snapshot(cx).overlay() != Some(Overlay::CommandPalette)
+            || !current_input_query(&self.input, &pressed.target.query, cx)
+        {
+            self.pressed_result = None;
+            return;
+        }
+        let store = self.links.store.read(cx);
+        let revoked = pressed.attachment != store.current_owner_attachment()
+            || !pressed.root.same_authority(store.snapshot().key())
+            || !current_press_target(&self.links, &pressed.target, cx);
+        if revoked && let Some(pressed) = self.pressed_result.as_mut() {
+            pressed.revoked = true;
+        }
+    }
+
+    fn refuse_revoked_press(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.mark_revoked_press(cx);
+        if self.pressed_result.as_ref().is_some_and(|pressed| pressed.revoked) {
+            self.complete_submission(stale_submission(), cx);
+            self.input.read(cx).focus_handle(cx).focus(window, cx);
+            return true;
+        }
+        false
+    }
+
+    fn owner_failure_words(&self, cx: &App) -> Option<SharedString> {
+        self.links.store.read(cx).owner_fault().map(|fault| {
+            format!("The index owner is unavailable: {fault}").into()
+        })
     }
 
     /// ⌘↵ opens Find only while this exact query has a current served page.
@@ -516,7 +633,7 @@ impl Ask {
         self.complete_submission(outcome, cx);
     }
 
-    /// The route for "every result, as a page" (⌘↵).
+    /// The Find route for the current search results (⌘↵).
     pub(crate) fn all_results(&self, cx: &App) -> Option<Route> {
         let query = self.draft.query()?.clone();
         let (results, root, serving) = self.search_resource(cx)?;
@@ -563,10 +680,15 @@ impl Ask {
         let admission = admit_resource(&results, root, serving);
         let (page, unavailable) = match admission {
             ResourceAdmission::Current(page) => (page, None),
-            ResourceAdmission::Retained { value, reason } =>
-                (value, Some(format!("Earlier result; {}; cannot open until verified", read_hold_words(reason)).into())),
-            ResourceAdmission::Failed { retained: Some(value), .. } =>
-                (value, Some("Search failed; earlier result cannot be opened".into())),
+            ResourceAdmission::Retained { value, reason } => {
+                let detail = if reason == ReadHoldReason::OwnerUnavailable {
+                    self.owner_failure_words(cx)
+                } else { None };
+                (value, Some(detail.unwrap_or_else(|| format!(
+                    "Earlier result; {}; cannot open until verified", read_hold_words(reason)).into())))
+            }
+            ResourceAdmission::Failed { retained: Some(value), terminal } =>
+                (value, Some(failed_search_words(terminal, true))),
             ResourceAdmission::Pending(_) | ResourceAdmission::Failed { retained: None, .. } => return Vec::new(),
         };
         if page.query.as_ref() != query.text.as_ref() { return Vec::new(); }
@@ -605,12 +727,21 @@ impl Ask {
     fn read_status(&self, cx: &App) -> (Option<SharedString>, Option<backend_library::SemanticSearchStatus>) {
         if let Some(status) = self.draft.status() { return (Some(status.into()), None); }
         let Some((results, root, serving)) = self.search_resource(cx) else { return (None, None) };
+        if serving && let Some(preparation) = results.query_preparation()
+            && preparation.basis.matches(root.root()) {
+            return (Some(format!("{}{}", preparation.words(),
+                if results.loaded_value().is_some() { " Earlier results are read-only." } else { "" }).into()), None);
+        }
         match admit_resource(&results, root, serving) {
             ResourceAdmission::Current(page) if self.draft.query().is_some_and(|query| page.query.as_ref() != query.text.as_ref()) =>
                 (Some("Search replied for a different query; links unavailable.".into()), None),
             ResourceAdmission::Current(page) => (None, page.coverage.semantic_search_status()),
             ResourceAdmission::Retained { reason, .. } => {
-                (Some(format!("Earlier search results · {} · links unavailable", read_hold_words(reason)).into()), None)
+                let detail = if reason == ReadHoldReason::OwnerUnavailable {
+                    self.owner_failure_words(cx)
+                } else { None };
+                (Some(detail.unwrap_or_else(|| format!(
+                    "Earlier search results · {} · links unavailable", read_hold_words(reason)).into())), None)
             }
             ResourceAdmission::Pending(reason) => {
                 (Some(match reason {
@@ -619,14 +750,8 @@ impl Ask {
                     ReadHoldReason::Reading | ReadHoldReason::NotReady => "Searching the library…".into(),
                 }), None)
             }
-            ResourceAdmission::Failed { terminal, retained } => {
-                let detail = match terminal {
-                    ResourceTerminal::Fault(error) => format!("Search failed: {}", error.message()),
-                    ResourceTerminal::Unavailable(_) => "The index does not provide search.".to_owned(),
-                    ResourceTerminal::Complete | ResourceTerminal::Partial => "Search is unavailable.".to_owned(),
-                };
-                (Some(format!("{detail}{}", if retained.is_some() { " Earlier results are shown without links." } else { "" }).into()), None)
-            }
+            ResourceAdmission::Failed { terminal, retained } =>
+                (Some(failed_search_words(terminal, retained.is_some())), None),
         }
     }
 }
@@ -646,6 +771,17 @@ fn read_hold_words(reason: ReadHoldReason) -> &'static str {
         ReadHoldReason::Reading => "search still running",
         ReadHoldReason::NotReady => "search not ready",
     }
+}
+
+/// A retained row and the read status disclose the same typed terminal;
+/// submitting that row must not replace the actionable failure detail.
+fn failed_search_words(terminal: &ResourceTerminal, retained: bool) -> SharedString {
+    let detail = match terminal {
+        ResourceTerminal::Fault(error) => format!("Search failed: {}", error.message()),
+        ResourceTerminal::Unavailable(_) => "The index does not provide search.".to_owned(),
+        ResourceTerminal::Complete | ResourceTerminal::Partial => "Search is unavailable.".to_owned(),
+    };
+    format!("{detail}{}", if retained { " Earlier results are shown without links." } else { "" }).into()
 }
 
 /// The package a route reads, when it reads one.
@@ -747,6 +883,13 @@ fn follow_row(links: &Links, input: &Entity<InputState>, query: &SearchQuery, ro
 fn current_row_route(links: &Links, query: &SearchQuery, route: &Route, cx: &App) -> bool {
     current_search(links, query, cx, |page| page.rows.iter().take(usize::from(query.limit))
         .any(|row| row_route(row).as_ref() == Some(route)))
+}
+
+fn current_press_target(links: &Links, target: &SearchPressTarget, cx: &App) -> bool {
+    match &target.destination {
+        SearchPressDestination::Row(route) => current_row_route(links, &target.query, route, cx),
+        SearchPressDestination::AllResults => current_search(links, &target.query, cx, |_| true),
+    }
 }
 
 fn follow_all(links: &Links, input: &Entity<InputState>, query: &SearchQuery, route: &Route,
@@ -859,11 +1002,34 @@ impl Ask {
         self.sync_row_focus(&choices, all_results.is_some(), window, cx);
         let (read_status, semantic_status) = self.read_status(cx);
         let read_status = self.refusal.as_ref().map(SubmitRefusal::words).or(read_status);
+        let preparation_check = self.draft.query().and_then(|query| {
+            let key = PageKey::Search(query.clone());
+            self.links.store.read(cx).preparation_token(&key).map(|token| (query.clone(), key, token))
+        });
         let scroll_map = ResultScrollMap::new(&choices, semantic_status.is_some(), all_results.is_some());
         self.apply_result_scroll(&choices, &scroll_map, cx);
         let mut list = div().id("ask-results").role(Role::List).aria_label("Search results")
             .flex().flex_col().pt(measure.space(Space::Tight))
             .flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.scroll);
+        if let Some((query, key, token)) = preparation_check {
+            let weak = cx.weak_entity();
+            let revision = self.revision.get();
+            let control = div().id("ask-check-preparation")
+                .role(Role::Button).aria_label("Check again")
+                .border_2().border_color(if self.preparation_focus.is_focused(window) { palette.peri.base.hsla() } else { palette.line2.hsla() })
+                .px(measure.space(Space::Gutter)).py(measure.space(Space::Snug))
+                .child(text(ty::MONO_SMALL, &measure, palette.ink1).child("Check again"));
+            list = list.child(facet::controls::button::native_button(control, &self.preparation_focus,
+                move |_, cx| {
+                    let _ = weak.update(cx, |ask, cx| {
+                        if ask.revision.get() != revision
+                            || ask.links.snapshot(cx).overlay() != Some(Overlay::CommandPalette)
+                            || ask.draft.query() != Some(&query)
+                            || !current_input_query(&ask.input, &query, cx) { return; }
+                        ask.links.store.update(cx, |store, cx| store.check_preparation(key.clone(), &token, cx));
+                    });
+                }));
+        }
         if let Some(status) = semantic_status {
             let status_words = semantic_search_label(status);
             list = list.child(
@@ -907,28 +1073,47 @@ impl Ask {
             let current_revision = self.revision.clone();
             list = list.child(
                 native_search_control(div().id("ask-find-page").flex().flex_none().items_center().gap(measure.space(Space::Roomy))
-                    .role(Role::Link).aria_label("Open every search result as a page")
+                    .role(Role::Link).aria_label("Open search results")
                     .h(measure.row() + measure.space(Space::Snug)).px(measure.space(Space::Gutter)).mt(measure.space(Space::Tight))
                     .border_t_1().border_color(palette.line1.hsla())
                     .hover(|style| style.bg(palette.tint)).focus_visible(|style| style.bg(palette.tint)).cursor_pointer()
-                    .child(text(ty::SMALL, &measure, palette.ink2).child("every result, as a page")),
-                    &self.all_focus, cx.weak_entity(), move |cx| {
+                    .child(text(ty::SMALL, &measure, palette.ink2).child("Open search results")),
+                    &self.all_focus, cx.weak_entity(),
+                    SearchPressTarget {
+                        query: query.clone(),
+                        revision,
+                        destination: SearchPressDestination::AllResults,
+                    }, move |cx| {
                         follow_all(&links, &input, &query, &route, revision, &current_revision, cx)
                     }),
             );
         }
         div()
             .id("ask")
+            .on_mouse_up(gpui::MouseButton::Left, cx.listener(|ask, _, window, cx| {
+                ask.refuse_revoked_press(window, cx);
+                ask.pressed_result = None;
+            }))
+            .on_mouse_up_out(gpui::MouseButton::Left, cx.listener(|ask, _, _, _| {
+                ask.pressed_result = None;
+            }))
             .size_full()
             .flex().flex_col()
             .bg(palette.g2)
             .border_r_1()
             .border_color(palette.line2.hsla())
-            .children(read_status.map(|words| {
-                div().id("ask-read-status").role(Role::Status).aria_label(words.clone())
-                    .flex_none().px(measure.space(Space::Gutter)).py(measure.space(Space::Snug))
-                    .child(text(ty::MONO_SMALL, &measure, palette.ink3).child(words))
-            }))
+            // A refusal belongs to this query, but must not move the selected
+            // result under the pointer. Reserve one scaled status line from
+            // the first results frame; long words retain their full native name.
+            .child(div().id("ask-status-slot").flex_none()
+                .h(px(measure.role(ty::MONO_SMALL).line) + measure.space(Space::Snug) * 2.0)
+                .px(measure.space(Space::Gutter)).py(measure.space(Space::Snug))
+                .overflow_hidden()
+                .children(read_status.map(|words| {
+                    div().id("ask-read-status").role(Role::Status).aria_label(words.clone())
+                        .w_full().overflow_hidden().whitespace_nowrap().text_ellipsis()
+                        .child(text(ty::MONO_SMALL, &measure, palette.ink3).child(words))
+                })))
             .child(list)
             .into_any_element()
     }
@@ -1009,7 +1194,12 @@ impl Ask {
             let handle = self.row_focus.iter().find(|(known, occurrence, _)| known == &route && *occurrence == choice.route_occurrence)
                 .map(|(_, _, handle)| handle).expect("every mounted route has a focus handle");
             row = native_search_control(row.focus_visible(|style| style.bg(palette.tint))
-                .cursor_pointer().hover(|style| style.bg(palette.tint)), handle, cx.weak_entity(), move |cx| {
+                .cursor_pointer().hover(|style| style.bg(palette.tint)), handle, cx.weak_entity(),
+                SearchPressTarget {
+                    query: query.clone(),
+                    revision,
+                    destination: SearchPressDestination::Row(route.clone()),
+                }, move |cx| {
                     follow_row(&links, &input, &query, &route, revision, &current_revision, cx)
                 });
         } else {
@@ -1032,12 +1222,29 @@ impl Ask {
 }
 
 fn native_search_control(
-    element: gpui::Stateful<gpui::Div>, focus: &FocusHandle, owner: gpui::WeakEntity<Ask>,
+    element: gpui::Stateful<gpui::Div>,
+    focus: &FocusHandle,
+    owner: gpui::WeakEntity<Ask>,
+    press: SearchPressTarget,
     admission: impl Fn(&App) -> SubmissionOutcome + 'static,
 ) -> gpui::Stateful<gpui::Div> {
-    facet::controls::button::native_button(element, focus, move |_, cx| {
-        let outcome = admission(cx);
-        let _ = owner.update(cx, |ask, cx| ask.complete_submission(outcome, cx));
+    let press_owner = owner.clone();
+    let element = element.on_mouse_down(gpui::MouseButton::Left, move |_, _, cx| {
+        let _ = press_owner.update(cx, |ask, cx| ask.capture_native_press(&press, cx));
+    });
+    facet::controls::button::native_button_with_event(element, focus, move |event, window, cx| {
+        let _ = owner.update(cx, |ask, cx| {
+            if matches!(event, gpui::ClickEvent::Mouse(_)) {
+                // Child clicks run before Ask's mouse-up listener. Consume the
+                // original press receipt before a replacement owner's same-route
+                // result can admit navigation and erase its sticky revocation.
+                if ask.refuse_revoked_press(window, cx) {
+                    return;
+                }
+            }
+            let outcome = admission(cx);
+            ask.complete_submission(outcome, cx);
+        });
     })
 }
 
@@ -1319,7 +1526,7 @@ mod tests {
                 })
             };
             let result_live = result_label.as_deref().is_some_and(|label| actionable_link(label));
-            let all_live = actionable_link("Open every search result as a page");
+            let all_live = actionable_link("Open search results");
             if phase == Some(facet::probe::StackPhase::Open) && result_live && all_live { break; }
             assert!(Instant::now() < deadline,
                 "Ask never exposed its settled native stops: phase={phase:?}, result={result_label:?}, result_live={result_live}, all_live={all_live}");
@@ -1599,6 +1806,127 @@ mod tests {
             && text.content == "Mystery has no page yet"), "the refusal is actually painted in the retained query");
     }
 
+    #[gpui::test]
+    fn refused_enter_keeps_selected_native_result_bounds_at_both_text_sizes_and_after_resize(cx: &mut TestAppContext) {
+        for percent in [100, 200] {
+            let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 900.0,
+                ReadPool::start(2, |_| NoPlaceSearch).expect("no-destination reader"));
+            let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+            rig.go(crate::navigation::Intent::ZoomTo { display, percent });
+            native_ask(&mut rig);
+            // Native AX supplies the row geometry. The capture probe forces
+            // every region to render per frame and would bypass the product
+            // caching whose Reader isolation this control measures.
+            rig.cx.update(|_, cx| facet::probe::disable(cx));
+            rig.cx.simulate_input("mystery");
+            rig.settle();
+            let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+            let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
+            let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
+            for width in [1440.0, 720.0, 1080.0] {
+                // Resize the mounted query, then edit through the real focused
+                // editor so each Enter starts with no submission refusal.
+                rig.cx.simulate_resize(gpui::size(px(width), px(900.0)));
+                rig.settle();
+                rig.keys("backspace");
+                rig.cx.simulate_input("y");
+                rig.settle();
+                assert!(ask.read_with(rig.cx, |ask, _| ask.refusal.is_none()));
+                assert_eq!(ask.read_with(rig.cx, |ask, _| ask.selected), 0);
+                let native_row = |rig: &mut Rig| {
+                    let tree: serde_json::Value = rig.cx.update(|window, _| serde_json::from_str(
+                        &window.debug_a11y_tree_json().expect("committed native result tree")).expect("native JSON"));
+                    tree["nodes"].as_object().expect("native nodes").values()
+                        .find(|node| node["element_id"] == "Name(\"ask-unavailable-0\")")
+                        .expect("selected Mystery row is actually mounted")["bounds"].clone()
+                };
+                let before = native_row(&mut rig);
+                let route = rig.route();
+                let pages = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx));
+                let reader_renders = rig.counts().reader;
+                rig.keys("enter");
+                let after = native_row(&mut rig);
+                assert_eq!(after, before,
+                    "failed Enter must not move the selected native result at {percent}%/{width}px");
+                assert_eq!(rig.route(), route, "refusal does not navigate the Reader");
+                assert_eq!(rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity()), reader,
+                    "refusal retains the mounted Reader entity");
+                assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx)), pages);
+                assert_eq!(rig.counts().reader, reader_renders, "refusal only redraws Ask");
+                assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "mystery");
+                assert_refusal(&mut rig, "mystery", "Mystery has no page yet");
+                eprintln!("native refused Enter geometry: percent={percent} width={width} before={before} after={after} reader_renders={reader_renders}");
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn native_refused_enter_reader_frame_diagnostic(cx: &mut TestAppContext) {
+        for percent in [100, 200] {
+            for width in [1440.0, 720.0, 1080.0] {
+                for submit in [false, true] {
+                    let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 900.0,
+                        ReadPool::start(2, |_| NoPlaceSearch).expect("no-destination reader"));
+                    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+                    rig.go(crate::navigation::Intent::ZoomTo { display, percent });
+                    native_ask(&mut rig);
+                    rig.cx.simulate_input("mystery");
+                    rig.settle();
+                    rig.cx.simulate_resize(gpui::size(px(width), px(900.0)));
+                    rig.settle();
+                    rig.keys("backspace");
+                    rig.cx.simulate_input("y");
+                    rig.settle();
+                    let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+                    let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
+                    let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
+                    let route = rig.route();
+                    let pages = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx));
+                    let row = |rig: &mut Rig| {
+                        let tree: serde_json::Value = rig.cx.update(|window, _| serde_json::from_str(
+                            &window.debug_a11y_tree_json().expect("committed native tree")).expect("native JSON"));
+                        tree["nodes"].as_object().expect("native nodes").values()
+                            .find(|node| node["element_id"] == "Name(\"ask-unavailable-0\")")
+                            .expect("mounted Mystery row")["bounds"].clone()
+                    };
+                    let before = row(&mut rig);
+                    let started = rig.cx.executor().now();
+                    let log = |rig: &mut Rig, stage: &str| {
+                        let counts = rig.counts();
+                        let motion = rig.shell.read_with(rig.cx, |shell, cx| shell.diagnostic_cover_motion(cx));
+                        let reader_state = reader.read_with(rig.cx, |reader, _| (
+                            reader.diagnostic_background_presentation(), reader.native_motion_settled(), reader.native_input_allowed()));
+                        let frame = rig.cx.update(|window, _| window.a11y_frame_number());
+                        eprintln!("ASK-READER-DIAGNOSTIC percent={percent} width={width} submit={submit} stage={stage} elapsed={:?} counts={counts:?} frame={frame} motion={motion:?} reader={reader_state:?}",
+                            rig.cx.executor().now().duration_since(started));
+                    };
+                    log(&mut rig, "before");
+                    if submit {
+                        rig.cx.simulate_keystrokes("enter");
+                        rig.cx.simulate_event(gpui::KeyUpEvent {
+                            keystroke: gpui::Keystroke::parse("enter").expect("native Enter"),
+                        });
+                    }
+                    log(&mut rig, "synchronous");
+                    rig.cx.run_until_parked();
+                    rig.draw();
+                    log(&mut rig, "parked-and-drawn");
+                    // Both branches advance the same ordinary native frame
+                    // machinery; only one dispatches the actual Enter gesture.
+                    rig.settle();
+                    log(&mut rig, "settled");
+                    assert_eq!(row(&mut rig), before, "diagnostic advancement preserves selected row geometry");
+                    assert_eq!(rig.route(), route);
+                    assert_eq!(rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity()), reader);
+                    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx)), pages);
+                    assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "mystery");
+                    if submit { assert_refusal(&mut rig, "mystery", "Mystery has no page yet"); }
+                    else { assert!(ask.read_with(rig.cx, |ask, _| ask.refusal.is_none())); }
+                }
+            }
+        }
+    }
+
     struct FailedSearch;
     impl PageReader for FailedSearch {
         fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
@@ -1664,12 +1992,24 @@ mod tests {
         let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
         let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
         assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), draft);
+        let expected_label = ask.read_with(rig.cx, |ask, _| ask.refusal.as_ref()
+            .expect("native submission retained its refusal").words());
         rig.repaint();
         let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("forced native Ask tree");
         let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
-        assert!(tree["nodes"].as_object().expect("native nodes").values().any(|node|
-            node["aria"]["role"].as_str() == Some("Status") && node["aria"]["label"].as_str().is_some_and(|label| label.contains(words))),
-            "the active query exposes actionable refusal words to native accessibility");
+        let native_status = tree["nodes"].as_object().expect("native nodes").values().any(|node|
+            node["element_id"] == "Name(\"ask-read-status\")"
+                && node["aria"]["role"].as_str() == Some("Status")
+                && node["aria"]["label"].as_str().is_some_and(|label| label.contains(words) && label == &*expected_label)
+                && node["bounds"]["width"].as_f64().is_some_and(|width| width > 0.0)
+                && node["bounds"]["height"].as_f64().is_some_and(|height| height > 0.0));
+        if !native_status {
+            let state = ask.read_with(rig.cx, |ask, cx| (
+                ask.refusal.as_ref().map(SubmitRefusal::words), ask.read_status(cx).0,
+                ask.owner_failure_words(cx), ask.search_resource(cx)));
+            eprintln!("ASK-REFUSAL-AX-DIAGNOSTIC expected={words:?} state={state:?} tree={json}");
+        }
+        assert!(native_status, "the active query exposes actionable refusal words to native accessibility");
         assert!(rig.cx.update(|window, cx| input.read(cx).focus_handle(cx).is_focused(window)), "the retained editor keeps native focus");
     }
 
@@ -1714,6 +2054,298 @@ mod tests {
         assert_refusal(&mut rig, "RelationLabel", "index attachment retired");
     }
 
+    // These tests renew an owner at its already published root. RootOnly
+    // intentionally advances authority for other shell tests, so it cannot
+    // isolate this same-root owner contract.
+    struct StableAskRoot;
+    impl crate::runtime::actor::EngineClient for StableAskRoot {
+        fn execute(&mut self, request: &crate::runtime::actor::EngineRequest)
+            -> Result<crate::runtime::actor::EngineDto, crate::runtime::actor::EngineFault> {
+            match request {
+                crate::runtime::actor::EngineRequest::Root { request, basis, .. } => {
+                    Ok(crate::runtime::actor::EngineDto::Root {
+                        request: *request, basis: *basis, key: *basis,
+                        revision: basis.revision(), delta: None, project: None, catalog: None,
+                    })
+                }
+                _ => Err(crate::runtime::actor::EngineFault::Cancelled),
+            }
+        }
+    }
+
+    struct CountAskReads(Arc<std::sync::atomic::AtomicUsize>);
+    impl PageReader for CountAskReads {
+        fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+            if matches!(request, ReadRequest::Search(_)) {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            Fixture.read(request, context)
+        }
+    }
+
+    fn native_result_labels(rig: &mut Rig) -> Vec<String> {
+        let tree: serde_json::Value = rig.cx.update(|window, _| serde_json::from_str(
+            &window.debug_a11y_tree_json().expect("committed native Ask tree")).expect("native Ask JSON"));
+        let mut labels = tree["nodes"].as_object().expect("native nodes").values()
+            .filter(|node| node["aria"]["role"] == "Link")
+            .filter_map(|node| node["aria"]["label"].as_str())
+            .filter(|label| label.starts_with("Result "))
+            .map(str::to_owned).collect::<Vec<_>>();
+        labels.sort();
+        labels
+    }
+
+    #[gpui::test]
+    fn visible_native_ask_query_renews_once_after_owner_recovery_but_hidden_query_stays_lazy(cx: &mut TestAppContext) {
+        use crate::model::ServiceMode;
+        use crate::runtime::owner::{OwnerGate, OwnerState};
+        use crate::runtime::store::DataStore;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let initial = VersionedRoot::synthetic(backend_library::view_state_root(
+            &[("shell".to_owned(), "tests".to_owned())]), 4);
+        let gate = OwnerGate::ready(initial, ServiceMode::Attached);
+        let reads = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&reads);
+        let mut rig = crate::shell::tests::rig_with_engine_gate(cx,
+            Some(page_route("RelationLabel")), 1440.0, 900.0,
+            ReadPool::start(1, move |_| CountAskReads(Arc::clone(&counter))).expect("Ask reader"),
+            StableAskRoot, Some(gate.clone()));
+        native_ask(&mut rig);
+        rig.cx.update(|window, cx| { facet::probe::disable(cx); cx.set_global(gpui::TextTrace); window.set_a11y_forced(true); });
+        rig.cx.simulate_input("RelationLabel");
+        rig.settle();
+        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+        let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
+        let query = ask.read_with(rig.cx, |ask, _| ask.draft.query().expect("current native draft").clone());
+        let key = crate::model::pages::PageKey::Search(query.clone());
+        let route = rig.route();
+        let root = rig.graph.store.read_with(rig.cx, |store, _| {
+            assert!(!store.focused().contains(&key), "the mounted Ask query is outside route-focused reads");
+            assert!(!store.observation_revoked(&key));
+            store.snapshot().key()
+        });
+        let labels = native_result_labels(&mut rig);
+        assert!(!labels.is_empty(), "the initial native result is actionable");
+        let count = reads.load(Ordering::SeqCst);
+        assert_eq!(count, 1, "typing admits exactly one actual Search read");
+        let renders = ask.read_with(rig.cx, |ask, _| ask.renders());
+        let frame = rig.cx.update(|window, _| window.a11y_frame_number());
+        rig.cx.run_until_parked();
+        assert_eq!(ask.read_with(rig.cx, |ask, _| ask.renders()), renders, "idle does not render Ask");
+        assert_eq!(rig.cx.update(|window, _| window.a11y_frame_number()), frame, "idle does not draw a frame");
+        gate.publish(OwnerState::Starting);
+        rig.graph.store.update(rig.cx, DataStore::owner_starting);
+        rig.cx.run_until_parked();
+        assert!(rig.graph.store.read_with(rig.cx, |store, _| store.observation_revoked(&key)));
+        assert_eq!(reads.load(Ordering::SeqCst), count, "Starting holds the visible query without dispatching it");
+        gate.publish(OwnerState::Ready { key: root, mode: ServiceMode::Attached });
+        rig.graph.store.update(rig.cx, DataStore::owner_ready);
+        let deadline = Instant::now() + rig.patience;
+        loop {
+            rig.cx.run_until_parked();
+            if rig.graph.store.read_with(rig.cx, |store, _| store.pool_activity().is_idle()) { break; }
+            assert!(Instant::now() < deadline, "owner recovery did not finish its native reads");
+            rig.cx.executor().advance_clock(Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        eprintln!("native Ask owner recovery: initial_search_reads={count} final_search_reads={} resource={:?}",
+            reads.load(Ordering::SeqCst), rig.graph.store.read_with(rig.cx, |store, _| store.search(&query)));
+        assert_eq!(reads.load(Ordering::SeqCst), count + 1, "the visible current draft renews exactly once without another keystroke");
+        assert!(ask.read_with(rig.cx, |ask, cx| ask.read_status(cx).0.is_none()), "the renewed result is current");
+        assert_eq!(native_result_labels(&mut rig), labels, "the exact native result actions return without a test repaint");
+        assert!(ask.read_with(rig.cx, |ask, _| ask.renders()) > renders);
+        assert!(rig.cx.update(|window, _| window.a11y_frame_number()) > frame);
+        assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "RelationLabel");
+        assert_eq!(rig.route(), route);
+        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key()), root);
+        rig.keys("escape");
+        assert_ne!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()), Some(crate::navigation::Overlay::CommandPalette));
+        let hidden = reads.load(Ordering::SeqCst);
+        gate.publish(OwnerState::Starting);
+        rig.graph.store.update(rig.cx, DataStore::owner_starting);
+        rig.cx.run_until_parked();
+        gate.publish(OwnerState::Ready { key: root, mode: ServiceMode::Attached });
+        rig.graph.store.update(rig.cx, DataStore::owner_ready);
+        rig.cx.run_until_parked();
+        assert_eq!(reads.load(Ordering::SeqCst), hidden, "the closed Ask draft causes no hidden eager Search");
+    }
+
+    #[gpui::test]
+    fn native_owner_recovery_preserves_the_current_cached_query_debounce(cx: &mut TestAppContext) {
+        use crate::model::ServiceMode;
+        use crate::runtime::owner::{OwnerGate, OwnerState};
+        use crate::runtime::store::DataStore;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let initial = VersionedRoot::synthetic(backend_library::view_state_root(
+            &[("shell".to_owned(), "tests".to_owned())]), 4);
+        let gate = OwnerGate::ready(initial, ServiceMode::Attached);
+        let reads = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&reads);
+        let mut rig = crate::shell::tests::rig_with_engine_gate(cx,
+            Some(page_route("RelationLabel")), 1440.0, 900.0,
+            ReadPool::start(1, move |_| CountAskReads(Arc::clone(&counter))).expect("Ask reader"),
+            StableAskRoot, Some(gate.clone()));
+        native_ask(&mut rig);
+        rig.cx.update(|window, cx| { facet::probe::disable(cx); window.set_a11y_forced(true); });
+        rig.cx.simulate_input("RelationLabel");
+        rig.settle();
+        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+        let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
+        let labels = native_result_labels(&mut rig);
+        assert!(!labels.is_empty());
+        let count = reads.load(Ordering::SeqCst);
+        assert_eq!(count, 1);
+        // Return to an already cached query, but do not let this new draft's
+        // debounce expire. Its resource activity alone cannot admit it.
+        for text in ["NotIssued", "RelationLabel"] {
+            rig.cx.update(|window, cx| input.update(cx, |input, cx| input.replace_all(text, window, cx)));
+        }
+        let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+        gate.publish(OwnerState::Starting);
+        rig.graph.store.update(rig.cx, DataStore::owner_starting);
+        rig.cx.run_until_parked();
+        gate.publish(OwnerState::Ready { key: root, mode: ServiceMode::Attached });
+        rig.graph.store.update(rig.cx, DataStore::owner_ready);
+        rig.cx.run_until_parked();
+        assert_eq!(reads.load(Ordering::SeqCst), count, "owner renewal cannot bypass the current draft's debounce");
+        rig.cx.executor().advance_clock(Duration::from_millis(89));
+        rig.cx.run_until_parked();
+        assert_eq!(reads.load(Ordering::SeqCst), count, "the cached query still waits for its full debounce");
+        rig.cx.executor().advance_clock(Duration::from_millis(1));
+        let deadline = Instant::now() + rig.patience;
+        loop {
+            rig.cx.run_until_parked();
+            if rig.graph.store.read_with(rig.cx, |store, _| store.pool_activity().is_idle()) { break; }
+            assert!(Instant::now() < deadline, "the debounced native query never completed");
+            rig.cx.executor().advance_clock(Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(reads.load(Ordering::SeqCst), count + 1, "the settled current draft admits exactly one replacement read");
+        assert_eq!(native_result_labels(&mut rig), labels, "the exact native result actions return without a test repaint");
+        let superseded = crate::model::pages::SearchQuery::new("NotIssued", 50).expect("superseded query");
+        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.search(&superseded).activity()),
+            crate::core::Activity::NotYet, "the superseded draft never reads");
+        assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "RelationLabel");
+        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key()), root);
+        eprintln!("native Ask debounce across owner recovery: initial_search_reads={count} final_search_reads={}", reads.load(Ordering::SeqCst));
+    }
+
+    struct OwnerAskView {
+        ask: gpui::Entity<super::Ask>,
+        input: gpui::Entity<gpui_component::input::InputState>,
+    }
+
+    impl gpui::Render for OwnerAskView {
+        fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+            use gpui::{ParentElement as _, Styled as _};
+            gpui::div().size_full().flex().flex_col()
+                .child(gpui_component::input::Input::new(&self.input))
+                .child(self.ask.clone())
+        }
+    }
+
+    #[gpui::test]
+    fn passive_owner_only_renewal_repaints_native_ask_without_moving_search_stamp(cx: &mut TestAppContext) {
+        use crate::model::ServiceMode;
+        use crate::model::pages::PageKey;
+        use crate::runtime::owner::{OwnerGate, OwnerState};
+        use crate::runtime::store::{Branch, DataStore, StoreEvent};
+        let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 900.0,
+            ReadPool::start(1, |_| Fixture).expect("shell reader"));
+        rig.keys("secondary-k");
+        let snapshot = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+        let root = snapshot.key();
+        let gate = OwnerGate::ready(root, ServiceMode::Attached);
+        // Exercise Ask's real StoreEvent boundary independently of the Shell
+        // and owner watcher's other notifications, which can mask this wake.
+        let (store, ask, input) = rig.cx.update(|window, cx| {
+            let store = DataStore::install_with_owner(cx, snapshot,
+                Some(ReadPool::start(1, |_| Fixture).expect("Ask reader")), Some(gate.clone()), None);
+            let links = super::Links { root: rig.graph.root.downgrade(), store: store.clone(),
+                shell: rig.shell.downgrade(), reader: Rc::new(RefCell::new(None)) };
+            let ask = cx.new(|cx| super::Ask::new(links, window, cx));
+            let input = ask.read(cx).input().clone();
+            window.replace_root(cx, |window, cx| {
+                let view = cx.new(|_| OwnerAskView { ask: ask.clone(), input: input.clone() });
+                gpui_component::Root::new(view, window, cx).bordered(false)
+            });
+            window.set_a11y_forced(true);
+            cx.set_global(gpui::TextTrace);
+            facet::probe::disable(cx);
+            input.read(cx).focus_handle(cx).focus(window, cx);
+            (store, ask, input)
+        });
+        rig.draw();
+        // Cache this exact query before typing a new draft for it. That
+        // draft's debounce is still pending at the owner boundary, so the
+        // query must not renew and only Branch::Owner can repaint its status.
+        let cached = crate::model::pages::SearchQuery::new("RelationLabel", 50).expect("cached query");
+        store.update(rig.cx, |store, cx| { store.ensure(PageKey::Search(cached.clone()), cx); });
+        let deadline = Instant::now() + rig.patience;
+        while store.read_with(rig.cx, |store, _| store.search(&cached).loaded_value().is_none()) {
+            rig.cx.run_until_parked();
+            assert!(Instant::now() < deadline, "native Ask's initial read never completed");
+            rig.cx.executor().advance_clock(Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        rig.cx.simulate_input("RelationLabel");
+        rig.cx.run_until_parked();
+        assert!(!ask.read_with(rig.cx, |ask, _| ask.query_settled), "the current draft still owns its typing debounce");
+        assert!(ask.read_with(rig.cx, |ask, cx| ask.read_status(cx).0.is_none() && !ask.choices(cx).is_empty()));
+        rig.repaint();
+        let bounds = rig.cx.debug_bounds("ask-result-row").expect("actual native result row");
+        rig.cx.simulate_mouse_down(bounds.center(), gpui::MouseButton::Left, Modifiers::none());
+        assert!(ask.read_with(rig.cx, |ask, _| ask.pressed_result.is_some()));
+        gate.publish(OwnerState::Starting);
+        store.update(rig.cx, DataStore::owner_starting);
+        rig.cx.run_until_parked();
+        assert!(ask.read_with(rig.cx, |ask, _| ask.pressed_result.as_ref().is_some_and(|press| press.revoked)));
+        let status_before = ask.read_with(rig.cx, |ask, cx| ask.read_status(cx).0.expect("retained unavailable status"));
+        let query = ask.read_with(rig.cx, |ask, _| ask.draft.query().expect("current draft").clone());
+        let key = PageKey::Search(query);
+        let stamp = store.read_with(rig.cx, |store, _| store.stamp(&key));
+        let renders = ask.read_with(rig.cx, |ask, _| ask.renders());
+        let frame = rig.cx.update(|window, _| window.a11y_frame_number());
+        rig.cx.run_until_parked();
+        assert_eq!(ask.read_with(rig.cx, |ask, _| ask.renders()), renders, "idle observation does not render Ask");
+        assert_eq!(rig.cx.update(|window, _| window.a11y_frame_number()), frame, "idle observation does not draw a frame");
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let observed = Rc::clone(&events);
+        let _events = rig.cx.update(|_, cx| cx.subscribe(&store, move |_, event: &StoreEvent, _| {
+            observed.borrow_mut().push(event.clone());
+        }));
+        gate.publish(OwnerState::Ready { key: root, mode: ServiceMode::Attached });
+        store.update(rig.cx, DataStore::owner_ready);
+        // Pump only ordinary events. No settle/draw/refresh/notify of Ask.
+        rig.cx.run_until_parked();
+        let status_after = ask.read_with(rig.cx, |ask, cx| ask.read_status(cx).0.expect("revoked read remains held"));
+        assert_ne!(status_before, status_after, "owner admission changes the exact retained status");
+        assert_eq!(store.read_with(rig.cx, |store, _| store.stamp(&key)), stamp, "renewal did not move the Search slot");
+        assert_eq!(store.read_with(rig.cx, |store, _| store.snapshot().key()), root);
+        assert!(events.borrow().iter().any(|event| event.is_branch(Branch::Owner)));
+        assert!(!events.borrow().iter().any(|event| event.is_branch(Branch::Root)
+            || event.is_branch(Branch::GraphFocus)
+            || matches!(event, StoreEvent::Resource(changed) if changed == &key)), "Ask has only its independent owner wake");
+        assert!(ask.read_with(rig.cx, |ask, _| ask.renders()) > renders, "owner renewal passively renders Ask");
+        assert!(rig.cx.update(|window, _| window.a11y_frame_number()) > frame, "the owner wake commits a native frame");
+        let tree: serde_json::Value = rig.cx.update(|window, _| serde_json::from_str(
+            &window.debug_a11y_tree_json().expect("committed native Ask tree")).expect("native Ask JSON"));
+        assert!(tree["nodes"].as_object().expect("native nodes").values().any(|node|
+            node["aria"]["role"] == "Status" && node["aria"]["label"] == status_after.as_ref()),
+            "the exact current status reaches native accessibility without a test repaint");
+        assert!(rig.cx.update(|window, _| window.painted_texts().iter()
+            .any(|text| text.text.as_ref() == status_after.as_ref())),
+            "the exact current status is painted without a test repaint");
+        eprintln!("native Ask owner-only wake: status_before={status_before:?} status_after={status_after:?} search_stamp={stamp:?} renders_before={renders} renders_after={} frame_before={frame} frame_after={} events={:?}",
+            ask.read_with(rig.cx, |ask, _| ask.renders()),
+            rig.cx.update(|window, _| window.a11y_frame_number()), events.borrow());
+        assert!(ask.read_with(rig.cx, |ask, _| ask.refusal.is_none()), "owner publication is not a submission");
+        assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "RelationLabel");
+        rig.cx.simulate_mouse_up(point(px(1400.0), px(10.0)), gpui::MouseButton::Left, Modifiers::none());
+        assert!(ask.read_with(rig.cx, |ask, _| ask.pressed_result.is_none()));
+        assert!(ask.read_with(rig.cx, |ask, _| ask.refusal.is_none()), "release outside still cancels the revoked press");
+    }
+
     #[gpui::test]
     fn actual_pointer_release_on_a_postpaint_stale_row_refuses_inside_ask(cx: &mut TestAppContext) {
         let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 900.0,
@@ -1735,6 +2367,279 @@ mod tests {
         assert_refusal(&mut rig, "RelationLabel", "no longer verified by the current index");
     }
 
+
+    #[gpui::test]
+    fn a_revoked_native_ask_press_cannot_borrow_a_fresh_same_route_before_repaint(
+        cx: &mut TestAppContext,
+    ) {
+        revoked_native_search_press_before_repaint(cx, false);
+    }
+
+    #[gpui::test]
+    fn a_revoked_native_all_results_press_cannot_borrow_a_fresh_query_before_repaint(
+        cx: &mut TestAppContext,
+    ) {
+        revoked_native_search_press_before_repaint(cx, true);
+    }
+
+    fn revoked_native_search_press_before_repaint(cx: &mut TestAppContext, all_results: bool) {
+        use crate::model::ServiceMode;
+        use crate::model::pages::PageKey;
+        use crate::runtime::owner::{OwnerFault, OwnerGate, OwnerState};
+        use crate::runtime::store::DataStore;
+
+        let initial = VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]),
+            4,
+        );
+        let gate = OwnerGate::ready(initial, ServiceMode::Attached);
+        let mut rig = crate::shell::tests::rig_with_engine_gate(
+            cx,
+            Some(page_route("RelationDirection")),
+            1440.0,
+            900.0,
+            ReadPool::start(1, |_| Fixture).expect("Ask reader"),
+            StableAskRoot,
+            Some(gate.clone()),
+        );
+        native_ask(&mut rig);
+        rig.cx.simulate_input("RelationLabel");
+        rig.settle();
+        let route = rig.route();
+        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+        let (query, destination, input) = ask.read_with(rig.cx, |ask, cx| {
+            (
+                ask.draft.query().expect("current query").clone(),
+                if all_results {
+                    ask.all_results(cx).expect("painted all-results route")
+                } else {
+                    ask.choices(cx)
+                        .into_iter()
+                        .next()
+                        .expect("painted row")
+                        .route
+                        .expect("row route")
+                },
+                ask.input().clone(),
+            )
+        });
+        assert_ne!(
+            route, destination,
+            "a borrowed press would visibly navigate"
+        );
+        let root = rig
+            .graph
+            .store
+            .read_with(rig.cx, |store, _| store.snapshot().key());
+        let former = rig.graph.store.read_with(rig.cx, |store, _| {
+            store
+                .current_owner_attachment()
+                .expect("painted owner attachment")
+        });
+        let bounds = if all_results {
+            crate::shell::tests::native_bounds_id(
+                &mut rig,
+                "ask-find-page",
+                "Link",
+                "Open search results",
+                true,
+            )
+            .expect("committed native all-results control")
+        } else {
+            rig.cx
+                .debug_bounds("ask-result-row")
+                .expect("painted row bounds")
+        };
+        rig.cx.simulate_event(gpui::MouseDownEvent {
+            position: bounds.center(),
+            modifiers: Modifiers::none(),
+            button: gpui::MouseButton::Left,
+            click_count: 1,
+            first_mouse: false,
+        });
+        assert!(ask.read_with(rig.cx, |ask, _| ask.pressed_result.is_some()));
+        let store = rig.graph.store.clone();
+        let patience = rig.patience;
+        // GPUI test-support eagerly draws dirty windows when an outer App
+        // update finishes. Keep publication and the actual native release in
+        // one update so the old dispatch frame remains mounted throughout.
+        rig.cx.update(|window, cx| {
+            use gpui::InputEvent as _;
+
+            let frame = window.a11y_frame_number();
+            let fault = OwnerFault::Lost("pressed owner retired".into());
+            gate.publish(OwnerState::Failed(fault.clone()));
+            store.update(cx, |store, cx| store.owner_failed(&fault, cx));
+            gate.publish(OwnerState::Ready {
+                key: root,
+                mode: ServiceMode::Attached,
+            });
+            store.update(cx, DataStore::owner_ready);
+            store.update(cx, |store, cx| {
+                store.ensure(PageKey::Search(query.clone()), cx);
+            });
+
+            // Drain the ordinary read worker, preserving all pending native
+            // notifications until after mouse-up has used the old listeners.
+            let deadline = Instant::now() + patience;
+            loop {
+                store.update(cx, |store, cx| store.drain(cx));
+                let current = ask.read(cx);
+                let replacement_is_current = if all_results {
+                    current.all_results(cx).as_ref() == Some(&destination)
+                } else {
+                    super::current_row_route(&current.links, &query, &destination, cx)
+                };
+                if replacement_is_current {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "replacement Search did not land");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            let current = store.read(cx);
+            assert_eq!(current.snapshot().key(), root);
+            assert!(current.current_owner_attachment().is_some());
+            assert!(!current.admits_owner_attachment(&former));
+            assert_eq!(
+                window.a11y_frame_number(),
+                frame,
+                "the old dispatch frame must remain mounted through replacement publication"
+            );
+            window.dispatch_event(
+                gpui::MouseUpEvent {
+                    position: bounds.center(),
+                    modifiers: Modifiers::none(),
+                    button: gpui::MouseButton::Left,
+                    click_count: 1,
+                }
+                .to_platform_input(),
+                cx,
+            );
+            assert_eq!(window.a11y_frame_number(), frame);
+            assert_eq!(
+                store.read(cx).snapshot().route(),
+                &route,
+                "the revoked pointer cannot borrow the replacement result"
+            );
+            assert!(
+                input.read(cx).focus_handle(cx).is_focused(window),
+                "the refused native release restores editor focus before any repaint"
+            );
+        });
+        assert_eq!(rig.route(), route);
+        assert!(ask.read_with(rig.cx, |ask, _| ask.pressed_result.is_none()));
+        assert_refusal(
+            &mut rig,
+            "RelationLabel",
+            "no longer verified by the current index",
+        );
+
+        // The refusal retires this pointer gesture, not the fresh result.
+        // A new keyboard submission still uses current admitted Search data.
+        rig.keys(if all_results {
+            "secondary-enter"
+        } else {
+            "enter"
+        });
+        assert_eq!(rig.route(), destination);
+    }
+
+    #[gpui::test]
+    fn native_pointer_on_current_all_results_opens_search_results(cx: &mut TestAppContext) {
+        let mut rig = rig_with_reads(
+            cx,
+            Some(page_route("RelationDirection")),
+            1440.0,
+            900.0,
+            ReadPool::start(1, |_| Fixture).expect("search reader"),
+        );
+        native_ask(&mut rig);
+        rig.cx.simulate_input("RelationLabel");
+        rig.settle();
+        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+        let destination = ask.read_with(rig.cx, |ask, cx| {
+            ask.all_results(cx).expect("current Find route")
+        });
+        assert_ne!(rig.route(), destination);
+        let bounds = crate::shell::tests::native_bounds_id(
+            &mut rig,
+            "ask-find-page",
+            "Link",
+            "Open search results",
+            true,
+        )
+        .expect("committed native all-results control");
+        rig.cx.simulate_event(gpui::MouseDownEvent {
+            position: bounds.center(),
+            modifiers: Modifiers::none(),
+            button: gpui::MouseButton::Left,
+            click_count: 1,
+            first_mouse: false,
+        });
+        assert!(ask.read_with(rig.cx, |ask, _| ask.pressed_result.is_some()));
+        rig.cx.simulate_event(gpui::MouseUpEvent {
+            position: bounds.center(),
+            modifiers: Modifiers::none(),
+            button: gpui::MouseButton::Left,
+            click_count: 1,
+        });
+        rig.settle();
+        assert_eq!(rig.route(), destination);
+        assert!(ask.read_with(rig.cx, |ask, _| ask.pressed_result.is_none()));
+    }
+
+    #[gpui::test]
+    fn a_cancelled_native_ask_press_does_not_refuse_a_later_owner_loss(cx: &mut TestAppContext) {
+        let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 900.0,
+            ReadPool::start(1, |_| Fixture).expect("search reader"));
+        native_ask(&mut rig);
+        rig.cx.simulate_input("RelationLabel");
+        rig.settle();
+        let route = rig.route();
+        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+        let bounds = rig.cx.debug_bounds("ask-result-row").expect("painted row bounds");
+        rig.cx.simulate_event(gpui::MouseDownEvent { position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1, first_mouse: false });
+        assert!(ask.read_with(rig.cx, |ask, _| ask.pressed_result.is_some()));
+        rig.cx.simulate_event(gpui::MouseUpEvent { position: gpui::point(gpui::px(1400.0), gpui::px(800.0)), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1 });
+        rig.settle();
+        assert!(ask.read_with(rig.cx, |ask, _| ask.pressed_result.is_none()),
+            "release outside Ask cancels only its feedback record");
+        rig.graph.store.update(rig.cx, |store, cx| store.owner_failed(&crate::runtime::owner::OwnerFault::Lost("later owner loss".into()), cx));
+        rig.settle();
+        assert_eq!(rig.route(), route);
+        assert!(ask.read_with(rig.cx, |ask, _| ask.refusal.is_none()),
+            "an earlier cancelled gesture cannot become a new submission");
+        assert!(ask.read_with(rig.cx, |ask, cx| ask.read_status(cx).0
+            .is_some_and(|words| words.contains("later owner loss"))),
+            "the current owner failure is still disclosed");
+    }
+
+    #[gpui::test]
+    fn owner_loss_during_a_native_ask_press_still_allows_release_outside_to_cancel(cx: &mut TestAppContext) {
+        let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 900.0,
+            ReadPool::start(1, |_| Fixture).expect("search reader"));
+        native_ask(&mut rig);
+        rig.cx.simulate_input("RelationLabel");
+        rig.settle();
+        let route = rig.route();
+        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+        let bounds = rig.cx.debug_bounds("ask-result-row").expect("painted row bounds");
+        rig.cx.simulate_event(gpui::MouseDownEvent { position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1, first_mouse: false });
+        assert!(ask.read_with(rig.cx, |ask, _| ask.pressed_result.is_some()));
+        rig.graph.store.update(rig.cx, |store, cx| store.owner_failed(&crate::runtime::owner::OwnerFault::Lost("owner lost during press".into()), cx));
+        rig.settle();
+        assert!(ask.read_with(rig.cx, |ask, _| ask.refusal.is_none()),
+            "owner revocation alone is not a submission");
+        assert!(ask.read_with(rig.cx, |ask, cx| ask.read_status(cx).0
+            .is_some_and(|words| words.contains("owner lost during press"))),
+            "the current failure is disclosed while the press remains cancellable");
+        rig.cx.simulate_event(gpui::MouseUpEvent { position: gpui::point(gpui::px(1400.0), gpui::px(800.0)), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1 });
+        rig.settle();
+        assert_eq!(rig.route(), route);
+        assert!(ask.read_with(rig.cx, |ask, _| ask.pressed_result.is_none()));
+        assert!(ask.read_with(rig.cx, |ask, _| ask.refusal.is_none()),
+            "release outside cancels a revoked press without a submission refusal");
+    }
 
     #[gpui::test]
     fn actual_pointer_on_a_nonaddressable_result_keeps_local_refusal(cx: &mut TestAppContext) {
@@ -1859,7 +2764,7 @@ mod tests {
         for _ in 0..16 { rig.keys("tab"); }
         let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
         assert!(rig.cx.update(|window, cx| ask.read(cx).all_focus.is_focused(window)));
-        assert_native_result_visible(&mut rig, "Open every search result as a page");
+        assert_native_result_visible(&mut rig, "Open search results");
         rig.keys("shift-tab");
         assert_native_result_visible(&mut rig, "Result 16:");
     }

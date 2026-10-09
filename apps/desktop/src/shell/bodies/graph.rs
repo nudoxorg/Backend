@@ -99,6 +99,7 @@ pub(crate) struct Map {
     resolved: BTreeMap<NodeId, ResolvedSymbol>,
     open_generation: u64,
     pending: Option<OpenRequest>,
+    query_interest: Option<crate::runtime::store::GraphQueryInterest>,
     _graph_events: Option<Subscription>,
     _open_intents: Option<Subscription>,
     _events: Subscription,
@@ -270,7 +271,7 @@ impl Map {
                     || event.is_branch(Branch::Root)
                     || event.is_branch(Branch::Overlay)
                 {
-                    map.invalidate_open();
+                    map.invalidate_open(cx);
                     map.error = None;
                     if event.is_branch(Branch::Route) {
                         map.cancel_presentation();
@@ -286,11 +287,22 @@ impl Map {
                     // the newly admitted projection without route re-entry.
                     cx.notify();
                 }
+                if event.is_branch(Branch::Owner) {
+                    // A replacement can serve the same immutable root. Its
+                    // retired scene and native actions cannot borrow the new
+                    // attachment merely because their resource stamps match.
+                    if map.links.store.read(cx).current_owner_attachment().is_some() {
+                        map.reset_indexed_world(cx);
+                    }
+                    map.request_world(cx);
+                    map.publish_focus(cx);
+                    cx.notify();
+                }
                 if let StoreEvent::PackagesPublished(authority) = event
                     && map.world_key.as_ref().is_some_and(|key| key.at_authority(map.links.snapshot(cx).key()))
                     && *authority == map.links.snapshot(cx).key().authority()
                 {
-                    map.invalidate_open();
+                    map.invalidate_open(cx);
                     map.reset_indexed_world(cx);
                     map.publish_focus(cx);
                     cx.notify();
@@ -366,6 +378,7 @@ impl Map {
             revealed_focus: None,
             resolved: BTreeMap::new(),
             pending: None,
+            query_interest: None,
             open_generation: 0,
             toured: 0,
             _graph_events: None,
@@ -647,9 +660,20 @@ impl Map {
         ])
     }
 
-    fn invalidate_open(&mut self) {
+    fn invalidate_open(&mut self, cx: &mut Context<Self>) {
         self.open_generation = self.open_generation.wrapping_add(1);
+        self.finish_open(cx);
+    }
+
+    fn finish_open(&mut self, cx: &mut Context<Self>) {
         self.pending = None;
+        if let Some(interest) = self.query_interest.take() {
+            let store = self.links.store.clone();
+            // Focus observers can run while GPUI is rendering their graph.
+            // Release after that turn; exact allocation admission prevents a
+            // retired observer from cancelling the next same-query gesture.
+            cx.defer(move |cx| { store.update(cx, |store, cx| store.release_graph_query(&interest, cx)); });
+        }
     }
 
     pub(crate) fn suspend(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -657,7 +681,7 @@ impl Map {
         // underlying reading visit. Route changes and explicit World commands
         // independently cancel passive restoration.
         if self.visible {
-            self.invalidate_open();
+            self.invalidate_open(cx);
             if let Some(graph) = &self.graph {
                 graph.update(cx, |graph, cx| graph.suspend(window, cx));
             }
@@ -699,7 +723,7 @@ impl Map {
                 self.cancel_presentation();
                 self.route_consumed = false;
             }
-            self.invalidate_open();
+            self.invalidate_open(cx);
             self.error = None;
         }
         self.visible = true;
@@ -795,7 +819,7 @@ impl Map {
     /// An explicit new World command is distinct from restoring a World
     /// history entry whose route has the same value.
     pub(crate) fn reset_world(&mut self, cx: &mut Context<Self>) {
-        self.invalidate_open();
+        self.invalidate_open(cx);
         self.cancel_presentation();
         self.route_consumed = true;
         self.revealed_focus = None;
@@ -1080,6 +1104,18 @@ impl Map {
         key.serving_owner(cx)
     }
 
+    fn pending_status(&self, cx: &App) -> Option<&'static str> {
+        let request = self.pending.as_ref()?;
+        let store = self.links.store.read(cx);
+        let snapshot = store.snapshot();
+        let focus = self.graph.as_ref().and_then(|graph| graph.read(cx).focused());
+        let current = request.accepts(self.open_generation, snapshot.route(), snapshot.key(), focus,
+            (self.visible || request.origin == OpenOrigin::Peek)
+                && snapshot.overlay().is_none() && snapshot.page_overlay().is_none())
+            && store.owner_serving() && self.resource_scene_owner(cx).is_some();
+        request.status_at(store.search(&request.query).query_preparation(), snapshot.key(), current)
+    }
+
     fn peek_action(
         &mut self,
         node: NodeId,
@@ -1102,7 +1138,7 @@ impl Map {
                 self.open(node, OpenView::Page, OpenOrigin::Peek, window, cx)
             }
             facet::graph::peek::Action::Focus => {
-                self.invalidate_open();
+                self.invalidate_open(cx);
                 self.error = None;
                 self.route_consumed = true;
                 if self.visible && is_graph(snapshot.route()) {
@@ -1150,7 +1186,7 @@ impl Map {
             return;
         }
         self.error = None;
-        self.invalidate_open();
+        self.invalidate_open(cx);
         self.publish_focus(cx);
         if let Some(resolved) = self.resolved.get(&node).cloned().or_else(|| {
             self.identities
@@ -1185,8 +1221,8 @@ impl Map {
             root: snapshot.key(),
             authority: snapshot.key().authority(),
         });
-        self.links.store.update(cx, |store, cx| {
-            store.ensure(PageKey::Search(query), cx);
+        self.query_interest = self.links.store.update(cx, |store, cx| {
+            store.observe_graph_query(query, cx)
         });
         self.resolve_open(window, cx);
         cx.notify();
@@ -1197,7 +1233,7 @@ impl Map {
             return;
         };
         if self.resource_scene_owner(cx).is_none() {
-            self.invalidate_open();
+            self.invalidate_open(cx);
             return;
         }
         let (snapshot, resource) = {
@@ -1215,7 +1251,7 @@ impl Map {
             focus,
             (self.visible || request.origin == OpenOrigin::Peek) && snapshot.overlay().is_none(),
         ) {
-            self.invalidate_open();
+            self.invalidate_open(cx);
             return;
         }
         let page = match open_value(&resource, request.root) {
@@ -1223,7 +1259,7 @@ impl Map {
             Ok(None) => return,
             Err(error) => {
                 self.error = Some(error);
-                self.pending = None;
+                self.finish_open(cx);
                 return;
             }
         };
@@ -1236,7 +1272,7 @@ impl Map {
         if page.next.is_some() && matches!(&resolution, Ok(_) | Err(MatchFailure::MissingIndex)) {
             let next = page.next.expect("guarded continuation");
             if request.continuations.contains(&next) {
-                self.pending = None;
+                self.finish_open(cx);
                 self.error = Some(
                     "The index repeated a search continuation without resolving this graph symbol."
                         .into(),
@@ -1253,14 +1289,14 @@ impl Map {
                 .store
                 .update(cx, |store, cx| store.load_more(&request.query, cx));
             if !issued {
-                self.pending = None;
+                self.finish_open(cx);
                 self.error = Some("The index cannot continue this graph symbol lookup.".into());
             }
             return;
         }
         match resolution {
             Ok(resolved) => {
-                self.pending = None;
+                self.finish_open(cx);
                 self.resolved.insert(request.node, resolved.clone());
                 // Re-read this same node after resize or camera motion. An
                 // offscreen/disappeared source supplies no morph anchor.
@@ -1275,7 +1311,7 @@ impl Map {
                 );
             }
             Err(error) => {
-                self.pending = None;
+                self.finish_open(cx);
                 self.error = Some(format!(
                     "{error}{}. Its page is unavailable.",
                     if page.next.is_some() {
@@ -1437,6 +1473,17 @@ struct OpenRequest {
 }
 
 impl OpenRequest {
+    fn status_at(&self, preparation: Option<crate::core::QueryPreparation>, root: VersionedRoot,
+        current: bool) -> Option<&'static str> {
+        if !current || self.authority != root.authority() || !self.root.same_authority(root) { return None; }
+        match preparation {
+            Some(preparation) if preparation.basis.matches(root.root())
+                && preparation.basis.matches(self.root.root()) => Some(preparation.words()),
+            Some(_) => None,
+            None => Some("Resolving this indexed symbol…"),
+        }
+    }
+
     fn accepts(
         &self,
         generation: u64,
@@ -1738,7 +1785,7 @@ impl Render for Map {
                         if map.pending.as_ref().is_some_and(|request| {
                             graph.read(cx).focused() != request.focus_at_open
                         }) {
-                            map.invalidate_open();
+                            map.invalidate_open(cx);
                         }
                         let focus = graph.read(cx).focused();
                         if map.semantic_focus != focus {
@@ -1840,7 +1887,9 @@ impl Render for Map {
         }
         let message = self.load_error.clone().or_else(|| self.error.clone()).unwrap_or_else(|| {
             if self.pending.is_some() {
-                "Resolving this indexed symbol…".into()
+                self.pending_status(cx).map_or_else(
+                    || "Earlier graph reading; this opening is no longer current.".into(),
+                    Into::into)
             } else {
                 self.coverage.as_ref().map_or_else(|| "Indexed graph".into(), |coverage| {
                     self.projection_origin.as_ref().map_or_else(|| "Indexed graph".into(), |origin| coverage.summary(origin))
@@ -1857,6 +1906,23 @@ impl Render for Map {
                 .child(crate::shell::kit::text(facet::tokens::ty::MONO_SMALL, &measure, cx.facet().palette().ink2)
                     .keyed("graph-projection-status").role(gpui::Role::Status).aria_label(message.clone()).child(message)))
         };
+        let root = if let Some((request, token)) = self.pending.as_ref().and_then(|request| {
+            let key = PageKey::Search(request.query.clone());
+            self.links.store.read(cx).preparation_token(&key).map(|token| (request.clone(), token))
+        }) {
+            let weak = cx.weak_entity();
+            root.child(div().absolute().bottom(px(40.0)).right(px(16.0))
+                .child(facet::controls::button::button("graph-check-preparation", "Check again", &measure)
+                    .on_click(move |_, cx| {
+                        let _ = weak.update(cx, |map, cx| {
+                            if !map.pending.as_ref().is_some_and(|pending| pending.generation == request.generation
+                                && pending.query == request.query && pending.root == request.root)
+                                || map.resource_scene_owner(cx).is_none() { return; }
+                            map.links.store.update(cx, |store, cx| store.check_preparation(
+                                PageKey::Search(request.query.clone()), &token, cx));
+                        });
+                    })))
+        } else { root };
         #[cfg(test)]
         if let Some(probe) = first_ready {
             let mounted_at_render = self.graph.is_some();
@@ -2077,11 +2143,44 @@ mod tests {
             authority: root.authority(),
         };
         assert!(request.accepts(5, &Route::World, root, Some(7), true));
+        let preparation = crate::core::QueryPreparation {
+            basis: root.root().into(),
+            state: backend_library::QueryPreparationState::Preparing,
+        };
+        assert_eq!(request.status_at(Some(preparation), root, true), Some(preparation.words()));
+        let retiring = crate::core::QueryPreparation {
+            state: backend_library::QueryPreparationState::Retiring, ..preparation
+        };
+        assert_eq!(request.status_at(Some(retiring), root, true), Some(retiring.words()));
+        assert_eq!(request.status_at(None, root, true), Some("Resolving this indexed symbol…"));
+        assert!(request.status_at(Some(preparation), root, false).is_none(),
+            "a retained graph must not claim that an unavailable owner is preparing");
+        assert!(request.status_at(None, root, false).is_none(),
+            "an invalid pending request cannot fall back to a resolving claim");
+        let foreign = crate::core::QueryPreparation {
+            basis: backend_library::view_state_root(&[("graph".to_owned(), "foreign preparation".to_owned())]).into(),
+            ..preparation
+        };
+        assert!(request.status_at(Some(foreign), root, true).is_none(),
+            "a stored marker cannot authorize status for another producer root");
+        assert!(request.status_at(Some(preparation), root.with_generation(2), true).is_none(),
+            "an old open request cannot advertise preparation in a successor authority");
+        assert!(request.status_at(None, root.with_generation(2), true).is_none());
+        // The request-root diagnostic also belongs to this open. Do not let
+        // a forged/stale field borrow otherwise matching current authority.
+        let foreign_request_basis = OpenRequest {
+            root: VersionedRoot::synthetic(backend_library::view_state_root(&[("graph".to_owned(), "foreign request".to_owned())]), 1),
+            ..request.clone()
+        };
+        assert!(foreign_request_basis.status_at(Some(preparation), root, true).is_none());
+        assert!(foreign_request_basis.status_at(None, root, true).is_none());
         let observed_root = VersionedRoot::from_revision(
             root.producer_epoch(),
             root.revision(),
             root.observation().saturating_add(1),
         );
+        assert_eq!(request.status_at(Some(preparation), observed_root, true), Some(preparation.words()),
+            "diagnostic observation metadata does not revoke the same preparation authority");
         assert!(
             request.accepts(5, &Route::World, observed_root, Some(7), true),
             "diagnostic observation changes do not stale a callback for the same authority"

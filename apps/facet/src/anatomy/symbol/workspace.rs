@@ -214,7 +214,7 @@ pub(super) fn workspace(env: &Env<'_>, uses: &Uses, ui: &Ui) -> AnyElement {
     let key = Key::of(Part::Sec(Sec::Uses));
     let section = div().id(key.id()).mt(env.s(env.lay.section)).flex().flex_col();
     if uses.all.is_empty() {
-        let words = uses.elsewhere.clone().unwrap_or_else(|| "Nothing in your workspace names it.".to_owned());
+        let words = uses.elsewhere.clone().unwrap_or_else(|| uses.evidence.notice());
         return section.child(head(env, Sec::Uses, "In your workspace", None, None)).child(wrapped(env, &key.field(Slot::None), words, roles::BODY, i.ink3)).into_any_element();
     }
     let shown = visible(uses, ui);
@@ -270,6 +270,7 @@ pub(super) fn workspace(env: &Env<'_>, uses: &Uses, ui: &Ui) -> AnyElement {
         list = list.child(wrapped(env, &key.field(Slot::Empty), "No place matches.", roles::BODY, i.ink3));
     }
     let mut out = section.child(head(env, Sec::Uses, "In your workspace", Some(places), aside)).child(filters(env, uses, ui)).child(list);
+    out = out.child(div().mt(env.k(10.0)).child(wrapped(env, &key.field(Slot::Note), uses.evidence.notice(), roles::ASIDE, i.ink3)));
     if uses.all.iter().any(|u| u.approx) {
         out = out.child(div().mt(env.k(10.0)).child(wrapped(env, &key.field(Slot::Foot), "Places marked lighter are matched by name in the files that import it, not resolved.", roles::ASIDE, i.ink3)));
     }

@@ -6,6 +6,7 @@ use std::cell::Cell;
 type TestResult<T = ()> = Result<T, &'static str>;
 
 struct Fixture {
+    icon: bool,
     current: Rc<Cell<bool>>,
     calls: Rc<Cell<usize>>,
     owned_focus: FocusHandle,
@@ -16,15 +17,24 @@ impl Render for Fixture {
         let measure = Measure::new(px(480.), &cx.facet());
         let current = self.current.clone();
         let calls = self.calls.clone();
+        let admission: ActivationAdmission = Rc::new(move |_| current.get());
+        let activate = move |_: &mut Window, _: &mut App| calls.set(calls.get() + 1);
+        let control = if self.icon {
+            crate::controls::icon_button("current-source-control", crate::icons::Icon::SideL, "Open source", &measure)
+                .when_current(admission)
+                .on_click(activate)
+                .into_any_element()
+        } else {
+            button("current-source-control", "Open source", &measure)
+                .focus_handle(self.owned_focus.clone())
+                .when_current(admission)
+                .on_click(activate)
+                .into_any_element()
+        };
         div()
             .flex()
             .flex_col()
-            .child(
-                button("current-source-control", "Open source", &measure)
-                    .focus_handle(self.owned_focus.clone())
-                    .when_current(Rc::new(move |_| current.get()))
-                    .on_click(move |_, _| calls.set(calls.get() + 1)),
-            )
+            .child(control)
             .child(
                 div()
                     .id("current-reader-focus")
@@ -60,12 +70,21 @@ fn click_ax(cx: &mut VisualTestContext, node: gpui::accesskit::NodeId) {
 fn stale_live_guard_denies_pointer_focus_and_ax_before_redraw_but_current_owner_activates(
     cx: &mut TestAppContext,
 ) {
-    let result = check_stale_live_guard_denies_pointer_focus_and_ax_before_redraw_but_current_owner_activates(cx);
+    let result = check_stale_live_guard_denies_pointer_focus_and_ax_before_redraw_but_current_owner_activates(cx, false);
+    assert!(result.is_ok(), "fixture failed: {result:?}");
+}
+
+#[gpui::test]
+fn stale_icon_guard_denies_pointer_focus_and_ax_before_redraw_but_current_owner_activates(
+    cx: &mut TestAppContext,
+) {
+    let result = check_stale_live_guard_denies_pointer_focus_and_ax_before_redraw_but_current_owner_activates(cx, true);
     assert!(result.is_ok(), "fixture failed: {result:?}");
 }
 
 fn check_stale_live_guard_denies_pointer_focus_and_ax_before_redraw_but_current_owner_activates(
     cx: &mut TestAppContext,
+    icon: bool,
 ) -> TestResult {
     cx.update(|cx| {
         gpui_component::init(cx);
@@ -83,6 +102,7 @@ fn check_stale_live_guard_denies_pointer_focus_and_ax_before_redraw_but_current_
     let (fixture, cx) = cx.add_window_view(|window, cx| {
         window.set_a11y_forced(true);
         Fixture {
+            icon,
             current: current.clone(),
             calls: calls.clone(),
             owned_focus: cx.focus_handle(),
@@ -132,10 +152,12 @@ fn check_stale_live_guard_denies_pointer_focus_and_ax_before_redraw_but_current_
     current.set(true);
     cx.simulate_click(at, gpui::Modifiers::none());
     assert_eq!(calls.get(), 1);
-    assert!(
-        cx.update(|window, _| owned_focus.is_focused(window)),
-        "fresh pointer retains native automatic focus"
-    );
+    if !icon {
+        assert!(cx.update(|window, _| owned_focus.is_focused(window)),
+            "fresh pointer retains native automatic focus");
+    }
+    assert!(!cx.update(|window, _| reader_focus.is_focused(window)),
+        "fresh pointer takes focus onto its native control");
     draw(cx);
     click_ax(cx, node);
     assert_eq!(calls.get(), 2, "fresh native AX activates once");

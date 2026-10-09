@@ -15,14 +15,14 @@
 
 use super::state::{DisplayEvidence, display_evidence, earlier_notice, not_ready};
 use super::{Ctx, Leaf};
-use crate::model::pages::{DocFragment, PackageRef, PageKey, SymbolPage, SymbolRef};
+use crate::model::pages::{PackageRef, PageKey, SymbolPage, SymbolRef};
 use crate::navigation::{Route, SymbolRoute};
 use crate::shell::kit::{HoverIntent, shared_id, text};
 use crate::shell::reader::Reader;
 use facet::anatomy::symbol::{Chrome, View};
 use facet::tokens::scale;
 use gpui::{
-    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div,
+    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString, StatefulInteractiveElement, Styled, div,
     px,
 };
 
@@ -34,6 +34,8 @@ mod hop_tests;
 mod host;
 #[cfg(test)]
 mod page_tests;
+#[cfg(all(test, feature = "visual-harness"))]
+pub(crate) use page_tests::fastapi_unavailable_capture;
 mod place;
 mod uses;
 
@@ -59,14 +61,10 @@ pub(super) fn body(
     let evidence = display_evidence(&resource, root, serving, |page| {
         page_matches_symbol(page, &symbol, expected_package.as_ref())
     });
-    let page = match &evidence {
-        DisplayEvidence::Current(page) => (**page).clone(),
+    let (page, retained_notice) = match &evidence {
+        DisplayEvidence::Current(page) => ((**page).clone(), None),
         DisplayEvidence::Earlier { value, .. } => {
-            return retained_symbol_page(
-                value,
-                &earlier_notice(&evidence).unwrap_or_default(),
-                ctx,
-            );
+            ((**value).clone(), earlier_notice(&evidence))
         }
         DisplayEvidence::Missing(other) => {
             return not_ready(other, &PageKey::Symbol(symbol), &name, ctx, cx);
@@ -79,21 +77,26 @@ pub(super) fn body(
             ))];
         }
     };
+    let current = matches!(&evidence, DisplayEvidence::Current(_));
     let package = route.package.as_str().to_owned();
-    let companions = companions::gather(&companions::of(&page), ctx.links, ctx.active, cx);
-    let root = ctx.links.snapshot(cx).key();
-    let (history, history_note) = history_of(
-        &package,
-        &page,
-        route.at.as_ref().map(|at| at.as_str()),
-        root,
-        cx,
-    );
+    let companions = if current {
+        companions::gather(&companions::of(&page), ctx.links, ctx.auxiliary_reads_active, cx)
+    } else {
+        if ctx.active { companions::suspend(ctx.links, cx); }
+        // Names on this exact page remain facts. Earlier companion pages do
+        // not become evidence for it, and this presentation requests none.
+        companions::of(&page).into_iter().map(|decl| (decl, None)).collect()
+    };
+    let (history, history_note) = if current {
+        history_of(&package, &page, route.at.as_ref().map(|at| at.as_str()), root, cx)
+    } else {
+        (facet::anatomy::history::History::default(), None)
+    };
     let facts = facts::facts(&page, &package, &companions, &history);
     let view = facet::anatomy::symbol::compile(&facts);
     // What your packages do with it: the lines the page carries, read.
-    let workspace = facet::anatomy::symbol::derive::uses::read_all(
-        &uses::sites(&page),
+    let workspace = uses::workspace(
+        &page,
         &facet::anatomy::symbol::derive::uses::Reader::of(&view),
     );
     let view = facet::anatomy::symbol::with_uses(view, &workspace);
@@ -111,7 +114,8 @@ pub(super) fn body(
         symbol: symbol.clone(),
         links: ctx.links.clone(),
         targets: ctx.targets,
-        active: ctx.active,
+        active: current && ctx.active,
+        read_only: !current,
         from: ctx.arrived_from.clone(),
         disclosure,
         reader: cx.weak_entity(),
@@ -127,10 +131,11 @@ pub(super) fn body(
         &facts.name,
         facts.owner.as_deref(),
         lay.main,
+        current && ctx.active,
         ctx,
         cx,
     );
-    let gem = gem(&page, &view, ctx);
+    let gem = gem(&page, &view, current && ctx.active, ctx);
     let element = facet::anatomy::symbol::page(
         &view,
         &workspace,
@@ -143,54 +148,32 @@ pub(super) fn body(
     for said in host.take_said() {
         ctx.say(said);
     }
-    let mut leaves = vec![Leaf::new(div().id("symbol-page").child(element))];
+    let mut leaves = Vec::new();
+    let element = if let Some(notice) = retained_notice {
+        let banner = ctx.say("Earlier reading · read-only".to_owned());
+        leaves.push(Leaf::new(
+            text(facet::tokens::ty::SMALL, &ctx.measure, ctx.palette.ink2)
+                .keyed("retained-symbol-status")
+                .role(gpui::Role::Status)
+                .aria_label(SharedString::from(notice))
+                .child(banner),
+        ));
+        gpui::inert("retained-symbol-page", "Earlier reading: declaration actions are unavailable", element)
+            .into_any_element()
+    } else {
+        element
+    };
+    leaves.push(Leaf::new(div().id("symbol-page").child(element)));
     if let Some(note) = history_note {
         let note = ctx.say(note.to_string());
         leaves.push(Leaf::new(
             text(facet::tokens::ty::SMALL, &ctx.measure, ctx.palette.ink2).child(note),
         ));
     }
-    if let Some(section) = upgrade(route, ctx, cx) {
+    if current && let Some(section) = upgrade(route, ctx, cx) {
         leaves.push(Leaf::new(section));
     }
     leaves
-}
-
-fn retained_symbol_page(page: &SymbolPage, notice: &str, ctx: &mut Ctx<'_>) -> Vec<Leaf> {
-    let mut lines = vec![
-        notice.to_owned(),
-        page.identity.coordinate.as_str().to_owned(),
-    ];
-    if let Some(signature) = page.signature.known() {
-        lines.push(signature.text.to_string());
-    }
-    let docs = DocFragment::plain_text(&page.docs);
-    if !docs.is_empty() {
-        lines.push(docs);
-    }
-    if let Some(excerpt) = page.site.excerpt.known() {
-        lines.push(excerpt.text.to_string());
-    }
-    lines
-        .into_iter()
-        .enumerate()
-        .map(|(index, line)| {
-            let words = ctx.say(line);
-            Leaf::new(
-                super::super::kit::quiet(words.clone(), &ctx.measure, ctx.palette)
-                    .keyed(SharedString::from(format!(
-                        "retained-symbol:{}:{index}",
-                        page.identity.coordinate.as_str()
-                    )))
-                    .role(if index == 0 {
-                        gpui::Role::Status
-                    } else {
-                        gpui::Role::Label
-                    })
-                    .aria_label(words),
-            )
-        })
-        .collect()
 }
 
 fn page_matches_symbol(
@@ -225,13 +208,13 @@ mod display_identity_tests {
 
 /// The mark, shared by the declaration's address so the row, the page and
 /// the graph node are one mark: the kind's mark, the family's hue.
-fn gem(page: &SymbolPage, view: &View, ctx: &Ctx<'_>) -> AnyElement {
+fn gem(page: &SymbolPage, view: &View, active: bool, ctx: &Ctx<'_>) -> AnyElement {
     let key = crate::shell::kit::shared_key(&page.identity.coordinate);
     let mark = facet::anatomy::symbol::gem(view, &ctx.measure, ctx.palette);
     div()
         .id(shared_id(&page.identity.coordinate))
         .debug_selector(move || key)
-        .child(if ctx.active {
+        .child(if active {
             facet::motion::shared::shared(shared_id(&page.identity.coordinate), mark)
                 .timing(
                     std::time::Duration::from_millis(460),
@@ -296,6 +279,7 @@ fn title(
     name: &str,
     owner: Option<&str>,
     room: gpui::Pixels,
+    active: bool,
     ctx: &mut Ctx<'_>,
     cx: &gpui::App,
 ) -> AnyElement {
@@ -343,7 +327,7 @@ fn title(
         row.child(crate::shell::text_fit::name_lines(&lines, role, ink0))
     };
     let key = crate::shell::kit::shared_key(&page.identity.coordinate);
-    let content = if ctx.active {
+    let content = if active {
         facet::motion::shared::shared_with(
             facet::anatomy::page::title_key(page.identity.coordinate.as_str()),
             move |morph| {
@@ -375,6 +359,8 @@ fn title(
     };
     div()
         .id("page-title")
+        .role(gpui::Role::Heading)
+        .aria_label(name)
         .debug_selector(move || format!("page-title:{key}"))
         .child(content)
         .into_any_element()

@@ -148,6 +148,8 @@ pub struct Actions {
     pub refine: Rc<dyn Fn(SharedString, &mut App)>,
     /// Retries the exact failed current route; absent when the owner cannot serve it.
     pub retry: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
+    /// Checks the same still-awaiting preparation; never grants result actions.
+    pub check_again: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
     pub symbol_routability: Rc<dyn Fn(&SharedString) -> Routability>,
     pub open_symbol: Rc<dyn Fn(SharedString, &mut Window, &mut App)>,
     pub open_code: Rc<dyn Fn(SharedString, &mut Window, &mut App)>,
@@ -539,8 +541,19 @@ impl RenderOnce for Find {
         }
         if matches!(admission, Admission::Failed(_)) && let Some(retry) = &self.actions.retry {
             let retry = retry.clone();
-            page = page.child(button(child(&self.id, "retry"), "Retry current Find query", &m).primary().disabled(!self.active)
-                .on_click(move |window, cx| retry(window, cx)));
+            page = page.child(
+                div().flex().items_center().flex_wrap().child(
+                    button(child(&self.id, "retry"), "Retry current Find query", &m)
+                        .primary()
+                        .disabled(!self.active)
+                        .on_click(move |window, cx| retry(window, cx)),
+                ),
+            );
+        }
+        if matches!(admission, Admission::Retained(_)) && let Some(check) = &self.actions.check_again {
+            let check = check.clone();
+            page = page.child(button(child(&self.id, "check-preparation"), "Check again", &m)
+                .disabled(!self.active).on_click(move |window, cx| check(window, cx)));
         }
         if !state.read(cx).held.packages().is_empty() {
             page = page.child(held_tray(&child(&self.id, "held-tray"), &state, &self.actions, admission.allows_actions(), &m, cx));

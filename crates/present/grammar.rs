@@ -606,7 +606,7 @@ pub const GRAMMARS: [CommandGrammar; 53] = [
             "Exact declaration coordinate whose uses are requested.",
         )],
         options: &[],
-        when: "Use to answer where is this symbol used: every row carries the relation kind, the authority class, and the exact source span that proves the use.",
+        when: "Use to read reported uses of a symbol: every row carries its relation kind, authority class, and exact source span. The bounded reply does not establish complete reference coverage, and zero rows do not prove no uses.",
     },
     CommandGrammar {
         name: "read",

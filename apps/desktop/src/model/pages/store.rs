@@ -82,6 +82,8 @@ impl PageValue {
 /// Why a read produced no value.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReadFailure {
+    /// Immediate typed refusal: the owner has one preparation worker for this basis.
+    QueryPreparation(crate::core::QueryPreparation),
     /// The producer does not provide this resource.
     Unavailable(UnavailableReason, Arc<str>),
     /// The read failed with a typed, bounded fault.
@@ -366,7 +368,7 @@ impl<K: Ord + Clone, T> Slots<K, T> {
         } else {
             previous
         };
-        slot.resource = previous.mark_error(fault.code(), fault.message());
+        slot.resource = previous.mark_fault(fault);
         slot.revision = slot.revision.next();
         true
     }
@@ -452,6 +454,15 @@ impl<K: Ord + Clone, T> Slots<K, T> {
         if running != generation {
             return Landing::Superseded;
         }
+        // Even a current generation cannot admit a preparation response for
+        // another immutable basis. End this fetch as a real protocol fault.
+        let result = match result {
+            Err(ReadFailure::QueryPreparation(preparation)) if !slot.asked_at.is_some_and(|root| preparation.basis.matches(root.root())) => {
+                Err(ReadFailure::Fault(ErrorValue::new(crate::core::FaultCode::Protocol,
+                    "query preparation replied for a different basis")))
+            }
+            result => result,
+        };
         slot.fetch = Fetch::Idle;
         let root = slot.asked_at;
         if manner == Manner::Quiet {
@@ -492,9 +503,8 @@ impl<K: Ord + Clone, T> Slots<K, T> {
             (Err(ReadFailure::Unavailable(reason, _detail)), _) => {
                 previous.mark_unavailable(reason)
             }
-            (Err(ReadFailure::Fault(error)), _) => {
-                previous.mark_error(error.code(), error.message().to_owned())
-            }
+            (Err(ReadFailure::Fault(error)), _) => previous.mark_fault(error),
+            (Err(ReadFailure::QueryPreparation(preparation)), _) => previous.awaiting_query(preparation),
             (Err(ReadFailure::Cancelled), _) => {
                 // A cancelled fetch leaves the slot as it was before the
                 // fetch began; the next ensure asks again.
@@ -1000,6 +1010,14 @@ impl PageStore {
         generation: Generation,
         result: Result<PageValue, ReadFailure>,
     ) -> Landing {
+        let result = match result {
+            Err(ReadFailure::QueryPreparation(_)) if !matches!(key,
+                PageKey::Search(_) | PageKey::Browse(crate::model::browse::BrowseKey::Find(_))) => {
+                Err(ReadFailure::Fault(ErrorValue::new(crate::core::FaultCode::Protocol,
+                    "query preparation is not admitted for this page read")))
+            }
+            result => result,
+        };
         match key {
             PageKey::Symbol(symbol) => self.symbols.land(symbol, generation, take(result, PageValue::symbol), replace),
             PageKey::Source(symbol) => self.sources.land(symbol, generation, take(result, PageValue::source), replace),
@@ -1129,6 +1147,12 @@ impl PageStore {
         self.packages.get(package)
     }
 
+    /// Borrows cached package resources once; callers must admit each exact
+    /// current root/owner before deriving actions. No worker reads are started.
+    pub(crate) fn package_resources(&self) -> impl Iterator<Item = (&PackageRef, &Resource<PackageDossier>)> {
+        self.packages.map.iter().map(|(package, slot)| (package, &slot.resource))
+    }
+
     /// Returns the search results resource.
     #[must_use]
     pub fn search(&self, query: &SearchQuery) -> Resource<SearchPage> {
@@ -1185,6 +1209,10 @@ impl PageStore {
             PageKey::Health => self.health.get(&()).activity(),
             PageKey::Browse(browse) => self.browse.get(browse).activity(),
         }
+    }
+
+    pub fn query_preparation(&self, key: &PageKey) -> Option<crate::core::QueryPreparation> {
+        dispatch_ref!(self, key, |slots, k| slots.get(k).query_preparation())
     }
 }
 

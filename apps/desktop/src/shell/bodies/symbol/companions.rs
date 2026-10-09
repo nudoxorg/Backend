@@ -60,22 +60,29 @@ pub(super) fn gather(companions: &[DeclRef], links: &Links, active: bool, cx: &m
         .collect()
 }
 
+/// A visible earlier primary page cannot keep an auxiliary renewal watcher.
+pub(super) fn suspend(links: &Links, cx: &mut Context<Reader>) {
+    let reader = cx.entity_id();
+    let route = links.snapshot(cx).route().clone();
+    if cx.try_global::<Watching>().and_then(|watching| watching.readers.get(&reader))
+        .is_some_and(|(visit, _, _)| visit == &route)
+    {
+        cx.global_mut::<Watching>().readers.remove(&reader);
+    }
+}
+
 fn watch(keys: &[PageKey], links: &Links, cx: &mut Context<Reader>) {
     let reader = cx.entity_id();
     let route = links.snapshot(cx).route().clone();
     let same = cx.try_global::<Watching>().and_then(|watching| watching.readers.get(&reader)).is_some_and(|(visit, watched, _)| visit == &route && watched == keys);
     if same {
-        // A covered page may have been invalidated while its observer was
-        // inactive. Visiting it again renews only its visible companions.
-        let revoked = {
-            let store = links.store.read(cx);
-            keys.iter().filter(|key| store.observation_revoked(key)).cloned().collect::<Vec<_>>()
-        };
-        if !revoked.is_empty() {
-            links.store.update(cx, |store, cx| {
-                for key in revoked { store.ensure(key, cx); }
-            });
-        }
+        // A root advance can cancel an auxiliary read without revoking its
+        // empty slot. The current primary page still owns these exact keys.
+        // The shared admission boundary keeps current values and terminal
+        // failures idle and renews cancelled/older-basis reads only once.
+        links.store.update(cx, |store, cx| {
+            for key in keys { store.ensure(key.clone(), cx); }
+        });
         return;
     }
     if keys.is_empty() {

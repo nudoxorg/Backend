@@ -119,6 +119,7 @@ mod tests {
     fn page_at(root: VersionedRoot, package: &str, rows: Vec<DeclRef>, complete: bool) -> Resource<PackageDossier> {
         fn unknown<T>() -> Known<T> { Known::unknown(crate::model::pages::GapReason::NotCaptured, "test") }
         Resource::loaded_at(PackageDossier {
+            project_tree: crate::model::project_browse::ProjectTreeCapability::Unestablished,
             package: PackageRef::parse(package).expect("package"),
             record: unknown(),
             versions: unknown(),

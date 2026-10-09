@@ -391,7 +391,7 @@ fn real_lockfile_display_only_tree_paints_without_minting_source_or_readme_contr
         &endpoint,
         LocalProjectId::from_path(&project).expect("exact project"),
     );
-    let mut rig = crate::shell::tests::rig_with_engine(cx, None, 1440.0, 900.0, pool, engine);
+    let mut rig = crate::shell::tests::rig_with_owner_reads(cx, None, 1440.0, 900.0, pool, engine);
     rig.patience = Duration::from_secs(120);
     rig.cx.update(|window, cx| {
         window.set_a11y_forced(true);
@@ -459,6 +459,29 @@ fn find_invalid_input_is_distinct_from_blank_and_missing_package_is_unavailable(
     assert!(matches!(unresolved, Routability::Unavailable(_)),
         "an unqualified declaration cannot produce an admitted package destination");
     assert_eq!(super::symbol_routability(&"/fixture/app::app.rs:1::main".into()), Routability::Available);
+}
+
+#[test]
+fn indexed_declaration_destinations_require_a_portable_qualified_package_namespace() {
+    use crate::model::pages::{PackageRef, SymbolRef};
+    use crate::shell::kit::indexed_result_route;
+    use crate::navigation::View;
+    for root in ["/fixture/app", r"C:\code\app", "C:/code/app", r"\\?\C:\code\app", "pkg:cargo/app@1.2.3"] {
+        let package = PackageRef::parse(root).expect("qualified package namespace");
+        let symbol = SymbolRef::new(&format!("{root}::src/lib.rs:1::main")).expect("qualified declaration");
+        assert!(indexed_result_route(&package, &symbol, View::Page).is_some(), "{root}");
+        assert!(indexed_result_route(&package, &symbol, View::Code).is_some(), "{root}");
+        let foreign = PackageRef::parse("/other/app").expect("other namespace");
+        assert!(indexed_result_route(&foreign, &symbol, View::Page).is_none(), "exact package binding: {root}");
+    }
+    for root in ["unqualified", "relative/app", "C:relative", "./app", r"\\server", r"\\server\", r"\\server\\share", r"\\\share", r"\\server\..\app", r"\\server\share\app", "//server/share/app", "C:/../app", "/fixture/../app", "C:/", "C:/bad:part", "C:/bad.", "C:/bad ", r"\\?\UNC\server\share\app"] {
+        let package = PackageRef::parse(root).expect("local display label remains valid");
+        let symbol = SymbolRef::new(&format!("{root}::Thing")).expect("display coordinate");
+        assert!(indexed_result_route(&package, &symbol, View::Page).is_none(), "{root}");
+        assert!(indexed_result_route(&package, &symbol, View::Code).is_none(), "{root}");
+        let package_row = SymbolRef::new(package.as_str()).expect("canonical package row");
+        assert!(indexed_result_route(&package, &package_row, View::Page).is_some(), "label package page: {root}");
+    }
 }
 
 fn find_fixture(query: &str, includes_answer: bool) -> BrowseValue {
@@ -998,7 +1021,13 @@ fn mounted_compare_native_choices_survive_back_forward_without_reusing_visit_act
     let selection = compare_selection();
     let route = Route::Orbit(OrbitRoute::Browse(BrowseRoute::Compare(selection.clone())));
     let mut rig = rig(cx, Some(route.clone()), 1440.0, 1400.0);
-    rig.cx.update(|window, cx| { window.set_a11y_forced(true); facet::probe::enable(cx); });
+    rig.cx.update(|window, cx| { window.set_a11y_forced(true); cx.set_global(gpui::TextTrace); facet::probe::enable(cx); });
+    let native_words = |rig: &mut crate::shell::tests::Rig, expected: &str| {
+        rig.cx.update(|window, _| {
+            window.painted_texts().iter().any(|words| words.text.as_ref() == expected)
+                && window.debug_a11y_tree_json().is_some_and(|tree| tree.contains(expected))
+        })
+    };
     land_compare(&mut rig, &selection, true, true);
     rig.settle();
     for suffix in ["scope-1", "facts-toggle"] {
@@ -1014,7 +1043,8 @@ fn mounted_compare_native_choices_survive_back_forward_without_reusing_visit_act
     let ReadingPresentation::Compare { comparison, .. } = &before.presentation else { panic!("Compare visit") };
     assert_eq!(comparison.scope, Some(facet::browse::compare::Scope::Shared));
     assert!(comparison.facts, "actual native facts toggle changes visit intent");
-    assert!(rig.said().iter().any(|words| words == "License as declared"),
+    crate::shell::tests::native_boundary_evidence(&mut rig, "compare-expanded-facts");
+    assert!(native_words(&mut rig, "License as declared"),
         "expanded facts paint an actual field supplied by the typed package record");
     rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Home)));
     rig.keys("secondary-[");
@@ -1022,11 +1052,11 @@ fn mounted_compare_native_choices_survive_back_forward_without_reusing_visit_act
     let restored = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
     assert_eq!(restored.id, before.id);
     assert_eq!(restored.presentation, before.presentation);
-    assert!(rig.said().iter().any(|words| words == "Hide package facts"), "Back remounts expanded native facts panel");
+    assert!(native_words(&mut rig, "Hide package facts"), "Back remounts expanded native facts panel");
     rig.keys("secondary-]");
     assert_eq!(rig.route(), Route::Orbit(OrbitRoute::Home));
     rig.keys("secondary-[");
-    assert!(rig.said().iter().any(|words| words == "Hide package facts"));
+    assert!(native_words(&mut rig, "Hide package facts"));
 }
 
 #[gpui::test]

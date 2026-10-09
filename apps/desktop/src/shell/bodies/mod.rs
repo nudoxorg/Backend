@@ -22,6 +22,8 @@ mod source;
 pub(crate) use source::paging::PagingState;
 mod state;
 mod symbol;
+#[cfg(all(test, feature = "visual-harness"))]
+pub(super) use symbol::fastapi_unavailable_capture;
 
 use gpui::Window;
 
@@ -86,6 +88,9 @@ pub(crate) struct Ctx<'a> {
     pub reader: WeakEntity<Reader>,
     /// Only the current page publishes shared motion endpoints.
     pub active: bool,
+    /// The sampled page is visible, including a readable Ask preview. Hidden
+    /// sheets and departure plates keep cached bytes without renewing reads.
+    pub auxiliary_reads_active: bool,
     /// The current page may claim native input only after its own transition
     /// and the shell's sampled Ask presentation have both released it.
     pub native_input_active: bool,

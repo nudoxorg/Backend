@@ -5,7 +5,7 @@ use super::{Ctx, Leaf};
 use crate::shell::kit::{quiet, text};
 use facet::tokens::ty;
 use facet::Space;
-use gpui::{ParentElement, Styled, div};
+use gpui::{InteractiveElement, ParentElement, StatefulInteractiveElement, Styled, div};
 
 pub(super) fn body(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
     let measure = ctx.measure;
@@ -17,7 +17,13 @@ pub(super) fn body(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
             .flex()
             .flex_col()
             .gap(measure.space(Space::Roomy))
-            .child(text(ty::DISPLAY, &measure, palette.ink0).child(title))
-            .child(quiet(line, &measure, palette)),
+            .child(div().id("inbox-heading")
+                .role(gpui::Role::Heading)
+                .aria_label(title.clone())
+                .aria_level(1)
+                .child(text(ty::DISPLAY, &measure, palette.ink0).child(title)))
+            .child(quiet(line.clone(), &measure, palette)
+                .role(gpui::Role::Label)
+                .aria_label(line)),
     )]
 }

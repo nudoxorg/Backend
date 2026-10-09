@@ -807,3 +807,39 @@ fn actual_watcher_replaces_changed_seeded_quiet_faults_and_keeps_identical_failu
     });
     drop(subscription);
 }
+
+
+#[test]
+fn owner_failure_projection_retains_full_detail_and_terminal_cause_after_long_unicode_context() {
+    let terminal = "caused by: publication journal root cause 日本語 sentinel";
+    let detail = format!("open compiler owner: {}\n{terminal}\0", "intermediate 原因\t".repeat(90));
+    assert!(detail.len() > 512);
+    assert!(detail.len() < backend_library::MAX_PRODUCT_TEXT_BYTES);
+    let fault = OwnerFault::Host(Arc::from(detail.clone()));
+    let value = owner_failure_value(&fault);
+    let sanitized: String = detail.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    assert_eq!(value.code(), FaultCode::Transport);
+    assert_eq!(value.diagnostic_detail(), Some(sanitized.as_str()));
+    assert!(!value.diagnostic_was_truncated());
+    assert!(value.message().starts_with("The index could not start. open compiler owner:"));
+    assert!(value.message().contains("[shortened]"));
+    assert!(value.message().contains(terminal));
+    assert!(value.message().len() <= 512);
+    assert!(value.message().chars().all(|c| !c.is_control()));
+    assert!(value.diagnostic_detail().unwrap().chars().all(|c| !c.is_control()));
+}
+
+#[test]
+fn oversized_owner_diagnostic_is_explicitly_bounded_at_both_ends() {
+    let terminal = "caused by: deepest retained terminal reason";
+    let fault = OwnerFault::Host(Arc::from(format!("open compiler owner: {}{terminal}", "原因".repeat(2_000))));
+    let value = owner_failure_value(&fault);
+    let detail = value.diagnostic_detail().expect("typed retained diagnostic");
+    assert!(value.diagnostic_was_truncated());
+    assert!(detail.len() <= backend_library::MAX_PRODUCT_TEXT_BYTES);
+    assert!(detail.starts_with("open compiler owner: "));
+    assert!(detail.ends_with(terminal));
+    assert!(detail.contains("[shortened]"));
+    assert!(value.message().len() <= 512);
+    assert!(value.message().ends_with(terminal));
+}

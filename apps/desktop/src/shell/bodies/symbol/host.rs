@@ -27,6 +27,8 @@ pub(super) struct ShellHost<'a> {
     pub links: Links,
     pub targets: &'a Targets,
     pub active: bool,
+    /// Earlier exact content keeps its layout without navigation or peeks.
+    pub read_only: bool,
     /// The declaration this page was reached from (a hop forward), ringed.
     pub from: Option<SymbolRef>,
     pub disclosure: SymbolDisclosure,
@@ -66,6 +68,7 @@ impl ShellHost<'_> {
 
 impl Doors for ShellHost<'_> {
     fn door(&self, link: &str) -> Option<Door> {
+        if self.read_only { return None; }
         let target = SymbolRef::new(link).ok()?;
         // A door to the page you are on is no door (and must not carry this
         // page's title key a second time).
@@ -142,6 +145,7 @@ impl Doors for ShellHost<'_> {
     }
 
     fn up(&self) -> Option<Rc<dyn Fn(&mut gpui::Window, &mut gpui::App)>> {
+        if self.read_only { return None; }
         Some(self.navigate(Intent::ZoomOut))
     }
 
@@ -199,6 +203,7 @@ impl Host for ShellHost<'_> {
     }
 
     fn lookup(&self, target: &str) -> Option<Act> {
+        if self.read_only { return None; }
         match self.docs.resolve(target)? {
             DocDestination::Declaration(symbol) => {
                 Some(self.navigate(Intent::Navigate(symbol_route(&self.package, &symbol)?)))

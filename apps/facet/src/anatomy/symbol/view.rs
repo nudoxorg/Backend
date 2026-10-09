@@ -152,6 +152,36 @@ impl Origin {
     }
 }
 
+/// The origins of the types actually shown on this page. Language names do
+/// not establish whether a particular declaration has written annotations.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum TypeEvidence {
+    /// No displayed type established an origin.
+    #[default]
+    NotShown,
+    /// Every shown type is written in its declaration.
+    Declared,
+    /// Every shown type came from documentation.
+    Docs,
+    /// Every shown type came from surrounding code.
+    Code,
+    /// More than one origin is represented; each type keeps its own origin.
+    Mixed,
+}
+
+impl TypeEvidence {
+    /// Explains only origins that need the same dotted mark as their types.
+    #[must_use]
+    pub const fn explanation(self) -> Option<&'static str> {
+        match self {
+            Self::NotShown | Self::Declared => None,
+            Self::Docs => Some("The shown types are read from its docs; a dotted underline marks each one."),
+            Self::Code => Some("The shown types are read from its code; a dotted underline marks each one."),
+            Self::Mixed => Some("Some shown types are read from its docs or its code; a dotted underline marks those. Written annotations remain declared."),
+        }
+    }
+}
+
 /// A type: the plain word first, what is written after it, quieter.
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub struct Ty {
@@ -741,8 +771,8 @@ pub struct Rail {
     pub releases: Vec<Release>,
     /// What changed between them, in words, when the page can say.
     pub across: Option<String>,
-    /// How we know its types, for an untyped language.
-    pub how: Option<String>,
+    /// Origins of the actual displayed types, shared with their underline law.
+    pub type_evidence: TypeEvidence,
 }
 
 /// The header.
@@ -905,12 +935,43 @@ pub struct Fill {
     pub places: usize,
 }
 
-/// Every place the workspace names the symbol, with what is derived from
-/// them.
+/// What was actually observed when reading references. The current bounded
+/// References reply has no completeness contract, so an empty reply cannot
+/// represent a proof that a declaration has no users.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum UseEvidence {
+    /// No reference observation has been supplied.
+    #[default]
+    NotRead,
+    /// The authority could not serve the reference read.
+    Unavailable,
+    /// Recorded sites and how many yielded readable local source lines.
+    Reported { reported: usize, readable: usize },
+}
+
+impl UseEvidence {
+    /// Shared by the workspace body and package rail, including empty lists.
+    #[must_use]
+    pub fn notice(self) -> String {
+        match self {
+            Self::NotRead => "Reference information has not been read.".into(),
+            Self::Unavailable => "Reference information is unavailable.".into(),
+            Self::Reported { reported: 0, .. } => "No use sites were reported; reference coverage has not been established.".into(),
+            Self::Reported { reported, readable } if readable < reported => format!(
+                "Showing {readable} readable local use sites from {reported} reported references; reference coverage has not been established."),
+            Self::Reported { .. } => "Reference coverage has not been established.".into(),
+        }
+    }
+}
+
+/// Every recorded place the workspace names the symbol, with what is derived
+/// from the readable lines; this list alone makes no completeness claim.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Uses {
     /// The places, in the order the index gave them.
     pub all: Vec<Use>,
+    /// Availability of the source reference observation, preserved even at zero.
+    pub evidence: UseEvidence,
     /// The workspace has no source in the symbol's language: what the places are.
     pub elsewhere: Option<String>,
 }

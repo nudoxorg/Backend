@@ -16,7 +16,7 @@ use crate::model::pages::{
     LanguageProgress, LineSpan, MatchReason, Member, Members, MembersCoverage, MethodGroup,
     NameLinkCoverage, OrbitModel, OrbitProject, OutlineNode, OutlinePosition, OutlineTree,
     PackageDossier, PackageRecord, PackageRef, Provenance, Readiness, ReadmeExactKind,
-    ReadmeExactTarget, ReadmeExactTargets, Receiver, RecordSource, ReferenceScope, ReferenceSite,
+    ReadmeExactTarget, ReadmeExactTargets, Receiver, RecordSource, ReferenceObservation, ReferenceScope, ReferenceSite,
     Relation, RelationKind, Rose, SearchContinuation, SearchPage, SearchRow, SignatureText,
     SignatureToken, SourceCoverage, SourceLocation, SourceOrigin, SourceSite, SourceText,
     SourceView, Standing, SymbolLink, SymbolPage, SymbolRef, TokenClass, TreeNode, TreeOpener,
@@ -1211,7 +1211,7 @@ fn derive_impl_blocks(
 pub fn references(
     reply: Result<&SurfaceReply, &ClientError>,
     outline: Option<&OutlineIndex>,
-) -> Known<Arc<[ReferenceSite]>> {
+) -> Known<ReferenceObservation> {
     let records = match reply {
         Ok(SurfaceReply::References { references, .. }) => references,
         Ok(other) => {
@@ -1264,7 +1264,7 @@ pub fn references(
             })
         })
         .collect::<Vec<_>>();
-    Known::Known(sites.into())
+    Known::Known(ReferenceObservation::new(sites.into()))
 }
 
 /// Lowers one client failure into a typed gap.
@@ -1612,7 +1612,7 @@ pub fn source_view(
     document: &Document,
     local_file: Option<&str>,
     local_editor_path: Option<&str>,
-    references: &Known<Arc<[ReferenceSite]>>,
+    references: &Known<ReferenceObservation>,
     outline: Option<&OutlineIndex>,
 ) -> SourceView {
     let site = source_site(&document.location, &document.excerpt);
@@ -1724,6 +1724,7 @@ pub fn source_view(
             (
                 Known::unknown(GapReason::NotServed, detail),
                 sites
+                    .reported_sites()
                     .iter()
                     .filter_map(|site| site.span.known())
                     .cloned()
@@ -1931,6 +1932,8 @@ pub struct PackageInputs<'a> {
     pub dependents: Result<&'a SurfaceReply, &'a ClientError>,
     /// Package outline, or why it is missing.
     pub outline: Result<&'a OutlineIndex, Gap>,
+    /// Bounded root-manifest capability read only for this selected package.
+    pub project_tree: crate::model::project_browse::ProjectTreeCapability,
     /// Local manifest facts, for a local project.
     pub local: Option<&'a LocalPackage>,
 }
@@ -2129,6 +2132,9 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
         None => Known::Unknown(not_served("README")),
     };
     PackageDossier {
+        project_tree: inputs.local.filter(|manifest| package.is_local()
+            && PackageRef::parse(manifest.project.as_str()).as_ref().ok() == Some(package))
+            .map_or(crate::model::project_browse::ProjectTreeCapability::Unestablished, |_| inputs.project_tree),
         package: package.clone(),
         record,
         versions,
@@ -2961,6 +2967,7 @@ mod tests {
         let failure = no_semantics();
         let complete = OutlineIndex::new(rows.clone(), true);
         let live = package_dossier(&PackageInputs {
+            project_tree: crate::model::project_browse::ProjectTreeCapability::Unestablished,
             package: &package,
             records: Err(&failure),
             versions: Err(&failure),
@@ -2984,6 +2991,7 @@ mod tests {
 
         let partial = OutlineIndex::new(rows, false);
         let live = package_dossier(&PackageInputs {
+            project_tree: crate::model::project_browse::ProjectTreeCapability::Unestablished,
             package: &package,
             records: Err(&failure),
             versions: Err(&failure),
@@ -3600,7 +3608,7 @@ mod tests {
         };
         let outline = OutlineIndex::new(rows, true);
         let sites = references(Ok(&reply), Some(&outline));
-        let sites = sites.known().expect("reference sites");
+        let sites = sites.known().expect("reference observation").reported_sites();
         assert_eq!(sites.len(), 1);
         assert_eq!(sites[0].site.name.as_ref(), "Boxed");
         assert_eq!(
@@ -3652,6 +3660,7 @@ mod tests {
             .expect("reason"),
         ));
         let dossier = package_dossier(&PackageInputs {
+            project_tree: crate::model::project_browse::ProjectTreeCapability::Unestablished,
             package: &package,
             records: Ok(&records),
             versions: Ok(&versions),
@@ -3752,6 +3761,7 @@ mod tests {
         let records = SurfaceReply::Package(Box::new([cargo]));
         let unavailable = no_semantics();
         let dossier = package_dossier(&PackageInputs {
+            project_tree: crate::model::project_browse::ProjectTreeCapability::Unestablished,
             package: &package,
             records: Ok(&records),
             versions: Err(&unavailable),
@@ -3780,6 +3790,7 @@ mod tests {
         let versions = SurfaceReply::PackageVersions(Box::new([other_profile]));
         let unavailable = no_semantics();
         let dossier = package_dossier(&PackageInputs {
+            project_tree: crate::model::project_browse::ProjectTreeCapability::Unestablished,
             package: &package,
             records: Ok(&records),
             versions: Ok(&versions),
@@ -3816,6 +3827,7 @@ mod tests {
         });
         let unavailable = no_semantics();
         let dossier = package_dossier(&PackageInputs {
+            project_tree: crate::model::project_browse::ProjectTreeCapability::Unestablished,
             package: &package,
             records: Err(&unavailable),
             versions: Err(&unavailable),
@@ -3876,6 +3888,7 @@ mod tests {
             members: 0,
         };
         let dossier = package_dossier(&PackageInputs {
+            project_tree: crate::model::project_browse::ProjectTreeCapability::Unestablished,
             package: &package,
             records: Ok(&records),
             versions: Ok(&versions),
@@ -3939,6 +3952,7 @@ mod tests {
         ));
         let outline = OutlineIndex::new(present_rows(), true);
         let dossier = package_dossier(&PackageInputs {
+            project_tree: crate::model::project_browse::ProjectTreeCapability::Unestablished,
             package: &package,
             records: Ok(&records),
             versions: Ok(&versions),
@@ -4007,6 +4021,7 @@ mod tests {
         let registry_versions = SurfaceReply::PackageVersions(Box::new([registry_row.clone()]));
         let unavailable = no_semantics();
         let registry_dossier = package_dossier(&PackageInputs {
+            project_tree: crate::model::project_browse::ProjectTreeCapability::Unestablished,
             package: &registry_package,
             records: Ok(&registry_reply),
             versions: Ok(&registry_versions),
@@ -4101,6 +4116,7 @@ mod tests {
             backend_library::ProductText::new("not recorded").expect("reason"),
         ));
         let dossier = package_dossier(&PackageInputs {
+            project_tree: crate::model::project_browse::ProjectTreeCapability::Unestablished,
             package: &package,
             records: Ok(&records),
             versions: Ok(&versions),
@@ -4157,6 +4173,7 @@ mod tests {
             backend_library::ProductText::new("not recorded").expect("reason"),
         ));
         let dossier = package_dossier(&PackageInputs {
+            project_tree: crate::model::project_browse::ProjectTreeCapability::Unestablished,
             package: &package,
             records: Ok(&records),
             versions: Ok(&versions),
@@ -4314,7 +4331,7 @@ mod tests {
         );
         document.symbol = key(&label);
         let coordinate = SymbolRef::new(&label).expect("coordinate");
-        let uses = Known::Known(Arc::from([ReferenceSite {
+        let uses = Known::Known(ReferenceObservation::new(Arc::from([ReferenceSite {
             site: DeclRef::from_label(&label, None, None, None).expect("site"),
             relation: SemanticLinkKind::TypeReference,
             confidence: SemanticConfidence::Compiler,
@@ -4323,7 +4340,7 @@ mod tests {
                 bytes: ByteSpan::new(11, 15).expect("span"),
             }),
             scope: ReferenceScope::Local,
-        }]));
+        }])));
         let view = source_view(
             &coordinate,
             &document,
@@ -4392,7 +4409,7 @@ mod tests {
             &document,
             Some(stale),
             Some("/fixture/page.rs"),
-            &Known::Known(Arc::from([])),
+            &Known::Known(ReferenceObservation::new(Arc::from([]))),
             Some(&outline),
         );
         let text = view.text.known().expect("excerpt text");
@@ -4421,7 +4438,7 @@ mod tests {
             &document,
             None,
             None,
-            &Known::Known(Arc::from([])),
+            &Known::Known(ReferenceObservation::new(Arc::from([]))),
             None,
         );
         let gap = view

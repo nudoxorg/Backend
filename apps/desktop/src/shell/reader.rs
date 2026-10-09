@@ -614,7 +614,7 @@ pub(crate) struct Reader {
     ask_geometry: Option<super::frame::AskGeometry>,
     /// The shell's painted Ask scene, rather than its already-cleared overlay,
     /// decides when a newly arrived body may claim native keyboard focus.
-    ask_background_input_allowed: bool,
+    background_presentation: super::ask_presentation::BackgroundPresentation,
     map: Option<Entity<bodies::graph::Map>>,
     graph_source: Option<crate::model::pages::SymbolRef>,
     links: Links,
@@ -716,7 +716,7 @@ impl Reader {
                 &[Branch::Root, Branch::Route, Branch::Reading, Branch::Overlay, Branch::Workspace, Branch::Settings],
             ),
             ask_geometry: None,
-            ask_background_input_allowed: true,
+            background_presentation: super::ask_presentation::BackgroundPresentation::Interactive,
             links,
             map: None,
             graph_source: None,
@@ -1068,7 +1068,7 @@ impl Reader {
         Ok(self.map.as_ref().and_then(|map| map.read(cx).native_graph()))
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, test))]
     pub(crate) fn graph_native_diagnostic(&self, cx: &App) -> String {
         let snapshot = self.links.snapshot(cx);
         format!("graph_visit={:?}; input={}, settled={}, route_equal={}, overlay={}, page_overlay={}",
@@ -2695,11 +2695,13 @@ impl Reader {
     /// A Find field may still focus before its read completes, so resource
     /// readiness and `painted` are intentionally separate from this gate.
     pub(crate) fn native_motion_settled(&self) -> bool {
-        self.arrival.is_none() && self.transit.is_none()
+        self.background_presentation != super::ask_presentation::BackgroundPresentation::Moving
+            && self.arrival.is_none() && self.transit.is_none()
     }
 
     pub(crate) fn native_input_allowed(&self) -> bool {
-        self.ask_background_input_allowed && self.native_motion_settled()
+        self.background_presentation == super::ask_presentation::BackgroundPresentation::Interactive
+            && self.native_motion_settled()
     }
 
     pub(crate) fn native_input_for(&self, route: &Route, overlay: Option<Overlay>) -> bool {
@@ -2737,12 +2739,17 @@ impl Reader {
         self.places.last().map(|place| place.key)
     }
 
-    pub(crate) fn set_ask_scene(&mut self, geometry: Option<super::frame::AskGeometry>, background_input_allowed: bool, cx: &mut Context<Self>) {
-        if self.ask_geometry != geometry || self.ask_background_input_allowed != background_input_allowed {
+    pub(crate) fn set_ask_scene(&mut self, geometry: Option<super::frame::AskGeometry>, background: super::ask_presentation::BackgroundPresentation, cx: &mut Context<Self>) {
+        if self.ask_geometry != geometry || self.background_presentation != background {
             self.ask_geometry = geometry;
-            self.ask_background_input_allowed = background_input_allowed;
+            self.background_presentation = background;
             cx.notify();
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn diagnostic_background_presentation(&self) -> super::ask_presentation::BackgroundPresentation {
+        self.background_presentation
     }
 
     /// Builds one place's body. The current place registers its targets and
@@ -2826,6 +2833,7 @@ impl Reader {
             let mut ctx = Ctx {
                 reader: cx.weak_entity(),
                 active: current,
+                auxiliary_reads_active: current && self.ask_geometry.is_none_or(|ask| ask.preview_left.is_some()),
                 native_input_active: current && self.native_input_allowed(),
                 measure: layout.folio_measure,
                 note: if layout.wide { Measure::new(layout.margin, facet) } else { layout.folio_measure },
