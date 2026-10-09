@@ -1739,6 +1739,7 @@ impl RpcError {
                 FaultSlug::NotFound
                 | FaultSlug::WrongBasis
                 | FaultSlug::InvalidQuery
+                | FaultSlug::QueryPreparation
                 | FaultSlug::CompilerRefused
                 | FaultSlug::PartiallyPublished
                 | FaultSlug::CursorMismatch

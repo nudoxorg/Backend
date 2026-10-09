@@ -383,6 +383,9 @@ pub struct CompilerAuthorityDiagnosticFacts {
     /// paths remain local-only and are not serialized into this summary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub python_failure: Option<PythonAuthorityFailureKind>,
+    /// Source identity and omission facts only; no config path, bytes or values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub python_configuration: Option<crate::interface::PythonConfigurationRefusalFacts>,
     /// Exact closed TypeScript cause; transcript, paths and solver text remain local.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub typescript_failure: Option<crate::interface::TypeScriptAuthorityFailureKind>,
@@ -1784,6 +1787,7 @@ pub(crate) fn package_failure_from_terminal(
                         observed_bytes: u64::try_from(diagnostic.observed).unwrap_or(u64::MAX),
                         truncated: diagnostic.truncated,
                         python_failure: diagnostic.python_failure,
+                        python_configuration: diagnostic.python_configuration,
                         typescript_failure: diagnostic.typescript_failure,
                         go_failure: diagnostic.go_failure,
                     }

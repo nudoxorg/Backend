@@ -22,7 +22,7 @@ use super::index_operation::{
     Acceptance as IndexOperationAcceptance, IndexOperationJournal, JournalEntry,
     JournalError as IndexOperationJournalError, StoredOperation, StoredOperationState,
 };
-use super::search_lane::{SearchLane, Waiter as SearchWaiter};
+use super::search_lane::SearchLane;
 use super::semantic_query::{
     execute_references, execute_semantic_graph, execute_structural_call_graph,
 };
@@ -319,8 +319,11 @@ pub(in crate::builtin) struct CommandAdapter {
     compiler: LocalCompilerClient,
     search_snapshots: super::super::query::SearchSnapshotOwner,
     search_lane: SearchLane,
-    search_replies:
-        std::collections::VecDeque<(SearchWaiter, Result<(), backend_engine::CommandFailure>)>,
+    search_preparation_failure: Option<(
+        backend_engine::WorkspaceRoot,
+        backend_library::ViewStateRoot,
+        backend_engine::CommandFailure,
+    )>,
     remote_semantic: super::super::query::RemoteSemantic,
     pending_semantic_search: Option<backend_library::SemanticSearchStatus>,
     published: Option<super::super::view_publish::PublishedRoots>,
@@ -709,7 +712,7 @@ impl CommandAdapter {
             compiler,
             search_snapshots,
             search_lane: SearchLane::default(),
-            search_replies: std::collections::VecDeque::new(),
+            search_preparation_failure: None,
             remote_semantic,
             pending_semantic_search: None,
             published,
@@ -767,17 +770,6 @@ impl CommandAdapter {
         let owner = daemon.engine().daemon().library().cursor();
         let request = backend_engine::decode_command_dto_for_owner(body, owner)
             .map_err(|error| BuiltinModelError(format!("decode command DTO: {error}")))?;
-        if let Command::Search(query) = &request.command {
-            return self.defer_search(
-                daemon,
-                SearchWaiter {
-                    ticket: transport_ticket,
-                    request_id: request.request_id,
-                    query: query.clone(),
-                    certificate: request.certificate().cloned(),
-                },
-            );
-        }
         if let Command::Surface(backend_library::SurfaceCommand::IndexAwait { ticket }) =
             &request.command
         {
@@ -1789,7 +1781,7 @@ impl CommandAdapter {
     pub(in crate::builtin) fn close(&mut self) {
         self.journal_readiness.close();
         self.search_lane.close();
-        self.search_replies.clear();
+        self.search_preparation_failure = None;
         self.browse_lane.close();
         if let Some(indexing) = self.indexing.as_mut() {
             indexing.cancelled.store(true, Ordering::Release);
@@ -3387,9 +3379,6 @@ impl CommandAdapter {
                 .awaiters
                 .retain(|(transport_ticket, _)| *transport_ticket != ticket);
         }
-        self.search_replies
-            .retain(|(waiter, _)| waiter.ticket != ticket);
-        self.search_lane.abandon_reply(ticket);
         self.browse_lane.abandon_reply(ticket);
     }
 
@@ -4273,15 +4262,27 @@ impl CommandAdapter {
                 self.graph_page(daemon, symbol, page, certificate)
             }
             Command::Related(query) => self.graph(daemon, query, certificate, true),
-            Command::GraphQuery(request) => execute_certified_graph_query(
-                daemon,
-                &self.compiler,
-                &mut self.search_snapshots,
-                &mut self.generations,
-                &mut self.image_rows,
-                &request,
-                certificate,
-            ),
+            Command::GraphQuery(request) => {
+                if request.control() != backend_engine::GraphQueryControl::Cancel {
+                    if let Some(failure) = self.prepare_query(daemon, request.page().basis())? {
+                        return Self::certify(
+                            daemon,
+                            &Command::GraphQuery(request),
+                            CommandReply::Failed(failure),
+                            certificate,
+                        );
+                    }
+                }
+                execute_certified_graph_query(
+                    daemon,
+                    &self.compiler,
+                    &mut self.search_snapshots,
+                    &mut self.generations,
+                    &mut self.image_rows,
+                    &request,
+                    certificate,
+                )
+            }
             Command::SemanticShapes(request) => {
                 let published_roots = self
                     .published
@@ -4632,116 +4633,57 @@ impl CommandAdapter {
         self.semantic_authority.mark_projections_current()
     }
 
-    fn defer_search(
+    /// Starts at most one corpus worker and returns current readiness, never
+    /// an owed RPC whose delivery waits for native preparation.
+    fn prepare_query(
         &mut self,
         daemon: &ProductDaemon,
-        waiter: SearchWaiter,
-    ) -> Result<Executed, BuiltinModelError> {
+        basis: backend_library::ViewRevision,
+    ) -> Result<Option<backend_engine::CommandFailure>, BuiltinModelError> {
         let workspace = daemon.engine().daemon().owner().snapshot().root();
         let view = daemon.engine().daemon().library().view();
-        // Do not prepare an index for a request whose claimed view is stale.
-        if waiter.query.basis() != view.root() {
-            let failure = Self::search_wrong_basis(daemon, &waiter.query);
-            return self
-                .search_reply(daemon, waiter, Err(failure))
-                .map(Executed::Reply);
+        if basis != view.root() {
+            return Ok(Some(backend_engine::CommandFailure::WrongBasis {
+                expected: view.root().into(),
+                observed: basis,
+            }));
         }
-        if self.search_lane.active() {
-            return match self.search_lane.share(workspace, view.root(), waiter) {
-                Ok(()) => Ok(Executed::Deferred),
-                Err((reason, waiter)) => self
-                    .search_reply(daemon, waiter, Err(reason.into_command_failure()))
-                    .map(Executed::Reply),
-            };
-        }
+        // A retry also observes completed work even if no transport ticket is
+        // waiting and no intervening poll installed the projection yet.
+        let _ = self.search_completions(daemon);
         if self
             .search_snapshots
             .selected_for(workspace, view)
             .is_some()
         {
-            return self
-                .search_reply(daemon, waiter, Ok(()))
-                .map(Executed::Reply);
+            return Ok(None);
         }
-        if !self.search_replies.is_empty() {
-            return self
-                .search_reply(
-                    daemon,
-                    waiter,
-                    Err(super::search_lane::Rejection::Retiring.into_command_failure()),
-                )
-                .map(Executed::Reply);
-        }
-        let capture = super::search_lane::Capture {
-            snapshot: daemon.engine().daemon().owner().snapshot(),
-            view: view.clone(),
-            compiler: self.compiler.clone(),
-            generations: self.generations.for_preparation(),
-        };
-        let projection = self.search_snapshots.take_projection();
-        self.search_lane
-            .start(projection, capture, waiter)
-            .map_err(BuiltinModelError)?;
-        Ok(Executed::Deferred)
-    }
-
-    fn search_reply(
-        &mut self,
-        daemon: &ProductDaemon,
-        waiter: SearchWaiter,
-        prepared: Result<(), backend_engine::CommandFailure>,
-    ) -> Result<Vec<u8>, BuiltinModelError> {
-        let command = Command::Search(waiter.query.clone());
-        let result = prepared.and_then(|()| {
-            let workspace = daemon.engine().daemon().owner().snapshot().root();
-            let library = daemon.engine().daemon().library();
-            let coordinator = self
-                .search_snapshots
-                .selected_for(workspace, library.view())
-                .ok_or_else(|| Self::search_wrong_basis(daemon, &waiter.query))?;
-            let coverage = super::super::admitted_coverage().map_err(|error| {
-                backend_engine::CommandFailure::IncoherentView(error.to_string())
-            })?;
-            super::super::query::search_page(
-                coordinator,
-                library,
-                &mut self.remote_semantic,
-                coverage,
-                &waiter.query,
-            )
-            .map_err(|error| match error {
-                super::super::query::SearchPageError::Projection(error) => error.into(),
-                super::super::query::SearchPageError::Local(error) => {
-                    backend_engine::CommandFailure::InvalidQuery(format!(
-                        "local_search_refused: {error}"
-                    ))
-                }
-            })
-        });
-        let (reply, status) = match result {
-            Ok((page, status)) => (CommandReply::Search(page), Some(status)),
-            Err(error) => (CommandReply::Failed(error), None),
-        };
-        let admitted = Self::certify(daemon, &command, reply, waiter.certificate)?;
-        Self::encode(daemon, waiter.request_id, admitted, status)
-    }
-
-    fn search_wrong_basis(
-        daemon: &ProductDaemon,
-        query: &backend_engine::Query,
-    ) -> backend_engine::CommandFailure {
-        let expected = daemon.engine().daemon().library().view().root();
-        if expected != query.basis() {
-            backend_engine::CommandFailure::WrongBasis {
-                expected: expected.into(),
-                observed: query.basis().into(),
-            }
+        let state = if self.search_lane.active() {
+            self.search_lane.state_for(workspace, view.root())
         } else {
-            backend_engine::CommandFailure::IncoherentView(
-                "workspace selection changed while search preparation was pending; retry"
-                    .to_owned(),
-            )
-        }
+            if let Some((failed_workspace, failed_view, failure)) =
+                self.search_preparation_failure.take()
+            {
+                if failed_workspace == workspace && failed_view == view.root() {
+                    return Ok(Some(failure));
+                }
+            }
+            let capture = super::search_lane::Capture {
+                snapshot: daemon.engine().daemon().owner().snapshot(),
+                view: view.clone(),
+                compiler: self.compiler.clone(),
+                generations: self.generations.for_preparation(),
+            };
+            let projection = self.search_snapshots.take_projection();
+            self.search_lane
+                .start(projection, capture)
+                .map_err(BuiltinModelError)?;
+            backend_library::QueryPreparationState::Preparing
+        };
+        Ok(Some(backend_engine::CommandFailure::QueryPreparation {
+            basis,
+            state,
+        }))
     }
 
     fn search_completions(
@@ -4750,35 +4692,23 @@ impl CommandAdapter {
     ) -> Vec<(u64, Result<Vec<u8>, BuiltinModelError>)> {
         let workspace = daemon.engine().daemon().owner().snapshot().root();
         let view = daemon.engine().daemon().library().view().root();
-        for waiter in self.search_lane.invalidate(workspace, view) {
-            let failure = Self::search_wrong_basis(daemon, &waiter.query);
-            self.search_replies.push_back((waiter, Err(failure)));
-        }
+        self.search_lane.invalidate(workspace, view);
         if let Some(completion) = self.search_lane.drain(workspace, view) {
-            let result = if completion.current {
-                completion
+            let succeeded = completion.current && completion.result.is_ok();
+            if completion.current {
+                self.search_preparation_failure = completion
                     .result
-                    .map_err(super::search_lane::Failure::into_command_failure)
-            } else {
-                Err(super::search_lane::Failure::Cancelled.into_command_failure())
-            };
+                    .err()
+                    .map(|error| (workspace, view, error.into_command_failure()));
+            }
             if let Some(projection) = completion.projection {
                 self.search_snapshots
-                    .restore_projection(projection, completion.current && result.is_ok());
-            }
-            for waiter in completion.waiters {
-                self.search_replies.push_back((waiter, result.clone()));
+                    .restore_projection(projection, succeeded);
             }
         }
-        // Preparation and owed replies share the same 64-ticket ceiling.
-        // A cold worker cannot start while replies are retained. Serialize
-        // one search per poll so concurrent callers cannot monopolize control.
-        match self.search_replies.pop_front() {
-            Some((waiter, result)) => {
-                vec![(waiter.ticket, self.search_reply(daemon, waiter, result))]
-            }
-            None => Vec::new(),
-        }
+        // All requests already received a typed readiness answer. Polling only
+        // installs a completed immutable projection; it owes no delayed reply.
+        Vec::new()
     }
 
     fn search(
@@ -4788,6 +4718,21 @@ impl CommandAdapter {
         certificate: Option<WireCertificate>,
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let command = Command::Search(query.clone());
+        if let Err(error) =
+            super::super::query::LocalQuery::prefix(query.text(), usize::from(query.limit().get()))
+        {
+            return Self::certify(
+                daemon,
+                &command,
+                CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(format!(
+                    "local_search_refused: {error}"
+                ))),
+                certificate,
+            );
+        }
+        if let Some(failure) = self.prepare_query(daemon, query.basis())? {
+            return Self::certify(daemon, &command, CommandReply::Failed(failure), certificate);
+        }
         let (reply, status) = execute_search(
             daemon,
             &self.compiler,
@@ -9166,19 +9111,9 @@ mod tests {
             .is_none()
         );
     }
-    fn defer_search_body(
-        adapter: &mut CommandAdapter,
-        daemon: &mut ProductDaemon,
-        id: u64,
-        ticket: u64,
-    ) -> Result<Executed, crate::builtin::BuiltinModelError> {
-        let body = search_command_body(daemon, id);
-        adapter.execute_or_defer(daemon, &body, ticket)
-    }
-
-    fn search_command_body(daemon: &ProductDaemon, id: u64) -> Vec<u8> {
+    fn search_body(daemon: &ProductDaemon, id: u64, text: &str) -> Vec<u8> {
         let query = backend_engine::Query::new(
-            "project",
+            text,
             daemon.engine().daemon().library().view().root(),
             backend_engine::QueryLimit::default(),
         );
@@ -9187,40 +9122,60 @@ mod tests {
             id: backend_engine::encode_id(query.basis().as_bytes()),
         });
         serde_json::to_vec(
-            &backend_engine::CommandDto::new(id, backend_engine::Command::Search(query))
+            &backend_engine::CommandDto::new(id, Command::Search(query))
                 .with_certificate(certificate),
         )
         .expect("certified search DTO")
     }
 
-    fn finish_search_lane(
+    fn immediate_search(
         adapter: &mut CommandAdapter,
         daemon: &mut ProductDaemon,
-    ) -> Vec<(u64, Result<Vec<u8>, crate::builtin::BuiltinModelError>)> {
+        id: u64,
+        text: &str,
+    ) -> serde_json::Value {
+        let body = search_body(daemon, id, text);
+        let started = std::time::Instant::now();
+        let Executed::Reply(bytes) = adapter
+            .execute_or_defer(daemon, &body, id + 1000)
+            .expect("immediate search readiness or result")
+        else {
+            panic!("a search never retains an owed native-preparation RPC");
+        };
+        assert!(started.elapsed() < Duration::from_secs(1));
+        let wire: serde_json::Value = serde_json::from_slice(&bytes).expect("wire reply");
+        assert_eq!(wire["request_id"], id);
+        wire
+    }
+
+    fn assert_preparing(wire: &serde_json::Value, state: &str, daemon: &ProductDaemon) {
+        assert_eq!(wire["reply"]["kind"], "failed");
+        assert_eq!(wire["reply"]["data"]["kind"], "query_preparation");
+        assert_eq!(wire["reply"]["data"]["data"]["state"], state);
+        assert_eq!(
+            wire["reply"]["data"]["data"]["basis"],
+            backend_engine::encode_id(daemon.engine().daemon().library().view().root().as_bytes())
+        );
+        assert!(
+            wire.get("semantic_search")
+                .is_none_or(serde_json::Value::is_null),
+            "corpus readiness is not optional vector-search status"
+        );
+    }
+
+    fn finish_search_lane(adapter: &mut CommandAdapter, daemon: &mut ProductDaemon) {
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
-        let mut replies = Vec::new();
-        while adapter.search_lane.active() || !adapter.search_replies.is_empty() {
-            let batch = adapter.poll_deferred(daemon);
+        while adapter.search_lane.active() {
             assert!(
-                batch.len() <= 1,
-                "at most one correlated search reply per owner turn"
+                adapter.poll_deferred(daemon).is_empty(),
+                "preparation owes no late transport reply"
             );
-            replies.extend(batch);
             assert!(
                 std::time::Instant::now() < deadline,
-                "bounded search worker retirement"
+                "bounded worker retirement"
             );
             std::thread::sleep(Duration::from_millis(2));
         }
-        replies
-    }
-
-    fn search_wire_kind(bytes: &[u8]) -> String {
-        let wire: serde_json::Value = serde_json::from_slice(bytes).expect("search reply DTO");
-        wire["reply"]["kind"]
-            .as_str()
-            .expect("reply kind")
-            .to_owned()
     }
 
     #[test]
@@ -9228,160 +9183,112 @@ mod tests {
         let mut fixture = AdapterFixture::new();
         let (adapter, daemon) = fixture.parts();
         let (entered, release) = adapter.search_lane.hold_next();
-        let start = std::time::Instant::now();
-        assert!(matches!(
-            defer_search_body(adapter, daemon, 100, 1100),
-            Ok(Executed::Deferred)
-        ));
-        let cold_admission_ms = start.elapsed().as_secs_f64() * 1000.0;
-        assert!(
-            cold_admission_ms < 1000.0,
-            "capture/admission blocked {cold_admission_ms} ms"
-        );
-        eprintln!("cold_search_capture_and_admission_ms={cold_admission_ms}");
+        let pending = immediate_search(adapter, daemon, 100, "project source");
+        assert_preparing(&pending, "preparing", daemon);
         entered
             .recv_timeout(Duration::from_secs(2))
-            .expect("owned native preparation held");
+            .expect("one held worker");
         let cancelled = install_transition_job(adapter);
-        let index_ticket = adapter
+        let ticket = adapter
             .indexing
             .as_ref()
-            .expect("index ticket")
+            .expect("index job")
             .owner_ticket
             .clone();
-        let mut measurements = BTreeMap::new();
-        for (id, name, command) in [
-            (201, "health", backend_engine::Command::Health),
-            (202, "revision", backend_engine::Command::Revision),
+        for (id, command) in [
+            (201, Command::Health),
+            (202, Command::Revision),
             (
                 203,
-                "cancel",
-                backend_engine::Command::Surface(backend_library::SurfaceCommand::IndexCancel {
-                    ticket: index_ticket,
-                }),
+                Command::Surface(backend_library::SurfaceCommand::IndexCancel { ticket }),
             ),
         ] {
             let body = serde_json::to_vec(&backend_engine::CommandDto::new(id, command))
                 .expect("control DTO");
-            let start = std::time::Instant::now();
+            let started = std::time::Instant::now();
             assert!(matches!(
                 adapter.execute_or_defer(daemon, &body, id + 1000),
                 Ok(Executed::Reply(_))
             ));
-            let millis = start.elapsed().as_secs_f64() * 1000.0;
-            assert!(millis < 1000.0, "{name} blocked {millis} ms");
-            measurements.insert(name, millis);
+            assert!(started.elapsed() < Duration::from_secs(1));
         }
         assert!(cancelled.load(Ordering::Acquire));
         adapter.indexing = None;
-        for offset in 1..super::super::search_lane::MAX_SEARCH_WAITERS {
-            assert!(matches!(
-                defer_search_body(adapter, daemon, 100 + offset as u64, 1100 + offset as u64),
-                Ok(Executed::Deferred)
-            ));
+        for id in 300..428 {
+            assert_preparing(
+                &immediate_search(adapter, daemon, id, "project source"),
+                "preparing",
+                daemon,
+            );
         }
-        let refused = defer_search_body(adapter, daemon, 999, 1999).expect("finite queue refusal");
-        let Executed::Reply(refused) = refused else {
-            panic!("overflow caller cannot register");
-        };
-        assert_eq!(search_wire_kind(&refused), "failed");
-        let refusal: serde_json::Value =
-            serde_json::from_slice(&refused).expect("typed queue refusal");
-        assert_eq!(refusal["reply"]["data"]["kind"], "invalid_query");
-        assert!(
-            refusal["reply"]["data"]["data"]["text"]
-                .as_str()
-                .expect("capacity class")
-                .starts_with("search_preparation_over_capacity:")
+        assert_eq!(adapter.search_snapshots.projection_builds(), 0);
+        release.send(()).expect("release worker");
+        finish_search_lane(adapter, daemon);
+        assert_eq!(
+            immediate_search(adapter, daemon, 500, "project source")["reply"]["kind"],
+            "search"
         );
-        release.send(()).expect("release native preparation");
-        let replies = finish_search_lane(adapter, daemon);
-        assert_eq!(replies.len(), super::super::search_lane::MAX_SEARCH_WAITERS);
-        for (ticket, result) in replies {
-            let bytes = result.expect("search reply");
-            let wire: serde_json::Value = serde_json::from_slice(&bytes).expect("correlation DTO");
-            assert_eq!(wire["request_id"], ticket - 1000);
-            assert_eq!(search_wire_kind(&bytes), "search");
-        }
         assert_eq!(
             adapter.search_snapshots.projection_builds(),
             1,
-            "all concurrent callers share one native writer"
-        );
-        eprintln!(
-            "cold_search_control_ms={}",
-            serde_json::to_string(&measurements).expect("measurements")
+            "all retry observations share one native writer"
         );
     }
 
     #[test]
     fn preparation_cold_search_owner_superseded_view_rejects_stale_preparation() {
         let mut fixture = AdapterFixture::new();
-        let new_project = fixture.root.0.join("other-project");
-        fs::create_dir_all(&new_project).expect("other project");
-        let new_label = label(&new_project);
+        let project = fixture.root.0.join("other-project");
+        fs::create_dir_all(&project).expect("project");
+        let new_label = label(&project);
         let (adapter, daemon) = fixture.parts();
+        let stale_body = search_body(daemon, 301, "project source");
         let old_workspace = daemon.engine().daemon().owner().snapshot().root();
         let old_view = daemon.engine().daemon().library().view().clone();
         let (entered, release) = adapter.search_lane.hold_next();
-        assert!(matches!(
-            defer_search_body(adapter, daemon, 301, 1301),
-            Ok(Executed::Deferred)
-        ));
+        assert_preparing(
+            &immediate_search(adapter, daemon, 300, "project source"),
+            "preparing",
+            daemon,
+        );
         entered
             .recv_timeout(Duration::from_secs(2))
-            .expect("prepare held");
+            .expect("held worker");
         let intent = BuiltinIntent::add(backend_engine::package_key(&new_label), new_label)
-            .expect("new selection");
-        super::commit_builtin_intent(daemon, 302, &intent)
-            .expect("advance authoritative workspace");
+            .expect("advance selection");
+        super::commit_builtin_intent(daemon, 302, &intent).expect("advance workspace");
         adapter
             .publish_view(daemon, Some(&intent))
             .expect("advance view");
-        let stale = adapter.poll_deferred(daemon);
-        assert_eq!(
-            stale.len(),
-            1,
-            "superseded reply fails before native retirement"
+        let Executed::Reply(bytes) = adapter
+            .execute_or_defer(daemon, &stale_body, 1301)
+            .expect("immediate stale refusal")
+        else {
+            panic!("no deferred stale query")
+        };
+        let stale: serde_json::Value = serde_json::from_slice(&bytes).expect("stale DTO");
+        assert_eq!(stale["reply"]["data"]["kind"], "wrong_basis");
+        assert_preparing(
+            &immediate_search(adapter, daemon, 303, "project source"),
+            "retiring",
+            daemon,
         );
-        assert_eq!(stale[0].0, 1301);
-        assert_eq!(
-            search_wire_kind(stale[0].1.as_ref().expect("stale DTO")),
-            "failed"
-        );
-        let wrong_basis: serde_json::Value =
-            serde_json::from_slice(stale[0].1.as_ref().expect("stale DTO"))
-                .expect("typed stale refusal");
-        assert_eq!(wrong_basis["reply"]["data"]["kind"], "wrong_basis");
-        assert_ne!(
-            wrong_basis["reply"]["data"]["data"]["expected"],
-            wrong_basis["reply"]["data"]["data"]["observed"]
-        );
-        assert_eq!(wrong_basis["request_id"], 301);
-        let busy = defer_search_body(adapter, daemon, 303, 1303)
-            .expect("bounded stale worker backpressure");
-        assert!(matches!(busy, Executed::Reply(_)));
-        release.send(()).expect("retire old native owner");
-        assert!(finish_search_lane(adapter, daemon).is_empty());
+        release.send(()).expect("retire superseded worker");
+        finish_search_lane(adapter, daemon);
         assert!(
             adapter
                 .search_snapshots
                 .selected_for(old_workspace, &old_view)
                 .is_none()
         );
-        assert_eq!(
-            adapter.search_snapshots.projection_builds(),
-            0,
-            "cancelled before native admission"
+        assert_preparing(
+            &immediate_search(adapter, daemon, 304, "project source"),
+            "preparing",
+            daemon,
         );
-        assert!(matches!(
-            defer_search_body(adapter, daemon, 304, 1304),
-            Ok(Executed::Deferred)
-        ));
-        let replies = finish_search_lane(adapter, daemon);
-        assert_eq!(replies.len(), 1);
+        finish_search_lane(adapter, daemon);
         assert_eq!(
-            search_wire_kind(replies[0].1.as_ref().expect("current DTO")),
+            immediate_search(adapter, daemon, 305, "project source")["reply"]["kind"],
             "search"
         );
     }
@@ -9395,71 +9302,58 @@ mod tests {
             adapter.search_snapshots =
                 crate::builtin::query::SearchSnapshotOwner::with_durable_root(&durable);
             let (entered, release) = adapter.search_lane.hold_next();
-            assert!(matches!(
-                defer_search_body(adapter, daemon, 401, 1401),
-                Ok(Executed::Deferred)
-            ));
+            assert_preparing(
+                &immediate_search(adapter, daemon, 401, "project source"),
+                "preparing",
+                daemon,
+            );
             entered
                 .recv_timeout(Duration::from_secs(2))
-                .expect("prepare held");
-            assert!(matches!(
-                defer_search_body(adapter, daemon, 402, 1402),
-                Ok(Executed::Deferred)
-            ));
+                .expect("held background preparation");
             adapter.abandon_reply(1401);
-            release.send(()).expect("release shared preparation");
-            let replies = finish_search_lane(adapter, daemon);
-            assert_eq!(replies.len(), 1);
-            assert_eq!(
-                replies[0].0, 1402,
-                "remaining caller keeps shared preparation alive"
+            assert_preparing(
+                &immediate_search(adapter, daemon, 402, "project source"),
+                "preparing",
+                daemon,
             );
+            release.send(()).expect("release preparation");
+            finish_search_lane(adapter, daemon);
             assert_eq!(
-                search_wire_kind(replies[0].1.as_ref().expect("shared DTO")),
+                immediate_search(adapter, daemon, 403, "project source")["reply"]["kind"],
                 "search"
             );
+            assert_eq!(adapter.search_snapshots.projection_builds(), 1);
         }
         fixture = fixture.reopen();
         {
             let (adapter, daemon) = fixture.parts();
-            adapter.search_snapshots =
-                crate::builtin::query::SearchSnapshotOwner::with_durable_root(&durable);
-            let (entered, release) = adapter.search_lane.hold_next();
-            assert!(matches!(
-                defer_search_body(adapter, daemon, 403, 1403),
-                Ok(Executed::Deferred)
-            ));
-            entered
-                .recv_timeout(Duration::from_secs(2))
-                .expect("cold restore held");
-            adapter.abandon_reply(1403);
-            release.send(()).expect("retire abandoned preparation");
-            assert!(finish_search_lane(adapter, daemon).is_empty());
-            assert_eq!(adapter.search_snapshots.projection_opens(), 0);
             adapter.search_snapshots =
                 crate::builtin::query::SearchSnapshotOwner::with_durable_root(&durable)
                     .with_durable_cache_budget(
                         backend_extension_tantivy::DurableCacheBudget::new(1)
                             .expect("refusal budget"),
                     );
-            assert!(matches!(
-                defer_search_body(adapter, daemon, 404, 1404),
-                Ok(Executed::Deferred)
-            ));
-            let failure = finish_search_lane(adapter, daemon);
+            assert_preparing(
+                &immediate_search(adapter, daemon, 404, "project source"),
+                "preparing",
+                daemon,
+            );
+            finish_search_lane(adapter, daemon);
+            let failed = immediate_search(adapter, daemon, 405, "project source");
             assert_eq!(
-                search_wire_kind(failure[0].1.as_ref().expect("bounded refusal DTO")),
-                "failed"
+                failed["reply"]["data"]["kind"], "incoherent_view",
+                "actual preparation failure survives, without a ready or empty search"
             );
             adapter.search_snapshots =
                 crate::builtin::query::SearchSnapshotOwner::with_durable_root(&durable);
-            assert!(matches!(
-                defer_search_body(adapter, daemon, 405, 1405),
-                Ok(Executed::Deferred)
-            ));
-            let restored = finish_search_lane(adapter, daemon);
+            assert_preparing(
+                &immediate_search(adapter, daemon, 406, "project source"),
+                "preparing",
+                daemon,
+            );
+            finish_search_lane(adapter, daemon);
             assert_eq!(
-                search_wire_kind(restored[0].1.as_ref().expect("restored DTO")),
+                immediate_search(adapter, daemon, 407, "project source")["reply"]["kind"],
                 "search"
             );
             assert_eq!(adapter.search_snapshots.projection_opens(), 1);
@@ -9469,138 +9363,223 @@ mod tests {
         let (adapter, daemon) = fixture.parts();
         adapter.search_snapshots =
             crate::builtin::query::SearchSnapshotOwner::with_durable_root(&durable);
-        assert!(matches!(
-            defer_search_body(adapter, daemon, 406, 1406),
-            Ok(Executed::Deferred)
-        ));
-        let restored = finish_search_lane(adapter, daemon);
-        assert_eq!(
-            search_wire_kind(restored[0].1.as_ref().expect("second cold restore")),
-            "search"
+        assert_preparing(
+            &immediate_search(adapter, daemon, 408, "project source"),
+            "preparing",
+            daemon,
         );
+        finish_search_lane(adapter, daemon);
         assert_eq!(adapter.search_snapshots.projection_opens(), 1);
         adapter.close();
-        assert!(
-            !adapter.search_lane.active(),
-            "worker retired before owner lease closure"
-        );
+        assert!(!adapter.search_lane.active());
     }
+
     #[test]
     fn preparation_cold_search_owner_completes_and_invalidates_while_index_scan_stays_pending() {
         let mut fixture = AdapterFixture::new();
-        let new_project = fixture.root.0.join("concurrent-project");
-        fs::create_dir_all(&new_project).expect("concurrent project");
-        let new_label = label(&new_project);
+        let project = fixture.root.0.join("concurrent-project");
+        fs::create_dir_all(&project).expect("project");
+        let new_label = label(&project);
         let (adapter, daemon) = fixture.parts();
         let cancelled = install_transition_job(adapter);
-        let (scan_sender, scanned) = std::sync::mpsc::sync_channel(1);
+        let (sender, scanned) = std::sync::mpsc::sync_channel(1);
         adapter.indexing.as_mut().expect("index owner").work = IndexJobWork::Scanning(scanned);
-        let index_ticket = adapter
+        let ticket = adapter
             .indexing
             .as_ref()
             .expect("ticket")
             .owner_ticket
             .clone();
-        let (entered, release) = adapter.search_lane.hold_next();
-        assert!(matches!(
-            defer_search_body(adapter, daemon, 501, 1501),
-            Ok(Executed::Deferred)
-        ));
-        entered
-            .recv_timeout(Duration::from_secs(2))
-            .expect("search preparation held");
-        for _ in 0..3 {
-            assert!(adapter.poll_deferred(daemon).is_empty());
-            assert!(matches!(
-                adapter.indexing.as_ref().expect("held index scan").work,
-                IndexJobWork::Scanning(_)
-            ));
-        }
-        release.send(()).expect("release only search");
-        let replies = finish_search_lane(adapter, daemon);
-        assert_eq!(
-            replies.len(),
-            1,
-            "search delivery must pass the pending-index early return"
+        assert_preparing(
+            &immediate_search(adapter, daemon, 501, "project source"),
+            "preparing",
+            daemon,
         );
-        assert_eq!(replies[0].0, 1501);
+        finish_search_lane(adapter, daemon);
+        assert!(adapter.indexing.is_some(), "index scan has no receipt");
         assert_eq!(
-            search_wire_kind(replies[0].1.as_ref().expect("concurrent search")),
+            immediate_search(adapter, daemon, 502, "project source")["reply"]["kind"],
             "search"
         );
-        assert!(
-            adapter.indexing.is_some(),
-            "index scan still has no worker receipt"
-        );
-
-        let new_package = backend_engine::package_key(&new_label);
-        let intent =
-            BuiltinIntent::add(new_package, new_label.clone()).expect("advance selected source");
-        super::commit_builtin_intent(daemon, 502, &intent).expect("workspace advance");
+        let intent = BuiltinIntent::add(backend_engine::package_key(&new_label), new_label.clone())
+            .expect("new view");
+        super::commit_builtin_intent(daemon, 503, &intent).expect("commit");
         adapter
             .publish_view(daemon, Some(&intent))
-            .expect("view advance");
+            .expect("publish");
         let (entered, release) = adapter.search_lane.hold_next();
-        assert!(matches!(
-            defer_search_body(adapter, daemon, 503, 1503),
-            Ok(Executed::Deferred)
-        ));
+        assert_preparing(
+            &immediate_search(adapter, daemon, 504, "project source"),
+            "preparing",
+            daemon,
+        );
         entered
             .recv_timeout(Duration::from_secs(2))
-            .expect("new preparation held");
-        let remove =
-            BuiltinIntent::remove(new_package, new_label).expect("remove concurrent project");
-        super::commit_builtin_intent(daemon, 504, &remove).expect("supersede pending preparation");
+            .expect("held selection");
+        let remove = BuiltinIntent::remove(backend_engine::package_key(&new_label), new_label)
+            .expect("remove");
+        super::commit_builtin_intent(daemon, 505, &remove).expect("advance");
         adapter
             .publish_view(daemon, Some(&remove))
-            .expect("publish superseding view");
-        let stale = adapter.poll_deferred(daemon);
-        assert_eq!(
-            stale.len(),
-            1,
-            "stale invalidation must pass pending-index early return"
+            .expect("publish removal");
+        assert_preparing(
+            &immediate_search(adapter, daemon, 506, "project source"),
+            "retiring",
+            daemon,
         );
-        let wire: serde_json::Value =
-            serde_json::from_slice(stale[0].1.as_ref().expect("stale result")).expect("DTO");
-        assert_eq!(wire["request_id"], 503);
-        assert_eq!(wire["reply"]["data"]["kind"], "wrong_basis");
-        assert!(adapter.indexing.is_some());
-        let health = serde_json::to_vec(&backend_engine::CommandDto::new(
-            505,
-            backend_engine::Command::Health,
-        ))
-        .expect("health DTO");
-        let start = std::time::Instant::now();
-        assert!(matches!(
-            adapter.execute_or_defer(daemon, &health, 1505),
-            Ok(Executed::Reply(_))
-        ));
-        assert!(start.elapsed() < Duration::from_secs(1));
-        let cancel = serde_json::to_vec(&backend_engine::CommandDto::new(
-            506,
-            backend_engine::Command::Surface(backend_library::SurfaceCommand::IndexCancel {
-                ticket: index_ticket,
-            }),
+        let body = serde_json::to_vec(&backend_engine::CommandDto::new(
+            507,
+            Command::Surface(backend_library::SurfaceCommand::IndexCancel { ticket }),
         ))
         .expect("cancel DTO");
-        let start = std::time::Instant::now();
         assert!(matches!(
-            adapter.execute_or_defer(daemon, &cancel, 1506),
+            adapter.execute_or_defer(daemon, &body, 1507),
             Ok(Executed::Reply(_))
         ));
-        assert!(start.elapsed() < Duration::from_secs(1));
         assert!(cancelled.load(Ordering::Acquire));
-        release.send(()).expect("retire stale native preparation");
-        assert!(finish_search_lane(adapter, daemon).is_empty());
-        assert!(
-            adapter.indexing.is_some(),
-            "scan cancellation is cooperative, never joined by control"
-        );
-        scan_sender
+        release.send(()).expect("retire search");
+        finish_search_lane(adapter, daemon);
+        assert!(adapter.indexing.is_some());
+        sender
             .send(Err(super::IndexScanFailure::Cancelled))
-            .expect("retire held scan");
+            .expect("scan receipt");
         assert!(adapter.poll_deferred(daemon).is_empty());
         assert!(adapter.indexing.is_none());
+    }
+
+    #[test]
+    fn preparation_single_word_search_preserves_results_and_direct_lookups_while_held() {
+        let mut fixture = AdapterFixture::new();
+        let (adapter, daemon) = fixture.parts();
+        let (entered, release) = adapter.search_lane.hold_next();
+        assert_preparing(
+            &immediate_search(adapter, daemon, 601, "project"),
+            "preparing",
+            daemon,
+        );
+        entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("held corpus worker");
+        assert_preparing(
+            &immediate_search(adapter, daemon, 602, "project"),
+            "preparing",
+            daemon,
+        );
+        for (id, command) in [
+            (
+                603,
+                Command::Name(backend_engine::NameQuery::new(
+                    "project",
+                    daemon.engine().daemon().library().view().root(),
+                    backend_engine::QueryLimit::default(),
+                )),
+            ),
+            (
+                604,
+                Command::Resolve {
+                    text: "project".to_owned(),
+                },
+            ),
+        ] {
+            let body = serde_json::to_vec(&backend_engine::CommandDto::new(id, command))
+                .expect("direct DTO");
+            let started = std::time::Instant::now();
+            let Executed::Reply(bytes) = adapter
+                .execute_or_defer(daemon, &body, id + 1000)
+                .expect("direct answer")
+            else {
+                panic!("direct lookup must not defer")
+            };
+            assert!(started.elapsed() < Duration::from_secs(1));
+            let wire: serde_json::Value = serde_json::from_slice(&bytes).expect("reply");
+            assert_eq!(wire["request_id"], id);
+            assert_ne!(wire["reply"]["kind"], "failed");
+        }
+        release.send(()).expect("warm corpus");
+        finish_search_lane(adapter, daemon);
+        let cold = immediate_search(adapter, daemon, 605, "project");
+        assert_eq!(cold["reply"]["kind"], "search");
+        assert_eq!(
+            immediate_search(adapter, daemon, 606, "project")["reply"],
+            cold["reply"]
+        );
+        assert_eq!(adapter.search_snapshots.projection_builds(), 1);
+    }
+
+    #[test]
+    fn preparation_negative_search_still_uses_full_corpus_and_blank_is_invalid() {
+        let mut fixture = AdapterFixture::new();
+        let (adapter, daemon) = fixture.parts();
+        assert_eq!(
+            immediate_search(adapter, daemon, 701, "   ")["reply"]["data"]["kind"],
+            "invalid_query"
+        );
+        assert!(!adapter.search_lane.active());
+        assert_preparing(
+            &immediate_search(adapter, daemon, 702, "never_published_identifier"),
+            "preparing",
+            daemon,
+        );
+        finish_search_lane(adapter, daemon);
+        assert_eq!(
+            immediate_search(adapter, daemon, 703, "never_published_identifier")["reply"]["kind"],
+            "search"
+        );
+        assert_eq!(adapter.search_snapshots.projection_builds(), 1);
+    }
+
+    #[test]
+    fn preparation_structured_query_shares_worker_and_cancel_is_immediate() {
+        let mut fixture = AdapterFixture::new();
+        let (adapter, daemon) = fixture.parts();
+        let query = backend_engine::GraphQueryRequest::new(
+            "{ Package { coordinate @output } }",
+            BTreeMap::new(),
+            daemon.engine().daemon().library().view().root(),
+            backend_engine::QueryLimit::default(),
+        )
+        .expect("bounded query");
+        let (entered, release) = adapter.search_lane.hold_next();
+        assert_preparing(
+            &immediate_search(adapter, daemon, 801, "project source"),
+            "preparing",
+            daemon,
+        );
+        entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("held corpus");
+        let body = serde_json::to_vec(&backend_engine::CommandDto::new(
+            802,
+            Command::GraphQuery(query.clone()),
+        ))
+        .expect("structured DTO");
+        let Executed::Reply(bytes) = adapter
+            .execute_or_defer(daemon, &body, 1802)
+            .expect("shared readiness")
+        else {
+            panic!("graph preparation must not defer")
+        };
+        assert_preparing(
+            &serde_json::from_slice(&bytes).expect("graph readiness"),
+            "preparing",
+            daemon,
+        );
+        let body = serde_json::to_vec(&backend_engine::CommandDto::new(
+            803,
+            Command::GraphQuery(query.cancelled()),
+        ))
+        .expect("cancel DTO");
+        let Executed::Reply(bytes) = adapter
+            .execute_or_defer(daemon, &body, 1803)
+            .expect("immediate cancel")
+        else {
+            panic!("cancel must not wait")
+        };
+        let wire: serde_json::Value = serde_json::from_slice(&bytes).expect("cancel reply");
+        assert_eq!(wire["reply"]["kind"], "graph_query");
+        release.send(()).expect("retire worker");
+        finish_search_lane(adapter, daemon);
+        assert_eq!(adapter.search_snapshots.projection_builds(), 1);
     }
 }
 

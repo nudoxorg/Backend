@@ -4513,7 +4513,15 @@ fn package_authority_terminal(
                 message.truncated,
             )
             .map(|diagnostic| match python_failure {
-                Some(failure) => diagnostic.with_python_failure(failure),
+                Some(failure) => {
+                    let diagnostic = diagnostic.with_python_failure(failure);
+                    match &cause {
+                        PackageAuthorityError::PythonPyrefly(error) => {
+                            retain_python_configuration(diagnostic, error)
+                        }
+                        _ => diagnostic,
+                    }
+                }
                 None => match typescript_failure {
                     Some(failure) => diagnostic.with_typescript_failure(failure),
                     None => match go_failure {
@@ -4548,6 +4556,7 @@ fn python_authority_failure_kind(error: &PythonCheckerError) -> PythonAuthorityF
         E::IncompleteSourceFrontier { .. } => PythonAuthorityFailureKind::IncompleteSourceFrontier,
         E::NativeTypeProjection { .. } => PythonAuthorityFailureKind::TypeProjectionUnsupported,
         E::ProjectReport { .. } => PythonAuthorityFailureKind::ProjectReportMismatch,
+        E::ProjectConfiguration { .. } => PythonAuthorityFailureKind::ConfigurationRefused,
         E::SourceDigest { .. } => PythonAuthorityFailureKind::SourceDigestMismatch,
         E::PackageRoot { .. } => PythonAuthorityFailureKind::InvalidPackageRoot,
         E::Spawn { .. } => PythonAuthorityFailureKind::CheckerSpawnFailed,
@@ -4559,6 +4568,33 @@ fn python_authority_failure_kind(error: &PythonCheckerError) -> PythonAuthorityF
         E::Timeout { .. } => PythonAuthorityFailureKind::CheckerTimeout,
         E::Workspace { .. } => PythonAuthorityFailureKind::WorkspaceIoFailed,
         E::InvalidSpan { .. } => PythonAuthorityFailureKind::InvalidFactSpan,
+    }
+}
+
+/// Config bytes and paths remain private; copy the immutable source authority
+/// before the checker error is flattened into bounded local-debug text.
+fn retain_python_configuration(
+    diagnostic: backend_library::interface::CompilerDiagnostic,
+    error: &PythonCheckerError,
+) -> backend_library::interface::CompilerDiagnostic {
+    if let PythonCheckerError::ProjectConfiguration {
+        source_identity,
+        source_byte_len,
+        omitted_faults,
+        evidence_truncated,
+        ..
+    } = error
+    {
+        diagnostic.with_python_configuration(
+            backend_library::interface::PythonConfigurationRefusalFacts {
+                source_identity: *source_identity,
+                source_byte_len: *source_byte_len,
+                omitted_faults: *omitted_faults,
+                evidence_truncated: *evidence_truncated,
+            },
+        )
+    } else {
+        diagnostic
     }
 }
 
@@ -4864,6 +4900,9 @@ fn package_authority_projection(
         | PackageAuthorityError::GoAuthorityUnavailable { .. }
         | PackageAuthorityError::ClangProject(_) => (Phase::Open, Class::Binding),
         PackageAuthorityError::PythonSyntax(_) => (Phase::Parse, Class::Syntax),
+        PackageAuthorityError::PythonPyrefly(PythonCheckerError::ProjectConfiguration { .. }) => {
+            (Phase::Parse, Class::Authority)
+        }
         PackageAuthorityError::PythonPyrefly(_) => (Phase::TypeCheck, Class::Type),
         PackageAuthorityError::RustProject(_)
         | PackageAuthorityError::RustWorkspaceWitnessUnavailable { .. } => {
@@ -5404,6 +5443,70 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("stop and restart"), "{message}");
+    }
+
+    #[test]
+    fn python_configuration_terminal_retains_typed_source_evidence_after_serialization() {
+        use backend_frontend_python::legacy::checker::CheckerError;
+        use backend_library::PackageCompilerFailure;
+        use backend_library::interface::PythonAuthorityFailureKind;
+        let error = CheckerError::ProjectConfiguration {
+            path: "/private/captured/pyproject.toml".into(),
+            source_identity: [37; 32],
+            source_byte_len: 8192,
+            omitted_faults: 100,
+            evidence_truncated: true,
+            faults: Box::new([]),
+        };
+        assert_eq!(
+            super::python_authority_failure_kind(&error),
+            PythonAuthorityFailureKind::ConfigurationRefused
+        );
+        let request = super::ApplicationCompilerRequest {
+            profile: LanguageProfile::Python(backend_semantic::vocabulary::PythonVersion::Python313),
+            stage: Stage::LowerIr,
+            source: "value = 1\n",
+        };
+        let source = request_source(request).unwrap();
+        let target = ContentId::<backend_version::CompilationTargetDomain>::from_canonical_bytes(
+            b"python-config-refusal",
+        );
+        let toolchain = ResolvedToolchain::from_version(
+            NativeTool::Python,
+            host_path("/toolchain/bin/python3"),
+            b"Python 3.13.0",
+        )
+        .unwrap();
+        let terminal = package_authority_terminal(
+            target,
+            request,
+            source,
+            ToolchainSelection::ResolvedNative(toolchain),
+            PackageAuthorityError::PythonPyrefly(error),
+        );
+        let failure = PackageCompilerFailure::from_package_terminal("pkg/module.py", &terminal)
+            .unwrap()
+            .unwrap();
+        let encoded = failure.encode_bounded_json().unwrap();
+        assert!(!String::from_utf8_lossy(&encoded).contains("/private/captured"));
+        let reopened = PackageCompilerFailure::decode_bounded_json(&encoded).unwrap();
+        assert_eq!(reopened.kind_tag(), "python_configuration_refused");
+        let backend_library::PackageCompilerFailureCause::Authority {
+            phase,
+            class,
+            diagnostic: Some(facts),
+        } = reopened.cause()
+        else {
+            panic!("configuration authority")
+        };
+        assert_eq!(*phase, backend_library::AuthorityPhaseFact::Parse);
+        assert_eq!(*class, backend_library::AuthorityClassFact::Authority);
+        let configuration = facts.python_configuration.unwrap();
+        assert_eq!(configuration.source_identity, [37; 32]);
+        assert_eq!(configuration.source_byte_len, 8192);
+        assert_eq!(configuration.omitted_faults, 100);
+        assert!(configuration.evidence_truncated);
+        assert!(reopened.retained_diagnostic_for_local_debug().is_none());
     }
 
     #[derive(Debug)]

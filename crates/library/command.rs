@@ -1193,6 +1193,13 @@ pub enum CommandFailure {
     },
     /// The query failed bounded semantic validation.
     InvalidQuery(String),
+    /// This query needs a corpus which the single owner is preparing or retiring.
+    QueryPreparation {
+        /// Exact published view requested by the caller.
+        basis: ViewRevision,
+        /// Current preparation state; no query result is implied.
+        state: QueryPreparationState,
+    },
     /// Useful profiles committed, with all unavailable profiles explicitly retained.
     PartiallyPublished(crate::IndexJobPartialPublication),
     /// Adding a package reached an exact compact-fragment compiler refusal.
@@ -1236,9 +1243,18 @@ impl core::fmt::Display for CommandFailure {
                 formatter.write_str("query basis does not match the view revision")
             }
             Self::InvalidQuery(message) => write!(formatter, "invalid query: {message}"),
-            Self::PartiallyPublished(partial) => write!(formatter,
+            Self::QueryPreparation { state, .. } => write!(
+                formatter,
+                "query corpus is {}; retry the same query against the current view",
+                state.as_str()
+            ),
+            Self::PartiallyPublished(partial) => write!(
+                formatter,
                 "partially published {}: {} profiles remain unavailable at workspace sequence {}",
-                partial.package.as_str(), partial.refused_profiles.len(), partial.receipt.workspace_sequence()),
+                partial.package.as_str(),
+                partial.refused_profiles.len(),
+                partial.receipt.workspace_sequence()
+            ),
             Self::CompilerRefused { detail, failure } => {
                 write!(
                     formatter,
@@ -1254,6 +1270,27 @@ impl core::fmt::Display for CommandFailure {
             Self::MutationRequiresOwner => {
                 formatter.write_str("mutation requires the durable engine owner")
             }
+        }
+    }
+}
+
+/// Readiness of the one corpus preparation worker, separate from vector search.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryPreparationState {
+    /// The current immutable view is being prepared asynchronously.
+    Preparing,
+    /// A previous selection must retire before a new worker can start.
+    Retiring,
+}
+
+impl QueryPreparationState {
+    /// Stable wire and presentation spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Preparing => "preparing",
+            Self::Retiring => "retiring",
         }
     }
 }

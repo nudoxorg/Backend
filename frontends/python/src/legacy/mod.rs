@@ -450,6 +450,10 @@ pub struct DeclarationFact {
     pub kind: DeclarationKind,
     /// Source range covering the declaration.
     pub span: Span,
+    /// Exact declaration extent containing `name_span`. A module constant
+    /// may be rebound: `span` retains the first written annotation/alias owner,
+    /// while this extent follows the current binding identifier.
+    pub binding_span: Span,
     /// Base-class expressions in the order written.
     pub bases: Vec<Annotation>,
     /// Recognized class form, absent when the declaration is not a class.
@@ -819,6 +823,7 @@ fn module_facts(
             name_span: module_span,
             kind: DeclarationKind::Module,
             span: module_span,
+            binding_span: module_span,
             bases: Vec::new(),
             class_form: None,
             decorators: Vec::new(),
@@ -1334,6 +1339,7 @@ impl<'a> Projection<'a> {
                         row.kind == DeclarationKind::Constant && row.name == declaration.name
                     }) {
                         existing.name_span = declaration.name_span;
+                        existing.binding_span = declaration.binding_span;
                     }
                 }
                 return;
@@ -2218,6 +2224,7 @@ impl<'a> Visitor<'a> for Projection<'a> {
                     name_span: span(function.name.range()),
                     kind: DeclarationKind::Function,
                     span: declaration_span,
+                    binding_span: declaration_span,
                     bases: Vec::new(),
                     class_form: None,
                     decorators,
@@ -2266,6 +2273,7 @@ impl<'a> Visitor<'a> for Projection<'a> {
                     name_span: span(class.name.range()),
                     kind: DeclarationKind::Class,
                     span: span(class.range),
+                    binding_span: span(class.range),
                     bases,
                     class_form: Some(form),
                     decorators,
@@ -2627,6 +2635,7 @@ impl Projection<'_> {
             name_span: binding_span,
             kind: DeclarationKind::Alias,
             span: span(statement.range()),
+            binding_span: span(statement.range()),
             bases: Vec::new(),
             class_form: None,
             decorators: Vec::new(),
@@ -2667,6 +2676,7 @@ impl Projection<'_> {
             name_span: binding_span,
             kind: DeclarationKind::Alias,
             span: span(statement.range()),
+            binding_span: span(statement.range()),
             bases: Vec::new(),
             class_form: None,
             decorators: Vec::new(),
@@ -2700,6 +2710,7 @@ impl Projection<'_> {
             name_span: span(name.range()),
             kind: DeclarationKind::Alias,
             span: span(statement.range()),
+            binding_span: span(statement.range()),
             bases: Vec::new(),
             class_form: None,
             decorators: Vec::new(),
@@ -2737,6 +2748,7 @@ impl Projection<'_> {
                 name_span: span(name.range()),
                 kind: DeclarationKind::Field,
                 span: span(statement.range()),
+                binding_span: span(statement.range()),
                 bases: Vec::new(),
                 class_form: None,
                 decorators: Vec::new(),
@@ -2778,6 +2790,7 @@ impl Projection<'_> {
                 name_span: span(name.range()),
                 kind: DeclarationKind::Constant,
                 span: span(statement.range()),
+                binding_span: span(statement.range()),
                 bases: Vec::new(),
                 class_form: None,
                 decorators: Vec::new(),

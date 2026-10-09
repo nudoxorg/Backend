@@ -1363,7 +1363,7 @@ fn journal_v3_payload(bytes: &[u8], field: &str, version: u16) -> Vec<u8> {
 
 #[test]
 fn journal_v3_known_snapshots_events_chain_to_current_without_replacing_history() {
-    for version in [21, 22, 23, 24, backend_library::DTO_VERSION] {
+    for version in [21, 22, 23, 24, 25, backend_library::DTO_VERSION] {
         journal_v3_known_version_chain(version);
     }
 }
@@ -1588,7 +1588,7 @@ fn journal_v3_refuses_unknown_versions_fields_proof_basis_and_descriptor_changes
 
 #[test]
 fn journal_v3_native_v21_fixture_appends_checked_current_and_reopens_twice() {
-    assert_eq!(backend_library::DTO_VERSION, 25);
+    assert_eq!(backend_library::DTO_VERSION, 26);
     // Exact historical codec output: native ARM64 source 9b0001b3af, whose
     // production persisted grammar is still v21. No field/version rewrite.
     let native = include_bytes!("fixtures/view-journal-v3-native-v21.bin");

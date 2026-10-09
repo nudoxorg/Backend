@@ -4917,3 +4917,37 @@ fn cold_cursor_verification_never_initializes_authority_for_a_forged_token() {
     );
     assert!(fixture.paths.authority_secret().is_file());
 }
+
+#[test]
+fn query_preparation_is_a_typed_transient_tool_result_with_exact_retry_not_index_failure() {
+    let basis = backend_library::ViewRevision::from_bytes([41; 32]);
+    for state in [
+        backend_library::QueryPreparationState::Preparing,
+        backend_library::QueryPreparationState::Retiring,
+    ] {
+        let fault = backend_present::Fault::from_command_failure(
+            &backend_library::CommandFailure::QueryPreparation { basis, state },
+            backend_present::Operand::Text("authentication".to_owned()),
+        )
+        .with_affordance(backend_present::Affordance::RetrySearch {
+            text: "authentication".to_owned(),
+            limit: 17,
+        });
+        let result = RpcError::from_fault(&fault)
+            .into_tool_result()
+            .expect("typed workload readiness is a domain result");
+        assert_eq!(result["isError"], true);
+        let dto = &result["structuredContent"];
+        assert_eq!(dto["slug"], "query-preparation");
+        assert_eq!(dto["query_preparation"]["basis"], "29".repeat(32));
+        assert_eq!(dto["query_preparation"]["state"], state.as_str());
+        assert_eq!(
+            dto["call"],
+            json!({"name":"backend.search","arguments":{"query":"authentication","limit":17}})
+        );
+        assert_eq!(dto["shell"], "nudox search authentication --limit 17");
+        assert!(dto.get("compiler_failure").is_none_or(Value::is_null));
+        assert!(dto.get("partial_publication").is_none_or(Value::is_null));
+        assert!(fault.cause().sentence().contains("indexing has not failed"));
+    }
+}

@@ -636,6 +636,28 @@ fn add_claim_bound(bound: &mut usize, claim: &WireClaim) {
 
 fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), ReplyAdmissionError> {
     let valid = match (command, reply) {
+        (_, CommandReply::Failed(crate::CommandFailure::QueryPreparation { basis, .. })) => {
+            let expected = match command {
+                Command::Search(query) => query.basis(),
+                Command::GraphQuery(query)
+                    if !matches!(query.control(), crate::GraphQueryControl::Cancel) =>
+                {
+                    query.page().basis()
+                }
+                _ => {
+                    return Err(ReplyAdmissionError::Protocol(
+                        "query preparation does not match this command".to_owned(),
+                    ));
+                }
+            };
+            if *basis != expected {
+                return Err(ReplyAdmissionError::Protocol(
+                    "query preparation source revision does not match the request".to_owned(),
+                ));
+            }
+            true
+        }
+
         (
             Command::Add { package, .. },
             CommandReply::Failed(crate::CommandFailure::PartiallyPublished(partial)),
@@ -944,5 +966,84 @@ fn command_cursor(command: &Command) -> Option<Cursor> {
             .continuation()
             .map(crate::PageContinuation::cursor),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod query_preparation_tests {
+    use super::*;
+    use crate::{GraphQueryRequest, NameQuery, Query, QueryLimit, QueryPreparationState};
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn query_preparation_reply_is_bound_to_search_or_active_graph_and_exact_basis() {
+        let basis = ViewRevision::from_bytes([41; 32]);
+        let foreign = ViewRevision::from_bytes([42; 32]);
+        let query = GraphQueryRequest::new(
+            "{ Package { coordinate @output } }",
+            BTreeMap::new(),
+            basis,
+            QueryLimit::default(),
+        )
+        .expect("graph request");
+        for state in [
+            QueryPreparationState::Preparing,
+            QueryPreparationState::Retiring,
+        ] {
+            let reply = ReplyDto::new(
+                19,
+                CommandReply::Failed(crate::CommandFailure::QueryPreparation { basis, state }),
+            );
+            for command in [
+                Command::Search(Query::new("authentication", basis, QueryLimit::default())),
+                Command::GraphQuery(query.clone()),
+            ] {
+                assert!(admit_reply(&CommandDto::new(19, command), &reply).is_ok());
+            }
+            for command in [
+                Command::Search(Query::new("authentication", foreign, QueryLimit::default())),
+                Command::GraphQuery(
+                    GraphQueryRequest::new(
+                        "{ Package { coordinate @output } }",
+                        BTreeMap::new(),
+                        foreign,
+                        QueryLimit::default(),
+                    )
+                    .expect("foreign graph"),
+                ),
+                Command::GraphQuery(query.clone().cancelled()),
+                Command::Health,
+                Command::Revision,
+                Command::Name(NameQuery::new(
+                    "authentication",
+                    basis,
+                    QueryLimit::default(),
+                )),
+                Command::Resolve {
+                    text: "authentication".to_owned(),
+                },
+                Command::Remove {
+                    package: crate::package_key("project"),
+                },
+            ] {
+                assert!(
+                    matches!(
+                        admit_reply(&CommandDto::new(19, command), &reply),
+                        Err(ReplyAdmissionError::Protocol(_))
+                    ),
+                    "readiness cannot authorize a foreign basis, cancel or unrelated command"
+                );
+            }
+            assert!(matches!(
+                admit_reply(
+                    &CommandDto::new(
+                        20,
+                        Command::Search(Query::new("authentication", basis, QueryLimit::default()))
+                    ),
+                    &reply
+                ),
+                Err(ReplyAdmissionError::RequestMismatch { .. })
+            ));
+        }
     }
 }

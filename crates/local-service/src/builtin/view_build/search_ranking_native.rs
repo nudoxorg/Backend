@@ -47,7 +47,7 @@ fn display(
         coordinate: row.label.clone(),
         name,
         signature: row.signature.clone(),
-        documentation: String::new(),
+        documentation: identity::fragment_text(&row.document),
         score: None,
         project,
         parent: None,
@@ -62,7 +62,7 @@ fn source_declaration_ranking_native_python_import_types_keep_real_function_firs
     std::fs::create_dir_all(project_root.join("core")).expect("source directory");
     let mut modules = vec![
         ("core/__init__.py".to_owned(), String::new()),
-        ("core/config.py".to_owned(), "from functools import lru_cache\n\nclass AppSettings:\n    pass\n\n@lru_cache\ndef get_app_settings() -> AppSettings:\n    return AppSettings()\n".to_owned()),
+        ("core/config.py".to_owned(), "from functools import lru_cache\n\nclass AppSettings:\n    pass\n\n@lru_cache\ndef get_app_settings() -> AppSettings:\n    \"\"\"Authentication needle is documented here.\"\"\"\n    return AppSettings()\n".to_owned()),
     ];
     for index in 0..32 {
         modules.push((format!("caller_{index}.py"), format!("from core.config import get_app_settings\n\ndef use_settings_{index}():\n    return get_app_settings()\n")));
@@ -276,7 +276,7 @@ fn source_declaration_ranking_native_python_import_types_keep_real_function_firs
         view.clone(),
         view.capability().expect("selected capability"),
         super::super::admitted_coverage().expect("coverage"),
-        corpus,
+        corpus.clone(),
     )
     .expect("native search corpus");
     let result = coordinator
@@ -345,4 +345,82 @@ fn source_declaration_ranking_native_python_import_types_keep_real_function_firs
         page.next.is_some(),
         "inferred types remain in continuation pages"
     );
+
+    // This one-word query matches only actual source documentation, not any
+    // declaration name or signature. It must never turn into a Names request.
+    assert!(corpus.facts().iter().all(|fact| {
+        let display = fact.presentation();
+        !display.name.to_lowercase().contains("authentication")
+            && display
+                .signature
+                .as_deref()
+                .is_none_or(|signature| !signature.to_lowercase().contains("authentication"))
+    }));
+    assert!(corpus.facts().iter().any(|fact| {
+        fact.presentation().id == function
+            && fact
+                .presentation()
+                .documentation
+                .contains("Authentication needle")
+    }));
+    let document_request = backend_engine::Query::new(
+        "authentication",
+        view.root(),
+        backend_engine::QueryLimit::new(25).expect("limit"),
+    );
+    let run_document_search = |selected: &crate::builtin::query::QueryCoordinator| {
+        crate::builtin::query::search_page(
+            selected,
+            &library,
+            &mut crate::builtin::query::RemoteSemantic::Unconfigured,
+            super::super::admitted_coverage().expect("coverage"),
+            &document_request,
+        )
+        .expect("full one-word document search")
+        .0
+    };
+    let initial = run_document_search(&coordinator);
+    assert!(
+        initial
+            .root
+            .rows()
+            .iter()
+            .any(|row| row.id.stable_key() == function)
+    );
+    assert_eq!(
+        run_document_search(&coordinator),
+        initial,
+        "warm full Search preserves cold result order and recipe"
+    );
+    let durable = temporary.path().join("document-search-index");
+    {
+        let mut owner = crate::builtin::query::SearchSnapshotOwner::with_durable_root(&durable);
+        let selected = owner
+            .select(
+                workspace,
+                view.clone(),
+                view.capability().expect("capability"),
+                super::super::admitted_coverage().expect("coverage"),
+                corpus.clone(),
+            )
+            .expect("persist current full projection");
+        assert_eq!(run_document_search(selected), initial);
+    }
+    let mut cold_owner = crate::builtin::query::SearchSnapshotOwner::with_durable_root(&durable);
+    let selected = cold_owner
+        .select(
+            workspace,
+            view.clone(),
+            view.capability().expect("capability"),
+            super::super::admitted_coverage().expect("coverage"),
+            corpus,
+        )
+        .expect("restore current full projection");
+    assert_eq!(
+        run_document_search(selected),
+        initial,
+        "restart preserves documentation hit, order and recipe"
+    );
+    assert_eq!(cold_owner.projection_opens(), 1);
+    assert_eq!(cold_owner.projection_builds(), 0);
 }

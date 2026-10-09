@@ -139,8 +139,8 @@ pub use command::ReferenceFact;
 pub use command::{
     Command, CommandFailure, CommandId, CommandReply, CompileExecutionIntent, DocumentQuery,
     GraphNeighborhoodQuery, HealthReport, NameQuery, OutlineQuery, PageContinuation, PageRequest,
-    PageTerminal, ProjectionPage, Query, QueryLimit, QueryRecord, RevisionReceipt,
-    SemanticSearchReason, SemanticSearchStatus, SymbolAddress, ViewRevision,
+    PageTerminal, ProjectionPage, Query, QueryLimit, QueryPreparationState, QueryRecord,
+    RevisionReceipt, SemanticSearchReason, SemanticSearchStatus, SymbolAddress, ViewRevision,
 };
 pub use command_registry::{
     COMMANDS, CommandDomain, CommandMutation, CommandSpec, command_spec, command_spec_named,

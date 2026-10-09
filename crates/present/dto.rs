@@ -295,6 +295,19 @@ pub struct FaultDto {
     /// Exact partial publication basis and the full typed terminal profile partition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partial_publication: Option<backend_library::IndexJobPartialPublication>,
+    /// Exact corpus readiness; distinct from index and vector-search status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_preparation: Option<QueryPreparationDto>,
+}
+
+/// A query waiting on the single asynchronous corpus preparation worker.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct QueryPreparationDto {
+    /// Exact view requested by the caller, encoded as its complete identity.
+    pub basis: String,
+    /// Preparing or retiring; neither is a completed query result.
+    pub state: backend_library::QueryPreparationState,
 }
 
 /// Machine-actionable setup facts derived from a producer's native tool requirement.
@@ -325,6 +338,12 @@ impl FaultDto {
             call: fault.affordance().tool_call(),
             compiler_failure: fault.compiler_failure().cloned(),
             partial_publication: fault.partial_publication_receipt().cloned(),
+            query_preparation: fault.query_preparation().map(|(basis, state)| {
+                QueryPreparationDto {
+                    basis: backend_library::encode_id(basis.as_bytes()),
+                    state,
+                }
+            }),
             compiler_tool_requirement: fault.compiler_failure().and_then(|failure| {
                 failure
                     .required_native_tool()

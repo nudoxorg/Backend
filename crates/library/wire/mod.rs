@@ -67,7 +67,6 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current transport DTO version. Version 25 adds typed project lockfile
-/// membership coverage. Live clients and services must use version 25 together;
-/// the explicitly maintained journal grammar is a separate persisted domain.
-pub const DTO_VERSION: u16 = 25;
+/// Current transport DTO version. Version 26 adds a command-bound transient
+/// query-preparation refusal. Persisted view rows and compact events are unchanged.
+pub const DTO_VERSION: u16 = 26;

@@ -23,6 +23,15 @@ const CONFIG_BYTES: u64 = 1024 * 1024;
 mod baseline;
 pub(super) use baseline::CapturedBaselines;
 
+/// Reopens an explanatory config read under the existing captured-input bounds.
+pub(super) fn read_configuration_input(
+    root: &Path,
+    relative: &Path,
+    control: PythonProjectControl<'_>,
+) -> Result<Option<Vec<u8>>, CheckerError> {
+    baseline::read_captured_input(root, relative, Some(control))
+}
+
 /// The compiled native solver is a distinct producer from an external Pyrefly command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativePythonProducerIdentity([u8; 32]);

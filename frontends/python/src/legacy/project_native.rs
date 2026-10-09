@@ -647,12 +647,15 @@ pub(super) fn analyze(
                                 candidate.kind,
                                 DeclarationKind::Class | DeclarationKind::Function
                             ) && candidate.name_span != target.name_span
-                                && candidate.span.start <= target.span.start
-                                && target.span.end <= candidate.span.end
+                                && candidate.binding_span.start <= target.binding_span.start
+                                && target.binding_span.end <= candidate.binding_span.end
                         })
                         .collect::<Vec<_>>();
                     enclosing.sort_by_key(|candidate| {
-                        (candidate.span.start, std::cmp::Reverse(candidate.span.end))
+                        (
+                            candidate.binding_span.start,
+                            std::cmp::Reverse(candidate.binding_span.end),
+                        )
                     });
                     let mut scopes = enclosing
                         .iter()
@@ -667,8 +670,8 @@ pub(super) fn analyze(
                             program: program_identity,
                             source: *source_identity,
                             path,
-                            declaration_start: target.span.start,
-                            declaration_end: target.span.end,
+                            declaration_start: target.binding_span.start,
+                            declaration_end: target.binding_span.end,
                             name_start: target.name_span.start,
                         },
                     )
@@ -1157,17 +1160,15 @@ fn captured_finder(
             }
             let (config, errors) = ConfigFile::from_file(&path);
             if !errors.is_empty() {
-                return Err(project_error(
-                    &path.to_string_lossy(),
-                    &format!(
-                        "native captured configuration errors: {}",
-                        errors
-                            .iter()
-                            .map(ConfigError::get_message)
-                            .collect::<Vec<_>>()
-                            .join("; ")
-                    ),
-                ));
+                let relative = path.strip_prefix(mirror).map_err(|_| {
+                    project_error("", "native config is outside the captured mirror")
+                })?;
+                return Err(super::project_configuration::configuration_error(
+                    &path,
+                    &original_root.join(relative),
+                    &errors,
+                    control,
+                )?);
             }
             let priority = match config.source {
                 ConfigSource::File(_) | ConfigSource::FailedParse(_) => 0,

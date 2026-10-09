@@ -9,6 +9,7 @@ pub(crate) enum CommandFailureWire {
     NotFound(EmptyWire),
     WrongBasis(WrongBasisWire),
     InvalidQuery(TextWire),
+    QueryPreparation(QueryPreparationWire),
     CompilerRefused(CompilerRefusedWire),
     PartiallyPublished(crate::IndexJobPartialPublication),
     CursorMismatch(EmptyWire),
@@ -22,6 +23,13 @@ pub(crate) enum CommandFailureWire {
 pub(crate) struct WrongBasisWire {
     expected: String,
     observed: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct QueryPreparationWire {
+    basis: String,
+    state: crate::QueryPreparationState,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -43,7 +51,15 @@ pub(crate) fn command_failure_to_wire(failure: &CommandFailure) -> CommandFailur
         CommandFailure::InvalidQuery(message) => CommandFailureWire::InvalidQuery(TextWire {
             text: message.clone(),
         }),
-        CommandFailure::PartiallyPublished(partial) => CommandFailureWire::PartiallyPublished(partial.clone()),
+        CommandFailure::QueryPreparation { basis, state } => {
+            CommandFailureWire::QueryPreparation(QueryPreparationWire {
+                basis: encode_id(basis.as_bytes()),
+                state: *state,
+            })
+        }
+        CommandFailure::PartiallyPublished(partial) => {
+            CommandFailureWire::PartiallyPublished(partial.clone())
+        }
         CommandFailure::CompilerRefused { detail, failure } => {
             CommandFailureWire::CompilerRefused(CompilerRefusedWire {
                 detail: TextWire {
@@ -77,6 +93,12 @@ pub(crate) fn command_failure_from_wire(
             ),
         },
         CommandFailureWire::InvalidQuery(value) => CommandFailure::InvalidQuery(value.text),
+        CommandFailureWire::QueryPreparation(value) => CommandFailure::QueryPreparation {
+            basis: ViewRevision::from_bytes(
+                decode_id(&value.basis).map_err(|error| error.to_string())?,
+            ),
+            state: value.state,
+        },
         CommandFailureWire::PartiallyPublished(partial) => {
             partial.admit().map_err(|error| error.to_string())?;
             CommandFailure::PartiallyPublished(partial)
@@ -153,5 +175,53 @@ mod tests {
         assert!(!display.contains("content:"));
         assert!(!display.contains("native stdout"));
         Ok(())
+    }
+
+    #[test]
+    fn query_preparation_wire_retains_exact_basis_and_closed_state() -> Result<(), String> {
+        for state in [
+            crate::QueryPreparationState::Preparing,
+            crate::QueryPreparationState::Retiring,
+        ] {
+            let failure = CommandFailure::QueryPreparation {
+                basis: ViewRevision::from_bytes([41; backend_version::ID_BYTES]),
+                state,
+            };
+            let wire = command_failure_to_wire(&failure);
+            let value = serde_json::to_value(&wire).map_err(|error| error.to_string())?;
+            assert_eq!(value["kind"], "query_preparation");
+            assert_eq!(value["data"]["basis"], "29".repeat(32));
+            assert_eq!(value["data"]["state"], state.as_str());
+            assert_eq!(command_failure_from_wire(wire)?, failure);
+            let reply = crate::ReplyDto::new(19, crate::CommandReply::Failed(failure));
+            crate::ReplyDto::decode_against(
+                &serde_json::to_vec(&reply).map_err(|error| error.to_string())?,
+                &reply,
+            )
+            .map_err(|error| error.to_string())?;
+            let mut old = serde_json::to_value(&reply).map_err(|error| error.to_string())?;
+            old["version"] = serde_json::json!(25);
+            let error = crate::decode_reply_body(
+                &serde_json::to_vec(&old).map_err(|error| error.to_string())?,
+            )
+            .expect_err("old25 live peers cannot decode new readiness");
+            assert!(error.contains("reply DTO version 25"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn query_preparation_wire_rejects_foreign_states_fields_and_malformed_basis() {
+        for value in [
+            serde_json::json!({"kind":"query_preparation","data":{"basis":"29".repeat(32),"state":"ready"}}),
+            serde_json::json!({"kind":"query_preparation","data":{"basis":"29".repeat(32),"state":"preparing","available":true}}),
+        ] {
+            assert!(serde_json::from_value::<CommandFailureWire>(value).is_err());
+        }
+        let wire: CommandFailureWire = serde_json::from_value(serde_json::json!({
+            "kind":"query_preparation","data":{"basis":"not-a-root","state":"preparing"},
+        }))
+        .expect("closed state itself admits");
+        assert!(command_failure_from_wire(wire).is_err());
     }
 }
