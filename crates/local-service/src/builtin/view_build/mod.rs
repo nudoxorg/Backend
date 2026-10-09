@@ -8,6 +8,8 @@
 
 mod call_join;
 #[cfg(test)]
+mod foreign_target_display_tests;
+#[cfg(test)]
 mod go_field_join;
 #[cfg(test)]
 mod go_type_mention_join;
