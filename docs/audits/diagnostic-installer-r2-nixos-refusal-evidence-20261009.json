@@ -1,0 +1,393 @@
+{
+  "schema": "nudox.root.r2-real-nixos-refusal-audit.v1",
+  "checked_at": "2026-10-09T22:10:27.710306+00:00",
+  "scope": "Actual public R2 stdin packaging refusal on NixOS, not compatible install or native product acceptance",
+  "final_receipt": {
+    "schema": "nudox.r2-public-cold-install-final.v1",
+    "result": "expected-nixos-stub-loader-refusal-no-activation",
+    "source_commit": "94ffb7f8945554d502e69350d0e5529d89cbe327",
+    "publication_receipt": {
+      "path": "/private/tmp/nudox-root-forgejo-r2-publication-20261009.json",
+      "sha256": "8b16d4cf683d99896a8856ab01ac182134258426195c25b152d4aafedc3a2d6d",
+      "all_four_public_assets_readback_passed": true
+    },
+    "host": {
+      "name": "ilo",
+      "os": "NixOS 26.05 (Yarara)",
+      "machine": "x86_64",
+      "kernel": "6.18.38",
+      "euid": 0,
+      "python": "/nix/store/jxyrvv4gbpnp3ap5iy7wxwl1sg4x2x88-python3-3.14.6/bin/python3",
+      "python_version": "3.14.6",
+      "preflight_stdout_sha256": "714c5f0970d06ab4bba5e677a41c5510882c6871d1e5ad721228022453682008",
+      "preflight_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "source_and_pins": {
+      "bootstrap_source_commit": "94ffb7f8945554d502e69350d0e5529d89cbe327",
+      "linux_payload_source": "c0016d4f4fc9b0f0a452c7c9556954e2287948b3",
+      "linux_payload_tag": "checkpoint-20261008-c0016d4f4f-linux-x64",
+      "linux_archive_sha256": "b394e10203d02898b20140f0f9f9869aa8412e6e288fb8d8e25ac01469df7a05",
+      "linux_archive_bytes": 133556631,
+      "linux_manifest_expected_sha256": "384ab3802efd256752f39fd8e3d79ace7af9e3ccf72797c71577327cb2535b24",
+      "linux_manifest_actual_sha256": "384ab3802efd256752f39fd8e3d79ace7af9e3ccf72797c71577327cb2535b24"
+    },
+    "public_asset_downloads": [
+      {
+        "name": "bootstrap.public.py",
+        "path": "/private/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/remote-proof/bootstrap.public.py",
+        "bytes": 13426,
+        "sha256": "36f0ea62e3b49cadebcef0f89e735639530c0ba1686e62d4dcbfea96294174f5"
+      },
+      {
+        "name": "bootstrap.stdin.py",
+        "path": "/private/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/remote-proof/bootstrap.stdin.py",
+        "bytes": 13426,
+        "sha256": "36f0ea62e3b49cadebcef0f89e735639530c0ba1686e62d4dcbfea96294174f5"
+      },
+      {
+        "name": "channel.public.json",
+        "path": "/private/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/remote-proof/channel.public.json",
+        "bytes": 3222,
+        "sha256": "f7c24e4628ac88f6252063b1e54f9a96054993ea90964dcdc555809888cf4fef"
+      },
+      {
+        "name": "linux-installer.public.py",
+        "path": "/private/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/remote-proof/linux-installer.public.py",
+        "bytes": 49954,
+        "sha256": "e11fcc271fc3a8feb676b9f8c383bbf5bdc215578ffc399774819184908ed071"
+      },
+      {
+        "name": "linux-manifest.public.json",
+        "path": "/private/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/remote-proof/linux-manifest.public.json",
+        "bytes": 698,
+        "sha256": "384ab3802efd256752f39fd8e3d79ace7af9e3ccf72797c71577327cb2535b24"
+      }
+    ],
+    "asset_prefetch_exit_codes": {
+      "bootstrap": 0,
+      "channel": 0,
+      "linux_installer": 0,
+      "linux_manifest": 0
+    },
+    "invocation": {
+      "bootstrap_url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009-r2/install.py",
+      "bootstrap_sha256": "36f0ea62e3b49cadebcef0f89e735639530c0ba1686e62d4dcbfea96294174f5",
+      "pipeline_argv": [
+        [
+          "/run/current-system/sw/bin/curl",
+          "-fsSL",
+          "--connect-timeout",
+          "10",
+          "--max-time",
+          "120",
+          "https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009-r2/install.py"
+        ],
+        [
+          "/run/current-system/sw/bin/tee",
+          "/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/proof/bootstrap.stdin.py"
+        ],
+        [
+          "/nix/store/jxyrvv4gbpnp3ap5iy7wxwl1sg4x2x88-python3-3.14.6/bin/python3",
+          "-",
+          "--prefix",
+          "/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/prefix"
+        ]
+      ],
+      "remote_timeout_seconds": 180,
+      "outer_ssh_timeout_seconds": 240,
+      "environment": {
+        "keys": [
+          "HOME",
+          "LANG",
+          "LC_ALL",
+          "PATH",
+          "PWD",
+          "SHLVL",
+          "TMPDIR",
+          "TZ",
+          "_"
+        ],
+        "env_i": true,
+        "forbidden_prefixes": [
+          "LD_",
+          "NIX_",
+          "BACKEND_",
+          "NUDOX_",
+          "NODE_"
+        ],
+        "forbidden_prefixes_present": [],
+        "python_executable": "/nix/store/jxyrvv4gbpnp3ap5iy7wxwl1sg4x2x88-python3-3.14.6/bin/python3",
+        "euid": 0,
+        "home": "/root",
+        "path": "/run/current-system/sw/bin"
+      },
+      "environment_forbidden_prefixes_absent": true,
+      "no_loader_or_runtime_overrides": true,
+      "attempt_exit_code": 1,
+      "ssh_wrapper_exit_code": 0,
+      "elapsed_seconds": 34.601,
+      "python_argv": [
+        "/nix/store/jxyrvv4gbpnp3ap5iy7wxwl1sg4x2x88-python3-3.14.6/bin/python3",
+        "-",
+        "--prefix",
+        "/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/prefix"
+      ]
+    },
+    "raw_output": {
+      "stdout": {
+        "path": "/private/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/remote-proof/stdout.bin",
+        "bytes": 705,
+        "sha256": "b3d8c5645dcff1069e60dd5f1fb2c1b82c44a9afd4550a770a6aa2732c209333",
+        "remote_path": "/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/proof/stdout.bin"
+      },
+      "stderr": {
+        "path": "/private/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/remote-proof/stderr.bin",
+        "bytes": 678,
+        "sha256": "8d5e6d206d76a5583ec983bfd8de68391df98b2459429a5fbd874352310963d1",
+        "remote_path": "/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/proof/stderr.bin"
+      },
+      "failure_excerpt": "nudox diagnostic mirror: TypeScript SDK Node --version probe failed; expected='v24.18.0'; returncode=127; stdout=<empty>; stderr='Could not start dynamically linked executable: /tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/prefix/lib/nudox/versions/.staging-k4_pku50/share/nudox/typescript/node/bin/node\\nNixOS cannot run dynamically linked executables intended for generic\\nlinux environments out of the box. For more information, see:\\nhttps://nix.dev/permalink/stub-ld\\n'; the loader reports that generic Linux dynamically linked executables are unsupported on this NixOS host; the packaged Node runtime needs a compatible host runtime before this install can be published\n"
+    },
+    "activation_ledger": {
+      "path": "/private/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/remote-proof/activation-ledger.json",
+      "sha256": "8e3a4d4bea9eb4f0815fe951b4ffef524bd9dacfc5321ca26396927605cd52b8",
+      "current_pointer_absent": true,
+      "command_aliases_absent": true,
+      "installed_markers": [],
+      "prefix_inventory": [
+        {
+          "path": "/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/prefix/bin",
+          "present": true,
+          "kind": "directory",
+          "mode": "0o700",
+          "uid": 0,
+          "dev": 66309,
+          "ino": 19399815
+        },
+        {
+          "path": "/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/prefix/lib",
+          "present": true,
+          "kind": "directory",
+          "mode": "0o700",
+          "uid": 0,
+          "dev": 66309,
+          "ino": 19399800
+        },
+        {
+          "path": "/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/prefix/lib/nudox",
+          "present": true,
+          "kind": "directory",
+          "mode": "0o700",
+          "uid": 0,
+          "dev": 66309,
+          "ino": 19399801
+        },
+        {
+          "path": "/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/prefix/lib/nudox/.install.lock",
+          "present": true,
+          "kind": "file",
+          "mode": "0o600",
+          "uid": 0,
+          "dev": 66309,
+          "ino": 19399802,
+          "bytes": 0
+        },
+        {
+          "path": "/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/prefix/lib/nudox/versions",
+          "present": true,
+          "kind": "directory",
+          "mode": "0o700",
+          "uid": 0,
+          "dev": 66309,
+          "ino": 19399814
+        }
+      ],
+      "remote_path": "/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/proof/activation-ledger.json"
+    },
+    "remote_proof_directory": "/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/proof",
+    "remote_prefix_left_in_place": "/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/prefix",
+    "no_cargo_compiler_index_owner_or_mcp_stdio": true,
+    "release_mutations": 0,
+    "native_jobs": 0,
+    "private_prefix": "/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/prefix",
+    "sdk_probe": {
+      "first_probe": "Node --version",
+      "expected_version": "v24.18.0",
+      "exit_code": 127,
+      "result": "NixOS stub-loader execution refusal",
+      "typescript_api_version_probe": "not reached because Node --version failed first"
+    }
+  },
+  "root_verified_named_files": [
+    {
+      "path": "/private/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/remote-proof/bootstrap.public.py",
+      "bytes": 13426,
+      "sha256": "36f0ea62e3b49cadebcef0f89e735639530c0ba1686e62d4dcbfea96294174f5"
+    },
+    {
+      "path": "/private/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/remote-proof/bootstrap.stdin.py",
+      "bytes": 13426,
+      "sha256": "36f0ea62e3b49cadebcef0f89e735639530c0ba1686e62d4dcbfea96294174f5"
+    },
+    {
+      "path": "/private/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/remote-proof/channel.public.json",
+      "bytes": 3222,
+      "sha256": "f7c24e4628ac88f6252063b1e54f9a96054993ea90964dcdc555809888cf4fef"
+    },
+    {
+      "path": "/private/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/remote-proof/linux-installer.public.py",
+      "bytes": 49954,
+      "sha256": "e11fcc271fc3a8feb676b9f8c383bbf5bdc215578ffc399774819184908ed071"
+    },
+    {
+      "path": "/private/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/remote-proof/linux-manifest.public.json",
+      "bytes": 698,
+      "sha256": "384ab3802efd256752f39fd8e3d79ace7af9e3ccf72797c71577327cb2535b24"
+    },
+    {
+      "path": "/private/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/remote-proof/stdout.bin",
+      "bytes": 705,
+      "sha256": "b3d8c5645dcff1069e60dd5f1fb2c1b82c44a9afd4550a770a6aa2732c209333"
+    },
+    {
+      "path": "/private/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/remote-proof/stderr.bin",
+      "bytes": 678,
+      "sha256": "8d5e6d206d76a5583ec983bfd8de68391df98b2459429a5fbd874352310963d1"
+    },
+    {
+      "path": "/private/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/remote-proof/activation-ledger.json",
+      "bytes": 2369,
+      "sha256": "8e3a4d4bea9eb4f0815fe951b4ffef524bd9dacfc5321ca26396927605cd52b8"
+    }
+  ],
+  "observer_normalization_raw_preserved": [
+    {
+      "raw_path": "/private/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/remote-proof/activation-ledger.json.raw.bin",
+      "raw_bytes": 2370,
+      "raw_sha256": "ae6a2ba95d1e27765fc447660f3170e793669ab9d545b5df29555316eb52e470",
+      "normalized_sha256": "8e3a4d4bea9eb4f0815fe951b4ffef524bd9dacfc5321ca26396927605cd52b8",
+      "observer_change": "removed only literal two-byte \\n suffix; parsed JSON identical"
+    },
+    {
+      "raw_path": "/private/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/remote-proof/remote-receipt.json.raw.bin",
+      "raw_bytes": 2758,
+      "raw_sha256": "ebcc51e9c68f0467387739f019851621adb548f9bfc7c9f02ae3dc9c38eaffce",
+      "normalized_sha256": "b7af4b6fd1be6682166deeee8feddefc9a08c54e0e3f69b7d99f54581622d410",
+      "observer_change": "removed only literal two-byte \\n suffix; parsed JSON identical"
+    },
+    {
+      "raw_path": "/private/tmp/nudox-r2-public-cold-20261009-3ed3fc47763e/remote-proof/attempt-environment.json.raw.bin",
+      "raw_bytes": 445,
+      "raw_sha256": "2817286580cddfc031d34fa8ffc8a6a8edd7fafc2ec1f7506ff05c171adb281d",
+      "normalized_sha256": "c261b12fd7060656b1fcabd116c9e2dd829837f813ba24610ed0b2e803339cf1",
+      "observer_change": "removed only literal two-byte \\n suffix; parsed JSON identical"
+    }
+  ],
+  "complete_packet_hashes": [
+    {
+      "path": "final-receipt.json",
+      "bytes": 8535,
+      "sha256": "ac624d4599e629e56f885fea9b2b56a13132a94725d75175da66f7a01df665c1"
+    },
+    {
+      "path": "local-receipt.json",
+      "bytes": 3200,
+      "sha256": "c89f964b4682e30ab3ab3c4344f3a3d51d39826d97688a6a7cea9f823f3f4bb6"
+    },
+    {
+      "path": "preflight.stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "preflight.stdout.bin",
+      "bytes": 1289,
+      "sha256": "714c5f0970d06ab4bba5e677a41c5510882c6871d1e5ad721228022453682008"
+    },
+    {
+      "path": "remote-attempt.sh",
+      "bytes": 6732,
+      "sha256": "c775cb4c89019a04fd608f2bc5b29c37aa7e50382eae0abc18c826236ad026e7"
+    },
+    {
+      "path": "remote-proof/activation-ledger.json",
+      "bytes": 2369,
+      "sha256": "8e3a4d4bea9eb4f0815fe951b4ffef524bd9dacfc5321ca26396927605cd52b8"
+    },
+    {
+      "path": "remote-proof/activation-ledger.json.raw.bin",
+      "bytes": 2370,
+      "sha256": "ae6a2ba95d1e27765fc447660f3170e793669ab9d545b5df29555316eb52e470"
+    },
+    {
+      "path": "remote-proof/attempt-environment.json",
+      "bytes": 444,
+      "sha256": "c261b12fd7060656b1fcabd116c9e2dd829837f813ba24610ed0b2e803339cf1"
+    },
+    {
+      "path": "remote-proof/attempt-environment.json.raw.bin",
+      "bytes": 445,
+      "sha256": "2817286580cddfc031d34fa8ffc8a6a8edd7fafc2ec1f7506ff05c171adb281d"
+    },
+    {
+      "path": "remote-proof/attempt.exit",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "path": "remote-proof/bootstrap.public.py",
+      "bytes": 13426,
+      "sha256": "36f0ea62e3b49cadebcef0f89e735639530c0ba1686e62d4dcbfea96294174f5"
+    },
+    {
+      "path": "remote-proof/bootstrap.stdin.py",
+      "bytes": 13426,
+      "sha256": "36f0ea62e3b49cadebcef0f89e735639530c0ba1686e62d4dcbfea96294174f5"
+    },
+    {
+      "path": "remote-proof/channel.public.json",
+      "bytes": 3222,
+      "sha256": "f7c24e4628ac88f6252063b1e54f9a96054993ea90964dcdc555809888cf4fef"
+    },
+    {
+      "path": "remote-proof/linux-installer.public.py",
+      "bytes": 49954,
+      "sha256": "e11fcc271fc3a8feb676b9f8c383bbf5bdc215578ffc399774819184908ed071"
+    },
+    {
+      "path": "remote-proof/linux-manifest.public.json",
+      "bytes": 698,
+      "sha256": "384ab3802efd256752f39fd8e3d79ace7af9e3ccf72797c71577327cb2535b24"
+    },
+    {
+      "path": "remote-proof/remote-receipt.json",
+      "bytes": 2757,
+      "sha256": "b7af4b6fd1be6682166deeee8feddefc9a08c54e0e3f69b7d99f54581622d410"
+    },
+    {
+      "path": "remote-proof/remote-receipt.json.raw.bin",
+      "bytes": 2758,
+      "sha256": "ebcc51e9c68f0467387739f019851621adb548f9bfc7c9f02ae3dc9c38eaffce"
+    },
+    {
+      "path": "remote-proof/stderr.bin",
+      "bytes": 678,
+      "sha256": "8d5e6d206d76a5583ec983bfd8de68391df98b2459429a5fbd874352310963d1"
+    },
+    {
+      "path": "remote-proof/stdout.bin",
+      "bytes": 705,
+      "sha256": "b3d8c5645dcff1069e60dd5f1fb2c1b82c44a9afd4550a770a6aa2732c209333"
+    },
+    {
+      "path": "ssh-run.stderr.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "ssh-run.stdout.bin",
+      "bytes": 1835,
+      "sha256": "d209f0ca0014007c8556eb9a30243ccf673eeef0999e39c2ea75a19d60deed20"
+    }
+  ]
+}

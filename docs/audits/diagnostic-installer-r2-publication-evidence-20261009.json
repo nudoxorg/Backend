@@ -1,0 +1,52 @@
+{
+  "schema": "nudox.root.diagnostic-r2-publication.v1",
+  "source": "94ffb7f8945554d502e69350d0e5529d89cbe327",
+  "started": "2026-10-09T21:43:49.236579+00:00",
+  "assets": [
+    {
+      "id": 9,
+      "name": "install-forgejo-bootstrap-36f0ea62e3b49cad.py",
+      "bytes": 13426,
+      "sha256": "36f0ea62e3b49cadebcef0f89e735639530c0ba1686e62d4dcbfea96294174f5",
+      "authenticated_draft_readback": true,
+      "anonymous_readback": true,
+      "public_url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009-r2/install-forgejo-bootstrap-36f0ea62e3b49cad.py"
+    },
+    {
+      "id": 10,
+      "name": "install.py",
+      "bytes": 13426,
+      "sha256": "36f0ea62e3b49cadebcef0f89e735639530c0ba1686e62d4dcbfea96294174f5",
+      "authenticated_draft_readback": true,
+      "anonymous_readback": true,
+      "public_url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009-r2/install.py"
+    },
+    {
+      "id": 11,
+      "name": "install-linux-x64-e11fcc271fc3a8fe.py",
+      "bytes": 49954,
+      "sha256": "e11fcc271fc3a8feb676b9f8c383bbf5bdc215578ffc399774819184908ed071",
+      "authenticated_draft_readback": true,
+      "anonymous_readback": true,
+      "public_url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009-r2/install-linux-x64-e11fcc271fc3a8fe.py"
+    },
+    {
+      "id": 12,
+      "name": "preview-channel.json",
+      "bytes": 3222,
+      "sha256": "f7c24e4628ac88f6252063b1e54f9a96054993ea90964dcdc555809888cf4fef",
+      "authenticated_draft_readback": true,
+      "anonymous_readback": true,
+      "public_url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009-r2/preview-channel.json"
+    }
+  ],
+  "complete": true,
+  "draft": false,
+  "old_release_mutations": 0,
+  "native_application_acceptance": "UNRUN",
+  "release_id": 17,
+  "tag": "nudox-diagnostic-installer-20261009-r2",
+  "target_commitish": "gui-index-integration",
+  "published_at": "2026-10-09T17:44:04-04:00",
+  "finished": "2026-10-09T21:44:13.699522+00:00"
+}
