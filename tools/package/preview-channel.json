@@ -9,40 +9,42 @@
   "platforms": {
     "linux-x64": {
       "status": "diagnostic-preview",
-      "source": "0584c3b6c019956d5fcb51dbd299c64389c3a11b",
-      "tag": "checkpoint-20261006-0584c3b6c0-linux-x64",
+      "source": "c0016d4f4fc9b0f0a452c7c9556954e2287948b3",
+      "tag": "checkpoint-20261008-c0016d4f4f-linux-x64",
       "known_failures": [
-        "Whole Requests publication refuses staged output versus exact compiler attempt.",
-        "TypeScript installed fallback witness refusal; whole-project QA is false."
+        "Ubuntu 24.04+ / glibc 2.39+ only; October 8 diagnostic binaries.",
+        "Original GNU install/reinstall passed; packed native runtime control timed out.",
+        "Fresh whole-application acceptance remains open; October 9 Rust repairs are not included."
       ],
       "installer": {
-        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261006-0584c3b6c0-linux-x64/install-linux-x64.py",
-        "sha256": "61837bb39ca18cd0a39e0f63c05f80bc35a34a798aa686f50af7cb85a46c6a90",
-        "bytes": 30967
+        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261008-c0016d4f4f-linux-x64/install-linux-x64-8baa4a60be98ee4e.py",
+        "sha256": "8baa4a60be98ee4e41e26c3b1cf0d4800e8ec4b8c80758128f38c19a06c799c9",
+        "bytes": 46973
       },
       "archive": {
-        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261006-0584c3b6c0-linux-x64/nudox-linux-x86_64-0584c3b6c0.tar.gz",
-        "sha256": "a6376f0cae1c68a628b90abab221ad86db446c606c5e2ca982e22cc2fdaf1d0f",
-        "bytes": 82277423
+        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261008-c0016d4f4f-linux-x64/nudox-linux-x86_64-c0016d4f4f.tar.gz",
+        "sha256": "b394e10203d02898b20140f0f9f9869aa8412e6e288fb8d8e25ac01469df7a05",
+        "bytes": 133556631
       }
     },
     "macos-arm64": {
       "status": "diagnostic-preview",
-      "source": "0584c3b6c019956d5fcb51dbd299c64389c3a11b",
-      "tag": "checkpoint-20261006-0584c3b6c0-macos-arm64",
+      "source": "a659d5d1819078b3c0046937191a9b54a76b1dfb",
+      "tag": "checkpoint-20261006-a659d5d181-macos-arm64",
       "known_failures": [
-        "Whole Requests publication refuses staged output versus exact compiler attempt.",
-        "TypeScript installed fallback witness refusal; whole-project QA is false."
+        "October 6 diagnostic binaries; October 9 Rust repairs are not included.",
+        "Existing HTTPie read tools were verified; fresh large-project indexing is not established.",
+        "Semantic embeddings are unconfigured; HTTPie history exceeds this binary row limit."
       ],
       "installer": {
-        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261006-0584c3b6c0-macos-arm64/install-macos-arm64.py",
-        "sha256": "72e88553137ed564b9a0fb75a909712ec0da7f7b43df7dfafc7754b717a07d51",
-        "bytes": 15521
+        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261006-a659d5d181-macos-arm64/install-macos-arm64-82f71f98a05a2b13.py",
+        "sha256": "82f71f98a05a2b13e05afd7185e35c5f8d252b9973ab4ce6d32ab22688794f25",
+        "bytes": 22094
       },
       "archive": {
-        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261006-0584c3b6c0-macos-arm64/nudox-macos-arm64-0584c3b6c0.tar.gz",
-        "sha256": "c01679c20f953f7129254790d2295936c902efbf036e42edfd8b72100fe0967b",
-        "bytes": 70245136
+        "url": "https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261006-a659d5d181-macos-arm64/nudox-macos-arm64-a659d5d181.tar.gz",
+        "sha256": "f88b841030699ae277afe697b6c92e98dfbb09a815f40388e3d2fbee0661e110",
+        "bytes": 70309994
       }
     }
   }
