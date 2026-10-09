@@ -42,10 +42,12 @@ use std::path::{Path, PathBuf};
 
 #[path = "product_state/catalog_search.rs"]
 mod catalog_search;
+#[path = "product_state/project_lockfile.rs"]
+mod project_lockfile;
 
-const STATE_VERSION: u16 = 1;
+const STATE_VERSION: u16 = 2;
 const MAX_PROJECTS: usize = 256;
-const MAX_PROJECT_MEMBERS: usize = 1024;
+const MAX_PROJECT_MEMBERS: usize = backend_library::MAX_PROJECT_MEMBERS;
 const MAX_SUBSCRIPTIONS: usize = 4096;
 const MAX_TREE_NODES: usize = 2048;
 const INDEX_SEARCH_CURSOR_VERSION: u8 = 4;
@@ -118,10 +120,15 @@ impl ProductState {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => StoredState::default(),
             Err(error) => return Err(format!("read product state: {error}")),
         };
-        if state.version != STATE_VERSION
+        // v1 has no lockfile coverage field. It is readable without rewriting;
+        // the next successful mutation publishes v2 atomically.
+        if !matches!(state.version, 1 | STATE_VERSION)
+            || (state.version == 1
+                && state.projects.iter().any(|project| project.lockfile_membership.is_some()))
             || state.projects.len() > MAX_PROJECTS
             || state.subscriptions.len() > MAX_SUBSCRIPTIONS
             || state.tree.len() > MAX_TREE_NODES
+            || state.projects.iter().any(|project| project.admit().is_err())
         {
             return Err("product state violates its version or cardinality bounds".to_owned());
         }
@@ -602,6 +609,7 @@ impl ProductState {
     }
 
     fn commit(&mut self) -> Result<(), String> {
+        self.state.version = STATE_VERSION;
         self.state.epoch = self
             .state
             .epoch
@@ -719,7 +727,7 @@ impl ProductState {
             return Err("project store is full".to_owned());
         }
         if let Some(path) = lockfile.as_ref() {
-            validate_lockfile(Path::new(path.as_str()))?;
+            project_lockfile::read(Path::new(path.as_str()))?;
         }
         let id = ProjectId::new(self.state.next_project);
         self.state.next_project =
@@ -729,6 +737,7 @@ impl ProductState {
             id,
             name,
             lockfile,
+            lockfile_membership: None,
             members: Box::new([]),
             member_manifest_names: Box::new([]),
         };
@@ -766,6 +775,8 @@ impl ProductState {
         }
         members.sort();
         project.members = members.into_boxed_slice();
+        project.member_manifest_names = Box::new([]);
+        project.lockfile_membership = None;
         Ok(project.clone())
     }
 
@@ -775,7 +786,10 @@ impl ProductState {
             .lockfile
             .as_ref()
             .ok_or("project has no lockfile")?;
-        self.state.projects[index].members = parse_lockfile(Path::new(path.as_str()))?;
+        let (members, membership) = project_lockfile::read(Path::new(path.as_str()))?;
+        self.state.projects[index].members = members;
+        self.state.projects[index].member_manifest_names = Box::new([]);
+        self.state.projects[index].lockfile_membership = Some(membership);
         Ok(self.state.projects[index].clone())
     }
 
@@ -2726,12 +2740,16 @@ fn member_manifest_name(
             let manifest = super::local_manifest::require_local_manifest(project_root)?;
             Ok(manifest.record.name)
         }
-        PackageReference::Purl(_) => {
+        PackageReference::Purl(coordinate) => {
             let records = indexed_package_records(view, member, workspace)?;
-            let record = records
-                .first()
-                .ok_or_else(|| format!("project member {} is not indexed", member.as_str()))?;
-            Ok(record.name.clone())
+            // A lockfile proves the package tuple even before its sources are
+            // indexed. A lineage label adds no registry or manifest facts.
+            match records.first() {
+                Some(record) => Ok(record.name.clone()),
+                None => {
+                    ProductText::new(coordinate.lineage_name()).map_err(|error| error.to_string())
+                }
+            }
         }
     }
 }
@@ -3640,56 +3658,6 @@ fn subject_title(subject: &TreeSubject) -> ProductText {
         TreeSubject::Explore(None) => "Explore",
     };
     ProductText::new(text).unwrap_or_else(|_| ProductText::from_static("Untitled"))
-}
-
-fn validate_lockfile(path: &Path) -> Result<(), String> {
-    if !path.is_absolute() {
-        return Err("lockfile path must be absolute".to_owned());
-    }
-    match path.file_name().and_then(|name| name.to_str()) {
-        Some(
-            "Cargo.lock" | "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock" | "uv.lock"
-            | "poetry.lock" | "requirements.txt" | "go.mod" | "pom.xml" | "packages.lock.json"
-            | "conan.lock" | "vcpkg.json",
-        ) => Ok(()),
-        _ => Err("unsupported lockfile name".to_owned()),
-    }
-}
-
-fn parse_lockfile(path: &Path) -> Result<Box<[PackageReference]>, String> {
-    validate_lockfile(path)?;
-    let text = fs::read_to_string(path).map_err(|error| format!("read lockfile: {error}"))?;
-    if text.len() > 8 * 1024 * 1024 {
-        return Err("lockfile exceeds byte bound".to_owned());
-    }
-    let mut rows = BTreeSet::new();
-    let mut name = None;
-    for line in text.lines().map(str::trim) {
-        if let Some(value) = line.strip_prefix("name = ") {
-            name = Some(value.trim_matches(['\"', '\'', ',']).to_owned());
-        } else if let Some(value) = line.strip_prefix("version = ")
-            && let Some(name) = name.take()
-        {
-            rows.insert(format!(
-                "pkg:cargo/{name}@{}",
-                value.trim_matches(['\"', '\'', ','])
-            ));
-        } else if let Some((name, version)) = line.split_once("==") {
-            rows.insert(format!("{name}@{version}"));
-        } else if let Some(value) = line.strip_prefix("require ")
-            && let Some((name, version)) = value.split_once(char::is_whitespace)
-        {
-            rows.insert(format!("{name}@{version}"));
-        }
-    }
-    if rows.len() > MAX_PROJECT_MEMBERS {
-        return Err("lockfile exceeds project member bound".to_owned());
-    }
-    rows.into_iter()
-        .map(PackageReference::parse)
-        .collect::<Result<Vec<_>, _>>()
-        .map(Vec::into_boxed_slice)
-        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -6946,4 +6914,6 @@ edition = \"2021\"
         let _ = fs::remove_dir_all(real_root);
         let _ = fs::remove_dir_all(workspace);
     }
+    include!("product_state/project_lockfile_tests.rs");
+
 }

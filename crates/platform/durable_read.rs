@@ -19,6 +19,40 @@ use std::path::Path;
 /// Returns the filesystem error, `InvalidData` for an oversized file, or
 /// `InvalidInput` if the final component or limit cannot be represented.
 pub fn read_regular_bounded(path: &Path, maximum: usize) -> io::Result<Vec<u8>> {
+    let file = open_regular(path)?;
+    let length = file.metadata()?.len();
+    read_bounded(file, length, maximum)
+}
+
+/// Reads one bounded regular file and rejects a changed held-file revision.
+///
+/// Uses the same pinned parent/nonblocking no-follow opener as
+/// [`read_regular_bounded`]. Length and native change/write times are compared
+/// on the same descriptor before and after reading; pathname replacement cannot
+/// switch the observed object. A changed observation is refused, never retried.
+pub fn read_regular_bounded_stable(path: &Path, maximum: usize) -> io::Result<Vec<u8>> {
+    read_stable_with(open_regular(path)?, maximum, |file, length, maximum| {
+        read_bounded(file, length, maximum)
+    })
+}
+
+/// Reads a stable direct file through a caller-retained source directory.
+///
+/// Callers that also use pathname-based APIs can retain this same capability
+/// and verify its pathname at their observation boundaries.
+pub fn read_regular_bounded_stable_at(
+    directory: &DirectoryCapability,
+    name: &str,
+    maximum: usize,
+) -> io::Result<Vec<u8>> {
+    read_stable_with(
+        directory.open_file_read(name)?,
+        maximum,
+        |file, length, maximum| read_bounded(file, length, maximum),
+    )
+}
+
+fn open_regular(path: &Path) -> io::Result<std::fs::File> {
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -33,9 +67,51 @@ pub fn read_regular_bounded(path: &Path, maximum: usize) -> io::Result<Vec<u8>> 
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     let directory = DirectoryCapability::open_read_only_source(parent)?;
-    let file = directory.open_file_read(name)?;
+    directory.open_file_read(name)
+}
+
+fn read_stable_with(
+    mut file: std::fs::File,
+    maximum: usize,
+    read: impl FnOnce(&mut std::fs::File, u64, usize) -> io::Result<Vec<u8>>,
+) -> io::Result<Vec<u8>> {
+    let before = file_revision(&file)?;
     let length = file.metadata()?.len();
-    read_bounded(file, length, maximum)
+    let bytes = read(&mut file, length, maximum)?;
+    let after = file_revision(&file)?;
+    if before != after || bytes.len() as u64 != length {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "regular file changed while reading",
+        ));
+    }
+    Ok(bytes)
+}
+
+#[cfg(unix)]
+fn file_revision(file: &std::fs::File) -> io::Result<(u64, u64, u64, i64, i64, i64, i64)> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata()?;
+    Ok((
+        metadata.dev(),
+        metadata.ino(),
+        metadata.len(),
+        metadata.mtime(),
+        metadata.mtime_nsec(),
+        metadata.ctime(),
+        metadata.ctime_nsec(),
+    ))
+}
+#[cfg(windows)]
+fn file_revision(file: &std::fs::File) -> io::Result<crate::win32::project_fs::FileRevision> {
+    crate::win32::project_fs::revision_for_file(file)
+}
+#[cfg(not(any(unix, windows)))]
+fn file_revision(_file: &std::fs::File) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "stable file revisions are unavailable on this platform",
+    ))
 }
 
 fn read_bounded(reader: impl Read, length: u64, maximum: usize) -> io::Result<Vec<u8>> {
@@ -266,3 +342,7 @@ mod tests {
         fs::remove_dir_all(root).expect("cleanup");
     }
 }
+
+#[cfg(test)]
+#[path = "durable_read_stable_tests.rs"]
+mod stable_tests;
