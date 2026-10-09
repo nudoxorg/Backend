@@ -3,7 +3,7 @@
 from __future__ import annotations
 # Helpers reused unchanged from pinned install-linux-x64.py
 # SHA 61837bb39ca18cd0a39e0f63c05f80bc35a34a798aa686f50af7cb85a46c6a90.
-import argparse, hashlib, json, os, re, shutil, subprocess, sys, tarfile, tempfile, time
+import argparse, hashlib, json, os, re, shutil, stat, subprocess, sys, tarfile, tempfile, time
 from pathlib import Path, PurePosixPath
 import urllib.request, urllib.parse, urllib.error
 MAX_ARCHIVE_BYTES=2*1024**3
@@ -139,7 +139,39 @@ def command_links(managed_root: Path) -> dict[str, str]:
     }
     return {name: str(managed_root / "current" / "bin" / binary) for name, binary in binaries.items()}
 
-def install(prefix: Path, entry: dict, manifest: dict, archive: Path) -> None:
+def check_checkpoint_update(current: Path, incoming_tag: str, allow_downgrade: bool = False) -> None:
+    """Preserve the active checkpoint when release dates cannot prove an upgrade."""
+    pattern = r"checkpoint-([0-9]{8})-[a-f0-9]{10}-(?:linux-x64|macos-arm64)"
+    incoming = re.fullmatch(pattern, incoming_tag)
+    if allow_downgrade or incoming is None or not current.exists():
+        return
+    marker = current.resolve(strict=True) / ".installed-release.json"
+    try:
+        descriptor = os.open(marker, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_size > 16 * 1024:
+                raise InstallError("active release marker is not a bounded regular file")
+            raw = stream.read(16 * 1024 + 1)
+            after = os.fstat(stream.fileno())
+            identity = lambda value: (value.st_dev, value.st_ino, value.st_size,
+                                      value.st_mtime_ns, value.st_ctime_ns)
+            if len(raw) > 16 * 1024 or identity(before) != identity(after) or identity(after) != identity(marker.lstat()):
+                raise InstallError("active release marker changed during admission")
+        installed = json.loads(raw)
+        if not isinstance(installed, dict) or not isinstance(installed.get("tag"), str):
+            raise InstallError("active release marker has no checkpoint identity")
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise InstallError("cannot verify active checkpoint before update") from error
+    active = re.fullmatch(pattern, installed["tag"])
+    if active is None or incoming_tag == installed["tag"]:
+        return
+    if incoming[1] < active[1] or incoming[1] == active[1]:
+        reason = "older" if incoming[1] < active[1] else "different same-date"
+        raise InstallError(f"refusing {reason} checkpoint {incoming_tag}; active is {installed['tag']}. Use --allow-downgrade to replace it explicitly")
+
+
+def install(prefix: Path, entry: dict, manifest: dict, archive: Path, *, allow_downgrade: bool = False) -> None:
     os.umask(0o077)
     prefix.mkdir(mode=0o700, parents=True, exist_ok=True)
     lib_dir = prefix / "lib"
@@ -180,6 +212,7 @@ def install(prefix: Path, entry: dict, manifest: dict, archive: Path) -> None:
         raise InstallError(f"refusing to replace non-symlink active install pointer: {current}")
     if current.is_symlink() and not _managed_link(current, managed_root):
         raise InstallError(f"refusing to replace active install pointer outside the managed NuDox install: {current}")
+    check_checkpoint_update(current, entry["tag"], allow_downgrade)
     stage = Path(tempfile.mkdtemp(prefix=".staging-", dir=version_root))
     try:
         safe_extract(archive, stage)
@@ -246,6 +279,7 @@ def verify_package(root,entry,manifest):
         if subprocess.run([str(root/'bin'/name),'--help'],env=clean,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=15).returncode: raise InstallError('packaged startup failed: '+name)
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__); parser.add_argument('--prefix',type=Path)
+    parser.add_argument('--allow-downgrade',action='store_true',help='allow an older or different same-date checkpoint')
     for flag in ['archive-url','archive-sha256','archive-size','source','tag']: parser.add_argument('--'+flag,required=True)
     args=parser.parse_args(argv)
     if sys.platform!='darwin' or os.uname().machine.lower() not in {'arm64','aarch64'}: raise InstallError('Mac preview supports arm64 only')
@@ -260,7 +294,7 @@ def main(argv=None):
         archive=Path(temporary)/'archive.tar.gz'
         download_archive(args.archive_url,args.archive_sha256,size,archive)
         entry={'version':'0.0.0','tag':args.tag,'source_sha':args.source,'asset':Path(parsed.path).name}
-        install(prefix,entry,{'sha256':args.archive_sha256},archive)
+        install(prefix,entry,{'sha256':args.archive_sha256},archive,allow_downgrade=args.allow_downgrade)
     print('Installed diagnostic Mac CLI preview in '+str(prefix)+'; add '+str(prefix/'bin')+' to PATH.')
     print('Known publication failures remain; ad-hoc signed, not notarized. Commands: nudox, nudox-mcp, nudox-locald.')
     return 0

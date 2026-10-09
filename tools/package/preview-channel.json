@@ -2,9 +2,9 @@
   "schema": "nudox.diagnostic-preview-channel.v1",
   "production_ready": false,
   "bootstrap": {
-    "url": "https://github.com/nudoxorg/Backend/releases/download/nudox-preview-installer/install-bootstrap-c7abc61872fbf970.py",
-    "sha256": "c7abc61872fbf9701fb21eccffe0bded7a6bcb513e7c849532a443fb74f5edaa",
-    "bytes": 5780
+    "url": "https://github.com/nudoxorg/Backend/releases/download/nudox-preview-installer/install-bootstrap-c533dfe34b7d137a.py",
+    "sha256": "c533dfe34b7d137a08f1569e217cdfd44fc733c8584f0b619c57a23b27cc0209",
+    "bytes": 6033
   },
   "platforms": {
     "linux-x64": {

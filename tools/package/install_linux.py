@@ -572,7 +572,39 @@ def command_links(managed_root: Path) -> dict[str, str]:
     return {name: str(managed_root / "current" / "bin" / binary) for name, binary in binaries.items()}
 
 
-def install(prefix: Path, entry: dict, manifest: dict, archive: Path) -> None:
+def check_checkpoint_update(current: Path, incoming_tag: str, allow_downgrade: bool = False) -> None:
+    """Preserve the active checkpoint when release dates cannot prove an upgrade."""
+    pattern = r"checkpoint-([0-9]{8})-[a-f0-9]{10}-(?:linux-x64|macos-arm64)"
+    incoming = re.fullmatch(pattern, incoming_tag)
+    if allow_downgrade or incoming is None or not current.exists():
+        return
+    marker = current.resolve(strict=True) / ".installed-release.json"
+    try:
+        descriptor = os.open(marker, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_size > 16 * 1024:
+                raise InstallError("active release marker is not a bounded regular file")
+            raw = stream.read(16 * 1024 + 1)
+            after = os.fstat(stream.fileno())
+            identity = lambda value: (value.st_dev, value.st_ino, value.st_size,
+                                      value.st_mtime_ns, value.st_ctime_ns)
+            if len(raw) > 16 * 1024 or identity(before) != identity(after) or identity(after) != identity(marker.lstat()):
+                raise InstallError("active release marker changed during admission")
+        installed = json.loads(raw)
+        if not isinstance(installed, dict) or not isinstance(installed.get("tag"), str):
+            raise InstallError("active release marker has no checkpoint identity")
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise InstallError("cannot verify active checkpoint before update") from error
+    active = re.fullmatch(pattern, installed["tag"])
+    if active is None or incoming_tag == installed["tag"]:
+        return
+    if incoming[1] < active[1] or incoming[1] == active[1]:
+        reason = "older" if incoming[1] < active[1] else "different same-date"
+        raise InstallError(f"refusing {reason} checkpoint {incoming_tag}; active is {installed['tag']}. Use --allow-downgrade to replace it explicitly")
+
+
+def install(prefix: Path, entry: dict, manifest: dict, archive: Path, *, allow_downgrade: bool = False) -> None:
     os.umask(0o077)
     prefix.mkdir(mode=0o700, parents=True, exist_ok=True)
     lib_dir = prefix / "lib"
@@ -613,6 +645,7 @@ def install(prefix: Path, entry: dict, manifest: dict, archive: Path) -> None:
         raise InstallError(f"refusing to replace non-symlink active install pointer: {current}")
     if current.is_symlink() and not _managed_link(current, managed_root):
         raise InstallError(f"refusing to replace active install pointer outside the managed NuDox install: {current}")
+    check_checkpoint_update(current, entry["tag"], allow_downgrade)
     stage = Path(tempfile.mkdtemp(prefix=".staging-", dir=version_root))
     try:
         safe_extract(archive, stage)
@@ -642,6 +675,7 @@ def install(prefix: Path, entry: dict, manifest: dict, archive: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prefix", type=Path, help="user install prefix (default: ~/.local)")
+    parser.add_argument("--allow-downgrade", action="store_true", help="allow an older or different same-date checkpoint")
     parser.add_argument("--candidate-directory", type=Path, help="install the exact digest-pinned package output for native QA")
     args = parser.parse_args(argv)
     if sys.platform != "linux" or not (os.uname().machine.lower() in {"x86_64", "amd64"}):
@@ -658,7 +692,7 @@ def main(argv: list[str] | None = None) -> int:
             entry, manifest, url = load_release()
             archive = Path(temp_dir) / entry["asset"]
             download_archive(url, manifest["sha256"], manifest["size_bytes"], archive)
-        install(prefix, entry, manifest, archive)
+        install(prefix, entry, manifest, archive, allow_downgrade=args.allow_downgrade)
     print(f"Installed NuDox {entry['version']} CLI, MCP server and local daemon in {prefix}.")
     print("Commands: nudox, nudox-mcp, nudox-locald, backend-cli, backend-mcp, backend-locald")
     print(f"MCP executable for client configuration: {prefix / 'bin' / 'backend-mcp'}")
