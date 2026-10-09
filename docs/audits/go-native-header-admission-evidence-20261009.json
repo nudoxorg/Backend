@@ -1,0 +1,46 @@
+{
+  "schema": "nudox-root-go-native-audit-v1",
+  "source": {
+    "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+    "clean": true,
+    "commit": "ab57113e53b08941c2ef7e5b6b0416b03bf3f909",
+    "tree": "39e8215f388175655ac5666157c12e29f33d7a87"
+  },
+  "git_blobs_independently_verified": 17992,
+  "blob_bytes": 466233495,
+  "gitlinks": {
+    "server/index/turso": [
+      "160000",
+      "052ad81a7dbb6efed34ea482ae6c7e2e6f6682e0"
+    ]
+  },
+  "raw_manifest_sha256": "d184fbd7c08c955d9623cae860facdeb1e71cbcac993ed1317689818bb76e14e",
+  "raw_archive_sha256": "9f63e96180a46a8e7397bdd1382803922a492b51e6ccbf6c2986c665b8fc346e",
+  "raw_file_count": 36,
+  "raw_bytes": 38662107,
+  "native_result": {
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "names": [
+      "driver::lower::go::tests::actual_go_ignored_platform_image_admits_without_active_package_spans"
+    ]
+  },
+  "native_receipt_sha256": "d82a8b329bfa7e62011f272f7531dd86416e1ec7ef06287c8a8cd53398de3c60",
+  "producer_receipt_sha256": "c74023cd7a788b192b65a268e1f78ad5e44d9b1da89ae6233045d565345c6f7e",
+  "immutable_image": {
+    "path": "/Users/rmccrar6/nudox-functional-corpus-20261006/sol61-go-same-capture-c8bc-native5-20261009/fixture-ab571/raw-recovery/producer/images/engine-lib",
+    "sha256": "f6e974571f30ca9ab6a2022df040bcf63922e20a09e6d7983c7d5f6994b8b41a",
+    "bytes": 462726144,
+    "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol61-nonblocking-search-20261007/.local/search-mac-owned-role/.nudox-cargo/slot-0/debug/deps/backend_engine-d8f1fd294bc12763"
+  },
+  "retained_unchanged_workspace_externs": 22,
+  "literal_return_sha256": "06853683f1850e1900981070fbc674742784e2151c27eee1fff31ce2a6e3f5a7",
+  "limitations": [
+    "Only the strict Go engine fixture; not current public application acceptance.",
+    "Actual native test took322.21 seconds, largely toolchain hashing; no latency claim.",
+    "Original failed native fixture, observer refusal and240-second operational timeout remain preserved.",
+    "The correction changes test premises and keeps native incomplete-header refusal strict; no production Go relaxation.",
+    "The immutable executable is remote-sealed; its multi-hundred-MiB bytes were not downloaded."
+  ]
+}
