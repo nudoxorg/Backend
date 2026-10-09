@@ -70,19 +70,11 @@ pub fn page_from_document_with_graph_relations(
             captured.map(backend_library::SourceLocation::path),
             captured.map(backend_library::SourceLocation::start_line),
         );
-    // The page's own row. A structural row is keyed by
-    // `symbol_key(coordinate)`, the key the document echoes; a compiler
-    // backed row is keyed by its compiler identity instead, so it is found
-    // by its exact coordinate. Its key is the one its members name as their
-    // parent and its graph edges name as their end.
-    let own = members.iter().find(|row| {
-        row.id == RowId::Symbol(document.symbol)
-            || (matches!(row.id, RowId::Symbol(_)) && row.label == coordinate)
-    });
-    let centre = match own.map(|row| row.id) {
-        Some(RowId::Symbol(symbol)) => symbol,
-        _ => document.symbol,
-    };
+    // The admitted document carries the actual selected identity for both
+    // structural and compiler-backed rows. A repeated coordinate cannot
+    // replace that identity or select another row's members and graph edges.
+    let centre = document.symbol;
+    let own = members.iter().find(|row| row.id == RowId::Symbol(centre));
     let language = page_language(&identity, members, centre);
     let source = source_from(&identity, &document.location, &document.excerpt);
     let kind = own.and_then(|row| row.kind);
