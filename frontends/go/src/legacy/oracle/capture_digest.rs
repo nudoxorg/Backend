@@ -40,9 +40,7 @@ struct CachedDigest {
 #[derive(Default)]
 pub(super) struct CaptureScratch {
     files: BTreeMap<PathBuf, CachedDigest>,
-    #[cfg(test)]
     pub(super) hash_bytes: u64,
-    #[cfg(test)]
     pub(super) hash_files: usize,
     #[cfg(test)]
     pub(super) cancel_after_bytes: Option<(u64, std::sync::Arc<AtomicBool>)>,
@@ -141,10 +139,7 @@ impl CaptureScratch {
             let mut digest = Sha256::new();
             let mut read = 0u64;
             let mut buffer = [0u8; 64 * 1024];
-            #[cfg(test)]
-            {
-                self.hash_files += 1;
-            }
+            self.hash_files += 1;
             loop {
                 if is_cancelled(cancelled) {
                     return CapturedFile::Unavailable;
@@ -160,9 +155,9 @@ impl CaptureScratch {
                     return CapturedFile::Unavailable;
                 }
                 digest.update(&buffer[..count]);
+                self.hash_bytes += count as u64;
                 #[cfg(test)]
                 {
-                    self.hash_bytes += count as u64;
                     if let Some((threshold, token)) = &self.cancel_after_bytes {
                         if self.hash_bytes >= *threshold {
                             token.store(true, Ordering::Release);

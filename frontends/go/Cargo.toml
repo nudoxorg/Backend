@@ -17,6 +17,7 @@ sha2 = "=0.10.9"
 fs4 = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 tree-sitter-go = "=0.25.0"
 
 [target.'cfg(unix)'.dependencies]

@@ -1,0 +1,229 @@
+{
+  "schema": "nudox.go-strict-closure-native-evidence.v1",
+  "change": "Remove only the redundant pre-helper package witness recapture; preserve full immediate pre-spawn and post-output recaptures.",
+  "replay": {
+    "base_commit": "1393d2a01827f8d187b16bf6a0a47491e7b528d3",
+    "source_commit": "544991cd2d720d37a682d3034891a2b4ebab198e",
+    "source_tree": "b9475ce363be15bba23317fefb7da90836aa405d",
+    "five_go_postfiles_exactly_equal_tested_source": true,
+    "postfiles": [
+      {
+        "path": "frontends/go/Cargo.toml",
+        "sha256": "98141e91009f36a2ebe01550411d384049c80b318ded1a8368e1a5269c6dc87f"
+      },
+      {
+        "path": "frontends/go/src/legacy/oracle.rs",
+        "sha256": "44f02139ba343ae0f334f56380aa690ac21a7e366dcc9f2e0d71daa9ec3c2d05"
+      },
+      {
+        "path": "frontends/go/src/legacy/oracle/authority_witness.rs",
+        "sha256": "a0b2fef34e2a99d6172f6b6d7069f27635ea347f744ca7ed381bfb83f949f6dc"
+      },
+      {
+        "path": "frontends/go/src/legacy/oracle/capture_digest.rs",
+        "sha256": "d69dc8ad6be859c3fc7437760907871e7ef636255d2653ff1b3c9cb5e75e34b6"
+      },
+      {
+        "path": "frontends/go/tests/selected_dependency_loader.rs",
+        "sha256": "9079f71b8b89996fe75004f2052afc7731b9d93baf6542f5a1078f4e6f494848"
+      }
+    ],
+    "cargo_lock_delta": "Only add the existing tracing package to backend-frontend-go dependencies; preserve newer canonical backend-discovery dependencies.",
+    "cargo_lock_sha256": "c2ab677acd7eca52e24b2a522bf9993ca5ba94f753b5d27ec78ddeb8fdcc3f0f",
+    "replayed_tree_native_build": "UNRUN; installed-Go native evidence belongs to tested30f source below."
+  },
+  "independent_root_audit": {
+    "path": "/private/tmp/nudox-root-go-strict30f-native-audit-20261009.json",
+    "sha256": "9530a75cae1909df73dc8b6b9668b19de5482f80a38f06924e5ff0ec85974ade",
+    "result": {
+      "source": "30f23e8a0921f04a50c28e62342d0f431c7ddd51",
+      "tree": "1bd8a9ceee0e12c3e5e22ca2999ad092cf10ef67",
+      "sealed_files": 11,
+      "sealed_bytes": 205709538,
+      "git_blobs": 18030,
+      "source_bytes": 467458399,
+      "source_before_after_identical": true,
+      "changed_go_vs_canonical113": [
+        {
+          "path": "frontends/go/Cargo.toml",
+          "current_sha256": "f553a39d92dc4c719d5f5834b365091e989deff59b58159cf7fa822cf3f51fed",
+          "tested_sha256": "98141e91009f36a2ebe01550411d384049c80b318ded1a8368e1a5269c6dc87f"
+        },
+        {
+          "path": "frontends/go/src/legacy/oracle.rs",
+          "current_sha256": "e6bb6a437379c5e5a014b3780cbd5fff5f4dc734a195c540c60ba15724b0b9c1",
+          "tested_sha256": "44f02139ba343ae0f334f56380aa690ac21a7e366dcc9f2e0d71daa9ec3c2d05"
+        },
+        {
+          "path": "frontends/go/src/legacy/oracle/authority_witness.rs",
+          "current_sha256": "23ab36b101f158c6f7cff6bbfef2dd42d188c21815f98621b2bf34cc66561a55",
+          "tested_sha256": "a0b2fef34e2a99d6172f6b6d7069f27635ea347f744ca7ed381bfb83f949f6dc"
+        },
+        {
+          "path": "frontends/go/src/legacy/oracle/capture_digest.rs",
+          "current_sha256": "beec7f9e16eeddeb2cdc320f083cc36a8853bc83b5cb74f42b494c01267e226c",
+          "tested_sha256": "d69dc8ad6be859c3fc7437760907871e7ef636255d2653ff1b3c9cb5e75e34b6"
+        },
+        {
+          "path": "frontends/go/tests/selected_dependency_loader.rs",
+          "current_sha256": "5f20253cdad435f104206aa922b9f1c32feca20af13f0d61fce8373fe982bd34",
+          "tested_sha256": "9079f71b8b89996fe75004f2052afc7731b9d93baf6542f5a1078f4e6f494848"
+        }
+      ],
+      "tests": {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "filtered_out": 1,
+        "body_seconds": 38.41
+      },
+      "artifact_fresh": false,
+      "direct_child_wait": true,
+      "admission": "original fresh valid complete census12:42UTC",
+      "image_hash_scope": "post-run retained image, not launch-time hash",
+      "scope": "one installed-Go native control; no Task/Caddy benchmark or current product suite acceptance"
+    }
+  },
+  "native": {
+    "source_commit": "30f23e8a0921f04a50c28e62342d0f431c7ddd51",
+    "source_tree": "1bd8a9ceee0e12c3e5e22ca2999ad092cf10ef67",
+    "test": "real_selected_loader_binds_inactive_platform_source_without_active_calls",
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "filtered_out": 1,
+    "body_seconds": 38.41,
+    "cold_helper_complete_revalidation_events": 2,
+    "retained_existing_assertions": [
+      "active Platform declaration and cross-file Platform reference",
+      "active inferred variable has basic int type and documentation",
+      "inactive source SHA-256 and exact file/GOOS/CGO constraint identity",
+      "inactive source has no active declarations, references or docs and retains excluded Platform declaration",
+      "reopened owner selects byte-identical inactive image and original source bytes are conserved"
+    ],
+    "actual_compiler_artifact_fresh": false,
+    "actual_profile": {
+      "opt_level": "3",
+      "debug_assertions": false,
+      "debuginfo": 0,
+      "overflow_checks": false,
+      "test": true
+    },
+    "receipt": {
+      "exit_code": 0,
+      "elapsed_seconds": 394.4815826449776,
+      "direct_child_wait": true,
+      "source_conserved": true,
+      "source_before_sha256": "a4eebcf83d9bd2448198e00ee93832138b47f79048cc4b2ae86084ea254965c7",
+      "source_after_sha256": "a4eebcf83d9bd2448198e00ee93832138b47f79048cc4b2ae86084ea254965c7",
+      "build_log_sha256": "ea831a57a8e9816ac9be902991ac7fce290471249e2762f2e424e76e28a4511c"
+    },
+    "receipt_sha256": "af05d69bb82537b277d0e4c69f717df3fd62e006f2cf46ed72bf4e2710394bb4",
+    "plan_argv": [
+      "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--release",
+      "-j2",
+      "--message-format=json-render-diagnostics",
+      "-p",
+      "backend-frontend-go",
+      "--test",
+      "selected_dependency_loader",
+      "real_selected_loader_binds_inactive_platform_source_without_active_calls",
+      "--",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "retained_test_image_sha256": "549a64cb305467bb30d70a2ae3805e2e77d37893e8561bffc7fb634111e3ee86",
+    "retained_go_image_sha256": "a32f18e49f0a817b429600593fadaabd04aae8ce53b3ae683c06b8fbeb28c6ab",
+    "image_hash_scope": "Post-run retained bytes at exact fresh:false compiler-artifact path; no launch-time image hash was recorded.",
+    "supervisor_hash_scope": "Current retained launcher source snapshot; no separate launch-time supervisor hash was recorded."
+  },
+  "counter_meaning": {
+    "capture_calls": "One event from each admission/revalidation routine reaching its trace boundary; not all entered calls or successful admissions.",
+    "loader_calls": "Inferred from dependency_closure.is_some(); NOT an actual successful child-spawn count. Includes present failed/incomplete closure values.",
+    "streamed_hash_files": "Actual streamed SHA-256 file attempts in request-local CaptureScratch, including attempts that later fail.",
+    "streamed_hash_bytes": "Actual bytes supplied to streamed SHA-256, including partial attempts; excludes small manifest-buffer hashing and separate tool/helper hashing.",
+    "capture_count_test": "Counts actual trace events around one real cold-helper authority call. It does not assert loader child counts.",
+    "native_sink": "No native daemon tracing subscriber or stderr counter sink is added in this replay; absent runtime events are unknown, never zero."
+  },
+  "raw_packet": {
+    "local_root": "/private/tmp/sol61-go-dependency-evidence-20261009/strict30f-native-audit01",
+    "remote_root": "/root/sol61-go-dependency-evidence-20261009/strict30f-native-audit01",
+    "sealed_manifest_sha256": "2f7ce0b50dd4b79f202388469c75fd169210d09756eba3f7d077f211d8e4328d",
+    "sealed_files": [
+      {
+        "path": "audit-receipt.json",
+        "bytes": 2635,
+        "sha256": "bd7f9affb7640883e189501235933dd0a32fbdbdfdc1605bc1bb514e501a5c3d"
+      },
+      {
+        "path": "build.jsonl",
+        "bytes": 314636,
+        "sha256": "ea831a57a8e9816ac9be902991ac7fce290471249e2762f2e424e76e28a4511c"
+      },
+      {
+        "path": "child-identity.json",
+        "bytes": 448,
+        "sha256": "6ad0431e217eb0e26d6f5895b76ce748a45a687a1721f8c0109af438528e3a63"
+      },
+      {
+        "path": "go-1.26.4.native",
+        "bytes": 15434441,
+        "sha256": "a32f18e49f0a817b429600593fadaabd04aae8ce53b3ae683c06b8fbeb28c6ab"
+      },
+      {
+        "path": "plan.json",
+        "bytes": 31909,
+        "sha256": "7e32c95e993cf22076addaa16b7de3a5f7bbdb7f65cf3eb4f1f639b978cc48db"
+      },
+      {
+        "path": "receipt.json",
+        "bytes": 395,
+        "sha256": "af05d69bb82537b277d0e4c69f717df3fd62e006f2cf46ed72bf4e2710394bb4"
+      },
+      {
+        "path": "selected_dependency_loader.native",
+        "bytes": 3217416,
+        "sha256": "549a64cb305467bb30d70a2ae3805e2e77d37893e8561bffc7fb634111e3ee86"
+      },
+      {
+        "path": "source-after.json",
+        "bytes": 4084673,
+        "sha256": "a4eebcf83d9bd2448198e00ee93832138b47f79048cc4b2ae86084ea254965c7"
+      },
+      {
+        "path": "source-before.json",
+        "bytes": 4084673,
+        "sha256": "a4eebcf83d9bd2448198e00ee93832138b47f79048cc4b2ae86084ea254965c7"
+      },
+      {
+        "path": "strict30f-authentic-source-single-commit.pack",
+        "bytes": 178532384,
+        "sha256": "ae167f41bc10bc15334ec58bf856691efc4d0627532eb4dcdab8c4bfb19a6cd3"
+      },
+      {
+        "path": "supervisor-current-snapshot.py",
+        "bytes": 5928,
+        "sha256": "6092e5778fcede8df18544dbc9a5d3e0cc8c28e3a2977e087d13afd71547b998"
+      }
+    ],
+    "local_source_audit_sha256": "6d991b240b3f4a482933ce297375ea8cd10a9d735c7275cb5c035996376c284c",
+    "source_pack_claim": "Authentic single commit plus complete tree/blobs; no ancestry claim.",
+    "git_blobs_independently_verified": 18030,
+    "blob_bytes": 467458399,
+    "gitlink": {
+      "path": "server/index/turso",
+      "commit": "052ad81a7dbb6efed34ea482ae6c7e2e6f6682e0",
+      "entries": []
+    }
+  },
+  "limits": [
+    "One genuine installed-Go native control; no current product suite or authentic Task/Caddy runtime acceptance.",
+    "No Task 120-second publication PASS or before/after end-to-end latency claim; original Active/unresolved failure remains retained.",
+    "Source count changes from three to two full recaptures per authority call; actual authentic-application totals remain unmeasured.",
+    "No reusable phase certificate, stamp cache, native watch authorization, timeout change, 88e4 stderr sink or unrun 6a6a spawn-counter atom is included."
+  ]
+}

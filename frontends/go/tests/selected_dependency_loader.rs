@@ -11,6 +11,27 @@ use backend_frontend_go::legacy::oracle::{
 };
 use backend_frontend_go::legacy::{ConfiguredGoOracle, GoImage, GoOracle, OracleError};
 
+#[derive(Clone, Default)]
+struct CaptureEvents(Arc<std::sync::atomic::AtomicUsize>);
+
+impl tracing::Subscriber for CaptureEvents {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        if event.metadata().target() == "compiler::go_authority_capture" {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
 fn installed_go() -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
     let requested = std::env::var_os("COMPILER_GO_COMPILER").unwrap_or_else(|| "go".into());
     let output = Command::new(&requested)
@@ -95,12 +116,20 @@ fn real_selected_loader_binds_inactive_platform_source_without_active_calls()
     let cancelled = AtomicBool::new(false);
     let witness = owner.package_authority_witness_cancellable(&project, Some(&cancelled))?;
     assert!(witness.is_complete());
+    let capture_events = CaptureEvents::default();
+    let capture_scope = tracing::subscriber::set_default(capture_events.clone());
     let active_bytes = owner.authority_image_for_package_with_authority_witness_cancellable(
         &caller,
         &project,
         &witness,
         Some(&cancelled),
     )?;
+    assert_eq!(
+        capture_events.0.load(std::sync::atomic::Ordering::Relaxed),
+        2,
+        "real cold helper preparation retains one full pre-spawn and one full post-output capture"
+    );
+    drop(capture_scope);
     let active_image = GoImage::open(&active_bytes)?;
     assert!(active_image.declarations().any(|row| row.is_ok_and(
         |row| row.name == b"Platform" && row.file == active.to_string_lossy().as_bytes()
