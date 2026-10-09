@@ -465,7 +465,10 @@ pub fn reply_memory_bound(reply: &ReplyDto) -> usize {
             add_bound(&mut bound, 512usize.saturating_add(message.len()));
         }
         CommandReply::Failed(crate::CommandFailure::PartiallyPublished(partial)) => {
-            add_bound(&mut bound, 512usize.saturating_add(partial.encoded_size_bound()));
+            add_bound(
+                &mut bound,
+                512usize.saturating_add(partial.encoded_size_bound()),
+            );
         }
         CommandReply::Failed(failure) => {
             add_bound(
@@ -633,15 +636,24 @@ fn add_claim_bound(bound: &mut usize, claim: &WireClaim) {
 
 fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), ReplyAdmissionError> {
     let valid = match (command, reply) {
-        (Command::Add { package, .. }, CommandReply::Failed(crate::CommandFailure::PartiallyPublished(partial))) => {
-            partial.admit().map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
+        (
+            Command::Add { package, .. },
+            CommandReply::Failed(crate::CommandFailure::PartiallyPublished(partial)),
+        ) => {
+            partial
+                .admit()
+                .map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
             if crate::package_key(partial.package.as_str()) != *package {
-                return Err(ReplyAdmissionError::Protocol("partial add reply does not match the requested package".to_owned()));
+                return Err(ReplyAdmissionError::Protocol(
+                    "partial add reply does not match the requested package".to_owned(),
+                ));
             }
             true
         }
         (_, CommandReply::Failed(crate::CommandFailure::PartiallyPublished(_))) => {
-            return Err(ReplyAdmissionError::Protocol("partial add publication does not match this command".to_owned()));
+            return Err(ReplyAdmissionError::Protocol(
+                "partial add publication does not match this command".to_owned(),
+            ));
         }
         (_, CommandReply::Error(_) | CommandReply::Failed(_))
         | (Command::Packages, CommandReply::Packages(_))
@@ -657,23 +669,7 @@ fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), Repl
         | (Command::GraphQuery(_), CommandReply::GraphQueryPage(_)) => true,
         (Command::SemanticShapes(_), CommandReply::SemanticShapes(_)) => true,
         (Command::Surface(command), CommandReply::Surface(reply)) => {
-            reply
-                .admit(command.id())
-                .map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
-            admit_index_ticket_reply(command, reply)?;
-            if let (
-                crate::SurfaceCommand::ProjectTree { root },
-                crate::SurfaceReply::ProjectTree(tree),
-            ) = (command, reply)
-                && !tree.request_binding().is_some_and(|binding| {
-                    binding.matches_requested_root(std::path::Path::new(root.as_str()))
-                })
-            {
-                return Err(ReplyAdmissionError::Protocol(
-                    "project Tree observation does not match the exact requested directory"
-                        .to_owned(),
-                ));
-            }
+            admit_surface_reply(command, reply)?;
             true
         }
         (Command::Add { package, .. }, CommandReply::Added(intent)) => {
@@ -759,19 +755,135 @@ fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), Repl
     }
 }
 
-/// Internal consistency cannot authorize a receipt for a different caller's job.
-/// Keep the reply family exact too: durable operation status shares the progress ID.
-fn admit_index_ticket_reply(
+/// Admits a surface reply against the actual command, including caller identity.
+///
+/// Command IDs alone cannot distinguish ticket and durable-operation replies.
+/// This borrowed boundary is shared by wire clients and caller journals before
+/// a receipt can acknowledge saved work. It does not require envelope cloning.
+///
+/// # Errors
+/// Returns [`ReplyAdmissionError`] for invalid structure, a different reply
+/// family, or an observation that does not match the exact requested identity.
+pub fn admit_surface_reply(
     command: &crate::SurfaceCommand,
     reply: &crate::SurfaceReply,
 ) -> Result<(), ReplyAdmissionError> {
-    use crate::{IndexJobObservation, SurfaceCommand, SurfaceReply};
+    reply
+        .admit(command.id())
+        .map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
+    admit_index_reply(command, reply)?;
+    if let (crate::SurfaceCommand::ProjectTree { root }, crate::SurfaceReply::ProjectTree(tree)) =
+        (command, reply)
+        && !tree.request_binding().is_some_and(|binding| {
+            binding.matches_requested_root(std::path::Path::new(root.as_str()))
+        })
+    {
+        return Err(ReplyAdmissionError::Protocol(
+            "project Tree observation does not match the exact requested directory".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+/// Internal consistency cannot authorize another caller's receipt.
+fn admit_index_reply(
+    command: &crate::SurfaceCommand,
+    reply: &crate::SurfaceReply,
+) -> Result<(), ReplyAdmissionError> {
+    use crate::{
+        IndexJobObservation, IndexOperationObservation, IndexStartResult, SurfaceCommand,
+        SurfaceReply,
+    };
+
+    let operation = match (command, reply) {
+        (
+            SurfaceCommand::IndexOperationStart {
+                operation_key,
+                package,
+                execution_intent,
+            },
+            SurfaceReply::IndexOperationStarted(observation),
+        ) => Some((
+            *operation_key,
+            Some((package, *execution_intent)),
+            observation,
+        )),
+        (
+            SurfaceCommand::IndexOperationStatus { operation_key },
+            SurfaceReply::IndexOperationStatus(observation),
+        ) => Some((*operation_key, None, observation)),
+        (
+            SurfaceCommand::IndexOperationStart { .. }
+            | SurfaceCommand::IndexOperationStatus { .. },
+            _,
+        ) => {
+            return Err(ReplyAdmissionError::Protocol(
+                "index operation reply family does not match the command".to_owned(),
+            ));
+        }
+        (SurfaceCommand::IndexStart { package, .. }, SurfaceReply::IndexStarted(result)) => {
+            let observed = match result {
+                IndexStartResult::Started { ticket, .. } => ticket.package(),
+                IndexStartResult::Terminal(terminal) => terminal.ticket.package(),
+            };
+            return if package == observed {
+                Ok(())
+            } else {
+                Err(ReplyAdmissionError::Protocol(
+                    "index start reply does not match the requested package".to_owned(),
+                ))
+            };
+        }
+        (SurfaceCommand::IndexStart { .. }, _) => {
+            return Err(ReplyAdmissionError::Protocol(
+                "index start reply family does not match the command".to_owned(),
+            ));
+        }
+        _ => None,
+    };
+    if let Some((requested_key, request, observation)) = operation {
+        let observed_key = match observation {
+            IndexOperationObservation::Known(status) => status.operation_key,
+            IndexOperationObservation::Unknown { operation_key }
+            | IndexOperationObservation::OutsideReceiptWindow { operation_key, .. } => {
+                *operation_key
+            }
+        };
+        if requested_key != observed_key {
+            return Err(ReplyAdmissionError::Protocol(
+                "index operation reply does not match the exact requested key".to_owned(),
+            ));
+        }
+        if let Some((package, execution_intent)) = request {
+            let digest = crate::index_operation_request_digest(package, execution_intent);
+            let matches = match observation {
+                IndexOperationObservation::Known(status) => {
+                    status.package == *package
+                        && status.execution_intent == execution_intent
+                        && status.request_digest == digest
+                }
+                IndexOperationObservation::OutsideReceiptWindow { request_digest, .. } => {
+                    *request_digest == digest
+                }
+                IndexOperationObservation::Unknown { .. } => true,
+            };
+            if !matches {
+                return Err(ReplyAdmissionError::Protocol(
+                    "index operation reply does not match the requested package and execution intent".to_owned(),
+                ));
+            }
+        }
+        return Ok(());
+    }
 
     let (requested, observed) = match (command, reply) {
         (SurfaceCommand::IndexAwait { ticket }, SurfaceReply::IndexTerminal(terminal)) => {
             (ticket, &terminal.ticket)
         }
-        (SurfaceCommand::IndexProgress { ticket, .. }, SurfaceReply::IndexProgress(observation)) => {
+        (
+            SurfaceCommand::IndexProgress { ticket, .. },
+            SurfaceReply::IndexProgress(observation),
+        ) => {
             let observed = match observation {
                 IndexJobObservation::Pending(page) => &page.ticket,
                 IndexJobObservation::Terminal(terminal) => &terminal.ticket,

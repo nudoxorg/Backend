@@ -1,0 +1,825 @@
+{
+  "reviewer": "root",
+  "reviewed_at_utc": "2026-10-09T07:42:38.970226+00:00",
+  "scope": "Exact borrowed and wire index-operation reply admission only",
+  "producing_source": {
+    "commit": "7270bf9d3fc80cd952d811218a8b9c80786b7097",
+    "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+    "status": "",
+    "tree": "a1b611798af3e7ea096d76fa5f15a612ad4c3a26"
+  },
+  "reviewed_postimages": {
+    "crates/library/lib.rs": {
+      "bytes": 19098,
+      "sha256": "ff15dc0e771b3d1539436727b6fdf48435b8a43ad9f5145c998b2239266a6286"
+    },
+    "crates/library/wire/admission.rs": {
+      "bytes": 36810,
+      "sha256": "bf5c2cbb120be4b2637783e2a7d9d4bb8cdea060703561ef0f55d7e90d844baf"
+    },
+    "crates/library/wire/index_ticket_reply_tests.rs": {
+      "bytes": 20570,
+      "sha256": "a0d7167b4fd10ff506d3a44b632611c5ccab36b6649846fa1353bebabf315461"
+    },
+    "crates/library/wire/mod.rs": {
+      "bytes": 2858,
+      "sha256": "7d45732dea9477f4510b4ae979feca0c17b0fe1d178c69a18a795e825e52effc"
+    }
+  },
+  "archive_sha256": "b4d38ea357af51a735e2a99ac2fc8a24f6e9e6307693ca042767762478f79ea0",
+  "archive_files_rehashed": 132,
+  "producing_git_blobs_rehashed": 18019,
+  "producing_git_blob_bytes": 467067813,
+  "native_image": {
+    "sha256": "d0d6dee1115b81f2abd24b5080b582072e24c616d3c44f29bdc1a6c32fda6e69",
+    "bytes": 287627088,
+    "fresh": false,
+    "source": {
+      "commit": "7270bf9d3fc80cd952d811218a8b9c80786b7097",
+      "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+      "status": "",
+      "tree": "a1b611798af3e7ea096d76fa5f15a612ad4c3a26"
+    }
+  },
+  "actual_owned_rustc_observations": [
+    {
+      "argv": [
+        "/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/rustc",
+        "--crate-name",
+        "backend_library",
+        "--edition=2024",
+        "crates/library/lib.rs",
+        "--error-format=json",
+        "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+        "--emit=dep-info,link",
+        "-C",
+        "opt-level=2",
+        "-C",
+        "embed-bitcode=no",
+        "-C",
+        "debuginfo=1",
+        "--warn=clippy::pedantic",
+        "--warn=clippy::all",
+        "--deny=clippy::unwrap_used",
+        "--warn=unused_qualifications",
+        "--warn=unused_lifetimes",
+        "--deny=unsafe_code",
+        "--warn=unreachable_pub",
+        "--deny=clippy::unimplemented",
+        "--deny=clippy::todo",
+        "--warn=clippy::panic",
+        "--warn=missing_docs",
+        "--deny=clippy::mem_forget",
+        "--warn=clippy::expect_used",
+        "--deny=clippy::dbg_macro",
+        "-C",
+        "debug-assertions=on",
+        "--test",
+        "--cfg",
+        "feature=\"test-support\"",
+        "--check-cfg",
+        "cfg(docsrs,test)",
+        "--check-cfg",
+        "cfg(feature, values(\"test-support\"))",
+        "-C",
+        "metadata=5e4cd880448a04f1",
+        "-C",
+        "extra-filename=-ea36b7a2136bdaad",
+        "--out-dir",
+        "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps",
+        "-L",
+        "dependency=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps",
+        "--extern",
+        "allocation_counter=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/liballocation_counter-ce34fdf3563d1796.rlib",
+        "--extern",
+        "arrayvec=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libarrayvec-d0744f94e6bd6bde.rlib",
+        "--extern",
+        "backend_advisory=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libbackend_advisory-eb412689fc08db55.rlib",
+        "--extern",
+        "backend_compile=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libbackend_compile-8e489cca688e85ba.rlib",
+        "--extern",
+        "backend_discovery=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libbackend_discovery-cdbe91122ed40e16.rlib",
+        "--extern",
+        "backend_execution=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libbackend_execution-f4fa339a4cdfca32.rlib",
+        "--extern",
+        "backend_flow=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libbackend_flow-1795342f0f45f7b9.rlib",
+        "--extern",
+        "backend_semantic=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libbackend_semantic-4c486d9d0090eefa.rlib",
+        "--extern",
+        "backend_version=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libbackend_version-3414d6ee52af4b1a.rlib",
+        "--extern",
+        "blake3=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libblake3-d081509858b27eb3.rlib",
+        "--extern",
+        "serde=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libserde-946473947ef86fdc.rlib",
+        "--extern",
+        "serde_json=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libserde_json-cfbf9337d0620de6.rlib",
+        "--extern",
+        "thiserror=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libthiserror-a31723fe66e2dbc4.rlib",
+        "--extern",
+        "toml=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libtoml-091dd5b01d1ba6b9.rlib",
+        "--extern",
+        "ureq=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libureq-5c2a57b13b96c741.rlib",
+        "-L",
+        "native=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/build/blake3-74e9753efaf66203/out",
+        "-L",
+        "native=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/build/blake3-74e9753efaf66203/out",
+        "-L",
+        "native=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/build/simsimd-476ca54da200cc17/out",
+        "-L",
+        "native=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/build/tree-sitter-d21153747836e99b/out",
+        "-L",
+        "native=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/build/ring-6cbe8ac372989d7f/out"
+      ],
+      "gate": "gate-00",
+      "last_observed_utc": "2026-10-09T07:18:16.664867+00:00",
+      "pgid": 1933877,
+      "pid": 1945812,
+      "start_ticks": "87417572",
+      "state": "S"
+    }
+  ],
+  "native_receipt_sha256": "f73a69417375d6b620a4e8620921ad708dc5cc1a01c52839a865661039367988",
+  "native_stdout_sha256": "4d12eea977b92f2d2a9246fe41e9ff3141b534235776d4f9a46362650bb5be89",
+  "native_result": [
+    {
+      "failed": 0,
+      "ignored": 0,
+      "passed": 8
+    }
+  ],
+  "native_elapsed_seconds": 0.17001712799537927,
+  "native_stdout": "\nrunning 8 tests\ntest wire::tests::index_ticket_reply::index_operation_replies_bind_exact_keys_through_borrowed_and_wire_admission ... ok\ntest wire::tests::index_ticket_reply::index_operation_start_rejects_self_consistent_foreign_requests_and_tombstones ... ok\ntest wire::tests::index_ticket_reply::index_start_and_progress_reject_shared_id_reply_family_substitution_in_both_directions ... ok\ntest wire::tests::index_ticket_reply::index_start_binds_packages_without_conflating_tickets_or_universal_failures ... ok\ntest wire::tests::index_ticket_reply::index_ticket_commands_keep_identity_free_failures_as_failures ... ok\ntest wire::tests::index_ticket_reply::index_ticket_progress_rejects_durable_operation_reply_with_the_same_command_id ... ok\ntest wire::tests::index_ticket_reply::index_ticket_replies_admit_exact_callers_including_refusals_partial_and_restart_unknown ... ok\ntest wire::tests::index_ticket_reply::index_ticket_replies_reject_foreign_package_epoch_and_counter_after_valid_decode ... ok\n\ntest result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 328 filtered out; finished in 0.01s\n\n",
+  "all_gate_results": [
+    {
+      "gate": "gate-00",
+      "exit_code": 0,
+      "test_summaries": []
+    },
+    {
+      "gate": "gate-01",
+      "exit_code": 0,
+      "test_summaries": []
+    },
+    {
+      "gate": "gate-02",
+      "exit_code": 0,
+      "test_summaries": []
+    },
+    {
+      "gate": "gate-03",
+      "exit_code": 0,
+      "test_summaries": []
+    },
+    {
+      "gate": "gate-04",
+      "exit_code": 0,
+      "test_summaries": []
+    },
+    {
+      "gate": "gate-05",
+      "exit_code": 0,
+      "test_summaries": []
+    },
+    {
+      "gate": "gate-06",
+      "exit_code": 0,
+      "test_summaries": []
+    },
+    {
+      "gate": "gate-07",
+      "exit_code": 0,
+      "test_summaries": []
+    },
+    {
+      "gate": "gate-08",
+      "exit_code": 0,
+      "test_summaries": []
+    },
+    {
+      "gate": "gate-09",
+      "exit_code": 0,
+      "test_summaries": []
+    },
+    {
+      "gate": "gate-10",
+      "exit_code": 0,
+      "test_summaries": []
+    },
+    {
+      "gate": "gate-11",
+      "exit_code": 0,
+      "test_summaries": []
+    },
+    {
+      "gate": "gate-12",
+      "exit_code": 0,
+      "test_summaries": [
+        {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 10
+        }
+      ]
+    },
+    {
+      "gate": "gate-13",
+      "exit_code": 0,
+      "test_summaries": [
+        {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        }
+      ]
+    },
+    {
+      "gate": "gate-14",
+      "exit_code": 0,
+      "test_summaries": [
+        {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 8
+        }
+      ]
+    },
+    {
+      "gate": "gate-15",
+      "exit_code": 0,
+      "test_summaries": [
+        {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        }
+      ]
+    },
+    {
+      "gate": "gate-16",
+      "exit_code": 0,
+      "test_summaries": [
+        {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 2
+        }
+      ]
+    },
+    {
+      "gate": "gate-17",
+      "exit_code": 101,
+      "test_summaries": [
+        {
+          "failed": 2,
+          "ignored": 0,
+          "passed": 131
+        }
+      ]
+    }
+  ],
+  "return_receipt_sha256": "8099efcfe257beb8a3edb9a7e476b909c56bb4f68294d9fccddfe4dbda3c326d",
+  "literal_original_return": {
+    "commit": "23b9c298a10a05a96e480922511c0f48462008fa",
+    "lock_sha256": "afb3a7518cd1f19b29bee48ec1b3be3f3d888c1ad61dde6e7f8cd4e3976fd731",
+    "status": "",
+    "tree": "e76e55283bbe534b45be9d88d6bf8a303c8f3a95"
+  },
+  "source_custody_restored": true,
+  "root_remote_image_rehash": "d0d6dee1115b81f2abd24b5080b582072e24c616d3c44f29bdc1a6c32fda6e69",
+  "raw_files": {
+    "gate-05/stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "gate-05/launch.json": {
+      "bytes": 2479,
+      "sha256": "edf31145a67306c02e067f3c149ae35587e96447497037f19f1fdf8bd57e9cc6"
+    },
+    "gate-05/stdout": {
+      "bytes": 111,
+      "sha256": "cc1f156638713409c1d0f5df785e6a7712f51e288c191879e04bc7ef41f9de5d"
+    },
+    "gate-05/receipt.json": {
+      "bytes": 3291,
+      "sha256": "12cb23c8ea57e5f2b5ebbd850acbab411bca8aaab45a534db20efabcab28b67a"
+    },
+    "gate-11-admission-envelope.json": {
+      "bytes": 27517,
+      "sha256": "571cfbcde21f27bce58fe2e6ad56d7e0b1c6fb4f50a4ec1f7c1149ad598a9354"
+    },
+    "gate-12-admission-request.json": {
+      "bytes": 443,
+      "sha256": "ec66d2442d40b978dcec763dd98c10cf450842e98b7bade10b8f505f9e9f9347"
+    },
+    "before-source-epoch-admission-request.json": {
+      "bytes": 454,
+      "sha256": "51ddfe60503bfcf44b8c5c870b4bef71e21f8992758ed73563a69a18d63e1219"
+    },
+    "gate-03-admission-envelope.json": {
+      "bytes": 24671,
+      "sha256": "81569a5b7bb302f26be260aa7a0661b33bf554ac5a4f354d70908770ce43cd43"
+    },
+    "gate-16-admission-request.json": {
+      "bytes": 443,
+      "sha256": "12043d2d9db289e9c67aeb2dd888b28aa87a4f591320a1a5d7d1b7b37432770e"
+    },
+    "gate-06-admission-envelope.json": {
+      "bytes": 30191,
+      "sha256": "daa82423613488b49873bb26bc3a497156cc9566d5c791dca13760d1f3b0519e"
+    },
+    "gate-02/stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "gate-02/launch.json": {
+      "bytes": 3247,
+      "sha256": "0934cb3cf432983638cdb02878f2e29a4702155505a2d5069a90cba7d1a37b97"
+    },
+    "gate-02/stdout": {
+      "bytes": 1004,
+      "sha256": "d6af30de315705bef29945cdf4cc3f32d70774fb1dc1fbc6b2a042d075f014d2"
+    },
+    "gate-02/receipt.json": {
+      "bytes": 4957,
+      "sha256": "e1c120851c431431aef9dff589b80774c89d0388376d7b169852a92a3c598940"
+    },
+    "inputs-before/full-source.json": {
+      "bytes": 8224746,
+      "sha256": "0b80daa99be5ba4241c7d30e966bed000a3caca1c0348fad348c575fde390bbd"
+    },
+    "inputs-before/receipt.json": {
+      "bytes": 1382,
+      "sha256": "b1092b3e01c4bd23cd7c34d02d38733f3bcdfbe2d024712ab93020daf17c9669"
+    },
+    "workspace-producer-emissions.json": {
+      "bytes": 80916,
+      "sha256": "d4b2b595d0bc343e87b21942395bf9273a37bd78f9e91586576324adb279a1f5"
+    },
+    "gate-00-admission-envelope.json": {
+      "bytes": 31109,
+      "sha256": "7cc136a503c312c8eef0f382d4315b7b82b052f2baac3b56dd6d30b0a6522239"
+    },
+    "gate-03-admission-request.json": {
+      "bytes": 442,
+      "sha256": "58c2120f97787484f4ee529a9583e62d25cccf356b493480f2b35d98526b95a7"
+    },
+    "gate-06/stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "gate-06/launch.json": {
+      "bytes": 2477,
+      "sha256": "f8c3964091fe03e466cc970b66f895f025ede75b1b83617b1519041621361623"
+    },
+    "gate-06/stdout": {
+      "bytes": 223,
+      "sha256": "1b7797a78b721e06b7ba5c37dcdc2d5c62ef29d7dc0afce28d295accf5602abc"
+    },
+    "gate-06/receipt.json": {
+      "bytes": 3401,
+      "sha256": "f5c1cfd0eb8118a52b6645f180033009c48c9324d825ae4a45d530e161bd2af4"
+    },
+    "gate-11-admission-request.json": {
+      "bytes": 443,
+      "sha256": "1e207eb318838f78953018653bfc4b5480ecfbd8ad6a8667ed6e269c8e624ab2"
+    },
+    "gate-02-admission-envelope.json": {
+      "bytes": 27387,
+      "sha256": "724cdd78f1faf47f3f07870f4357aaebb78caceaa4a07644d25467ef55177a8a"
+    },
+    "gate-06-admission-request.json": {
+      "bytes": 442,
+      "sha256": "06b25f355beb0d721b17eba04d3b733098138694a3e9aa43519020f1408bc933"
+    },
+    "supervisor.py": {
+      "bytes": 24516,
+      "sha256": "e9935ba5d0b4851b17a7f456fc132c4cfc399595cdf46e7a020d3944e1308cf0"
+    },
+    "gate-09-admission-envelope.json": {
+      "bytes": 27516,
+      "sha256": "3802bcb15b3b32564cc00830eee9160b55fdff0445c7ed23a5be3c356d63c3a2"
+    },
+    "gate-07-admission-request.json": {
+      "bytes": 442,
+      "sha256": "ef33a35d2f76e3dbf068ed1c042b0a375e675f6a0108ec79555204cc6ad6a219"
+    },
+    "gate-07/stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "gate-07/launch.json": {
+      "bytes": 13624,
+      "sha256": "3fb7362debe180c35801532a33e1da847469ffe34e61964f6f575019dd1a8883"
+    },
+    "gate-07/stdout": {
+      "bytes": 11067,
+      "sha256": "dccd84ab34d595462c90515b542bd22de0ff5a902add99ba51a80177e9a48617"
+    },
+    "gate-07/receipt.json": {
+      "bytes": 25520,
+      "sha256": "347c95f9682060fd8336b2d4d4de9e22e68320bd8e394239ddb9ffb6316f458a"
+    },
+    "gate-09-admission-request.json": {
+      "bytes": 443,
+      "sha256": "5f2c72685ad8cd31a260a7bbc712790e191698a183b317b704e618c759cf8a4a"
+    },
+    "gate-00/stderr": {
+      "bytes": 299083,
+      "sha256": "dfc2033f407ca97ab300177d8543e93ba75a98f87a88a94e525506f8f01696d9"
+    },
+    "gate-00/launch.json": {
+      "bytes": 2766,
+      "sha256": "a3a24669b36f801aaee07b17c745032c8d3c6da173a64ab76d5f4cd1a1f8fbeb"
+    },
+    "gate-00/stdout": {
+      "bytes": 908027,
+      "sha256": "3b673511a789b2b7f32248c9aeda1c460d97bd94c2784625d3aaa74b0669bd06"
+    },
+    "gate-00/receipt.json": {
+      "bytes": 13155,
+      "sha256": "fdff2ace8787fe8e092b6b2c6b6c920afb5f21c2c3187186545b69adfa470d88"
+    },
+    "gate-00/current-group.json": {
+      "bytes": 483,
+      "sha256": "2225f6e82392ef08002a2f1b0c522130580cba7efabc48ae9a813aac2569aba2"
+    },
+    "failure.json": {
+      "bytes": 986,
+      "sha256": "de005c54608e18e33f6b20c510867e4c9016170babb7b1940796f0a3a613a030"
+    },
+    "gate-05-admission-envelope.json": {
+      "bytes": 30192,
+      "sha256": "354c7c0ba7296936dd81956d5b7022b78f1759c2202a529f033fea92d5382766"
+    },
+    "gate-17/stderr": {
+      "bytes": 7983,
+      "sha256": "1254448b6b7028aa57eadaa89d78345f8f16642ca2befa9e42222d3021780fbe"
+    },
+    "gate-17/launch.json": {
+      "bytes": 2237,
+      "sha256": "cc44e33aa76aaf7e780321497328887dd800dabe7e6115b6eb4c7ee9c49ea93f"
+    },
+    "gate-17/stdout": {
+      "bytes": 12188,
+      "sha256": "0346a47311493c95f5b5d52f54b997ab24b0170b949d12b74f1477aa2fec441e"
+    },
+    "gate-17/receipt.json": {
+      "bytes": 3006,
+      "sha256": "15a8f926bf669e2547e949f4bbd32f803f1ea72e8215d1e8f0c6d3a09edb2c9b"
+    },
+    "gate-03/stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "gate-03/launch.json": {
+      "bytes": 2420,
+      "sha256": "beed2133b60b6670facf4b86afccd487b399975007ead9c3cc0a738db553b4d5"
+    },
+    "gate-03/stdout": {
+      "bytes": 92,
+      "sha256": "bb000a140c9ba3b51adab6d691e99acfe8f3934ce062531161fc473fbb31ea33"
+    },
+    "gate-03/receipt.json": {
+      "bytes": 3211,
+      "sha256": "fb2e730b11ce73f7885d8ee9c6d807146bec6479b632d4b241440a79f55685eb"
+    },
+    "admission-validator.py": {
+      "bytes": 5283,
+      "sha256": "7ea49805865189ffd0e763cfb8ba5573595d1fbb417999cd4df745e6cc1ccfc8"
+    },
+    "original-before/full-source.json": {
+      "bytes": 8196759,
+      "sha256": "4cf23b56bca274e04f42e340e875842dd48aceb459b47987ad85f2942133c209"
+    },
+    "original-before/receipt.json": {
+      "bytes": 1382,
+      "sha256": "f7490d6547be5dc5bab2317f16c6585627af6edd80ffe7180394b625dd52c825"
+    },
+    "gate-13/stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "gate-13/launch.json": {
+      "bytes": 2399,
+      "sha256": "ac9cc203b0bf568ca1647eaf9fba435f2f5dd44cdb3602d98eb17b0a105a5b56"
+    },
+    "gate-13/stdout": {
+      "bytes": 190,
+      "sha256": "6608d64eb7c242a019882b1fc6d4ad675e09df797a77cc61e19cfff8f62e7e6a"
+    },
+    "gate-13/receipt.json": {
+      "bytes": 3166,
+      "sha256": "ebbbae13fd44b2a76ff46a18e3f41a44603b705d3da70e03042bec4fdb10a70a"
+    },
+    "gate-08-admission-request.json": {
+      "bytes": 443,
+      "sha256": "56804471c0f2a7cfdfc34750bbfa2011fbb55616a6ec8dc163b7a19c2e7511bc"
+    },
+    "gate-00-admission-request.json": {
+      "bytes": 442,
+      "sha256": "435dd376b68e54f7939e0247c4195cc5c301849dbe963c642c4b7ed187e54868"
+    },
+    "stable-source-epoch.json": {
+      "bytes": 14565,
+      "sha256": "fd30cfe74c511132aa480f8df88e5b43a0904b0579d1ca45f3356cb42c2b1740"
+    },
+    "gate-17-admission-request.json": {
+      "bytes": 443,
+      "sha256": "3b2fe500e2065538776d5da569df18a81a6d0605c89e4d5785f1dd8c90498f88"
+    },
+    "gate-10/stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "gate-10/launch.json": {
+      "bytes": 2536,
+      "sha256": "f4cec9414d635fcd17bd2da5864f02f50c23f40990ffa6f36bb0046e491244f5"
+    },
+    "gate-10/stdout": {
+      "bytes": 130,
+      "sha256": "bbe8f9ac6ff50d8beecc1df3895f5726f14789b768d15f7b5a9f61bb62f55d12"
+    },
+    "gate-10/receipt.json": {
+      "bytes": 3365,
+      "sha256": "3ca89f940b32d6aa74abce3d68efdad302c6e6038ebf9321e43a8ff3fca465e1"
+    },
+    "gate-15-admission-envelope.json": {
+      "bytes": 27384,
+      "sha256": "9e3dd444bcbd1262ad094c792fac7682fcac4009b814711531eeb7cdbd04315c"
+    },
+    "gate-13-admission-envelope.json": {
+      "bytes": 31013,
+      "sha256": "23ba683da505f8ffeb865d0f4e27284b477793e0dfe9f69a1a93f64c21d1c182"
+    },
+    "gate-01/stderr": {
+      "bytes": 3570,
+      "sha256": "4b6312ab9e6a2ae4e3aa5ea2a6eeca4ea94116ae07c274e2c3dc56d52ae2e9e4"
+    },
+    "gate-01/launch.json": {
+      "bytes": 2576,
+      "sha256": "c65be62776ae028c34e40b895be91df0719a7179de1274646e6cfaa382816dda"
+    },
+    "gate-01/stdout": {
+      "bytes": 535468,
+      "sha256": "e87004353c7516f6e3eaced189358ecd4be5afbf8b4c35aebe5debb2b6ac19ff"
+    },
+    "gate-01/receipt.json": {
+      "bytes": 7196,
+      "sha256": "efc64191477fb22ff731e9d55496ae77b18a6a4f7cbe555c36c8d5043d84d5d9"
+    },
+    "gate-01/current-group.json": {
+      "bytes": 703,
+      "sha256": "87229146b9d217d586673405a07a3990ddacf131e827c668a349f102e2bd0d89"
+    },
+    "before-source-epoch-admission-envelope.json": {
+      "bytes": 31232,
+      "sha256": "75e8e3a53fd4b116d39e5b9fbae4e17b31c153fcf86ac4614731d1f501ce2f43"
+    },
+    "gate-02-admission-request.json": {
+      "bytes": 442,
+      "sha256": "7b3287dbb3774662a15228b8775e8d7960d6f856b0a9b52c6cd78e37debecec9"
+    },
+    "gate-14-admission-request.json": {
+      "bytes": 443,
+      "sha256": "a9d89e8cb97d5fb4573437fc70e8e702cc3850a241ca17fbceadb75e1e1978c8"
+    },
+    "gate-01-admission-request.json": {
+      "bytes": 442,
+      "sha256": "de604228b7fa461ed9e0fc07a95719b3d7e1a636d631e8f43bb50c4a2565bb3b"
+    },
+    "coordinator.py": {
+      "bytes": 5766,
+      "sha256": "38197a3f3694394fb2da6895db0adfafd7b86a2d2c3f91abfba879a3956e9bc2"
+    },
+    "gate-13-admission-request.json": {
+      "bytes": 443,
+      "sha256": "c07297a759058ce68cad11cd5bb5c05e516d744473b899d6d7817dc05e0352f2"
+    },
+    "unchanged-source-metadata.json": {
+      "bytes": 4178187,
+      "sha256": "5957f4f2d0829a0897689f5ab73d17ddf547e0c45f17e40ec194647e2f7895c7"
+    },
+    "gate-15-admission-request.json": {
+      "bytes": 443,
+      "sha256": "a063db98792e34b10203dc2536d113d9ac19495a8f8c952ccd647fa9d7726911"
+    },
+    "gate-11/stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "gate-11/launch.json": {
+      "bytes": 2513,
+      "sha256": "db40f5d57e51f9bfc4c4f360e6bcab084fc4726c5de4aac086a4e01bbd427e46"
+    },
+    "gate-11/stdout": {
+      "bytes": 125,
+      "sha256": "42ac1884c6348eee73fd9f90e4df23487380a2f96bf1542504bc9466a4fbb711"
+    },
+    "gate-11/receipt.json": {
+      "bytes": 3337,
+      "sha256": "1811f47322a2d9390559033852d5fe1b930aacdedb68de7b0467be719f2ed679"
+    },
+    "gate-14/stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "gate-14/launch.json": {
+      "bytes": 2309,
+      "sha256": "0c67e781b3c85366551e56fc1f9000c1462668574ae066f9007f596443085ad3"
+    },
+    "gate-14/stdout": {
+      "bytes": 1102,
+      "sha256": "4d12eea977b92f2d2a9246fe41e9ff3141b534235776d4f9a46362650bb5be89"
+    },
+    "gate-14/receipt.json": {
+      "bytes": 3076,
+      "sha256": "f73a69417375d6b620a4e8620921ad708dc5cc1a01c52839a865661039367988"
+    },
+    "gate-04/stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "gate-04/launch.json": {
+      "bytes": 3220,
+      "sha256": "ca621acc458420e7c572faa79ac0f345f779703b4d5f9e4a91440e78e74fa58b"
+    },
+    "gate-04/stdout": {
+      "bytes": 962,
+      "sha256": "f26eaa891c58340ad7121f5883e0ca4512948bc995e78ee17bd7970daf942352"
+    },
+    "gate-04/receipt.json": {
+      "bytes": 4888,
+      "sha256": "7be0b2d28a7b848c05b89b41e63b8ed34ac59ecdf01fd601e5dafef53e3509a3"
+    },
+    "entry.json": {
+      "bytes": 1694,
+      "sha256": "bbeca4b217bddb3d5376d7aa99748fe84d56afe52a38d872ed4ba4175726fd5a"
+    },
+    "initial-admission.json": {
+      "bytes": 29370,
+      "sha256": "e549b40315019fb446f5d077a3c75a09ab740f209b14a20df7c90c6e6aab596d"
+    },
+    "gate-10-admission-envelope.json": {
+      "bytes": 27561,
+      "sha256": "3e40a43d9b7c1ea298a26aa9663afac9f1968dce5984cb755f2fdc9cc175088b"
+    },
+    "gate-15/stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "gate-15/launch.json": {
+      "bytes": 2439,
+      "sha256": "769923751b963af6be4b0c1b1d6d24dfe6c841d6367aeb886479c7f5ba7e4434"
+    },
+    "gate-15/stdout": {
+      "bytes": 209,
+      "sha256": "404f7128c9721c0319a3ffdfa6c8386fcd8a283cc506908c414fe6ade71e4826"
+    },
+    "gate-15/receipt.json": {
+      "bytes": 3205,
+      "sha256": "b5c8d26f2c7170e7fdc38ed47af0a6451b3207e8c39d35d34718e7327a63b9de"
+    },
+    "gate-12-admission-envelope.json": {
+      "bytes": 27515,
+      "sha256": "279db17ab7744f975d4a67531cd1485b4780526cf41c1ac0c085af0951a1377d"
+    },
+    "gate-16-admission-envelope.json": {
+      "bytes": 27385,
+      "sha256": "ac5c780289e9906678ee3651350733f8953e17ece136b3ce5a6747cc48cddde4"
+    },
+    "gate-17-admission-envelope.json": {
+      "bytes": 27385,
+      "sha256": "6bf7198e2c7dd97330ab77fc1d0fd900fd750cd9db01fcd9c00640d212848dd7"
+    },
+    "pyrefly-producer-emissions.json": {
+      "bytes": 4567,
+      "sha256": "e85b094324ff3b75a5116903c933e640960d89dde59ba98465db1a8411cf78e4"
+    },
+    "gate-08-admission-envelope.json": {
+      "bytes": 27517,
+      "sha256": "37af6654b6093e3e4be20eb8d2fd66beace75ca9d263bcfc9bf0151b2093c099"
+    },
+    "gate-01-admission-envelope.json": {
+      "bytes": 24626,
+      "sha256": "b385ffb6de5ec8f733e82fe774920eca7f40ebf3cb77619fcd0fdc321398cc5c"
+    },
+    "gate-09/stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "gate-09/launch.json": {
+      "bytes": 3382,
+      "sha256": "6e5c322189598b8b678fa855fc9a28addeb7729380b18fd7dfad59629f49f58f"
+    },
+    "gate-09/stdout": {
+      "bytes": 413,
+      "sha256": "ffafcd9a9bd68522d03e4039d4dac6f1344134acdf554fe4f37fa42d5afd3721"
+    },
+    "gate-09/receipt.json": {
+      "bytes": 4498,
+      "sha256": "de14c60982900abdac7a80b7bb756bbb9f417a8223416d903ba8672b825b3990"
+    },
+    "gate-10-admission-request.json": {
+      "bytes": 443,
+      "sha256": "9a3d9bbdcb48a7489a8c63857f65ebe1fe1e6c03711be796bef0593a8dc7c41b"
+    },
+    "gate-12/stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "gate-12/launch.json": {
+      "bytes": 2290,
+      "sha256": "b9cf1681b7d6ba96bd7f7798be47d053092037f4a1d126ec027fb0aad43384a3"
+    },
+    "gate-12/stdout": {
+      "bytes": 1158,
+      "sha256": "04fa94d924a70e665e9f10fdbfea8bde9cbe4cde87ea400024334cd8b4539305"
+    },
+    "gate-12/receipt.json": {
+      "bytes": 3057,
+      "sha256": "f9f48409a37da8f18474fabf96dc685c859297251560383baaa322b32692ba1a"
+    },
+    "gate-07-admission-envelope.json": {
+      "bytes": 27472,
+      "sha256": "5deb9a5c84329dcb122c2e01c8af756d556475ac15622c3aebb209faf690bf3f"
+    },
+    "gate-05-admission-request.json": {
+      "bytes": 442,
+      "sha256": "584d5e8f3b3cdff492400572e5b792cbd521e268415e6f8b01d928d88e9a0c06"
+    },
+    "plan.json": {
+      "bytes": 29760,
+      "sha256": "bfc4e13821e1db928730c9df83dd6463d2c0a128c910d5ba77790f4ba2b27b1d"
+    },
+    "gate-14-admission-envelope.json": {
+      "bytes": 30180,
+      "sha256": "37ce77956498f63568ab7196dc211924420bddb00b6a42b76a6b98dea308a980"
+    },
+    "gate-04-admission-envelope.json": {
+      "bytes": 30147,
+      "sha256": "5942eddfdd1aed6298a665ff04853348eb6b8d773fe4a9fad2c36bd80d7b010e"
+    },
+    "compiler-observations.json": {
+      "bytes": 2104476,
+      "sha256": "3edc386c1508b9f8b2e823ca9f6246f27862372ba7fa789c208992e895065feb"
+    },
+    "gate-04-admission-request.json": {
+      "bytes": 442,
+      "sha256": "c8ba46cedce57647ac888930cca260fb402571723c741e9655ab775a37dfcce3"
+    },
+    "restoration-source.json": {
+      "bytes": 321,
+      "sha256": "4de6cc342f26af3979f26b54b1d741bdc78e9467fec476260fdd9c56111c9ebb"
+    },
+    "pyrefly-generating-input-closure.json": {
+      "bytes": 18767,
+      "sha256": "68930ac0cf0415e38707ab4824ea50d1f0cbaacaa1ca23d37c9423aaf940dcea"
+    },
+    "return-receipt.json": {
+      "bytes": 108843,
+      "sha256": "8099efcfe257beb8a3edb9a7e476b909c56bb4f68294d9fccddfe4dbda3c326d"
+    },
+    "gate-16/stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "gate-16/launch.json": {
+      "bytes": 2323,
+      "sha256": "be923603ab33e83a3de47b79afded56b56e4de1285d7a40ca4e8e0e25e6cca1d"
+    },
+    "gate-16/stdout": {
+      "bytes": 327,
+      "sha256": "8ee3dc9f828f51369916e15a7e7e84b706a1a22c04c80258d4e11018fa9d510b"
+    },
+    "gate-16/receipt.json": {
+      "bytes": 3090,
+      "sha256": "a7e2c5b7383cfbb650c9c46e5d507f0ca491bdca0a523f1d766a21976308a03b"
+    },
+    "gate-08/stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "gate-08/launch.json": {
+      "bytes": 2410,
+      "sha256": "a61c88a09e0af239260e8ddfee7fb42fb506793c90a27d5dcf1e7981617f7114"
+    },
+    "gate-08/stdout": {
+      "bytes": 120,
+      "sha256": "259db300ee91cdb1afb577cc262534c86e4f344d40a7c25701bcaff7e496131d"
+    },
+    "gate-08/receipt.json": {
+      "bytes": 3230,
+      "sha256": "9089346417e3975bbf77b9da446c123e9ff6f1700b4880ba12acd197d1006a63"
+    },
+    "staged-files.json": {
+      "bytes": 458,
+      "sha256": "79a4e64e32177f4d4cd99b8ff11d99be02046c63dab37e693cbedc0f2ce9676a"
+    }
+  },
+  "limits": [
+    "Same-producing-cohort MCP gate remained131PASS/2FAIL,8native controls initiallyNOT_RUN; this is not163PASS.",
+    "Current installed CLI/MCP/GUI, matching normal trio and public all55-tool real-project acceptance remain unrun.",
+    "No DTO or canonical lock change is included in this4-path checkpoint.",
+    "Native image feature set includes test-support; no packaged release claim."
+  ]
+}
