@@ -1609,3 +1609,42 @@ fn owner_index_job_cli_ticket_and_progress_operands_are_validated() {
     .expect("sequence reaches bounded parser");
     assert!(lower(&invalid_sequence, PROJECT).is_err());
 }
+
+#[test]
+fn corpus_preparation_fault_keeps_typed_readiness_and_exact_search_retry() {
+    let basis = backend_library::ViewRevision::from_bytes([41; 32]);
+    for state in [
+        backend_library::QueryPreparationState::Preparing,
+        backend_library::QueryPreparationState::Retiring,
+    ] {
+        let fault = crate::drive::probe_fault(
+            &backend_client::ClientError::CommandFailed(
+                backend_library::CommandFailure::QueryPreparation { basis, state },
+            ),
+            crate::drive::Probe::Search {
+                text: "find configuration handler",
+                limit: 17,
+            },
+        );
+        assert_eq!(fault.slug(), FaultSlug::QueryPreparation);
+        assert_eq!(fault.cause().slug(), crate::CauseSlug::Preparing);
+        assert_eq!(fault.operand().render(), "find configuration handler");
+        let dto = crate::dto::FaultDto::new(&fault);
+        let readiness = dto.query_preparation.expect("exact typed readiness");
+        assert_eq!(readiness.basis, "29".repeat(32));
+        assert_eq!(readiness.state, state);
+        assert_eq!(
+            dto.call,
+            Some(
+                serde_json::json!({"name":"backend.search","arguments":{"query":"find configuration handler","limit":17}})
+            )
+        );
+        assert_eq!(
+            dto.shell,
+            Some("nudox search 'find configuration handler' --limit 17".to_owned())
+        );
+        assert!(dto.compiler_failure.is_none());
+        assert!(dto.partial_publication.is_none());
+        assert!(fault.cause().sentence().contains("retry this same query"));
+    }
+}

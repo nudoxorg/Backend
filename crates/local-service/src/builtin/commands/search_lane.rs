@@ -1,18 +1,16 @@
 //! One exclusive projection owner crosses the control loop through bounded
-//! messages. Concurrent callers share that preparation, with at most 64 owed
-//! replies. A different selection is refused until the active worker retires;
+//! messages. Callers observe readiness without retaining an owed RPC.
+//! A different selection is refused until the active worker retires;
 //! it never queues another corpus or starts another native writer.
 
 use super::super::query::SearchSnapshotOwner;
-use backend_engine::{CoverageCapability, Query, ViewRoot, WorkspaceRoot};
+use backend_engine::{CoverageCapability, ViewRoot, WorkspaceRoot};
 use backend_extension_trustfall::SemanticQueryCorpus;
 use backend_version::CoverageWitness;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
-
-pub(super) const MAX_SEARCH_WAITERS: usize = super::adapter::MAX_WAITING_COMMANDS;
 
 pub(super) enum Failure {
     Preparation(super::super::query::QueryError),
@@ -44,20 +42,6 @@ impl Failure {
     }
 }
 
-pub(super) enum Rejection {
-    Full,
-    Retiring,
-}
-
-impl Rejection {
-    pub(super) fn into_command_failure(self) -> backend_engine::CommandFailure {
-        backend_engine::CommandFailure::InvalidQuery(match self {
-            Self::Full => "search_preparation_over_capacity: reply queue is full; retry after current work completes",
-            Self::Retiring => "search_preparation_retiring: retry after the previous native owner retires",
-        }.to_owned())
-    }
-}
-
 /// Only immutable selected evidence enters the native preparation thread.
 pub(super) struct Selection {
     pub(super) workspace: WorkspaceRoot,
@@ -76,17 +60,9 @@ pub(super) struct Capture {
     pub(super) generations: super::super::generation_residence::SemanticGenerationResidence,
 }
 
-pub(super) struct Waiter {
-    pub(super) ticket: u64,
-    pub(super) request_id: u64,
-    pub(super) query: Query,
-    pub(super) certificate: Option<super::super::WireCertificate>,
-}
-
 pub(super) struct Completion {
     pub(super) projection: Option<SearchSnapshotOwner>,
     pub(super) result: Result<(), Failure>,
-    pub(super) waiters: Vec<Waiter>,
     pub(super) current: bool,
 }
 
@@ -94,7 +70,6 @@ struct Active {
     workspace: WorkspaceRoot,
     view: backend_library::ViewStateRoot,
     cancelled: Arc<AtomicBool>,
-    waiters: Vec<Waiter>,
     completed: mpsc::Receiver<(SearchSnapshotOwner, Result<(), Failure>)>,
     worker: JoinHandle<()>,
 }
@@ -114,29 +89,23 @@ pub(super) struct SearchLane {
 }
 
 impl SearchLane {
-    /// Registers another caller for precisely the active preparation. No
-    /// corpus is captured for a duplicate, stale, or over-capacity caller.
-    pub(super) fn share(
+    /// A request observes this one worker; it never waits on its completion.
+    pub(super) fn state_for(
         &mut self,
         workspace: WorkspaceRoot,
         view: backend_library::ViewStateRoot,
-        waiter: Waiter,
-    ) -> Result<(), (Rejection, Waiter)> {
-        let Some(active) = self.active.as_mut() else {
-            return Err((Rejection::Retiring, waiter));
+    ) -> backend_library::QueryPreparationState {
+        let Some(active) = self.active.as_ref() else {
+            return backend_library::QueryPreparationState::Retiring;
         };
         if active.workspace != workspace || active.view != view {
             active.cancelled.store(true, Ordering::Release);
-            return Err((Rejection::Retiring, waiter));
         }
         if self.closed || active.cancelled.load(Ordering::Acquire) {
-            return Err((Rejection::Retiring, waiter));
+            backend_library::QueryPreparationState::Retiring
+        } else {
+            backend_library::QueryPreparationState::Preparing
         }
-        if active.waiters.len() >= MAX_SEARCH_WAITERS {
-            return Err((Rejection::Full, waiter));
-        }
-        active.waiters.push(waiter);
-        Ok(())
     }
 
     pub(super) fn active(&self) -> bool {
@@ -147,7 +116,6 @@ impl SearchLane {
         &mut self,
         mut projection: SearchSnapshotOwner,
         capture: Capture,
-        waiter: Waiter,
     ) -> Result<(), String> {
         if self.closed || self.active.is_some() {
             return Err("search preparation owner is unavailable; retry".to_owned());
@@ -227,28 +195,23 @@ impl SearchLane {
             workspace,
             view,
             cancelled,
-            waiters: vec![waiter],
             completed,
             worker,
         });
         Ok(())
     }
 
-    /// Reject stale callers immediately, while the uninterruptible portion of
-    /// a cancelled native commit may still be retiring on the one worker.
+    /// Cancel superseded work without blocking the control loop on retirement.
     pub(super) fn invalidate(
         &mut self,
         workspace: WorkspaceRoot,
         view: backend_library::ViewStateRoot,
-    ) -> Vec<Waiter> {
-        let Some(active) = self.active.as_mut() else {
-            return Vec::new();
-        };
-        if active.workspace == workspace && active.view == view {
-            return Vec::new();
+    ) {
+        if let Some(active) = self.active.as_ref() {
+            if active.workspace != workspace || active.view != view {
+                active.cancelled.store(true, Ordering::Release);
+            }
         }
-        active.cancelled.store(true, Ordering::Release);
-        std::mem::take(&mut active.waiters)
     }
 
     pub(super) fn drain(
@@ -276,18 +239,8 @@ impl SearchLane {
         Some(Completion {
             projection,
             result,
-            waiters: active.waiters,
             current,
         })
-    }
-
-    pub(super) fn abandon_reply(&mut self, ticket: u64) {
-        if let Some(active) = self.active.as_mut() {
-            active.waiters.retain(|waiter| waiter.ticket != ticket);
-            if active.waiters.is_empty() {
-                active.cancelled.store(true, Ordering::Release);
-            }
-        }
     }
 
     /// Retirement is joined. Shutdown may wait for a native commit already in

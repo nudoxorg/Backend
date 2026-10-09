@@ -1,9 +1,9 @@
 //! The maintained grammar of checked BVIEWJ01 version-3 journal frames.
 //!
 //! Snapshot rows, bases, certificates and compact transition records
-//! use the current DTO contract and the maintained historical envelopes 21–24.
-//! Their document selections, failure replies, Python metadata and project
-//! lockfile membership do not change persisted view fields. Every snapshot and event still passes current strict proof admission.
+//! use the current DTO contract and the maintained historical envelopes 21–25.
+//! Version 26 adds only a live failed reply; view rows, snapshot certificates
+//! and compact events remain unchanged. Every snapshot and event still passes current strict proof admission.
 //! Incompatible persisted fields require a new journal grammar.
 
 use super::DTO_VERSION;
@@ -13,7 +13,7 @@ use crate::{CommittedViewDelta, CoverageCapability, Cursor, ViewDto, ViewRoot};
 // Review snapshot/event fields and historical compatibility before moving
 // this fence, or introduce a new journal grammar for incompatible fields.
 const _: () = assert!(
-    DTO_VERSION == 25,
+    DTO_VERSION == 26,
     "review persisted view journal compatibility before accepting a new DTO version"
 );
 
@@ -49,11 +49,11 @@ impl JournalViewGrammarV3 {
     /// # Errors
     /// Refuses unknown and incompatible persisted envelope versions.
     pub fn check_envelope_version(self, version: u16) -> Result<(), String> {
-        if version == DTO_VERSION || matches!(version, 21 | 22 | 23 | 24) {
+        if version == DTO_VERSION || matches!(version, 21 | 22 | 23 | 24 | 25) {
             Ok(())
         } else {
             Err(format!(
-                "unsupported persisted view envelope version {version}; journal grammar 3 reads current {DTO_VERSION} and historical 21, 22, 23 and 24"
+                "unsupported persisted view envelope version {version}; journal grammar 3 reads current {DTO_VERSION} and historical 21, 22, 23, 24 and 25"
             ))
         }
     }

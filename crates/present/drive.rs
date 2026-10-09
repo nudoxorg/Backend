@@ -607,6 +607,14 @@ pub fn probe_fault(error: &ClientError, probe: Probe<'_>) -> Fault {
 /// the coordinate they supplied, so this suggests their own word back to them
 /// rather than inventing a query.
 fn next_step(fault: Fault, probe: Probe<'_>) -> Fault {
+    if let Probe::Search { text, limit } = probe
+        && fault.slug() == crate::FaultSlug::QueryPreparation
+    {
+        return fault.with_affordance(Affordance::RetrySearch {
+            text: text.to_owned(),
+            limit,
+        });
+    }
     if let Probe::Outline(path) | Probe::OutlinePage { path, .. } = probe
         && fault.slug() == crate::FaultSlug::NotFound
     {

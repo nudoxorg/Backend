@@ -37,6 +37,8 @@ pub enum FaultSlug {
     WrongBasis,
     /// The query failed bounded semantic validation.
     InvalidQuery,
+    /// The requested corpus is preparing or retiring asynchronously.
+    QueryPreparation,
     /// A closed compiler failure refused one package source member.
     CompilerRefused,
     /// Useful language profiles committed while others were explicitly refused.
@@ -79,6 +81,7 @@ impl FaultSlug {
             Self::NotFound => "not-found",
             Self::WrongBasis => "wrong-basis",
             Self::InvalidQuery => "invalid-query",
+            Self::QueryPreparation => "query-preparation",
             Self::CompilerRefused => "compiler-refused",
             Self::PartiallyPublished => "partially-published",
             Self::CursorMismatch => "cursor-mismatch",
@@ -195,6 +198,8 @@ pub enum CauseSlug {
     Unconfigured,
     /// The work is still in progress.
     Indexing,
+    /// The query corpus is preparing independently of index publication.
+    Preparing,
     /// The local daemon could not be reached.
     Unreachable,
     /// The payload exceeded a bounded allocation.
@@ -219,6 +224,7 @@ impl CauseSlug {
             Self::Malformed => "malformed",
             Self::Unconfigured => "unconfigured",
             Self::Indexing => "indexing",
+            Self::Preparing => "preparing",
             Self::Unreachable => "unreachable",
             Self::Oversized => "oversized",
             Self::Unproven => "unproven",
@@ -240,6 +246,13 @@ impl fmt::Display for CauseSlug {
 pub enum Affordance {
     /// Run the same request again.
     Retry,
+    /// Retry one corpus-backed search with its original text and page credit.
+    RetrySearch {
+        /// Exact caller-supplied search text.
+        text: String,
+        /// Original bounded page credit.
+        limit: u16,
+    },
     /// Index or refresh one project path.
     Reindex {
         /// Project path to index.
@@ -294,11 +307,16 @@ impl Affordance {
     pub fn shell(&self) -> Option<String> {
         match self {
             Self::Retry => Some("re-run the same command".to_owned()),
-            Self::Reindex { path } => Some(format!(
-                "nudox add {}",
-                crate::shell::quote_argument(path)
+            Self::RetrySearch { text, limit } => Some(format!(
+                "nudox search {} --limit {limit}",
+                crate::shell::quote_argument(text),
             )),
-            Self::OpenFolder { path } => Some(format!("open {}", crate::shell::quote_argument(path))),
+            Self::Reindex { path } => {
+                Some(format!("nudox add {}", crate::shell::quote_argument(path)))
+            }
+            Self::OpenFolder { path } => {
+                Some(format!("open {}", crate::shell::quote_argument(path)))
+            }
             Self::UseCommand { name, args } => {
                 let mut line = format!("backend {name}");
                 for argument in args {
@@ -323,6 +341,10 @@ impl Affordance {
     pub fn tool_call(&self) -> Option<serde_json::Value> {
         match self {
             Self::Retry | Self::None => None,
+            Self::RetrySearch { text, limit } => Some(serde_json::json!({
+                "name": "backend.search",
+                "arguments": { "query": text, "limit": limit }
+            })),
             Self::Reindex { path } => Some(serde_json::json!({
                 "name": "backend.index",
                 "arguments": { "path": path }
@@ -371,6 +393,7 @@ pub struct Fault {
     affordance: Affordance,
     compiler_failure: Option<PackageCompilerFailure>,
     partial_publication: Option<backend_library::IndexJobPartialPublication>,
+    query_preparation: Option<(ViewRevision, backend_library::QueryPreparationState)>,
 }
 
 impl Fault {
@@ -389,6 +412,7 @@ impl Fault {
             affordance,
             compiler_failure: None,
             partial_publication: None,
+            query_preparation: None,
         }
     }
 
@@ -420,6 +444,14 @@ impl Fault {
     #[must_use]
     pub const fn compiler_failure(&self) -> Option<&PackageCompilerFailure> {
         self.compiler_failure.as_ref()
+    }
+
+    /// The exact requested basis and corpus readiness, when preparation is pending.
+    #[must_use]
+    pub const fn query_preparation(
+        &self,
+    ) -> Option<(ViewRevision, backend_library::QueryPreparationState)> {
+        self.query_preparation
     }
 
     /// Returns the complete checked partial publication, including every refused profile.
@@ -658,6 +690,23 @@ impl Fault {
                 detail.clone(),
                 Affordance::None,
             ),
+            CommandFailure::QueryPreparation { basis, state } => {
+                let mut fault = Self::new(
+                    FaultSlug::QueryPreparation,
+                    operand,
+                    Cause::new(
+                        CauseSlug::Preparing,
+                        format!(
+                            "the query corpus for revision {} is {}; retry this same query to observe readiness; for a declaration name or coordinate, use nudox resolve; indexing has not failed",
+                            backend_library::encode_id(basis.as_bytes()),
+                            state.as_str(),
+                        ),
+                    ),
+                    Affordance::Retry,
+                );
+                fault.query_preparation = Some((*basis, *state));
+                return fault;
+            }
             CommandFailure::PartiallyPublished(partial) => {
                 return Self::partial_publication(partial, operand);
             }
