@@ -573,7 +573,14 @@ fn request(server: &mut Server<Fake>, method: &str, params: &Value) -> Value {
                 .expect("encode request")
                 .as_slice(),
         )
+        .map(|reply| encoded_stdio_reply(reply))
         .expect("a request receives a response")
+}
+
+fn encoded_stdio_reply(reply: Value) -> Value {
+    let mut line = Vec::new();
+    write_message(&mut line, &reply).expect("production stdio encoder");
+    serde_json::from_slice(&line).expect("encoded stdio response")
 }
 
 fn call(server: &mut Server<Fake>, tool: &str, arguments: &Value) -> Value {
@@ -3197,7 +3204,11 @@ fn newline_codec_rejects_malformed_and_oversized_jsonrpc_frames() {
         "id": 1,
         "result": "x".repeat(crate::MAX_MCP_RESPONSE_FRAME + 1)
     });
-    assert!(write_message(&mut output, &oversized_result).is_err());
+    write_message(&mut output, &oversized_result).expect("oversized reply becomes bounded fault");
+    assert!(output.len() <= DEFAULT_RESPONSE_BUDGET_BYTES);
+    let reply: Value = serde_json::from_slice(&output).expect("bounded refusal");
+    assert_eq!(reply["error"]["code"], -32000);
+    assert_eq!(reply["id"], 1);
 }
 
 #[test]
@@ -3387,7 +3398,7 @@ fn every_metadata_route_stays_within_the_context_budget() {
     let response = server
         .handle(&serde_json::to_vec(&huge_prompt).expect("large prompt request"))
         .expect("large prompt response");
-    assert_context_bounded(&response);
+    assert_context_bounded(&encoded_stdio_reply(response));
 }
 
 #[test]
@@ -3401,7 +3412,7 @@ fn wire_budget_metadata_counts_the_complete_escaped_jsonrpc_line() {
         "budget":{"bytes":34050,"estimatedTokens":8513,"bytesPerToken":4}
     });
     let result = tool_result(&source_text, structured.clone(), false);
-    let response = bound_rpc_reply(success(json!("request-אב🙂"), result));
+    let response = encoded_stdio_reply(success(json!("request-אב🙂"), result));
     assert_context_bounded(&response);
     assert_eq!(response["result"]["structuredContent"], structured);
     assert_eq!(response["result"]["isError"], false);
@@ -3436,7 +3447,7 @@ fn wire_budget_metadata_counts_the_complete_escaped_jsonrpc_line() {
     });
     let large_text = "λ אב🙂\n".repeat(6_000);
     let large_result = tool_result(&large_text, large_structured.clone(), false);
-    let large_response = bound_rpc_reply(success(json!(large_id.clone()), large_result));
+    let large_response = encoded_stdio_reply(success(json!(large_id.clone()), large_result));
     assert_eq!(large_response["id"], large_id);
     assert_eq!(large_response["result"]["isError"], false);
     assert_eq!(
