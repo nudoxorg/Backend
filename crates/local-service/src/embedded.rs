@@ -568,6 +568,251 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn current_workspace_mixed_legacy_modes_recover_without_replacing_state() {
+        const CHILD: &str = "NUDOX_CURRENT_WORKSPACE_LEGACY_MODES_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output =
+                std::process::Command::new(std::env::current_exe().expect("test executable"))
+                    .arg("current_workspace_mixed_legacy_modes_recover_without_replacing_state")
+                    .arg("--nocapture")
+                    .arg("--test-threads=1")
+                    .env(CHILD, "1")
+                    .output()
+                    .expect("umask child");
+            assert!(
+                output.status.success(),
+                "current permission child failed: {output:?}"
+            );
+            return;
+        }
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+        rustix::process::umask(rustix::fs::Mode::from_bits_truncate(0o002));
+        // Report13's ambient Linux workspace and the default CLI/MCP layout
+        // reach the same owner. The separate runtime/desktop laws check how
+        // those paths are selected; this law checks their retained storage.
+        for layout in [
+            ".local/share/nudox/workspace",
+            ".local/state/Nudox/projects/report13",
+        ] {
+            let (root, mut config) = scratch_workspace("current-legacy-modes");
+            let workspace = root.join(layout);
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(workspace.parent().expect("workspace parent"))
+                .expect("private layout parents");
+            std::fs::rename(&config.workspace, &workspace).expect("fixture workspace layout");
+            let workspace = std::fs::canonicalize(workspace).expect("canonical fixture workspace");
+            config.workspace = workspace.clone();
+            config.authority_secret = Some(workspace.join("authority.secret"));
+            EmbeddedLocalService::start(config.clone())
+                .expect("this build creates current state")
+                .close()
+                .expect("close original owner");
+            let credential = std::fs::read(workspace.join("authority.secret")).expect("credential");
+            let journal = std::fs::read(workspace.join("view.journal")).expect("current journal");
+            assert!(
+                !journal.is_empty(),
+                "the fixture contains a real persisted view"
+            );
+            let workspace_metadata = std::fs::symlink_metadata(&workspace).expect("workspace root");
+            assert_eq!(workspace_metadata.mode() & 0o777, 0o700);
+            let workspace_identity = (workspace_metadata.dev(), workspace_metadata.ino());
+            // Existing modes include both the original 0775 and the 0755 left
+            // by `chmod go-w`. Keep the inode identities to detect replacement.
+            let directories = [
+                "objects",
+                "objects/packs",
+                "objects/objects",
+                "objects/closures",
+                "objects/nodes",
+                "compiler",
+                "compiler/artifacts",
+                "compiler/journal",
+                "compiler/native-work",
+                "cache",
+                "cache/embedding",
+                "search-index-v2",
+                "registry-discovery",
+                "semantic-objects",
+                "semantic-objects/packs",
+                "semantic-objects/objects",
+                "semantic-objects/closures",
+                "semantic-objects/nodes",
+                "forge",
+                "forge/coordination",
+                "forge/coordination/leases",
+                "forge/coordination/objects",
+                "forge/coordination/temps",
+                "forge/content",
+                "forge/content/objects",
+                "forge/content/temps",
+                "forge/content/transfers",
+                "forge/content/quarantine",
+                "registry",
+                "registry/v1",
+                "registry/v1/cas",
+                "registry/v1/cas/objects",
+                "registry/v1/cas/objects/objects",
+                "registry/v1/cas/objects/temps",
+                "registry/v1/cas/objects/transfers",
+                "registry/v1/cas/objects/quarantine",
+                "registry/registry-acquisition",
+                "registry/registry-acquisition/coordination",
+                "registry/registry-acquisition/coordination/leases",
+                "registry/registry-acquisition/coordination/objects",
+                "registry/registry-acquisition/coordination/temps",
+            ]
+            .map(|relative| {
+                let path = workspace.join(relative);
+                let metadata = std::fs::symlink_metadata(&path).expect("real store directory");
+                assert!(metadata.is_dir());
+                (path, (metadata.dev(), metadata.ino()))
+            });
+            for (index, (path, _)) in directories.iter().enumerate() {
+                std::fs::set_permissions(
+                    path,
+                    std::fs::Permissions::from_mode([0o775, 0o755, 0o700][index % 3]),
+                )
+                .expect("mixed legacy directory mode");
+            }
+            // Repair is limited to named state directories, even within an
+            // active store. Source trees and previously archived state remain
+            // byte-for-byte and mode-for-mode as the operator left them.
+            let untouched_trees = [
+                (workspace.join("forge/content/kept-source"), "src"),
+                (workspace.join("from-another-build"), "kept-index"),
+            ]
+            .map(|(root, child)| {
+                let leaf = root.join(child);
+                let file = leaf.join("kept");
+                [root, leaf, file]
+            });
+            for [root, leaf, file] in &untouched_trees {
+                std::fs::create_dir_all(leaf).expect("unrequested fixture subtree");
+                std::fs::write(file, b"retained bytes").expect("unrequested bytes");
+                for directory in [root, leaf] {
+                    std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o775))
+                        .expect("unrequested directory mode");
+                }
+                std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o664))
+                    .expect("unrequested file mode");
+            }
+            struct UntouchedEntry<'a> {
+                path: &'a Path,
+                mode: u32,
+                identity: (u64, u64),
+                contents: Option<&'static [u8]>,
+            }
+            let untouched: Vec<UntouchedEntry<'_>> = untouched_trees
+                .iter()
+                .flat_map(|[root, leaf, file]| {
+                    [
+                        (root.as_path(), None),
+                        (leaf.as_path(), None),
+                        (file.as_path(), Some(b"retained bytes".as_slice())),
+                    ]
+                })
+                .map(|(path, contents)| {
+                    let metadata = std::fs::symlink_metadata(path).expect("unrequested entry");
+                    if contents.is_some() {
+                        assert!(metadata.is_file());
+                    } else {
+                        assert!(metadata.is_dir());
+                    }
+                    UntouchedEntry {
+                        path,
+                        mode: metadata.mode(),
+                        identity: (metadata.dev(), metadata.ino()),
+                        contents,
+                    }
+                })
+                .collect();
+            for reopen in 0..2 {
+                // Repeat the old writable owner-file condition on cold restart
+                // too. The authenticated epoch advances through a private
+                // atomic replacement rather than rewriting it with the umask.
+                let state =
+                    std::fs::read(workspace.join("OWNER.state")).expect("prior owner state");
+                for name in ["OWNER.state", "OWNER.lock"] {
+                    std::fs::set_permissions(
+                        workspace.join(name),
+                        std::fs::Permissions::from_mode(0o664),
+                    )
+                    .expect("legacy owner file mode");
+                }
+                let service =
+                    EmbeddedLocalService::start_replacing_state_from_another_build(config.clone())
+                        .expect("current state with legacy modes reopens");
+                assert!(
+                    service.state_set_aside().is_none(),
+                    "current state is not archived on reopen {reopen}"
+                );
+                assert!(service.is_running());
+                let metadata = std::fs::symlink_metadata(&workspace).expect("retained root");
+                assert_eq!(metadata.mode() & 0o777, 0o700);
+                assert_eq!((metadata.dev(), metadata.ino()), workspace_identity);
+                for (path, identity) in &directories {
+                    let metadata = std::fs::symlink_metadata(path).expect("repaired directory");
+                    assert_eq!(metadata.mode() & 0o777, 0o700, "{}", path.display());
+                    assert_eq!(
+                        (metadata.dev(), metadata.ino()),
+                        *identity,
+                        "repair retains {}",
+                        path.display()
+                    );
+                }
+                for name in ["OWNER.state", "OWNER.lock", "authority.secret"] {
+                    assert_eq!(
+                        std::fs::symlink_metadata(workspace.join(name))
+                            .expect("private file")
+                            .mode()
+                            & 0o777,
+                        0o600,
+                        "{name}"
+                    );
+                }
+                assert_ne!(
+                    std::fs::read(workspace.join("OWNER.state")).expect("new owner state"),
+                    state,
+                    "owner state is privately replaced on every reopen"
+                );
+                assert_eq!(
+                    std::fs::read(workspace.join("authority.secret")).expect("same credential"),
+                    credential
+                );
+                assert!(
+                    std::fs::read(workspace.join("view.journal"))
+                        .expect("retained journal")
+                        .starts_with(&journal),
+                    "the current persisted view is retained"
+                );
+                for entry in &untouched {
+                    let metadata =
+                        std::fs::symlink_metadata(entry.path).expect("unrequested entry");
+                    assert_eq!(metadata.mode(), entry.mode, "{}", entry.path.display());
+                    assert_eq!(
+                        (metadata.dev(), metadata.ino()),
+                        entry.identity,
+                        "repair never replaces {}",
+                        entry.path.display()
+                    );
+                    if let Some(contents) = entry.contents {
+                        assert_eq!(
+                            std::fs::read(entry.path).expect("unrequested bytes"),
+                            contents
+                        );
+                    }
+                }
+                assert!(!workspace.join("from-another-build-2").exists());
+                service.close().expect("close reopened owner");
+            }
+            std::fs::remove_dir_all(root).expect("remove owned fixture");
+        }
+    }
+
     #[test]
     fn a_workspace_another_process_holds_the_lock_of_is_never_moved() {
         let (root, config) = state_from_another_build("held");
