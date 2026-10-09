@@ -37,9 +37,9 @@ const MAX_COMPILER_WORKSPACE_FILE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_COMPILER_WORKSPACE_STREAM_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_COMPILER_WORKSPACE_CHUNK_BYTES: usize = 1024 * 1024;
 #[cfg(windows)]
-const COMPILER_WORKSPACE_POLICY_IDENTITY: &str = "nudox.compiler-workspace.v1/gitignore+generated-defaults.v2;csharp-bin-source-filter.v1;ignore-case=insensitive;portable-case-collision=reject;symlink=reject";
+const COMPILER_WORKSPACE_POLICY_IDENTITY: &str = "nudox.compiler-workspace.v1/gitignore+generated-defaults.v3;python-initialized-subpackages.v1;declared-captured-python-source-roots.v1;csharp-bin-source-filter.v1;ignore-case=insensitive;portable-case-collision=reject;symlink=reject";
 #[cfg(not(windows))]
-const COMPILER_WORKSPACE_POLICY_IDENTITY: &str = "nudox.compiler-workspace.v1/gitignore+generated-defaults.v2;csharp-bin-source-filter.v1;ignore-case=sensitive;portable-case-collision=reject;symlink=reject";
+const COMPILER_WORKSPACE_POLICY_IDENTITY: &str = "nudox.compiler-workspace.v1/gitignore+generated-defaults.v3;python-initialized-subpackages.v1;declared-captured-python-source-roots.v1;csharp-bin-source-filter.v1;ignore-case=sensitive;portable-case-collision=reject;symlink=reject";
 const MAX_COMPILER_CONFIGURATION_FILES_PER_LANGUAGE: usize = 4_096;
 pub(super) const MAX_COMPILER_CONFIGURATION_FILE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_COMPILER_CONFIGURATION_BYTES_PER_LANGUAGE: usize = 32 * 1024 * 1024;
@@ -5836,6 +5836,51 @@ mod compiler_workspace_snapshot_tests {
         let path = std::env::temp_dir().join(format!("bcw-{}-{serial}", std::process::id()));
         fs::create_dir_all(&path).map_err(|error| error.to_string())?;
         Ok(Scratch(path))
+    }
+
+    #[test]
+    fn snapshot_captures_python_build_package_bytes_and_fences_package_marker_changes()
+    -> Result<(), String> {
+        let scratch = scratch()?;
+        for (path, bytes) in [
+            ("src/pkg/__init__.py", b"".as_slice()),
+            ("src/pkg/build/__init__.py", b"".as_slice()),
+            (
+                "src/pkg/build/build_tracker.py",
+                b"class BuildTracker: pass\n".as_slice(),
+            ),
+            ("src/pkg/build/data.bin", b"raw-package-data".as_slice()),
+            ("build/__init__.py", b"".as_slice()),
+            ("build/generated.py", b"x = 1\n".as_slice()),
+        ] {
+            let path = scratch.0.join(path);
+            fs::create_dir_all(path.parent().ok_or("parent")?)
+                .map_err(|error| error.to_string())?;
+            fs::write(path, bytes).map_err(|error| error.to_string())?;
+        }
+        let snapshot = CompilerWorkspaceSnapshot::open(&scratch.0)?;
+        assert_eq!(
+            snapshot.read_file("src/pkg/build/build_tracker.py", 1024)?,
+            b"class BuildTracker: pass\n"
+        );
+        assert_eq!(
+            snapshot.read_file("src/pkg/build/data.bin", 1024)?,
+            b"raw-package-data"
+        );
+        assert!(
+            !snapshot
+                .entries()
+                .iter()
+                .any(|entry| entry.path == "build" || entry.path.starts_with("build/"))
+        );
+        assert!(snapshot.revalidate()?);
+        fs::remove_file(scratch.0.join("src/pkg/build/__init__.py"))
+            .map_err(|error| error.to_string())?;
+        assert!(
+            !snapshot.revalidate()?,
+            "changing package topology changes the admitted source frontier"
+        );
+        Ok(())
     }
 
     #[test]

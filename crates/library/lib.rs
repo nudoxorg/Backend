@@ -12,8 +12,9 @@
 /// discovery adapters.
 pub use backend_discovery::{
     DEFAULT_IGNORED_DIRECTORIES, DiscoveredEntry, DiscoveryError as FilesystemDiscoveryError,
-    DiscoveryPolicy, EntryKind, HARD_IGNORED_DIRECTORIES, is_hard_ignored_directory,
-    is_hard_ignored_path,
+    DiscoveryPolicy, EntryKind, HARD_IGNORED_DIRECTORIES, SourceSelectionScope, PythonSourceContext,
+    is_python_context_document,
+    is_hard_ignored_directory, is_hard_ignored_path, is_ignored_source_file_path,
 };
 
 mod arrangement;

@@ -25,8 +25,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 
 const SOURCE_FRONTIER_VERSION: u8 = 3;
-const SOURCE_FRONTIER_POLICY_IDENTITY: &str =
-    "backend.local-source-frontier.v1;selection=source-selection-policy.v1;git-clean-paths.v1";
+const SOURCE_FRONTIER_POLICY_IDENTITY: &str = "backend.local-source-frontier.v1;selection=source-selection-policy.v2;python-initialized-subpackages.v1;declared-captured-python-source-roots.v1;git-clean-paths.v1";
 const MAX_SOURCE_FRONTIERS: usize = 8 * 1024;
 const MAX_SOURCE_FRONTIER_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SOURCE_FRONTIER_CACHE_BYTES: usize = 32 * 1024 * 1024;

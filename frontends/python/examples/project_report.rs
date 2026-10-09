@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use backend_frontend_python::legacy::checker::{
     NativePythonProjectAuthority, PYTHON_NATIVE_PROJECT_SOURCE_REVISION, PythonProjectBytesSource,
     PythonProjectControl, PythonProjectSourceStatus, PythonSourceDecodeFault, SymbolOutcome,
-    is_ignored_python_source_directory,
+    is_ignored_python_source_path,
 };
 use backend_semantic::vocabulary::PythonVersion;
 use serde_json::json;
@@ -43,7 +43,12 @@ fn source_status_json(status: &PythonProjectSourceStatus) -> serde_json::Value {
     }
 }
 
-fn files(root: &Path, directory: &Path, output: &mut Vec<PathBuf>) -> std::io::Result<()> {
+fn files(
+    root: &Path,
+    directory: &Path,
+    context: &backend_discovery::PythonSourceContext,
+    output: &mut Vec<PathBuf>,
+) -> std::io::Result<()> {
     for entry in std::fs::read_dir(directory)? {
         let entry = entry?;
         let metadata = entry.file_type()?;
@@ -52,10 +57,10 @@ fn files(root: &Path, directory: &Path, output: &mut Vec<PathBuf>) -> std::io::R
         }
         let path = entry.path();
         if metadata.is_dir() {
-            if is_ignored_python_source_directory(&entry.file_name()) {
+            if is_ignored_python_source_path(root, &path, context) {
                 continue;
             }
-            files(root, &path, output)?;
+            files(root, &path, context, output)?;
         } else if path
             .extension()
             .is_some_and(|extension| extension == "py" || extension == "pyi")
@@ -78,7 +83,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let checker = NativePythonProjectAuthority::admit()?;
     let root = PathBuf::from(&args[1]);
     let mut paths = Vec::new();
-    files(&root, &root, &mut paths)?;
+    let context = backend_discovery::PythonSourceContextCapture::capture(
+        &root,
+        backend_discovery::DiscoveryPolicy::default()
+            .respect_gitignore(false)
+            .exclude("**/.local/**"),
+    )?;
+    files(&root, &root, context.context(), &mut paths)?;
+    context.validate_current(&root)?;
     paths.sort();
     let owned = paths
         .iter()

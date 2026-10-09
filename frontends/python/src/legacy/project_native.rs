@@ -59,6 +59,7 @@ pub(super) fn analyze(
     syntax: &BTreeMap<&str, ModuleFacts>,
     rejected: &BTreeMap<&str, crate::legacy::RejectedSyntax>,
     baselines: &CapturedBaselines,
+    source_context: &backend_discovery::PythonSourceContext,
     profile: backend_semantic::vocabulary::PythonVersion,
     control: PythonProjectControl<'_>,
 ) -> Result<NativeProjectResult, CheckerError> {
@@ -132,6 +133,7 @@ pub(super) fn analyze(
         original_root,
         mirror,
         raw_sources[0].relative_path,
+        source_context,
         control,
     )?;
     let mut coverage_gaps = Vec::new();

@@ -45,7 +45,7 @@ pub use project::{
     PythonProjectBytesSource, PythonProjectControl, PythonProjectCoverageGap,
     PythonProjectCoverageGapKind, PythonProjectDiagnostic, PythonProjectFingerprint,
     PythonProjectReport, PythonProjectSource, PythonProjectSourceStatus, PythonProjectWitness,
-    PythonTypeProjectionFault, is_ignored_python_source_directory,
+    PythonTypeProjectionFault, is_ignored_python_source_directory, is_ignored_python_source_path,
 };
 
 use std::path::{Path, PathBuf};
