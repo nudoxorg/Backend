@@ -1,0 +1,105 @@
+{
+  "source": "e8d82ca02315496a9c4ce1de300bdaac4135e305",
+  "tree": "a536fbc578a6b09663abebf8e31cbd4bb3c823d8",
+  "canonical": "1393d2a01827f8d187b16bf6a0a47491e7b528d3",
+  "readiness_atom": "b8571b802926e193180b3d40bb8d2f0ffeba2e6d",
+  "all16_readiness_postimages_exact": true,
+  "python_paths": [
+    {
+      "path": "Cargo.lock",
+      "composed_disjoint_hunks": false,
+      "origin": "configuration",
+      "postimage_exact": true
+    },
+    {
+      "path": "crates/engine/src/application/compiler.rs",
+      "composed_disjoint_hunks": false,
+      "origin": "configuration",
+      "postimage_exact": true
+    },
+    {
+      "path": "crates/library/interface/compiler.rs",
+      "composed_disjoint_hunks": false,
+      "origin": "configuration",
+      "postimage_exact": true
+    },
+    {
+      "path": "crates/library/interface/mod.rs",
+      "composed_disjoint_hunks": false,
+      "origin": "configuration",
+      "postimage_exact": true
+    },
+    {
+      "path": "crates/library/surface.rs",
+      "composed_disjoint_hunks": false,
+      "origin": "configuration",
+      "postimage_exact": true
+    },
+    {
+      "path": "crates/library/surface/package_compiler_failure.rs",
+      "composed_disjoint_hunks": false,
+      "origin": "configuration",
+      "postimage_exact": true
+    },
+    {
+      "path": "frontends/python/Cargo.toml",
+      "composed_disjoint_hunks": false,
+      "origin": "configuration",
+      "postimage_exact": true
+    },
+    {
+      "path": "frontends/python/src/legacy/checker.rs",
+      "composed_disjoint_hunks": false,
+      "origin": "configuration",
+      "postimage_exact": true
+    },
+    {
+      "path": "frontends/python/src/legacy/mod.rs",
+      "composed_disjoint_hunks": false,
+      "origin": "coordinate",
+      "postimage_exact": true
+    },
+    {
+      "path": "frontends/python/src/legacy/project.rs",
+      "composed_disjoint_hunks": false,
+      "origin": "configuration",
+      "postimage_exact": true
+    },
+    {
+      "path": "frontends/python/src/legacy/project_baseline.rs",
+      "composed_disjoint_hunks": false,
+      "origin": "configuration",
+      "postimage_exact": true
+    },
+    {
+      "path": "frontends/python/src/legacy/project_configuration.rs",
+      "composed_disjoint_hunks": false,
+      "origin": "configuration",
+      "postimage_exact": true
+    },
+    {
+      "path": "frontends/python/src/legacy/project_native.rs",
+      "composed_disjoint_hunks": true,
+      "origin": "composed",
+      "postimage_exact": null
+    },
+    {
+      "path": "frontends/python/tests/python_binding_coordinates.rs",
+      "composed_disjoint_hunks": false,
+      "origin": "coordinate",
+      "postimage_exact": true
+    },
+    {
+      "path": "frontends/python/tests/python_configuration_diagnostics.rs",
+      "composed_disjoint_hunks": false,
+      "origin": "configuration",
+      "postimage_exact": true
+    }
+  ],
+  "all_other_canonical_postimages_modes_unchanged": true,
+  "changed_path_count": 31,
+  "source_tree_entry_count": 18040,
+  "lock_delta": "diff --git a/Cargo.lock b/Cargo.lock\nindex 463e75fae2..16881a7174 100644\n--- a/Cargo.lock\n+++ b/Cargo.lock\n@@ -1364,6 +1364,7 @@ dependencies = [\n  \"serde\",\n  \"serde_json\",\n  \"thiserror 2.0.20\",\n+ \"toml 1.1.5+spec-1.1.0\",\n  \"tree-sitter-python\",\n ]\n \n",
+  "shared_native_delta": "diff --git a/frontends/python/src/legacy/project_native.rs b/frontends/python/src/legacy/project_native.rs\nindex 4e0b18c020..960bbe7bad 100644\n--- a/frontends/python/src/legacy/project_native.rs\n+++ b/frontends/python/src/legacy/project_native.rs\n@@ -647,12 +647,15 @@ pub(super) fn analyze(\n                                 candidate.kind,\n                                 DeclarationKind::Class | DeclarationKind::Function\n                             ) && candidate.name_span != target.name_span\n-                                && candidate.span.start <= target.span.start\n-                                && target.span.end <= candidate.span.end\n+                                && candidate.binding_span.start <= target.binding_span.start\n+                                && target.binding_span.end <= candidate.binding_span.end\n                         })\n                         .collect::<Vec<_>>();\n                     enclosing.sort_by_key(|candidate| {\n-                        (candidate.span.start, std::cmp::Reverse(candidate.span.end))\n+                        (\n+                            candidate.binding_span.start,\n+                            std::cmp::Reverse(candidate.binding_span.end),\n+                        )\n                     });\n                     let mut scopes = enclosing\n                         .iter()\n@@ -667,8 +670,8 @@ pub(super) fn analyze(\n                             program: program_identity,\n                             source: *source_identity,\n                             path,\n-                            declaration_start: target.span.start,\n-                            declaration_end: target.span.end,\n+                            declaration_start: target.binding_span.start,\n+                            declaration_end: target.binding_span.end,\n                             name_start: target.name_span.start,\n                         },\n                     )\n@@ -1157,17 +1160,15 @@ fn captured_finder(\n             }\n             let (config, errors) = ConfigFile::from_file(&path);\n             if !errors.is_empty() {\n-                return Err(project_error(\n-                    &path.to_string_lossy(),\n-                    &format!(\n-                        \"native captured configuration errors: {}\",\n-                        errors\n-                            .iter()\n-                            .map(ConfigError::get_message)\n-                            .collect::<Vec<_>>()\n-                            .join(\"; \")\n-                    ),\n-                ));\n+                let relative = path.strip_prefix(mirror).map_err(|_| {\n+                    project_error(\"\", \"native config is outside the captured mirror\")\n+                })?;\n+                return Err(super::project_configuration::configuration_error(\n+                    &path,\n+                    &original_root.join(relative),\n+                    &errors,\n+                    control,\n+                )?);\n             }\n             let priority = match config.source {\n                 ConfigSource::File(_) | ConfigSource::FailedParse(_) => 0,\n",
+  "native_validation": "UNRUN"
+}
