@@ -1,0 +1,333 @@
+{
+  "schema": "nudox.compiler-owner-diagnostic.native-evidence.v1",
+  "scope": "Bounded service error-chain extraction and typed compiler-owner cause reporting only",
+  "native": {
+    "source": {
+      "commit": "91b06077c4aad68a8fecfc0c20d7489113c789ef",
+      "tree": "c2bde3180cee388aecc0efeec2442ab95dbf7331",
+      "cargo_lock_sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4",
+      "clean": true
+    },
+    "image": {
+      "path": "/Users/rmccrar6/sol61-compiler-owner-diagnostic7-native-20261009/evidence/build-00/images/localservice-lib",
+      "sha256": "510dc1cf1f0f6ca2be6814f3c0d86d2f02123f6c6f71173d5e5c1552012f2dc3",
+      "bytes": 725070104,
+      "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007/debug/deps/backend_local_service-fb339fe309d09189"
+    },
+    "host": "h16001mac",
+    "controls_passed": 7,
+    "controls_failed": 0,
+    "controls_ignored": 0,
+    "test_names": [
+      "builtin::commands::index::local_compile_error_chain_tests::refusal_includes_numeric_generation_cause_through_typed_source_chain",
+      "builtin::commands::index::local_compile_error_chain_tests::verbose_middle_causes_do_not_hide_the_deepest_numeric_generation_cause",
+      "builtin::commands::index::local_compile_error_chain_tests::exact_product_text_boundary_keeps_the_complete_terminal_cause",
+      "builtin::commands::index::local_compile_error_chain_tests::unicode_and_nul_are_sanitized_before_protocol_text_admission",
+      "builtin::commands::index::local_compile_error_chain_tests::source_depth_limit_reports_omitted_causes_and_keeps_last_admitted_cause",
+      "builtin::commands::index::local_compile_error_chain_tests::cyclic_source_chain_is_reported_without_exceeding_its_depth_budget",
+      "builtin::diagnostic::tests::compiler_owner_diagnostic_retains_rooted_publication_journal_cause"
+    ],
+    "plan_sha256": "7a3be9b57a4e1c8e525a39d2cf84fb6da0e8355bd98050d21e095113eb36f272",
+    "raw_archive": "/private/tmp/sol61-owner-diagnostic7-native-20261009/native-run-final91b060/native-job-raw.tar.gz",
+    "raw_archive_sha256": "630f750284b44f7673cbdc8b01e95e8c27b09eb7c01b1728f53438b90d1f4230",
+    "source_input_manifest_sha256": "cef74d75f8a2ca7107ba7891446938d052ac8f0d35138c41b865e224591c248f",
+    "source_input_count": 17966,
+    "gates": [
+      {
+        "gate": "build-00",
+        "receipt_sha256": "37e2c7639e04fe4a990777614709c1137d257deda226f0380ae4cd234a895a8a",
+        "accepted": true,
+        "exit": 0,
+        "running_test_names": [],
+        "test_summaries": [],
+        "retirement": "owned-child-kernel-wait",
+        "group_survivors": [],
+        "managed_leases_empty": true,
+        "logs": {
+          "stdout": {
+            "sha256": "238384239bc36657b9e3f0515fd12c8d8bd23d268756cea52fa375673f471344",
+            "bytes": 2912946
+          },
+          "stderr": {
+            "sha256": "025cfc1fb1d941e7f1a2b99b10aaa934f8976e834b1c2d980c4dfe2fd467a837",
+            "bytes": 534
+          }
+        },
+        "child_elapsed_seconds": 237.96707304101437
+      },
+      {
+        "gate": "image-00",
+        "receipt_sha256": "7d00e92f7ee395a2680e1775a5f4b4614014e07ae600fc1bfd61b25cad32b500",
+        "accepted": true,
+        "exit": 0,
+        "running_test_names": [],
+        "test_summaries": [],
+        "retirement": "owned-child-kernel-wait",
+        "group_survivors": [],
+        "managed_leases_empty": true,
+        "logs": {
+          "stdout": {
+            "sha256": "df998ff90a6a92c64f9d894cec5bfd6d69b970e23c8ae1b84402f4da93fd2de7",
+            "bytes": 124523
+          },
+          "stderr": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          }
+        },
+        "child_elapsed_seconds": 10.24925895803608
+      },
+      {
+        "gate": "image-01",
+        "receipt_sha256": "7be3c52a707f5ce7e5c7f4817fc4a978479cb0d7c899caea0cf4ce6df0a8722c",
+        "accepted": true,
+        "exit": 0,
+        "running_test_names": [
+          "builtin::commands::index::local_compile_error_chain_tests::refusal_includes_numeric_generation_cause_through_typed_source_chain"
+        ],
+        "test_summaries": [
+          [
+            "ok",
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "retirement": "owned-child-kernel-wait",
+        "group_survivors": [],
+        "managed_leases_empty": true,
+        "logs": {
+          "stdout": {
+            "sha256": "56c42065a272c68abc59be0fef25349af9a2ad6108b47c5691337d1c5ddaca8a",
+            "bytes": 255
+          },
+          "stderr": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          }
+        },
+        "child_elapsed_seconds": 2.1773581670131534
+      },
+      {
+        "gate": "image-02",
+        "receipt_sha256": "a30a230f7daee657371e420aaec52348b103fa63134323326dc5bd940b6e5d8a",
+        "accepted": true,
+        "exit": 0,
+        "running_test_names": [
+          "builtin::commands::index::local_compile_error_chain_tests::verbose_middle_causes_do_not_hide_the_deepest_numeric_generation_cause"
+        ],
+        "test_summaries": [
+          [
+            "ok",
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "retirement": "owned-child-kernel-wait",
+        "group_survivors": [],
+        "managed_leases_empty": true,
+        "logs": {
+          "stdout": {
+            "sha256": "26fc3fad3353992126777af89b56bc77912ddfa6dca02b3cec7921e8c76d98d0",
+            "bytes": 257
+          },
+          "stderr": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          }
+        },
+        "child_elapsed_seconds": 2.1775879160268232
+      },
+      {
+        "gate": "image-03",
+        "receipt_sha256": "a403c1c3161c947b8e301ca3c879382ee4a9ee5ada1edebe4deda0637a853f25",
+        "accepted": true,
+        "exit": 0,
+        "running_test_names": [
+          "builtin::commands::index::local_compile_error_chain_tests::exact_product_text_boundary_keeps_the_complete_terminal_cause"
+        ],
+        "test_summaries": [
+          [
+            "ok",
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "retirement": "owned-child-kernel-wait",
+        "group_survivors": [],
+        "managed_leases_empty": true,
+        "logs": {
+          "stdout": {
+            "sha256": "6729a23396dece011012e7b76ea8d3a61e4a843f68047553cb22a81061ae41a6",
+            "bytes": 248
+          },
+          "stderr": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          }
+        },
+        "child_elapsed_seconds": 2.1775817919988185
+      },
+      {
+        "gate": "image-04",
+        "receipt_sha256": "cce83b2b17d989f3308087f2398e4e8aa51f4df4552570455a77bb39f6949bde",
+        "accepted": true,
+        "exit": 0,
+        "running_test_names": [
+          "builtin::commands::index::local_compile_error_chain_tests::unicode_and_nul_are_sanitized_before_protocol_text_admission"
+        ],
+        "test_summaries": [
+          [
+            "ok",
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "retirement": "owned-child-kernel-wait",
+        "group_survivors": [],
+        "managed_leases_empty": true,
+        "logs": {
+          "stdout": {
+            "sha256": "c7ed17bd1e347b128f615a918a21b6ec82053ad53eb7bf3368e8dd25c36e3a2e",
+            "bytes": 247
+          },
+          "stderr": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          }
+        },
+        "child_elapsed_seconds": 2.178197667002678
+      },
+      {
+        "gate": "image-05",
+        "receipt_sha256": "0b089c26453e1e319a1f68df8cb6fb6550da433780ab12925c5d6c7a1a9b46b1",
+        "accepted": true,
+        "exit": 0,
+        "running_test_names": [
+          "builtin::commands::index::local_compile_error_chain_tests::source_depth_limit_reports_omitted_causes_and_keeps_last_admitted_cause"
+        ],
+        "test_summaries": [
+          [
+            "ok",
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "retirement": "owned-child-kernel-wait",
+        "group_survivors": [],
+        "managed_leases_empty": true,
+        "logs": {
+          "stdout": {
+            "sha256": "7a43ded84a245b208f6a604efd3a1beef56c7e300e9fe5cf84faa0cbd29670aa",
+            "bytes": 258
+          },
+          "stderr": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          }
+        },
+        "child_elapsed_seconds": 2.183687457931228
+      },
+      {
+        "gate": "image-06",
+        "receipt_sha256": "8a2cc58d868cc7d65b7f06e18fe411e01a7e8080269f0a2838ea2067ea62ee15",
+        "accepted": true,
+        "exit": 0,
+        "running_test_names": [
+          "builtin::commands::index::local_compile_error_chain_tests::cyclic_source_chain_is_reported_without_exceeding_its_depth_budget"
+        ],
+        "test_summaries": [
+          [
+            "ok",
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "retirement": "owned-child-kernel-wait",
+        "group_survivors": [],
+        "managed_leases_empty": true,
+        "logs": {
+          "stdout": {
+            "sha256": "b069a61a39535b5178f62bcc061105241c609a13fccfcfa76c86a79d63944f81",
+            "bytes": 253
+          },
+          "stderr": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          }
+        },
+        "child_elapsed_seconds": 2.1869639169890434
+      },
+      {
+        "gate": "image-07",
+        "receipt_sha256": "c7b1e2b11238e62a318e73af48832c7b83241dc2b2c6018d136059d5392afb81",
+        "accepted": true,
+        "exit": 0,
+        "running_test_names": [
+          "builtin::diagnostic::tests::compiler_owner_diagnostic_retains_rooted_publication_journal_cause"
+        ],
+        "test_summaries": [
+          [
+            "ok",
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "retirement": "owned-child-kernel-wait",
+        "group_survivors": [],
+        "managed_leases_empty": true,
+        "logs": {
+          "stdout": {
+            "sha256": "b8722c968bcccd78b0db0ec19e061c4664b83d9d1b3ac1c7b7f27538981e53b3",
+            "bytes": 222
+          },
+          "stderr": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          }
+        },
+        "child_elapsed_seconds": 2.1759571249131113
+      }
+    ]
+  },
+  "replay": {
+    "base": "d140748038e010ef38fc5e55dc05c178854d3df3",
+    "source_paths": [
+      {
+        "path": "crates/local-service/src/builtin.rs",
+        "native_sha256": "ad1d740a8838e0b4d8959cb9b6bdc76d36f8d37c42e81c87e4a91bdff5a240f0",
+        "canonical_replay_sha256": "0fd04ff92ede4bab9413da72c1c44fe4622d70b4b4f8e86732b6dbc8d851c0f8",
+        "byte_identical_to_native": false
+      },
+      {
+        "path": "crates/local-service/src/builtin/commands/index.rs",
+        "native_sha256": "cbd544091983601ba620341b1b52af973e5063e43e11dd59ccd4b2bf700abd5f",
+        "canonical_replay_sha256": "9740735b9df8abbd5c7007cd2e358965ea5424b860fc025c8ac5c091d5b70fc5",
+        "byte_identical_to_native": false
+      },
+      {
+        "path": "crates/local-service/src/builtin/diagnostic.rs",
+        "native_sha256": "822cee873af52ae23ee85bc48014ecb10fa97b99ac8cc741f757e95e021af7e1",
+        "canonical_replay_sha256": "822cee873af52ae23ee85bc48014ecb10fa97b99ac8cc741f757e95e021af7e1",
+        "byte_identical_to_native": true
+      }
+    ],
+    "minimal_reviewed_patch_sha256": "bff20b55987a13bacd2066c689b99ef2f6664878a9cd2342d3e3434e9faf057a",
+    "cargo_lock_preserved": true,
+    "native_program_source_changes_preserved": true,
+    "python_captured_baseline_changes_preserved": true,
+    "combined_canonical_native_build": "UNRUN"
+  },
+  "limitations": [
+    "Seven focused Darwin native controls; not an installed CLI/MCP/GUI acceptance run.",
+    "Linux and Windows builds are unrun for this composition.",
+    "This preserves causes; it does not repair the separate initial-root publication timeout.",
+    "Individual owned processes were kernel-waited and groups/leases empty; final SDK source/stamp handback is pending separate literal receipt."
+  ]
+}
