@@ -79,6 +79,16 @@ pub fn fault(fault: &Fault) -> String {
     let _ = write!(out, "\n{}", fault.cause().sentence());
     if let Some(call) = fault.affordance().tool_call() {
         let _ = write!(out, "\n→ `{}`", tool_call_text(&call));
+    } else if let crate::Affordance::RecoverOwner { .. } = fault.affordance()
+        && let Some(shell) = fault.affordance().shell()
+    {
+        // An indented code block preserves even literal backticks and newlines
+        // inside quoted path operands without inventing an MCP scope change.
+        let _ = write!(
+            out,
+            "\n→ Run in a shell:\n\n    {}",
+            shell.replace('\n', "\n    ")
+        );
     }
     out
 }

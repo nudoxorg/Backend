@@ -78,9 +78,19 @@ fn restrict_to_owner(path: &Path) {
 fn passive_health_does_not_start_locald_or_create_state_when_owner_is_absent() {
     let root = scratch("absent");
     fs::create_dir_all(&root).expect("create fixture root");
-    let project = root.join("project");
-    let workspace = root.join("state");
-    let endpoint = root.join("run").join("locald.sock");
+    let root = backend_runtime::normalize_surface_path(&root);
+    #[cfg(unix)]
+    let (project, workspace, endpoint) = (
+        root.join("project é ' $(printf BAD)"),
+        root.join("state `printf BAD`; literal"),
+        root.join("run").join("owner ' .sock"),
+    );
+    #[cfg(not(unix))]
+    let (project, workspace, endpoint) = (
+        root.join("project"),
+        root.join("state"),
+        root.join("run").join("locald.sock"),
+    );
     fs::create_dir(&project).expect("create project");
     let marker = root.join("locald-was-started");
     let fake_locald = marker_daemon(&root, &marker);
@@ -114,13 +124,45 @@ fn passive_health_does_not_start_locald_or_create_state_when_owner_is_absent() {
     assert_eq!(fault["answer"], "fault");
     assert_eq!(fault["slug"], "endpoint");
     assert_eq!(fault["cause"], "unreachable");
-    let recovery = fault["shell"].as_str().expect("owner startup recovery command");
-    assert!(recovery.starts_with("backend health "), "{recovery}");
+    assert_eq!(
+        fault["operand"],
+        endpoint.to_str().expect("selected endpoint")
+    );
+    let recovery = fault["shell"]
+        .as_str()
+        .expect("owner startup recovery command");
+    assert!(recovery.starts_with("nudox --project "), "{recovery}");
+    assert!(recovery.ends_with(" health"), "{recovery}");
     assert!(!recovery.contains("--passive"), "{recovery}");
-    for selected_path in [&project, &workspace, &endpoint] {
-        assert!(
-            recovery.contains(selected_path.to_str().expect("UTF-8 fixture path")),
-            "recovery must retain selected paths: {recovery}"
+    assert!(
+        fault.get("call").is_none(),
+        "CLI scope cannot become MCP arguments: {fault}"
+    );
+    #[cfg(unix)]
+    {
+        let script = format!(r#"nudox() {{ printf '%s\000' "$@"; }}; {recovery}"#);
+        let parsed = Command::new("/bin/sh")
+            .args(["-c", &script])
+            .output()
+            .expect("parse the actual CLI recovery shell command");
+        assert!(parsed.status.success());
+        assert!(parsed.stderr.is_empty());
+        let mut expected = Vec::new();
+        for operand in [
+            "--project",
+            project.to_str().expect("project"),
+            "--workspace",
+            workspace.to_str().expect("workspace"),
+            "--endpoint",
+            endpoint.to_str().expect("endpoint"),
+            "health",
+        ] {
+            expected.extend_from_slice(operand.as_bytes());
+            expected.push(0);
+        }
+        assert_eq!(
+            parsed.stdout, expected,
+            "retain every literal selected operand"
         );
     }
     assert!(
@@ -134,6 +176,31 @@ fn passive_health_does_not_start_locald_or_create_state_when_owner_is_absent() {
         "a machine rendering leaves stderr empty: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let markdown = Command::new(env!("CARGO_BIN_EXE_backend-cli"))
+        .args([
+            "--passive",
+            "--format",
+            "markdown",
+            "--project",
+            project.to_str().expect("project"),
+            "--workspace",
+            workspace.to_str().expect("workspace"),
+            "--endpoint",
+            endpoint.to_str().expect("endpoint"),
+            "health",
+        ])
+        .env("BACKEND_LOCALD_BIN", &fake_locald)
+        .output()
+        .expect("render actual scoped passive failure as Markdown");
+    assert!(!markdown.status.success());
+    assert!(markdown.stdout.is_empty());
+    let markdown = String::from_utf8(markdown.stderr).expect("UTF-8 Markdown");
+    assert!(markdown.ends_with(&format!(
+        "→ Run in a shell:\n\n    {}\n",
+        recovery.replace('\n', "\n    ")
+    )));
+    assert!(!markdown.contains("backend.health"));
+    assert!(!markdown.contains("backend.status"));
     assert!(!marker.exists(), "passive health spawned the daemon");
     assert!(!workspace.exists(), "passive health created state");
     assert!(

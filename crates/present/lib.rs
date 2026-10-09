@@ -68,6 +68,8 @@ mod grammar;
 mod identity;
 mod language;
 mod outline;
+#[cfg(test)]
+mod owner_recovery_tests;
 mod page;
 mod product;
 mod record;
@@ -107,7 +109,7 @@ pub use dto::{
     RelationGroupDto, SelectedSymbolIdDto, ShelfDto, ShelfEntryDto, SignatureTokenDto, SourceDto,
     StatusDto, answer_value, fault_value,
 };
-pub use fault::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand};
+pub use fault::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand, OwnerContext};
 pub use glyph::{KindGlyph, LanguageGlyph, RelationDirection, RelationLabel, relation_label};
 pub use grammar::{
     ArgumentKind, ArgumentSpec, CommandGrammar, GRAMMARS, domain_name, domains, grammar_for,
