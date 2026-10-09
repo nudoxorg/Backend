@@ -34,7 +34,7 @@ class Tests(unittest.TestCase):
     self.assertFalse((root/'escape').exists())
  def test_reinstall_integrity_and_unowned_command(self):
   with tempfile.TemporaryDirectory() as temp:
-   root=pathlib.Path(temp); archive=self.archive(root); prefix=root/'prefix'; entry={'tag':'checkpoint-test','version':'0.0.0','source_sha':'a'*40,'asset':'test.tar.gz'}; manifest={'sha256':hashlib.sha256(archive.read_bytes()).hexdigest()}
+   root=pathlib.Path(temp); archive=self.archive(root); prefix=root/'prefix'; entry={'tag':'checkpoint-20261009-'+('a'*10)+'-macos-arm64','version':'0.0.0','source_sha':'a'*40,'asset':'nudox-macos-arm64-'+('a'*10)+'.tar.gz'}; manifest={'sha256':hashlib.sha256(archive.read_bytes()).hexdigest()}
    mac.install(prefix,entry,manifest,archive); current=prefix/'lib/nudox/current'
    before=current.resolve(); mac.install(prefix,entry,manifest,archive); self.assertEqual(current.resolve(),before)
    (before/'bin/backend-cli').write_bytes(b'tampered')
@@ -63,26 +63,26 @@ class Tests(unittest.TestCase):
     prefix=pathlib.Path(temp).resolve()/'prefix'; managed=prefix/'lib/nudox'
     tag='checkpoint-20261009-'+('a'*10)+'-'+platform
     active=managed/'versions'/tag; active.mkdir(parents=True)
-    marker=active/'.installed-release.json'; marker.write_text(json.dumps({'tag':tag}))
+    marker=active/'.installed-release.json'; installed={'tag':tag,'version':'0.0.0','source_sha':'a'*40,'asset':('nudox-macos-arm64-' if platform=='macos-arm64' else 'nudox-linux-x86_64-')+('a'*10)+'.tar.gz','sha256':'c'*64}; marker.write_text(json.dumps(installed))
     current=managed/'current'; current.symlink_to(pathlib.Path('versions')/tag)
     before=marker.read_bytes(); pointer=os.readlink(current)
     for incoming,reason in [('checkpoint-20261008-'+('b'*10)+'-'+platform,'older'),
                             ('checkpoint-20261009-'+('b'*10)+'-'+platform,'different same-date')]:
      with patch.object(module,'safe_extract') as extract:
       with self.assertRaisesRegex(module.InstallError,reason):
-       module.install(prefix,{'tag':incoming},{},pathlib.Path(temp)/'not-downloaded.tar.gz')
+       module.install(prefix,{**installed,'tag':incoming,'source_sha':'b'*40,'asset':installed['asset'].replace('a'*10,'b'*10)},{'sha256':'d'*64},pathlib.Path(temp)/'not-downloaded.tar.gz')
       extract.assert_not_called()
      self.assertEqual(os.readlink(current),pointer); self.assertEqual(marker.read_bytes(),before)
-    module.check_checkpoint_update(current,tag)
-    module.check_checkpoint_update(current,'checkpoint-20261010-'+('b'*10)+'-'+platform)
-    module.check_checkpoint_update(current,'checkpoint-20261008-'+('b'*10)+'-'+platform,True)
+    module.check_checkpoint_update(current,installed)
+    module.check_checkpoint_update(current,{**installed,'tag':'checkpoint-20261010-'+('b'*10)+'-'+platform,'source_sha':'b'*40,'asset':installed['asset'].replace('a'*10,'b'*10)})
+    module.check_checkpoint_update(current,{**installed,'tag':'checkpoint-20261008-'+('b'*10)+'-'+platform,'source_sha':'b'*40,'asset':installed['asset'].replace('a'*10,'b'*10)},True)
  def test_actual_same_day_override_and_idempotent_reinstall_keep_verified_files(self):
   with tempfile.TemporaryDirectory() as temp:
    root=pathlib.Path(temp).resolve(); prefix=root/'prefix'
    def package(source,date):
     directory=root/(source[0]+date); directory.mkdir()
     archive=self.archive(directory,source=source)
-    entry={'tag':'checkpoint-'+date+'-'+source[:10]+'-macos-arm64','version':'0.0.0','source_sha':source,'asset':'test.tar.gz'}
+    entry={'tag':'checkpoint-'+date+'-'+source[:10]+'-macos-arm64','version':'0.0.0','source_sha':source,'asset':'nudox-macos-arm64-'+source[:10]+'.tar.gz'}
     return entry,{'sha256':hashlib.sha256(archive.read_bytes()).hexdigest()},archive
    first=package('a'*40,'20261009'); other=package('b'*40,'20261009')
    mac.install(prefix,*first); current=prefix/'lib/nudox/current'
