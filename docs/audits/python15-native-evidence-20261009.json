@@ -1,0 +1,906 @@
+{
+  "archive_sha256": "cf817a27864df33980fc488d3daf6505262693d9e9aa86d6175d7a8323973805",
+  "git_blobs_rehashed": 18023,
+  "integrated_source": {
+    "commit": "99091c1f7e5c46047f738b87dd3cbc16c1c6cda3",
+    "exact_candidate_postimages": 12,
+    "index_overlap": "Python postimage plus two canonical107 pub(super) visibility modifiers; all canonical107 source conserved.",
+    "source_paths": 13,
+    "tree": "62540df9e9e7ce45753be18d5c502627f326bc5c"
+  },
+  "limits": [
+    "Native15 laws, not complete Python codec support or all real repositories.",
+    "Current corpus Buildbot555 completes but retains diagnostics and oracle misses; pip659 frontier resolution refuses; mypy1319 exceeds unchanged60s State bound.",
+    "Normal CLI/MCP/GUI and composed publication107 boundaries still require matching current product binaries."
+  ],
+  "native_counts": {
+    "failed": 0,
+    "ignored": 0,
+    "passed": 15
+  },
+  "native_images": {
+    "backend-worker": {
+      "bytes": 1362070208,
+      "cargo_artifact": {
+        "executable": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/target/debug/backend-worker",
+        "features": [],
+        "filenames": [
+          "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/target/debug/backend-worker"
+        ],
+        "fresh": false,
+        "manifest_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/apps/worker/Cargo.toml",
+        "package_id": "path+file:///root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/apps/worker#backend-worker@0.2.0",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 1,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": false
+        },
+        "reason": "compiler-artifact",
+        "target": {
+          "crate_types": [
+            "bin"
+          ],
+          "doc": true,
+          "doctest": false,
+          "edition": "2024",
+          "kind": [
+            "bin"
+          ],
+          "name": "backend-worker",
+          "src_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/apps/worker/src/main.rs",
+          "test": true
+        }
+      },
+      "device": 66309,
+      "fresh": false,
+      "inode": 6859815,
+      "mode": 448,
+      "path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/target/debug/backend-worker",
+      "preserved_path": "/root/sol61-python-ast-reuse-20261009/native-current734-intake-attempt01/images/backend-worker",
+      "sha256": "7fb2788027690322d2e6c676ed9131f1c1a8939fa4cf28ac6840d700f6247dbe",
+      "source": {
+        "commit": "734727baf7e4158d9939fcb9eb87651d90ee5e6a",
+        "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+        "status": "",
+        "tree": "38f3a7adf53308e2373b5f25315521578a1b443a"
+      }
+    },
+    "backend_engine": {
+      "bytes": 1343467416,
+      "cargo_artifact": {
+        "executable": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_engine-8381445b2284d0b0",
+        "features": [],
+        "filenames": [
+          "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_engine-8381445b2284d0b0"
+        ],
+        "fresh": false,
+        "manifest_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/crates/engine/Cargo.toml",
+        "package_id": "path+file:///root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/crates/engine#backend-engine@0.2.0",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 1,
+          "opt_level": "2",
+          "overflow_checks": true,
+          "test": true
+        },
+        "reason": "compiler-artifact",
+        "target": {
+          "crate_types": [
+            "lib"
+          ],
+          "doc": true,
+          "doctest": true,
+          "edition": "2024",
+          "kind": [
+            "lib"
+          ],
+          "name": "backend_engine",
+          "src_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/crates/engine/src/lib.rs",
+          "test": true
+        }
+      },
+      "device": 66309,
+      "fresh": false,
+      "inode": 6859798,
+      "mode": 448,
+      "path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_engine-8381445b2284d0b0",
+      "preserved_path": "/root/sol61-python-ast-reuse-20261009/native-current734-intake-attempt01/images/backend_engine",
+      "sha256": "3715254d37b2f3ddff42c20cd37c3cacdbd87468d75f3786f6a2a14078d11f8a",
+      "source": {
+        "commit": "734727baf7e4158d9939fcb9eb87651d90ee5e6a",
+        "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+        "status": "",
+        "tree": "38f3a7adf53308e2373b5f25315521578a1b443a"
+      }
+    },
+    "backend_frontend_python": {
+      "bytes": 294620240,
+      "cargo_artifact": {
+        "executable": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_frontend_python-6b780162ef21e05b",
+        "features": [],
+        "filenames": [
+          "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_frontend_python-6b780162ef21e05b"
+        ],
+        "fresh": false,
+        "manifest_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python/Cargo.toml",
+        "package_id": "path+file:///root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python#backend-frontend-python@0.2.0",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 1,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        },
+        "reason": "compiler-artifact",
+        "target": {
+          "crate_types": [
+            "lib"
+          ],
+          "doc": true,
+          "doctest": true,
+          "edition": "2024",
+          "kind": [
+            "lib"
+          ],
+          "name": "backend_frontend_python",
+          "src_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python/lib.rs",
+          "test": true
+        }
+      },
+      "device": 66309,
+      "fresh": false,
+      "inode": 6859802,
+      "mode": 448,
+      "path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_frontend_python-6b780162ef21e05b",
+      "preserved_path": "/root/sol61-python-ast-reuse-20261009/native-current734-intake-attempt01/images/backend_frontend_python",
+      "sha256": "0a5fce132178ae6335954cb049e0f88c472340712cf99a5ed156a3206d4100a8",
+      "source": {
+        "commit": "734727baf7e4158d9939fcb9eb87651d90ee5e6a",
+        "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+        "status": "",
+        "tree": "38f3a7adf53308e2373b5f25315521578a1b443a"
+      }
+    },
+    "backend_local_service": {
+      "bytes": 1774775104,
+      "cargo_artifact": {
+        "executable": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_local_service-6ef973d92eccf7d2",
+        "features": [],
+        "filenames": [
+          "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_local_service-6ef973d92eccf7d2"
+        ],
+        "fresh": false,
+        "manifest_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/crates/local-service/Cargo.toml",
+        "package_id": "path+file:///root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/crates/local-service#backend-local-service@0.2.0",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 1,
+          "opt_level": "2",
+          "overflow_checks": true,
+          "test": true
+        },
+        "reason": "compiler-artifact",
+        "target": {
+          "crate_types": [
+            "lib"
+          ],
+          "doc": true,
+          "doctest": true,
+          "edition": "2024",
+          "kind": [
+            "lib"
+          ],
+          "name": "backend_local_service",
+          "src_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/crates/local-service/src/lib.rs",
+          "test": true
+        }
+      },
+      "device": 66309,
+      "fresh": false,
+      "inode": 6859824,
+      "mode": 448,
+      "path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_local_service-6ef973d92eccf7d2",
+      "preserved_path": "/root/sol61-python-ast-reuse-20261009/native-current734-intake-attempt01/images/backend_local_service",
+      "sha256": "a9deffae8050a204fdd470082532f4ea20bbda18c902745710b9008d0aa1a690",
+      "source": {
+        "commit": "734727baf7e4158d9939fcb9eb87651d90ee5e6a",
+        "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+        "status": "",
+        "tree": "38f3a7adf53308e2373b5f25315521578a1b443a"
+      }
+    },
+    "project_report": {
+      "bytes": 347329776,
+      "cargo_artifact": {
+        "executable": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/target/debug/examples/project_report",
+        "features": [],
+        "filenames": [
+          "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/target/debug/examples/project_report"
+        ],
+        "fresh": false,
+        "manifest_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python/Cargo.toml",
+        "package_id": "path+file:///root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python#backend-frontend-python@0.2.0",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 1,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": false
+        },
+        "reason": "compiler-artifact",
+        "target": {
+          "crate_types": [
+            "bin"
+          ],
+          "doc": false,
+          "doctest": false,
+          "edition": "2024",
+          "kind": [
+            "example"
+          ],
+          "name": "project_report",
+          "src_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python/examples/project_report.rs",
+          "test": false
+        }
+      },
+      "device": 66309,
+      "fresh": false,
+      "inode": 6859818,
+      "mode": 448,
+      "path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/target/debug/examples/project_report",
+      "preserved_path": "/root/sol61-python-ast-reuse-20261009/native-current734-intake-attempt01/images/project_report",
+      "sha256": "42c7c87d04e506f1c5a3ff3da4c6433454d201d8b9a95e49dfb96407f66e4373",
+      "source": {
+        "commit": "734727baf7e4158d9939fcb9eb87651d90ee5e6a",
+        "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+        "status": "",
+        "tree": "38f3a7adf53308e2373b5f25315521578a1b443a"
+      }
+    },
+    "python_project": {
+      "bytes": 349722920,
+      "cargo_artifact": {
+        "executable": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/python_project-be8f5c7fa4d5b536",
+        "features": [],
+        "filenames": [
+          "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/python_project-be8f5c7fa4d5b536"
+        ],
+        "fresh": false,
+        "manifest_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python/Cargo.toml",
+        "package_id": "path+file:///root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python#backend-frontend-python@0.2.0",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 1,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        },
+        "reason": "compiler-artifact",
+        "target": {
+          "crate_types": [
+            "bin"
+          ],
+          "doc": false,
+          "doctest": false,
+          "edition": "2024",
+          "kind": [
+            "test"
+          ],
+          "name": "python_project",
+          "src_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python/tests/python_project.rs",
+          "test": true
+        }
+      },
+      "device": 66309,
+      "fresh": false,
+      "inode": 6859813,
+      "mode": 448,
+      "path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/python_project-be8f5c7fa4d5b536",
+      "preserved_path": "/root/sol61-python-ast-reuse-20261009/native-current734-intake-attempt01/images/python_project",
+      "sha256": "7ab69285d915a9248540e9ac877772b232f094fbe7a5b6e1610883e63532aaeb",
+      "source": {
+        "commit": "734727baf7e4158d9939fcb9eb87651d90ee5e6a",
+        "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+        "status": "",
+        "tree": "38f3a7adf53308e2373b5f25315521578a1b443a"
+      }
+    },
+    "python_source_intake": {
+      "bytes": 349391376,
+      "cargo_artifact": {
+        "executable": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/python_source_intake-6a89e251d9f55f56",
+        "features": [],
+        "filenames": [
+          "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/python_source_intake-6a89e251d9f55f56"
+        ],
+        "fresh": false,
+        "manifest_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python/Cargo.toml",
+        "package_id": "path+file:///root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python#backend-frontend-python@0.2.0",
+        "profile": {
+          "debug_assertions": true,
+          "debuginfo": 1,
+          "opt_level": "0",
+          "overflow_checks": true,
+          "test": true
+        },
+        "reason": "compiler-artifact",
+        "target": {
+          "crate_types": [
+            "bin"
+          ],
+          "doc": false,
+          "doctest": false,
+          "edition": "2024",
+          "kind": [
+            "test"
+          ],
+          "name": "python_source_intake",
+          "src_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python/tests/python_source_intake.rs",
+          "test": true
+        }
+      },
+      "device": 66309,
+      "fresh": false,
+      "inode": 6859792,
+      "mode": 448,
+      "path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/python_source_intake-6a89e251d9f55f56",
+      "preserved_path": "/root/sol61-python-ast-reuse-20261009/native-current734-intake-attempt01/images/python_source_intake",
+      "sha256": "a59cab39c75f6d7bfa5abc83c557bd45aad93f3528e83ac1bdb66be761e3000a",
+      "source": {
+        "commit": "734727baf7e4158d9939fcb9eb87651d90ee5e6a",
+        "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+        "status": "",
+        "tree": "38f3a7adf53308e2373b5f25315521578a1b443a"
+      }
+    }
+  },
+  "native_source": {
+    "commit": "734727baf7e4158d9939fcb9eb87651d90ee5e6a",
+    "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+    "status": "",
+    "tree": "38f3a7adf53308e2373b5f25315521578a1b443a"
+  },
+  "raw_files_rehashed": 140,
+  "receipts": [
+    {
+      "elapsed_seconds": 102.63463194994256,
+      "gate": "gate-00",
+      "job": {
+        "argv": [
+          "test",
+          "--locked",
+          "--offline",
+          "-j2",
+          "-vv",
+          "--message-format=json-render-diagnostics",
+          "-p",
+          "backend-frontend-python",
+          "--lib",
+          "--test",
+          "python_project",
+          "--test",
+          "python_source_intake",
+          "--no-run"
+        ],
+        "image_names": [
+          "backend_frontend_python",
+          "python_project",
+          "python_source_intake"
+        ],
+        "kind": "compile",
+        "require_pyrefly_closure": true
+      },
+      "receipt_sha256": "24ddeba8d77fe621761b58af4d59b8d8163cb963afb37721e33b6998e663bf89"
+    },
+    {
+      "elapsed_seconds": 392.574570135097,
+      "gate": "gate-01",
+      "job": {
+        "argv": [
+          "test",
+          "--locked",
+          "--offline",
+          "-j2",
+          "-vv",
+          "--message-format=json-render-diagnostics",
+          "-p",
+          "backend-engine",
+          "--lib",
+          "--no-run"
+        ],
+        "image_names": [
+          "backend_engine"
+        ],
+        "kind": "compile",
+        "require_pyrefly_closure": false
+      },
+      "receipt_sha256": "5713c5c1b13d441ed244edde48171373250c3eb96f342229106b1ed0ec0fb9ed"
+    },
+    {
+      "elapsed_seconds": 524.5728445710847,
+      "gate": "gate-02",
+      "job": {
+        "argv": [
+          "test",
+          "--locked",
+          "--offline",
+          "-j2",
+          "-vv",
+          "--message-format=json-render-diagnostics",
+          "-p",
+          "backend-local-service",
+          "--lib",
+          "--no-run"
+        ],
+        "image_names": [
+          "backend_local_service"
+        ],
+        "kind": "compile",
+        "require_pyrefly_closure": false
+      },
+      "receipt_sha256": "90fe7c2318020660e22fcb9e852470c2cc9ddb3dc231049ef1c29e1b41b991e3"
+    },
+    {
+      "elapsed_seconds": 142.3141613350017,
+      "gate": "gate-03",
+      "job": {
+        "argv": [
+          "build",
+          "--locked",
+          "--offline",
+          "-j2",
+          "-vv",
+          "--message-format=json-render-diagnostics",
+          "-p",
+          "backend-worker",
+          "--bin",
+          "backend-worker"
+        ],
+        "image_names": [
+          "backend-worker"
+        ],
+        "kind": "boundary"
+      },
+      "receipt_sha256": "a3c6e445cdf3a6f1f1224db6ba2b39d70aace1ad403acf37fcd1d22c5ff82822"
+    },
+    {
+      "elapsed_seconds": 13.898993671988137,
+      "gate": "gate-04",
+      "job": {
+        "argv": [
+          "build",
+          "--locked",
+          "--offline",
+          "-j2",
+          "-vv",
+          "--message-format=json-render-diagnostics",
+          "-p",
+          "backend-frontend-python",
+          "--example",
+          "project_report"
+        ],
+        "image_names": [
+          "project_report"
+        ],
+        "kind": "example"
+      },
+      "receipt_sha256": "35b4f36a3c0e52b3770ed8fda749805bec6dc4ebf1bfe7597a5513289e2b8d89"
+    },
+    {
+      "elapsed_seconds": 0.822644655010663,
+      "gate": "gate-05",
+      "job": {
+        "filter": "written_return_owner_is_the_innermost_function_site",
+        "image": "backend_frontend_python",
+        "kind": "inventory",
+        "names": [
+          "legacy::checker::project_native::tests::written_return_owner_is_the_innermost_function_site"
+        ],
+        "options": [
+          "--list"
+        ]
+      },
+      "receipt_sha256": "67990832baa626cf5d558bb4b2540c0320c4bef3bad56f7b03e6c1bb6b640b81"
+    },
+    {
+      "elapsed_seconds": 1.7923808919731528,
+      "gate": "gate-06",
+      "job": {
+        "filter": "legacy::checker::source_intake::tests::",
+        "image": "backend_frontend_python",
+        "kind": "inventory",
+        "names": [
+          "legacy::checker::source_intake::tests::source_intake_borrows_utf8_and_ascii_without_changing_offsets",
+          "legacy::checker::source_intake::tests::source_intake_reports_raw_fault_extent_and_cookie_policy"
+        ],
+        "options": [
+          "--list"
+        ]
+      },
+      "receipt_sha256": "9f536a56e477041d835429aca30771cd7066fd51658100d0a359bf6a6003720a"
+    },
+    {
+      "elapsed_seconds": 2.12063182098791,
+      "gate": "gate-07",
+      "job": {
+        "filter": "native_",
+        "image": "python_project",
+        "kind": "inventory",
+        "names": [
+          "native_project_restores_cross_module_definitions_preserving_utf8",
+          "native_relative_import_aliases_retain_exact_selected_function_coordinates",
+          "native_empty_package_initializers_are_not_named_declaration_targets",
+          "captured_baseline_preserves_native_cross_file_facts_and_unfiltered_diagnostics",
+          "native_interface_attributes_keep_executable_and_stub_fallback_coordinates"
+        ],
+        "options": [
+          "--list",
+          "--skip",
+          "native_project_cannot_bind_uncaptured_files_or_external_configured_roots",
+          "--skip",
+          "native_compiled_dependency_is_typed_unavailable_with_a_membership_witness",
+          "--skip",
+          "native_unsupported_projection_keeps_its_constructor_and_original_range",
+          "--skip",
+          "selected_package_root_preserves_real_module_leaf_and_native_call_coordinates"
+        ]
+      },
+      "receipt_sha256": "9fd8b843e5603b1146a1ff267fbd15d280d69b63a087b22fd92f5408b679fd3b"
+    },
+    {
+      "elapsed_seconds": 2.2694764169864357,
+      "gate": "gate-08",
+      "job": {
+        "filter": "",
+        "image": "python_source_intake",
+        "kind": "inventory",
+        "names": [
+          "raw_frontier_retains_per_file_syntax_and_codec_refusals_without_poisoning_valid_answers",
+          "wholly_undecoded_frontier_retains_resources_without_synthetic_semantic_text",
+          "a_selected_valid_interface_does_not_inherit_an_unselected_executable_syntax_gap",
+          "native_utf8_bom_and_crlf_keep_original_byte_spans_and_the_complete_raw_program"
+        ],
+        "options": [
+          "--list"
+        ]
+      },
+      "receipt_sha256": "41ae0041df9b09bf344d85e3f9a6c7229afce761e135a9de376ec3e14a17705d"
+    },
+    {
+      "elapsed_seconds": 2.1761938959825784,
+      "gate": "gate-09",
+      "job": {
+        "filter": "application::compiler::tests::python_raw_frontier_admission_binds_unavailable_members_and_rejects_mutations",
+        "image": "backend_engine",
+        "kind": "inventory",
+        "names": [
+          "application::compiler::tests::python_raw_frontier_admission_binds_unavailable_members_and_rejects_mutations"
+        ],
+        "options": [
+          "--list",
+          "--exact"
+        ]
+      },
+      "receipt_sha256": "8572e07c7bf355bae191a3d9b862a5bbcc8dba040d891d5480f6d645a8dec779"
+    },
+    {
+      "elapsed_seconds": 2.2554984020534903,
+      "gate": "gate-10",
+      "job": {
+        "filter": "application::runtime::python_raw_source_ownership_tests::python_raw_frontier_keeps_unavailable_bytes_and_borrows_utf8_without_copying",
+        "image": "backend_engine",
+        "kind": "inventory",
+        "names": [
+          "application::runtime::python_raw_source_ownership_tests::python_raw_frontier_keeps_unavailable_bytes_and_borrows_utf8_without_copying"
+        ],
+        "options": [
+          "--list",
+          "--exact"
+        ]
+      },
+      "receipt_sha256": "ea27a65cd02d2ff6daa8aba04d0faa49e045432367bd5e168c711eb17ea05f05"
+    },
+    {
+      "elapsed_seconds": 0.6649942100048065,
+      "gate": "gate-11",
+      "job": {
+        "filter": "builtin::ingest::robustness_tests::python_unavailable_resources_keep_baseline_rows_and_exact_compiler_frontier",
+        "image": "backend_local_service",
+        "kind": "inventory",
+        "names": [
+          "builtin::ingest::robustness_tests::python_unavailable_resources_keep_baseline_rows_and_exact_compiler_frontier"
+        ],
+        "options": [
+          "--list",
+          "--exact"
+        ]
+      },
+      "receipt_sha256": "87fc6b5512f27fa649dfff1ae99708dc5ac40acb361e3419aaa309f7602d47bb"
+    },
+    {
+      "elapsed_seconds": 0.1169395970646292,
+      "gate": "gate-12",
+      "job": {
+        "count": 1,
+        "filter": "written_return_owner_is_the_innermost_function_site",
+        "image": "backend_frontend_python",
+        "kind": "native",
+        "options": [
+          "--nocapture",
+          "--test-threads=1"
+        ]
+      },
+      "native_names": [
+        "legacy::checker::project_native::tests::written_return_owner_is_the_innermost_function_site"
+      ],
+      "receipt_sha256": "9a0dca76d741678336490325352e161b27860afbb33974b5d89de9d310d6580e"
+    },
+    {
+      "elapsed_seconds": 0.08184298092965037,
+      "gate": "gate-13",
+      "job": {
+        "count": 2,
+        "filter": "legacy::checker::source_intake::tests::",
+        "image": "backend_frontend_python",
+        "kind": "native",
+        "options": [
+          "--nocapture",
+          "--test-threads=1"
+        ]
+      },
+      "native_names": [
+        "legacy::checker::source_intake::tests::source_intake_borrows_utf8_and_ascii_without_changing_offsets",
+        "legacy::checker::source_intake::tests::source_intake_reports_raw_fault_extent_and_cookie_policy"
+      ],
+      "receipt_sha256": "b7b5a5d97e99f29aaa95187a441d0ffb06beebc7fd6c42f5e11fda8f904be534"
+    },
+    {
+      "elapsed_seconds": 33.62234994897153,
+      "gate": "gate-14",
+      "job": {
+        "count": 5,
+        "filter": "native_",
+        "image": "python_project",
+        "kind": "native",
+        "options": [
+          "--nocapture",
+          "--test-threads=1",
+          "--skip",
+          "native_project_cannot_bind_uncaptured_files_or_external_configured_roots",
+          "--skip",
+          "native_compiled_dependency_is_typed_unavailable_with_a_membership_witness",
+          "--skip",
+          "native_unsupported_projection_keeps_its_constructor_and_original_range",
+          "--skip",
+          "selected_package_root_preserves_real_module_leaf_and_native_call_coordinates"
+        ]
+      },
+      "native_names": [
+        "captured_baseline_preserves_native_cross_file_facts_and_unfiltered_diagnostics",
+        "native_empty_package_initializers_are_not_named_declaration_targets",
+        "native_interface_attributes_keep_executable_and_stub_fallback_coordinates",
+        "native_project_restores_cross_module_definitions_preserving_utf8",
+        "native_relative_import_aliases_retain_exact_selected_function_coordinates"
+      ],
+      "receipt_sha256": "73f44f7d3c98d6d8d021458b97eaaf0eda810e2c36698c79736b13276c9bf1b7"
+    },
+    {
+      "elapsed_seconds": 14.727786962990649,
+      "gate": "gate-15",
+      "job": {
+        "count": 4,
+        "filter": "",
+        "image": "python_source_intake",
+        "kind": "native",
+        "options": [
+          "--nocapture",
+          "--test-threads=1"
+        ]
+      },
+      "native_names": [
+        "a_selected_valid_interface_does_not_inherit_an_unselected_executable_syntax_gap",
+        "native_utf8_bom_and_crlf_keep_original_byte_spans_and_the_complete_raw_program",
+        "raw_frontier_retains_per_file_syntax_and_codec_refusals_without_poisoning_valid_answers",
+        "wholly_undecoded_frontier_retains_resources_without_synthetic_semantic_text"
+      ],
+      "receipt_sha256": "b7b75b346e84d8f7daf17c559e4f6b4a5e04dbe1ea2e2ac9a936bcef89985809"
+    },
+    {
+      "elapsed_seconds": 0.6282114339992404,
+      "gate": "gate-16",
+      "job": {
+        "count": 1,
+        "filter": "application::compiler::tests::python_raw_frontier_admission_binds_unavailable_members_and_rejects_mutations",
+        "image": "backend_engine",
+        "kind": "native",
+        "options": [
+          "--nocapture",
+          "--test-threads=1",
+          "--exact"
+        ]
+      },
+      "native_names": [
+        "application::compiler::tests::python_raw_frontier_admission_binds_unavailable_members_and_rejects_mutations"
+      ],
+      "receipt_sha256": "2a2477b930dab1796573f7bf22001967bf4fdca96158024bc9b04cd831f9c9cb"
+    },
+    {
+      "elapsed_seconds": 0.1917570000514388,
+      "gate": "gate-17",
+      "job": {
+        "count": 1,
+        "filter": "application::runtime::python_raw_source_ownership_tests::python_raw_frontier_keeps_unavailable_bytes_and_borrows_utf8_without_copying",
+        "image": "backend_engine",
+        "kind": "native",
+        "options": [
+          "--nocapture",
+          "--test-threads=1",
+          "--exact"
+        ]
+      },
+      "native_names": [
+        "application::runtime::python_raw_source_ownership_tests::python_raw_frontier_keeps_unavailable_bytes_and_borrows_utf8_without_copying"
+      ],
+      "receipt_sha256": "fa7191eee2a34c9cd3951f3c9cdbed90dded0597eff18e66687db420b8aa7f7c"
+    },
+    {
+      "elapsed_seconds": 0.29702708090189844,
+      "gate": "gate-18",
+      "job": {
+        "count": 1,
+        "filter": "builtin::ingest::robustness_tests::python_unavailable_resources_keep_baseline_rows_and_exact_compiler_frontier",
+        "image": "backend_local_service",
+        "kind": "native",
+        "options": [
+          "--nocapture",
+          "--test-threads=1",
+          "--exact"
+        ]
+      },
+      "native_names": [
+        "builtin::ingest::robustness_tests::python_unavailable_resources_keep_baseline_rows_and_exact_compiler_frontier"
+      ],
+      "receipt_sha256": "1eb47a96554fe15862b39d61f3cbd92cc8e84b522415b2f7fb8c7176e67a2ef2"
+    }
+  ],
+  "return_sha256": "075758fe26d18071f00899664c7fd953489fd93bae49a87a8e796f27b233fd3f",
+  "root_remote_image_rehash": {
+    "host": "ilo",
+    "receipt_sha256": "20fd0724f0b63051dd6aea50d31151f116ee4467afce5ba327757f6cf96afb0e",
+    "rows": [
+      {
+        "bytes": 1362070208,
+        "path": "/root/sol61-python-ast-reuse-20261009/native-current734-intake-attempt01/images/backend-worker",
+        "sha256": "7fb2788027690322d2e6c676ed9131f1c1a8939fa4cf28ac6840d700f6247dbe"
+      },
+      {
+        "bytes": 1343467416,
+        "path": "/root/sol61-python-ast-reuse-20261009/native-current734-intake-attempt01/images/backend_engine",
+        "sha256": "3715254d37b2f3ddff42c20cd37c3cacdbd87468d75f3786f6a2a14078d11f8a"
+      },
+      {
+        "bytes": 294620240,
+        "path": "/root/sol61-python-ast-reuse-20261009/native-current734-intake-attempt01/images/backend_frontend_python",
+        "sha256": "0a5fce132178ae6335954cb049e0f88c472340712cf99a5ed156a3206d4100a8"
+      },
+      {
+        "bytes": 1774775104,
+        "path": "/root/sol61-python-ast-reuse-20261009/native-current734-intake-attempt01/images/backend_local_service",
+        "sha256": "a9deffae8050a204fdd470082532f4ea20bbda18c902745710b9008d0aa1a690"
+      },
+      {
+        "bytes": 347329776,
+        "path": "/root/sol61-python-ast-reuse-20261009/native-current734-intake-attempt01/images/project_report",
+        "sha256": "42c7c87d04e506f1c5a3ff3da4c6433454d201d8b9a95e49dfb96407f66e4373"
+      },
+      {
+        "bytes": 349722920,
+        "path": "/root/sol61-python-ast-reuse-20261009/native-current734-intake-attempt01/images/python_project",
+        "sha256": "7ab69285d915a9248540e9ac877772b232f094fbe7a5b6e1610883e63532aaeb"
+      },
+      {
+        "bytes": 349391376,
+        "path": "/root/sol61-python-ast-reuse-20261009/native-current734-intake-attempt01/images/python_source_intake",
+        "sha256": "a59cab39c75f6d7bfa5abc83c557bd45aad93f3528e83ac1bdb66be761e3000a"
+      }
+    ]
+  },
+  "schema": "nudox.root.python15-native-evidence.v1",
+  "source_packet_sha256": "5877db26e0c3effdbdafbfa97b0dd7226d5ba4f57162bd1f6c27bf33cd93070c",
+  "source_postimages": [
+    {
+      "bytes": 46528,
+      "exact_reviewed_postimage": true,
+      "git_blob": "e7adec98619775c6fc200c2bfb1eaf7553f7f9ee",
+      "path": "apps/worker/src/cluster_runtime/workspace_snapshot.rs",
+      "sha256": "b82c24d762f43b18e7b5022d591e149c0fa9e4ae89e578ec44080faf7dcc4a98"
+    },
+    {
+      "bytes": 249866,
+      "exact_reviewed_postimage": true,
+      "git_blob": "68c2454e6a1efde8cf465a1c877bb8cd162d687d",
+      "path": "crates/engine/src/application/compiler.rs",
+      "sha256": "9eb322e4a4802ed5a224ce6fc8ba6961a0e15d7daf66e29d81ab18f57376bc50"
+    },
+    {
+      "bytes": 58663,
+      "exact_reviewed_postimage": true,
+      "git_blob": "5a134f189297e7de4243daad29f14e9ecd8b0551",
+      "path": "crates/engine/src/application/package_authority.rs",
+      "sha256": "5adb836a45d5af7bb59b6d1254d64586261cbd8eefa525ebb64c5111b01ff4e6"
+    },
+    {
+      "bytes": 244403,
+      "exact_reviewed_postimage": true,
+      "git_blob": "7414d7dd848a58c96faf853da138996260c2d557",
+      "path": "crates/engine/src/application/runtime.rs",
+      "sha256": "0637242e24845a128b76eea0732e4e6519e152f219d5188b9e743cb041da6034"
+    },
+    {
+      "bytes": 306914,
+      "exact_reviewed_postimage": true,
+      "git_blob": "74f6fe8d2e9ea87f9955ea2a4cbe449e6b8f3c86",
+      "path": "crates/local-service/src/builtin/commands/index.rs",
+      "sha256": "547d7b9efbc68fe392c25d087a503b82894fc18df1e4b0701b14ccd87af3ce6c"
+    },
+    {
+      "bytes": 237748,
+      "exact_reviewed_postimage": true,
+      "git_blob": "94d35455471467519f8eb3834bb588a3a52a1c48",
+      "path": "crates/local-service/src/builtin/ingest.rs",
+      "sha256": "f084021fc437a2b48c5b1599dea88da0561e12d419f37613e88382b4266e04b6"
+    },
+    {
+      "bytes": 7995,
+      "exact_reviewed_postimage": true,
+      "git_blob": "4840b8d0772c5dab7783e0971a2e8dbe5e4021d6",
+      "path": "frontends/python/examples/project_report.rs",
+      "sha256": "0041f5cdb0bb4749040ebb836c6d0c3fe8071dc8c9ba0925c3f375f147b49251"
+    },
+    {
+      "bytes": 96228,
+      "exact_reviewed_postimage": true,
+      "git_blob": "70c73f8f3095a888bb5cce348bebe0c04ec552ae",
+      "path": "frontends/python/src/legacy/checker.rs",
+      "sha256": "7e4a20565e81cab6f5a1987f84ae3d12dd0bdbf120896305c652630151a29d12"
+    },
+    {
+      "bytes": 48922,
+      "exact_reviewed_postimage": true,
+      "git_blob": "50e81b4e5a351a06cf1777150f6b77a1ec795a73",
+      "path": "frontends/python/src/legacy/project.rs",
+      "sha256": "d867745316765422bfc11b6ae17fb7c9e7e1650b0bcd236dae99a4a3a5bdf2b5"
+    },
+    {
+      "bytes": 73587,
+      "exact_reviewed_postimage": true,
+      "git_blob": "d52f1a531a1096125d26ffb41190b5cab0823683",
+      "path": "frontends/python/src/legacy/project_native.rs",
+      "sha256": "350877bd7a3fa7f3c49f8aa972d914af8433dfc602d4154ada6c3746a8e82fd7"
+    },
+    {
+      "bytes": 8126,
+      "exact_reviewed_postimage": true,
+      "git_blob": "766f115bea3bbc5c3b97cbf63832ce7435214956",
+      "path": "frontends/python/src/legacy/source_intake.rs",
+      "sha256": "83847fcb4d7c179be9eddef12fa30601702f256b8e4a338008308dfc7fc0b47f"
+    },
+    {
+      "bytes": 12271,
+      "exact_reviewed_postimage": true,
+      "git_blob": "5e8d251b8f328ab3d3358d15f020a2f023611c66",
+      "path": "frontends/python/tests/python_source_intake.rs",
+      "sha256": "e2b80c08696a5691a6e1642c99f55629c81392a1976aa15ba87873d8a085f541"
+    },
+    {
+      "bytes": 50123,
+      "git_blob": "ba3189f4207ac5314b6dfec9116484505e72e1db",
+      "path": "frontends/python/src/legacy/project_baseline.rs",
+      "sha256": "0f76255f19ef70887a1d851b40cf9c3be1bdeaee2fe670bcebeff06216f53078",
+      "test_only_delta_from33dd": true
+    }
+  ],
+  "utc": "2026-10-09T09:12:55.244745+00:00"
+}
