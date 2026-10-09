@@ -1,0 +1,268 @@
+{
+  "schema": "nudox.root-process-cancellation-native-audit.v1",
+  "actual_tested_source": {
+    "clean": true,
+    "commit": "75285525bd27546894dc8321f1ed702cf5875846",
+    "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+    "relation": "same tree as 69e source checkpoint; commit includes helper extraction and qualification successor",
+    "tree": "f63066d55466a57236a320b6a26edf3c3d2fe5f2"
+  },
+  "source_atom": "69e497e06fd6cb53eba5ae34524588bbe06a55cc",
+  "integrated_atom": "19dbc8754d9c7e44a014ee4e4935ffc07ee2e6cc",
+  "integrated_tree": "022dcebb2b6f9a09165ab583af980ebdad4ef242",
+  "source_correspondence": [
+    {
+      "path": "apps/cli/src/cluster.rs",
+      "tested_preimage": "d18b4b82fa8652b5de9113c280145edb197cfb0b",
+      "tested_postimage": "5f182c6d3fafc752240859bb60fb76681ed7f06e",
+      "integrated_preimage": "d18b4b82fa8652b5de9113c280145edb197cfb0b",
+      "integrated_postimage": "5f182c6d3fafc752240859bb60fb76681ed7f06e"
+    },
+    {
+      "path": "crates/compile/src/supervisor.rs",
+      "tested_preimage": "dc8fc1a2886a43171e8de3f35e76bc3202f44e05",
+      "tested_postimage": "f410921f617dcf1d640123c584abf90e3d2740b9",
+      "integrated_preimage": "dc8fc1a2886a43171e8de3f35e76bc3202f44e05",
+      "integrated_postimage": "f410921f617dcf1d640123c584abf90e3d2740b9"
+    },
+    {
+      "path": "crates/compile/src/tests.rs",
+      "tested_preimage": "ba8317fe4abd1745aa5e1794321db8129ccafd6d",
+      "tested_postimage": "0ba9b9b687700a6e1b742f2b81da64a4438aedb0",
+      "integrated_preimage": "ba8317fe4abd1745aa5e1794321db8129ccafd6d",
+      "integrated_postimage": "0ba9b9b687700a6e1b742f2b81da64a4438aedb0"
+    }
+  ],
+  "manifest_sha256": "9ae172b1da97b52e4702a7810f8864dac45c114e0133cc396eec35988c79643d",
+  "verified_file_count": 23,
+  "verified_files": [
+    {
+      "path": "/private/tmp/sol61-current-warning-process-group-attempt04/admission-validator.py",
+      "bytes": 5283,
+      "sha256": "7ea49805865189ffd0e763cfb8ba5573595d1fbb417999cd4df745e6cc1ccfc8"
+    },
+    {
+      "path": "/private/tmp/sol61-current-warning-process-group-attempt04/dispatcher.py",
+      "bytes": 3235,
+      "sha256": "46c9a09c3a35172c890bda98e86ac5bc87e96634e56e6d8afa6a3eb24ac71493"
+    },
+    {
+      "path": "/private/tmp/sol61-current-warning-process-group-attempt04/dispatch/before-source-epoch-local-admission.json",
+      "bytes": 26244,
+      "sha256": "113524ed44c3c610e06bca9cb5117976a23951bf5204c6a0003da89f9adc17be"
+    },
+    {
+      "path": "/private/tmp/sol61-current-warning-process-group-attempt04/dispatch/gate-00-local-admission.json",
+      "bytes": 26144,
+      "sha256": "0f3c1ef30e9a985c2bc383d70eb39e4a76416179a932ee3879c41432cf2a611a"
+    },
+    {
+      "path": "/private/tmp/sol61-current-warning-process-group-attempt04/dispatch/gate-01-local-admission.json",
+      "bytes": 26142,
+      "sha256": "bb90c8b23e826440b8d9565cc312554ab92d0ceb3e6e0aae8ae98f1376b3396d"
+    },
+    {
+      "path": "/private/tmp/sol61-current-warning-process-group-attempt04/dispatch/initial-local-admission.json",
+      "bytes": 26230,
+      "sha256": "1318421ab48fe9f12f27e7eb0077d40cde6e19ca94485a77d41f526eb854924a"
+    },
+    {
+      "path": "/private/tmp/sol61-current-warning-process-group-attempt04/native-plan.json",
+      "bytes": 8561,
+      "sha256": "c174aa7dcafa33880877526efbed83163387b8fd01f1a4c72359aed15ad10cf1"
+    },
+    {
+      "path": "/private/tmp/sol61-current-warning-process-group-attempt04/raw/return-receipt.json",
+      "bytes": 6340,
+      "sha256": "984f5f4e9112adc0d3f4d32b3c14d441ae837e5aa06d31cbadeb713cf4d5eb60"
+    },
+    {
+      "path": "/private/tmp/sol61-current-warning-process-group-attempt04/native-supervisor.py",
+      "bytes": 22062,
+      "sha256": "c92112d7818da0fbfafc725e6112a9d537f150fbe3192f7836340d2e0f34fb10"
+    },
+    {
+      "path": "/private/tmp/sol61-current-warning-atomic-checkpoint-20261009/current-warning-cleanup-3path.bundle",
+      "bytes": 3291,
+      "sha256": "92321f524551520a40bcf7f01094162c389c4175554490aef8efe4f4db3ceea9"
+    },
+    {
+      "path": "/private/tmp/sol61-current-warning-atomic-checkpoint-20261009/current-warning-cleanup-3path.patch",
+      "bytes": 11810,
+      "sha256": "284e93367f5d64b7df6922eab5b29e260e4c51da0d8d31046fbe551d45eb4d57"
+    },
+    {
+      "path": "/private/tmp/sol61-current-warning-atomic-checkpoint-20261009/current-warning-cleanup-3path.manifest.json",
+      "bytes": 2462,
+      "sha256": "f4c4fe321d9ca7a70323bbdb474fde263717b1ee0f11a333da6b09becc614fb9"
+    },
+    {
+      "path": "/private/tmp/sol61-current-warning-process-group-attempt04/raw/gate-00/stdout",
+      "bytes": 295887,
+      "sha256": "81a56158b91eec5b610e606eb66e4a219f0e831db43880fc977f08449a5b07b4"
+    },
+    {
+      "path": "/private/tmp/sol61-current-warning-process-group-attempt04/raw/gate-00/stderr",
+      "bytes": 336929,
+      "sha256": "c92b72abe44e2455453f69d26a105138892cc2206a8f9ac03e48202eb8e47161"
+    },
+    {
+      "path": "/private/tmp/sol61-current-warning-process-group-attempt04/raw/gate-00/launch.json",
+      "bytes": 2540,
+      "sha256": "101a878a1006b2222876cece3f1ffd482e106471bd4416ecd1654fdcf32add06"
+    },
+    {
+      "path": "/private/tmp/sol61-current-warning-process-group-attempt04/raw/gate-00/receipt.json",
+      "bytes": 3477,
+      "sha256": "7a35293c7897a2d55d6e911ab6c92a6d85a9483d74a007c7430f03ea26115a3f"
+    },
+    {
+      "path": "/private/tmp/sol61-current-warning-process-group-attempt04/raw/gate-00/current-group.json",
+      "bytes": 703,
+      "sha256": "3a2a7bc37c8ecb64e729e65d68705fee745e2362b3405cc53670396e3c4718cb"
+    },
+    {
+      "path": "/private/tmp/sol61-current-warning-process-group-attempt04/raw/gate-01/stdout",
+      "bytes": 846887,
+      "sha256": "b421cdfed030329fefff004212f39fb4d7c15130290b678a9ecf81cc7d9985e8"
+    },
+    {
+      "path": "/private/tmp/sol61-current-warning-process-group-attempt04/raw/gate-01/stderr",
+      "bytes": 6760757,
+      "sha256": "86dcf4cb84b651f2b3db543f3f809fdb2bcef46b967960a488d90aea3443f3ca"
+    },
+    {
+      "path": "/private/tmp/sol61-current-warning-process-group-attempt04/raw/gate-01/launch.json",
+      "bytes": 2472,
+      "sha256": "1c64fa1606ce4521b15ddeaa370aa17bb789c9a48c954f4881fc911bc93d0c57"
+    },
+    {
+      "path": "/private/tmp/sol61-current-warning-process-group-attempt04/raw/gate-01/receipt.json",
+      "bytes": 6385,
+      "sha256": "4d0ae0fc200309d1c4cef3926bb16d947d3fb075ebd8832b6757b8a08dc3cd67"
+    },
+    {
+      "path": "/private/tmp/sol61-current-warning-process-group-attempt04/raw/gate-01/current-group.json",
+      "bytes": 373,
+      "sha256": "fb83f2708565e08673698b140bb6d1c9d7bffb6a6077f8f53a4fd82bb1f7bcc3"
+    },
+    {
+      "path": "/private/tmp/sol61-current-warning-process-group-attempt04/raw/return-receipt.json",
+      "bytes": 6340,
+      "sha256": "984f5f4e9112adc0d3f4d32b3c14d441ae837e5aa06d31cbadeb713cf4d5eb60"
+    }
+  ],
+  "gates": [
+    {
+      "name": "gate-00",
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-vv",
+        "--message-format=json-render-diagnostics",
+        "-p",
+        "backend-compile",
+        "--lib",
+        "supervisor_cancels_the_entire_process_group",
+        "--",
+        "--nocapture"
+      ],
+      "elapsed_seconds": 45.368692921008915,
+      "exit_code": 0,
+      "test_summary": [
+        {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        }
+      ],
+      "receipt_sha256": "7a35293c7897a2d55d6e911ab6c92a6d85a9483d74a007c7430f03ea26115a3f"
+    },
+    {
+      "name": "gate-01",
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "clippy",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-vv",
+        "--message-format=json-render-diagnostics",
+        "-p",
+        "backend-cli",
+        "-p",
+        "backend-compile",
+        "--lib",
+        "--tests"
+      ],
+      "elapsed_seconds": 99.14517805690411,
+      "exit_code": 0,
+      "test_summary": [],
+      "receipt_sha256": "4d0ae0fc200309d1c4cef3926bb16d947d3fb075ebd8832b6757b8a08dc3cd67"
+    }
+  ],
+  "actual_test_artifact": {
+    "reason": "compiler-artifact",
+    "package_id": "path+file:///root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/crates/compile#backend-compile@0.2.0",
+    "manifest_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/crates/compile/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "backend_compile",
+      "src_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/crates/compile/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "profile": {
+      "opt_level": "0",
+      "debuginfo": 1,
+      "debug_assertions": true,
+      "overflow_checks": true,
+      "test": true
+    },
+    "features": [],
+    "filenames": [
+      "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_compile-bc9005c1532877d2"
+    ],
+    "executable": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_compile-bc9005c1532877d2",
+    "fresh": false
+  },
+  "test_image_sha256": null,
+  "test_image_limitation": "Actual Cargo fresh:false executable metadata and native test stream are recorded. This attempt did not preserve or hash the test executable; no installed binary or release proof is claimed.",
+  "returned_custody": {
+    "receipt_sha256": "984f5f4e9112adc0d3f4d32b3c14d441ae837e5aa06d31cbadeb713cf4d5eb60",
+    "original_source": {
+      "commit": "23b9c298a10a05a96e480922511c0f48462008fa",
+      "lock_sha256": "afb3a7518cd1f19b29bee48ec1b3be3f3d888c1ad61dde6e7f8cd4e3976fd731",
+      "status": "",
+      "tree": "e76e55283bbe534b45be9d88d6bf8a303c8f3a95"
+    },
+    "all_four_locks_reacquired": true,
+    "stamps_unchanged": true,
+    "all_owned_children_kernel_waited": true,
+    "managed_leases_empty": true
+  },
+  "warning_counts": {
+    "workspace_summary_emissions": 7985,
+    "dependency_vendor_summary_emissions": 2830,
+    "counts_are_unique_diagnostics": false,
+    "workspace_warning_clean": false
+  },
+  "claims": {
+    "native_process_group_control_passed": 1,
+    "native_process_group_control_failed": 0,
+    "focused_clippy_exit_zero": true,
+    "workspace_warning_clean": false,
+    "release_or_installer": false,
+    "real_project_indexing": false
+  }
+}
