@@ -2501,6 +2501,8 @@ fn terminate_process_group(pid: u32) -> Result<(), ProcessError> {
                         rustix::process::getpgid(Some(group_id))
                     );
                 }
+                #[cfg(not(test))]
+                let _ = error;
                 Err(ProcessError::UnsupportedLimit(
                     crate::UnsupportedLimit::ProcessGroup,
                 ))
