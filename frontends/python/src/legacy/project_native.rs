@@ -647,12 +647,15 @@ pub(super) fn analyze(
                                 candidate.kind,
                                 DeclarationKind::Class | DeclarationKind::Function
                             ) && candidate.name_span != target.name_span
-                                && candidate.span.start <= target.span.start
-                                && target.span.end <= candidate.span.end
+                                && candidate.binding_span.start <= target.binding_span.start
+                                && target.binding_span.end <= candidate.binding_span.end
                         })
                         .collect::<Vec<_>>();
                     enclosing.sort_by_key(|candidate| {
-                        (candidate.span.start, std::cmp::Reverse(candidate.span.end))
+                        (
+                            candidate.binding_span.start,
+                            std::cmp::Reverse(candidate.binding_span.end),
+                        )
                     });
                     let mut scopes = enclosing
                         .iter()
@@ -667,8 +670,8 @@ pub(super) fn analyze(
                             program: program_identity,
                             source: *source_identity,
                             path,
-                            declaration_start: target.span.start,
-                            declaration_end: target.span.end,
+                            declaration_start: target.binding_span.start,
+                            declaration_end: target.binding_span.end,
                             name_start: target.name_span.start,
                         },
                     )
