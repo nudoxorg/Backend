@@ -164,7 +164,7 @@ impl<'work> ParserStateCore<'work> {
             NodeIndex::NONE
         };
 
-        let end_pos = self.token_end();
+        let end_pos = self.module_declaration_end(name, body);
 
         let module_idx = self.arena.add_module(
             syntax_kind_ext::MODULE_DECLARATION,
@@ -315,7 +315,7 @@ impl<'work> ParserStateCore<'work> {
             NodeIndex::NONE
         };
 
-        let end_pos = self.token_end();
+        let end_pos = self.module_declaration_end(name, body);
 
         let module_idx = self.arena.add_module(
             syntax_kind_ext::MODULE_DECLARATION,
@@ -366,7 +366,7 @@ impl<'work> ParserStateCore<'work> {
             NodeIndex::NONE
         };
 
-        let end_pos = self.token_end();
+        let end_pos = self.module_declaration_end(name, body);
 
         let module_idx = self.arena.add_module(
             syntax_kind_ext::MODULE_DECLARATION,
@@ -387,6 +387,21 @@ impl<'work> ParserStateCore<'work> {
         }
 
         module_idx
+    }
+
+    /// The body owns its last consumed token; the cursor already points after it.
+    /// A bodyless declaration can own a current semicolon, but never the next
+    /// statement's token when automatic semicolon insertion separates them.
+    fn module_declaration_end(&self, name: NodeIndex, body: NodeIndex) -> u32 {
+        if let Some(body) = self.arena.get(body) {
+            body.end
+        } else if self.is_token(SyntaxKind::SemicolonToken) {
+            self.token_end()
+        } else {
+            self.arena
+                .get(name)
+                .map_or(self.token_pos(), |name| name.end)
+        }
     }
 
     /// Parse module block: { statements }

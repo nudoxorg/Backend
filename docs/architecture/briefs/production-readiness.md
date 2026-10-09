@@ -893,3 +893,12 @@ The first authentic Docs application test starts with a fresh HOME and platform-
 ### Durable frontier cutover — 2026-10-08
 
 The [source-bound store packet](../../../evidence/durable-frontier-union-20261008/README.md) closes the synthetic durable frontier regression. The original 446-node fixture performs 198,481 commitments and hashes 1,906,926,126 payload bytes; the identity-set union performs 2,231 commitments and hashes 21,331,373 bytes. All 275 store library tests pass on exact native source `a1e604aaee5a4f16391d4375a4b9f64b2604c7be`, with the original strict `64 * physical_nodes` work bound unchanged. Root verified all 22 retained raw members, the full store crate's source correspondence and the actual compiled/executed image binding. The stale first fixed run remains explicitly invalid in the packet. This is synthetic debug work reduction and full store-library validation, not proof that current public Docs/Mealie/PocketBase remove requests finish; those require a rebuilt matched trio and genuine runtime replay.
+
+
+## October 9: module declaration boundary checkpoint
+
+The parser now derives each module declaration boundary from its own parsed body. Empty/comment-only ambient declarations no longer absorb the next declaration. Bodyless declarations retain their own explicit semicolon or automatic-semicolon boundary. The production change is shared by ordinary, ambient, and dotted module constructors; speculation cursor behavior is unchanged.
+
+Root independently compared all three canonical preimages and tested postimages, parsed both raw Cargo/test streams, and rehashed the actual remote ARM64 test image (`0d110a86788837ad6376962e018d6dd2f8eda6cf467dbc17976f2286d969437a`). Exact source `8f82165eb5cdfd37e8f46d7b4ec407b3342726d7` passed six boundary controls and six existing speculation controls: 12 passed, 0 failed, 0 ignored. The root and supplemental nested TSZ lock hashes remained unchanged across each owned, kernel-waited test process. The independent audit is `docs/audits/parser-module-span-native-evidence-20261009.json`.
+
+This checkpoint proves those parser and speculation controls. It does not prove the original Next.js application failure is resolved: the separate composed TypeScript integration and authentic Next.js replay remain pending. The preceding parser test-import compilation failure and original Next.js RED evidence remain preserved.
