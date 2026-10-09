@@ -10,7 +10,7 @@ use backend_engine::application::{
 use backend_engine::cluster_transport::{
     ClusterExecutionClass, EndpointId, RemoteIndexCapability, RemoteIndexCapabilityClaims,
     RemoteIndexPermission, RemoteIndexProductScope, RemoteIndexQueryOperation,
-    RemoteIndexSemanticSelection, ScopedClusterInvite, SecretKey, remote_index_now,
+    RemoteIndexSemanticSelection, SecretKey, remote_index_now,
 };
 use backend_engine::{PackageReference, ProductText, SurfaceCommand, SurfaceReply};
 use backend_library::{IndexSearchCursor, interface::PackageUrl};
@@ -1308,7 +1308,7 @@ pub(crate) fn load_client_secret(path: &std::path::Path) -> Result<SecretKey, Fa
 
 fn read_bounded_file(path: &std::path::Path, maximum: usize) -> Result<Vec<u8>, Fault> {
     let (directory, name) = private_file_location(path, false)?;
-    let mut file = directory
+    let file = directory
         .open_private_file(&name)
         .map_err(|error| storage_fault(path, error.to_string()))?;
     let metadata = file
@@ -1874,7 +1874,9 @@ fn usage(operand: impl Into<String>, message: impl Into<String>) -> Fault {
 mod tests {
     use super::*;
     use backend_engine::application::{CompilerInvocationRecipeV2, LocalRuntimeToolchain};
-    use backend_engine::cluster_transport::{ClusterExecutionClass, SecretKey};
+    use backend_engine::cluster_transport::{
+        ClusterExecutionClass, ScopedClusterInvite, SecretKey,
+    };
     use backend_local_service::compiler_trust::TrustedCompilerWorkerPolicy;
     use backend_semantic::vocabulary::{GoVersion, NativeTool, RustEdition};
 

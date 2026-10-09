@@ -4,7 +4,6 @@ use std::{
     error::Error,
     fmt::Write as _,
     fs,
-    io::Write as _,
     path::PathBuf,
     process::Command,
     sync::Arc,
@@ -1204,61 +1203,190 @@ fn supervisor_honors_a_borrowed_absolute_deadline() -> Result<(), Box<dyn Error>
 }
 
 #[cfg(unix)]
-#[test]
-fn supervisor_cancels_the_entire_process_group() -> Result<(), Box<dyn Error>> {
-    let pid_path = std::env::temp_dir().join(format!(
-        "backend-compile-grandchild-{}.pid",
+struct ProcessGroupTestDirectory(PathBuf);
+
+#[cfg(unix)]
+impl Drop for ProcessGroupTestDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(unix)]
+struct ProcessGroupTestWorkspace {
+    path: PathBuf,
+    ready: fs::File,
+    _directory: ProcessGroupTestDirectory,
+}
+
+#[cfg(unix)]
+fn process_group_test_workspace() -> Result<ProcessGroupTestWorkspace, Box<dyn Error>> {
+    use std::os::unix::fs::DirBuilderExt as _;
+
+    let workspace = std::env::temp_dir().join(format!(
+        "backend-compile-process-group-{}",
         std::process::id()
     ));
-    let _ = fs::remove_file(&pid_path);
-    let pid_tmp_path = pid_path.with_extension("pid.tmp");
-    let _ = fs::remove_file(&pid_tmp_path);
-    let script = format!(
-        "sleep 30 & child=$!; printf '%s' \"$child\" > {}; mv {} {}; wait",
-        pid_tmp_path.display(),
-        pid_tmp_path.display(),
-        pid_path.display(),
-    );
-    let process_limits = limits(64, 64, Duration::from_secs(2), 128)?;
-    let process = command("/bin/sh", &["-c", &script], process_limits)?;
-    let (cancellation, handle) = Cancellation::new();
-    let join = thread::spawn(move || process.run_with_cancellation(&cancellation));
-    // The shell creates/truncates the file before `printf` writes the PID;
-    // existence alone therefore races with the reader. Wait for the complete
-    // parseable value, which is the actual child-start handshake.
-    let child_pid = (0..100)
-        .find_map(|_| {
-            let result = fs::read_to_string(&pid_path)
-                .ok()
-                .and_then(|pid| pid.trim().parse::<u32>().ok());
-            if result.is_none() {
-                thread::sleep(Duration::from_millis(2));
+    let _ = fs::remove_dir_all(&workspace);
+    let mut builder = fs::DirBuilder::new();
+    builder.mode(0o700).create(&workspace)?;
+    let directory = ProcessGroupTestDirectory(workspace.clone());
+    let ready_pipe = workspace.join("ready");
+    let hold_pipe = workspace.join("hold");
+    assert!(Command::new("mkfifo").arg(&ready_pipe).status()?.success());
+    assert!(Command::new("mkfifo").arg(&hold_pipe).status()?.success());
+    let ready = fs::File::from(rustix::fs::open(
+        &ready_pipe,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )?);
+    Ok(ProcessGroupTestWorkspace {
+        _directory: directory,
+        path: workspace,
+        ready,
+    })
+}
+
+#[cfg(unix)]
+fn process_group_ready_pids(
+    ready: &mut fs::File,
+    deadline: std::time::Instant,
+) -> Result<(u32, u32), Box<dyn Error>> {
+    use std::io::Read as _;
+
+    let mut handshake = Vec::with_capacity(32);
+    loop {
+        if let Some(newline) = handshake.iter().position(|byte| *byte == b'\n') {
+            let line = std::str::from_utf8(&handshake[..newline])?;
+            let mut fields = line.split_whitespace();
+            let shell_pid = fields.next().ok_or("missing shell PID")?.parse::<u32>()?;
+            let child_pid = fields
+                .next()
+                .ok_or("missing grandchild PID")?
+                .parse::<u32>()?;
+            if fields.next().is_some() || shell_pid == 0 || child_pid == 0 {
+                return Err("invalid process-group readiness record".into());
             }
-            result
-        })
-        .ok_or("grandchild PID was not published")?;
-    handle.cancel();
-    let result = join.join().map_err(|_| "supervisor thread panicked")?;
-    assert_eq!(result, Err(ProcessError::Cancelled));
-    for _ in 0..100 {
-        let alive = Command::new("/bin/kill")
-            .arg("-0")
-            .arg(child_pid.to_string())
-            .status()
-            .is_ok_and(|status| status.success());
-        if !alive {
-            break;
+            return Ok((shell_pid, child_pid));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("process-group readiness pipe did not publish both PIDs".into());
+        }
+
+        let mut chunk = [0; 64];
+        match ready.read(&mut chunk) {
+            Ok(0) => {}
+            Ok(read) => handshake.extend_from_slice(&chunk[..read]),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => return Err(error.into()),
+        }
+        if handshake.len() > 64 {
+            return Err("process-group readiness record exceeded its bound".into());
         }
         thread::sleep(Duration::from_millis(2));
     }
-    let alive = Command::new("/bin/kill")
-        .arg("-0")
-        .arg(child_pid.to_string())
-        .status()
-        .is_ok_and(|status| status.success());
-    let _ = fs::remove_file(pid_path);
-    let _ = fs::remove_file(pid_tmp_path);
-    assert!(!alive);
+}
+
+#[cfg(unix)]
+fn process_group_record(pid: u32) -> Result<(u32, String), Box<dyn Error>> {
+    let output = Command::new("ps")
+        .arg("-o")
+        .arg("pgid=,stat=")
+        .arg("-p")
+        .arg(pid.to_string())
+        .output()?;
+    if !output.status.success() {
+        return Err(format!("could not inspect process {pid}").into());
+    }
+    let record = std::str::from_utf8(&output.stdout)?;
+    let mut fields = record.split_whitespace();
+    let group_id = fields
+        .next()
+        .ok_or("process was not visible before cancel")?
+        .parse::<u32>()?;
+    let state = fields
+        .next()
+        .ok_or("process state was not reported")?
+        .to_owned();
+    Ok((group_id, state))
+}
+
+#[cfg(unix)]
+fn process_group_has_live_process(group_id: u32) -> Result<bool, Box<dyn Error>> {
+    let output = Command::new("ps")
+        .args(["-A", "-o", "pgid=,stat="])
+        .output()?;
+    if !output.status.success() {
+        return Err("could not inspect process-group retirement".into());
+    }
+    for line in std::str::from_utf8(&output.stdout)?.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(group), Some(state)) = (fields.next(), fields.next()) else {
+            continue;
+        };
+        if group.parse::<u32>()? == group_id && !state.starts_with('Z') {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(unix)]
+#[test]
+fn supervisor_cancels_the_entire_process_group() -> Result<(), Box<dyn Error>> {
+    use std::time::Instant;
+
+    let mut workspace = process_group_test_workspace()?;
+    let workspace_path = workspace.path.clone();
+    let script =
+        "IFS= read -r _ < hold & child=$!; printf '%s %s\\n' \"$$\" \"$child\" > ready; wait";
+    let process_timeout = Duration::from_secs(2);
+    let process_limits = limits(64, 64, process_timeout, 128)?;
+    let process = SupervisedCommand::new(
+        PathBuf::from("/bin/sh"),
+        vec!["-c".into(), script.into()],
+        workspace_path,
+        ProcessEnvironment::new(Vec::new())?,
+        process_limits,
+    )?;
+    let (cancellation, handle) = Cancellation::new();
+    let deadline = Instant::now() + process_timeout;
+    let running = ProcessSupervisor::new(process).start_with_cancellation(&cancellation)?;
+
+    let (shell_pid, child_pid) = process_group_ready_pids(&mut workspace.ready, deadline)?;
+    let (shell_group, shell_state) = process_group_record(shell_pid)?;
+    let (child_group, child_state) = process_group_record(child_pid)?;
+    assert_eq!(
+        shell_group, shell_pid,
+        "supervised shell leads its process group"
+    );
+    assert_eq!(
+        child_group, shell_group,
+        "grandchild belongs to the supervised group"
+    );
+    assert!(
+        !shell_state.starts_with('Z'),
+        "supervised shell is live before cancel"
+    );
+    assert!(
+        !child_state.starts_with('Z'),
+        "grandchild is live before cancel"
+    );
+
+    handle.cancel();
+    assert_eq!(
+        running.finish_with_observer_until(&cancellation, deadline),
+        Err(ProcessError::Cancelled)
+    );
+
+    let retirement_deadline = Instant::now() + Duration::from_secs(1);
+    while process_group_has_live_process(shell_group)? && Instant::now() < retirement_deadline {
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert!(
+        !process_group_has_live_process(shell_group)?,
+        "a live process remained in the supervised process group"
+    );
     Ok(())
 }
 
@@ -1419,6 +1547,7 @@ fn executable_lease_isolated_from_in_place_mutation() -> Result<(), Box<dyn Erro
 #[cfg(target_os = "macos")]
 #[test]
 fn executable_lease_copies_macho_before_original_mutation() -> Result<(), Box<dyn Error>> {
+    use std::io::Write as _;
     use std::os::unix::fs::PermissionsExt;
 
     let source = PathBuf::from("/usr/bin/true");
