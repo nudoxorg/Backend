@@ -40,6 +40,8 @@ struct Fake {
     empty_outline: bool,
     /// Keep genuine outline transport/proof failures distinct from absence.
     outline_error: Option<ClientError>,
+    /// Exact source availability returned by the document/source boundary.
+    document_override: Option<Document>,
     /// Optional graph rows used to exercise the complete-page admission cap.
     graph_rows: Option<Box<[GraphQueryRow]>>,
     /// Identity-free typed failed reply from the direct graph-page route.
@@ -236,7 +238,7 @@ impl Engine for Fake {
                         backend_library::CommandFailure::NotFound,
                     ));
                 }
-                CommandReply::Document(document())
+                CommandReply::Document(self.document_override.clone().unwrap_or_else(document))
             }
             Probe::Related(at) | Probe::Graph(at) => {
                 if at == MISSING {
@@ -2277,6 +2279,84 @@ fn document_and_source_tools_advertise_their_useful_default_detail() {
         search["inputSchema"]["properties"]["detail"]["default"],
         "summary"
     );
+}
+
+#[test]
+fn explicit_source_refuses_unavailable_text_while_document_retains_its_native_identity() {
+    let coordinate = format!("{PROJECT}::semantic::{}::Environment", "0b".repeat(32));
+    let native = symbol_key("compiler-owned-Environment");
+    for (location, excerpt, cause) in [
+        (
+            SourceAvailability::NotCaptured,
+            SourceExcerpt::NotCaptured,
+            "not-captured",
+        ),
+        (
+            SourceAvailability::Captured(
+                SourceLocation::new("httpie/context.py", 46).expect("captured site"),
+            ),
+            SourceExcerpt::NotHydrated,
+            "not-resident",
+        ),
+        (
+            SourceAvailability::Unconfigured,
+            SourceExcerpt::Unconfigured,
+            "unconfigured",
+        ),
+    ] {
+        let document = Document::new(
+            native,
+            view_state_root(&[]),
+            [Fragment::Text(
+                "Retained compiler documentation.".to_owned(),
+            )],
+        )
+        .with_location(location)
+        .with_excerpt(excerpt);
+        let mut server = ready(Fake {
+            document_override: Some(document),
+            ..Fake::default()
+        });
+        let args = json!({"coordinate":coordinate,"detail":"full"});
+        let page = call(&mut server, "backend.document", &args);
+        assert_eq!(page["isError"], false);
+        assert_eq!(page["structuredContent"]["answer"], "page");
+        assert_eq!(
+            page["structuredContent"]["identity"]["coordinate"],
+            coordinate
+        );
+        assert_eq!(
+            page["structuredContent"]["identity"]["semantic_data"]["value"],
+            json!(native.as_bytes())
+        );
+        assert_eq!(page["structuredContent"]["source_fault"]["cause"], cause);
+        assert!(text_of(&page).contains("Retained compiler documentation."));
+
+        let source = call(&mut server, "backend.source", &args);
+        assert_eq!(source["isError"], true);
+        assert_eq!(source["structuredContent"]["answer"], "fault");
+        assert_eq!(source["structuredContent"]["slug"], "source-unavailable");
+        assert_eq!(source["structuredContent"]["cause"], cause);
+        assert_eq!(source["structuredContent"]["operand"], coordinate);
+    }
+
+    let mut server = ready(Fake::default());
+    let captured = call(
+        &mut server,
+        "backend.source",
+        &json!({"coordinate":DECLARATION,"detail":"full"}),
+    );
+    assert_eq!(captured["isError"], false);
+    assert_eq!(
+        captured["structuredContent"]["source"]["path"],
+        "src/lib.rs"
+    );
+    assert_eq!(captured["structuredContent"]["source"]["line"], 2);
+    assert_eq!(
+        captured["structuredContent"]["source"]["lines"][0],
+        "pub fn ferris() -> Beacon {"
+    );
+    assert!(captured["structuredContent"]["source_fault"].is_null());
 }
 
 #[test]

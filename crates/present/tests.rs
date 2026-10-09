@@ -695,6 +695,96 @@ fn declaration_row() -> backend_library::Row {
 }
 
 #[test]
+fn selected_document_keeps_its_own_row_members_and_edges_when_coordinates_repeat() {
+    let coordinate = format!("{PROJECT}::semantic::{}::Environment", "0b".repeat(32));
+    let selected = symbol_key("native-selected-Environment");
+    let other = symbol_key("native-other-Environment");
+    let child = symbol_key("native-selected-child");
+    let other_child = symbol_key("native-other-child");
+    let target = symbol_key("native-selected-target");
+    let selected_row = backend_library::Row::in_package(
+        RowId::Symbol(selected),
+        basis(),
+        package_key(PROJECT),
+        &coordinate,
+    )
+    .with_kind(DeclarationKind::Class);
+    let other_row = backend_library::Row::in_package(
+        RowId::Symbol(other),
+        basis(),
+        package_key(PROJECT),
+        &coordinate,
+    )
+    .with_kind(DeclarationKind::Type);
+    let child_row = backend_library::Row::new(RowId::Symbol(child), basis(), "selected-child")
+        .with_parent(selected)
+        .with_kind(DeclarationKind::Method);
+    let other_child_row =
+        backend_library::Row::new(RowId::Symbol(other_child), basis(), "other-child")
+            .with_parent(other)
+            .with_kind(DeclarationKind::Field);
+    let target_row = backend_library::Row::new(RowId::Symbol(target), basis(), "selected-target")
+        .with_kind(DeclarationKind::Function);
+    let document = Document::new(
+        selected,
+        basis().root,
+        [Fragment::Text("native docs".to_owned())],
+    )
+    .with_location(SourceAvailability::Captured(
+        SourceLocation::new("httpie/context.py", 46).expect("site"),
+    ));
+    for members in [
+        vec![
+            other_row.clone(),
+            selected_row.clone(),
+            child_row.clone(),
+            other_child_row.clone(),
+        ],
+        vec![
+            selected_row,
+            other_row.clone(),
+            other_child_row.clone(),
+            child_row.clone(),
+        ],
+        vec![other_row, other_child_row, child_row],
+    ] {
+        let has_selected = members.iter().any(|row| row.id == RowId::Symbol(selected));
+        let page = page_from_document_with_graph_relations(
+            &coordinate,
+            &document,
+            &members,
+            std::slice::from_ref(&target_row),
+            &[GraphRelation::new(
+                RowId::Symbol(selected),
+                RowId::Symbol(target),
+                SemanticLinkKind::Calls,
+            )],
+            Vec::new(),
+        );
+        assert_eq!(page.identity().key(), IdentityKey::Symbol(selected));
+        assert_eq!(page.identity().coordinate().as_str(), coordinate);
+        assert_eq!(page.kind(), has_selected.then_some(DeclarationKind::Class));
+        assert_eq!(page.language(), Language::Python);
+        let members = page
+            .members()
+            .iter()
+            .flat_map(MemberGroup::members)
+            .map(|member| member.identity().key())
+            .collect::<Vec<_>>();
+        assert_eq!(members, [IdentityKey::Symbol(child)]);
+        assert_eq!(page.relations().len(), 1);
+        assert_eq!(
+            page.relations()[0].label(),
+            RelationLabel::Typed(SemanticLinkKind::Calls, RelationDirection::Outgoing,)
+        );
+        assert_eq!(
+            page.relations()[0].relations()[0].identity().key(),
+            IdentityKey::Symbol(target)
+        );
+    }
+}
+
+#[test]
 fn compiler_graph_relation_kinds_survive_owner_page_assembly() {
     let centre = symbol_key(DECLARATION);
     let calls = symbol_key("/abs/polyglot::src/lib.rs:5::calls");
