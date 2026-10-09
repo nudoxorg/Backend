@@ -482,6 +482,7 @@ impl GoPackageAuthorityWitness {
                 cancelled,
             )));
         }
+        trace_capture_work("admission", &scratch, witness.dependency_closure.is_some());
         Ok(witness)
     }
 
@@ -568,8 +569,21 @@ impl GoPackageAuthorityWitness {
                 cancelled,
             )));
         }
+        trace_capture_work("revalidation", &scratch, current.dependency_closure.is_some());
         Ok(*self == current)
     }
+}
+
+fn trace_capture_work(phase: &str, scratch: &CaptureScratch, selected: bool) {
+    tracing::info!(
+        target: "compiler::go_authority_capture",
+        phase,
+        capture_calls = 1_u64,
+        loader_calls = u64::from(selected),
+        streamed_hash_files = scratch.hash_files,
+        streamed_hash_bytes = scratch.hash_bytes,
+        "Go authority content capture"
+    );
 }
 
 /// Typed root-selection failure while capturing a Go package authority witness.

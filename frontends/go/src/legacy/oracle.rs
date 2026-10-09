@@ -2127,11 +2127,10 @@ impl ConfiguredGoOracle {
         if let Some(failure) = witness.dependency_closure_failure() {
             return Err(OracleError::DependencyClosureUnavailable { failure });
         }
-        let current = witness.matches_current_cancellable(package_root, cancelled)?;
+        // Helper preparation reads the selected toolchain and embedded helper
+        // sources. The complete package closure is checked immediately before
+        // the project child below, then again after its output is collected.
         check_go_cancellation(cancelled)?;
-        if !current {
-            return Err(OracleError::PackageAuthorityWitnessChanged);
-        }
         let (helper_binary, revalidated_after_build) = self.cached_helper_binary_cancellable(cancelled)?;
         if !revalidated_after_build {
             environment.revalidate_toolchain()?;
