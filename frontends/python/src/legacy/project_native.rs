@@ -1,7 +1,7 @@
 //! Exact typed answers and definitions from one committed Pyrefly 1.2 State.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -26,7 +26,7 @@ use ruff_python_ast::visitor::{Visitor, walk_expr, walk_stmt};
 use ruff_text_size::Ranged as SyntaxRanged;
 
 use super::project::{
-    CandidateWitness, CapturedProjectLayout, DefinitionTarget, DirectoryWitness,
+    CandidateWitness, CapturedBaselines, CapturedProjectLayout, DefinitionTarget, DirectoryWitness,
     PythonProjectControl, PythonProjectCoverageGap, PythonProjectCoverageGapKind,
     PythonProjectDiagnostic, PythonProjectSource, PythonTypeProjectionFault,
     SourceDirectoryWitness, checkpoint, project_error,
@@ -53,6 +53,7 @@ pub(super) fn analyze(
     package: &str,
     sources: &[PythonProjectSource<'_>],
     syntax: &BTreeMap<&str, ModuleFacts>,
+    baselines: &CapturedBaselines,
     profile: backend_semantic::vocabulary::PythonVersion,
     control: PythonProjectControl<'_>,
 ) -> Result<NativeProjectResult, CheckerError> {
@@ -87,6 +88,7 @@ pub(super) fn analyze(
         layout,
         original_root,
         sources,
+        baselines,
         NativeVersion::new(3, minor, 0),
         control,
     )?;
@@ -892,6 +894,7 @@ fn captured_finder(
     layout: &CapturedProjectLayout,
     original_root: &Path,
     sources: &[PythonProjectSource<'_>],
+    baselines: &CapturedBaselines,
     version: NativeVersion,
     control: PythonProjectControl<'_>,
 ) -> Result<(ConfigFinder, [u8; 32]), CheckerError> {
@@ -899,13 +902,14 @@ fn captured_finder(
         mut config: ConfigFile,
         layout: &CapturedProjectLayout,
         original: &Path,
+        baselines: &CapturedBaselines,
         version: NativeVersion,
     ) -> Result<ArcId<ConfigFile>, CheckerError> {
         if let Some(path) = &config.typeshed_path {
             return Err(CheckerError::UncapturedDependency { path: path.clone() });
         }
-        if let Some(path) = &config.baseline {
-            return Err(CheckerError::UncapturedDependency { path: path.clone() });
+        if let Some(path) = &mut config.baseline {
+            baselines.admit(path, layout, original)?;
         }
         if config.build_system.is_some() || config.source_db.is_some() {
             return Err(project_error(
@@ -986,6 +990,7 @@ fn captured_finder(
         ConfigFile::init_at_root(mirror, &ProjectLayout::new(mirror), false),
         layout,
         original_root,
+        baselines,
         version,
     )?;
     let mut loaded = BTreeMap::new();
@@ -1020,14 +1025,17 @@ fn captured_finder(
             };
             loaded.insert(
                 path,
-                (priority, configure(config, layout, original_root, version)?),
+                (
+                    priority,
+                    configure(config, layout, original_root, baselines, version)?,
+                ),
             );
         }
     }
     let mut effective = BTreeMap::new();
     let mut scope_identity = blake3::Hasher::new();
     scope_identity.update(b"compiler.python.effective-config-scope.v1\0");
-    scope_identity.update(b"root-isolated;named-package-import-root.v1;native-priority;candidate-presence+absence;checked-unannotated;checked-returns;no-interpreter;no-fallback;no-ignore;no-index;classdef+ctor;depth=64;work=262144\0");
+    scope_identity.update(b"root-isolated;named-package-import-root.v1;captured-diagnostic-baseline.v1;native-priority;candidate-presence+absence;checked-unannotated;checked-returns;no-interpreter;no-fallback;no-ignore;no-index;classdef+ctor;depth=64;work=262144\0");
     for directory in directories {
         let mut candidates = Vec::new();
         for (depth, ancestor) in directory

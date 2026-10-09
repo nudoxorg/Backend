@@ -74,7 +74,7 @@ const REVEAL_HEADER: &[u8] = b"from typing import reveal_type\n";
 /// The `reveal_type(` call spelling prefix.
 const REVEAL_CALL: &[u8] = b"reveal_type(";
 /// Versioned identity of package-scoped Pyrefly env and working-directory policy.
-pub const PYTHON_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1: &str = "pyrefly-native-project-state-30b5ca52.classdef-declaration+constructor-callee.exact-source-coordinate.no-import-call-fallback.named-package-mirror-only.v8";
+pub const PYTHON_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1: &str = "pyrefly-native-project-state-30b5ca52.classdef-declaration+constructor-callee.exact-source-coordinate.no-import-call-fallback.named-package-mirror-only.captured-baseline.root-pinned-inputs.v11";
 
 /// Exact upstream revision of the compiled native Python State authority.
 pub const PYTHON_NATIVE_PROJECT_SOURCE_REVISION: &str = "30b5ca5250db9f2d9264d5e889662cf1224a75b7";
@@ -2093,18 +2093,37 @@ impl Workspace {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |duration| duration.as_nanos());
-        let path =
-            std::env::temp_dir().join(format!("pyrefly-check-{}-{nanos}", std::process::id()));
+        Self::create_at(nanos)
+    }
+
+    /// Reserves a distinct directory even when concurrent calls share a clock tick.
+    fn create_at(nanos: u128) -> Result<Self, CheckerError> {
+        static NEXT_WORKSPACE: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
         let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         {
             use std::os::unix::fs::DirBuilderExt;
             builder.mode(0o700);
         }
-        builder
-            .create(&path)
-            .map_err(|source| CheckerError::Workspace { source })?;
-        Ok(Self { path })
+        for _ in 0..64 {
+            let sequence = NEXT_WORKSPACE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "pyrefly-check-{}-{nanos}-{sequence}",
+                std::process::id()
+            ));
+            match builder.create(&path) {
+                Ok(()) => return Ok(Self { path }),
+                Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(source) => return Err(CheckerError::Workspace { source }),
+            }
+        }
+        Err(CheckerError::Workspace {
+            source: std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "temporary workspace reservation collided 64 times",
+            ),
+        })
     }
 
     /// Writes one probe file and returns its path.

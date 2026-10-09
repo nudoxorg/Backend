@@ -1,0 +1,461 @@
+{
+  "schema": "nudox.python-captured-input.checkpoint.v1",
+  "reviewed_utc": "2026-10-09T01:09:01.245784+00:00",
+  "canonical_base": "4f9059cfcacc085aef03688ab7dce259f8096a54",
+  "native_source": {
+    "cargo_lock_sha256": "b45bb9a10382c70e6888b220e82061d038b886a5235978f9442c6483229bb1dd",
+    "clean": true,
+    "commit": "57ec29b3f0b597ccef5cc95dc94c1c81e3bff339",
+    "tree": "ad7d44a26f0a18a17e8669fd7aeaecd03c596a6a"
+  },
+  "darwin_native_tests": {
+    "failed": 0,
+    "passed": 10,
+    "scope": "8 capture/baseline/workspace controls, pinned authentic Paperless config/baseline1, actual two fresh States integration1"
+  },
+  "gates": [
+    {
+      "remote_path": "/Users/rmccrar6/sol61-python3b69-review-20261008/gate-00-attempt03/receipt.json",
+      "sha256": "e5395c7999439a111ac3bfb6512c442a843fdf6be2dbac7b355c3bdace8569f6",
+      "gate": 0,
+      "source": {
+        "commit": "57ec29b3f0b597ccef5cc95dc94c1c81e3bff339",
+        "tree": "ad7d44a26f0a18a17e8669fd7aeaecd03c596a6a",
+        "cargo_lock_sha256": "b45bb9a10382c70e6888b220e82061d038b886a5235978f9442c6483229bb1dd",
+        "clean": true
+      },
+      "artifact": {
+        "bytes": 24679560,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/.local/build/runtime-fcb/.nudox-cargo/slot-0/debug/deps/backend_frontend_python-17428eb08774f8a4",
+        "path": "/Users/rmccrar6/sol61-python3b69-review-20261008/gate-00-attempt03/images/backend_frontend_python",
+        "sha256": "b73a8ad716c5565dfb8bccbbb9cf0854fb322c7351aed8bd19705ab5b130d1dd"
+      },
+      "test_summaries": [
+        [
+          "ok",
+          "8",
+          "0",
+          "1"
+        ]
+      ],
+      "actual_pass_names": [
+        "legacy::checker::project::baseline::tests::captured_input_rejects_changes_during_same_open_file_read",
+        "legacy::checker::project::baseline::tests::native_compact_and_legacy_baselines_have_identical_exact_matching_keys",
+        "legacy::checker::project::baseline::tests::captured_configuration_preserves_absence_bounds_cancellation_and_native_error_detail",
+        "legacy::checker::project::baseline::tests::captured_configuration_revalidation_rejects_same_bytes_symlink_swaps",
+        "legacy::checker::project::baseline::tests::baseline_capture_refuses_outside_missing_malformed_symlink_bound_and_cancelled_inputs",
+        "legacy::checker::project::baseline::tests::absolute_baseline_keys_rebase_only_exact_source_root",
+        "legacy::checker::project::baseline::tests::native_configuration_baseline_has_exact_mirror_admission_and_change_guard",
+        "legacy::checker::project::baseline::tests::temporary_workspaces_are_distinct_at_the_same_clock_tick"
+      ]
+    },
+    {
+      "remote_path": "/Users/rmccrar6/sol61-python3b69-review-20261008/gate-01-attempt01/receipt.json",
+      "sha256": "6d72389467e97dce7a955d21fa8755fca32c658c344898db36fc9f92175202fd",
+      "gate": 1,
+      "source": {
+        "commit": "57ec29b3f0b597ccef5cc95dc94c1c81e3bff339",
+        "tree": "ad7d44a26f0a18a17e8669fd7aeaecd03c596a6a",
+        "cargo_lock_sha256": "b45bb9a10382c70e6888b220e82061d038b886a5235978f9442c6483229bb1dd",
+        "clean": true
+      },
+      "artifact": {
+        "bytes": 24679560,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/.local/build/runtime-fcb/.nudox-cargo/slot-0/debug/deps/backend_frontend_python-17428eb08774f8a4",
+        "path": "/Users/rmccrar6/sol61-python3b69-review-20261008/gate-00-attempt03/images/backend_frontend_python",
+        "sha256": "b73a8ad716c5565dfb8bccbbb9cf0854fb322c7351aed8bd19705ab5b130d1dd"
+      },
+      "test_summaries": [
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ]
+      ],
+      "actual_pass_names": [
+        "legacy::checker::project::baseline::tests::authentic_paperless_configuration_baseline_is_captured_without_policy_rewrite"
+      ]
+    },
+    {
+      "remote_path": "/Users/rmccrar6/sol61-python3b69-review-20261008/gate-02-attempt01/receipt.json",
+      "sha256": "fc12cd3ba7a09783016a56560764ebf1689ee652697a755b3a8d14577cd00a47",
+      "gate": 2,
+      "source": {
+        "commit": "57ec29b3f0b597ccef5cc95dc94c1c81e3bff339",
+        "tree": "ad7d44a26f0a18a17e8669fd7aeaecd03c596a6a",
+        "cargo_lock_sha256": "b45bb9a10382c70e6888b220e82061d038b886a5235978f9442c6483229bb1dd",
+        "clean": true
+      },
+      "artifact": {
+        "bytes": 106175216,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/.local/build/runtime-fcb/.nudox-cargo/slot-0/debug/deps/python_project-b20618da074dc523",
+        "path": "/Users/rmccrar6/sol61-python3b69-review-20261008/gate-02-attempt01/images/python_project",
+        "sha256": "02edaa92a2f3f6c976d24d4cad049c9c6ede87656663d5f91ec0f292c5d7e1da"
+      },
+      "test_summaries": [
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ]
+      ],
+      "actual_pass_names": [
+        "captured_baseline_preserves_native_cross_file_facts_and_unfiltered_diagnostics"
+      ]
+    },
+    {
+      "remote_path": "/Users/rmccrar6/sol61-python3b69-review-20261008/gate-03-attempt01/receipt.json",
+      "sha256": "cc1343334a959b18a4def268785e06e7af4a366d3bd4fa33c49e9e6c676951bc",
+      "gate": 3,
+      "source": {
+        "commit": "57ec29b3f0b597ccef5cc95dc94c1c81e3bff339",
+        "tree": "ad7d44a26f0a18a17e8669fd7aeaecd03c596a6a",
+        "cargo_lock_sha256": "b45bb9a10382c70e6888b220e82061d038b886a5235978f9442c6483229bb1dd",
+        "clean": true
+      },
+      "artifact": {
+        "bytes": 105466000,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/.local/target/debug/examples/project_report",
+        "path": "/Users/rmccrar6/sol61-python3b69-review-20261008/gate-03-attempt01/images/project_report",
+        "sha256": "900128243ad088bc80de607499641d36c3ff97880d0cc29d903f73b908ffe085"
+      },
+      "test_summaries": [],
+      "actual_pass_names": []
+    },
+    {
+      "remote_path": "/Users/rmccrar6/sol61-python3b69-review-20261008/gate-04-attempt01/receipt-json-revalidated.json",
+      "sha256": "1e292d8a4c406d20810c52ca7704f46d1ebe6815bc3d1651e85859eb1117085d",
+      "gate": 4,
+      "source": {
+        "cargo_lock_sha256": "b45bb9a10382c70e6888b220e82061d038b886a5235978f9442c6483229bb1dd",
+        "clean": true,
+        "commit": "57ec29b3f0b597ccef5cc95dc94c1c81e3bff339",
+        "tree": "ad7d44a26f0a18a17e8669fd7aeaecd03c596a6a"
+      },
+      "artifact": {
+        "bytes": 105466000,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/sol-fresh-fcb-mac-build-20261006/.local/target/debug/examples/project_report",
+        "path": "/Users/rmccrar6/sol61-python3b69-review-20261008/gate-03-attempt01/images/project_report",
+        "sha256": "900128243ad088bc80de607499641d36c3ff97880d0cc29d903f73b908ffe085"
+      },
+      "test_summaries": [],
+      "actual_pass_names": []
+    }
+  ],
+  "whole_paperless_native_assertions": {
+    "consumer278_utils189_exact_binding": [
+      {
+        "elapsed_ms": 36489,
+        "exact_definition": {
+          "native_callee": null,
+          "same_module": false,
+          "source_coordinate": "python-native-source-coordinate-v1:6d35d6eae564918aed9b101a362ff5a2b1280ba320141285c64906ab5ea085d4:0e87ccdeeb31bcfae75263bb885927b43e97a9ce2c87131a91fc932aed0643fe:22:src/documents/utils.py:5830:6532:5834",
+          "source_span": {
+            "end": 9850,
+            "start": 9834
+          },
+          "spelling": "compute_checksum",
+          "target_kind": "Function",
+          "target_name": "documents.utils.compute_checksum",
+          "target_path": "src/documents/utils.py",
+          "target_span": {
+            "end": 5850,
+            "start": 5834
+          }
+        },
+        "pass": 0
+      },
+      {
+        "elapsed_ms": 34841,
+        "exact_definition": {
+          "native_callee": null,
+          "same_module": false,
+          "source_coordinate": "python-native-source-coordinate-v1:6d35d6eae564918aed9b101a362ff5a2b1280ba320141285c64906ab5ea085d4:0e87ccdeeb31bcfae75263bb885927b43e97a9ce2c87131a91fc932aed0643fe:22:src/documents/utils.py:5830:6532:5834",
+          "source_span": {
+            "end": 9850,
+            "start": 9834
+          },
+          "spelling": "compute_checksum",
+          "target_kind": "Function",
+          "target_name": "documents.utils.compute_checksum",
+          "target_path": "src/documents/utils.py",
+          "target_span": {
+            "end": 5850,
+            "start": 5834
+          }
+        },
+        "pass": 1
+      }
+    ],
+    "fresh_State_passes": 2,
+    "frontier": 410,
+    "module_counts": [
+      410,
+      410
+    ],
+    "scope": "native compiler example only; no installed CLI/MCP acceptance"
+  },
+  "root_independent_checks": {
+    "raw_receipt_hashes": 8,
+    "distinct_raw_log_hashes": 14,
+    "actual_unique_success_names": 10,
+    "independently_parsed_actual_26207589_byte_report": true,
+    "all410_modules_in_each_fresh_state": true,
+    "exact_call_target_and_spans_in_both_states": true,
+    "all10_postimages_match_tested_source": true,
+    "entire_source_replay_tree_verified": true,
+    "only_two_lock_dependency_lines_changed": true,
+    "vendor_overlay_hashes_match_actual_source": true,
+    "user_nix_unchanged": true
+  },
+  "source_correspondence": {
+    "all_python_and_vendored_pyrefly_tree_entries_equal_native_tested": true,
+    "build_or_tests_run": false,
+    "canonical_preimage": "4f9059cfcacc085aef03688ab7dce259f8096a54",
+    "lock_preservation": {
+      "added_dependencies": [
+        "backend-platform",
+        "rustix 1.1.4"
+      ],
+      "all_other_package_entries_preserved": true,
+      "format_change_scope": "Exactly two dependency lines added",
+      "only_changed_package": [
+        "backend-frontend-python",
+        "0.2.0",
+        null
+      ],
+      "package_count": 1577,
+      "removed_dependencies": []
+    },
+    "native_tested_source": "57ec29b3f0b597ccef5cc95dc94c1c81e3bff339",
+    "paths": [
+      {
+        "native57ec_postimage_equal": true,
+        "path": "Cargo.lock",
+        "postimage": {
+          "bytes": 422822,
+          "git_kind": "blob",
+          "git_mode": "100644",
+          "git_oid": "0949ec8b72d75cd1d06c76de4ce5e185a5b74816",
+          "sha256": "b45bb9a10382c70e6888b220e82061d038b886a5235978f9442c6483229bb1dd"
+        },
+        "preimage": {
+          "bytes": 422784,
+          "git_kind": "blob",
+          "git_mode": "100644",
+          "git_oid": "25ac5b16988eb5f1bcfe4e31d9ff8103162565c3",
+          "sha256": "f10d160ea4cd31fab22a1d20cbfd882624dcf0f7a234daba2407eef31901d1a4"
+        }
+      },
+      {
+        "native57ec_postimage_equal": true,
+        "path": "frontends/python/Cargo.toml",
+        "postimage": {
+          "bytes": 1457,
+          "git_kind": "blob",
+          "git_mode": "100644",
+          "git_oid": "31a0af8313a05f5750a1e97d35a8100ae92368fc",
+          "sha256": "35dbc9d55d8ba3f190244b28528cc14a7de23ccb5f3f8fedaffa0136c3ecc8bd"
+        },
+        "preimage": {
+          "bytes": 1249,
+          "git_kind": "blob",
+          "git_mode": "100644",
+          "git_oid": "7ab6ba7165f2af7afd23c6efa9e98a545807765a",
+          "sha256": "2002cb0a69a218620f3acace3c15e213aefe44e460ccdfec9cae8276157fa98e"
+        }
+      },
+      {
+        "native57ec_postimage_equal": true,
+        "path": "frontends/python/src/legacy/checker.rs",
+        "postimage": {
+          "bytes": 96050,
+          "git_kind": "blob",
+          "git_mode": "100644",
+          "git_oid": "52e3557d31ad3b59d38163dd5a2b591fa2db0d38",
+          "sha256": "3611054d4e389259ec33d7041d0e761a78efee0efc66df3685560e4a55cf4128"
+        },
+        "preimage": {
+          "bytes": 95170,
+          "git_kind": "blob",
+          "git_mode": "100644",
+          "git_oid": "250f868160a84e089a899bc328d9cd42fd4d6ed0",
+          "sha256": "4691e6f5ac2d9cf7b47a683a27b57e3ccea8f72a93a9e41de4b5af8453fc29bb"
+        }
+      },
+      {
+        "native57ec_postimage_equal": true,
+        "path": "frontends/python/src/legacy/project.rs",
+        "postimage": {
+          "bytes": 43490,
+          "git_kind": "blob",
+          "git_mode": "100644",
+          "git_oid": "a4df663a9fa7f6cb11c039623eb4de2bcdd98cc3",
+          "sha256": "294186a65166aef7cab25405f46815d7c1adcef70462d37c6b35fa9b4f416584"
+        },
+        "preimage": {
+          "bytes": 42478,
+          "git_kind": "blob",
+          "git_mode": "100644",
+          "git_oid": "185e276327aa724c0a3c05cb86dc65369745e08b",
+          "sha256": "f422f45e2074c77a390f51e68ee689d433e0b2b2c744df5803b6bead3a21d075"
+        }
+      },
+      {
+        "native57ec_postimage_equal": true,
+        "path": "frontends/python/src/legacy/project_baseline.rs",
+        "postimage": {
+          "bytes": 50088,
+          "git_kind": "blob",
+          "git_mode": "100644",
+          "git_oid": "b5b4ab153eeb21d21cbc8e22b8626584e2d56759",
+          "sha256": "77c2cf51fa660ef3017a7cd944abfe99ce9eeb2546516635473a19a9efd19e65"
+        },
+        "preimage": null
+      },
+      {
+        "native57ec_postimage_equal": true,
+        "path": "frontends/python/src/legacy/project_native.rs",
+        "postimage": {
+          "bytes": 66262,
+          "git_kind": "blob",
+          "git_mode": "100644",
+          "git_oid": "017eab4a5ac1892b3f30594e03c1d27414fc7107",
+          "sha256": "1564206e0140dceeeec9666a4775aa2dbabf232011795c0c2c9ba236aad65fda"
+        },
+        "preimage": {
+          "bytes": 66030,
+          "git_kind": "blob",
+          "git_mode": "100644",
+          "git_oid": "f9e484deba291d403b26f830be2be2b74a404c0c",
+          "sha256": "e9dbda5397612265a953356b770ceedfb73e5a1bc59ce346235a619a30ce70b8"
+        }
+      },
+      {
+        "native57ec_postimage_equal": true,
+        "path": "frontends/python/tests/python_project.rs",
+        "postimage": {
+          "bytes": 45535,
+          "git_kind": "blob",
+          "git_mode": "100644",
+          "git_oid": "b8137df53ea0247ecccc97ecb787cdbb93228f89",
+          "sha256": "80402ec86959ca355aa1c3abe7e698fbed38d0af51ac7eb27ad8172640105460"
+        },
+        "preimage": {
+          "bytes": 41529,
+          "git_kind": "blob",
+          "git_mode": "100644",
+          "git_oid": "745a9d420059284e2d7aa7819c2a04157ed4a6d4",
+          "sha256": "90d3b2346d3736e0f97d7e2029b4b97eab9572aa3bf295c05996af39585896e1"
+        }
+      },
+      {
+        "native57ec_postimage_equal": true,
+        "path": "vendor/pyrefly_native_1_2/NUDOX-UPSTREAM.json",
+        "postimage": {
+          "bytes": 294345,
+          "git_kind": "blob",
+          "git_mode": "100644",
+          "git_oid": "30034dd8d5b97fc8bb7632c08f28220269a61d11",
+          "sha256": "3b5635ea3802c94f3e3ca4659fbb1f41a9887a0a1de97a6291205c031f0f9b7a"
+        },
+        "preimage": {
+          "bytes": 293390,
+          "git_kind": "blob",
+          "git_mode": "100644",
+          "git_oid": "e7e1c636d39152a36a82c0c12310fa30729d6d87",
+          "sha256": "86f2c1dc74a08e40e5e6fd0dc99a945f8c3aa4f528ba5dca3f80575ae69ea847"
+        }
+      },
+      {
+        "native57ec_postimage_equal": true,
+        "path": "vendor/pyrefly_native_1_2/lib/error/baseline.rs",
+        "postimage": {
+          "bytes": 12868,
+          "git_kind": "blob",
+          "git_mode": "100644",
+          "git_oid": "d3d4507ea1987b2ff20f274184e5b40e4ef7726d",
+          "sha256": "7901b47744d5c582bb383c3bd62120cefd280e1d214a69755c113161c337b87c"
+        },
+        "preimage": {
+          "bytes": 11319,
+          "git_kind": "blob",
+          "git_mode": "100644",
+          "git_oid": "f60ef41b52b48a2f2abe380d3e3971bbfc5690e0",
+          "sha256": "3770b72f7fd41bf21dce2b4c8c4dcd0152c345c6c0cfd8a4363cd0c77e94de3d"
+        }
+      },
+      {
+        "native57ec_postimage_equal": true,
+        "path": "vendor/pyrefly_native_1_2/lib/lib.rs",
+        "postimage": {
+          "bytes": 3278,
+          "git_kind": "blob",
+          "git_mode": "100644",
+          "git_oid": "c8134623ffa03055f52132ec814fb3af864b41f9",
+          "sha256": "fedb8a408de71d9c250e76f930a6e5b1e15ee4670067bb5d424908ad6e3a095f"
+        },
+        "preimage": {
+          "bytes": 3071,
+          "git_kind": "blob",
+          "git_mode": "100644",
+          "git_oid": "90f719e840949861ae32522f628a6b9781ba2283",
+          "sha256": "30c8978f55a9f2861843bdede727f5ad4092295fc3f593f95b09b94219d0aef5"
+        }
+      }
+    ],
+    "python_vendor_tree_entry_count": 1735,
+    "schema": "nudox.python-canonical-replay.staged-correspondence.v1",
+    "source_only": true,
+    "staged_tree": "6db1e9ba3793298e2563c49a2797061154ddba46",
+    "unrelated_canonical_tree_entries_preserved": 17987,
+    "user_tools_nix": {
+      "path": "/Users/mileswirht/Downloads/backend/.config/nix/tools.nix",
+      "sha256": "6dd2ce9c03cb653c5fe52f0bc8f8dc7dd91a473902632ba294a90efb09122898",
+      "untouched": true
+    }
+  },
+  "native_packet": {
+    "path": "/private/tmp/sol61-python-workspace-reservation-20261009/native-result.json",
+    "sha256": "3a6fe2b36380987bb730fea665da2c4d3df12c8c09af33ea3ae0b860bbc9bfa8"
+  },
+  "original_failures": [
+    {
+      "bytes": 99116,
+      "path": "/private/tmp/sol61-python-3b69-stability-20261008/gate-00-attempt01/receipt.json",
+      "sha256": "64e2f3a46761b4c86e36ac4fdc591e326eb6bfdd0691646e059a4d43a5020ffc"
+    },
+    {
+      "bytes": 127459,
+      "path": "/private/tmp/sol61-python-3b69-stability-20261008/gate-00-attempt02/receipt.json",
+      "sha256": "a90f040f725a0d7bb6a9fa138b903c7ea441baea729a1b05c40fef866614a743"
+    },
+    {
+      "bytes": 51830,
+      "path": "/private/tmp/sol61-python-3b69-stability-20261008/gate-04-attempt01/receipt.json",
+      "sha256": "b3f89f5c79722ad532bf657a813ada2768d01f5b86e3a9aefb8b11a548139dab"
+    }
+  ],
+  "observer_revalidation": {
+    "bytes": 54557,
+    "path": "/private/tmp/sol61-python-workspace-reservation-20261009/receipt-json-revalidated.json",
+    "sha256": "1e292d8a4c406d20810c52ca7704f46d1ebe6815bc3d1651e85859eb1117085d"
+  },
+  "observer_disclosure": "Original whole Paperless native run exited0; original observer incorrectly counted every indented nested opening brace. Separate raw/SHA/source/tool/fixture/image-bound revalidation applies column-zero root JSON locator and retains all original410-module/two-State/exact-span assertions. Original observer RED retained; no new native execution or compiler was started.",
+  "literal_native_retirement": {
+    "bytes": 16570,
+    "path": "/private/tmp/sol61-python-workspace-reservation-20261009/native10-paperless410-final-retirement.json",
+    "sha256": "291f31b28d2cb50696ed442e4daaf7f91b5b02513879312745b954452b33fd2f"
+  },
+  "sdk_original_source_and_stamp_restoration": {
+    "path": "/private/tmp/sol61-python-canonical4f9059-replay-20261009/sdk-final-return.json",
+    "sha256": "5bb575fa1a2665e3cac801548fa48ed9e599c12b347c03cc4f78b6ae4124a735"
+  },
+  "limitations": [
+    "Combined canonical build/runtime replay remains unrun.",
+    "Linux/Windows native controls and installed CLI/MCP/GUI acceptance remain unrun for this successor.",
+    "Paperless is a native compiler example, not a whole installed-product acceptance run."
+  ]
+}

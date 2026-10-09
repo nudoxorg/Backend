@@ -941,6 +941,106 @@ fn selected_package_root_preserves_real_module_leaf_and_native_call_coordinates(
     Ok(())
 }
 
+#[cfg(any(unix, windows))]
+#[test]
+fn captured_baseline_preserves_native_cross_file_facts_and_unfiltered_diagnostics()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = std::env::temp_dir().join(format!(
+        "nudox-python-captured-baseline-native-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(root.join("src"))?;
+    let sources = [
+        PythonProjectSource {
+            relative_path: "src/api.py",
+            source: "def compute_checksum() -> int:\n    return 'wrong'\n",
+        },
+        PythonProjectSource {
+            relative_path: "src/consumer.py",
+            source: "from api import compute_checksum\n\ndef consume() -> int:\n    return compute_checksum()\n",
+        },
+    ];
+    for source in &sources {
+        std::fs::write(root.join(source.relative_path), source.source)?;
+    }
+    let configuration = "[tool.pyrefly]\npython-platform = \"linux\"\nsearch-path = [\"src\"]\nbaseline = \".pyrefly-baseline.json\"\n";
+    std::fs::write(root.join("pyproject.toml"), configuration)?;
+    let baseline = r#"{"errors":[{"column":12,"path":"src/api.py","name":"bad-return","concise_description":"retained native diagnostic","severity":"error"}]}"#;
+    std::fs::write(root.join(".pyrefly-baseline.json"), baseline)?;
+    let cancelled = AtomicBool::new(false);
+    let checker = NativePythonProjectAuthority::admit()?;
+    #[cfg(unix)]
+    {
+        let alias = root.with_extension("root-alias");
+        std::os::unix::fs::symlink(&root, &alias)?;
+        for spelling in [alias.clone(), alias.join(""), alias.join(".")] {
+            let refusal = checker.analyze_project(
+                &spelling,
+                "paperless-control",
+                &sources,
+                PythonVersion::Python314,
+                publication_control(&cancelled),
+            );
+            assert!(matches!(refusal, Err(CheckerError::PackageRoot { .. })));
+        }
+        std::fs::remove_file(&alias)?;
+    }
+    for _ in 0..2 {
+        let report = checker.analyze_project(
+            &root,
+            "paperless-control",
+            &sources,
+            PythonVersion::Python314,
+            publication_control(&cancelled),
+        )?;
+        let caller = report
+            .module("src/consumer.py")
+            .ok_or("native caller report")?;
+        let position = sources[1]
+            .source
+            .rfind("compute_checksum()")
+            .ok_or("call")?;
+        let symbol = caller
+            .symbols
+            .iter()
+            .find(|symbol| symbol.span.start as usize == position)
+            .ok_or("native call occurrence")?;
+        let SymbolOutcome::Definition { target, .. } = &symbol.outcome else {
+            return Err("captured baseline changed native call binding".into());
+        };
+        assert_eq!(target.relative_path.as_ref(), "src/api.py");
+        assert_eq!(target.name.as_ref(), "compute_checksum");
+        assert_eq!(
+            &sources[0].source[target.name_span.start as usize..target.name_span.end as usize],
+            "compute_checksum"
+        );
+        // Existing raw diagnostics remain unfiltered: admitting baseline policy
+        // bytes does not suppress or manufacture selected-source semantic facts.
+        assert!(
+            report
+                .diagnostics()
+                .iter()
+                .any(
+                    |diagnostic| diagnostic.relative_path.as_ref() == "src/api.py"
+                        && diagnostic.kind.as_ref() == "bad-return"
+                )
+        );
+        report
+            .witness()
+            .validate_current(publication_control(&cancelled))?;
+        std::fs::write(root.join(".pyrefly-baseline.json"), "{\"errors\":[]}")?;
+        assert!(
+            report
+                .witness()
+                .validate_current(publication_control(&cancelled))
+                .is_err()
+        );
+        std::fs::write(root.join(".pyrefly-baseline.json"), baseline)?;
+    }
+    std::fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
 #[test]
 #[ignore = "requires the complete pinned Mealie879b Python package; native authority only"]
 fn pinned_mealie_selected_package_preserves_all464_sources_and_known_call()
