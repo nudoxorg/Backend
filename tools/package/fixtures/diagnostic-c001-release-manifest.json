@@ -1,0 +1,15 @@
+{
+  "asset": "nudox-linux-x86_64-c0016d4f4f.tar.gz",
+  "build_manifest_sha256": "41e957d4f6318dcf2110029d68e229d851fb5f3b7f8904004380eb8a721074b5",
+  "cargo_lock_sha256": "afb3a7518cd1f19b29bee48ec1b3be3f3d888c1ad61dde6e7f8cd4e3976fd731",
+  "minimum_glibc": "2.39",
+  "packaging_manifest_sha256": "63df22ff504313f1e296e40514ccd87d5617422ce63f7a21ee981a30dcf4f5bf",
+  "platform": "linux-x64",
+  "schema": 1,
+  "sha256": "b394e10203d02898b20140f0f9f9869aa8412e6e288fb8d8e25ac01469df7a05",
+  "size_bytes": 133556631,
+  "source_sha": "c0016d4f4fc9b0f0a452c7c9556954e2287948b3",
+  "source_tree": "8e4303f3f26690f137c8ca3701878f4f170d79b2",
+  "target": "x86_64-unknown-linux-gnu",
+  "version": "0.2.0"
+}

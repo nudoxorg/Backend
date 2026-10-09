@@ -1,0 +1,56 @@
+{
+  "schema": "nudox.diagnostic-forgejo-channel.v1",
+  "production_ready": false,
+  "bootstrap": {
+    "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009/install-forgejo-bootstrap-a0ef6ed94b145648.py",
+    "sha256": "a0ef6ed94b1456483ce652809533cdbf007f42c9c8950bad3d67177ce0c87130",
+    "bytes": 13137
+  },
+  "platforms": {
+    "linux-x64": {
+      "status": "diagnostic-preview",
+      "source": "c0016d4f4fc9b0f0a452c7c9556954e2287948b3",
+      "tag": "checkpoint-20261008-c0016d4f4f-linux-x64",
+      "known_failures": [
+        "Ubuntu 24.04+ / glibc 2.39+ only; October 8 diagnostic binaries.",
+        "Original GNU install/reinstall passed; packed native runtime control timed out.",
+        "Fresh whole-application acceptance remains open; October 9 Rust repairs are not included."
+      ],
+      "installer": {
+        "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/checkpoint-20261008-c0016d4f4f-linux-x64/install-linux-x64-8baa4a60be98ee4e.py",
+        "sha256": "8baa4a60be98ee4e41e26c3b1cf0d4800e8ec4b8c80758128f38c19a06c799c9",
+        "bytes": 46973
+      },
+      "archive": {
+        "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/checkpoint-20261008-c0016d4f4f-linux-x64/nudox-linux-x86_64-c0016d4f4f.tar.gz",
+        "sha256": "b394e10203d02898b20140f0f9f9869aa8412e6e288fb8d8e25ac01469df7a05",
+        "bytes": 133556631
+      },
+      "manifest": {
+        "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/checkpoint-20261008-c0016d4f4f-linux-x64/release-manifest-linux-x64.json",
+        "sha256": "384ab3802efd256752f39fd8e3d79ace7af9e3ccf72797c71577327cb2535b24",
+        "bytes": 698
+      }
+    },
+    "macos-arm64": {
+      "status": "diagnostic-preview",
+      "source": "a659d5d1819078b3c0046937191a9b54a76b1dfb",
+      "tag": "checkpoint-20261006-a659d5d181-macos-arm64",
+      "known_failures": [
+        "October 6 diagnostic binaries; October 9 Rust repairs are not included.",
+        "Existing HTTPie read tools were verified; fresh large-project indexing is not established.",
+        "Semantic embeddings are unconfigured; HTTPie history exceeds this binary row limit."
+      ],
+      "installer": {
+        "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/checkpoint-20261006-a659d5d181-macos-arm64/install-macos-arm64-82f71f98a05a2b13.py",
+        "sha256": "82f71f98a05a2b13e05afd7185e35c5f8d252b9973ab4ce6d32ab22688794f25",
+        "bytes": 22094
+      },
+      "archive": {
+        "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/checkpoint-20261006-a659d5d181-macos-arm64/nudox-macos-arm64-a659d5d181.tar.gz",
+        "sha256": "f88b841030699ae277afe697b6c92e98dfbb09a815f40388e3d2fbee0661e110",
+        "bytes": 70309994
+      }
+    }
+  }
+}
