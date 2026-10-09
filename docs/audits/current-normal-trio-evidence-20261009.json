@@ -1,0 +1,53 @@
+{
+  "schema": "nudox.root.current99091.normal3.raw-audit.v1",
+  "utc": "2026-10-09T10:13:35.636979+00:00",
+  "source": {
+    "cargo_lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+    "clean": true,
+    "commit": "99091c1f7e5c46047f738b87dd3cbc16c1c6cda3",
+    "tree": "62540df9e9e7ce45753be18d5c502627f326bc5c"
+  },
+  "archive_sha256": "674536e1f6e4284dcf60fd8a662f1a2649f3e69b0bbf37c91fecc5876aa1f5f0",
+  "all_25_raw_regular_members_rehashed": true,
+  "all_18028_Git_blob_entries_bytes_modes_oids_rehashed": true,
+  "all_18029_job_source_inputs_compared": true,
+  "actual_single_normal_Cargo_producer": {
+    "pid": 7686,
+    "exit": 0,
+    "accepted": true
+  },
+  "raw_Cargo_artifacts": 955,
+  "complete_output_closure": 1727,
+  "fresh_changed_workspace_libraries": 9,
+  "fresh_normal_root_binaries": 3,
+  "returned_owner_stamp_and_kernel_wait_receipts_validated": true,
+  "remote_images_independent_rehash_pending": false,
+  "not_product_runtime_or_release_validation": true,
+  "remote_images_independent_SSH_rehash": {
+    "host": "h16001mac",
+    "exit": 0,
+    "bytes_sha256_device_inode_mode_exact": true,
+    "images": [
+      {
+        "name": "backend-cli",
+        "bytes": 224785680,
+        "sha256": "32513c257410bff291827238d41eafffb2c1f680034138b2bf05c6c7c3fd5a97",
+        "inode": 23073635
+      },
+      {
+        "name": "backend-locald",
+        "bytes": 696660112,
+        "sha256": "0fe7edaf0993abf5e524b60be006f789ba3da7b4e5de0526c7f8e70d4f4de3c6",
+        "inode": 23073667
+      },
+      {
+        "name": "backend-mcp",
+        "bytes": 165943392,
+        "sha256": "22f5d18864c202992b1c15ce361d433b89576c39e6619e090bd34bc6b5e1c0aa",
+        "inode": 23073674
+      }
+    ],
+    "device": 16777230,
+    "mode": 365
+  }
+}
