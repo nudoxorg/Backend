@@ -8,7 +8,7 @@
 //! a node that cannot be matched says so with its tag rather than pretending
 //! to be a name.
 
-use crate::identity::{Identity, IdentityKey, KeyTag};
+use crate::identity::{Identity, KeyTag};
 use backend_library::{DeclarationKind, OutlineExtent, OutlineNode, SymbolKey};
 
 use crate::page::Truncation;
@@ -166,11 +166,6 @@ pub fn row_resolver(
     move |symbol| {
         rows.iter()
             .find(|row| row.id == backend_library::RowId::Symbol(symbol))
-            .map(|row| {
-                (
-                    Identity::parse_with_key(&row.label, IdentityKey::Symbol(symbol)),
-                    row.kind,
-                )
-            })
+            .map(|row| (Identity::from_row(row), row.kind))
     }
 }

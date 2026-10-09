@@ -1,4 +1,4 @@
-//! Typed identity parsed from the engine's coordinate spelling.
+//! Typed producer-row identity with retained coordinate display spelling.
 //!
 //! The engine addresses rows with four closed spellings:
 //!
@@ -17,7 +17,9 @@
 //! and never a guess.
 
 use crate::language::Language;
-use backend_library::{PackageKey, RowId, SymbolKey, encode_id};
+use backend_library::{
+    Document, PackageKey, Row, RowId, SourceAvailability, SymbolKey, encode_id, package_key,
+};
 use core::fmt;
 use core::num::NonZeroU32;
 
@@ -27,10 +29,11 @@ const SEPARATOR: &str = "::";
 /// Separator rendered between the parts of a readable identity trail.
 pub(crate) const TRAIL: &str = " › ";
 
-/// The exact coordinate text the engine accepts for one row.
+/// Retained coordinate or producer display text for one row.
 ///
-/// This is the value an agent passes back. It is never abbreviated, never
-/// wrapped, and never truncated by any renderer in this crate.
+/// Display labels can collide; this text alone does not prove a unique locator.
+/// The selected key retains row identity independently of its spelling. The
+/// text is never abbreviated, wrapped, or truncated by a renderer in this crate.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Coordinate(String);
 
@@ -317,11 +320,13 @@ impl From<RowId> for IdentityKey {
     }
 }
 
-/// Which closed coordinate spelling one identity was parsed from.
+/// The row plane or locally admitted coordinate decoration of an identity.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum IdentityShape {
     /// The project root itself.
     Package,
+    /// A selected symbol whose display text supplies no local coordinate authority.
+    Symbol,
     /// One source file or module inside a project.
     Module,
     /// One declaration at an exact file and line.
@@ -334,7 +339,7 @@ pub enum IdentityShape {
     Opaque,
 }
 
-/// One parsed row identity.
+/// One presentation identity bound to its row plane and selected key.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Identity {
     coordinate: Coordinate,
@@ -348,6 +353,125 @@ pub struct Identity {
 }
 
 impl Identity {
+    /// Lowers a producer row without promoting display text into a package.
+    ///
+    /// The row plane and selected key are authoritative. Unattached symbols
+    /// remain symbols even when their display happens to resemble a path or
+    /// coordinate; only captured source fields supply their source location.
+    #[must_use]
+    pub fn from_row(row: &Row) -> Self {
+        match row.id {
+            RowId::Package(key) => Self::from_package(&row.label, key),
+            RowId::Object(_) => {
+                Self::display(&row.label, IdentityShape::Opaque, IdentityKey::Absent)
+            }
+            RowId::Symbol(symbol) => {
+                let mut local = row
+                    .package
+                    .and_then(|package| Self::parse_in_package(&row.label, package));
+                let project = local.as_mut().and_then(|identity| identity.project.take());
+                let mut identity = Self::symbol(&row.label, symbol, &row.source, local);
+                // A local-looking spelling cannot establish membership by itself.
+                identity.project = project;
+                identity
+            }
+        }
+    }
+
+    /// Binds a document to its selected native symbol and actual source facts.
+    /// A source-less display never becomes a package or an invented source site.
+    #[must_use]
+    pub fn from_document(label: &str, document: &Document) -> Self {
+        let mut identity = Self::symbol(label, document.symbol, &document.location, None);
+        // A document's source site does not certify package arrangement membership.
+        identity.project = None;
+        identity
+    }
+
+    /// Retains a typed package operand without interpreting delimiters in its path.
+    #[must_use]
+    pub fn from_package(label: &str, key: PackageKey) -> Self {
+        Self {
+            coordinate: Coordinate::new(label),
+            shape: IdentityShape::Package,
+            project: Some(ProjectRef::new(label)),
+            path: None,
+            line: None,
+            trail: SymbolTrail::default(),
+            key: IdentityKey::Package(key),
+            manifest_name: None,
+        }
+    }
+
+    fn display(label: &str, shape: IdentityShape, key: IdentityKey) -> Self {
+        Self {
+            coordinate: Coordinate::new(label),
+            shape,
+            project: None,
+            path: None,
+            line: None,
+            trail: SymbolTrail(Box::new([SymbolSegment::new(label)])),
+            key,
+            manifest_name: None,
+        }
+    }
+
+    fn parse_in_package(label: &str, package: PackageKey) -> Option<Self> {
+        // The delimiter belongs to display syntax. Only the actual package
+        // key can identify its boundary when the package root itself contains it.
+        let mut candidates = label.match_indices(SEPARATOR).filter_map(|(at, _)| {
+            let root = &label[..at];
+            (package_key(root) == package).then_some((root, &label[at + SEPARATOR.len()..]))
+        });
+        let (root, tail) = candidates.next()?;
+        if candidates.next().is_some() {
+            return None;
+        }
+        let mut identity = parse_tail(tail);
+        identity.coordinate = Coordinate::new(label);
+        identity.project = Some(ProjectRef::new(root));
+        Some(identity)
+    }
+
+    fn symbol(
+        label: &str,
+        symbol: SymbolKey,
+        source: &SourceAvailability,
+        local: Option<Self>,
+    ) -> Self {
+        let key = IdentityKey::Symbol(symbol);
+        let identity = if local.is_some() || source.file_path().is_some() {
+            let mut parsed = local.unwrap_or_else(|| Self::parse(label));
+            parsed.key = key;
+            if matches!(
+                parsed.shape,
+                IdentityShape::Package | IdentityShape::Opaque | IdentityShape::External
+            ) {
+                Self::display(label, IdentityShape::Symbol, key)
+            } else {
+                let mut parsed = parsed;
+                // Keep a module's readable name when its source site is absent.
+                // The retained name is display text, not a fabricated file path.
+                if parsed.shape == IdentityShape::Module && source.file_path().is_none() {
+                    parsed.trail = SymbolTrail(Box::new([SymbolSegment::new(parsed.name())]));
+                }
+                parsed
+            }
+        } else {
+            Self::display(label, IdentityShape::Symbol, key)
+        };
+        identity.with_source_availability(source)
+    }
+
+    /// Replaces display-derived location fields with the producer's actual source facts.
+    pub(crate) fn with_source_availability(mut self, source: &SourceAvailability) -> Self {
+        self.path = source.file_path().map(PackagePath::new);
+        self.line = source
+            .captured()
+            .and_then(|site| LineNumber::new(site.start_line()));
+        self
+    }
+
     /// Parses one engine coordinate into its typed parts.
     #[must_use]
     pub fn parse(label: &str) -> Self {
@@ -409,7 +533,10 @@ impl Identity {
         self
     }
 
-    /// Returns the exact coordinate the engine accepts for this row.
+    /// Returns the retained coordinate or producer display text verbatim.
+    ///
+    /// Display text can name multiple rows. [`Self::key`] retains the selected
+    /// identity; this string alone does not establish a unique locator.
     #[must_use]
     pub const fn coordinate(&self) -> &Coordinate {
         &self.coordinate

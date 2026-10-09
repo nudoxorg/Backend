@@ -26,6 +26,7 @@ const PROJECT: &str = "/abs/polyglot";
 const MODULE: &str = "/abs/polyglot::src/lib.rs";
 const DECLARATION: &str = "/abs/polyglot::src/lib.rs:2::ferris";
 const MISSING: &str = "/abs/polyglot::src/lib.rs:999::nothing";
+const DECLARATION_SOURCE: &str = "pub fn ferris() -> Beacon {\n    Beacon\n}";
 
 // ---------------------------------------------------------------------------
 // the fixture engine
@@ -147,6 +148,16 @@ fn module_row() -> Row {
         MODULE,
     )
     .with_kind(DeclarationKind::Module)
+    .with_signature("pub mod lib")
+    .with_document(Vec::<Fragment>::new())
+    .with_source(SourceLocation::new("src/lib.rs", 1).expect("one-based module location"))
+    .with_excerpt(
+        SourceExcerpt::captured(
+            format!("pub mod lib {{\n{DECLARATION_SOURCE}\n}}"),
+            SourceExcerptExtent::Complete,
+        )
+        .expect("bounded enclosing module excerpt"),
+    )
 }
 
 fn declaration_row() -> Row {
@@ -163,7 +174,7 @@ fn declaration_row() -> Row {
     .with_source(SourceLocation::new("src/lib.rs", 2).expect("one-based location"))
     .with_excerpt(
         SourceExcerpt::captured(
-            "pub fn ferris() -> Beacon {\n    Beacon\n}",
+            DECLARATION_SOURCE,
             SourceExcerptExtent::Complete,
         )
         .expect("bounded excerpt"),
@@ -172,7 +183,7 @@ fn declaration_row() -> Row {
 
 fn document() -> Document {
     let mut document = Document::new(
-        symbol_key(MODULE),
+        symbol_key(DECLARATION),
         view_state_root(&[]),
         [Fragment::Text("Lights the beacon.".to_owned())],
     )
@@ -181,14 +192,56 @@ fn document() -> Document {
     ))
     .with_excerpt(
         SourceExcerpt::captured(
-            "pub fn ferris() -> Beacon {\n    Beacon\n}",
+            DECLARATION_SOURCE,
             SourceExcerptExtent::Complete,
         )
         .expect("bounded excerpt"),
     );
-    document.symbol = symbol_key(MODULE);
-    document.signature = Some("pub mod lib".to_owned());
+    document.symbol = symbol_key(DECLARATION);
+    document.signature = Some("pub fn ferris() -> Beacon".to_owned());
     document
+}
+
+fn module_document() -> Document {
+    let row = module_row();
+    let mut document = Document::new(symbol_key(MODULE), view_state_root(&[]), row.document)
+        .with_location(row.source)
+        .with_excerpt(row.excerpt);
+    document.signature = row.signature;
+    document
+}
+
+#[test]
+fn fixture_document_and_rows_retain_their_selected_keys_and_captured_sites() {
+    let document = document();
+    let declaration = declaration_row();
+    assert_eq!(document.symbol, symbol_key(DECLARATION));
+    assert_eq!(declaration.id, RowId::Symbol(document.symbol));
+    assert_eq!(declaration.label, DECLARATION);
+    assert_eq!(declaration.parent, Some(symbol_key(MODULE)));
+    assert_eq!(declaration.signature, document.signature);
+    assert_eq!(declaration.source.captured(), document.location.captured());
+    assert_eq!(declaration.excerpt, document.excerpt);
+    let module = module_row();
+    let module_document = module_document();
+    assert_eq!(module.id, RowId::Symbol(module_document.symbol));
+    assert_eq!(module.signature, module_document.signature);
+    assert_eq!(module.source, module_document.location);
+    assert_eq!(module.excerpt, module_document.excerpt);
+    assert_eq!(
+        module.excerpt.text().expect("captured enclosing module"),
+        format!("pub mod lib {{\n{DECLARATION_SOURCE}\n}}")
+    );
+    for (row, coordinate, line) in [
+        (module_row(), MODULE, 1),
+        (declaration, DECLARATION, 2),
+    ] {
+        assert_eq!(row.id, RowId::Symbol(symbol_key(coordinate)));
+        assert_eq!(row.package, Some(package_key(PROJECT)));
+        let source = row.source.captured().expect("fixture captured its source");
+        assert_eq!(source.path(), "src/lib.rs");
+        assert_eq!(source.start_line(), line);
+    }
 }
 
 fn unreachable() -> ClientError {
@@ -238,9 +291,27 @@ impl Engine for Fake {
                         backend_library::CommandFailure::NotFound,
                     ));
                 }
-                CommandReply::Document(self.document_override.clone().unwrap_or_else(document))
+                CommandReply::Document(self.document_override.clone().unwrap_or_else(|| {
+                    if at == MODULE {
+                        module_document()
+                    } else {
+                        document()
+                    }
+                }))
             }
-            Probe::Related(at) | Probe::Graph(at) => {
+            Probe::Related(at) => {
+                if at == MISSING {
+                    return Err(ClientError::CommandFailed(
+                        backend_library::CommandFailure::NotFound,
+                    ));
+                }
+                CommandReply::Graph(snapshot(vec![if at == MODULE {
+                    module_row()
+                } else {
+                    declaration_row()
+                }]))
+            }
+            Probe::Graph(at) => {
                 if at == MISSING {
                     return Err(ClientError::CommandFailed(
                         backend_library::CommandFailure::NotFound,
@@ -2400,9 +2471,12 @@ fn a_document_call_returns_the_markdown_page_and_the_typed_answer() {
         lines.get(2).copied(),
         Some("`/abs/polyglot::src/lib.rs:2::ferris`")
     );
-    assert!(text.contains("```rust\npub mod lib\n```"), "{text}");
+    assert!(text.contains("```rust\npub fn ferris() -> Beacon\n```"), "{text}");
     assert!(text.contains("Lights the beacon."), "{text}");
-    assert!(text.contains("## members"), "{text}");
+    assert!(
+        !text.contains("## members"),
+        "the function has no child declarations: {text}"
+    );
     assert!(text.contains("## source"), "{text}");
     assert!(text.contains("   2 pub fn ferris() -> Beacon {"), "{text}");
     assert!(!text.contains('|'), "no Markdown table may appear: {text}");
@@ -2412,11 +2486,16 @@ fn a_document_call_returns_the_markdown_page_and_the_typed_answer() {
         DECLARATION
     );
     assert_eq!(
+        result["structuredContent"]["identity"]["semantic_data"]["value"],
+        json!(symbol_key(DECLARATION).as_bytes()),
+        "the requested declaration, document, and related row select the same native key"
+    );
+    assert_eq!(
         result["structuredContent"]["identity"]["trail"],
         "polyglot › src/lib.rs:2 › ferris"
     );
     assert_eq!(
-        result["structuredContent"]["signature"], "pub mod lib",
+        result["structuredContent"]["signature"], "pub fn ferris() -> Beacon",
         "a document's default projection must include the code it was requested to show"
     );
     assert_eq!(result["structuredContent"]["source"]["extent"], "complete");
@@ -2428,6 +2507,86 @@ fn a_document_call_returns_the_markdown_page_and_the_typed_answer() {
                 .any(|line| line == "pub fn ferris() -> Beacon {")),
         "the default document projection lost its bounded source excerpt: {result}"
     );
+}
+
+#[test]
+fn a_module_document_call_lists_its_actual_function_member() {
+    let mut server = ready(Fake::default());
+    let result = call(
+        &mut server,
+        "backend.document",
+        &json!({ "coordinate": MODULE }),
+    );
+    assert_eq!(result["isError"], false);
+    let text = text_of(&result);
+    let lines = text.lines().collect::<Vec<_>>();
+    assert_eq!(lines.first().copied(), Some("# polyglot › src/lib.rs:1"));
+    let meta = format!(
+        "module · rust · key {} · src/lib.rs:1",
+        backend_present::KeyTag::from_key(symbol_key(MODULE).as_bytes())
+    );
+    assert_eq!(
+        lines.get(1).copied(),
+        Some(meta.as_str())
+    );
+    assert_eq!(lines.get(2).copied(), Some("`/abs/polyglot::src/lib.rs`"));
+    assert!(text.contains("```rust\npub mod lib\n```"), "{text}");
+    assert!(text.contains("## members"), "{text}");
+    assert!(text.contains("ferris"), "{text}");
+    assert!(text.contains("## source"), "{text}");
+    assert!(text.contains("   1 pub mod lib {"), "{text}");
+    assert!(text.contains("   2 pub fn ferris() -> Beacon {"), "{text}");
+    let page = &result["structuredContent"];
+    assert_eq!(page["answer"], "page");
+    assert_eq!(page["kind"], "module");
+    assert_eq!(page["signature"], "pub mod lib");
+    assert!(
+        page.get("relations").is_none(),
+        "outline members are not extra graph relations"
+    );
+    assert!(page.get("prose").is_none(), "the module fixture has no documentation");
+    assert_eq!(page["identity"]["coordinate"], MODULE);
+    assert_eq!(page["identity"]["project"], PROJECT);
+    assert_eq!(page["identity"]["path"], "src/lib.rs");
+    assert_eq!(page["identity"]["line"], 1);
+    assert_eq!(
+        page["identity"]["semantic_data"]["value"],
+        json!(symbol_key(MODULE).as_bytes())
+    );
+    assert_eq!(page["source"]["path"], "src/lib.rs");
+    assert_eq!(page["source"]["line"], 1);
+    assert_eq!(page["source"]["extent"], "complete");
+    let module_source = format!("pub mod lib {{\n{DECLARATION_SOURCE}\n}}");
+    assert_eq!(
+        page["source"]["lines"],
+        json!(module_source.lines().collect::<Vec<_>>())
+    );
+    let groups = page["members"].as_array().expect("actual module member groups");
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0]["kind"], "function");
+    let members = groups[0]["members"].as_array().expect("actual function members");
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0]["identity"]["coordinate"], DECLARATION);
+    assert_eq!(members[0]["identity"]["name"], "ferris");
+    assert_eq!(members[0]["identity"]["project"], PROJECT);
+    assert_eq!(members[0]["identity"]["path"], "src/lib.rs");
+    assert_eq!(members[0]["identity"]["line"], 2);
+    assert_eq!(
+        members[0]["identity"]["semantic_data"]["value"],
+        json!(symbol_key(DECLARATION).as_bytes())
+    );
+    assert_eq!(members[0]["signature"], "pub fn ferris() -> Beacon");
+    let source = call(
+        &mut server,
+        "backend.source",
+        &json!({ "coordinate": MODULE, "detail": "full" }),
+    );
+    assert_eq!(source["isError"], false);
+    assert_eq!(
+        source["structuredContent"]["identity"]["semantic_data"]["value"],
+        json!(symbol_key(MODULE).as_bytes())
+    );
+    assert_eq!(source["structuredContent"]["source"], page["source"]);
 }
 
 #[test]

@@ -4,7 +4,8 @@
 
 use allocation_counter::measure;
 use backend_library::{
-    Basis, Coverage, DeclarationKind, Row, RowId, object_version, symbol_key, view_state_root,
+    Basis, Coverage, DeclarationKind, Row, RowId, SourceLocation, object_version, package_key,
+    symbol_key, view_state_root,
 };
 use backend_library::{HealthReport, Library, OutlineExtent, OutlineNode};
 use backend_present::{
@@ -671,12 +672,17 @@ fn worst_records() -> Answer {
     let basis = basis();
     let rows = (0..200)
         .map(|index| {
-            let row = Row::new(
+            let row = Row::in_package(
                 RowId::Symbol(symbol_key(&format!("typed-budget-{index}"))),
                 basis,
+                package_key("/workspace/project"),
                 format!(
                     "/workspace/project::src/module_{index}/declaration_{index}:1::declaration_{index}"
                 ),
+            )
+            .with_source(
+                SourceLocation::new(format!("src/module_{index}/declaration_{index}"), 1)
+                    .expect("fixture captured its one-based source location"),
             )
             .with_kind(DeclarationKind::Function)
             .with_signature("pub fn declaration() -> Result<(), Error>");
@@ -695,10 +701,15 @@ fn worst_records() -> Answer {
 
 fn unicode_rtl_records() -> Answer {
     let basis = basis();
-    let row = Row::new(
+    let row = Row::in_package(
         RowId::Symbol(symbol_key("/workspace/مرحبا::src/שלום.rs:7::函数_東京")),
         basis,
+        package_key("/workspace/مرحبا"),
         "/workspace/مرحبا::src/שלום.rs:7::函数_東京",
+    )
+    .with_source(
+        SourceLocation::new("src/שלום.rs", 7)
+            .expect("fixture captured its one-based Unicode source location"),
     )
     .with_kind(DeclarationKind::Function)
     .with_signature("pub fn שלום_東京() -> Result<(), Ошибка>");

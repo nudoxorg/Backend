@@ -66,6 +66,8 @@ mod fault;
 mod glyph;
 mod grammar;
 mod identity;
+#[cfg(test)]
+mod identity_row_tests;
 mod language;
 mod outline;
 #[cfg(test)]

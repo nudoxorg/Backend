@@ -726,14 +726,22 @@ mod tests {
         );
         let rows = (0..200)
             .map(|index| {
-                let row = backend_library::Row::new(
+                let row = backend_library::Row::in_package(
                     backend_library::RowId::Symbol(backend_library::symbol_key(&format!(
                         "typed-budget-{index}"
                     ))),
                     basis,
+                    backend_library::package_key("/workspace/project"),
                     format!(
                         "/workspace/project::src/module_{index}/declaration_{index}:1::declaration_{index}"
                     ),
+                )
+                .with_source(
+                    backend_library::SourceLocation::new(
+                        format!("src/module_{index}/declaration_{index}"),
+                        1,
+                    )
+                    .expect("fixture captured its one-based source location"),
                 )
                 .with_kind(backend_library::DeclarationKind::Function)
                 .with_signature("pub fn declaration() -> Result<(), Error>");
@@ -778,6 +786,40 @@ mod tests {
             .expect_err("an oversized complete page is refused before allocation");
         assert_eq!(refused.budget, 48 * 1024);
         assert_eq!(refused.bytes, 134_052);
+    }
+
+    #[test]
+    fn local_looking_budget_row_without_evidence_keeps_its_selected_symbol_identity() {
+        let basis = backend_library::Basis::new(
+            backend_library::view_state_root(&[]),
+            backend_library::object_version(&[]),
+        );
+        let key = backend_library::symbol_key("unattached-budget-row");
+        let label = "/workspace/project::src/module_0/declaration_0:1::declaration_0";
+        let row = backend_library::Row::new(backend_library::RowId::Symbol(key), basis, label);
+        let answer = Answer::Records(Box::new(crate::record::RecordList::new(
+            "declaration_0",
+            crate::coverage::CoverageLine::new(&[backend_library::Coverage::Complete], Some(1)),
+            vec![crate::record::Record::from_row(&row)],
+        )));
+        let encoded = encode_answer(&answer, Detail::Full, None, 48 * 1024)
+            .expect("one unattached symbol fits");
+        let value: Value = serde_json::from_slice(&encoded.bytes).expect("actual typed JSON");
+        let identity = &value["records"][0]["identity"];
+        assert_eq!(identity["shape"], "symbol");
+        assert_eq!(identity["coordinate"], label);
+        assert_eq!(identity["name"], label);
+        assert_eq!(
+            identity["semantic_data"],
+            serde_json::json!({
+                "kind": "selected-symbol-id", "value": key.as_bytes(),
+            })
+        );
+        assert!(identity.get("project").is_none());
+        assert!(identity.get("path").is_none());
+        assert!(identity.get("line").is_none());
+        assert_eq!(row.package, None);
+        assert_eq!(row.source, backend_library::SourceAvailability::NotCaptured);
     }
 
     #[test]
@@ -1029,14 +1071,22 @@ mod tests {
         );
         let rows = (0..200)
             .map(|index| {
-                let row = backend_library::Row::new(
+                let row = backend_library::Row::in_package(
                     backend_library::RowId::Symbol(backend_library::symbol_key(&format!(
                         "typed-budget-{index}"
                     ))),
                     basis,
+                    backend_library::package_key("/workspace/project"),
                     format!(
                         "/workspace/project::src/module_{index}/declaration_{index}:1::declaration_{index}"
                     ),
+                )
+                .with_source(
+                    backend_library::SourceLocation::new(
+                        format!("src/module_{index}/declaration_{index}"),
+                        1,
+                    )
+                    .expect("fixture captured its one-based source location"),
                 )
                 .with_kind(backend_library::DeclarationKind::Function)
                 .with_signature("pub fn declaration() -> Result<(), Error>");

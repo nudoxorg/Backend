@@ -113,7 +113,7 @@ pub struct IdentityDto {
     pub trail: String,
     /// The declaration's own name.
     pub name: String,
-    /// Which closed spelling this coordinate uses.
+    /// The typed row plane or locally admitted coordinate decoration.
     pub shape: String,
     /// The owning project's absolute root.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -168,6 +168,7 @@ impl IdentityDto {
 fn shape_name(identity: &Identity) -> String {
     match identity.shape() {
         crate::identity::IdentityShape::Package => "package",
+        crate::identity::IdentityShape::Symbol => "symbol",
         crate::identity::IdentityShape::Module => "module",
         crate::identity::IdentityShape::Declaration => "declaration",
         crate::identity::IdentityShape::Semantic => "semantic",

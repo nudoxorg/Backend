@@ -16,7 +16,7 @@
 use crate::coverage::CoverageLine;
 use crate::fault::Fault;
 use crate::glyph::{RelationDirection, RelationLabel, relation_label};
-use crate::identity::{Identity, IdentityKey, KeyTag, LineNumber, PackagePath, ProjectRef};
+use crate::identity::{Identity, KeyTag, LineNumber, PackagePath, ProjectRef};
 use crate::language::Language;
 use crate::outline::{OutlineEntry, OutlineTree, row_resolver};
 use crate::page::{
@@ -60,21 +60,17 @@ pub fn page_from_document_with_graph_relations(
     graph_relations: &[GraphRelation],
     notes: Vec<Fault>,
 ) -> Page {
-    // A semantic coordinate is content-addressed and spells no path, so the
-    // page reads its path and line from the document's captured site, as
-    // `Record::from_row` does for the same row; otherwise every compiler
-    // backed page would render `language: unknown`.
-    let captured = document.location.captured();
-    let identity = Identity::parse_with_key(coordinate, IdentityKey::Symbol(document.symbol))
-        .with_captured_source(
-            captured.map(backend_library::SourceLocation::path),
-            captured.map(backend_library::SourceLocation::start_line),
-        );
     // The admitted document carries the actual selected identity for both
     // structural and compiler-backed rows. A repeated coordinate cannot
     // replace that identity or select another row's members and graph edges.
     let centre = document.symbol;
     let own = members.iter().find(|row| row.id == RowId::Symbol(centre));
+    let identity = own
+        .map_or_else(
+            || Identity::from_document(coordinate, document),
+            Identity::from_row,
+        )
+        .with_source_availability(&document.location);
     let language = page_language(&identity, members, centre);
     let source = source_from(&identity, &document.location, &document.excerpt);
     let kind = own.and_then(|row| row.kind);
@@ -101,9 +97,7 @@ fn page_language(identity: &Identity, rows: &[Row], symbol: SymbolKey) -> Langua
     }
     rows.iter()
         .find(|row| row.id == RowId::Symbol(symbol))
-        .map_or(Language::Unknown, |row| {
-            Identity::parse(&row.label).language()
-        })
+        .map_or(Language::Unknown, |row| Identity::from_row(row).language())
 }
 
 fn source_from(
@@ -164,15 +158,9 @@ fn site_from(identity: &Identity, availability: &SourceAvailability) -> Option<S
     }
 }
 
-/// One row's identity, with the source site its producer captured when the
-/// coordinate itself spells none (the same derivation `Record::from_row`
-/// uses, so a member or relation names the path a search result names).
+/// Uses the same typed row projection for records, members and relations.
 fn row_identity(row: &Row) -> Identity {
-    let captured = row.source.captured();
-    Identity::parse_with_key(&row.label, row.id.into()).with_captured_source(
-        captured.map(backend_library::SourceLocation::path),
-        captured.map(backend_library::SourceLocation::start_line),
-    )
+    Identity::from_row(row)
 }
 
 fn member_groups(rows: &[Row], parent: SymbolKey) -> Box<[MemberGroup]> {
@@ -333,7 +321,7 @@ pub fn shelf_from_root(root: &ViewRoot, revision: KeyTag) -> Shelf {
 fn language_counts(rows: &[Row]) -> BTreeMap<String, BTreeMap<Language, u64>> {
     let mut counts: BTreeMap<String, BTreeMap<Language, u64>> = BTreeMap::new();
     for row in rows {
-        let identity = Identity::parse(&row.label);
+        let identity = Identity::from_row(row);
         let Some(project) = identity.project() else {
             continue;
         };
@@ -403,7 +391,7 @@ fn shelf_entry(row: &Row, counts: &BTreeMap<String, BTreeMap<Language, u64>>) ->
 /// line that said `ready · 18 row(s)`. The owner's own [`RowState`] is the
 /// authority, and it is the only thing consulted here.
 fn package_identity(row: &Row) -> Identity {
-    let identity = Identity::parse_with_key(&row.label, row.id.into());
+    let identity = Identity::from_row(row);
     if matches!(row.id, backend_library::RowId::Package(_)) {
         row.signature
             .as_deref()
@@ -445,7 +433,7 @@ pub fn outline_tree(package_label: &str, outline: &Outline, rows: &[Row]) -> Out
         .map(|root| OutlineEntry::resolve(root, &mut resolver))
         .collect::<Vec<_>>();
     OutlineTree::new(
-        Identity::parse_with_key(package_label, IdentityKey::Package(outline.package)),
+        Identity::from_package(package_label, outline.package),
         roots,
         outline.extent,
     )

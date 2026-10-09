@@ -476,7 +476,15 @@ fn page(engine: &mut dyn Engine, coordinate: &str) -> Result<Page, Fault> {
     };
     let mut notes = Vec::with_capacity(2);
     let relation_rows = probe_rows(engine, coordinate, &mut notes);
-    let members = probe_members(engine, coordinate, &mut notes);
+    let identity = relation_rows
+        .rows
+        .iter()
+        .find(|row| row.id == backend_library::RowId::Symbol(document.symbol))
+        .map_or_else(
+            || Identity::from_document(coordinate, &document),
+            Identity::from_row,
+        );
+    let members = probe_members(engine, &identity, &mut notes);
     Ok(page_from_document_with_graph_relations(
         coordinate,
         &document,
@@ -682,8 +690,8 @@ fn probe_rows(engine: &mut dyn Engine, coordinate: &str, notes: &mut Vec<Fault>)
 }
 
 /// Fetches the owning package's flat outline so members can be named.
-fn probe_members(engine: &mut dyn Engine, coordinate: &str, notes: &mut Vec<Fault>) -> Vec<Row> {
-    let Some(project) = Identity::parse(coordinate).project().cloned() else {
+fn probe_members(engine: &mut dyn Engine, identity: &Identity, notes: &mut Vec<Fault>) -> Vec<Row> {
+    let Some(project) = identity.project() else {
         return Vec::new();
     };
     match outline_rows(engine, project.root()) {
