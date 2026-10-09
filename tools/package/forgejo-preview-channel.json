@@ -2,9 +2,9 @@
   "schema": "nudox.diagnostic-forgejo-channel.v1",
   "production_ready": false,
   "bootstrap": {
-    "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009/install-forgejo-bootstrap-412f30b8bf875338.py",
-    "sha256": "412f30b8bf875338f384dba932159fbc5026408fbf4fe728faba8cf42ebf8039",
-    "bytes": 12705
+    "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009/install-forgejo-bootstrap-a0ef6ed94b145648.py",
+    "sha256": "a0ef6ed94b1456483ce652809533cdbf007f42c9c8950bad3d67177ce0c87130",
+    "bytes": 13137
   },
   "platforms": {
     "linux-x64": {

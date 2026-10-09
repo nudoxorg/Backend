@@ -71,6 +71,7 @@ def mac_fixture(root):
 class Tests(unittest.TestCase):
     def test_default_channel_and_unchanged_platform_library_pins(self):
         boot.validate_channel(channel())
+        boot.admit_libraries(channel())
         mac = (ROOT / "install_macos_preview.py").read_bytes()
         linux = (ROOT / "install_linux.py").read_text().replace('PINNED_RELEASE_TAG = ""',
                 'PINNED_RELEASE_TAG = "checkpoint-20261008-c0016d4f4f-linux-x64"').replace('PINNED_MANIFEST_SHA256 = ""',
@@ -123,6 +124,14 @@ class Tests(unittest.TestCase):
             self.assertEqual(boot.platform_key(system, machine), key)
         for system, machine in [("Linux", "arm64"), ("Darwin", "x86_64"), ("Windows", "amd64")]:
             with self.assertRaises(boot.InstallError): boot.platform_key(system, machine)
+
+    def test_new_library_envelope_requires_new_bootstrap_before_library_admission(self):
+        value = channel(); entry = value["platforms"]["macos-arm64"]
+        entry["installer"].update(sha256="b" * 64, bytes=23000,
+                url=boot.release_url(entry["tag"], "install-macos-arm64-" + "b" * 16 + ".py"))
+        boot.validate_channel(value)
+        with self.assertRaisesRegex(boot.InstallError, "reviewed bytes"):
+            boot.admit_libraries(value)
 
     def test_streamed_private_file_matches_digest_and_bounded_read(self):
         body = b"x" * 150000
@@ -261,6 +270,60 @@ urllib.request.build_opener=lambda *handlers: Opener()
             self.assertIn(entry["installer"]["url"], requests)
             self.assertIn(entry["archive"]["url"], requests)
             self.assertEqual(json.loads((prefix / "lib/nudox/current/.installed-release.json").read_text())["source_sha"], entry["source"])
+
+    def test_actual_old_bootstrap_updates_before_distinct_new_library_stdin_and_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); entry, archive = mac_fixture(root)
+            # Owned future-version fixture: only a library comment and the new
+            # bootstrap's literal reviewed SHA/size constants differ. Its full
+            # install() and every ownership/inventory/lease check remain normal.
+            old_source = (ROOT / "install_forgejo_preview.py").read_bytes()
+            library_body = (ROOT / "install_macos_preview.py").read_bytes() + b"\n# Reviewed future-version Python fixture only.\n"
+            library = root / "new-library.py"; library.write_bytes(library_body)
+            library_sha = hashlib.sha256(library_body).hexdigest()
+            old_sha, old_size, _ = boot.LIBRARIES["macos-arm64"]
+            new_source = old_source.replace(old_sha.encode(), library_sha.encode()).replace(str(old_size).encode(), str(len(library_body)).encode())
+            self.assertNotEqual(new_source, old_source)
+            new_bootstrap = root / "new-bootstrap.py"; new_bootstrap.write_bytes(new_source)
+            new_sha = hashlib.sha256(new_source).hexdigest()
+            old_file = root / "old-bootstrap.py"; old_file.write_bytes(old_source)
+            value = channel(); value["platforms"]["macos-arm64"] = entry
+            entry["installer"] = {"url": boot.release_url(entry["tag"], "install-macos-arm64-" + library_sha[:16] + ".py"),
+                                  "sha256": library_sha, "bytes": len(library_body)}
+            value["bootstrap"] = {"url": boot.release_url(boot.BOOTSTRAP_TAG, "install-forgejo-bootstrap-" + new_sha[:16] + ".py"),
+                                  "sha256": new_sha, "bytes": len(new_source)}
+            boot.validate_channel(value)
+            with self.assertRaises(boot.InstallError): boot.admit_libraries(value)
+            metadata = root / "channel.json"; metadata.write_text(json.dumps(value))
+            mapping = {boot.CHANNEL: str(metadata), value["bootstrap"]["url"]: str(new_bootstrap),
+                       entry["installer"]["url"]: str(library), entry["archive"]["url"]: str(archive)}
+            (root / "mapping.json").write_text(json.dumps(mapping))
+            (root / "sitecustomize.py").write_text('''import io,json,os,pathlib,platform,urllib.request
+platform.system=lambda: 'Darwin'
+platform.machine=lambda: 'arm64'
+mapping=json.loads(pathlib.Path(os.environ['FIXTURE_MAPPING']).read_text())
+class Response(io.BytesIO):
+ def __init__(self,url): super().__init__(pathlib.Path(mapping[url]).read_bytes()); self.url=url
+ def geturl(self): return self.url
+class Opener:
+ def open(self,request,timeout):
+  with open(os.environ['FIXTURE_REQUESTS'],'a') as log: log.write(request.full_url+'\\n')
+  return Response(request.full_url)
+urllib.request.build_opener=lambda *handlers: Opener()
+''')
+            environment = {**os.environ, "PYTHONPATH": str(root), "PYTHONDONTWRITEBYTECODE": "1",
+                           "FIXTURE_MAPPING": str(root / "mapping.json"), "FIXTURE_REQUESTS": str(root / "requests")}
+            for mode in ["stdin", "file"]:
+                prefix = root / mode
+                command = [sys.executable, "-" if mode == "stdin" else str(old_file), "--prefix", str(prefix), "--allow-downgrade"]
+                result = subprocess.run(command, input=old_source.decode() if mode == "stdin" else None,
+                                        text=True, capture_output=True, env=environment, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue((prefix / "lib/nudox/current").is_symlink())
+                requests = (root / "requests").read_text().splitlines()
+                self.assertEqual(requests[0:3], [boot.CHANNEL, value["bootstrap"]["url"], boot.CHANNEL])
+                self.assertIn(entry["installer"]["url"], requests[3:])
+                (root / "requests").unlink()
 
 
 if __name__ == "__main__":

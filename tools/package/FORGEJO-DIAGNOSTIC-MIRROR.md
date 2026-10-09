@@ -5,6 +5,10 @@ libraries remain unchanged. A separate bootstrap is necessary because their
 command-line download paths require GitHub. The mirror uses one bounded HTTPS
 transport, verifies scripts before import, and calls the platform library's
 normal `install()` API without changing its globals or verification routines.
+An old immutable bootstrap first validates the channel envelope and verifies
+the current bootstrap before re-executing it. Only the digest-matching current
+bootstrap admits its own compiled library pins. This permits reviewed library
+updates without importing a library that the executing bootstrap has not pinned.
 
 The existing public repository is `philocalyst/Backend` on
 `https://dev.nudox.org/git/`. Canonical `Nudox/Backend` is private. Anonymous
@@ -48,6 +52,9 @@ checked against the installed Forgejo 15.0.9 Swagger schema and upstream
 directly. The installed local attachment storage needs no external redirect.
 The documented v15 attachment limit defaults to 2,048 MiB and the inspected
 configuration has no override. Actual publication/downloads remain Root's gate.
+Transport uses a 120-second socket timeout per blocking read, with no overall
+download deadline; slow successful reads can prolong installation. No instant
+installation or bounded wall-clock download claim is made.
 
 After publication, the explicit stdin command is `curl -fsSL <the channel's
 bootstrap URL> | python3 -`. Direct-file execution uses the same URL and
@@ -64,7 +71,7 @@ row limit. Linux c001 is an October 8 GNU diagnostic trio requiring glibc
 control timed out and whole-application acceptance remains open. The channel
 retains these exact limitations.
 
-Validation is Python-only: the existing 24 installer controls and 13 new
+Validation is Python-only: the existing 24 installer controls and 15 new
 transport/package controls. New actual stdin/file subprocesses use fixture
 HTTPS responses and harmless shell executables, while invoking the unchanged
 platform installation library normally. They are not real public download,

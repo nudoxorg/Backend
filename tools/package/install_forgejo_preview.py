@@ -150,15 +150,24 @@ def validate_channel(channel):
             datetime.datetime.strptime(tag.split("-")[1], "%Y%m%d")
         except ValueError as error:
             raise InstallError("invalid checkpoint calendar date") from error
-        library_sha, library_size, library_name = LIBRARIES[key]
-        installer = artifact(entry["installer"], tag, library_name + "-" + library_sha[:16] + ".py", MAX_SCRIPT)
-        if installer["sha256"] != library_sha or installer["bytes"] != library_size:
-            raise InstallError("mirror platform library differs from the reviewed bytes")
+        installer = entry["installer"]
+        if not isinstance(installer, dict) or not isinstance(installer.get("sha256"), str):
+            raise InstallError("invalid mirror platform library")
+        library_name = LIBRARIES[key][2]
+        artifact(installer, tag, library_name + "-" + installer["sha256"][:16] + ".py", MAX_SCRIPT)
         archive_name = ("nudox-macos-arm64-" if key == "macos-arm64" else "nudox-linux-x86_64-") + source[:10] + ".tar.gz"
         artifact(entry["archive"], tag, archive_name, MAX_ARCHIVE)
         if key == "linux-x64":
             artifact(entry["manifest"], tag, "release-manifest-linux-x64.json", MAX_METADATA)
     return channel
+
+
+def admit_libraries(channel):
+    """Only the digest-matching bootstrap admits its compiled library pins."""
+    for key, entry in channel["platforms"].items():
+        expected_sha, expected_size, _ = LIBRARIES[key]
+        if entry["installer"]["sha256"] != expected_sha or entry["installer"]["bytes"] != expected_size:
+            raise InstallError("mirror platform library differs from the reviewed bytes")
 
 
 def load_library(path, key):
@@ -226,6 +235,7 @@ def main(argv=None):
             if args.allow_downgrade:
                 command.append("--allow-downgrade")
             return subprocess.call(command)
+        admit_libraries(channel)
         entry = channel["platforms"][key]
         print("Diagnostic mirror; whole-project acceptance is not established.", flush=True)
         for failure in entry["known_failures"]:
