@@ -15,7 +15,9 @@ use backend_engine::registry::{
     PackageCoordinate, REGISTRY_SOURCE_ROOT_VERSION, RegistryId, RegistrySource, RegistrySourceSet,
     admit_registry_coordinate,
 };
-use backend_library::is_hard_ignored_path;
+use backend_library::{
+    PythonSourceContext, SourceSelectionScope, is_ignored_source_file_path, is_python_context_document,
+};
 use backend_platform::directory::{DirectoryCapability, DirectoryEntry, EntryKind};
 use backend_platform::OwnedWorkspaceDirectory;
 use flate2::read::{DeflateDecoder, GzDecoder};
@@ -2863,7 +2865,9 @@ pub(super) fn stage_archive(
     let staging_root = workspace_root.as_ref().join("registry-staging");
     fs::create_dir_all(&staging_root)
         .map_err(|error| RegistryAddError::Acquisition(AcquisitionError::Io(error)))?;
-    let digest = blake3::hash(archive);
+    // A cached staging directory must not preserve a frontier selected by an
+    // older source policy merely because the archive bytes are unchanged.
+    let digest = stage_archive_identity(archive, cfg!(windows));
     let directory = staging_root.join(hex(digest.as_bytes()));
     if directory.exists() {
         if needs_cargo_boundary {
@@ -2912,12 +2916,45 @@ pub(super) fn stage_archive(
     StagedProject::at(directory, &version)
 }
 
+fn stage_archive_identity(archive: &[u8], case_insensitive: bool) -> blake3::Hash {
+    let mut identity = blake3::Hasher::new();
+    identity.update(b"nudox.registry-stage.v2;python-initialized-subpackages.v1;declared-captured-python-source-roots.v1\0");
+    identity.update(if case_insensitive {
+        b"case-insensitive\0"
+    } else {
+        b"case-sensitive\0"
+    });
+    identity.update(archive);
+    identity.finalize()
+}
+
+fn inventory_python_package(
+    packages: &BTreeSet<PathBuf>,
+    directory: &Path,
+    case_insensitive: bool,
+) -> bool {
+    if case_insensitive {
+        packages.iter().any(|package| {
+            package
+                .as_os_str()
+                .eq_ignore_ascii_case(directory.as_os_str())
+        })
+    } else {
+        packages.contains(directory)
+    }
+}
+
 struct StageWriter {
     root: PathBuf,
     paths: BTreeSet<String>,
     files: usize,
     source_files: usize,
     bytes: usize,
+    inventory_only: bool,
+    python_packages: BTreeSet<PathBuf>,
+    context_documents: BTreeMap<PathBuf, Vec<u8>>,
+    context_bytes: usize,
+    source_context: PythonSourceContext,
 }
 
 impl StageWriter {
@@ -2928,6 +2965,11 @@ impl StageWriter {
             files: 0,
             source_files: 0,
             bytes: 0,
+            inventory_only: false,
+            python_packages: BTreeSet::new(),
+            context_documents: BTreeMap::new(),
+            context_bytes: 0,
+            source_context: PythonSourceContext::default(),
         }
     }
 
@@ -2938,12 +2980,76 @@ impl StageWriter {
 
     fn file(&mut self, raw: &str, bytes: &[u8]) -> Result<(), RegistryAddError> {
         let relative = confined_path(raw)?;
+        if self.inventory_only {
+            // Bound the member inventory without retaining source payloads.
+            self.files = self
+                .files
+                .checked_add(1)
+                .ok_or(RegistryAddError::Acquisition(AcquisitionError::Bounds))?;
+            self.bytes = self
+                .bytes
+                .checked_add(raw.len())
+                .ok_or(RegistryAddError::Acquisition(AcquisitionError::Bounds))?;
+            if self.files > MAX_EXTRACTED_FILES || self.bytes > MAX_EXTRACTED_TOTAL_BYTES {
+                return Err(RegistryAddError::Acquisition(AcquisitionError::Bounds));
+            }
+            if relative.file_name().is_some_and(|name| {
+                ["__init__.py", "__init__.pyi"].iter().any(|candidate| {
+                    if cfg!(windows) {
+                        name.eq_ignore_ascii_case(candidate)
+                    } else {
+                        name == std::ffi::OsStr::new(candidate)
+                    }
+                })
+            }) {
+                if let Some(parent) = relative.parent() {
+                    self.python_packages.insert(parent.to_owned());
+                }
+            }
+            if is_python_context_document(&relative, cfg!(windows))
+                && !is_ignored_source_file_path(
+                    &relative,
+                    SourceSelectionScope::Generic,
+                    cfg!(windows),
+                    &PythonSourceContext::default(),
+                    |_| false,
+                )
+            {
+                // Exact config payloads alone are retained, under the same
+                // per-document/aggregate source-context bounds as disk input.
+                let context_bytes = self
+                    .context_bytes
+                    .checked_add(bytes.len())
+                    .ok_or(RegistryAddError::Acquisition(AcquisitionError::Bounds))?;
+                if bytes.len() > 1024 * 1024
+                    || self.context_documents.len() >= 4096
+                    || context_bytes > 32 * 1024 * 1024
+                {
+                    return Err(RegistryAddError::Acquisition(AcquisitionError::Bounds));
+                }
+                self.context_bytes = context_bytes;
+                if self
+                    .context_documents
+                    .insert(relative, bytes.to_vec())
+                    .is_some()
+                {
+                    return Err(RegistryAddError::UnsupportedArchive);
+                }
+            }
+            return Ok(());
+        }
         // Registry archives frequently carry dependency trees and framework
         // output.  Apply the same hard product-owned directory policy as
         // local source discovery before accounting or materialising bytes.
         // This keeps archive staging and checkout discovery on one boundary;
         // a later source scan still applies its smaller per-source limit.
-        if is_hard_ignored_path(&relative) {
+        if is_ignored_source_file_path(
+            &relative,
+            SourceSelectionScope::PythonPackages,
+            cfg!(windows),
+            &self.source_context,
+            |directory| inventory_python_package(&self.python_packages, directory, cfg!(windows)),
+        ) {
             return Ok(());
         }
         if bytes.len() > MAX_EXTRACTED_FILE_BYTES {
@@ -2987,16 +3093,35 @@ impl StageWriter {
 }
 
 fn extract_archive(archive: &[u8], writer: &mut StageWriter) -> Result<(), RegistryAddError> {
-    if archive.starts_with(&[0x1f, 0x8b]) {
+    let decompressed;
+    let payload = if archive.starts_with(&[0x1f, 0x8b]) {
         let mut decoder = GzDecoder::new(Cursor::new(archive));
-        let decompressed = read_bounded(&mut decoder, MAX_EXTRACTED_TOTAL_BYTES)?;
+        decompressed = read_bounded(&mut decoder, MAX_EXTRACTED_TOTAL_BYTES)?;
         admit_expansion(archive.len(), decompressed.len())?;
-        return extract_tar(&decompressed, writer);
-    }
-    if archive.starts_with(b"PK\x03\x04") || archive.starts_with(b"PK\x05\x06") {
-        return extract_zip(archive, writer);
-    }
-    extract_tar(archive, writer)
+        decompressed.as_slice()
+    } else {
+        archive
+    };
+    let visit = |writer: &mut StageWriter| {
+        if payload.starts_with(b"PK\x03\x04") || payload.starts_with(b"PK\x05\x06") {
+            extract_zip(payload, writer)
+        } else {
+            extract_tar(payload, writer)
+        }
+    };
+    let mut inventory = StageWriter::new(writer.root.clone());
+    inventory.inventory_only = true;
+    visit(&mut inventory)?;
+    writer.source_context = PythonSourceContext::from_documents(
+        inventory
+            .context_documents
+            .iter()
+            .map(|(path, bytes)| (path.as_path(), bytes.as_slice())),
+        cfg!(windows),
+    )
+    .map_err(|_| RegistryAddError::UnsupportedArchive)?;
+    writer.python_packages = inventory.python_packages;
+    visit(writer)
 }
 
 fn extract_tar(bytes: &[u8], writer: &mut StageWriter) -> Result<(), RegistryAddError> {
@@ -3212,6 +3337,11 @@ fn extract_zip(bytes: &[u8], writer: &mut StageWriter) -> Result<(), RegistryAdd
         .map_err(|_| RegistryAddError::UnsupportedArchive)?;
         if name.ends_with('/') {
             StageWriter::directory(name)?;
+        } else if writer.inventory_only
+            && !is_python_context_document(Path::new(name), cfg!(windows))
+        {
+            writer.file(name, &[])?;
+            entries = entries.saturating_add(1);
         } else {
             if declared > MAX_EXTRACTED_FILE_BYTES {
                 return Err(RegistryAddError::Acquisition(AcquisitionError::Bounds));
@@ -5667,6 +5797,153 @@ mod tests {
         assert_eq!(writer.source_files, 1);
         assert!(!root.join("package/node_modules").exists());
         assert!(root.join("package/src/index.js").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn archive_python_subpackages_use_the_complete_order_independent_member_inventory() {
+        let root = scratch();
+        fs::create_dir_all(&root).expect("stage root");
+        let source = b"class BuildTracker: pass\n";
+        let members: [(&str, &[u8]); 13] = [
+            // Initializers deliberately follow their package contents.
+            ("package/src/pkg/build/build_tracker.py", source),
+            ("package/src/pkg/dist/interface.pyi", source),
+            ("package/src/pkg/build/resource.txt", b"package data"),
+            ("package/src/pkg/node_modules/__init__.py", b""),
+            ("package/src/pkg/node_modules/generated.py", source),
+            ("package/build/__init__.py", b""),
+            ("package/build/generated.py", source),
+            ("package/dist/generated.py", source),
+            ("package/unrelated/build/source.py", source),
+            ("package/unrelated/build/__init__.py", b""),
+            ("package/src/pkg/build/__init__.py", b""),
+            ("package/src/pkg/dist/__init__.pyi", b""),
+            ("package/src/pkg/__init__.py", b""),
+        ];
+        for (index, members) in [members.to_vec(), members.into_iter().rev().collect()]
+            .iter()
+            .enumerate()
+        {
+            let destination = root.join(index.to_string());
+            fs::create_dir(&destination).expect("destination");
+            let mut writer = StageWriter::new(destination.clone());
+            extract_archive(&tar_files(members), &mut writer).expect("valid tar");
+            assert_eq!(writer.files, 6);
+            assert_eq!(writer.source_files, 5);
+            assert_eq!(
+                fs::read(destination.join("package/src/pkg/build/build_tracker.py"))
+                    .expect("source"),
+                source
+            );
+            assert_eq!(
+                fs::read(destination.join("package/src/pkg/build/resource.txt")).expect("data"),
+                b"package data"
+            );
+            for ignored in [
+                "package/build",
+                "package/dist",
+                "package/unrelated/build",
+                "package/src/pkg/node_modules",
+            ] {
+                assert!(
+                    !destination.join(ignored).exists(),
+                    "generated tree was reopened: {ignored}"
+                );
+            }
+            let selected = backend_library::discover_source_files(
+                &destination,
+                backend_library::source_selection_policy(),
+            )
+            .expect("shared discovery");
+            assert_eq!(
+                selected.len(),
+                writer.files,
+                "archive staging and filesystem source policy agree"
+            );
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stage_cache_identity_binds_the_effective_case_policy() {
+        let archive = tar_file("package/src/source.py", b"source = True\n");
+        assert_ne!(
+            stage_archive_identity(&archive, false),
+            stage_archive_identity(&archive, true)
+        );
+        assert_eq!(
+            stage_archive_identity(&archive, cfg!(windows)),
+            stage_archive_identity(&archive, cfg!(windows))
+        );
+    }
+
+    #[test]
+    fn archive_package_inventory_uses_the_effective_case_policy() {
+        let packages = BTreeSet::from([PathBuf::from("package/SRC/BUILD")]);
+        assert!(inventory_python_package(
+            &packages,
+            Path::new("package/SRC/BUILD"),
+            false
+        ));
+        assert!(!inventory_python_package(
+            &packages,
+            Path::new("package/src/build"),
+            false
+        ));
+        assert!(inventory_python_package(
+            &packages,
+            Path::new("package/src/build"),
+            true
+        ));
+        assert!(!inventory_python_package(
+            &packages,
+            Path::new("package/src/build-extra"),
+            true
+        ));
+    }
+
+    #[test]
+    fn archive_declared_python_source_roots_keep_build_without_a_fake_parent_initializer() {
+        let root = scratch();
+        fs::create_dir_all(&root).expect("root");
+        for (declaration_index, declaration) in [
+            "[project]\nname = 'build'\n[tool.pyrefly]\nsearch-path = ['src']\n",
+            "[project]\nname = 'build'\n[tool.setuptools.packages.find]\nwhere = ['src']\n",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let members: [(&str, &[u8]); 7] = [
+                ("package/src/build/__init__.py", b""),
+                ("package/src/build/__main__.py", b"def entrypoint(): pass\n"),
+                ("package/src/ns/dist/__init__.pyi", b""),
+                ("package/src/ns/dist/api.pyi", b"def value() -> int: ...\n"),
+                ("package/build/__init__.py", b""),
+                ("package/build/generated.py", b"generated = True\n"),
+                ("package/pyproject.toml", declaration.as_bytes()),
+            ];
+            for (index, members) in [members.to_vec(), members.into_iter().rev().collect()]
+                .iter()
+                .enumerate()
+            {
+                let destination = root.join(format!("{declaration_index}-{index}"));
+                fs::create_dir(&destination).expect("destination");
+                let mut writer = StageWriter::new(destination.clone());
+                extract_archive(&tar_files(members), &mut writer).expect("tar");
+                assert_eq!(writer.files, 5);
+                assert_eq!(writer.source_files, 4);
+                assert!(!destination.join("package/src/__init__.py").exists());
+                assert!(!destination.join("package/build").exists());
+                assert!(destination.join("package/src/build/__main__.py").is_file());
+                let selected = backend_library::discover_source_files(
+                    &destination,
+                    backend_library::source_selection_policy(),
+                )
+                .expect("same disk source context");
+                assert_eq!(selected.len(), writer.files);
+            }
+        }
         let _ = fs::remove_dir_all(root);
     }
 

@@ -1090,7 +1090,9 @@ dependencies = [
 name = "backend-discovery"
 version = "0.2.0"
 dependencies = [
+ "backend-platform",
  "ignore",
+ "toml 0.8.23",
 ]
 
 [[package]]

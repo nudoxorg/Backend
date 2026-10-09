@@ -24,6 +24,7 @@ use std::{
 #[must_use]
 pub fn source_selection_policy() -> backend_discovery::DiscoveryPolicy {
     backend_discovery::DiscoveryPolicy::default()
+        .source_scope(backend_discovery::SourceSelectionScope::PythonPackages)
 }
 
 /// Starts the shared deterministic traversal for a package/archive adapter.

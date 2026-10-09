@@ -92,7 +92,7 @@ fn native_producer_capture() -> Result<(NativePythonProducerIdentity, FileWitnes
         ))
         .as_bytes(),
     );
-    identity.update(b"root-isolated;named-single-package-import-root.v1;captured-diagnostic-baseline.v1;root-pinned-config-inputs.v1;fresh-state;per-file-raw-intake.v1;native-syntax-diagnostics;unavailable-exact-rdeps;classdef-declaration+constructor-callee;captured-candidates;depth64;work262144\0");
+    identity.update(b"root-isolated;named-single-package-import-root.v1;declared-captured-python-source-roots.v1;captured-diagnostic-baseline.v1;root-pinned-config-inputs.v1;fresh-state;per-file-raw-intake.v1;native-syntax-diagnostics;unavailable-exact-rdeps;classdef-declaration+constructor-callee;captured-candidates;depth64;work262144\0");
     identity.update(digest.as_bytes());
     identity.update(&size.to_be_bytes());
     host.validate_current()?;
@@ -635,13 +635,36 @@ impl DirectoryWitness {
     }
 }
 
-/// Source-capture exclusions, matching the Python producer example and the
-/// discovery owner's generated/cache directory policy. An explicitly configured
-/// root is inspected even when its own name is excluded; exclusions affect its
-/// descendants only.
+/// Name-only compatibility policy. New source owners use the path/context
+/// helper so initialized or declared Python packages can retain build/dist.
+/// Explicit roots remain the responsibility of the caller.
 #[must_use]
 pub fn is_ignored_python_source_directory(name: &std::ffi::OsStr) -> bool {
     backend_discovery::is_hard_ignored_directory(name) || name == ".local"
+}
+
+/// Path-aware Python source selection. Only initialized subpackages named
+/// `build` or `dist` reopen those generated defaults; other source/artifact
+/// exclusions and the Python producer's local tool state remain excluded.
+#[must_use]
+pub fn is_ignored_python_source_path(
+    root: &Path,
+    path: &Path,
+    context: &backend_discovery::PythonSourceContext,
+) -> bool {
+    path.strip_prefix(root).is_err()
+        || path.strip_prefix(root).is_ok_and(|relative| {
+            relative
+                .components()
+                .any(|component| component.as_os_str() == ".local")
+        })
+        || backend_discovery::is_ignored_source_directory(
+            root,
+            path,
+            backend_discovery::SourceSelectionScope::PythonPackages,
+            cfg!(windows),
+            context,
+        )
 }
 
 /// Exact original directory membership for the configured finite module roots.
@@ -650,11 +673,18 @@ pub fn is_ignored_python_source_directory(name: &std::ffi::OsStr) -> bool {
 #[derive(Debug)]
 pub(super) struct SourceDirectoryWitness {
     path: PathBuf,
+    source_root: PathBuf,
+    context: std::sync::Arc<backend_discovery::PythonSourceContext>,
     children: Option<Vec<(std::ffi::OsString, bool)>>,
 }
 
 impl SourceDirectoryWitness {
-    fn capture(path: PathBuf, control: PythonProjectControl<'_>) -> Result<Self, CheckerError> {
+    fn capture(
+        source_root: &Path,
+        context: std::sync::Arc<backend_discovery::PythonSourceContext>,
+        path: PathBuf,
+        control: PythonProjectControl<'_>,
+    ) -> Result<Self, CheckerError> {
         checkpoint(control)?;
         match std::fs::symlink_metadata(&path) {
             Ok(metadata) if !metadata.is_dir() => {
@@ -664,6 +694,8 @@ impl SourceDirectoryWitness {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(Self {
                     path,
+                    source_root: source_root.to_owned(),
+                    context,
                     children: None,
                 });
             }
@@ -674,6 +706,8 @@ impl SourceDirectoryWitness {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(Self {
                     path,
+                    source_root: source_root.to_owned(),
+                    context,
                     children: None,
                 });
             }
@@ -684,7 +718,7 @@ impl SourceDirectoryWitness {
             checkpoint(control)?;
             let entry = entry.map_err(workspace_error)?;
             let name = entry.file_name();
-            if is_ignored_python_source_directory(&name) {
+            if is_ignored_python_source_path(source_root, &entry.path(), &context) {
                 continue;
             }
             let kind = entry.file_type().map_err(workspace_error)?;
@@ -708,6 +742,8 @@ impl SourceDirectoryWitness {
         children.sort();
         Ok(Self {
             path,
+            source_root: source_root.to_owned(),
+            context,
             children: Some(children),
         })
     }
@@ -717,8 +753,24 @@ impl SourceDirectoryWitness {
         original: &Path,
         mirror: &Path,
         source_path: &str,
+        source_context: &backend_discovery::PythonSourceContext,
         control: PythonProjectControl<'_>,
     ) -> Result<Vec<Self>, CheckerError> {
+        let mut context = source_context.clone();
+        let roots = roots.into_iter().collect::<Vec<_>>();
+        for root in &roots {
+            // The project root itself is the ordinary default search root.
+            // Only additional captured finder roots may reopen their own name.
+            if root != original {
+                let relative = root
+                    .strip_prefix(original)
+                    .map_err(|_| CheckerError::UncapturedDependency { path: root.clone() })?;
+                context
+                    .add_captured_source_root(relative)
+                    .map_err(|error| project_error(source_path, &error.to_string()))?;
+            }
+        }
+        let context = std::sync::Arc::new(context);
         let mut pending = roots.into_iter().collect::<Vec<_>>();
         let mut captured = BTreeMap::new();
         while let Some(path) = pending.pop() {
@@ -726,7 +778,7 @@ impl SourceDirectoryWitness {
             if captured.contains_key(&path) {
                 continue;
             }
-            let witness = Self::capture(path.clone(), control)?;
+            let witness = Self::capture(original, context.clone(), path.clone(), control)?;
             if let Some(children) = &witness.children {
                 let relative = path
                     .strip_prefix(original)
@@ -760,7 +812,15 @@ impl SourceDirectoryWitness {
         &self,
         control: PythonProjectControl<'_>,
     ) -> Result<(), CheckerError> {
-        if Self::capture(self.path.clone(), control)?.children != self.children {
+        if Self::capture(
+            &self.source_root,
+            self.context.clone(),
+            self.path.clone(),
+            control,
+        )?
+        .children
+            != self.children
+        {
             return Err(project_error(
                 &self.path.to_string_lossy(),
                 "configured Python source directory membership changed",
@@ -1049,6 +1109,34 @@ impl NativePythonProjectAuthority {
             &mut mirror_witness,
             control,
         )?;
+        let mut source_documents = Vec::new();
+        let mut source_document_bytes = 0usize;
+        for path in captured_configs
+            .iter()
+            .filter(|path| backend_discovery::is_python_context_document(path, cfg!(windows)))
+        {
+            checkpoint(control)?;
+            let relative = path
+                .strip_prefix(mirror)
+                .map_err(|_| CheckerError::UncapturedDependency { path: path.clone() })?;
+            let bytes = baseline::read_captured_input(mirror, relative, Some(control))?
+                .ok_or_else(|| CheckerError::UncapturedDependency { path: path.clone() })?;
+            source_document_bytes = source_document_bytes.saturating_add(bytes.len());
+            if source_documents.len() >= 4096 || source_document_bytes > 32 * 1024 * 1024 {
+                return Err(project_error(
+                    "",
+                    "Python source context exceeds aggregate captured input bounds",
+                ));
+            }
+            source_documents.push((relative.to_owned(), bytes));
+        }
+        let source_context = backend_discovery::PythonSourceContext::from_documents(
+            source_documents
+                .iter()
+                .map(|(path, bytes)| (path.as_path(), bytes.as_slice())),
+            cfg!(windows),
+        )
+        .map_err(|error| project_error("", &error.to_string()))?;
         let native = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             super::project_native::analyze(
                 &layout,
@@ -1059,6 +1147,7 @@ impl NativePythonProjectAuthority {
                 &facts,
                 &rejected,
                 &witness.baselines,
+                &source_context,
                 profile,
                 control,
             )

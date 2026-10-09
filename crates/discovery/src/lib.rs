@@ -15,6 +15,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod python_context;
+pub use python_context::{
+    PythonSourceContext, PythonSourceContextCapture, is_python_context_document,
+};
+
 /// Directory names treated as generated or tool-owned state by default.
 pub const DEFAULT_IGNORED_DIRECTORIES: &[&str] = &[
     ".git",
@@ -84,6 +89,117 @@ pub fn is_hard_ignored_path(path: &Path) -> bool {
             .components()
             .any(|component| is_hard_ignored_directory(component.as_os_str()))
     })
+}
+
+/// Language/project context for generated-directory selection.
+/// Generic discovery retains the directory-name defaults. Source adapters may
+/// recognize Python package topology, without reopening repository ignore rules.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SourceSelectionScope {
+    /// No language-specific package directory exception.
+    #[default]
+    Generic,
+    /// `build` and `dist` can be ordinary subpackages of initialized packages.
+    PythonPackages,
+}
+
+/// Applies the generated-directory policy to a relative regular-file member.
+/// `package_directory` must witness an ordinary `__init__.py` or `__init__.pyi`
+/// member in that exact directory. Archive callers provide the complete bounded
+/// member inventory, so selection never depends on initializer ordering.
+#[must_use]
+pub fn is_ignored_source_file_path(
+    path: &Path,
+    scope: SourceSelectionScope,
+    case_insensitive: bool,
+    context: &PythonSourceContext,
+    package_directory: impl Fn(&Path) -> bool,
+) -> bool {
+    path.parent().is_some_and(|parent| {
+        ignored_source_components(parent, scope, case_insensitive, context, package_directory)
+    })
+}
+
+/// Applies the same policy to an on-disk directory below an explicit root.
+/// Initializer symlinks and special nodes cannot reopen a generated directory.
+#[must_use]
+pub fn is_ignored_source_directory(
+    root: &Path,
+    path: &Path,
+    scope: SourceSelectionScope,
+    case_insensitive: bool,
+    context: &PythonSourceContext,
+) -> bool {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return true;
+    };
+    ignored_source_components(relative, scope, case_insensitive, context, |directory| {
+        initialized_python_package(&root.join(directory))
+    })
+}
+
+fn initialized_python_package(directory: &Path) -> bool {
+    std::fs::symlink_metadata(directory).is_ok_and(|metadata| metadata.is_dir())
+        && ["__init__.py", "__init__.pyi"].iter().any(|name| {
+            std::fs::symlink_metadata(directory.join(name)).is_ok_and(|metadata| metadata.is_file())
+        })
+}
+
+fn ignored_source_components(
+    path: &Path,
+    scope: SourceSelectionScope,
+    case_insensitive: bool,
+    context: &PythonSourceContext,
+    package_directory: impl Fn(&Path) -> bool,
+) -> bool {
+    let generated = |name: &OsStr| {
+        DEFAULT_IGNORED_DIRECTORIES.iter().any(|candidate| {
+            if case_insensitive {
+                name.eq_ignore_ascii_case(candidate)
+            } else {
+                name == OsStr::new(candidate)
+            }
+        })
+    };
+    // Ordinary source paths and generic discovery need no package probes or
+    // incremental path allocation. Only an ambiguous generated component does.
+    if scope == SourceSelectionScope::Generic {
+        return path
+            .components()
+            .any(|component| generated(component.as_os_str()));
+    }
+    if !path
+        .components()
+        .any(|component| generated(component.as_os_str()))
+    {
+        return false;
+    }
+    let mut directory = PathBuf::new();
+    for component in path.components() {
+        directory.push(component.as_os_str());
+        let name = component.as_os_str();
+        let matches = |candidate: &str| {
+            if case_insensitive {
+                name.eq_ignore_ascii_case(candidate)
+            } else {
+                name == OsStr::new(candidate)
+            }
+        };
+        if !generated(name) {
+            continue;
+        }
+        let python_subpackage = scope == SourceSelectionScope::PythonPackages
+            && (matches("build") || matches("dist"))
+            && (context.permits(&directory, case_insensitive, &package_directory)
+                || (package_directory(&directory)
+                    && directory
+                        .parent()
+                        .is_some_and(|parent| package_directory(parent))));
+        if !python_subpackage {
+            return true;
+        }
+    }
+    false
 }
 
 /// The kind of one admitted filesystem entry.
@@ -201,6 +317,7 @@ impl std::error::Error for DiscoveryError {}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiscoveryPolicy {
     generated_defaults: bool,
+    source_scope: SourceSelectionScope,
     respect_gitignore: bool,
     case_insensitive: bool,
     includes: Vec<String>,
@@ -219,11 +336,20 @@ impl DiscoveryPolicy {
     pub fn new() -> Self {
         Self {
             generated_defaults: true,
+            source_scope: SourceSelectionScope::Generic,
             respect_gitignore: true,
             case_insensitive: cfg!(windows),
             includes: Vec::new(),
             excludes: Vec::new(),
         }
+    }
+
+    /// Selects language/project context for generated defaults. This never
+    /// overrides a Git ignore, an explicit exclusion, or an owner workspace.
+    #[must_use]
+    pub fn source_scope(mut self, scope: SourceSelectionScope) -> Self {
+        self.source_scope = scope;
+        self
     }
 
     /// Enables or disables generated/dependency directory defaults.
@@ -349,17 +475,6 @@ impl DiscoveryPolicy {
             })
     }
 
-    fn generated_component(&self, component: &OsStr) -> bool {
-        self.generated_defaults
-            && DEFAULT_IGNORED_DIRECTORIES.iter().any(|candidate| {
-                if self.case_insensitive {
-                    candidate.eq_ignore_ascii_case(&component.to_string_lossy())
-                } else {
-                    OsStr::new(candidate) == component
-                }
-            })
-    }
-
     fn include_reopens(&self, root: &Path, path: &Path) -> bool {
         let Ok(relative) = path.strip_prefix(root) else {
             return false;
@@ -402,6 +517,7 @@ impl DiscoveryPolicy {
         root: &Path,
         path: &Path,
         include_overrides: Option<&ignore::overrides::Override>,
+        context: &PythonSourceContext,
     ) -> bool {
         let Ok(relative) = path.strip_prefix(root) else {
             return false;
@@ -424,9 +540,15 @@ impl DiscoveryPolicy {
         if csharp_binary_output {
             return false;
         }
-        let generated = relative
-            .components()
-            .any(|component| self.generated_component(component.as_os_str()));
+        let directory = relative;
+        let generated = self.generated_defaults
+            && ignored_source_components(
+                directory,
+                self.source_scope,
+                self.case_insensitive,
+                context,
+                |directory| initialized_python_package(&root.join(directory)),
+            );
         if !generated {
             return true;
         }
@@ -476,11 +598,22 @@ impl DiscoveryPolicy {
         let root = root.as_ref().to_owned();
         let mut builder = WalkBuilder::new(&root);
         let policy = self.clone();
+        let context = if self.source_scope == SourceSelectionScope::PythonPackages
+            && self.generated_defaults
+        {
+            PythonSourceContextCapture::capture(&root, self.clone()).map(Some)
+        } else {
+            Ok(None)
+        };
+        let context_error = context.as_ref().err().cloned();
+        let context_capture = context.ok().flatten().map(std::sync::Arc::new);
+        let context_for_filter = context_capture.clone();
+        let empty_context = PythonSourceContext::default();
         let overrides = self.overrides(&root);
         let include_overrides = self.include_overrides(&root);
         let initial_error = match (&overrides, &include_overrides) {
             (Err(error), _) | (_, Err(error)) => Some(error.clone()),
-            (Ok(_), Ok(_)) => None,
+            (Ok(_), Ok(_)) => context_error,
         };
         if let Ok(overrides) = overrides {
             builder.overrides(overrides);
@@ -507,12 +640,17 @@ impl DiscoveryPolicy {
                         &root_for_filter,
                         entry.path(),
                         include_overrides.as_ref(),
+                        context_for_filter
+                            .as_ref()
+                            .map_or(&empty_context, |capture| capture.context()),
                     ))
         });
         Discovery {
             root,
             inner: builder.build(),
             initial_error,
+            context_capture,
+            context_validated: false,
         }
     }
 }
@@ -522,6 +660,8 @@ pub struct Discovery {
     root: PathBuf,
     inner: Walk,
     initial_error: Option<DiscoveryError>,
+    context_capture: Option<std::sync::Arc<PythonSourceContextCapture>>,
+    context_validated: bool,
 }
 
 impl fmt::Debug for Discovery {
@@ -541,7 +681,17 @@ impl Iterator for Discovery {
             return Some(Err(error));
         }
         loop {
-            let result = self.inner.next()?;
+            let Some(result) = self.inner.next() else {
+                if !self.context_validated {
+                    self.context_validated = true;
+                    if let Some(capture) = &self.context_capture {
+                        if let Err(error) = capture.validate_current(&self.root) {
+                            return Some(Err(error));
+                        }
+                    }
+                }
+                return None;
+            };
             match result {
                 Ok(entry) if entry.path() == self.root => {
                     if let Some(error) = entry.error() {
@@ -768,6 +918,243 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn python_package_context_reopens_only_initialized_build_and_dist_subpackages() {
+        let scratch = Scratch::new("python-package-build");
+        for path in [
+            "src/pkg/__init__.py",
+            "src/pkg/build/__init__.py",
+            "src/pkg/build/build_tracker.py",
+            "src/pkg/build/resource.txt",
+            "src/pkg/dist/__init__.pyi",
+            "src/pkg/dist/interface.pyi",
+            "src/pkg/node_modules/__init__.py",
+            "src/pkg/node_modules/dependency.py",
+            "src/pkg/unmarked/build/source.py",
+            "unrelated/build/__init__.py",
+            "unrelated/build/source.py",
+            "build/__init__.py",
+            "build/generated.py",
+            "dist/__init__.py",
+            "dist/generated.py",
+            "web/build/app.js",
+            "web/dist/bundle.js",
+        ] {
+            let path = scratch.0.join(path);
+            fs::create_dir_all(path.parent().expect("parent")).expect("directory");
+            fs::write(path, b"source").expect("file");
+        }
+        let files = |policy: DiscoveryPolicy| {
+            policy
+                .walk(&scratch.0)
+                .filter_map(|entry| {
+                    let entry = entry.expect("discovery");
+                    entry.is_file().then(|| {
+                        slash_path(entry.path().strip_prefix(&scratch.0).expect("relative"))
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(files(DiscoveryPolicy::default()), ["src/pkg/__init__.py"]);
+        let python = DiscoveryPolicy::default().source_scope(SourceSelectionScope::PythonPackages);
+        assert_eq!(
+            files(python.clone()),
+            [
+                "src/pkg/__init__.py",
+                "src/pkg/build/__init__.py",
+                "src/pkg/build/build_tracker.py",
+                "src/pkg/build/resource.txt",
+                "src/pkg/dist/__init__.pyi",
+                "src/pkg/dist/interface.pyi",
+            ]
+        );
+        // Package topology changes only product generated defaults. User Git
+        // rules remain authoritative, even for an otherwise valid subpackage.
+        fs::write(
+            scratch.0.join(".gitignore"),
+            b"/build/\n/dist/\nsrc/pkg/build/\n",
+        )
+        .expect("ignore");
+        assert!(
+            !files(python)
+                .iter()
+                .any(|path| path.starts_with("src/pkg/build/"))
+        );
+        assert!(
+            files(DiscoveryPolicy::default().source_scope(SourceSelectionScope::PythonPackages))
+                .iter()
+                .any(|path| path == "src/pkg/dist/interface.pyi")
+        );
+    }
+
+    #[test]
+    fn declared_python_source_context_keeps_pypa_build_and_namespace_packages() {
+        let scratch = Scratch::new("declared-build-root");
+        for path in [
+            "src/build/__init__.py",
+            "src/build/__main__.py",
+            "src/ns/dist/__init__.pyi",
+            "src/ns/dist/api.pyi",
+            "build/__init__.py",
+            "build/generated.py",
+            "dist/generated.py",
+            "src/node_modules/__init__.py",
+            "src/node_modules/generated.py",
+        ] {
+            let path = scratch.0.join(path);
+            fs::create_dir_all(path.parent().expect("parent")).expect("directory");
+            fs::write(path, b"source").expect("file");
+        }
+        // PyPA/build declares src as a native search root. A static setuptools
+        // layout is also source-selection authority, without rewriting native
+        // finder configuration. Neither needs fake src/ns initializers.
+        for declaration in [
+            "[project]\nname = 'build'\n[tool.pyrefly]\nsearch-path = ['src']\n",
+            "[project]\nname = 'build'\n[tool.setuptools.packages.find]\nwhere = ['src']\n",
+        ] {
+            fs::write(scratch.0.join("pyproject.toml"), declaration).expect("manifest");
+            let files = DiscoveryPolicy::default()
+                .source_scope(SourceSelectionScope::PythonPackages)
+                .walk(&scratch.0)
+                .filter_map(|entry| {
+                    let entry = entry.expect("discovery");
+                    entry.is_file().then(|| {
+                        slash_path(entry.path().strip_prefix(&scratch.0).expect("relative"))
+                    })
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                files,
+                [
+                    "pyproject.toml",
+                    "src/build/__init__.py",
+                    "src/build/__main__.py",
+                    "src/ns/dist/__init__.pyi",
+                    "src/ns/dist/api.pyi"
+                ],
+                "declared source context: {declaration}"
+            );
+        }
+        let capture = PythonSourceContextCapture::capture(&scratch.0, DiscoveryPolicy::default())
+            .expect("context");
+        fs::write(
+            scratch.0.join("pyproject.toml"),
+            b"[tool.pyrefly]\nsearch-path = ['other']\n",
+        )
+        .expect("changed declaration");
+        assert!(capture.validate_current(&scratch.0).is_err());
+    }
+
+    #[test]
+    fn nested_context_does_not_reopen_ancestor_sibling_or_uninitialized_outputs() {
+        let scratch = Scratch::new("nested-context-scope");
+        for path in [
+            "build/generated.py",
+            "sibling/build/generated.py",
+            "nested/src/build/generated.py",
+            "nested/src/pkg/dist/__init__.pyi",
+            "nested/src/pkg/dist/api.pyi",
+        ] {
+            let path = scratch.0.join(path);
+            fs::create_dir_all(path.parent().expect("parent")).expect("directory");
+            fs::write(path, b"source").expect("file");
+        }
+        fs::write(
+            scratch.0.join("nested/pyrefly.toml"),
+            b"search-path = ['..', '../sibling', 'src']\n",
+        )
+        .expect("nested configuration");
+        let selected = DiscoveryPolicy::default()
+            .source_scope(SourceSelectionScope::PythonPackages)
+            .walk(&scratch.0)
+            .filter_map(|entry| {
+                let entry = entry.expect("discovery");
+                entry
+                    .is_file()
+                    .then(|| slash_path(entry.path().strip_prefix(&scratch.0).expect("relative")))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            selected,
+            [
+                "nested/pyrefly.toml",
+                "nested/src/pkg/dist/__init__.pyi",
+                "nested/src/pkg/dist/api.pyi"
+            ]
+        );
+    }
+
+    #[test]
+    fn archive_and_directory_helpers_share_explicit_case_and_declared_root_policy() {
+        let scratch = Scratch::new("declared-case");
+        let context = PythonSourceContext::from_documents(
+            [(
+                Path::new("pyproject.toml"),
+                b"[tool.setuptools.packages.find]\nwhere = ['SRC']\n".as_slice(),
+            )],
+            false,
+        )
+        .expect("context");
+        for path in ["src/build", "src/BUILD", "src/dist", "src/DIST"] {
+            fs::create_dir_all(scratch.0.join(path)).expect("directory");
+            fs::write(scratch.0.join(path).join("__init__.py"), b"").expect("marker");
+            for case in [false, true] {
+                let disk = is_ignored_source_directory(
+                    &scratch.0,
+                    &scratch.0.join(path),
+                    SourceSelectionScope::PythonPackages,
+                    case,
+                    &context,
+                );
+                let member = is_ignored_source_file_path(
+                    &Path::new(path).join("source.py"),
+                    SourceSelectionScope::PythonPackages,
+                    case,
+                    &context,
+                    |directory| initialized_python_package(&scratch.0.join(directory)),
+                );
+                assert_eq!(
+                    disk, member,
+                    "disk/archive case disagreement: {path}, case={case}"
+                );
+                assert_eq!(disk, !case && matches!(path, "src/build" | "src/dist"));
+            }
+            fs::remove_file(scratch.0.join(path).join("__init__.py")).expect("remove marker");
+            assert!(
+                is_ignored_source_directory(
+                    &scratch.0,
+                    &scratch.0.join(path),
+                    SourceSelectionScope::PythonPackages,
+                    true,
+                    &context
+                ),
+                "declared source roots do not reopen uninitialized generated descendants"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_initializer_cannot_reopen_a_generated_python_directory() {
+        let scratch = Scratch::new("python-package-marker-link");
+        fs::create_dir_all(scratch.0.join("pkg/build")).expect("package");
+        fs::write(scratch.0.join("pkg/__init__.py"), b"").expect("parent marker");
+        fs::write(scratch.0.join("marker.py"), b"").expect("target");
+        std::os::unix::fs::symlink(
+            scratch.0.join("marker.py"),
+            scratch.0.join("pkg/build/__init__.py"),
+        )
+        .expect("marker link");
+        fs::write(scratch.0.join("pkg/build/generated.py"), b"x = 1").expect("generated");
+        assert!(is_ignored_source_directory(
+            &scratch.0,
+            &scratch.0.join("pkg/build"),
+            SourceSelectionScope::PythonPackages,
+            false,
+            &PythonSourceContext::default()
+        ));
     }
 
     #[test]
