@@ -1,0 +1,1250 @@
+{
+  "schema": "nudox.root.durable-indexing-native-evidence.v1",
+  "root_source_commit": "708c01415b567a568effb45b5c6aad98aa7bf363",
+  "canonical_base": "86f1f20f1339c779f3e6f715d89e105fd7b7f6b5",
+  "epochs": [
+    {
+      "epoch": "native-currenta844-mcp-attempt01",
+      "archive_sha256": "39b18df60038cca538096b6371960fc8dde4e886ad135a60eb7d123013dc5fd2",
+      "raw_files_rehashed": 52,
+      "source": {
+        "manifest_sha256": "94d3cf0907d8c5cdaae3a22c23b13242e6a8975c664d8a41d6d2cf8a65ca86b5",
+        "source": {
+          "commit": "a844549206a5ac77715372e12a74cf77b34a6fe5",
+          "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+          "status": "",
+          "tree": "e35cc3f2cca6f10d9d4c6e3fa2b2c4ffcf70d5d0"
+        },
+        "git_blobs_rehashed": 18019,
+        "gitlinks_reference_only": [
+          {
+            "git_oid": "052ad81a7dbb6efed34ea482ae6c7e2e6f6682e0",
+            "path": "server/index/turso",
+            "reference_only": true
+          }
+        ]
+      },
+      "receipts": [
+        {
+          "gate": "gate-00",
+          "sha256": "33840ac77c14caa92a4106119c80e26db5944ae58bf57cb6e4343592255fbd7b",
+          "job": {
+            "argv": [
+              "test",
+              "--locked",
+              "--offline",
+              "-j2",
+              "--message-format=json-render-diagnostics",
+              "-p",
+              "backend-mcp",
+              "--lib",
+              "--no-run"
+            ],
+            "image_names": [
+              "backend_mcp"
+            ],
+            "kind": "compile"
+          },
+          "elapsed_seconds": 366.9077361020027,
+          "test_summaries": []
+        },
+        {
+          "gate": "gate-01",
+          "sha256": "8e8c7e45f09a3a7e47329cf5029d5366b1388257ec8bf8212dfbeb3846bad1c3",
+          "job": {
+            "filter": "",
+            "image": "backend_mcp",
+            "kind": "inventory",
+            "names": [
+              "http::tests::automatic_http_token_is_private_and_survives_restart_without_rotation",
+              "http::tests::bind_proof_rejects_non_loopback_addresses",
+              "http::tests::bound_http_answers_pending_before_blocked_durable_authentication_and_admits_afterward",
+              "http::tests::concurrent_http_initializers_admit_one_complete_credential",
+              "http::tests::failed_http_authentication_retains_first_cause_and_admits_no_sessions",
+              "http::tests::token_comparison_includes_length",
+              "http::tests::unavailable_authentication_response_keeps_an_oversized_request_id_bounded",
+              "http::tests::unsafe_or_oversized_http_token_files_refuse_without_replacing_or_echoing_bytes",
+              "jsonrpc::reconnect::tests::a_mutating_surface_command_is_not_repeated",
+              "jsonrpc::reconnect::tests::a_mutation_reconnects_without_being_sent_twice",
+              "jsonrpc::reconnect::tests::a_product_fault_does_not_reconnect",
+              "jsonrpc::reconnect::tests::a_read_reconnects_and_returns_its_reply",
+              "jsonrpc::reconnect::tests::a_second_disconnect_parks_the_replacement_for_the_next_call",
+              "jsonrpc::reconnect::tests::daemon_restart_io_kinds_are_reconnectable_but_configuration_errors_are_not",
+              "jsonrpc::reconnect::tests::deterministic_idle_gap_matrix_reconnects_only_after_the_timeout",
+              "jsonrpc::reconnect::tests::every_read_only_surface_variant_is_repeatable",
+              "jsonrpc::reconnect::tests::failed_reconnect_does_not_reuse_the_dead_lease",
+              "jsonrpc::reconnect::tests::reconnect_transfers_the_retired_product_to_the_endpoint",
+              "jsonrpc::reconnect::tests::revision_health_and_graph_query_all_recover",
+              "jsonrpc::reconnect::tests::the_call_after_a_refused_mutation_succeeds",
+              "jsonrpc::tests::a_document_call_returns_the_markdown_page_and_the_typed_answer",
+              "jsonrpc::tests::a_malformed_operand_names_the_argument_and_the_closed_set",
+              "jsonrpc::tests::a_missing_resource_is_refused_rather_than_guessed",
+              "jsonrpc::tests::a_refused_surface_operation_reports_its_typed_cause",
+              "jsonrpc::tests::a_search_call_leads_with_honest_coverage_then_two_lines_per_record",
+              "jsonrpc::tests::adapter_errors_keep_continuation_transport_refusal_separate_from_compiler_facts",
+              "jsonrpc::tests::adapter_errors_keep_valid_json_and_coordinate_protocol_strings_unproven",
+              "jsonrpc::tests::adapter_errors_preserve_typed_compiler_facts_at_exact_boundaries",
+              "jsonrpc::tests::advertised_registry_lookups_reach_the_typed_product_commands",
+              "jsonrpc::tests::an_affordance_is_the_exact_next_tool_call_an_agent_can_paste",
+              "jsonrpc::tests::an_explicit_project_is_active_even_when_the_launch_directory_differs",
+              "jsonrpc::tests::an_outline_call_is_a_tree_of_names_never_bare_digests",
+              "jsonrpc::tests::an_unknown_coordinate_is_refused_with_the_operand_and_a_next_tool_call",
+              "jsonrpc::tests::an_unknown_tool_is_a_protocol_error_not_a_result",
+              "jsonrpc::tests::an_unreachable_endpoint_is_a_fault_with_the_retry_affordance",
+              "jsonrpc::tests::authenticated_continuation_decode_preserves_domain_and_server_fault_distinctions",
+              "jsonrpc::tests::blocking_owner_await_is_not_exposed_over_mcp",
+              "jsonrpc::tests::cancellation_notifications_are_silent_and_do_not_poison_the_session",
+              "jsonrpc::tests::cold_cursor_verification_never_initializes_authority_for_a_forged_token",
+              "jsonrpc::tests::combined_budget_shortens_only_the_readable_preview_with_explicit_provenance",
+              "jsonrpc::tests::continuation_authority_binds_context_and_owner_payload",
+              "jsonrpc::tests::continuation_context_binds_workspace_query_limit_and_detail",
+              "jsonrpc::tests::copied_ticket_string_uses_the_object_decoder_and_preserves_the_owner_ticket",
+              "jsonrpc::tests::deeply_nested_json_is_rejected_before_tool_admission",
+              "jsonrpc::tests::default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapshots",
+              "jsonrpc::tests::dependency_refusal_marks_tool_failure_and_keeps_the_exact_requested_package",
+              "jsonrpc::tests::direct_and_generic_graph_routes_preserve_typed_domain_and_protocol_failures",
+              "jsonrpc::tests::document_and_source_tools_advertise_their_useful_default_detail",
+              "jsonrpc::tests::every_metadata_route_stays_within_the_context_budget",
+              "jsonrpc::tests::every_registry_row_is_reachable_as_exactly_one_tool",
+              "jsonrpc::tests::generic_surface_dependency_refusal_keeps_exact_package_action_and_typed_fault",
+              "jsonrpc::tests::generic_surface_progress_and_cancel_keep_the_request_ticket_projection",
+              "jsonrpc::tests::graph_continuation_round_trip_is_bounded_and_authorized",
+              "jsonrpc::tests::graph_page_text_does_not_treat_cancellation_or_missing_cursor_as_limit_advice",
+              "jsonrpc::tests::graph_query_limits_are_rejected_before_the_product_boundary",
+              "jsonrpc::tests::high_fanout_graph_and_surface_pages_refuse_atomically",
+              "jsonrpc::tests::index_cancel_preserves_terminal_races_and_rejects_fabricated_tickets",
+              "jsonrpc::tests::index_progress_distinguishes_prior_owner_tickets_and_terminal_refusals",
+              "jsonrpc::tests::index_progress_maximum_owner_page_fits_the_combined_mcp_result_budget",
+              "jsonrpc::tests::index_progress_returns_bounded_events_and_the_exact_next_sequence",
+              "jsonrpc::tests::index_requires_its_advertised_path_before_owner_admission",
+              "jsonrpc::tests::index_search_cursor_cannot_cross_between_named_and_generic_mcp_tools",
+              "jsonrpc::tests::index_search_cursor_round_trips_between_servers_with_the_same_workspace_authority",
+              "jsonrpc::tests::index_search_tool_cursor_rejects_context_changes_and_raw_owner_tokens",
+              "jsonrpc::tests::index_search_tool_round_trips_mcp_cursors_at_summary_and_full_detail",
+              "jsonrpc::tests::index_start_keeps_the_exact_owner_ticket_and_routes_purls_to_the_owner_job_api",
+              "jsonrpc::tests::index_tool_advertises_and_validates_execution_intent",
+              "jsonrpc::tests::initialize_negotiates_only_the_library_supported_protocols",
+              "jsonrpc::tests::initialized_notification_cannot_bypass_initialize",
+              "jsonrpc::tests::keyed_index_progress_preserves_durable_owner_evidence_and_rejects_mixed_identities",
+              "jsonrpc::tests::lazy_cursor_authority_is_durable_once_and_replayable_in_a_fresh_server",
+              "jsonrpc::tests::lazy_cursor_authority_retries_after_repair_without_process_key_fallback",
+              "jsonrpc::tests::malformed_call_tool_envelopes_and_unknown_routes_remain_rpc_errors",
+              "jsonrpc::tests::malformed_or_expired_cursor_does_not_admit_a_workspace_authority",
+              "jsonrpc::tests::mcp_text_is_the_same_shared_markdown_the_cli_renders",
+              "jsonrpc::tests::missing_index_path_returns_actionable_structured_usage_before_owner_work",
+              "jsonrpc::tests::missing_required_mcp_argument_names_the_tool_field_not_cli_usage",
+              "jsonrpc::tests::newline_codec_is_bounded_and_compact",
+              "jsonrpc::tests::newline_codec_rejects_malformed_and_oversized_jsonrpc_frames",
+              "jsonrpc::tests::outline_resource_templates_preserve_readable_and_absent_projects",
+              "jsonrpc::tests::oversized_signed_index_search_cursor_projection_is_refused_without_truncation",
+              "jsonrpc::tests::owner_index_job_tools_advertise_exact_tickets_and_immediate_progress",
+              "jsonrpc::tests::partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_same_mcp_wire_result",
+              "jsonrpc::tests::recognized_tools_share_typed_missing_input_results_before_any_owner_call",
+              "jsonrpc::tests::registry_lookup_tools_are_advertised_with_bounded_typed_inputs",
+              "jsonrpc::tests::registry_schema_primitive_types_are_enforced_before_the_product_boundary",
+              "jsonrpc::tests::resource_discovery_needs_no_owner_and_outline_reads_preserve_protocol_failure",
+              "jsonrpc::tests::resources_are_the_same_markdown_their_tools_return",
+              "jsonrpc::tests::semantic_shapes_actual_jsonrpc_preserves_full_view_in_summary_and_full",
+              "jsonrpc::tests::semantic_shapes_jsonrpc_refuses_oversized_view_without_dropping_required_facts",
+              "jsonrpc::tests::semantic_versions_jsonrpc_keeps_true_oversize_refusals_atomic",
+              "jsonrpc::tests::semantic_versions_jsonrpc_preserves_captured_semver_and_matches_the_cli_projection",
+              "jsonrpc::tests::simultaneous_lazy_cursor_admission_uses_one_durable_identity",
+              "jsonrpc::tests::stale_graph_roots_are_reported_as_a_restartable_cursor_error",
+              "jsonrpc::tests::stale_named_index_search_cursor_is_a_restartable_refusal",
+              "jsonrpc::tests::stale_surface_index_search_cursor_is_reported_as_restartable",
+              "jsonrpc::tests::status_is_a_rollup_a_reader_can_hold_not_a_capability_dump",
+              "jsonrpc::tests::surface_errors_keep_valid_compiler_json_and_coordinates_as_unproven_protocol",
+              "jsonrpc::tests::surface_errors_preserve_typed_compiler_facts_across_all_job_routes",
+              "jsonrpc::tests::surface_index_search_cursor_binds_query_limit_project_and_detail",
+              "jsonrpc::tests::surface_index_search_cursor_round_trips_through_the_mcp_projection",
+              "jsonrpc::tests::the_handshake_reports_the_stable_protocol_and_its_instructions",
+              "jsonrpc::tests::the_packages_call_states_readiness_for_every_project",
+              "jsonrpc::tests::the_query_card_carries_worked_queries_over_the_declared_schema",
+              "jsonrpc::tests::the_references_tool_serves_occurrence_sites_with_source_spans",
+              "jsonrpc::tests::the_session_list_hides_the_surface_escape_hatch",
+              "jsonrpc::tests::the_session_tool_list_leads_with_packages_and_index",
+              "jsonrpc::tests::the_surface_escape_hatch_returns_the_typed_reply_and_a_readable_block",
+              "jsonrpc::tests::the_typed_query_lane_reports_its_terminal_and_revision",
+              "jsonrpc::tests::tool_catalog_names_callable_routes_without_advertising_unready_surfaces",
+              "jsonrpc::tests::tree_open_routes_record_the_initialized_mcp_client",
+              "jsonrpc::tests::wire_budget_metadata_counts_the_complete_escaped_jsonrpc_line",
+              "process::tests::stdio_metadata_answers_when_durable_workspace_admission_is_unavailable",
+              "process::tests::stdio_metadata_does_not_initialize_a_new_workspace",
+              "tests::certified_framed_dispatch_admits_identity_before_presentation",
+              "tests::embedded_client_rejects_an_intent_for_another_package_before_execution",
+              "tests::endpoint_error_extracts_correlation_without_admitting_claims",
+              "tests::endpoint_error_keeps_a_valid_request_id",
+              "tests::framed_dispatch_preserves_cli_reply_shape",
+              "tests::frames_are_bounded_and_round_trip",
+              "tests::graph_requests_retain_their_revision_for_endpoint_admission",
+              "tests::health_cannot_be_claimed_without_a_producer_certificate",
+              "tests::in_process_client_does_not_cache_replies",
+              "tests::injected_transport_checks_basis_and_freshness",
+              "tests::malformed_request_gets_a_framed_reply",
+              "tests::mcp_admission_bounds_requests_and_replies",
+              "tests::mcp_outer_frame_matches_the_canonical_local_codec",
+              "tests::replies_must_match_the_requested_command_shape",
+              "tests::request_encoding_rejects_a_certificate_for_another_package",
+              "tests::unix_endpoint_path_is_bounded",
+              "tests::unix_transport_consumes_producer_certified_success_without_expected_cache",
+              "tests::unix_transport_executes_one_correlated_request",
+              "tests::unix_transport_rejects_digest_only_identity_success"
+            ],
+            "options": [
+              "--list",
+              "--skip",
+              "process::tests::stdio_returns_correlated_mcp_error_when_owner_startup_fails"
+            ]
+          },
+          "elapsed_seconds": 0.8692810349166393,
+          "test_summaries": []
+        },
+        {
+          "gate": "gate-02",
+          "sha256": "2b2a08eadd941f8496bcfa404185734b2e05c0d0ba3a8cc84870abc171ed17c3",
+          "job": {
+            "filter": "process::tests::stdio_returns_correlated_mcp_error_when_owner_startup_fails",
+            "image": "backend_mcp",
+            "kind": "inventory",
+            "names": [
+              "process::tests::stdio_returns_correlated_mcp_error_when_owner_startup_fails"
+            ],
+            "options": [
+              "--list",
+              "--exact"
+            ]
+          },
+          "elapsed_seconds": 0.5958598520373926,
+          "test_summaries": []
+        },
+        {
+          "gate": "gate-03",
+          "sha256": "ede851cc4fc86dfd281d470528756d74c1aeab9e50d52eeb79869ae9e1c98e22",
+          "job": {
+            "count": 133,
+            "filter": "",
+            "image": "backend_mcp",
+            "kind": "native",
+            "options": [
+              "--nocapture",
+              "--test-threads=1",
+              "--skip",
+              "process::tests::stdio_returns_correlated_mcp_error_when_owner_startup_fails"
+            ]
+          },
+          "elapsed_seconds": 138.41526871698443,
+          "test_summaries": [
+            {
+              "failed": 0,
+              "ignored": 0,
+              "passed": 133
+            }
+          ]
+        }
+      ],
+      "native_counts": {
+        "passed": 133,
+        "failed": 0,
+        "ignored": 0
+      },
+      "return_receipt_sha256": "ebca394ee0a45707387961b11ddeb223547aee2ecae0e1b6eba3f8a3252714a8",
+      "overall_return_pass": false,
+      "failure": {
+        "error": "AssertionError('Exact single owned old-companion refusal child must be observed; no publication or cleanup guess')",
+        "traceback": "Traceback (most recent call last):\n  File \"/root/sol61-current-product-recovery-20261009/native-currenta844-mcp-attempt01/supervisor.py\", line 293, in <module>\n    for i,job in enumerate(plan['jobs']):run_job(i,job)\n                                         ~~~~~~~^^^^^^^\n  File \"/root/sol61-current-product-recovery-20261009/native-currenta844-mcp-attempt01/supervisor.py\", line 214, in run_job\n    assert len(old_observed)==1, 'Exact single owned old-companion refusal child must be observed; no publication or cleanup guess'\n           ^^^^^^^^^^^^^^^^^^^^\nAssertionError: Exact single owned old-companion refusal child must be observed; no publication or cleanup guess\n",
+        "utc": "2026-10-09T08:00:10.426597+00:00"
+      },
+      "native_images": {
+        "backend_mcp": {
+          "bytes": 1223384304,
+          "cargo_artifact": {
+            "executable": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_mcp-ff9579e6d88e1efa",
+            "features": [
+              "default"
+            ],
+            "filenames": [
+              "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_mcp-ff9579e6d88e1efa"
+            ],
+            "fresh": false,
+            "manifest_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/apps/mcp/Cargo.toml",
+            "package_id": "path+file:///root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/apps/mcp#backend-mcp@0.2.0",
+            "profile": {
+              "debug_assertions": true,
+              "debuginfo": 1,
+              "opt_level": "0",
+              "overflow_checks": true,
+              "test": true
+            },
+            "reason": "compiler-artifact",
+            "target": {
+              "crate_types": [
+                "lib"
+              ],
+              "doc": true,
+              "doctest": true,
+              "edition": "2024",
+              "kind": [
+                "lib"
+              ],
+              "name": "backend_mcp",
+              "src_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/apps/mcp/src/lib.rs",
+              "test": true
+            }
+          },
+          "device": 66309,
+          "fresh": false,
+          "inode": 6859765,
+          "mode": 448,
+          "path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_mcp-ff9579e6d88e1efa",
+          "sha256": "bb830785ed9cb5b58ab968e5e465d9049f02d5f059832089449d0a896ec39ddb",
+          "source": {
+            "commit": "a844549206a5ac77715372e12a74cf77b34a6fe5",
+            "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+            "status": "",
+            "tree": "e35cc3f2cca6f10d9d4c6e3fa2b2c4ffcf70d5d0"
+          }
+        }
+      }
+    },
+    {
+      "epoch": "native-current7270bf-remaining08-attempt01",
+      "archive_sha256": "649e493c874009212a7599a8366d67d763e94f054976ec9593efce012980af05",
+      "raw_files_rehashed": 72,
+      "source": {
+        "manifest_sha256": "42b9a7c7d287e63d5d5eb04d66534b7ab982ccdeed6d37e6a7bfede78593a3f8",
+        "source": {
+          "commit": "7270bf9d3fc80cd952d811218a8b9c80786b7097",
+          "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+          "status": "",
+          "tree": "a1b611798af3e7ea096d76fa5f15a612ad4c3a26"
+        },
+        "git_blobs_rehashed": 18019,
+        "gitlinks_reference_only": [
+          {
+            "git_oid": "052ad81a7dbb6efed34ea482ae6c7e2e6f6682e0",
+            "path": "server/index/turso",
+            "reference_only": true
+          }
+        ]
+      },
+      "receipts": [
+        {
+          "gate": "gate-00",
+          "sha256": "fa0c21c2706b0dafa620dc80e0e46f5cd6285197f442dae7438d32161b4b8db1",
+          "job": {
+            "filter": "written_return_owner_is_the_innermost_function_site",
+            "image": "backend_frontend_python",
+            "kind": "inventory",
+            "names": [
+              "legacy::checker::project_native::tests::written_return_owner_is_the_innermost_function_site"
+            ],
+            "options": [
+              "--list"
+            ]
+          },
+          "elapsed_seconds": 0.17402515304274857,
+          "test_summaries": []
+        },
+        {
+          "gate": "gate-01",
+          "sha256": "1fc1e71a4f02a711c121d151224e90341d9b995167ba15ca1f15aa18bb4b4e01",
+          "job": {
+            "filter": "native_",
+            "image": "python_project",
+            "kind": "inventory",
+            "names": [
+              "native_project_restores_cross_module_definitions_preserving_utf8",
+              "native_relative_import_aliases_retain_exact_selected_function_coordinates",
+              "native_empty_package_initializers_are_not_named_declaration_targets",
+              "captured_baseline_preserves_native_cross_file_facts_and_unfiltered_diagnostics",
+              "native_interface_attributes_keep_executable_and_stub_fallback_coordinates"
+            ],
+            "options": [
+              "--list",
+              "--skip",
+              "native_project_cannot_bind_uncaptured_files_or_external_configured_roots",
+              "--skip",
+              "native_compiled_dependency_is_typed_unavailable_with_a_membership_witness",
+              "--skip",
+              "native_unsupported_projection_keeps_its_constructor_and_original_range",
+              "--skip",
+              "selected_package_root_preserves_real_module_leaf_and_native_call_coordinates"
+            ]
+          },
+          "elapsed_seconds": 0.7608190760947764,
+          "test_summaries": []
+        },
+        {
+          "gate": "gate-02",
+          "sha256": "41b22106aee077c2a7ee16e1a62641934a84be25d326239631d737cdc69942cf",
+          "job": {
+            "filter": "compiler_fault_tests::partial_publication_keeps_useful_languages_all_refusals_and_exact_machine_basis",
+            "image": "backend_present",
+            "kind": "inventory",
+            "names": [
+              "compiler_fault_tests::partial_publication_keeps_useful_languages_all_refusals_and_exact_machine_basis"
+            ],
+            "options": [
+              "--list",
+              "--exact"
+            ]
+          },
+          "elapsed_seconds": 0.14880870701745152,
+          "test_summaries": []
+        },
+        {
+          "gate": "gate-03",
+          "sha256": "d77eb09bdb79f20add0de21ad951b43c80d5b9f786aaf14f56fbdc7aa1aa3084",
+          "job": {
+            "filter": "tests::admitted_durable_partial_matches_ticket_fault_and_cli_exit_without_inventing_source_facts",
+            "image": "backend_cli",
+            "kind": "inventory",
+            "names": [
+              "tests::admitted_durable_partial_matches_ticket_fault_and_cli_exit_without_inventing_source_facts"
+            ],
+            "options": [
+              "--list",
+              "--exact"
+            ]
+          },
+          "elapsed_seconds": 0.6649749900680035,
+          "test_summaries": []
+        },
+        {
+          "gate": "gate-04",
+          "sha256": "13b791ee209284d17ce182f9e982253cf3d68195335b58878011b74aa6413b8b",
+          "job": {
+            "count": 1,
+            "filter": "written_return_owner_is_the_innermost_function_site",
+            "image": "backend_frontend_python",
+            "kind": "native",
+            "options": [
+              "--nocapture",
+              "--test-threads=1"
+            ]
+          },
+          "elapsed_seconds": 1.174695503897965,
+          "test_summaries": [
+            {
+              "failed": 0,
+              "ignored": 0,
+              "passed": 1
+            }
+          ]
+        },
+        {
+          "gate": "gate-05",
+          "sha256": "d5ba571449b842d1c72d88edc39da7ef53c6faca99e12560a618816c1acce861",
+          "job": {
+            "count": 5,
+            "filter": "native_",
+            "image": "python_project",
+            "kind": "native",
+            "options": [
+              "--nocapture",
+              "--test-threads=1",
+              "--skip",
+              "native_project_cannot_bind_uncaptured_files_or_external_configured_roots",
+              "--skip",
+              "native_compiled_dependency_is_typed_unavailable_with_a_membership_witness",
+              "--skip",
+              "native_unsupported_projection_keeps_its_constructor_and_original_range",
+              "--skip",
+              "selected_package_root_preserves_real_module_leaf_and_native_call_coordinates"
+            ]
+          },
+          "elapsed_seconds": 31.01543271599803,
+          "test_summaries": [
+            {
+              "failed": 0,
+              "ignored": 0,
+              "passed": 5
+            }
+          ]
+        },
+        {
+          "gate": "gate-06",
+          "sha256": "dab94f2906dbb3267033b9f353ba61d5be773a7aed4f5edf393d4e3225757d42",
+          "job": {
+            "count": 1,
+            "filter": "compiler_fault_tests::partial_publication_keeps_useful_languages_all_refusals_and_exact_machine_basis",
+            "image": "backend_present",
+            "kind": "native",
+            "options": [
+              "--nocapture",
+              "--test-threads=1",
+              "--exact"
+            ]
+          },
+          "elapsed_seconds": 1.6638201620662585,
+          "test_summaries": [
+            {
+              "failed": 0,
+              "ignored": 0,
+              "passed": 1
+            }
+          ]
+        },
+        {
+          "gate": "gate-07",
+          "sha256": "cdb41101afa2a3fb149ee184cd5bd1a80908611034dcb40d6f4fe8f77aabdb9b",
+          "job": {
+            "count": 1,
+            "filter": "tests::admitted_durable_partial_matches_ticket_fault_and_cli_exit_without_inventing_source_facts",
+            "image": "backend_cli",
+            "kind": "native",
+            "options": [
+              "--nocapture",
+              "--test-threads=1",
+              "--exact"
+            ]
+          },
+          "elapsed_seconds": 0.2680493440711871,
+          "test_summaries": [
+            {
+              "failed": 0,
+              "ignored": 0,
+              "passed": 1
+            }
+          ]
+        }
+      ],
+      "native_counts": {
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0
+      },
+      "return_receipt_sha256": "694f78388719dc7bfe2712901c6a19f0e9cf53b20768aa1b08181b4c2d815e3f",
+      "overall_return_pass": true,
+      "failure": null,
+      "native_images": {
+        "backend_cli": {
+          "bytes": 1331444384,
+          "cargo_artifact": {
+            "executable": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_cli-6919463b592c2392",
+            "features": [],
+            "filenames": [
+              "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_cli-6919463b592c2392"
+            ],
+            "fresh": false,
+            "manifest_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/apps/cli/Cargo.toml",
+            "package_id": "path+file:///root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/apps/cli#backend-cli@0.2.0",
+            "profile": {
+              "debug_assertions": true,
+              "debuginfo": 1,
+              "opt_level": "0",
+              "overflow_checks": true,
+              "test": true
+            },
+            "reason": "compiler-artifact",
+            "target": {
+              "crate_types": [
+                "lib"
+              ],
+              "doc": true,
+              "doctest": true,
+              "edition": "2024",
+              "kind": [
+                "lib"
+              ],
+              "name": "backend_cli",
+              "src_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/apps/cli/src/lib.rs",
+              "test": true
+            }
+          },
+          "device": 66309,
+          "fresh": false,
+          "inode": 6859778,
+          "mode": 448,
+          "path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_cli-6919463b592c2392",
+          "preserved_path": "/root/sol61-current-product-recovery-20261009/native-current7270bf-remaining08-attempt01/images/backend_cli",
+          "sha256": "7ffe9bab29c8f366e5890076262c9eb42765694dbdfd96b1a6538dd5e1a3fa35",
+          "source": {
+            "commit": "7270bf9d3fc80cd952d811218a8b9c80786b7097",
+            "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+            "status": "",
+            "tree": "a1b611798af3e7ea096d76fa5f15a612ad4c3a26"
+          }
+        },
+        "backend_frontend_python": {
+          "bytes": 294553488,
+          "cargo_artifact": {
+            "executable": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_frontend_python-6b780162ef21e05b",
+            "features": [],
+            "filenames": [
+              "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_frontend_python-6b780162ef21e05b"
+            ],
+            "fresh": false,
+            "manifest_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python/Cargo.toml",
+            "package_id": "path+file:///root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python#backend-frontend-python@0.2.0",
+            "profile": {
+              "debug_assertions": true,
+              "debuginfo": 1,
+              "opt_level": "0",
+              "overflow_checks": true,
+              "test": true
+            },
+            "reason": "compiler-artifact",
+            "target": {
+              "crate_types": [
+                "lib"
+              ],
+              "doc": true,
+              "doctest": true,
+              "edition": "2024",
+              "kind": [
+                "lib"
+              ],
+              "name": "backend_frontend_python",
+              "src_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python/lib.rs",
+              "test": true
+            }
+          },
+          "device": 66309,
+          "fresh": false,
+          "inode": 6859749,
+          "mode": 448,
+          "path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_frontend_python-6b780162ef21e05b",
+          "preserved_path": "/root/sol61-current-product-recovery-20261009/native-current7270bf-remaining08-attempt01/images/backend_frontend_python",
+          "sha256": "d04c14c4ef90b1bd246baf32650ef5c7050b04c0a469a3c3d49a78c1ca02c792",
+          "source": {
+            "commit": "7270bf9d3fc80cd952d811218a8b9c80786b7097",
+            "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+            "status": "",
+            "tree": "a1b611798af3e7ea096d76fa5f15a612ad4c3a26"
+          }
+        },
+        "backend_present": {
+          "bytes": 1107296000,
+          "cargo_artifact": {
+            "executable": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_present-d80681ee13d9e755",
+            "features": [],
+            "filenames": [
+              "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_present-d80681ee13d9e755"
+            ],
+            "fresh": false,
+            "manifest_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/crates/present/Cargo.toml",
+            "package_id": "path+file:///root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/crates/present#backend-present@0.2.0",
+            "profile": {
+              "debug_assertions": true,
+              "debuginfo": 1,
+              "opt_level": "0",
+              "overflow_checks": true,
+              "test": true
+            },
+            "reason": "compiler-artifact",
+            "target": {
+              "crate_types": [
+                "lib"
+              ],
+              "doc": true,
+              "doctest": true,
+              "edition": "2024",
+              "kind": [
+                "lib"
+              ],
+              "name": "backend_present",
+              "src_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/crates/present/lib.rs",
+              "test": true
+            }
+          },
+          "device": 66309,
+          "fresh": false,
+          "inode": 6859759,
+          "mode": 448,
+          "path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/backend_present-d80681ee13d9e755",
+          "preserved_path": "/root/sol61-current-product-recovery-20261009/native-current7270bf-remaining08-attempt01/images/backend_present",
+          "sha256": "1f8f5403ec11099466d349275ff6ea6aa85244f98d7d626d21b28ca7be4a0659",
+          "source": {
+            "commit": "7270bf9d3fc80cd952d811218a8b9c80786b7097",
+            "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+            "status": "",
+            "tree": "a1b611798af3e7ea096d76fa5f15a612ad4c3a26"
+          }
+        },
+        "python_project": {
+          "bytes": 347717896,
+          "cargo_artifact": {
+            "executable": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/python_project-be8f5c7fa4d5b536",
+            "features": [],
+            "filenames": [
+              "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/python_project-be8f5c7fa4d5b536"
+            ],
+            "fresh": false,
+            "manifest_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python/Cargo.toml",
+            "package_id": "path+file:///root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python#backend-frontend-python@0.2.0",
+            "profile": {
+              "debug_assertions": true,
+              "debuginfo": 1,
+              "opt_level": "0",
+              "overflow_checks": true,
+              "test": true
+            },
+            "reason": "compiler-artifact",
+            "target": {
+              "crate_types": [
+                "bin"
+              ],
+              "doc": false,
+              "doctest": false,
+              "edition": "2024",
+              "kind": [
+                "test"
+              ],
+              "name": "python_project",
+              "src_path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/frontends/python/tests/python_project.rs",
+              "test": true
+            }
+          },
+          "device": 66309,
+          "fresh": false,
+          "inode": 6859751,
+          "mode": 448,
+          "path": "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/python_project-be8f5c7fa4d5b536",
+          "preserved_path": "/root/sol61-current-product-recovery-20261009/native-current7270bf-remaining08-attempt01/images/python_project",
+          "sha256": "ee999432ddda57fcf907bf1865d3e1844cc2f6bb634518b256f2b698355780f1",
+          "source": {
+            "commit": "7270bf9d3fc80cd952d811218a8b9c80786b7097",
+            "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+            "status": "",
+            "tree": "a1b611798af3e7ea096d76fa5f15a612ad4c3a26"
+          }
+        }
+      }
+    }
+  ],
+  "independent_remote_mcp_image_sha256": "bb830785ed9cb5b58ab968e5e465d9049f02d5f059832089449d0a896ec39ddb",
+  "limits": [
+    "Separate source/native epochs; counts do not describe one end-to-end cohort.",
+    "Qualified startup-refusal control stdout passes but child observer fails; no positive acceptance credit.",
+    "Native test images do not prove installed matching CLI/MCP/local-service, public projects, GUI, or release readiness.",
+    "Remaining-eight uses preserved genuine 7270 images; no new compiler invocation is asserted.",
+    "Partial publication and unresolved saved-operation recovery still require public large-project verification."
+  ],
+  "owned_mcp_rustc_observation": {
+    "argv": [
+      "/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/rustc",
+      "--crate-name",
+      "backend_mcp",
+      "--edition=2024",
+      "apps/mcp/src/lib.rs",
+      "--error-format=json",
+      "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+      "--emit=dep-info,link",
+      "-C",
+      "embed-bitcode=no",
+      "-C",
+      "debuginfo=1",
+      "--warn=clippy::pedantic",
+      "--warn=clippy::all",
+      "--deny=clippy::unwrap_used",
+      "--warn=unused_qualifications",
+      "--warn=unused_lifetimes",
+      "--deny=unsafe_code",
+      "--warn=unreachable_pub",
+      "--deny=clippy::unimplemented",
+      "--deny=clippy::todo",
+      "--warn=clippy::panic",
+      "--warn=missing_docs",
+      "--deny=clippy::mem_forget",
+      "--warn=clippy::expect_used",
+      "--deny=clippy::dbg_macro",
+      "--test",
+      "--cfg",
+      "feature=\"default\"",
+      "--check-cfg",
+      "cfg(docsrs,test)",
+      "--check-cfg",
+      "cfg(feature, values(\"default\", \"token-budget\"))",
+      "-C",
+      "metadata=cff3db1b09913d6f",
+      "-C",
+      "extra-filename=-ff9579e6d88e1efa",
+      "--out-dir",
+      "/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps",
+      "-L",
+      "dependency=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps",
+      "--extern",
+      "axum=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libaxum-67e4c31df4f6f720.rlib",
+      "--extern",
+      "backend_client=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libbackend_client-b4df3e229caa2f9a.rlib",
+      "--extern",
+      "backend_engine=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libbackend_engine-a10d875011a281eb.rlib",
+      "--extern",
+      "backend_extension_trustfall=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libbackend_extension_trustfall-18f48c39b39da70f.rlib",
+      "--extern",
+      "backend_library=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libbackend_library-2926c349e12dc8f9.rlib",
+      "--extern",
+      "backend_platform=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libbackend_platform-ac164a5b9fe7b1d8.rlib",
+      "--extern",
+      "backend_present=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libbackend_present-7d6f936db93842ca.rlib",
+      "--extern",
+      "backend_replication=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libbackend_replication-b278db59895cf577.rlib",
+      "--extern",
+      "backend_runtime=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libbackend_runtime-77df1f26eaba3ea9.rlib",
+      "--extern",
+      "backend_semantic=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libbackend_semantic-4c486d9d0090eefa.rlib",
+      "--extern",
+      "backend_version=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libbackend_version-3414d6ee52af4b1a.rlib",
+      "--extern",
+      "base64=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libbase64-063a52b36efb04d8.rlib",
+      "--extern",
+      "blake3=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libblake3-d081509858b27eb3.rlib",
+      "--extern",
+      "futures_executor=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libfutures_executor-90b1e8948cff2298.rlib",
+      "--extern",
+      "futures_util=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libfutures_util-fb1c885fadf81e21.rlib",
+      "--extern",
+      "serde=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libserde-946473947ef86fdc.rlib",
+      "--extern",
+      "serde_json=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libserde_json-cfbf9337d0620de6.rlib",
+      "--extern",
+      "tokio=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/deps/libtokio-3310114c7e79585a.rlib",
+      "-L",
+      "native=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/build/blake3-74e9753efaf66203/out",
+      "-L",
+      "native=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/build/blake3-74e9753efaf66203/out",
+      "-L",
+      "native=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/build/ring-6cbe8ac372989d7f/out",
+      "-L",
+      "native=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/build/simsimd-476ca54da200cc17/out",
+      "-L",
+      "native=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/build/tree-sitter-d21153747836e99b/out",
+      "-L",
+      "native=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/build/zstd-sys-468d58cbf6cf4ce7/out",
+      "-L",
+      "native=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/build/tree-sitter-cpp-b3beaec67a98eebb/out",
+      "-L",
+      "native=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/build/tree-sitter-c-sharp-b10245ff9b2474ab/out",
+      "-L",
+      "native=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/build/tree-sitter-go-bfa122463ae66f80/out",
+      "-L",
+      "native=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/build/tree-sitter-java-df87dfe1c97e961c/out",
+      "-L",
+      "native=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/build/tikv-jemalloc-sys-fb3329f060f8e8cf/out/build/lib",
+      "-L",
+      "native=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/build/tree-sitter-python-31fd3b9c4459bcc5/out",
+      "-L",
+      "native=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/build/tree-sitter-rust-b9ef61c5d00de656/out",
+      "-L",
+      "native=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/build/tree-sitter-typescript-77e4aefa28ea04ba/out",
+      "-L",
+      "native=/root/codex-worktrees/sol61-cli-mcp-tail-9165-20261008/.local/cli-mcp-tail-role/.nudox-cargo/slot-0/debug/build/psm-762e897fa0f49616/out"
+    ],
+    "gate": "gate-00",
+    "last_observed_utc": "2026-10-09T07:57:13.336543+00:00",
+    "pgid": 1995531,
+    "pid": 2007669,
+    "start_ticks": "87674474",
+    "state": "S"
+  },
+  "exact_nineteen_postimages": {
+    "canonical_base": "86f1f20f1339c779f3e6f715d89e105fd7b7f6b5",
+    "actual_native_producer_source": "a844549206a5ac77715372e12a74cf77b34a6fe5",
+    "patch": "/private/tmp/sol61-current-product-recovery-20261009/durable-partial-mcp19-over-canonical86f1.patch",
+    "patch_sha256": "f252a72416f86001641e672b33e5dff0dfd107ef9ea8f83f8f852d68e5891a69",
+    "paths": [
+      {
+        "path": "Cargo.lock",
+        "bytes": 422873,
+        "sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+        "git_blob": "bf1844960e73b47b51e77716c1ee7e1e898d9d47"
+      },
+      {
+        "path": "apps/cli/src/process.rs",
+        "bytes": 15303,
+        "sha256": "a7503f8fb5e39549f5f07fe7cc91ae8c02dfcb1fd81b9d1fa73d0eee5b06dd30",
+        "git_blob": "0cbe358927e559bcf391dc772c888fca8066c5a5"
+      },
+      {
+        "path": "apps/cli/src/run.rs",
+        "bytes": 5157,
+        "sha256": "ac788704244ba1b46b1017fdf95e0dbbe8bf5a2c356724d52a0d7f858e330c4f",
+        "git_blob": "3eb8fcbdfdd8736eee01e3419f9acda53007ba0d"
+      },
+      {
+        "path": "apps/cli/src/tests.rs",
+        "bytes": 59317,
+        "sha256": "c5d5ee5e41c727cdc58f973a3bdc9e065237fd9558a159f5da2cb77f15db70a5",
+        "git_blob": "824bdb9ea8792af869b2d81ed53ec7ce198274dc"
+      },
+      {
+        "path": "apps/mcp/src/jsonrpc.rs",
+        "bytes": 75112,
+        "sha256": "15dbe18350b2406034fc2555fc07aa0cd4e3b8d6196a0804ac299e1e551f062b",
+        "git_blob": "87645b272e81f9c50564cebda5aa98b9a6b9ac43"
+      },
+      {
+        "path": "apps/mcp/src/jsonrpc/reconnect.rs",
+        "bytes": 42338,
+        "sha256": "9b1102c3db8a232ae85a42dafac0319197c7c684d8133fb73da2b794d8011d35",
+        "git_blob": "6623eb110d26b029b6f3ce3e2b23571a0f87feac"
+      },
+      {
+        "path": "apps/mcp/src/jsonrpc/tests.rs",
+        "bytes": 182370,
+        "sha256": "5f0fc260ad1cda3b1ca0cb842caf7954e3ed31eaef1ee16e7ed5c9a9c5dc3c59",
+        "git_blob": "4ebea06ca30b1efbff30a259a9ac24165ea7fb7b"
+      },
+      {
+        "path": "apps/mcp/src/jsonrpc/tools.rs",
+        "bytes": 24724,
+        "sha256": "6a2e7a488001752fbaaa3a4fe7482fce1329ad33050756928de9d581804b2067",
+        "git_blob": "41f9a3349f78122ae1ce719364bc0b2af50233ce"
+      },
+      {
+        "path": "crates/client/Cargo.toml",
+        "bytes": 819,
+        "sha256": "62226d5dd7e2c49d63282246a6dff0a8ef3257b7039968b6784674f2aac22e0d",
+        "git_blob": "ee49c8a31fe22645f64b6adc0e52aa67e671e8ac"
+      },
+      {
+        "path": "crates/client/src/index_operation.rs",
+        "bytes": 31666,
+        "sha256": "baf52d3184c5840cee585f6d521e1d824232e41c2740f0b47e5204faf9a62c31",
+        "git_blob": "f07e692015f5bc8a7a653e5c29545a149a207e21"
+      },
+      {
+        "path": "crates/client/src/lib.rs",
+        "bytes": 89378,
+        "sha256": "e8875e644775b36c607855d9ddb01d3eadf7f90efc77afdfd1422c63e64e1edf",
+        "git_blob": "e482bf25f76610abb06c5098cbaf047c8cd27e6a"
+      },
+      {
+        "path": "crates/present/call.rs",
+        "bytes": 37935,
+        "sha256": "b26f41baee26b6d4f371aa20f825cb20a81c3f9e3794595576dc355647c2688f",
+        "git_blob": "3cde049c24437c99878b9eda3945c264c1ca5d0a"
+      },
+      {
+        "path": "crates/present/drive.rs",
+        "bytes": 28176,
+        "sha256": "f21348e8ce473972c9fef02a637b58325e46975e77b8a83e937426c282f239f3",
+        "git_blob": "de42fdd7817d3fd57c53fd15648e33716dab00ba"
+      },
+      {
+        "path": "crates/present/fault.rs",
+        "bytes": 34120,
+        "sha256": "b2548b64a2467e7fd8caea179d9cd3d00f6970b95dc7933a6aae84a8d0c97769",
+        "git_blob": "111bc4fc8041da6523bb58861aca4be90e2f1ab9"
+      },
+      {
+        "path": "crates/present/grammar.rs",
+        "bytes": 44977,
+        "sha256": "b69937d57ead3e99715c16371136bb62a4d5ce88945424a493d2dc1435e1fa74",
+        "git_blob": "355547833b3121fd1c0bd297c8c6050f136bd64c"
+      },
+      {
+        "path": "crates/present/product.rs",
+        "bytes": 173040,
+        "sha256": "6b320dd2e3ce179c97dbc880804455afa1ea3c94e896cdd5466df8b2574db9b3",
+        "git_blob": "a997aa427a9bfe6e92195e16dc61a1b15dba7261"
+      },
+      {
+        "path": "crates/present/render/markdown.rs",
+        "bytes": 19466,
+        "sha256": "41dbd8ced760588c32d318d4b61f7b3debb33bf52d56b359ea707a07b432e725",
+        "git_blob": "12062cbd61ac22b185c07da920a0c32417146307"
+      },
+      {
+        "path": "crates/present/render/text.rs",
+        "bytes": 24231,
+        "sha256": "9c6628a291dd620ee3e5517970be49a0ec85364dd91d5afe82e65a597f975a10",
+        "git_blob": "6b62b489b8e255a1bc7f3bf416b32988222366e7"
+      },
+      {
+        "path": "crates/present/tests.rs",
+        "bytes": 60246,
+        "sha256": "ffff63a7a241c1afcc1daedeaa570d17b9aff8dddc057e7200de9a27c30f53a8",
+        "git_blob": "50fe077eb31f8377d75ec17a0f81afac677b030a"
+      }
+    ],
+    "scope": "Exact nineteen candidate postimages over canonical86f1; preserve all canonical audit/readiness docs. No claim that a844 images are canonical or that pending MCP gates passed."
+  },
+  "current_mcp_exact_inventory_and_pass_names": [
+    "http::tests::automatic_http_token_is_private_and_survives_restart_without_rotation",
+    "http::tests::bind_proof_rejects_non_loopback_addresses",
+    "http::tests::bound_http_answers_pending_before_blocked_durable_authentication_and_admits_afterward",
+    "http::tests::concurrent_http_initializers_admit_one_complete_credential",
+    "http::tests::failed_http_authentication_retains_first_cause_and_admits_no_sessions",
+    "http::tests::token_comparison_includes_length",
+    "http::tests::unavailable_authentication_response_keeps_an_oversized_request_id_bounded",
+    "http::tests::unsafe_or_oversized_http_token_files_refuse_without_replacing_or_echoing_bytes",
+    "jsonrpc::reconnect::tests::a_mutating_surface_command_is_not_repeated",
+    "jsonrpc::reconnect::tests::a_mutation_reconnects_without_being_sent_twice",
+    "jsonrpc::reconnect::tests::a_product_fault_does_not_reconnect",
+    "jsonrpc::reconnect::tests::a_read_reconnects_and_returns_its_reply",
+    "jsonrpc::reconnect::tests::a_second_disconnect_parks_the_replacement_for_the_next_call",
+    "jsonrpc::reconnect::tests::daemon_restart_io_kinds_are_reconnectable_but_configuration_errors_are_not",
+    "jsonrpc::reconnect::tests::deterministic_idle_gap_matrix_reconnects_only_after_the_timeout",
+    "jsonrpc::reconnect::tests::every_read_only_surface_variant_is_repeatable",
+    "jsonrpc::reconnect::tests::failed_reconnect_does_not_reuse_the_dead_lease",
+    "jsonrpc::reconnect::tests::reconnect_transfers_the_retired_product_to_the_endpoint",
+    "jsonrpc::reconnect::tests::revision_health_and_graph_query_all_recover",
+    "jsonrpc::reconnect::tests::the_call_after_a_refused_mutation_succeeds",
+    "jsonrpc::tests::a_document_call_returns_the_markdown_page_and_the_typed_answer",
+    "jsonrpc::tests::a_malformed_operand_names_the_argument_and_the_closed_set",
+    "jsonrpc::tests::a_missing_resource_is_refused_rather_than_guessed",
+    "jsonrpc::tests::a_refused_surface_operation_reports_its_typed_cause",
+    "jsonrpc::tests::a_search_call_leads_with_honest_coverage_then_two_lines_per_record",
+    "jsonrpc::tests::adapter_errors_keep_continuation_transport_refusal_separate_from_compiler_facts",
+    "jsonrpc::tests::adapter_errors_keep_valid_json_and_coordinate_protocol_strings_unproven",
+    "jsonrpc::tests::adapter_errors_preserve_typed_compiler_facts_at_exact_boundaries",
+    "jsonrpc::tests::advertised_registry_lookups_reach_the_typed_product_commands",
+    "jsonrpc::tests::an_affordance_is_the_exact_next_tool_call_an_agent_can_paste",
+    "jsonrpc::tests::an_explicit_project_is_active_even_when_the_launch_directory_differs",
+    "jsonrpc::tests::an_outline_call_is_a_tree_of_names_never_bare_digests",
+    "jsonrpc::tests::an_unknown_coordinate_is_refused_with_the_operand_and_a_next_tool_call",
+    "jsonrpc::tests::an_unknown_tool_is_a_protocol_error_not_a_result",
+    "jsonrpc::tests::an_unreachable_endpoint_is_a_fault_with_the_retry_affordance",
+    "jsonrpc::tests::authenticated_continuation_decode_preserves_domain_and_server_fault_distinctions",
+    "jsonrpc::tests::blocking_owner_await_is_not_exposed_over_mcp",
+    "jsonrpc::tests::cancellation_notifications_are_silent_and_do_not_poison_the_session",
+    "jsonrpc::tests::cold_cursor_verification_never_initializes_authority_for_a_forged_token",
+    "jsonrpc::tests::combined_budget_shortens_only_the_readable_preview_with_explicit_provenance",
+    "jsonrpc::tests::continuation_authority_binds_context_and_owner_payload",
+    "jsonrpc::tests::continuation_context_binds_workspace_query_limit_and_detail",
+    "jsonrpc::tests::copied_ticket_string_uses_the_object_decoder_and_preserves_the_owner_ticket",
+    "jsonrpc::tests::deeply_nested_json_is_rejected_before_tool_admission",
+    "jsonrpc::tests::default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapshots",
+    "jsonrpc::tests::dependency_refusal_marks_tool_failure_and_keeps_the_exact_requested_package",
+    "jsonrpc::tests::direct_and_generic_graph_routes_preserve_typed_domain_and_protocol_failures",
+    "jsonrpc::tests::document_and_source_tools_advertise_their_useful_default_detail",
+    "jsonrpc::tests::every_metadata_route_stays_within_the_context_budget",
+    "jsonrpc::tests::every_registry_row_is_reachable_as_exactly_one_tool",
+    "jsonrpc::tests::generic_surface_dependency_refusal_keeps_exact_package_action_and_typed_fault",
+    "jsonrpc::tests::generic_surface_progress_and_cancel_keep_the_request_ticket_projection",
+    "jsonrpc::tests::graph_continuation_round_trip_is_bounded_and_authorized",
+    "jsonrpc::tests::graph_page_text_does_not_treat_cancellation_or_missing_cursor_as_limit_advice",
+    "jsonrpc::tests::graph_query_limits_are_rejected_before_the_product_boundary",
+    "jsonrpc::tests::high_fanout_graph_and_surface_pages_refuse_atomically",
+    "jsonrpc::tests::index_cancel_preserves_terminal_races_and_rejects_fabricated_tickets",
+    "jsonrpc::tests::index_progress_distinguishes_prior_owner_tickets_and_terminal_refusals",
+    "jsonrpc::tests::index_progress_maximum_owner_page_fits_the_combined_mcp_result_budget",
+    "jsonrpc::tests::index_progress_returns_bounded_events_and_the_exact_next_sequence",
+    "jsonrpc::tests::index_requires_its_advertised_path_before_owner_admission",
+    "jsonrpc::tests::index_search_cursor_cannot_cross_between_named_and_generic_mcp_tools",
+    "jsonrpc::tests::index_search_cursor_round_trips_between_servers_with_the_same_workspace_authority",
+    "jsonrpc::tests::index_search_tool_cursor_rejects_context_changes_and_raw_owner_tokens",
+    "jsonrpc::tests::index_search_tool_round_trips_mcp_cursors_at_summary_and_full_detail",
+    "jsonrpc::tests::index_start_keeps_the_exact_owner_ticket_and_routes_purls_to_the_owner_job_api",
+    "jsonrpc::tests::index_tool_advertises_and_validates_execution_intent",
+    "jsonrpc::tests::initialize_negotiates_only_the_library_supported_protocols",
+    "jsonrpc::tests::initialized_notification_cannot_bypass_initialize",
+    "jsonrpc::tests::keyed_index_progress_preserves_durable_owner_evidence_and_rejects_mixed_identities",
+    "jsonrpc::tests::lazy_cursor_authority_is_durable_once_and_replayable_in_a_fresh_server",
+    "jsonrpc::tests::lazy_cursor_authority_retries_after_repair_without_process_key_fallback",
+    "jsonrpc::tests::malformed_call_tool_envelopes_and_unknown_routes_remain_rpc_errors",
+    "jsonrpc::tests::malformed_or_expired_cursor_does_not_admit_a_workspace_authority",
+    "jsonrpc::tests::mcp_text_is_the_same_shared_markdown_the_cli_renders",
+    "jsonrpc::tests::missing_index_path_returns_actionable_structured_usage_before_owner_work",
+    "jsonrpc::tests::missing_required_mcp_argument_names_the_tool_field_not_cli_usage",
+    "jsonrpc::tests::newline_codec_is_bounded_and_compact",
+    "jsonrpc::tests::newline_codec_rejects_malformed_and_oversized_jsonrpc_frames",
+    "jsonrpc::tests::outline_resource_templates_preserve_readable_and_absent_projects",
+    "jsonrpc::tests::oversized_signed_index_search_cursor_projection_is_refused_without_truncation",
+    "jsonrpc::tests::owner_index_job_tools_advertise_exact_tickets_and_immediate_progress",
+    "jsonrpc::tests::partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_same_mcp_wire_result",
+    "jsonrpc::tests::recognized_tools_share_typed_missing_input_results_before_any_owner_call",
+    "jsonrpc::tests::registry_lookup_tools_are_advertised_with_bounded_typed_inputs",
+    "jsonrpc::tests::registry_schema_primitive_types_are_enforced_before_the_product_boundary",
+    "jsonrpc::tests::resource_discovery_needs_no_owner_and_outline_reads_preserve_protocol_failure",
+    "jsonrpc::tests::resources_are_the_same_markdown_their_tools_return",
+    "jsonrpc::tests::semantic_shapes_actual_jsonrpc_preserves_full_view_in_summary_and_full",
+    "jsonrpc::tests::semantic_shapes_jsonrpc_refuses_oversized_view_without_dropping_required_facts",
+    "jsonrpc::tests::semantic_versions_jsonrpc_keeps_true_oversize_refusals_atomic",
+    "jsonrpc::tests::semantic_versions_jsonrpc_preserves_captured_semver_and_matches_the_cli_projection",
+    "jsonrpc::tests::simultaneous_lazy_cursor_admission_uses_one_durable_identity",
+    "jsonrpc::tests::stale_graph_roots_are_reported_as_a_restartable_cursor_error",
+    "jsonrpc::tests::stale_named_index_search_cursor_is_a_restartable_refusal",
+    "jsonrpc::tests::stale_surface_index_search_cursor_is_reported_as_restartable",
+    "jsonrpc::tests::status_is_a_rollup_a_reader_can_hold_not_a_capability_dump",
+    "jsonrpc::tests::surface_errors_keep_valid_compiler_json_and_coordinates_as_unproven_protocol",
+    "jsonrpc::tests::surface_errors_preserve_typed_compiler_facts_across_all_job_routes",
+    "jsonrpc::tests::surface_index_search_cursor_binds_query_limit_project_and_detail",
+    "jsonrpc::tests::surface_index_search_cursor_round_trips_through_the_mcp_projection",
+    "jsonrpc::tests::the_handshake_reports_the_stable_protocol_and_its_instructions",
+    "jsonrpc::tests::the_packages_call_states_readiness_for_every_project",
+    "jsonrpc::tests::the_query_card_carries_worked_queries_over_the_declared_schema",
+    "jsonrpc::tests::the_references_tool_serves_occurrence_sites_with_source_spans",
+    "jsonrpc::tests::the_session_list_hides_the_surface_escape_hatch",
+    "jsonrpc::tests::the_session_tool_list_leads_with_packages_and_index",
+    "jsonrpc::tests::the_surface_escape_hatch_returns_the_typed_reply_and_a_readable_block",
+    "jsonrpc::tests::the_typed_query_lane_reports_its_terminal_and_revision",
+    "jsonrpc::tests::tool_catalog_names_callable_routes_without_advertising_unready_surfaces",
+    "jsonrpc::tests::tree_open_routes_record_the_initialized_mcp_client",
+    "jsonrpc::tests::wire_budget_metadata_counts_the_complete_escaped_jsonrpc_line",
+    "process::tests::stdio_metadata_answers_when_durable_workspace_admission_is_unavailable",
+    "process::tests::stdio_metadata_does_not_initialize_a_new_workspace",
+    "tests::certified_framed_dispatch_admits_identity_before_presentation",
+    "tests::embedded_client_rejects_an_intent_for_another_package_before_execution",
+    "tests::endpoint_error_extracts_correlation_without_admitting_claims",
+    "tests::endpoint_error_keeps_a_valid_request_id",
+    "tests::framed_dispatch_preserves_cli_reply_shape",
+    "tests::frames_are_bounded_and_round_trip",
+    "tests::graph_requests_retain_their_revision_for_endpoint_admission",
+    "tests::health_cannot_be_claimed_without_a_producer_certificate",
+    "tests::in_process_client_does_not_cache_replies",
+    "tests::injected_transport_checks_basis_and_freshness",
+    "tests::malformed_request_gets_a_framed_reply",
+    "tests::mcp_admission_bounds_requests_and_replies",
+    "tests::mcp_outer_frame_matches_the_canonical_local_codec",
+    "tests::replies_must_match_the_requested_command_shape",
+    "tests::request_encoding_rejects_a_certificate_for_another_package",
+    "tests::unix_endpoint_path_is_bounded",
+    "tests::unix_transport_consumes_producer_certified_success_without_expected_cache",
+    "tests::unix_transport_executes_one_correlated_request",
+    "tests::unix_transport_rejects_digest_only_identity_success"
+  ],
+  "previous_7270_five_native_gates": {
+    "archive_sha256": "b4d38ea357af51a735e2a99ac2fc8a24f6e9e6307693ca042767762478f79ea0",
+    "root_prior_full_archive_audit_sha256": "1d03d6f2dc9e2ab6de6f92d6cd236f7bd4a17809861015143841bb49a5d4a2ac",
+    "native_counts": {
+      "passed": 22,
+      "failed": 0,
+      "ignored": 0
+    },
+    "gates": [
+      {
+        "gate": "gate-12",
+        "receipt_sha256": "f9f48409a37da8f18474fabf96dc685c859297251560383baaa322b32692ba1a",
+        "job": {
+          "count": 10,
+          "filter": "index_operation::tests::",
+          "image": "backend_client",
+          "kind": "native",
+          "options": [
+            "--nocapture",
+            "--test-threads=1"
+          ]
+        },
+        "source": {
+          "commit": "7270bf9d3fc80cd952d811218a8b9c80786b7097",
+          "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+          "status": "",
+          "tree": "a1b611798af3e7ea096d76fa5f15a612ad4c3a26"
+        },
+        "names": [
+          "index_operation::tests::a_status_for_a_different_requested_key_cannot_acknowledge_the_saved_claim",
+          "index_operation::tests::a_terminal_progress_read_allows_the_next_explicit_refresh_immediately",
+          "index_operation::tests::a_terminal_receipt_for_an_explicit_different_key_cannot_clear_pending_work",
+          "index_operation::tests::foreign_reply_and_changed_authority_preserve_the_exact_original_claim",
+          "index_operation::tests::legacy_ticket_progress_cannot_acknowledge_a_durable_operation_receipt",
+          "index_operation::tests::proven_terminal_clears_the_claim_and_a_later_refresh_gets_a_fresh_key",
+          "index_operation::tests::saved_claim_precedes_first_send_and_lost_ack_reconciles_without_new_start",
+          "index_operation::tests::simultaneous_caller_cannot_dispatch_a_second_operation",
+          "index_operation::tests::unknown_on_explicit_retry_replays_only_the_same_durable_key",
+          "index_operation::tests::unresolved_and_consumed_receipts_never_allocate_a_replacement"
+        ],
+        "elapsed_seconds": 26.033339559915476
+      },
+      {
+        "gate": "gate-13",
+        "receipt_sha256": "ebbbae13fd44b2a76ff46a18e3f41a44603b705d3da70e03042bec4fdb10a70a",
+        "job": {
+          "count": 1,
+          "filter": "tests::each_request_rearms_a_bounded_deadline_for_its_own_lease",
+          "image": "backend_client",
+          "kind": "native",
+          "options": [
+            "--nocapture",
+            "--test-threads=1",
+            "--exact"
+          ]
+        },
+        "source": {
+          "commit": "7270bf9d3fc80cd952d811218a8b9c80786b7097",
+          "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+          "status": "",
+          "tree": "a1b611798af3e7ea096d76fa5f15a612ad4c3a26"
+        },
+        "names": [
+          "tests::each_request_rearms_a_bounded_deadline_for_its_own_lease"
+        ],
+        "elapsed_seconds": 0.09295618999749422
+      },
+      {
+        "gate": "gate-14",
+        "receipt_sha256": "f73a69417375d6b620a4e8620921ad708dc5cc1a01c52839a865661039367988",
+        "job": {
+          "count": 8,
+          "filter": "wire::tests::index_ticket_reply::",
+          "image": "backend_library",
+          "kind": "native",
+          "options": [
+            "--nocapture",
+            "--test-threads=1"
+          ]
+        },
+        "source": {
+          "commit": "7270bf9d3fc80cd952d811218a8b9c80786b7097",
+          "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+          "status": "",
+          "tree": "a1b611798af3e7ea096d76fa5f15a612ad4c3a26"
+        },
+        "names": [
+          "wire::tests::index_ticket_reply::index_operation_replies_bind_exact_keys_through_borrowed_and_wire_admission",
+          "wire::tests::index_ticket_reply::index_operation_start_rejects_self_consistent_foreign_requests_and_tombstones",
+          "wire::tests::index_ticket_reply::index_start_and_progress_reject_shared_id_reply_family_substitution_in_both_directions",
+          "wire::tests::index_ticket_reply::index_start_binds_packages_without_conflating_tickets_or_universal_failures",
+          "wire::tests::index_ticket_reply::index_ticket_commands_keep_identity_free_failures_as_failures",
+          "wire::tests::index_ticket_reply::index_ticket_progress_rejects_durable_operation_reply_with_the_same_command_id",
+          "wire::tests::index_ticket_reply::index_ticket_replies_admit_exact_callers_including_refusals_partial_and_restart_unknown",
+          "wire::tests::index_ticket_reply::index_ticket_replies_reject_foreign_package_epoch_and_counter_after_valid_decode"
+        ],
+        "elapsed_seconds": 0.17001712799537927
+      },
+      {
+        "gate": "gate-15",
+        "receipt_sha256": "b5c8d26f2c7170e7fdc38ed47af0a6451b3207e8c39d35d34718e7327a63b9de",
+        "job": {
+          "count": 1,
+          "filter": "tests::durable_index_grammars_keep_exact_keys_and_reject_mixed_progress_identities",
+          "image": "backend_present",
+          "kind": "native",
+          "options": [
+            "--nocapture",
+            "--test-threads=1",
+            "--exact"
+          ]
+        },
+        "source": {
+          "commit": "7270bf9d3fc80cd952d811218a8b9c80786b7097",
+          "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+          "status": "",
+          "tree": "a1b611798af3e7ea096d76fa5f15a612ad4c3a26"
+        },
+        "names": [
+          "tests::durable_index_grammars_keep_exact_keys_and_reject_mixed_progress_identities"
+        ],
+        "elapsed_seconds": 0.0799543330213055
+      },
+      {
+        "gate": "gate-16",
+        "receipt_sha256": "a7e2c5b7383cfbb650c9c46e5d507f0ca491bdca0a523f1d766a21976308a03b",
+        "job": {
+          "count": 2,
+          "filter": "product::tests::durable_index_operation_",
+          "image": "backend_present",
+          "kind": "native",
+          "options": [
+            "--nocapture",
+            "--test-threads=1"
+          ]
+        },
+        "source": {
+          "commit": "7270bf9d3fc80cd952d811218a8b9c80786b7097",
+          "lock_sha256": "0fe1cfe8435eceac5e8bd6487bd97b00dd3cb1d12857ebf17d5df38e6377a7fe",
+          "status": "",
+          "tree": "a1b611798af3e7ea096d76fa5f15a612ad4c3a26"
+        },
+        "names": [
+          "product::tests::durable_index_operation_projection_preserves_all_states_and_published_receipt",
+          "product::tests::durable_index_operation_view_exposes_structural_capture_and_pending_semantics"
+        ],
+        "elapsed_seconds": 0.08587947301566601
+      }
+    ],
+    "limits": "Same previously authenticated7270 images; original full MCP gate131PASS2FAIL retained, not overwritten by a844successor."
+  }
+}
