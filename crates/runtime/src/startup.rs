@@ -8,21 +8,24 @@ use std::fmt::{self, Write as _};
 use std::fs::File;
 use std::io::{self, Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
 use std::process::Command;
+#[cfg(any(windows, test))]
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Private failure-receipt path installed only on an automatically spawned owner.
 pub const STARTUP_DIAGNOSTIC_ENV: &str = "BACKEND_LOCALD_STARTUP_DIAGNOSTIC_FILE";
-const MAGIC: &str = "nudox.local-startup-failure.v1\n";
+pub(super) const MAGIC: &str = "nudox.local-startup-failure.v1\n";
 const TERMINAL_PREFIX: &str = "terminal:";
-const TERMINAL_FOOTER: &str = "\n--nudox.local-startup-failure.complete--\n";
+pub(super) const TERMINAL_FOOTER: &str = "\n--nudox.local-startup-failure.complete--\n";
 const MAX_CAUSE_BYTES: usize = 8192;
 const MAX_CAUSE_DIGITS: usize = 4;
+#[cfg(any(windows, test))]
 static ATTEMPT: AtomicU64 = AtomicU64::new(0);
 
 /// The original owner refusal, bounded at its producer and checked on reading.
 #[derive(Debug)]
-pub struct StartupDiagnostic(String);
+pub struct StartupDiagnostic(pub(super) String);
 
 impl fmt::Display for StartupDiagnostic {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -30,6 +33,7 @@ impl fmt::Display for StartupDiagnostic {
     }
 }
 
+#[cfg(any(windows, test))]
 pub(crate) struct StartupAttempt {
     path: PathBuf,
     directory: backend_platform::DirectoryCapability,
@@ -37,6 +41,7 @@ pub(crate) struct StartupAttempt {
     file: File,
 }
 
+#[cfg(any(windows, test))]
 impl StartupAttempt {
     pub(crate) fn prepare(workspace: &Path) -> io::Result<Self> {
         let nonce = std::time::SystemTime::now()
@@ -74,6 +79,7 @@ impl StartupAttempt {
         Ok(attempt)
     }
 
+    #[cfg(windows)]
     pub(crate) fn configure(&self, command: &mut Command) {
         command.env(STARTUP_DIAGNOSTIC_ENV, &self.path);
     }
@@ -96,6 +102,7 @@ impl StartupAttempt {
     }
 }
 
+#[cfg(any(windows, test))]
 impl Drop for StartupAttempt {
     fn drop(&mut self) {
         if self.file.lock().is_err() {
@@ -240,6 +247,18 @@ fn maximum_record_bytes() -> usize {
         + TERMINAL_FOOTER.len()
 }
 
+#[cfg(unix)]
+pub(super) fn failure_record(error: &dyn fmt::Display) -> Vec<u8> {
+    let mut cause = BoundedCause {
+        text: String::new(),
+        full: false,
+    };
+    let _ = write!(&mut cause, "{error}");
+    let mut record = MAGIC.as_bytes().to_vec();
+    record.extend_from_slice(&terminal_payload(&cause.text));
+    record
+}
+
 fn terminal_payload(cause: &str) -> Vec<u8> {
     let mut payload = format!("{TERMINAL_PREFIX}{}\n", cause.len()).into_bytes();
     payload.extend_from_slice(cause.as_bytes());
@@ -247,7 +266,7 @@ fn terminal_payload(cause: &str) -> Vec<u8> {
     payload
 }
 
-fn terminal_cause(record: &[u8]) -> io::Result<Option<String>> {
+pub(super) fn terminal_cause(record: &[u8]) -> io::Result<Option<String>> {
     if record == MAGIC.as_bytes() {
         return Ok(None);
     }

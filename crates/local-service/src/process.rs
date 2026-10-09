@@ -1556,7 +1556,16 @@ pub fn run_process<O: OwnerService + 'static>(owner: O, config: ProcessConfig) -
 /// can select it explicitly with `--profile builtin` or [`PROFILE_ENV`].
 #[must_use]
 pub fn main_entry() -> ExitCode {
-    match ProcessConfig::parse(std::env::args().skip(1)) {
+    let args = std::env::args().skip(1);
+    #[cfg(unix)]
+    let (bootstrap, args) = match backend_runtime::SpawnedOwnerBootstrap::extract(args) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            report_process_failure(&error);
+            return ExitCode::from(EX_USAGE);
+        }
+    };
+    match ProcessConfig::parse(args) {
         Err(ProcessError::Help) => {
             print_help();
             ExitCode::SUCCESS
@@ -1567,8 +1576,23 @@ pub fn main_entry() -> ExitCode {
         }
         Ok(config) => match config.profile.as_str() {
             "builtin" | "builtin-echo" => {
+                #[cfg(unix)]
+                if let Some(bootstrap) = bootstrap.as_ref() {
+                    if let Err(error) = bootstrap.initialize(
+                        &config.workspace,
+                        config.endpoint.as_path(),
+                        config.authority_secret.as_deref(),
+                    ) {
+                        report_process_failure(&error);
+                        return ExitCode::from(EX_USAGE);
+                    }
+                }
                 let default_authority = config.workspace.join("authority.secret");
-                if config.authority_secret.as_ref() == Some(&default_authority) {
+                #[cfg(unix)]
+                let automatic = bootstrap.is_some();
+                #[cfg(not(unix))]
+                let automatic = false;
+                if !automatic && config.authority_secret.as_ref() == Some(&default_authority) {
                     let paths = WorkspacePaths::discover(
                         None,
                         Some(config.workspace.clone()),
@@ -1594,7 +1618,13 @@ pub fn main_entry() -> ExitCode {
 /// Reports the original failure without attaching a detached owner's stderr
 /// to its launcher or allowing a secondary diagnostic failure to replace it.
 pub(crate) fn report_process_failure(error: &dyn fmt::Display) {
-    if let Ok(Some(reporter)) = backend_runtime::StartupFailureReporter::from_environment() {
+    #[cfg(unix)]
+    let automatic = backend_runtime::report_automatic_startup_failure(error);
+    #[cfg(not(unix))]
+    let automatic = false;
+    if !automatic
+        && let Ok(Some(reporter)) = backend_runtime::StartupFailureReporter::from_environment()
+    {
         let _ = reporter.report(error);
     }
     eprintln!("locald: {error}");

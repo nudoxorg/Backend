@@ -6,7 +6,8 @@
 //! any of them reaches the reader through the same three-line grammar and the
 //! same exit code table.
 //!
-//! `index` is the one command whose answer is "not yet". When someone is
+//! Startup can return a typed pending observation before any command is sent.
+//! `index` also reports readiness progress. When someone is
 //! watching, it rewrites a single readiness line in place until the lanes
 //! agree, so the honest answer — this takes time — is visible rather than
 //! implied by silence.
@@ -25,6 +26,12 @@ use std::time::{Duration, Instant};
 
 /// How long `index` watches readiness before handing the reader the line.
 const PROGRESS_LIMIT: Duration = Duration::from_secs(20);
+/// Initial CLI response budget; this never extends the shared owner's lifetime.
+#[cfg(unix)]
+const STARTUP_RESPONSE_BUDGET: Duration = Duration::from_secs(2);
+/// EX_TEMPFAIL: startup remains pending, and no command was submitted.
+#[cfg(unix)]
+const EXIT_STARTUP_PENDING: u8 = 75;
 
 /// Runs the CLI process against the configured daemon endpoint.
 #[must_use]
@@ -96,7 +103,34 @@ fn run_words(words: &[String], options: &Options) -> Result<(String, ExitCode), 
     let endpoint_result = if options.passive() {
         backend_runtime::connect_existing_locald(&workspace)
     } else {
-        backend_runtime::ensure_locald(&workspace)
+        #[cfg(unix)]
+        {
+            match backend_runtime::start_locald(
+                &workspace,
+                STARTUP_RESPONSE_BUDGET,
+                startup_progress,
+            ) {
+                Ok(backend_runtime::LocaldStartup::Ready(endpoint)) => Ok(endpoint),
+                Ok(backend_runtime::LocaldStartup::Pending(pending)) => {
+                    return Ok((
+                        render_startup_pending(&pending, options)?,
+                        ExitCode::from(EXIT_STARTUP_PENDING),
+                    ));
+                }
+                Err(error) => Err(error),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            // The existing Windows durable bootstrap is retained. The bounded
+            // child/pipe guarantee above is Unix-only, not inferred for Windows.
+            let mut stderr = std::io::stderr().lock();
+            let _ = writeln!(
+                stderr,
+                "local startup: starting (this platform uses the existing synchronous setup)"
+            ).and_then(|()| stderr.flush());
+            backend_runtime::ensure_locald(&workspace)
+        }
     };
     let endpoint = endpoint_result.map_err(|error| {
         let message = if options.passive() {
@@ -121,7 +155,7 @@ fn run_words(words: &[String], options: &Options) -> Result<(String, ExitCode), 
                     ]),
                 }
             } else {
-                Affordance::Retry
+                startup_error_action(&error)
             },
         )
     })?;
@@ -137,6 +171,75 @@ fn run_words(words: &[String], options: &Options) -> Result<(String, ExitCode), 
     }
     render_admitted_answer(&session, &answer, options)
         .map(|output| (output, render::answer_exit_code(&answer)))
+}
+
+#[cfg(unix)]
+fn startup_progress(phase: backend_runtime::StartupPhase) {
+    // Separate stderr progress preserves machine stdout and is flushed before
+    // waiting on the child's durable setup. It never describes indexing.
+    let mut stderr = std::io::stderr().lock();
+    let _ = writeln!(stderr, "local startup: {}", phase.as_str()).and_then(|()| stderr.flush());
+}
+
+fn startup_error_action(error: &backend_runtime::RuntimeError) -> Affordance {
+    #[cfg(unix)]
+    if matches!(
+        error,
+        backend_runtime::RuntimeError::CompanionProtocolMismatch
+    ) {
+        // The closed runtime cause includes the matched install/build action.
+        // Retrying an incompatible executable pair cannot repair its grammar.
+        return Affordance::None;
+    }
+    let _ = error;
+    Affordance::Retry
+}
+
+#[cfg(unix)]
+fn render_startup_pending(
+    pending: &backend_runtime::StartupPending,
+    options: &Options,
+) -> Result<String, Fault> {
+    if options.is_machine() {
+        #[derive(serde::Serialize)]
+        struct Pending<'a> {
+            kind: &'static str,
+            phase: &'a str,
+            cause: &'a str,
+            action: &'a str,
+            candidate_pid: Option<u32>,
+            contender_exited: bool,
+            command_submitted: bool,
+        }
+        let observation = Pending {
+            kind: "local-startup-pending",
+            phase: pending.phase().as_str(),
+            cause: pending.cause().as_str(),
+            action: pending.action().as_str(),
+            candidate_pid: pending.candidate_pid(),
+            contender_exited: pending.contender_exited(),
+            command_submitted: false,
+        };
+        // Only fixed strings, booleans and a numeric observation are serialized.
+        // This local CLI response is not a live engine DTO or operation receipt.
+        return serde_json::to_string(&observation)
+            .map(|json| format!("{json}\n"))
+            .map_err(|error| {
+                Fault::usage(
+                    "startup response",
+                    format!("cannot encode startup observation: {error}"),
+                )
+            });
+    }
+    let candidate = pending.candidate_pid().map_or_else(
+        || "no candidate was started".to_owned(),
+        |pid| format!("candidate {pid}; ownership is not established by this observation"),
+    );
+    Ok(format!(
+        "local startup pending: {} ({candidate})\ncause: {}\naction: retry the original command; it has not been submitted\n",
+        pending.phase().as_str(),
+        pending.cause().as_str()
+    ))
 }
 
 pub(crate) fn render_admitted_answer(
@@ -273,4 +376,59 @@ pub fn answer_with_session(
         .into_owned();
     let request = plan(words, options, &project)?;
     run::execute(session, &request)
+}
+
+#[cfg(all(test, unix))]
+mod startup_tests {
+    use super::*;
+
+    #[test]
+    fn pending_json_is_a_startup_observation_without_an_accepted_command() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = PathBuf::from("/tmp").join(format!("ncs-{}-{nonce}", std::process::id()));
+        let workspace = backend_runtime::WorkspacePaths::discover(
+            Some(std::env::current_dir().expect("cwd")),
+            Some(root.join("state")),
+            Some(root.join("owner.sock")),
+        )
+        .expect("uncreated explicit workspace");
+        let backend_runtime::LocaldStartup::Pending(pending) =
+            backend_runtime::start_locald(&workspace, Duration::ZERO, |_| {
+                panic!("zero-budget response must not start a candidate")
+            })
+            .expect("pending observation")
+        else {
+            panic!("no endpoint exists");
+        };
+        let json = render_startup_pending(&pending, &Options::plain(options::Format::Json))
+            .expect("startup response");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("typed JSON");
+        assert_eq!(value["kind"], "local-startup-pending");
+        assert_eq!(value["phase"], "starting");
+        assert_eq!(value["cause"], "response-budget");
+        assert_eq!(value["action"], "retry-original-command");
+        assert_eq!(value["command_submitted"], false);
+        assert!(value["candidate_pid"].is_null());
+        assert_eq!(value["contender_exited"], false);
+        assert!(value.get("operation").is_none());
+        assert!(value.get("readiness").is_none());
+        let text = render_startup_pending(&pending, &Options::fallback()).expect("human pending");
+        assert!(text.contains("no candidate was started"));
+        assert!(text.contains("it has not been submitted"));
+        assert!(!workspace.data().exists());
+    }
+
+    #[test]
+    fn mismatched_companion_action_is_install_or_rebuild_instead_of_retry() {
+        let error = backend_runtime::RuntimeError::CompanionProtocolMismatch;
+        assert!(matches!(startup_error_action(&error), Affordance::None));
+        assert!(
+            error
+                .to_string()
+                .contains("install matched CLI and locald or rebuild")
+        );
+    }
 }
