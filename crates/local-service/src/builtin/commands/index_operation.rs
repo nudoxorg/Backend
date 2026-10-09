@@ -19,6 +19,7 @@ use backend_library::{
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 const SCHEMA_VERSION: i64 = 1;
@@ -230,7 +231,15 @@ struct JournalMeta {
     next_terminal_sequence: i64,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum JournalRole {
+    Writer,
+    PublicationObserver,
+}
+
 pub(super) struct IndexOperationJournal {
+    role: JournalRole,
+    owner_identity: Arc<()>,
     _database: turso::Database,
     _database_directory: backend_platform::DirectoryCapability,
     database_file: File,
@@ -241,6 +250,32 @@ pub(super) struct IndexOperationJournal {
     hint_time: Option<std::time::SystemTime>,
     #[cfg(test)]
     read_queries: std::cell::Cell<usize>,
+}
+
+/// The original connection is the sole in-process keyed receipt writer.
+/// A detached capability is returned intact on a wrong-owner settlement.
+#[must_use = "return the original keyed receipt writer after publication"]
+pub(super) struct PublicationJournalWriter(IndexOperationJournal);
+
+pub(super) struct PublicationJournalReturn<'a> {
+    target: &'a mut IndexOperationJournal,
+    writer: PublicationJournalWriter,
+}
+
+impl PublicationJournalReturn<'_> {
+    pub(super) fn into_writer(self) -> PublicationJournalWriter {
+        self.writer
+    }
+
+    pub(super) fn install(self) -> IndexOperationJournal {
+        std::mem::replace(self.target, self.writer.0)
+    }
+}
+
+impl PublicationJournalWriter {
+    pub(super) fn journal_mut(&mut self) -> &mut IndexOperationJournal {
+        &mut self.0
+    }
 }
 
 /// Notification evidence is separate from the SQL transaction's result.
@@ -311,6 +346,8 @@ impl IndexOperationJournal {
             Ok::<_, JournalError>((database, connection))
         })?;
         Ok(Self {
+            role: JournalRole::Writer,
+            owner_identity: Arc::new(()),
             _database: database,
             _database_directory: database_directory,
             database_file,
@@ -322,6 +359,79 @@ impl IndexOperationJournal {
             #[cfg(test)]
             read_queries: std::cell::Cell::new(0),
         })
+    }
+
+    fn require_writer(&self) -> Result<(), JournalError> {
+        if self.role == JournalRole::Writer {
+            Ok(())
+        } else {
+            Err(JournalError::DatabaseBusy)
+        }
+    }
+
+    pub(super) fn publication_writer_reserved(&self) -> bool {
+        self.role == JournalRole::PublicationObserver
+    }
+
+    /// Pins a read-only connection to the already admitted database. The
+    /// original connection, descriptor, readiness capability and counters
+    /// move to the worker; no path is reopened and no schema is rewritten.
+    pub(super) fn detach_publication_writer(
+        &mut self,
+    ) -> Result<PublicationJournalWriter, JournalError> {
+        self.require_writer()?;
+        let mut connection = self._database.connect().map_err(database_error)?;
+        connection
+            .busy_timeout(BUSY_TIMEOUT)
+            .map_err(database_error)?;
+        futures_executor::block_on(
+            connection.execute_batch("PRAGMA query_only=1; PRAGMA cache_size=256;"),
+        )
+        .map_err(database_error)?;
+        let database_file = self
+            .database_file
+            .try_clone()
+            .map_err(|error| JournalError::Database(error.to_string()))?;
+        let reader = Self {
+            role: JournalRole::PublicationObserver,
+            owner_identity: Arc::clone(&self.owner_identity),
+            _database: self._database.clone(),
+            _database_directory: self._database_directory.clone(),
+            database_file,
+            connection,
+            readiness: self.readiness.clone(),
+            last_hint: None,
+            #[cfg(test)]
+            hint_time: self.hint_time,
+            #[cfg(test)]
+            read_queries: std::cell::Cell::new(0),
+        };
+        Ok(PublicationJournalWriter(std::mem::replace(self, reader)))
+    }
+
+    pub(super) fn prepare_publication_writer_return(
+        &mut self,
+        writer: PublicationJournalWriter,
+    ) -> Result<PublicationJournalReturn<'_>, (PublicationJournalWriter, JournalError)> {
+        if self.role != JournalRole::PublicationObserver
+            || writer.0.role != JournalRole::Writer
+            || !Arc::ptr_eq(&self.owner_identity, &writer.0.owner_identity)
+        {
+            return Err((writer, JournalError::InvalidTransition));
+        }
+        Ok(PublicationJournalReturn {
+            target: self,
+            writer,
+        })
+    }
+
+    pub(super) fn restore_publication_writer(
+        &mut self,
+        writer: PublicationJournalWriter,
+    ) -> Result<(), (PublicationJournalWriter, JournalError)> {
+        let returned = self.prepare_publication_writer_return(writer)?;
+        drop(returned.install());
+        Ok(())
     }
 
     pub(super) fn observe_changes(&mut self, changed: super::journal_readiness::Changed) {
@@ -467,6 +577,7 @@ impl IndexOperationJournal {
         package: PackageReference,
         execution_intent: CompileExecutionIntent,
     ) -> Result<Acceptance, JournalError> {
+        self.require_writer()?;
         let request_digest = index_operation_request_digest(&package, execution_intent);
         let result = futures_executor::block_on(async {
             let transaction = self
@@ -728,6 +839,11 @@ impl IndexOperationJournal {
 
     /// Updates per-profile outcomes while preserving the exact structural
     /// source root committed for this operation.
+    ///
+    /// A proved-unselected attempt may record Failed before its separate
+    /// capture-only workspace commit. Its failure reason stays immutable;
+    /// only the same capture may later advance to terminal nonpublished
+    /// profile outcomes. Selected terminals cannot take this update path.
     pub(super) fn source_capture_updated(
         &mut self,
         operation_key: IndexOperationKey,
@@ -737,10 +853,21 @@ impl IndexOperationJournal {
             return Err(JournalError::InvalidTransition);
         }
         self.transition(operation_key, |mut entry| {
+            let failed = matches!(entry.state, StoredOperationState::Failed { .. });
             if !matches!(
                 entry.state,
-                StoredOperationState::Accepted | StoredOperationState::Prepared { .. }
-            ) {
+                StoredOperationState::Accepted
+                    | StoredOperationState::Prepared { .. }
+                    | StoredOperationState::Failed { .. }
+            ) || failed
+                && receipt.profiles().iter().any(|profile| {
+                    !matches!(
+                        profile.state,
+                        backend_library::IndexOperationSemanticProfileState::Unavailable { .. }
+                            | backend_library::IndexOperationSemanticProfileState::Failed { .. }
+                    )
+                })
+            {
                 return Err(JournalError::InvalidTransition);
             }
             let Some(previous) = entry.source_capture.as_ref() else {
@@ -921,39 +1048,67 @@ impl IndexOperationJournal {
                 }
             }
             JournalEntry::Retained(entry) => {
-                let state = match &entry.state {
-                    StoredOperationState::Accepted => match active {
-                        Some((ticket, stage)) => IndexOperationState::Active { ticket, stage },
-                        None => IndexOperationState::Accepted,
-                    },
-                    StoredOperationState::Prepared { .. } => return Ok(None),
-                    StoredOperationState::Published { receipt, .. } => {
-                        IndexOperationState::Published(receipt.clone())
+                let state = if self.publication_writer_reserved() && active.is_some() {
+                    let (ticket, stage) = active.as_ref().expect("checked live owner ticket");
+                    IndexOperationState::Active {
+                        ticket: ticket.clone(),
+                        stage: *stage,
                     }
-                    StoredOperationState::PartiallyPublished { receipt, .. } => {
-                        let plan = entry.planned_partial.as_ref().ok_or_else(|| {
-                            JournalError::Corrupt(
-                                "partial publication lost its prepared profile plan".to_owned(),
-                            )
-                        })?;
-                        IndexOperationState::PartiallyPublished {
-                            receipt: receipt.clone(),
-                            refused_profiles: plan.refused_profiles.clone(),
+                } else {
+                    match &entry.state {
+                        StoredOperationState::Accepted => match active {
+                            Some((ticket, stage)) => IndexOperationState::Active { ticket, stage },
+                            None => IndexOperationState::Accepted,
+                        },
+                        StoredOperationState::Prepared { .. } => match active {
+                            // Only the owning live job supplies this ticket. The
+                            // SQL marker is not evidence that the new read head is
+                            // installed, so it remains Active through publication.
+                            Some((ticket, stage)) => IndexOperationState::Active { ticket, stage },
+                            None => return Ok(None),
+                        },
+                        StoredOperationState::Published { receipt, .. } => {
+                            IndexOperationState::Published(receipt.clone())
                         }
-                    }
-                    StoredOperationState::Failed {
-                        reason,
-                        detail,
-                        compiler_failure,
-                    } => IndexOperationState::Failed {
-                        reason: *reason,
-                        detail: detail.clone(),
-                        compiler_failure: compiler_failure.clone(),
-                    },
-                    StoredOperationState::Unresolved { reason, detail } => {
-                        IndexOperationState::Unresolved {
+                        StoredOperationState::PartiallyPublished { receipt, .. } => {
+                            let plan = entry.planned_partial.as_ref().ok_or_else(|| {
+                                JournalError::Corrupt(
+                                    "partial publication lost its prepared profile plan".to_owned(),
+                                )
+                            })?;
+                            IndexOperationState::PartiallyPublished {
+                                receipt: receipt.clone(),
+                                refused_profiles: plan.refused_profiles.clone(),
+                            }
+                        }
+                        StoredOperationState::Failed { .. }
+                            if entry.source_capture.as_ref().is_some_and(|capture| {
+                                capture.profiles().iter().any(|profile| {
+                                    matches!(
+                                        profile.state,
+                                        backend_library::IndexOperationSemanticProfileState::Pending { .. }
+                                    )
+                                })
+                            }) => IndexOperationState::Unresolved {
+                                reason: backend_library::IndexOperationUnresolvedReason::SemanticWorkInterruptedAfterCapture,
+                                detail: ProductText::from_static(
+                                    "the original failure is durable, but its source capture still requires explicit recovery",
+                                ),
+                            },
+                        StoredOperationState::Failed {
+                            reason,
+                            detail,
+                            compiler_failure,
+                        } => IndexOperationState::Failed {
                             reason: *reason,
                             detail: detail.clone(),
+                            compiler_failure: compiler_failure.clone(),
+                        },
+                        StoredOperationState::Unresolved { reason, detail } => {
+                            IndexOperationState::Unresolved {
+                                reason: *reason,
+                                detail: detail.clone(),
+                            }
                         }
                     }
                 };
@@ -976,6 +1131,7 @@ impl IndexOperationJournal {
         operation_key: IndexOperationKey,
         change: impl FnOnce(StoredOperation) -> Result<StoredOperation, JournalError>,
     ) -> Result<(), JournalError> {
+        self.require_writer()?;
         let result = futures_executor::block_on(async {
             let transaction = self
                 .connection
@@ -987,6 +1143,7 @@ impl IndexOperationJournal {
                     .await?
                     .ok_or(JournalError::Missing)?;
                 let previous_state = row.state;
+                let previous_terminal_sequence = row.terminal_sequence;
                 let previous = match decode_row(row)? {
                     JournalEntry::Retained(entry) => entry,
                     JournalEntry::OutsideReceiptWindow { .. } => {
@@ -1000,6 +1157,10 @@ impl IndexOperationJournal {
                 validate_entry(&updated)?;
                 let new_state =
                     stored_state_code(&updated.state).ok_or(JournalError::InvalidTransition)?;
+                let was_terminal = matches!(previous_state, STATE_PUBLISHED | STATE_FAILED);
+                if was_terminal && new_state != previous_state {
+                    return Err(JournalError::InvalidTransition);
+                }
                 if previous_state == STATE_ACCEPTED && new_state == STATE_PREPARED {
                     // The Immediate write transaction serializes competing
                     // connections. A separate admission read is only an
@@ -1024,7 +1185,13 @@ impl IndexOperationJournal {
                 }
                 let payload = encode_entry(&updated)?;
                 let is_terminal = matches!(new_state, STATE_PUBLISHED | STATE_FAILED);
-                let terminal_sequence = if is_terminal {
+                let became_terminal = is_terminal && !was_terminal;
+                // A terminal receipt's capture metadata may close later, but
+                // that does not create another terminal operation or advance
+                // its position in the durable receipt window.
+                let terminal_sequence = if was_terminal {
+                    previous_terminal_sequence
+                } else if became_terminal {
                     let meta = read_meta_transaction(&transaction).await?;
                     validate_meta(&meta)?;
                     Some(meta.next_terminal_sequence)
@@ -1054,7 +1221,7 @@ impl IndexOperationJournal {
                 let is_prepared = new_state == STATE_PREPARED;
                 let pending_delta = i64::from(is_pending) - i64::from(was_pending);
                 let prepared_delta = i64::from(is_prepared) - i64::from(was_prepared);
-                let terminal_delta = i64::from(is_terminal);
+                let terminal_delta = i64::from(became_terminal);
                 if pending_delta != 0 || prepared_delta != 0 || terminal_delta != 0 {
                     transaction
                         .execute(
@@ -1068,7 +1235,7 @@ impl IndexOperationJournal {
                         .await
                         .map_err(database_error)?;
                 }
-                if is_terminal {
+                if became_terminal {
                     prune_terminal_receipts(&transaction).await?;
                 }
                 Ok(())
@@ -1639,6 +1806,24 @@ fn validate_entry(entry: &StoredOperation) -> Result<(), JournalError> {
         compiler_failure,
     } = &entry.state
     {
+        if entry.source_capture.as_ref().is_some_and(|capture| {
+            capture.profiles().iter().any(|profile| {
+                matches!(
+                    profile.state,
+                    backend_library::IndexOperationSemanticProfileState::Published { .. }
+                )
+            })
+        }) {
+            return Err(JournalError::Corrupt(
+                "failed operation retains a published source capture".to_owned(),
+            ));
+        }
+        // The structural capture was admitted independently above. An
+        // unselected attempt persists its original failure before a later
+        // capture-only commit closes Pending profiles, so this private
+        // durable gap cannot use the public terminal/capture shape rule.
+        // Validate the failure tuple separately; public replies still require
+        // every profile to be terminal before exposing Failed.
         let status = IndexOperationStatus::new(
             entry.operation_key,
             entry.package.clone(),
@@ -1648,8 +1833,7 @@ fn validate_entry(entry: &StoredOperation) -> Result<(), JournalError> {
                 detail: detail.clone(),
                 compiler_failure: compiler_failure.clone(),
             },
-        )
-        .with_source_capture(entry.source_capture.clone());
+        );
         SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(status))
             .admit(backend_library::CommandId::IndexProgress)
             .map_err(|error| JournalError::Corrupt(error.to_string()))?;
@@ -1733,7 +1917,7 @@ fn validate_entry(entry: &StoredOperation) -> Result<(), JournalError> {
     Ok(())
 }
 
-fn same_source_capture_basis(
+pub(super) fn same_source_capture_basis(
     previous: &IndexOperationSourceCaptureReceipt,
     next: &IndexOperationSourceCaptureReceipt,
 ) -> bool {
@@ -1755,7 +1939,7 @@ fn same_source_capture_basis(
             })
 }
 
-fn source_capture_states_advance(
+pub(super) fn source_capture_states_advance(
     previous: &[backend_library::IndexOperationSourceProfile],
     next: &[backend_library::IndexOperationSourceProfile],
 ) -> bool {
@@ -3006,5 +3190,224 @@ mod tests {
         assert!(!path.exists(), "sidecar refusal precedes database creation");
         assert_eq!(fs::read(&target).expect("read sentinel"), b"outside bytes");
         cleanup(&path);
+    }
+    #[test]
+    fn publication_journal_original_writer_and_readonly_observer_keep_exact_prepared_state() {
+        let path = path();
+        let mut journal = open(&path);
+        let operation = key(901);
+        journal
+            .accept(operation, package(), CompileExecutionIntent::Interactive)
+            .expect("actual accepted key");
+        let mut writer = journal
+            .detach_publication_writer()
+            .expect("original writer transfer");
+        assert!(journal.publication_writer_reserved());
+        assert_eq!(read_single_integer_pragma(&journal, "PRAGMA query_only"), 1);
+        assert_eq!(
+            journal.accept(key(902), package(), CompileExecutionIntent::Interactive),
+            Err(JournalError::DatabaseBusy)
+        );
+        assert_eq!(
+            journal.prepare(operation, Some([1; 32]), [2; 32], 3),
+            Err(JournalError::DatabaseBusy)
+        );
+        assert!(
+            futures_executor::block_on(
+                journal
+                    .connection
+                    .execute("DELETE FROM backend_index_operations", ())
+            )
+            .is_err(),
+            "SQL itself rejects writes through the observer"
+        );
+        writer
+            .journal_mut()
+            .prepare(operation, Some([1; 32]), [2; 32], 3)
+            .expect("actual durable Prepared barrier on original connection");
+        assert!(
+            matches!(journal.entry(operation).expect("independent readonly WAL observation"), Some(JournalEntry::Retained(entry)) if matches!(entry.state, StoredOperationState::Prepared { request_identity: Some(id), base_workspace_root: root, base_workspace_sequence: 3 } if id == [1;32] && root == [2;32]))
+        );
+        let ticket = backend_library::IndexJobTicket::new(
+            std::num::NonZeroU64::new(901).expect("nonzero journal projection fixture"),
+            [9; 16],
+            package(),
+        );
+        let active = journal
+            .observation(
+                operation,
+                Some((ticket.clone(), backend_library::IndexJobStage::Publishing)),
+            )
+            .expect("read-only prepared observation")
+            .expect("live prepared work remains observable");
+        assert!(matches!(&active,
+            IndexOperationObservation::Known(IndexOperationStatus {
+                state: IndexOperationState::Active { ticket: actual, stage: backend_library::IndexJobStage::Publishing }, ..
+            }) if actual == &ticket));
+        SurfaceReply::IndexOperationStatus(active)
+            .admit(backend_library::CommandId::IndexProgress)
+            .expect("strict Active receipt does not claim physical or view publication");
+        assert!(
+            journal
+                .observation(operation, None)
+                .expect("cold observation")
+                .is_none(),
+            "without a live owner ticket Prepared still requires exact recovery"
+        );
+        journal
+            .restore_publication_writer(writer)
+            .unwrap_or_else(|_| panic!("same owner returns original writer"));
+        assert!(!journal.publication_writer_reserved());
+        assert_eq!(read_single_integer_pragma(&journal, "PRAGMA query_only"), 0);
+        journal
+            .failed(
+                operation,
+                IndexOperationFailureReason::WorkerFailed,
+                ProductText::from_static("actual pre-publication refusal"),
+            )
+            .expect("original writer remains usable");
+
+        // Failure is durable before a later capture-only workspace commit.
+        // Only that same structural capture may subsequently close its
+        // Pending profile; the failed reason and original basis stay fixed.
+        use backend_library::{
+            IndexOperationSemanticCoverage as Coverage,
+            IndexOperationSemanticProfileState as State,
+            IndexOperationSemanticUnavailableReason as Reason,
+        };
+        let failed_operation = key(903);
+        journal
+            .accept(
+                failed_operation,
+                package(),
+                CompileExecutionIntent::Interactive,
+            )
+            .expect("accept independent captured operation");
+        journal
+            .bind_source_capture_base(failed_operation, [20; 32], 9)
+            .expect("bind actual capture base");
+        let pending = source_capture_receipt(failed_operation, State::Pending { prior: None }, 10);
+        journal
+            .source_captured(failed_operation, pending.clone())
+            .expect("retain original structural capture");
+        journal
+            .failed(
+                failed_operation,
+                IndexOperationFailureReason::WorkerFailed,
+                ProductText::from_static("unchanged physical base proved"),
+            )
+            .expect("persist failure before terminal capture advances");
+        let terminal_accounting = |journal: &IndexOperationJournal| {
+            let row = futures_executor::block_on(load_row_connection(
+                &journal.connection,
+                failed_operation,
+            ))
+            .expect("read actual terminal row")
+            .expect("retain failed operation");
+            (
+                row.terminal_sequence,
+                read_single_integer_pragma(
+                    journal,
+                    "SELECT next_terminal_sequence FROM backend_index_operation_meta \
+                     WHERE singleton=1",
+                ),
+                read_single_integer_pragma(
+                    journal,
+                    "SELECT COUNT(*) FROM backend_index_operations \
+                     WHERE terminal_sequence IS NOT NULL",
+                ),
+            )
+        };
+        let original_accounting = (Some(2), 3, 2);
+        assert_eq!(terminal_accounting(&journal), original_accounting);
+        for invalid in [
+            pending.clone(),
+            source_capture_receipt(
+                failed_operation,
+                State::Published {
+                    generation: [71; 32],
+                    coverage: Coverage::Complete,
+                },
+                10,
+            ),
+            source_capture_receipt(
+                failed_operation,
+                State::Unavailable {
+                    reason: Reason::Rejected,
+                },
+                11,
+            ),
+        ] {
+            assert_eq!(
+                journal.source_capture_updated(failed_operation, invalid),
+                Err(JournalError::InvalidTransition)
+            );
+            assert_eq!(terminal_accounting(&journal), original_accounting);
+        }
+        let terminal = source_capture_receipt(
+            failed_operation,
+            State::Unavailable {
+                reason: Reason::Rejected,
+            },
+            10,
+        );
+        journal
+            .source_capture_updated(failed_operation, terminal.clone())
+            .expect("close only the exact failed capture");
+        assert_eq!(terminal_accounting(&journal), original_accounting);
+        journal
+            .source_capture_updated(failed_operation, terminal.clone())
+            .expect("exact terminal capture update remains idempotent");
+        assert_eq!(terminal_accounting(&journal), original_accounting);
+        assert_eq!(
+            journal.source_capture_updated(
+                failed_operation,
+                source_capture_receipt(
+                    failed_operation,
+                    State::Unavailable {
+                        reason: Reason::Cancelled,
+                    },
+                    10
+                )
+            ),
+            Err(JournalError::InvalidTransition)
+        );
+        assert_eq!(terminal_accounting(&journal), original_accounting);
+        drop(journal);
+        let journal = open(&path);
+        assert_eq!(terminal_accounting(&journal), original_accounting);
+        let Some(IndexOperationObservation::Known(status)) = journal
+            .observation(failed_operation, None)
+            .expect("cold failed receipt")
+        else {
+            panic!("failed receipt must survive reopen");
+        };
+        assert!(
+            matches!(&status.state, IndexOperationState::Failed {
+            reason: IndexOperationFailureReason::WorkerFailed, detail, ..
+        } if detail.as_str() == "unchanged physical base proved"),
+            "{status:?}"
+        );
+        assert_eq!(status.source_capture, Some(terminal));
+    }
+
+    #[test]
+    fn publication_journal_foreign_return_retains_both_original_connections() {
+        let mut a = open(&path());
+        let mut b = open(&path());
+        let writer_a = a.detach_publication_writer().expect("A original writer");
+        let writer_b = b.detach_publication_writer().expect("B original writer");
+        let writer_b = match a.restore_publication_writer(writer_b) {
+            Err((writer, JournalError::InvalidTransition)) => writer,
+            _ => panic!("foreign return must preserve B authority"),
+        };
+        a.restore_publication_writer(writer_a)
+            .unwrap_or_else(|_| panic!("A correct return"));
+        b.restore_publication_writer(writer_b)
+            .unwrap_or_else(|_| panic!("B correct return"));
+        a.accept(key(903), package(), CompileExecutionIntent::Interactive)
+            .expect("A next write");
+        b.accept(key(904), package(), CompileExecutionIntent::Interactive)
+            .expect("B next write");
     }
 }

@@ -862,6 +862,16 @@ Python exact source-coordinate joins passed 22 native library controls on `05845
 
 No new release or installer is recommended by this checkpoint. The preexisting Nix edit and unfinished work remain preserved. Readiness remains open until clean installation, current composed publication, reference/graph correctness, bounded paging/removal, cold restart and live GUI operation pass on matching images.
 
+### Current publication recovery checkpoint — 2026-10-09
+
+Source `250580591b32a41885a37802073540caada9a2c7` keeps the admitted query view available while an index publication is prepared and committed. The publisher carries the original writer capabilities through cancellation, refused installation, unwind, explicit retry and shutdown. A SQL terminal observation alone cannot install a new owner head. Turso graph reads use an admitted read snapshot, so an ongoing query retains its original generation and selector while later writes proceed. Missing catalog records and stale project graph bases retain their typed failures through the adapter and wire.
+
+The persisted journal admits its fixed historical envelopes 21–24 and current envelope 25, with an explicit compile-time fence requiring review when the live DTO version changes. The row, proof, descriptor and transition checks remain strict. Cold reopen preserves historical records, while unknown versions, fields and altered proof bases are refused.
+
+The [Root-audited native packet](../../audits/publication28-native-evidence-20261009.json) records **28 passed, zero failed, zero ignored** on actual producer source `09e0eae9928e8e3beb109cab94c9bbe40263ad84`: the original 23 publisher/worker/read-snapshot controls, two current graph controls and three journal controls. Root rehashed all 127 raw archive members, all 18,022 Git blobs, all 16 producing/inventory/execution receipts, their fresh fleet admissions, exact test names and image bindings. Root also independently rehashed both native test images over SSH. The integrated 17 source postimages match that producer exactly on newer canonical `1c52dfa73a552354144bee78f402f60d86cbc6ef`; the existing client dependency lockfile changes remain intact. The two previous current runs, 3 passed/22 failed and 23 passed/2 failed, remain recorded as failures.
+
+This checkpoint proves those native laws. Matching normal CLI/MCP/service binaries, real large-project publication and removal, every MCP surface, cold restart and the live GUI remain separate open gates. The TypeScript seven-control suite and Python fifteen-control suite are passing on their separately named candidates; neither is claimed as execution on this composed publication checkpoint. No new installer or production-readiness claim is made here.
+
 
 ### Durable frontier cutover — 2026-10-08
 

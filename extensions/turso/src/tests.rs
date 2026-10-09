@@ -3730,3 +3730,102 @@ async fn stored_state_rowid(projection: &TursoProjection, source: &PackageRefere
     row.get(0)
         .unwrap_or_else(|error| panic!("state rowid decode: {error}"))
 }
+
+#[test]
+fn captured_sql_read_snapshot_keeps_old_graph_during_same_generation_and_selector_writes() {
+    futures_executor::block_on(async {
+        let path = path();
+        let source = PackageReference::parse("pkg:cargo/read-snapshot@1.0.0").expect("source");
+        let original = graph_facts(
+            &source,
+            &[
+                dependency_edge(&source, "serde", "^1"),
+                dependency_edge(&source, "tokio", "^1"),
+            ],
+        );
+        let mut writer = open_test(&path).await.expect("actual selected SQL writer");
+        let initial = fallback_seed_view();
+        writer
+            .synchronize_package_graph_current_for_test(initial.root(), &original)
+            .await
+            .expect("actual graph publication");
+        let request = backend_library::PackageGraphPageRequest::new(
+            source.clone(),
+            backend_library::PackageGraphDirection::Dependencies,
+            None,
+            1,
+        )
+        .expect("bounded first page");
+        let first = writer
+            .read_package_graph_page(&request)
+            .await
+            .expect("old page1");
+        let backend_library::PackageGraphPageTerminal::More(cursor) = first.terminal.clone() else {
+            panic!("two genuine edges must page");
+        };
+        let next = request.clone().with_cursor(cursor);
+        let second = writer
+            .read_package_graph_page(&next)
+            .await
+            .expect("old page2");
+        let captured = writer
+            .capture_read_snapshot()
+            .await
+            .expect("actual held read transaction");
+        let old_revision = captured.package_graph_revision();
+        assert!(
+            captured
+                .connection_for_test()
+                .execute("DELETE FROM backend_projection_rows", ())
+                .await
+                .is_err(),
+            "the SQL connection itself refuses mutation"
+        );
+        let changed = graph_facts(&source, &[dependency_edge(&source, "serde", "^2")]);
+        writer
+            .synchronize_package_graph_current_for_test(initial.root(), &changed)
+            .await
+            .expect("original writer mutates same-generation WAL");
+        assert_eq!(
+            captured
+                .read_package_graph_page(&request)
+                .await
+                .expect("retained page1"),
+            first
+        );
+        assert_eq!(
+            captured
+                .read_package_graph_page(&next)
+                .await
+                .expect("original cursor page2"),
+            second
+        );
+        assert_ne!(
+            writer
+                .read_package_graph_page(&request)
+                .await
+                .expect("new graph"),
+            first
+        );
+        let target = view_with_label("read-snapshot-new-generation");
+        writer
+            .synchronize_from_current_for_test(&target)
+            .await
+            .expect("actual selector generation replacement");
+        writer
+            .synchronize_package_graph_current_for_test(target.root(), &changed)
+            .await
+            .expect("new generation graph");
+        assert_eq!(captured.package_graph_revision(), old_revision);
+        assert_eq!(
+            captured
+                .read_package_graph_page(&next)
+                .await
+                .expect("old cursor survives selector change"),
+            second
+        );
+        drop(captured);
+        drop(writer);
+        remove_database(&path);
+    });
+}

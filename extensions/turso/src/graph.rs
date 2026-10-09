@@ -133,41 +133,9 @@ impl TursoProjection {
         }
         let _operation_guard = self.operation_guard()?;
         let tx = self.connection.unchecked_transaction().await?;
-        let Some(view) = metadata_from(&tx).await? else {
-            tx.rollback().await?;
-            return Err(ProjectionError::StaleTransition);
-        };
-        let graph = package_graph_metadata_from(&tx).await?;
+        let result = package_graph_revision_from(&tx, self.generation, self.marker_identity).await;
         tx.rollback().await?;
-        let view_root = view
-            .root
-            .as_slice()
-            .try_into()
-            .map_err(|_| ProjectionError::CorruptMetadata { field: "root" })?;
-        let view_version = view.view_version.as_slice().try_into().map_err(|_| {
-            ProjectionError::CorruptMetadata {
-                field: "view_version",
-            }
-        })?;
-        let (graph_root, facts_witness) = match graph {
-            Some(graph) => (
-                Some(graph.root.as_slice().try_into().map_err(|_| {
-                    ProjectionError::CorruptMetadata {
-                        field: "graph_root",
-                    }
-                })?),
-                Some(graph.facts_witness),
-            ),
-            None => (None, None),
-        };
-        Ok(PackageGraphRevision {
-            generation: self.generation,
-            marker_identity: self.marker_identity,
-            view_root,
-            view_version,
-            graph_root,
-            facts_witness,
-        })
+        result
     }
 
     /// Reuses an already selected, exact graph snapshot.
@@ -1442,4 +1410,47 @@ fn decode_exact_product_text(
 
 fn misuse_graph_edge(message: &'static str) -> ProjectionError {
     ProjectionError::Database(turso::Error::Misuse(message.to_owned()))
+}
+
+/// Decodes one revision from the caller's already-held SQLite read snapshot.
+pub(crate) async fn package_graph_revision_from(
+    tx: &turso::Connection,
+    generation: crate::ProjectionGenerationId,
+    marker_identity: backend_platform::FileIdentity,
+) -> Result<PackageGraphRevision, ProjectionError> {
+    let Some(view) = metadata_from(tx).await? else {
+        return Err(ProjectionError::StaleTransition);
+    };
+    let graph = package_graph_metadata_from(tx).await?;
+    let view_root = view
+        .root
+        .as_slice()
+        .try_into()
+        .map_err(|_| ProjectionError::CorruptMetadata { field: "root" })?;
+    let view_version =
+        view.view_version
+            .as_slice()
+            .try_into()
+            .map_err(|_| ProjectionError::CorruptMetadata {
+                field: "view_version",
+            })?;
+    let (graph_root, facts_witness) = match graph {
+        Some(graph) => (
+            Some(graph.root.as_slice().try_into().map_err(|_| {
+                ProjectionError::CorruptMetadata {
+                    field: "graph_root",
+                }
+            })?),
+            Some(graph.facts_witness),
+        ),
+        None => (None, None),
+    };
+    Ok(PackageGraphRevision {
+        generation,
+        marker_identity,
+        view_root,
+        view_version,
+        graph_root,
+        facts_witness,
+    })
 }
