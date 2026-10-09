@@ -241,11 +241,48 @@ impl fmt::Display for CauseSlug {
     }
 }
 
+/// The exact CLI connection context to recover, without rebinding an MCP tool.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OwnerContext {
+    project: String,
+    workspace: String,
+    endpoint: String,
+}
+
+impl OwnerContext {
+    /// Retains all three already-selected connection operands unchanged.
+    #[must_use]
+    pub fn new(project: String, workspace: String, endpoint: String) -> Self {
+        Self {
+            project,
+            workspace,
+            endpoint,
+        }
+    }
+
+    fn recovery_shell(&self) -> String {
+        format!(
+            "nudox --project {} --workspace {} --endpoint {} health",
+            crate::shell::quote_argument(&self.project),
+            crate::shell::quote_argument(&self.workspace),
+            crate::shell::quote_argument(&self.endpoint),
+        )
+    }
+}
+
 /// The next step a reader can take, typed so each surface renders its idiom.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Affordance {
     /// Run the same request again.
     Retry,
+    /// Inspect the owner already bound to the current surface.
+    InspectOwner,
+    /// Reach or start the exact CLI owner that a passive request could not reach.
+    /// Its connection options cannot be represented by an MCP tool's arguments.
+    RecoverOwner {
+        /// Exact selected project, durable workspace and local endpoint.
+        context: OwnerContext,
+    },
     /// Retry one corpus-backed search with its original text and page credit.
     RetrySearch {
         /// Exact caller-supplied search text.
@@ -287,10 +324,7 @@ impl Affordance {
     /// Suggests re-reading the shelf status.
     #[must_use]
     pub fn status() -> Self {
-        Self::UseCommand {
-            name: "health",
-            args: Box::new([]),
-        }
+        Self::InspectOwner
     }
 
     /// Suggests searching for the text the caller addressed.
@@ -307,6 +341,8 @@ impl Affordance {
     pub fn shell(&self) -> Option<String> {
         match self {
             Self::Retry => Some("re-run the same command".to_owned()),
+            Self::InspectOwner => Some("nudox health".to_owned()),
+            Self::RecoverOwner { context } => Some(context.recovery_shell()),
             Self::RetrySearch { text, limit } => Some(format!(
                 "nudox search {} --limit {limit}",
                 crate::shell::quote_argument(text),
@@ -328,7 +364,10 @@ impl Affordance {
             Self::WaitForReadiness => {
                 Some("backend health  (wait for ~lanes to read ready)".to_owned())
             }
-            Self::PollIndex { ticket, after_sequence } => Some(format!(
+            Self::PollIndex {
+                ticket,
+                after_sequence,
+            } => Some(format!(
                 "backend index_progress {} --after-sequence {after_sequence}",
                 crate::shell::quote_argument(&crate::product::index_ticket_json(ticket)),
             )),
@@ -340,7 +379,11 @@ impl Affordance {
     #[must_use]
     pub fn tool_call(&self) -> Option<serde_json::Value> {
         match self {
-            Self::Retry | Self::None => None,
+            Self::Retry | Self::RecoverOwner { .. } | Self::None => None,
+            Self::InspectOwner => Some(serde_json::json!({
+                "name": "backend.status",
+                "arguments": {}
+            })),
             Self::RetrySearch { text, limit } => Some(serde_json::json!({
                 "name": "backend.search",
                 "arguments": { "query": text, "limit": limit }
@@ -361,7 +404,10 @@ impl Affordance {
                 "name": "backend.status",
                 "arguments": {}
             })),
-            Self::PollIndex { ticket, after_sequence } => Some(serde_json::json!({
+            Self::PollIndex {
+                ticket,
+                after_sequence,
+            } => Some(serde_json::json!({
                 "name": "backend.index_progress",
                 "arguments": { "ticket": ticket, "after_sequence": after_sequence }
             })),
@@ -381,8 +427,6 @@ fn tool_arguments(name: &str, args: &[String]) -> serde_json::Value {
         |value| serde_json::json!({ field: value }),
     )
 }
-
-
 
 /// One typed failure, complete enough to render on any surface.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -572,7 +616,9 @@ impl Fault {
                 CauseSlug::Absent,
                 "no outline is published for this package at this revision",
             ),
-            Affordance::Reindex { path: path.to_owned() },
+            Affordance::Reindex {
+                path: path.to_owned(),
+            },
         )
     }
 
@@ -580,7 +626,10 @@ impl Fault {
     #[must_use]
     pub fn lane(lane: Lane, reason: Reason) -> Self {
         let affordance = match reason {
-            Reason::NoIndex => Affordance::UseCommand { name: "packages", args: Box::new([]) },
+            Reason::NoIndex => Affordance::UseCommand {
+                name: "packages",
+                args: Box::new([]),
+            },
             Reason::Incomplete => Affordance::WaitForReadiness,
             Reason::Unconfigured => Affordance::None,
             Reason::Offline | Reason::Cancelled => Affordance::Retry,

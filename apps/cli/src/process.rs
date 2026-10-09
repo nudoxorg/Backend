@@ -15,7 +15,9 @@ use crate::options::{self, Options};
 use crate::render;
 use crate::run::{self, Answer};
 use backend_client::Session;
-use backend_present::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand, grammar_for};
+use backend_present::{
+    Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand, OwnerContext, grammar_for,
+};
 use backend_present::{Request, lower, lower_surface_json};
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -146,16 +148,12 @@ fn run_words(words: &[String], options: &Options) -> Result<(String, ExitCode), 
             Operand::Path(workspace.endpoint().to_string_lossy().into_owned()),
             Cause::new(CauseSlug::Unreachable, message),
             if options.passive() {
-                Affordance::UseCommand {
-                    name: "health",
-                    args: Box::new([
-                        "--project".to_owned(),
+                Affordance::RecoverOwner {
+                    context: OwnerContext::new(
                         project.clone(),
-                        "--workspace".to_owned(),
                         workspace.data().to_string_lossy().into_owned(),
-                        "--endpoint".to_owned(),
                         workspace.endpoint().to_string_lossy().into_owned(),
-                    ]),
+                    ),
                 }
             } else {
                 startup_error_action(&error)
