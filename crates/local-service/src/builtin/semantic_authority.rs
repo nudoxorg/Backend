@@ -1482,7 +1482,35 @@ pub(super) struct DetachedSemanticAuthority {
     workspace: backend_version::WorkspaceRoot,
 }
 
+/// A checked return keeps the actor field exclusively borrowed until the
+/// coherent head install. Installation cannot fail or destroy prior maps.
+pub(super) struct SemanticWriterReturn<'a> {
+    target: &'a mut SemanticAuthority,
+    writer: DetachedSemanticAuthority,
+}
+
+#[must_use = "retire captured semantic proof maps on the publication worker"]
+pub(super) struct RetiredSemanticRead {
+    _authority: SemanticAuthority,
+}
+
+impl SemanticWriterReturn<'_> {
+    pub(super) fn into_writer(self) -> DetachedSemanticAuthority {
+        self.writer
+    }
+
+    pub(super) fn install(self) -> RetiredSemanticRead {
+        RetiredSemanticRead {
+            _authority: std::mem::replace(self.target, self.writer.authority),
+        }
+    }
+}
+
 impl DetachedSemanticAuthority {
+    pub(super) fn authority(&self) -> &SemanticAuthority {
+        &self.authority
+    }
+
     pub(super) fn authority_mut(&mut self) -> &mut SemanticAuthority {
         &mut self.authority
     }
@@ -1668,11 +1696,11 @@ impl SemanticAuthority {
 
     /// A rejected route returns the whole capability. Neither a foreign owner
     /// nor a changed admitted root may consume the sole writer.
-    pub(super) fn restore_index_writer(
+    pub(super) fn prepare_index_writer_return(
         &mut self,
         current_workspace: backend_version::WorkspaceRoot,
         writer: DetachedSemanticAuthority,
-    ) -> Result<(), (DetachedSemanticAuthority, BuiltinModelError)> {
+    ) -> Result<SemanticWriterReturn<'_>, (DetachedSemanticAuthority, BuiltinModelError)> {
         let matches = matches!(&self.authority,
             SemanticAuthorityRole::CapturedRead { workspace, .. }
                 if *workspace == current_workspace && *workspace == writer.workspace)
@@ -1690,7 +1718,19 @@ impl SemanticAuthority {
                 ),
             ));
         }
-        *self = writer.authority;
+        Ok(SemanticWriterReturn {
+            target: self,
+            writer,
+        })
+    }
+
+    pub(super) fn restore_index_writer(
+        &mut self,
+        current_workspace: backend_version::WorkspaceRoot,
+        writer: DetachedSemanticAuthority,
+    ) -> Result<(), (DetachedSemanticAuthority, BuiltinModelError)> {
+        let returned = self.prepare_index_writer_return(current_workspace, writer)?;
+        drop(returned.install());
         Ok(())
     }
 
@@ -3739,7 +3779,24 @@ impl SemanticAuthority {
         let publication = self
             .image_loader
             .prepare_product_selection_changes(entries, removals)?;
-        let result = persist_marker()?;
+        // The selector write lease deliberately spans physical publication.
+        // Catch the caller's unwind while that lease is still in scope: the
+        // admitted entries have not been installed, so returning an error
+        // releases an unchanged, unpoisoned selector. The caller still owns
+        // the physical-publication capabilities and must reconcile them.
+        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(persist_marker)) {
+            Ok(result) => result?,
+            Err(payload) => {
+                // A caller may panic with an arbitrary payload whose Drop can
+                // also unwind. Release the unchanged selector before dropping
+                // that payload so even the second unwind cannot poison it.
+                drop(publication);
+                drop(payload);
+                return Err(BuiltinModelError(
+                    "product marker publication unwound before selector installation".to_owned(),
+                ));
+            }
+        };
         let selected = publication.commit();
         self.remember_product_selection_observations(selected);
         for key in observation_removals {

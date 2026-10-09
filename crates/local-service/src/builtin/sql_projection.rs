@@ -72,6 +72,13 @@ impl<'a> GraphBase<'a> {
         daemon: &'a ProductDaemon,
     ) -> Result<Self, ProjectionError> {
         let revision = futures_executor::block_on(projection.package_graph_revision())?;
+        Self::capture_revision(revision, daemon)
+    }
+
+    pub(super) fn capture_revision(
+        revision: PackageGraphRevision,
+        daemon: &'a ProductDaemon,
+    ) -> Result<Self, ProjectionError> {
         let view = daemon.engine().daemon().library().view();
         if revision.view_root() != *view.root().as_bytes()
             || revision.view_version() != *view.version().as_bytes()
@@ -97,5 +104,122 @@ impl<'a> GraphBase<'a> {
             self.view.root(),
             facts,
         ))
+    }
+}
+
+/// The derived SQL writer is transferred separately from its held read
+/// snapshot. A reader has no write accessor and never reopens the selector.
+pub(super) struct ProjectionOwner {
+    identity: std::sync::Arc<()>,
+    role: ProjectionRole,
+}
+
+enum ProjectionRole {
+    Writer(TursoProjection),
+    Captured(backend_extension_turso::TursoProjectionReadSnapshot),
+}
+
+#[must_use = "return the original derived projection writer to its owner"]
+pub(super) struct ProjectionWriter {
+    identity: std::sync::Arc<()>,
+    projection: TursoProjection,
+}
+
+/// Checked while the actor still serves the captured head. Holding the
+/// mutable field borrow prevents another reservation until installation.
+pub(super) struct ProjectionReturn<'a> {
+    owner: &'a mut ProjectionOwner,
+    writer: ProjectionWriter,
+}
+
+impl ProjectionOwner {
+    pub(super) fn new(projection: TursoProjection) -> Self {
+        Self {
+            identity: std::sync::Arc::new(()),
+            role: ProjectionRole::Writer(projection),
+        }
+    }
+
+    pub(super) fn writer_mut(&mut self) -> Result<&mut TursoProjection, ProjectionError> {
+        match &mut self.role {
+            ProjectionRole::Writer(writer) => Ok(writer),
+            ProjectionRole::Captured(_) => Err(ProjectionError::NamespaceBusy),
+        }
+    }
+
+    pub(super) fn revision(&self) -> Result<PackageGraphRevision, ProjectionError> {
+        match &self.role {
+            ProjectionRole::Writer(writer) => {
+                futures_executor::block_on(writer.package_graph_revision())
+            }
+            ProjectionRole::Captured(reader) => Ok(reader.package_graph_revision()),
+        }
+    }
+
+    pub(super) async fn read_package_graph_page(
+        &self,
+        request: &backend_library::PackageGraphPageRequest,
+    ) -> Result<backend_library::PackageGraphPage, backend_extension_turso::PackageGraphReadError>
+    {
+        match &self.role {
+            ProjectionRole::Writer(writer) => writer.read_package_graph_page(request).await,
+            ProjectionRole::Captured(reader) => reader.read_package_graph_page(request).await,
+        }
+    }
+
+    pub(super) fn reserve_writer(&mut self) -> Result<ProjectionWriter, ProjectionError> {
+        let ProjectionRole::Writer(writer) = &self.role else {
+            return Err(ProjectionError::NamespaceBusy);
+        };
+        let reader = futures_executor::block_on(writer.capture_read_snapshot())?;
+        let ProjectionRole::Writer(writer) =
+            std::mem::replace(&mut self.role, ProjectionRole::Captured(reader))
+        else {
+            unreachable!("selected original projection writer");
+        };
+        Ok(ProjectionWriter {
+            identity: std::sync::Arc::clone(&self.identity),
+            projection: writer,
+        })
+    }
+
+    pub(super) fn prepare_return(
+        &mut self,
+        writer: ProjectionWriter,
+    ) -> Result<ProjectionReturn<'_>, (ProjectionWriter, ProjectionError)> {
+        if !matches!(self.role, ProjectionRole::Captured(_))
+            || !std::sync::Arc::ptr_eq(&self.identity, &writer.identity)
+        {
+            return Err((writer, ProjectionError::NamespaceIdentity));
+        }
+        Ok(ProjectionReturn {
+            owner: self,
+            writer,
+        })
+    }
+}
+
+impl ProjectionWriter {
+    pub(super) fn projection_mut(&mut self) -> &mut TursoProjection {
+        &mut self.projection
+    }
+}
+
+impl ProjectionReturn<'_> {
+    pub(super) fn into_writer(self) -> ProjectionWriter {
+        self.writer
+    }
+
+    /// No fallible work remains after prepare_return. The old read snapshot
+    /// is returned intact for retirement on the existing publication worker.
+    pub(super) fn install(self) -> backend_extension_turso::TursoProjectionReadSnapshot {
+        let old = std::mem::replace(
+            &mut self.owner.role,
+            ProjectionRole::Writer(self.writer.projection),
+        );
+        let ProjectionRole::Captured(reader) = old else {
+            unreachable!("prepared return retains exclusive field borrow");
+        };
+        reader
     }
 }

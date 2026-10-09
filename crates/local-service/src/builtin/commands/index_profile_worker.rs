@@ -4,17 +4,18 @@
 //! unique writers only after thread creation succeeds; the owned JoinHandle
 //! returns them even when compilation or admission unwinds.
 
-use super::super::super::semantic_authority::DetachedSemanticAuthority;
+use super::super::super::semantic_authority::{DetachedSemanticAuthority, RetiredSemanticRead};
 use super::super::super::{BuiltinModel, BuiltinModelError};
 use super::super::index::{
     DeferredIndex, DeferredProfileFailure, DeferredProfileTicket, deferred_compile_was_cancelled,
     finish_deferred_profile_for_snapshot, run_deferred_compile,
 };
 use backend_engine::application::{LocalCompilerClient, OwnedPackageSourceSet};
-use backend_engine::{ReadHeadWriter, WorkspaceSnapshot};
+use backend_engine::{ReadHeadWriter, RetiredReadHead, WorkspaceSnapshot};
 use backend_semantic::vocabulary::LanguageProfile;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender};
 use std::thread::JoinHandle;
 
 pub(super) struct ProfileIdentity {
@@ -115,10 +116,7 @@ impl ProfileWork {
             .unwrap_or_else(|_| ProfileOutcome::Admitted(Err(BuiltinModelError(
                 "compiler or semantic candidate admission panicked; the original writers were retained".to_owned(),
             ).into())));
-        ProfileCompletion {
-            work: self,
-            outcome,
-        }
+        ProfileCompletion::returned(self, outcome)
     }
 }
 
@@ -126,25 +124,111 @@ impl ProfileWork {
 pub(super) struct ProfileCompletion {
     pub(super) work: ProfileWork,
     pub(super) outcome: ProfileOutcome,
+    pub(super) retired: RetiredProfile,
+    retirement: Option<ProfileRetirement>,
+}
+
+#[derive(Default)]
+pub(super) struct RetiredProfile {
+    pub(super) head: Option<RetiredReadHead>,
+    pub(super) semantic: Option<RetiredSemanticRead>,
+    #[cfg(test)]
+    pub(super) test_retirement: Option<Box<dyn FnOnce() + Send>>,
+}
+
+#[cfg(test)]
+impl Drop for RetiredProfile {
+    fn drop(&mut self) {
+        if let Some(callback) = self.test_retirement.take() {
+            callback();
+        }
+    }
+}
+
+struct ProfileRetirement {
+    send: SyncSender<RetiredProfile>,
+    handle: JoinHandle<()>,
+}
+
+impl ProfileCompletion {
+    pub(super) fn returned(work: ProfileWork, outcome: ProfileOutcome) -> Self {
+        Self {
+            work,
+            outcome,
+            retired: RetiredProfile::default(),
+            retirement: None,
+        }
+    }
+
+    /// The actual compiler thread stays owned until the actor has returned
+    /// its displaced read payloads. Polling waits for their destruction without
+    /// dropping the last large map or joining a running destructor on actor.
+    pub(super) fn retire(mut self) -> Result<Self, ProfileWorker> {
+        match self.retirement.take() {
+            Some(retirement) => {
+                retirement
+                    .send
+                    .send(std::mem::take(&mut self.retired))
+                    .unwrap_or_else(|_| panic!("owned compiler retirement receiver disappeared"));
+                Err(ProfileWorker::Retiring {
+                    handle: retirement.handle,
+                    completion: self,
+                })
+            }
+            None => {
+                // Startup rejection and synchronous test callbacks never ran
+                // the production private admission thread.
+                drop(std::mem::take(&mut self.retired));
+                Ok(self)
+            }
+        }
+    }
 }
 
 #[must_use = "poll and join the owned compiler worker"]
 pub(super) enum ProfileWorker {
     Running(JoinHandle<ProfileCompletion>),
     Returned(ProfileCompletion),
+    Owned {
+        handle: JoinHandle<()>,
+        completion: Receiver<ProfileCompletion>,
+        retire: SyncSender<RetiredProfile>,
+    },
+    Retiring {
+        handle: JoinHandle<()>,
+        completion: ProfileCompletion,
+    },
 }
 
 impl ProfileWorker {
     pub(super) fn spawn(work: ProfileWork) -> Result<Self, (ProfileWork, std::io::Error)> {
-        Self::spawn_with(work, |receive| {
-            std::thread::Builder::new()
-                .name("locald-index-compile".to_owned())
-                .spawn(move || {
-                    receive
-                        .recv()
-                        .expect("owned compiler startup transfer")
-                        .run()
-                })
+        let (startup, receive) = std::sync::mpsc::sync_channel::<ProfileWork>(1);
+        let (completed, completion) = std::sync::mpsc::sync_channel(1);
+        let (retire, retirement) = std::sync::mpsc::sync_channel::<RetiredProfile>(1);
+        let handle = match std::thread::Builder::new()
+            .name("locald-index-compile".to_owned())
+            .spawn(move || {
+                let Ok(work) = receive.recv() else { return };
+                if completed.send(work.run()).is_ok() {
+                    if let Ok(retired) = retirement.recv() {
+                        drop(retired);
+                    }
+                }
+            }) {
+            Ok(handle) => handle,
+            Err(error) => return Err((work, error)),
+        };
+        if let Err(error) = startup.send(work) {
+            let _ = handle.join();
+            return Err((
+                error.0,
+                std::io::Error::other("compiler startup transfer refused"),
+            ));
+        }
+        Ok(Self::Owned {
+            handle,
+            completion,
+            retire,
         })
     }
 
@@ -175,8 +259,24 @@ impl ProfileWorker {
         match self {
             Self::Running(handle) => handle
                 .join()
-                .expect("the compiler worker catches unwinds while borrowing its unique writers"),
+                .expect("compiler callback catches owned-writer unwinds"),
             Self::Returned(completion) => completion,
+            Self::Owned {
+                handle,
+                completion,
+                retire,
+            } => {
+                let completion = completion.recv().expect("owned compiler completion");
+                retire
+                    .send(RetiredProfile::default())
+                    .unwrap_or_else(|_| panic!("owned retirement receiver"));
+                handle.join().expect("compiler thread retired");
+                completion
+            }
+            Self::Retiring { handle, completion } => {
+                handle.join().expect("compiler read payloads retired");
+                completion
+            }
         }
     }
 
@@ -185,6 +285,32 @@ impl ProfileWorker {
             Self::Running(handle) if !handle.is_finished() => Err(Self::Running(handle)),
             running @ Self::Running(_) => Ok(running.join()),
             Self::Returned(completion) => Ok(completion),
+            Self::Owned {
+                handle,
+                completion,
+                retire,
+            } => match completion.try_recv() {
+                Ok(mut completed) => {
+                    completed.retirement = Some(ProfileRetirement {
+                        send: retire,
+                        handle,
+                    });
+                    Ok(completed)
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => Err(Self::Owned {
+                    handle,
+                    completion,
+                    retire,
+                }),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    let _ = handle.join();
+                    panic!("compiler catches admission unwind before exporting its writers")
+                }
+            },
+            Self::Retiring { handle, completion } if !handle.is_finished() => {
+                Err(Self::Retiring { handle, completion })
+            }
+            retired @ Self::Retiring { .. } => Ok(retired.join()),
         }
     }
 }

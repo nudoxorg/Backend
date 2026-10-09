@@ -74,208 +74,207 @@ impl TursoProjection {
         request.admit()?;
         let _operation_guard = self.operation_guard()?;
         let tx = self.connection.unchecked_transaction().await?;
-        let Some(metadata) = crate::graph::package_graph_metadata_from(&tx).await? else {
-            tx.rollback().await?;
-            return if request.cursor.is_some() {
-                Err(PackageGraphReadError::StaleCursor)
-            } else {
-                Err(ProjectionError::StaleTransition.into())
-            };
-        };
-        if !crate::graph::graph_root_matches_selected_view(&tx, &metadata).await? {
-            tx.rollback().await?;
-            return if request.cursor.is_some() {
-                Err(PackageGraphReadError::StaleCursor)
-            } else {
-                Err(ProjectionError::StaleTransition.into())
-            };
-        }
-        let view_root = fixed_root(&metadata)?;
-        if let Some(cursor) = &request.cursor
-            && (cursor.schema != backend_library::PACKAGE_GRAPH_PAGE_SCHEMA
-                || cursor.view_root != view_root
-                || cursor.facts_witness != metadata.facts_witness
-                || cursor.catalog_snapshot != request.catalog_snapshot)
-        {
-            tx.rollback().await?;
-            return Err(PackageGraphReadError::StaleCursor);
-        }
+        let result = read_page_snapshot(&tx, request).await;
+        tx.rollback().await?;
+        result
+    }
+}
 
-        let selection = match request.direction {
-            PackageGraphDirection::Dependencies => {
-                select_source(&tx, request, request.cursor.as_ref()).await?
+/// Shared row/page grammar. The caller owns a read transaction that has
+/// already fixed the SQLite snapshot; this helper never starts or ends it.
+pub(crate) async fn read_page_snapshot(
+    tx: &turso::Connection,
+    request: &PackageGraphPageRequest,
+) -> Result<PackageGraphPage, PackageGraphReadError> {
+    request.admit()?;
+    let Some(metadata) = crate::graph::package_graph_metadata_from(tx).await? else {
+        return if request.cursor.is_some() {
+            Err(PackageGraphReadError::StaleCursor)
+        } else {
+            Err(ProjectionError::StaleTransition.into())
+        };
+    };
+    if !crate::graph::graph_root_matches_selected_view(tx, &metadata).await? {
+        return if request.cursor.is_some() {
+            Err(PackageGraphReadError::StaleCursor)
+        } else {
+            Err(ProjectionError::StaleTransition.into())
+        };
+    }
+    let view_root = fixed_root(&metadata)?;
+    if let Some(cursor) = &request.cursor
+        && (cursor.schema != backend_library::PACKAGE_GRAPH_PAGE_SCHEMA
+            || cursor.view_root != view_root
+            || cursor.facts_witness != metadata.facts_witness
+            || cursor.catalog_snapshot != request.catalog_snapshot)
+    {
+        return Err(PackageGraphReadError::StaleCursor);
+    }
+
+    let selection = match request.direction {
+        PackageGraphDirection::Dependencies => {
+            select_source(tx, request, request.cursor.as_ref()).await?
+        }
+        PackageGraphDirection::Dependents => SourceSelection::NotApplicable,
+    };
+    if request.cursor.is_some() && matches!(&selection, SourceSelection::Missing) {
+        return Err(PackageGraphReadError::StaleCursor);
+    }
+
+    let selected_source = match &selection {
+        SourceSelection::Exact(source) => Some(source),
+        SourceSelection::NotApplicable
+        | SourceSelection::Missing
+        | SourceSelection::Ambiguous(_) => None,
+    };
+    if let Some(cursor) = &request.cursor {
+        let recipe = request.recipe(selected_source);
+        if cursor.recipe != recipe || cursor.source.as_ref() != selected_source {
+            return Err(PackageGraphPageError::CursorMismatch.into());
+        }
+    }
+
+    if request.control == PackageGraphControl::Cancel {
+        let page = empty_page(
+            view_root,
+            metadata.facts_witness,
+            request.catalog_snapshot,
+            request,
+            selected_source.cloned(),
+            PackageGraphKnowledge::Unknown { reason: None },
+            PackageGraphPageTerminal::Cancelled,
+        );
+        page.admit_for(request)?;
+        return Ok(page);
+    }
+
+    let (knowledge, source, rows, more) = match request.direction {
+        PackageGraphDirection::Dependencies => match selection {
+            SourceSelection::Missing => (
+                PackageGraphKnowledge::Unknown {
+                    reason: Some(product_text(
+                        "no dependency source is recorded for this package",
+                    )),
+                },
+                None,
+                Vec::new(),
+                false,
+            ),
+            SourceSelection::Ambiguous(sources) => (
+                PackageGraphKnowledge::Ambiguous {
+                    sources: sources.into_boxed_slice(),
+                },
+                None,
+                Vec::new(),
+                false,
+            ),
+            SourceSelection::NotApplicable => {
+                return Err(PackageGraphPageError::PageShape.into());
             }
-            PackageGraphDirection::Dependents => SourceSelection::NotApplicable,
-        };
-        if request.cursor.is_some() && matches!(&selection, SourceSelection::Missing) {
-            tx.rollback().await?;
-            return Err(PackageGraphReadError::StaleCursor);
-        }
-
-        let selected_source = match &selection {
-            SourceSelection::Exact(source) => Some(source),
-            SourceSelection::NotApplicable
-            | SourceSelection::Missing
-            | SourceSelection::Ambiguous(_) => None,
-        };
-        if let Some(cursor) = &request.cursor {
-            let recipe = request.recipe(selected_source);
-            if cursor.recipe != recipe || cursor.source.as_ref() != selected_source {
-                tx.rollback().await?;
-                return Err(PackageGraphPageError::CursorMismatch.into());
-            }
-        }
-
-        if request.control == PackageGraphControl::Cancel {
-            let page = empty_page(
-                view_root,
-                metadata.facts_witness,
-                request.catalog_snapshot,
-                request,
-                selected_source.cloned(),
-                PackageGraphKnowledge::Unknown { reason: None },
-                PackageGraphPageTerminal::Cancelled,
-            );
-            page.admit_for(request)?;
-            tx.rollback().await?;
-            return Ok(page);
-        }
-
-        let (knowledge, source, rows, more) = match request.direction {
-            PackageGraphDirection::Dependencies => match selection {
-                SourceSelection::Missing => (
-                    PackageGraphKnowledge::Unknown {
-                        reason: Some(product_text(
-                            "no dependency source is recorded for this package",
-                        )),
-                    },
-                    None,
-                    Vec::new(),
-                    false,
-                ),
-                SourceSelection::Ambiguous(sources) => (
-                    PackageGraphKnowledge::Ambiguous {
-                        sources: sources.into_boxed_slice(),
-                    },
-                    None,
-                    Vec::new(),
-                    false,
-                ),
-                SourceSelection::NotApplicable => {
-                    tx.rollback().await?;
-                    return Err(PackageGraphPageError::PageShape.into());
-                }
-                SourceSelection::Exact(selected) => {
-                    let state = crate::graph::package_source_state(&tx, &selected).await?;
-                    match state {
-                        crate::graph::PackageGraphSourceState::Unknown(reason) => (
-                            PackageGraphKnowledge::Unknown {
-                                reason: Some(reason),
-                            },
-                            Some(selected.clone()),
-                            Vec::new(),
-                            false,
-                        ),
-                        crate::graph::PackageGraphSourceState::Unavailable(reason) => (
-                            PackageGraphKnowledge::Unavailable {
-                                reason,
-                            },
-                            Some(selected.clone()),
-                            Vec::new(),
-                            false,
-                        ),
-                        crate::graph::PackageGraphSourceState::Known => {
-                            let (rows, more) = forward_edges(
-                                &tx,
-                                &selected,
-                                request.cursor.as_ref().map(|value| value.after_edge_id),
-                                request.limit,
-                            )
-                            .await?;
-                            (PackageGraphKnowledge::Known, Some(selected), rows, more)
-                        }
-                    }
-                }
-            },
-            PackageGraphDirection::Dependents => {
-                let (rows, more) = match &request.package {
-                    PackageReference::Purl(_) => {
-                        reverse_edges(
-                            &tx,
-                            &request.package,
+            SourceSelection::Exact(selected) => {
+                let state = crate::graph::package_source_state(tx, &selected).await?;
+                match state {
+                    crate::graph::PackageGraphSourceState::Unknown(reason) => (
+                        PackageGraphKnowledge::Unknown {
+                            reason: Some(reason),
+                        },
+                        Some(selected.clone()),
+                        Vec::new(),
+                        false,
+                    ),
+                    crate::graph::PackageGraphSourceState::Unavailable(reason) => (
+                        PackageGraphKnowledge::Unavailable { reason },
+                        Some(selected.clone()),
+                        Vec::new(),
+                        false,
+                    ),
+                    crate::graph::PackageGraphSourceState::Known => {
+                        let (rows, more) = forward_edges(
+                            tx,
+                            &selected,
                             request.cursor.as_ref().map(|value| value.after_edge_id),
                             request.limit,
                         )
-                        .await?
+                        .await?;
+                        (PackageGraphKnowledge::Known, Some(selected), rows, more)
                     }
-                    PackageReference::Local(_) => (Vec::new(), false),
-                };
-                let knowledge = if matches!(&request.package, PackageReference::Local(_)) {
-                    PackageGraphKnowledge::Unknown {
-                        reason: Some(product_text(
-                            "dependent lookup requires a versioned registry package coordinate",
-                        )),
-                    }
-                } else {
-                    let coverage = reverse_knowledge(&tx).await?;
-                    match coverage {
-                        PackageGraphKnowledge::Unknown {
-                            reason: Some(reason),
-                        } if !rows.is_empty() || more => PackageGraphKnowledge::Partial {
-                            reason,
-                            unavailable: false,
-                        },
-                        PackageGraphKnowledge::Unavailable { reason }
-                            if !rows.is_empty() || more =>
-                        {
-                            PackageGraphKnowledge::Partial {
-                                reason,
-                                unavailable: true,
-                            }
-                        }
-                        other => other,
-                    }
-                };
-                (knowledge, None, rows, more)
+                }
             }
-        };
-
-        let terminal = if more {
-            let Some(after_edge_id) = rows.last().map(|row| row.facts_version) else {
-                tx.rollback().await?;
-                return Err(ProjectionError::Database(turso::Error::Misuse(
-                    "package graph page has a continuation without a row".to_owned(),
-                ))
-                .into());
+        },
+        PackageGraphDirection::Dependents => {
+            let (rows, more) = match &request.package {
+                PackageReference::Purl(_) => {
+                    reverse_edges(
+                        tx,
+                        &request.package,
+                        request.cursor.as_ref().map(|value| value.after_edge_id),
+                        request.limit,
+                    )
+                    .await?
+                }
+                PackageReference::Local(_) => (Vec::new(), false),
             };
-            PackageGraphPageTerminal::More(PackageGraphCursor {
-                schema: backend_library::PACKAGE_GRAPH_PAGE_SCHEMA,
-                view_root,
-                facts_witness: metadata.facts_witness,
-                catalog_snapshot: request.catalog_snapshot,
-                recipe: request.recipe(source.as_ref()),
-                source: source.clone(),
-                after_edge_id,
-            })
-        } else {
-            PackageGraphPageTerminal::Complete
+            let knowledge = if matches!(&request.package, PackageReference::Local(_)) {
+                PackageGraphKnowledge::Unknown {
+                    reason: Some(product_text(
+                        "dependent lookup requires a versioned registry package coordinate",
+                    )),
+                }
+            } else {
+                let coverage = reverse_knowledge(tx).await?;
+                match coverage {
+                    PackageGraphKnowledge::Unknown {
+                        reason: Some(reason),
+                    } if !rows.is_empty() || more => PackageGraphKnowledge::Partial {
+                        reason,
+                        unavailable: false,
+                    },
+                    PackageGraphKnowledge::Unavailable { reason } if !rows.is_empty() || more => {
+                        PackageGraphKnowledge::Partial {
+                            reason,
+                            unavailable: true,
+                        }
+                    }
+                    other => other,
+                }
+            };
+            (knowledge, None, rows, more)
+        }
+    };
+
+    let terminal = if more {
+        let Some(after_edge_id) = rows.last().map(|row| row.facts_version) else {
+            return Err(ProjectionError::Database(turso::Error::Misuse(
+                "package graph page has a continuation without a row".to_owned(),
+            ))
+            .into());
         };
-        let page = PackageGraphPage {
+        PackageGraphPageTerminal::More(PackageGraphCursor {
             schema: backend_library::PACKAGE_GRAPH_PAGE_SCHEMA,
             view_root,
             facts_witness: metadata.facts_witness,
             catalog_snapshot: request.catalog_snapshot,
-            package: request.package.clone(),
-            direction: request.direction,
-            source,
-            knowledge,
-            rows: rows.into_boxed_slice(),
-            terminal,
-        };
-        page.admit_for(request)?;
-        tx.rollback().await?;
-        Ok(page)
-    }
+            recipe: request.recipe(source.as_ref()),
+            source: source.clone(),
+            after_edge_id,
+        })
+    } else {
+        PackageGraphPageTerminal::Complete
+    };
+    let page = PackageGraphPage {
+        schema: backend_library::PACKAGE_GRAPH_PAGE_SCHEMA,
+        view_root,
+        facts_witness: metadata.facts_witness,
+        catalog_snapshot: request.catalog_snapshot,
+        package: request.package.clone(),
+        direction: request.direction,
+        source,
+        knowledge,
+        rows: rows.into_boxed_slice(),
+        terminal,
+    };
+    page.admit_for(request)?;
+    Ok(page)
 }
 
 #[derive(Clone)]
@@ -671,21 +670,24 @@ mod tests {
 
     #[test]
     fn durable_source_identity_decoders_reject_malformed_tags_and_ids() {
-        assert!(crate::graph::decode_package_reference(
-            3,
-            "pkg:cargo/decoder-check@1.0.0".to_owned(),
-        )
-        .is_err());
-        assert!(crate::graph::decode_package_reference(
-            i64::from(PackageReferenceKind::Purl.tag()),
-            "not a package URL".to_owned(),
-        )
-        .is_err());
-        assert!(crate::graph::decode_package_reference(
-            i64::from(PackageReferenceKind::Local.tag()),
-            " padded local coordinate ".to_owned(),
-        )
-        .is_err());
+        assert!(
+            crate::graph::decode_package_reference(3, "pkg:cargo/decoder-check@1.0.0".to_owned(),)
+                .is_err()
+        );
+        assert!(
+            crate::graph::decode_package_reference(
+                i64::from(PackageReferenceKind::Purl.tag()),
+                "not a package URL".to_owned(),
+            )
+            .is_err()
+        );
+        assert!(
+            crate::graph::decode_package_reference(
+                i64::from(PackageReferenceKind::Local.tag()),
+                " padded local coordinate ".to_owned(),
+            )
+            .is_err()
+        );
         assert!(crate::graph::decode_source_authority(5, vec![0; 32]).is_err());
         assert!(crate::graph::decode_source_authority(0, vec![1; 32]).is_err());
         assert!(crate::graph::decode_source_authority(1, vec![1; 31]).is_err());
@@ -930,7 +932,10 @@ mod tests {
             let PackageGraphPageTerminal::More(purl_cursor) = &purl_first.terminal else {
                 panic!("PURL page must have a continuation");
             };
-            assert_eq!(purl_cursor.schema, backend_library::PACKAGE_GRAPH_PAGE_SCHEMA);
+            assert_eq!(
+                purl_cursor.schema,
+                backend_library::PACKAGE_GRAPH_PAGE_SCHEMA
+            );
             assert_eq!(purl_cursor.schema, 2, "typed cursor recipe uses schema v2");
 
             let local_request = PackageGraphPageRequest::new(
@@ -959,9 +964,7 @@ mod tests {
             };
             assert_eq!(local_cursor.source.as_ref(), Some(&local_key));
             let local_second = projection
-                .read_package_graph_page(
-                    &local_request.clone().with_cursor(local_cursor.clone()),
-                )
+                .read_package_graph_page(&local_request.clone().with_cursor(local_cursor.clone()))
                 .await
                 .expect("Local continuation");
             assert_eq!(local_second.source, Some(local_key));
@@ -987,10 +990,7 @@ mod tests {
                 .expect("reverse decoder keeps the source kind");
             assert_eq!(reverse.rows.len(), 1);
             assert_eq!(reverse.rows[0].source, local);
-            assert_eq!(
-                reverse.rows[0].source.kind(),
-                PackageReferenceKind::Local
-            );
+            assert_eq!(reverse.rows[0].source.kind(), PackageReferenceKind::Local);
             drop(projection);
             remove_database(&path);
         });
@@ -1076,10 +1076,13 @@ mod tests {
                 .await
                 .expect("add outer whitespace without changing the checked witness");
             let source_key = PackageGraphSourceKey::new(source.clone(), authority);
-            assert!(projection
-                .package_dependencies_for_source(&source_key)
-                .await
-                .is_err(), "unpaged reads must refuse trim-normalized state text");
+            assert!(
+                projection
+                    .package_dependencies_for_source(&source_key)
+                    .await
+                    .is_err(),
+                "unpaged reads must refuse trim-normalized state text"
+            );
             let request = PackageGraphPageRequest::new(
                 source.clone(),
                 PackageGraphDirection::Dependencies,
@@ -1087,10 +1090,10 @@ mod tests {
                 8,
             )
             .expect("request");
-            assert!(projection
-                .read_package_graph_page(&request)
-                .await
-                .is_err(), "paged reads must refuse trim-normalized state text");
+            assert!(
+                projection.read_package_graph_page(&request).await.is_err(),
+                "paged reads must refuse trim-normalized state text"
+            );
             drop(projection);
             remove_database(&path);
         });
@@ -1123,8 +1126,8 @@ mod tests {
             // per-source and graph digests alongside the matching state row.
             // The existing edge remains independently well-formed; only the
             // contradictory coexistence should make both reads refuse it.
-            let reason = ProductText::new("registry omitted dependency metadata")
-                .expect("state reason");
+            let reason =
+                ProductText::new("registry omitted dependency metadata").expect("state reason");
             let unknown = backend_library::CheckedPackageGraphFacts::new(vec![(
                 source_key.clone(),
                 DependencyFacts::Unknown(reason.clone()),
@@ -1172,10 +1175,13 @@ mod tests {
                 .await
                 .expect("persist matching Unknown state");
 
-            assert!(projection
-                .package_dependencies_for_source(&source_key)
-                .await
-                .is_err(), "unpaged reads must reject a valid gap witness with an indexed edge");
+            assert!(
+                projection
+                    .package_dependencies_for_source(&source_key)
+                    .await
+                    .is_err(),
+                "unpaged reads must reject a valid gap witness with an indexed edge"
+            );
             let request = PackageGraphPageRequest::new(
                 source,
                 PackageGraphDirection::Dependencies,
@@ -1183,10 +1189,10 @@ mod tests {
                 8,
             )
             .expect("request");
-            assert!(projection
-                .read_package_graph_page(&request)
-                .await
-                .is_err(), "paged reads must reject a valid gap witness with an indexed edge");
+            assert!(
+                projection.read_package_graph_page(&request).await.is_err(),
+                "paged reads must reject a valid gap witness with an indexed edge"
+            );
             drop(projection);
             remove_database(&path);
         });
@@ -1220,10 +1226,13 @@ mod tests {
                 .await
                 .expect("delete durable state row");
             let source_key = PackageGraphSourceKey::new(source.clone(), authority);
-            assert!(projection
-                .package_dependencies_for_source(&source_key)
-                .await
-                .is_err(), "unpaged reads must detect a deleted Unknown/Unavailable row");
+            assert!(
+                projection
+                    .package_dependencies_for_source(&source_key)
+                    .await
+                    .is_err(),
+                "unpaged reads must detect a deleted Unknown/Unavailable row"
+            );
             let request = PackageGraphPageRequest::new(
                 source.clone(),
                 PackageGraphDirection::Dependencies,
@@ -1266,10 +1275,13 @@ mod tests {
                 .await
                 .expect("move state to a different typed coordinate");
             let source_key = PackageGraphSourceKey::new(source.clone(), authority);
-            assert!(projection
-                .package_dependencies_for_source(&source_key)
-                .await
-                .is_err(), "unpaged lookup must detect a state row under another identity");
+            assert!(
+                projection
+                    .package_dependencies_for_source(&source_key)
+                    .await
+                    .is_err(),
+                "unpaged lookup must detect a state row under another identity"
+            );
             let dependencies = PackageGraphPageRequest::new(
                 source.clone(),
                 PackageGraphDirection::Dependencies,
@@ -1277,10 +1289,13 @@ mod tests {
                 8,
             )
             .expect("dependency request");
-            assert!(projection
-                .read_package_graph_page(&dependencies)
-                .await
-                .is_err(), "paged lookup must detect a state row under another identity");
+            assert!(
+                projection
+                    .read_package_graph_page(&dependencies)
+                    .await
+                    .is_err(),
+                "paged lookup must detect a state row under another identity"
+            );
             let dependents = PackageGraphPageRequest::new(
                 package("pkg:cargo/state-identity-target@1.0.0"),
                 PackageGraphDirection::Dependents,
@@ -1288,10 +1303,13 @@ mod tests {
                 8,
             )
             .expect("reverse request");
-            assert!(projection
-                .read_package_graph_page(&dependents)
-                .await
-                .is_err(), "reverse probe must reject a state key without its witness");
+            assert!(
+                projection
+                    .read_package_graph_page(&dependents)
+                    .await
+                    .is_err(),
+                "reverse probe must reject a state key without its witness"
+            );
             drop(projection);
             remove_database(&path);
 
@@ -1320,10 +1338,13 @@ mod tests {
                 .await
                 .expect("write invalid persisted state kind");
             let invalid_key = PackageGraphSourceKey::new(invalid_source.clone(), invalid_authority);
-            assert!(projection
-                .package_dependencies_for_source(&invalid_key)
-                .await
-                .is_err(), "forward lookup must refuse state=3");
+            assert!(
+                projection
+                    .package_dependencies_for_source(&invalid_key)
+                    .await
+                    .is_err(),
+                "forward lookup must refuse state=3"
+            );
             let reverse = PackageGraphPageRequest::new(
                 package("pkg:cargo/invalid-state-target@1.0.0"),
                 PackageGraphDirection::Dependents,
@@ -1331,10 +1352,10 @@ mod tests {
                 8,
             )
             .expect("reverse request");
-            assert!(projection
-                .read_package_graph_page(&reverse)
-                .await
-                .is_err(), "state=3 must not be skipped into a Known reverse answer");
+            assert!(
+                projection.read_package_graph_page(&reverse).await.is_err(),
+                "state=3 must not be skipped into a Known reverse answer"
+            );
             drop(projection);
             remove_database(&path);
         });

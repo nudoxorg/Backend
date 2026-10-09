@@ -15,6 +15,7 @@ mod graph;
 mod package_graph_read;
 mod projection_namespace;
 mod read;
+mod read_snapshot;
 mod schema;
 mod sharing;
 mod writer;
@@ -55,6 +56,7 @@ pub use graph::{
 pub use package_graph_read::PackageGraphReadError;
 pub use projection_namespace::{ProjectionGenerationId, ProjectionGraphSeed, ProjectionSeed};
 pub use read::{MAX_LABEL_QUERY_ROWS, RootedRows};
+pub use read_snapshot::TursoProjectionReadSnapshot;
 pub use sharing::{IoBackendName, SharedWalBackend, SharingRefusal};
 pub use writer::ProjectionRevision;
 

@@ -1316,7 +1316,7 @@ pub(in crate::builtin) fn source_capture_receipt_for_root(
     )
 }
 
-fn source_capture_receipt_for_snapshot(
+pub(super) fn source_capture_receipt_for_snapshot(
     snapshot: &WorkspaceSnapshot,
     package: &backend_engine::PackageReference,
     operation_key: backend_library::IndexOperationKey,
@@ -1357,7 +1357,7 @@ pub(in crate::builtin) fn source_capture_summary_for_root(
     )
 }
 
-fn source_capture_summary_for_snapshot(
+pub(super) fn source_capture_summary_for_snapshot(
     snapshot: &WorkspaceSnapshot,
     package: &backend_engine::PackageReference,
     operation_key: Option<backend_library::IndexOperationKey>,

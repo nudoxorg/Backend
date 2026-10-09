@@ -1,12 +1,21 @@
 //! The maintained grammar of checked BVIEWJ01 version-3 journal frames.
 //!
-//! Snapshot rows, bases, certificates and compact transition records have
-//! identical fields and admission rules in envelopes 21, 22, 23 and 24. Document
-//! selections, failure replies and Python metadata changed only live replies.
-//! Incompatible persisted fields require a new journal grammar; increasing
-//! the live DTO version never extends this domain implicitly.
+//! Snapshot rows, bases, certificates and compact transition records
+//! use the current DTO contract and the maintained historical envelopes 21–24.
+//! Their document selections, failure replies, Python metadata and project
+//! lockfile membership do not change persisted view fields. Every snapshot and event still passes current strict proof admission.
+//! Incompatible persisted fields require a new journal grammar.
 
+use super::DTO_VERSION;
 use crate::{CommittedViewDelta, CoverageCapability, Cursor, ViewDto, ViewRoot};
+
+// A live DTO bump must not silently widen the persisted journal domain.
+// Review snapshot/event fields and historical compatibility before moving
+// this fence, or introduce a new journal grammar for incompatible fields.
+const _: () = assert!(
+    DTO_VERSION == 25,
+    "review persisted view journal compatibility before accepting a new DTO version"
+);
 
 /// Codec domain selected after a host checks a BVIEWJ01 version-3 frame and
 /// its container, checksum, workspace and capability provenance.
@@ -33,17 +42,18 @@ impl JournalViewGrammarV3 {
         Ok(Self { _private: () })
     }
 
-    /// Checks the explicitly maintained snapshot/compact-event envelope
-    /// versions. This does not admit a live client or any payload identity.
+    /// Checks the current snapshot/compact-event envelope and the explicitly
+    /// maintained historical versions. This does not admit a live client or any
+    /// payload identity.
     ///
     /// # Errors
     /// Refuses unknown and incompatible persisted envelope versions.
     pub fn check_envelope_version(self, version: u16) -> Result<(), String> {
-        if matches!(version, 21 | 22 | 23 | 24) {
+        if version == DTO_VERSION || matches!(version, 21 | 22 | 23 | 24) {
             Ok(())
         } else {
             Err(format!(
-                "unsupported persisted view envelope version {version}; journal grammar 3 reads 21, 22, 23 and 24"
+                "unsupported persisted view envelope version {version}; journal grammar 3 reads current {DTO_VERSION} and historical 21, 22, 23 and 24"
             ))
         }
     }

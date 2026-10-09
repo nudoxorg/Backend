@@ -7,6 +7,10 @@ use crate::builtin::commands::adapter::index_profile_worker::{
 use crate::builtin::commands::index;
 
 fn actual_work(fixture: &mut AdapterFixture) -> ProfileWork {
+    actual_work_with_queue(fixture, false)
+}
+
+fn actual_work_with_queue(fixture: &mut AdapterFixture, queued: bool) -> ProfileWork {
     let (package, label) = fixture.add_target();
     fs::write(
         Path::new(&label).join("pyproject.toml"),
@@ -18,6 +22,13 @@ fn actual_work(fixture: &mut AdapterFixture) -> ProfileWork {
         "def worker_name(value: int) -> int:\n    return value + 1\n",
     )
     .expect("real source");
+    if queued {
+        fs::write(
+            Path::new(&label).join("queued.go"),
+            "package worker\nfunc queuedWorker(value int) int { return value + 1 }\n",
+        )
+        .expect("real queued Go source");
+    }
     let (adapter, daemon) = fixture.parts();
     let cancel = Arc::new(AtomicBool::new(false));
     let scan = index::capture_index_scan(
@@ -54,6 +65,17 @@ fn actual_work(fixture: &mut AdapterFixture) -> ProfileWork {
         .publish_view(daemon, None)
         .expect("coherent admitted prior view");
     let (profile, sources) = job.take_next_work().expect("actual compiler work");
+    if queued {
+        assert!(matches!(
+            profile.profile(),
+            backend_semantic::vocabulary::LanguageProfile::Python(_)
+        ));
+        assert_eq!(
+            job.pending_attempts().len(),
+            1,
+            "actual distinct queued profile"
+        );
+    }
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let read_head = daemon
         .engine_mut()
@@ -77,6 +99,142 @@ fn actual_work(fixture: &mut AdapterFixture) -> ProfileWork {
         sources,
         cancel,
     )
+}
+
+fn attempt_dispositions(
+    fixture: &AdapterFixture,
+    attempts: &[backend_extension_turso::CandidateAttempt],
+) -> Vec<backend_extension_turso::AttemptDisposition> {
+    futures_executor::block_on(async {
+        let authority = backend_extension_turso::TursoAuthority::open(
+            fixture
+                .root
+                .0
+                .join("workspace")
+                .join(backend_extension_turso::AUTHORITY_FILE_NAME),
+        )
+        .await
+        .expect("reopen actual attempt authority");
+        let mut dispositions = Vec::with_capacity(attempts.len());
+        for attempt in attempts {
+            dispositions.push(
+                authority
+                    .attempt_disposition(&attempt.recovery_claim())
+                    .await
+                    .expect("read exact actual attempt disposition"),
+            );
+        }
+        dispositions
+    })
+}
+
+#[test]
+fn existing_index_worker_shutdown_retires_current_and_queued_attempts() {
+    use backend_extension_turso::{AttemptDisposition, CandidateAttemptRetirementReason};
+    use std::time::{Duration, Instant};
+    // Cover the thread-owned connection, a returned startup result, and the
+    // already-restored connection while displaced reads finish retiring.
+    for mode in [0, 1, 2] {
+        let mut fixture = AdapterFixture::new();
+        let work = actual_work_with_queue(&mut fixture, true);
+        let mut attempts = vec![work.identity.attempt.clone()];
+        attempts.extend(work.job.pending_attempts());
+        assert_eq!(
+            attempt_dispositions(&fixture, &attempts),
+            vec![AttemptDisposition::Pending; 2]
+        );
+        let cancelled = work.cancellation_for_test();
+        cancelled.store(true, Ordering::Release);
+        let worker = if mode == 1 {
+            ProfileWorker::Returned(ProfileCompletion::returned(work, ProfileOutcome::Cancelled))
+        } else {
+            let mut worker = ProfileWorker::spawn(work)
+                .unwrap_or_else(|(_, error)| panic!("spawn actual cancellation worker: {error}"));
+            if mode == 2 {
+                let deadline = Instant::now() + Duration::from_secs(30);
+                let completion = loop {
+                    match worker.poll() {
+                        Ok(completion) => break completion,
+                        Err(returned) => worker = returned,
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "actual canceled worker completion"
+                    );
+                    std::thread::sleep(Duration::from_millis(1));
+                };
+                let (adapter, daemon) = fixture.parts();
+                let completion = adapter
+                    .settle_index_profile(daemon, completion)
+                    .unwrap_or_else(|_| {
+                        panic!("return original writers before payload retirement")
+                    });
+                assert!(completion.work.semantic.is_none());
+                match completion.retire() {
+                    Err(worker) => worker,
+                    Ok(_) => panic!("production worker retains its read-payload retirement"),
+                }
+            } else {
+                worker
+            }
+        };
+        let adapter = fixture.adapter.as_mut().expect("actual adapter");
+        install_transition_job(adapter);
+        let job = adapter.indexing.as_mut().expect("actual resident job");
+        job.cancelled = cancelled;
+        job.work = IndexJobWork::Compiling { worker };
+        adapter.close();
+        adapter.close(); // Cleanup is terminal and idempotent.
+        assert!(matches!(
+            adapter.indexing.as_ref().expect("job").work,
+            IndexJobWork::Transition
+        ));
+        drop(fixture.adapter.take());
+        assert_eq!(
+            attempt_dispositions(&fixture, &attempts),
+            vec![AttemptDisposition::Retired(CandidateAttemptRetirementReason::Cancelled); 2],
+            "cold authority must retain both exact terminal dispositions"
+        );
+    }
+}
+
+#[test]
+fn existing_index_worker_shutdown_preserves_selected_current_and_retires_queue() {
+    use backend_extension_turso::{AttemptDisposition, CandidateAttemptRetirementReason};
+    let mut fixture = AdapterFixture::new();
+    install_mixed_native_compiler(&mut fixture);
+    let work = actual_work_with_queue(&mut fixture, true);
+    let mut attempts = vec![work.identity.attempt.clone()];
+    attempts.extend(work.job.pending_attempts());
+    let cancelled = work.cancellation_for_test();
+    let completion = ProfileWorker::spawn(work)
+        .unwrap_or_else(|(_, error)| panic!("spawn actual native compiler: {error}"))
+        .join();
+    assert!(
+        matches!(&completion.outcome, ProfileOutcome::Admitted(Ok(()))),
+        "actual compiled Python profile must be admitted"
+    );
+    let before = attempt_dispositions(&fixture, &attempts);
+    assert!(matches!(&before[0], AttemptDisposition::Published(_)));
+    assert_eq!(before[1], AttemptDisposition::Pending);
+    let adapter = fixture.adapter.as_mut().expect("actual adapter");
+    install_transition_job(adapter);
+    let job = adapter.indexing.as_mut().expect("actual resident job");
+    job.cancelled = cancelled;
+    job.work = IndexJobWork::Compiling {
+        worker: ProfileWorker::Returned(completion),
+    };
+    adapter.close();
+    drop(fixture.adapter.take());
+    let after = attempt_dispositions(&fixture, &attempts);
+    assert_eq!(
+        after[0], before[0],
+        "cleanup must preserve the exact selected generation"
+    );
+    assert_eq!(
+        after[1],
+        AttemptDisposition::Retired(CandidateAttemptRetirementReason::Cancelled)
+    );
 }
 
 fn settle_then_write(fixture: &mut AdapterFixture, completion: ProfileCompletion) {
@@ -136,12 +294,10 @@ fn existing_index_worker_spawn_rejection_retains_writers_for_next_real_commit() 
     };
     settle_then_write(
         &mut fixture,
-        ProfileCompletion {
+        ProfileCompletion::returned(
             work,
-            outcome: ProfileOutcome::Admitted(Err(
-                BuiltinModelError("spawn refused".to_owned()).into()
-            )),
-        },
+            ProfileOutcome::Admitted(Err(BuiltinModelError("spawn refused".to_owned()).into())),
+        ),
     );
 }
 
@@ -190,10 +346,7 @@ fn existing_index_worker_retirement_failure_does_not_skip_queued_attempts() {
     );
     settle_then_write(
         &mut fixture,
-        ProfileCompletion {
-            work,
-            outcome: ProfileOutcome::Cancelled,
-        },
+        ProfileCompletion::returned(work, ProfileOutcome::Cancelled),
     );
 }
 
@@ -277,4 +430,65 @@ fn existing_index_worker_listener_error_and_drop_cancel_and_join_before_retireme
             IndexJobWork::Transition
         ));
     }
+}
+
+#[test]
+fn existing_index_worker_displaced_read_maps_retire_on_its_original_thread() {
+    use std::time::{Duration, Instant};
+    let mut fixture = AdapterFixture::new();
+    let work = actual_work(&mut fixture);
+    let mut worker =
+        ProfileWorker::spawn(work).unwrap_or_else(|(_, error)| panic!("actual worker: {error}"));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let completion = loop {
+        match worker.poll() {
+            Ok(completion) => break completion,
+            Err(returned) => worker = returned,
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    assert!(matches!(
+        completion.outcome,
+        ProfileOutcome::Admitted(Err(_))
+    ));
+    let (adapter, daemon) = fixture.parts();
+    let mut completion = adapter
+        .settle_index_profile(daemon, completion)
+        .unwrap_or_else(|_| panic!("return both original writers"));
+    assert!(completion.retired.head.is_some() && completion.retired.semantic.is_some());
+    let actor_thread = std::thread::current().id();
+    let (entered, observed) = std::sync::mpsc::sync_channel(1);
+    let (release, released) = std::sync::mpsc::sync_channel(1);
+    completion.retired.test_retirement = Some(Box::new(move || {
+        assert_ne!(std::thread::current().id(), actor_thread);
+        entered
+            .send(())
+            .expect("actual original compiler thread starts retirement");
+        released
+            .recv_timeout(Duration::from_secs(30))
+            .expect("bounded retirement release");
+    }));
+    let worker = match completion.retire() {
+        Err(worker) => worker,
+        Ok(_) => panic!("actual production worker remains owned through retirement"),
+    };
+    observed
+        .recv_timeout(Duration::from_secs(2))
+        .expect("worker owns displaced map destruction");
+    let health = serde_json::to_vec(&backend_engine::CommandDto::new(0x995, Command::Health))
+        .expect("health");
+    assert!(matches!(
+        adapter.execute_or_defer(daemon, &health, 0x995),
+        Ok(Executed::Reply(_))
+    ));
+    let worker = match worker.poll() {
+        Err(worker) => worker,
+        Ok(_) => panic!("owner must not report worker retired while destructor is active"),
+    };
+    release
+        .send(())
+        .expect("finish old read payload retirement");
+    let completion = worker.join();
+    settle_then_write(&mut fixture, completion);
 }

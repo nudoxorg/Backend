@@ -1363,7 +1363,7 @@ fn journal_v3_payload(bytes: &[u8], field: &str, version: u16) -> Vec<u8> {
 
 #[test]
 fn journal_v3_known_snapshots_events_chain_to_current_without_replacing_history() {
-    for version in [21, 22, 23, 24] {
+    for version in [21, 22, 23, 24, backend_library::DTO_VERSION] {
         journal_v3_known_version_chain(version);
     }
 }
@@ -1513,7 +1513,12 @@ fn journal_v3_refuses_unknown_versions_fields_proof_basis_and_descriptor_changes
         21,
     );
     assert!(backend_library::JournalViewGrammarV3::from_checked_container(VERSION - 1).is_err());
-    for (kind, bytes, inner) in [(SNAPSHOT, &snapshot, "view"), (EVENT, &event, "event")] {
+    for (kind, bytes, inner, version) in [
+        (SNAPSHOT, &snapshot, "view", 21),
+        (EVENT, &event, "event", 21),
+        (SNAPSHOT, &snapshot, "view", backend_library::DTO_VERSION),
+        (EVENT, &event, "event", backend_library::DTO_VERSION),
+    ] {
         for (at, tamper) in [
             "old-version",
             "future-version",
@@ -1528,12 +1533,13 @@ fn journal_v3_refuses_unknown_versions_fields_proof_basis_and_descriptor_changes
         .enumerate()
         {
             let path = std::env::temp_dir()
-                .join(format!("backend-journal-v3-refusal-{stamp}-{kind}-{at}"));
+                .join(format!("backend-journal-v3-refusal-{stamp}-{kind}-{version}-{at}"));
             let journal = ViewJournal::open(&path).expect("journal");
             if kind == EVENT {
                 journal.append(SNAPSHOT, &snapshot).expect("valid base");
             }
             let mut value: serde_json::Value = serde_json::from_slice(bytes).expect("JSON");
+            value[inner]["version"] = serde_json::json!(version);
             match tamper {
                 "old-version" => value[inner]["version"] = serde_json::json!(20),
                 "future-version" => {
