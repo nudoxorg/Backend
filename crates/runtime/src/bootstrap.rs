@@ -1069,6 +1069,86 @@ mod tests {
         }
         std::fs::remove_dir_all(root).expect("remove fixture");
     }
+
+    #[test]
+    fn retired_contender_waits_for_winner_endpoint_before_reporting_ready() {
+        use std::os::unix::net::UnixListener;
+        use std::sync::mpsc;
+
+        let root = super::super::tests::socket_test_directory("startup-contender-winner");
+        std::fs::create_dir_all(&root).expect("fixture root");
+        let paths = paths(&root);
+        let fixture_deadline = Instant::now() + Duration::from_secs(2);
+        let mut child = OwnedChild(
+            Command::new("/bin/sh")
+                .args([
+                    "-c",
+                    "printf 'nudox.local-startup-pipe.v1\\nphase:admitted\\n'; exit 75",
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("owned contending candidate"),
+        );
+        let mut pipe = child.stdout.take().expect("startup pipe");
+        backend_platform::child_output::configure(&pipe).expect("nonblocking pipe");
+
+        // Bind the simulated winner only after the loser reports exit 75. The
+        // child's status is a wait condition, never evidence of readiness.
+        let (contended_tx, contended_rx) = mpsc::channel();
+        let mut contended_tx = Some(contended_tx);
+        let endpoint = paths.endpoint().to_path_buf();
+        let winner = std::thread::spawn(move || {
+            contended_rx
+                .recv_timeout(fixture_deadline.saturating_duration_since(Instant::now()))
+                .expect("contender outcome observed");
+            let listener = UnixListener::bind(endpoint).expect("winner endpoint bind");
+            listener
+                .set_nonblocking(true)
+                .expect("bounded winner accept");
+            loop {
+                match listener.accept() {
+                    Ok((connection, _)) => {
+                        drop(connection);
+                        break;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < fixture_deadline,
+                            "launcher must connect before the fixture deadline"
+                        );
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("winner accept failed: {error}"),
+                }
+            }
+        });
+        let result = wait_for_owner(
+            &paths,
+            &mut child,
+            &mut pipe,
+            fixture_deadline,
+            &mut |phase| {
+                if phase == StartupPhase::AwaitingOwner
+                    && let Some(contended_tx) = contended_tx.take()
+                {
+                    contended_tx.send(()).expect("signal winner fixture");
+                }
+            },
+        );
+        child.wait().expect("kernel-wait contending candidate");
+        winner.join().expect("winner accepted one readiness probe");
+        assert!(
+            matches!(
+                result,
+                Ok(LocaldStartup::Ready(endpoint)) if endpoint.as_path() == paths.endpoint()
+            ),
+            "exit 75 must wait for a successful connection to the winner"
+        );
+        assert!(!paths.data().exists());
+        std::fs::remove_dir_all(root).expect("remove fixture");
+    }
+
     // The PID remains this test's direct, unreaped child until waitpid below.
     // This guard never uses a name, discovery scan, or another owner's PID.
     struct UnreapedPeer(rustix::process::Pid);
