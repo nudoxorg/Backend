@@ -1289,7 +1289,9 @@ impl DirectoryCapability {
 /// that is not group- or world-writable, or a root-owned sticky temporary
 /// directory. Each child is created relative to a pinned directory handle
 /// with owner-only permissions. Existing children must already be owned by
-/// the current user and private; this type never chmods an existing directory.
+/// the current user and private. `open`, `child`, and `under_user_data` never
+/// change existing directory permissions; only the explicitly application-owned
+/// [`Self::under_user_data_application`] boundary permits a scoped repair.
 /// Path-based consumers can call [`Self::verify_path`] immediately before
 /// using [`Self::path`].
 #[derive(Clone)]
@@ -1314,6 +1316,30 @@ impl OwnedWorkspaceDirectory {
     /// by other users. Their permissions are preserved. Missing components
     /// are created privately relative to held handles; links are never followed.
     pub fn under_user_data(anchor: &Path, suffix: &[&str], application: &str) -> io::Result<Self> {
+        Self::under_user_data_impl(anchor, suffix, application, false)
+    }
+
+    /// Establishes a known application-owned state boundary, repairing only
+    /// that final current-user-owned directory on Unix when an older build
+    /// created it with readable permissions. Conventional profile/data parents
+    /// keep strict ownership and non-writable admission; links are refused.
+    /// Windows retains existing protected-DACL admission.
+    pub fn under_user_data_application(
+        anchor: &Path,
+        suffix: &[&str],
+        application: &str,
+    ) -> io::Result<Self> {
+        Self::under_user_data_impl(anchor, suffix, application, true)
+    }
+
+    fn under_user_data_impl(
+        anchor: &Path,
+        suffix: &[&str],
+        application: &str,
+        repair_application: bool,
+    ) -> io::Result<Self> {
+        #[cfg(not(unix))]
+        let _ = repair_application;
         if !anchor.is_absolute() {
             return Err(invalid("user data anchor must be absolute"));
         }
@@ -1347,6 +1373,17 @@ impl OwnedWorkspaceDirectory {
                 parent = child;
             }
             parent.verify_path(&path)?;
+            if repair_application {
+                let application_path = path.join(application);
+                crate::durable::ensure_private_application_directory(&application_path)
+                    .map_err(|error| {
+                        io::Error::new(
+                            error.kind(),
+                            format!("{}: {error}", application_path.display()),
+                        )
+                    })?;
+                parent.verify_path(&path)?;
+            }
             parent.open_or_create_private_dir(application)?
         };
         #[cfg(windows)]
