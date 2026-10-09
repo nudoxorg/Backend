@@ -144,6 +144,8 @@ use view_build::rows_for_indexed_sources;
 use view_journal::ViewJournal;
 #[path = "builtin/commands/mod.rs"]
 mod commands;
+#[path = "builtin/diagnostic.rs"]
+mod diagnostic;
 #[path = "builtin/registry.rs"]
 mod registry;
 use registry::RegistryGateway;
@@ -1791,7 +1793,10 @@ pub(crate) fn compose_owner(
         Some(snapshot) => {
             backend_engine::application::LocalCompilerHostSelection::from_closed_snapshot(snapshot)
                 .map_err(|error| {
-                    ProcessError::Profile(format!("admit closed compiler selection: {error}"))
+                    ProcessError::Profile(diagnostic::bounded_error_chain(
+                        "admit closed compiler selection: ",
+                        &error,
+                    ))
                 })?
         }
         None => backend_engine::application::LocalCompilerHost::new(
@@ -1804,7 +1809,10 @@ pub(crate) fn compose_owner(
         )
         .capture_installed_selection()
         .map_err(|error| {
-            ProcessError::Profile(format!("capture installed compiler selection: {error}"))
+            ProcessError::Profile(diagnostic::bounded_error_chain(
+                "capture installed compiler selection: ",
+                &error,
+            ))
         })?,
     };
     let mut compiler_host = backend_engine::application::LocalCompilerHost::new(
@@ -1832,7 +1840,12 @@ pub(crate) fn compose_owner(
             None => compiler_host
                 .open_with_embedding_runtime(embedding.runtime(), embedding.requirement()),
         }
-        .map_err(|error| ProcessError::Profile(format!("open compiler owner: {error}")))?;
+        .map_err(|error| {
+            ProcessError::Profile(diagnostic::bounded_error_chain(
+                "open compiler owner: ",
+                &error,
+            ))
+        })?;
     let selection_receipt = compiler_selection.encode_receipt().map_err(|error| {
         ProcessError::Profile(format!("encode compiler selection receipt: {error}"))
     })?;
