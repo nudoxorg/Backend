@@ -7,7 +7,9 @@
   "overlay_manifest_sha256": "4177687a46ae101cabe38149014102dba295fcbe673b9ef5d47aaa9eb9a17984",
   "changes": [
     "Only blake3 dependency requirement =1.8.2 -> ^1.8.3 to unify with Iroh; workspace remains locked1.8.7",
-    "Sibling native crates use same pinned upstream git revision instead of sibling paths"
+    "Sibling native crates use same pinned upstream git revision instead of sibling paths",
+    "Diagnostic baseline reader admits typed matching-key input (path/name/positive column) with typed optional legacy metadata and preserves upstream acceptance of unrelated JSON properties; compact inputs do not invent error coordinates or change legacy error output.",
+    "Doc-hidden reexports expose only the existing native baseline processor and diagnostic type to the captured-input adapter and its native matching controls; the error module remains private."
   ],
   "upstream_files": [
     {
@@ -6873,6 +6875,18 @@
     {
       "path": "test_laziness/test_unused_import_from_same_module.md",
       "sha256": "2b31ee23df2c08554eac15e95e94fc6c208cd61f516c5a204fa667bfb7624ea2"
+    }
+  ],
+  "overlay_files": [
+    {
+      "path": "lib/error/baseline.rs",
+      "upstream_sha256": "3770b72f7fd41bf21dce2b4c8c4dcd0152c345c6c0cfd8a4363cd0c77e94de3d",
+      "overlay_sha256": "7901b47744d5c582bb383c3bd62120cefd280e1d214a69755c113161c337b87c"
+    },
+    {
+      "path": "lib/lib.rs",
+      "upstream_sha256": "30c8978f55a9f2861843bdede727f5ad4092295fc3f593f95b09b94219d0aef5",
+      "overlay_sha256": "fedb8a408de71d9c250e76f930a6e5b1e15ee4670067bb5d424908ad6e3a095f"
     }
   ]
 }

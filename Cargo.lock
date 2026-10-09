@@ -1343,6 +1343,7 @@ version = "0.2.0"
 dependencies = [
  "backend-compile",
  "backend-discovery",
+ "backend-platform",
  "backend-semantic",
  "blake3",
  "pyrefly",
@@ -1354,6 +1355,7 @@ dependencies = [
  "ruff_python_parser 0.0.8",
  "ruff_text_size 0.0.0",
  "ruff_text_size 0.0.8",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "thiserror 2.0.20",

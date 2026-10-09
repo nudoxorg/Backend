@@ -11,10 +11,44 @@ use std::path::Path;
 use anyhow::Result;
 use pyrefly_util::absolutize::Absolutize;
 use pyrefly_util::fs_anyhow;
+use serde::Deserialize;
 
 use crate::error::error::Error;
 use crate::error::legacy::LegacyError;
+#[cfg(test)]
 use crate::error::legacy::LegacyErrors;
+
+/// A baseline is a set of diagnostic matching keys, not a fabricated error
+/// report. Compact baseline writers omit the unused legacy coordinates.
+#[derive(Deserialize)]
+struct BaselineFile {
+    errors: Vec<BaselineInput>,
+}
+
+#[derive(Deserialize)]
+struct BaselineInput {
+    path: String,
+    name: String,
+    column: usize,
+    // Keep full legacy baselines compatible while checking the types of any
+    // supplied metadata. None of these values supplies a missing key.
+    #[serde(rename = "line")]
+    _line: Option<usize>,
+    #[serde(rename = "stop_line")]
+    _stop_line: Option<usize>,
+    #[serde(rename = "stop_column")]
+    _stop_column: Option<usize>,
+    #[serde(rename = "code")]
+    _code: Option<i32>,
+    #[serde(rename = "description")]
+    _description: Option<String>,
+    #[serde(rename = "concise_description")]
+    _concise_description: Option<String>,
+    #[serde(rename = "severity")]
+    _severity: Option<String>,
+    #[serde(rename = "cell")]
+    _cell: Option<usize>,
+}
 
 /// If an error with an exactly matching path, error slug, and starting column exist in the baseline, we ignore it.
 /// Keys always use absolute paths internally so that comparison is decoupled from path format in baseline file.
@@ -63,10 +97,22 @@ impl BaselineProcessor {
     /// so that relative paths in the file are resolved correctly.
     pub fn from_file(baseline_path: &Path, relative_to: &Path) -> Result<Self> {
         let content = fs_anyhow::read_to_string(baseline_path)?;
-        let baseline_file: LegacyErrors = serde_json::from_str(&content)?;
-        Ok(Self::from_legacy_errors(&baseline_file, relative_to))
+        let baseline_file: BaselineFile = serde_json::from_str(&content)?;
+        let mut baseline_keys = HashSet::new();
+        for entry in baseline_file.errors {
+            if entry.path.is_empty() || entry.name.is_empty() || entry.column == 0 {
+                anyhow::bail!("baseline entry has an empty path/name or zero starting column");
+            }
+            baseline_keys.insert(BaselineKey {
+                path: BaselineKey::normalize_path(Path::new(&entry.path), relative_to),
+                name: entry.name,
+                column: entry.column,
+            });
+        }
+        Ok(Self { baseline_keys })
     }
 
+    #[cfg(test)]
     fn from_legacy_errors(legacy_errors: &LegacyErrors, relative_to: &Path) -> Self {
         let baseline_keys = legacy_errors
             .errors

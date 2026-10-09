@@ -17,6 +17,10 @@ use crate::legacy::{DeclarationKind, Span, extract};
 
 const CONFIG_BYTES: u64 = 1024 * 1024;
 
+#[path = "project_baseline.rs"]
+mod baseline;
+pub(super) use baseline::CapturedBaselines;
+
 /// The compiled native solver is a distinct producer from an external Pyrefly command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativePythonProducerIdentity([u8; 32]);
@@ -86,7 +90,7 @@ fn native_producer_capture() -> Result<(NativePythonProducerIdentity, FileWitnes
         ))
         .as_bytes(),
     );
-    identity.update(b"root-isolated;named-single-package-import-root.v1;fresh-state;classdef-declaration+constructor-callee;captured-candidates;depth64;work262144\0");
+    identity.update(b"root-isolated;named-single-package-import-root.v1;captured-diagnostic-baseline.v1;root-pinned-config-inputs.v1;fresh-state;classdef-declaration+constructor-callee;captured-candidates;depth64;work262144\0");
     identity.update(digest.as_bytes());
     identity.update(&size.to_be_bytes());
     host.validate_current()?;
@@ -372,6 +376,7 @@ pub struct PythonProjectWitness {
     fingerprint: PythonProjectFingerprint,
     candidates: Vec<CandidateWitness>,
     frontier: Vec<SourceDirectoryWitness>,
+    baselines: CapturedBaselines,
 }
 
 /// Exact host-local transaction identity for source/configuration/producer facts.
@@ -387,9 +392,16 @@ impl PythonProjectFingerprint {
 }
 
 #[derive(Debug)]
+enum FileWitnessRead {
+    Ordinary,
+    CapturedInput { root: PathBuf },
+}
+
+#[derive(Debug)]
 struct FileWitness {
     path: PathBuf,
     digest: Option<(blake3::Hash, u64)>,
+    read: FileWitnessRead,
 }
 
 impl FileWitness {
@@ -442,7 +454,11 @@ impl FileWitness {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(workspace_error(error)),
         };
-        Ok(Self { path, digest })
+        Ok(Self {
+            path,
+            digest,
+            read: FileWitnessRead::Ordinary,
+        })
     }
 
     fn validate_current(&self) -> Result<(), CheckerError> {
@@ -453,8 +469,21 @@ impl FileWitness {
         &self,
         control: Option<PythonProjectControl<'_>>,
     ) -> Result<(), CheckerError> {
-        let current = Self::capture_controlled(self.path.clone(), control)?;
-        if self.digest != current.digest {
+        let current = match &self.read {
+            FileWitnessRead::Ordinary => {
+                Self::capture_controlled(self.path.clone(), control)?.digest
+            }
+            FileWitnessRead::CapturedInput { root } => {
+                let relative = self.path.strip_prefix(root).map_err(|_| {
+                    CheckerError::UncapturedDependency {
+                        path: self.path.clone(),
+                    }
+                })?;
+                baseline::read_captured_input(root, relative, control)?
+                    .map(|bytes| (blake3::hash(&bytes), bytes.len() as u64))
+            }
+        };
+        if self.digest != current {
             return Err(project_error(
                 &self.path.to_string_lossy(),
                 "admitted source, configuration, or executable changed",
@@ -731,6 +760,7 @@ impl PythonProjectWitness {
     /// Refuses any changed selected source, configuration probe, or executable.
     pub fn validate_current(&self, control: PythonProjectControl<'_>) -> Result<(), CheckerError> {
         checkpoint(control)?;
+        self.baselines.validate_current(control)?;
         for directory in &self.frontier {
             directory.validate_current(control)?;
         }
@@ -752,6 +782,8 @@ impl NativePythonProjectAuthority {
     /// Selected sources and configuration files are captured in a private mirror
     /// before the native transaction starts. Its original relative paths are retained; its
     /// digest-validated native declaration spans join only to the supplied bytes.
+    /// The package root must be an absolute directory rather than a symlink;
+    /// captured configuration reads pin that root without resolving an alias.
     /// Filesystem dependencies/configuration outside that mirror are refused;
     /// bundled stubs are immutable native producer data. No cross-call reuse or
     /// complete public binding claim follows from this bounded source contract.
@@ -776,7 +808,16 @@ impl NativePythonProjectAuthority {
             ..control
         };
         checkpoint(control)?;
-        if !package_root.is_absolute() || !package_root.is_dir() {
+        // Remove lexical trailing separators/dots before inspecting the final
+        // directory entry. An alias followed by '/' or '/.' otherwise makes
+        // lstat/open treat that alias as an intermediate component.
+        let root_entry = package_root.components().collect::<PathBuf>();
+        if !package_root.is_absolute()
+            || root_entry
+                .components()
+                .any(|part| matches!(part, Component::ParentDir))
+            || !std::fs::symlink_metadata(&root_entry).is_ok_and(|metadata| metadata.is_dir())
+        {
             return Err(CheckerError::PackageRoot {
                 path: package_root.to_path_buf(),
             });
@@ -800,6 +841,7 @@ impl NativePythonProjectAuthority {
             fingerprint: PythonProjectFingerprint([0; 32]),
             candidates: Vec::new(),
             frontier: Vec::new(),
+            baselines: CapturedBaselines::default(),
         };
         let mut mirror_witness = Vec::new();
         for source in sources {
@@ -854,6 +896,7 @@ impl NativePythonProjectAuthority {
         }
         // Capture both present and absent configuration probes before invoking
         // Pyrefly. No upward config search can reach the caller's live ancestors.
+        let mut captured_configs = Vec::new();
         for directory in directories {
             for name in [
                 "pyrefly.toml",
@@ -866,49 +909,31 @@ impl NativePythonProjectAuthority {
                 checkpoint(control)?;
                 let relative = directory.join(name);
                 let original = package_root.join(&relative);
-                let original_witness = match std::fs::symlink_metadata(&original) {
-                    Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
-                        if metadata.len() > CONFIG_BYTES {
-                            return Err(project_error(
-                                &relative.to_string_lossy(),
-                                "configuration exceeds capture bound",
-                            ));
-                        }
-                        let bytes = std::fs::read(&original).map_err(workspace_error)?;
-                        if bytes.len() as u64 > CONFIG_BYTES {
-                            return Err(project_error(
-                                &relative.to_string_lossy(),
-                                "configuration changed beyond capture bound",
-                            ));
-                        }
-                        let digest = Some((blake3::hash(&bytes), bytes.len() as u64));
-                        let target = mirror.join(&relative);
-                        if let Some(parent) = target.parent() {
-                            std::fs::create_dir_all(parent).map_err(workspace_error)?;
-                        }
-                        std::fs::write(&target, &bytes).map_err(workspace_error)?;
-                        mirror_witness.push(FileWitness {
-                            path: target,
-                            digest,
-                        });
-                        FileWitness {
-                            path: original,
-                            digest,
-                        }
+                let bytes = baseline::read_captured_input(package_root, &relative, Some(control))?;
+                let digest = bytes
+                    .as_ref()
+                    .map(|bytes| (blake3::hash(bytes), bytes.len() as u64));
+                if let Some(bytes) = bytes {
+                    let target = mirror.join(&relative);
+                    if let Some(parent) = target.parent() {
+                        std::fs::create_dir_all(parent).map_err(workspace_error)?;
                     }
-                    Ok(_) => {
-                        return Err(project_error(
-                            &relative.to_string_lossy(),
-                            "configuration is not a regular captured file",
-                        ));
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => FileWitness {
-                        path: original,
-                        digest: None,
+                    std::fs::write(&target, &bytes).map_err(workspace_error)?;
+                    captured_configs.push(target.clone());
+                    mirror_witness.push(FileWitness {
+                        path: target,
+                        digest,
+                        read: FileWitnessRead::Ordinary,
+                    });
+                }
+                let original_witness = FileWitness {
+                    path: original,
+                    digest,
+                    read: FileWitnessRead::CapturedInput {
+                        root: package_root.to_path_buf(),
                     },
-                    Err(error) => return Err(workspace_error(error)),
                 };
-                original_witness.validate_current()?;
+                original_witness.validate_controlled(Some(control))?;
                 witness.files.push(original_witness);
             }
         }
@@ -924,6 +949,13 @@ impl NativePythonProjectAuthority {
             .map_err(workspace_error)?;
             mirror_witness.push(FileWitness::capture(mirror.join("pyrefly.toml"))?);
         }
+        witness.baselines = CapturedBaselines::capture(
+            &layout,
+            package_root,
+            &captured_configs,
+            &mut mirror_witness,
+            control,
+        )?;
         let native = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             super::project_native::analyze(
                 &layout,
@@ -931,6 +963,7 @@ impl NativePythonProjectAuthority {
                 package_name,
                 sources,
                 &facts,
+                &witness.baselines,
                 profile,
                 control,
             )
@@ -941,6 +974,7 @@ impl NativePythonProjectAuthority {
         identity.update(&self.producer.as_bytes());
         identity.update(&native.configuration_fingerprint);
         layout.fingerprint(&mut identity);
+        witness.baselines.fingerprint(&mut identity);
         hash_field(&mut identity, package_name.as_bytes());
         hash_field(&mut identity, super::profile_tag(profile).as_bytes());
         let mut selected = sources.iter().collect::<Vec<_>>();

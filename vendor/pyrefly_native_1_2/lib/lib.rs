@@ -31,6 +31,11 @@ pub mod binding;
 pub mod commands;
 mod compat;
 mod error;
+// The captured-input adapter uses the same processor and diagnostic type as State.
+#[doc(hidden)]
+pub use error::baseline::BaselineProcessor;
+#[doc(hidden)]
+pub use error::error::Error as NativeDiagnostic;
 mod export;
 #[doc(hidden)]
 pub mod lsp;
