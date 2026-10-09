@@ -3738,7 +3738,7 @@ mod tests {
     fn actual_go_ignored_platform_image_admits_without_active_package_spans() {
         use backend_frontend_go::legacy::GoOracle;
         use backend_frontend_go::legacy::oracle::{
-            GoOracleChildEnvironment, GoOracleConfiguration,
+            GoDependencyClosureFailure, GoOracleChildEnvironment, GoOracleConfiguration, OracleError,
         };
 
         let go = std::env::var_os("COMPILER_GO_COMPILER")
@@ -3804,7 +3804,10 @@ mod tests {
             go.clone(),
             goroot,
             modules,
-            root.path().join("build-cache"),
+            root.path()
+                .canonicalize()
+                .expect("canonical private fixture root")
+                .join("build-cache"),
         )
         .expect("genuine selected Go authority");
         let toolchain_identity = environment.toolchain_identity();
@@ -3929,13 +3932,41 @@ mod tests {
         let external_source = b"package selection_test\nfunc Dormant() int { return 7 }\n";
         std::fs::write(&external, external_source).expect("inactive-only external fixture");
         let malformed = project.join(format!("malformed_{other}.go"));
-        let malformed_source = b"package ???\n";
-        std::fs::write(&malformed, malformed_source).expect("inactive malformed header");
+        std::fs::write(&malformed, b"package ???\n").expect("inactive malformed header");
+        // The native module index diagnoses malformed package clauses before
+        // applying filename exclusions. Its fallback skips these clauses, so
+        // let the files cross Go's two-second indexing cutoff without changing
+        // their bytes or mtimes. Ignored does not imply a complete native graph.
+        std::thread::sleep(std::time::Duration::from_millis(2100));
+        let malformed_witness = oracle
+            .package_authority_witness_cancellable(&project, None)
+            .expect("native malformed-header witness");
+        assert!(!malformed_witness.is_complete());
+        assert!(matches!(
+            oracle.authority_image_for_package_with_authority_witness_cancellable(
+                &caller,
+                &project,
+                &malformed_witness,
+                None,
+            ),
+            Err(OracleError::DependencyClosureUnavailable {
+                failure: GoDependencyClosureFailure::PackageLoad,
+            })
+        ));
+
+        // A valid package/import header with a malformed dormant body remains
+        // ignored by both native loaders. Its namespace has no active semantic
+        // owner, and its body cannot supply declaration or reference facts.
+        let malformed_source = b"package dormant\nfunc Broken( {\n";
+        std::fs::write(&malformed, malformed_source).expect("inactive malformed body");
         let witness = oracle
             .package_authority_witness_cancellable(&project, None)
             .expect("fresh source-only package witness after the fixture mutation");
-        assert!(witness.is_complete());
-        for (path, source, expected_facts, unavailable) in [
+        assert!(
+            witness.is_complete(),
+            "fresh selected witness after dormant-source mutation: {witness:#?}"
+        );
+        for (path, source, expected_facts, declarations_unavailable) in [
             (&external, external_source.as_slice(), 1, false),
             (&malformed, malformed_source.as_slice(), 0, true),
         ] {
@@ -3959,12 +3990,25 @@ mod tests {
                     .windows(b"source-only".len())
                     .any(|row| row == b"source-only")
             );
-            if unavailable {
+            if declarations_unavailable {
                 assert!(
                     constraint
                         .constraint
+                        .windows(b"declarations-unavailable:go-parser".len())
+                        .any(|row| row == b"declarations-unavailable:go-parser")
+                );
+                assert!(
+                    !constraint
+                        .constraint
                         .windows(b"package-unavailable:go-parser".len())
-                        .any(|row| row == b"package-unavailable:go-parser")
+                        .any(|row| row == b"package-unavailable:go-parser"),
+                    "the compiler-ignored source still has a valid package clause"
+                );
+                assert!(
+                    constraint
+                        .constraint
+                        .windows(b"namespace=\"dormant\"".len())
+                        .any(|row| row == b"namespace=\"dormant\"")
                 );
             } else {
                 assert!(
