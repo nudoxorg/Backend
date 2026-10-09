@@ -17,7 +17,7 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 const MCP_PATH: &str = "/mcp";
 const TOKEN_ENV: &str = "BACKEND_MCP_TOKEN";
@@ -25,6 +25,8 @@ const TOKEN_FILE: &str = "mcp-http-token";
 static TOKEN_STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const MAX_SESSIONS: usize = 64;
 const MAX_IN_FLIGHT: usize = 64;
+const AUTHENTICATION_RETRY_SECONDS: u64 = 1;
+const MAX_BOOTSTRAP_CAUSE_BYTES: usize = 4096;
 const SESSION_HEADER: HeaderName = HeaderName::from_static("mcp-session-id");
 
 /// A socket address proven to be local before the listener is opened.
@@ -70,17 +72,21 @@ impl BearerToken {
     fn load(paths: &backend_runtime::WorkspacePaths) -> Result<(Self, TokenSource), String> {
         match std::env::var(TOKEN_ENV) {
             Ok(value) => Self::parse(value).map(|token| (token, TokenSource::Environment)),
-            Err(std::env::VarError::NotPresent) => {
-                paths
-                    .initialize_data_directory()
-                    .map_err(|error| error.to_string())?;
-                let path = paths.data().join(TOKEN_FILE);
-                Self::provision(&path).map(|token| (token, TokenSource::WorkspaceFile(path)))
-            }
+            Err(std::env::VarError::NotPresent) => Self::load_workspace(paths),
             Err(std::env::VarError::NotUnicode(_)) => Err(format!(
                 "{TOKEN_ENV} must contain 16-256 visible ASCII bytes"
             )),
         }
+    }
+
+    fn load_workspace(
+        paths: &backend_runtime::WorkspacePaths,
+    ) -> Result<(Self, TokenSource), String> {
+        paths
+            .initialize_data_directory()
+            .map_err(|error| error.to_string())?;
+        let path = paths.data().join(TOKEN_FILE);
+        Self::provision(&path).map(|token| (token, TokenSource::WorkspaceFile(path)))
     }
 
     fn read_file(path: &Path) -> io::Result<Self> {
@@ -210,11 +216,107 @@ type LiveSessions = HashMap<SessionId, Arc<Mutex<Server<ReconnectingProduct>>>>;
 struct Sessions {
     paths: backend_runtime::WorkspacePaths,
     project: String,
-    cursor_secret: [u8; 32],
+    cursor_secret: crate::jsonrpc::CursorAuthority,
     token: BearerToken,
     next_id: AtomicU64,
     live: Mutex<LiveSessions>,
+}
+
+/// Binding a loopback socket does not admit an authentication authority. No
+/// session exists until the one owned initializer returns a durable token.
+struct HttpBootstrap {
+    paths: backend_runtime::WorkspacePaths,
+    authentication: OnceLock<Authentication>,
     request_capacity: Arc<tokio::sync::Semaphore>,
+}
+
+enum Authentication {
+    Ready(Arc<Sessions>),
+    Failed(String),
+}
+
+impl HttpBootstrap {
+    fn new(paths: backend_runtime::WorkspacePaths) -> Self {
+        Self {
+            paths,
+            authentication: OnceLock::new(),
+            request_capacity: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT)),
+        }
+    }
+
+    fn sessions(&self, body: Option<&[u8]>) -> Result<Arc<Sessions>, Response> {
+        match self.authentication.get() {
+            Some(Authentication::Ready(sessions)) => Ok(Arc::clone(sessions)),
+            Some(Authentication::Failed(cause)) => Err(authentication_unavailable(
+                body,
+                "authentication_failed",
+                "Repair the authentication setup described by the cause, then restart backend-mcp.",
+                Some(cause),
+            )),
+            None => Err(authentication_unavailable(
+                body,
+                "authentication_pending",
+                "Retry after durable HTTP authentication is ready; no MCP session has been admitted.",
+                None,
+            )),
+        }
+    }
+
+    fn finish(&self, admitted: Result<(BearerToken, TokenSource), String>, address: SocketAddr) {
+        let authentication = match admitted {
+            Ok((token, source)) => {
+                let sessions = Arc::new(Sessions {
+                    paths: self.paths.clone(),
+                    project: canonical_project(self.paths.project()),
+                    cursor_secret: crate::jsonrpc::CursorAuthority::workspace(&self.paths),
+                    token,
+                    next_id: AtomicU64::new(0),
+                    live: Mutex::new(HashMap::new()),
+                });
+                if self
+                    .authentication
+                    .set(Authentication::Ready(sessions))
+                    .is_ok()
+                {
+                    eprintln!(
+                        "backend-mcp: ready {}",
+                        json!({
+                            "transport": "streamable-http",
+                            "url": format!("http://{address}{MCP_PATH}"),
+                            "authorization": source.hint(),
+                            "maxSessions": MAX_SESSIONS,
+                            "maxInFlight": MAX_IN_FLIGHT,
+                            "maxRequestBytes": crate::MAX_MCP_REQUEST_FRAME,
+                            "maxResponseBytes": crate::MAX_MCP_RESPONSE_FRAME,
+                        })
+                    );
+                }
+                return;
+            }
+            Err(mut cause) => {
+                let mut boundary = cause.len().min(MAX_BOOTSTRAP_CAUSE_BYTES);
+                while !cause.is_char_boundary(boundary) {
+                    boundary -= 1;
+                }
+                cause.truncate(boundary);
+                Authentication::Failed(cause)
+            }
+        };
+        if self.authentication.set(authentication).is_ok()
+            && let Some(Authentication::Failed(cause)) = self.authentication.get()
+        {
+            eprintln!(
+                "backend-mcp: authentication failed {}",
+                json!({
+                    "transport": "streamable-http",
+                    "url": format!("http://{address}{MCP_PATH}"),
+                    "phase": "durable-authentication",
+                    "cause": cause,
+                    "action": "Repair authentication setup, then restart backend-mcp.",
+                })
+            );
+        }
+    }
 }
 
 impl Sessions {
@@ -268,7 +370,7 @@ impl Sessions {
         let mut server = Server::with_authority(
             disconnected_reconnecting_product(&self.paths),
             self.project.clone(),
-            self.cursor_secret,
+            self.cursor_secret.clone(),
         );
         let reply = server.handle(body);
         let initialized = reply
@@ -331,13 +433,21 @@ impl Sessions {
     }
 }
 
-async fn accept(State(state): State<Arc<Sessions>>, headers: HeaderMap, body: Bytes) -> Response {
+async fn accept(
+    State(state): State<Arc<HttpBootstrap>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     let Ok(permit) = state.request_capacity.clone().try_acquire_owned() else {
         return rpc_error(
             StatusCode::SERVICE_UNAVAILABLE,
             -32000,
             "MCP request capacity reached",
         );
+    };
+    let state = match state.sessions(Some(&body)) {
+        Ok(sessions) => sessions,
+        Err(response) => return response,
     };
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
@@ -353,13 +463,17 @@ async fn accept(State(state): State<Arc<Sessions>>, headers: HeaderMap, body: By
     })
 }
 
-async fn remove(State(state): State<Arc<Sessions>>, headers: HeaderMap) -> Response {
+async fn remove(State(state): State<Arc<HttpBootstrap>>, headers: HeaderMap) -> Response {
     let Ok(permit) = state.request_capacity.clone().try_acquire_owned() else {
         return rpc_error(
             StatusCode::SERVICE_UNAVAILABLE,
             -32000,
             "MCP request capacity reached",
         );
+    };
+    let state = match state.sessions(None) {
+        Ok(sessions) => sessions,
+        Err(response) => return response,
     };
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
@@ -386,63 +500,102 @@ pub(super) fn main_entry(paths: &backend_runtime::WorkspacePaths, bind: Loopback
 }
 
 fn run(paths: &backend_runtime::WorkspacePaths, bind: LoopbackBind) -> Result<(), String> {
-    let project = canonical_project(paths.project());
-    let cursor_secret = crate::jsonrpc::cursor_secret(paths)?;
-    let (token, token_source) = BearerToken::load(paths)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|error| error.to_string())?;
-    runtime.block_on(serve(
-        paths.clone(),
-        project,
-        cursor_secret,
-        token,
-        token_source,
-        bind,
-    ))
+    runtime.block_on(serve(paths.clone(), bind))
 }
 
-async fn serve(
-    paths: backend_runtime::WorkspacePaths,
-    project: String,
-    cursor_secret: [u8; 32],
-    token: BearerToken,
-    token_source: TokenSource,
-    bind: LoopbackBind,
-) -> Result<(), String> {
+async fn serve(paths: backend_runtime::WorkspacePaths, bind: LoopbackBind) -> Result<(), String> {
     let listener = tokio::net::TcpListener::bind(bind.0)
         .await
         .map_err(|error| format!("could not bind {}: {error}", bind.0))?;
+    let state = Arc::new(HttpBootstrap::new(paths));
+    serve_bound(listener, state, BearerToken::load).await
+}
+
+async fn serve_bound<F>(
+    listener: tokio::net::TcpListener,
+    state: Arc<HttpBootstrap>,
+    initialize: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&backend_runtime::WorkspacePaths) -> Result<(BearerToken, TokenSource), String>
+        + Send
+        + 'static,
+{
     let address = listener.local_addr().map_err(|error| error.to_string())?;
-    let state = Arc::new(Sessions {
-        paths,
-        project,
-        cursor_secret,
-        token: token.clone(),
-        next_id: AtomicU64::new(0),
-        live: Mutex::new(HashMap::new()),
-        request_capacity: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT)),
-    });
     let app = Router::new()
         .route(MCP_PATH, post(accept).delete(remove))
         .layer(DefaultBodyLimit::max(crate::MAX_MCP_REQUEST_FRAME))
-        .with_state(state);
+        .with_state(Arc::clone(&state));
     eprintln!(
-        "backend-mcp: ready {}",
+        "backend-mcp: bound {}",
         json!({
             "transport": "streamable-http",
             "url": format!("http://{address}{MCP_PATH}"),
-            "authorization": token_source.hint(),
-            "maxSessions": MAX_SESSIONS,
-            "maxInFlight": MAX_IN_FLIGHT,
-            "maxRequestBytes": crate::MAX_MCP_REQUEST_FRAME,
-            "maxResponseBytes": crate::MAX_MCP_RESPONSE_FRAME,
+            "phase": "authentication_pending",
+            "action": "Wait for the ready event before creating an MCP session.",
         })
     );
-    axum::serve(listener, app)
-        .await
-        .map_err(|error| error.to_string())
+    let paths = state.paths.clone();
+    // This is one process-owned blocking task. The listener serves truthful
+    // Pending responses while durable setup waits; no deadline pretends that
+    // a token or owner has become ready.
+    let initializer = tokio::task::spawn_blocking(move || initialize(&paths));
+    let server = std::future::IntoFuture::into_future(axum::serve(listener, app));
+    tokio::pin!(server);
+    tokio::select! {
+        result = &mut server => result.map_err(|error| error.to_string()),
+        admitted = initializer => {
+            state.finish(
+                admitted.unwrap_or_else(|_| Err("HTTP authentication initializer failed".to_owned())),
+                address,
+            );
+            server.await.map_err(|error| error.to_string())
+        }
+    }
+}
+
+fn authentication_unavailable(
+    body: Option<&[u8]>,
+    kind: &'static str,
+    action: &'static str,
+    cause: Option<&str>,
+) -> Response {
+    let id = body
+        .and_then(|body| serde_json::from_slice::<Value>(body).ok())
+        .and_then(|request| request.get("id").cloned())
+        .filter(|id| id.is_string() || id.is_number() || id.is_null())
+        .unwrap_or(Value::Null);
+    let mut reply = json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": -32002,
+            "message": "MCP authentication is not ready",
+            "data": {"kind": kind, "phase": "durable-authentication", "action": action},
+        },
+    });
+    if let Some(cause) = cause {
+        reply["error"]["data"]["cause"] = json!(cause);
+    } else {
+        reply["error"]["data"]["retryAfterSeconds"] = json!(AUTHENTICATION_RETRY_SECONDS);
+    }
+    let mut count = ResponseByteCounter::default();
+    if serde_json::to_writer(&mut count, &reply).is_err()
+        || count.bytes > crate::MAX_MCP_RESPONSE_FRAME
+    {
+        reply["id"] = Value::Null;
+    }
+    let mut response = (StatusCode::SERVICE_UNAVAILABLE, Json(reply)).into_response();
+    if cause.is_none() {
+        response
+            .headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+    }
+    response
 }
 
 fn canonical_project(path: &Path) -> String {
@@ -696,5 +849,218 @@ mod tests {
         assert!(constant_time_eq(b"abcdefghijklmnop", b"abcdefghijklmnop"));
         assert!(!constant_time_eq(b"abcdefghijklmnop", b"abcdefghijklmno"));
         assert!(!constant_time_eq(b"abcdefghijklmnop", b"xbcdefghijklmnop"));
+    }
+
+    fn bootstrap_paths(fixture: &PrivateTokenFixture) -> backend_runtime::WorkspacePaths {
+        let project = fixture.0.join("project");
+        std::fs::create_dir(&project).expect("HTTP fixture project");
+        backend_runtime::WorkspacePaths::discover(
+            Some(project),
+            Some(fixture.0.join("state")),
+            None,
+        )
+        .expect("HTTP fixture workspace selection")
+    }
+
+    async fn wire_request(address: SocketAddr, authorization: Option<String>) -> String {
+        tokio::task::spawn_blocking(move || {
+            use std::io::Write as _;
+            let body = r#"{"jsonrpc":"2.0","id":7,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"bootstrap-test","version":"1"}}}"#;
+            let mut connection = std::net::TcpStream::connect_timeout(
+                &address,
+                std::time::Duration::from_secs(2),
+            )
+            .expect("bound HTTP listener accepts a connection");
+            connection
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .expect("bounded response wait");
+            connection
+                .set_write_timeout(Some(std::time::Duration::from_secs(2)))
+                .expect("bounded request write");
+            write!(
+                connection,
+                "POST /mcp HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{}\r\n{body}",
+                body.len(),
+                authorization.map_or_else(String::new, |token| format!("Authorization: Bearer {token}\r\n")),
+            )
+            .expect("write initialize request");
+            let mut response = String::new();
+            connection
+                .take(64 * 1024)
+                .read_to_string(&mut response)
+                .expect("complete bounded HTTP reply");
+            assert!(response.len() < 64 * 1024, "response exceeded test bound");
+            response
+        })
+        .await
+        .expect("wire observer completed")
+    }
+
+    async fn wait_for_authentication(state: &HttpBootstrap) {
+        // Ready follows real file and directory durability barriers. This
+        // completion bound is separate from the two-second Pending-response
+        // assertions below and does not impose a production Ready deadline.
+        tokio::time::timeout(std::time::Duration::from_secs(90), async {
+            while state.authentication.get().is_none() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("authentication initializer completes");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bound_http_answers_pending_before_blocked_durable_authentication_and_admits_afterward()
+    {
+        let fixture = PrivateTokenFixture::new();
+        let paths = bootstrap_paths(&fixture);
+        let state = Arc::new(HttpBootstrap::new(paths.clone()));
+        let listener = tokio::net::TcpListener::bind(LoopbackBind::default().0)
+            .await
+            .expect("loopback bind");
+        let address = listener.local_addr().expect("bound address");
+        let (entered, admission_entered) = tokio::sync::oneshot::channel();
+        let (release, admission_release) = std::sync::mpsc::channel();
+        let serving = tokio::spawn(serve_bound(listener, Arc::clone(&state), move |paths| {
+            let _ = entered.send(());
+            admission_release
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("release blocked authentication initializer");
+            BearerToken::load_workspace(paths)
+        }));
+        tokio::time::timeout(std::time::Duration::from_secs(2), admission_entered)
+            .await
+            .expect("initializer began")
+            .expect("initializer entered barrier");
+        assert!(
+            !paths.data().exists(),
+            "metadata bootstrap must not create workspace state"
+        );
+        let occupied = state
+            .request_capacity
+            .clone()
+            .acquire_many_owned(u32::try_from(MAX_IN_FLIGHT).expect("bounded capacity"))
+            .await
+            .expect("occupy request capacity");
+        let saturated = wire_request(address, None).await;
+        assert!(saturated.starts_with("HTTP/1.1 503"), "{saturated}");
+        assert!(saturated.contains("MCP request capacity reached"));
+        drop(occupied);
+        let pending = wire_request(address, None).await;
+        assert!(pending.starts_with("HTTP/1.1 503"), "{pending}");
+        assert!(pending.to_ascii_lowercase().contains("retry-after: 1\r\n"));
+        assert!(!pending.to_ascii_lowercase().contains("mcp-session-id:"));
+        let (_, body) = pending.split_once("\r\n\r\n").expect("HTTP body");
+        let pending: Value = serde_json::from_str(body).expect("correlated pending reply");
+        assert_eq!(pending["id"], 7);
+        assert_eq!(pending["error"]["data"]["kind"], "authentication_pending");
+        assert!(state.authentication.get().is_none());
+        release
+            .send(())
+            .expect("resume real durable token admission");
+        wait_for_authentication(&state).await;
+        let token = BearerToken::read_file(&paths.data().join(TOKEN_FILE))
+            .expect("stable durable HTTP token exists before Ready");
+        let unauthorized = wire_request(address, None).await;
+        assert!(unauthorized.starts_with("HTTP/1.1 401"), "{unauthorized}");
+        let initialized = wire_request(address, Some(token.0.to_string())).await;
+        assert!(initialized.starts_with("HTTP/1.1 200"), "{initialized}");
+        assert!(initialized.to_ascii_lowercase().contains("mcp-session-id:"));
+        assert!(
+            !paths.authority_secret().exists(),
+            "initialize has no cursor"
+        );
+        let Authentication::Ready(sessions) = state.authentication.get().expect("Ready") else {
+            panic!("durable authentication failed");
+        };
+        assert_eq!(sessions.live.lock().expect("live sessions").len(), 1);
+        serving.abort();
+        assert!(
+            serving
+                .await
+                .expect_err("test listener retired")
+                .is_cancelled()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn failed_http_authentication_retains_first_cause_and_admits_no_sessions() {
+        let fixture = PrivateTokenFixture::new();
+        let paths = bootstrap_paths(&fixture);
+        paths
+            .initialize_data_directory()
+            .expect("private state fixture");
+        let token_path = paths.data().join(TOKEN_FILE);
+        let secret = "invalid-private-token-not-for-response".repeat(10);
+        backend_platform::durable::write_private_atomic(&token_path, secret.as_bytes())
+            .expect("invalid existing token");
+        let expected = BearerToken::load_workspace(&paths)
+            .err()
+            .expect("exact admission refusal");
+        let state = Arc::new(HttpBootstrap::new(paths));
+        let listener = tokio::net::TcpListener::bind(LoopbackBind::default().0)
+            .await
+            .expect("loopback bind");
+        let address = listener.local_addr().expect("bound address");
+        let serving = tokio::spawn(serve_bound(
+            listener,
+            Arc::clone(&state),
+            BearerToken::load_workspace,
+        ));
+        wait_for_authentication(&state).await;
+        for _ in 0..2 {
+            let response = wire_request(address, Some(secret.clone())).await;
+            assert!(response.starts_with("HTTP/1.1 503"), "{response}");
+            assert!(!response.contains(&secret));
+            assert!(!response.to_ascii_lowercase().contains("mcp-session-id:"));
+            let (_, body) = response.split_once("\r\n\r\n").expect("HTTP body");
+            let failed: Value = serde_json::from_str(body).expect("failure response");
+            assert_eq!(failed["id"], 7);
+            assert_eq!(failed["error"]["data"]["kind"], "authentication_failed");
+            assert_eq!(failed["error"]["data"]["cause"], expected);
+            assert!(
+                failed["error"]["data"]["action"]
+                    .as_str()
+                    .expect("action")
+                    .contains("restart")
+            );
+        }
+        assert_eq!(
+            std::fs::read(token_path).expect("unchanged credential"),
+            secret.as_bytes()
+        );
+        assert!(matches!(
+            state.authentication.get(),
+            Some(Authentication::Failed(_))
+        ));
+        serving.abort();
+        assert!(
+            serving
+                .await
+                .expect_err("test listener retired")
+                .is_cancelled()
+        );
+    }
+
+    #[tokio::test]
+    async fn unavailable_authentication_response_keeps_an_oversized_request_id_bounded() {
+        let request = serde_json::to_vec(&json!({"jsonrpc":"2.0", "id":"x".repeat(crate::MAX_MCP_RESPONSE_FRAME), "method":"initialize"}))
+            .expect("bounded request fixture");
+        let response = authentication_unavailable(
+            Some(&request),
+            "authentication_pending",
+            "Retry after authentication is ready.",
+            None,
+        );
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(response.into_body(), crate::MAX_MCP_RESPONSE_FRAME)
+            .await
+            .expect("response remains within the product byte bound");
+        let reply: Value = serde_json::from_slice(&body).expect("bounded pending reply");
+        assert!(
+            reply["id"].is_null(),
+            "unreturnable identity cannot overflow the response frame"
+        );
+        assert_eq!(reply["error"]["data"]["kind"], "authentication_pending");
     }
 }

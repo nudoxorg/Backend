@@ -1,3 +1,13 @@
+MCP and private workspace admission checkpoint — 2026-10-09
+
+Reviewed Linux source `3544a31083ff0ac078afaed23b8061dd899c099d` passed a fresh 141 controls: MCP 132, presentation 2 and local service 7. Root independently checked all 23 receipts, 46 complete raw log hashes and the exact 141 inventoried/passing names. The original 139 PASS / 3 FAIL cohort remains preserved. A writer repair control passed separately on earlier `2840`; it is not part of this fresh 141 cohort. The retained BUILD epoch is retired with no owned groups, but its original `23b9` restoration duty remains outstanding until final handback.
+
+Private workspace directory repair is admitted only through the checked owning lease; readers cannot repair modes or enumerate/alter unrelated files. Startup keeps local health available without forcing unavailable registry catalog reads, and incompatible old journals reach the set-aside path. MCP honors supported negotiated versions, uses its actual calling surface for tree actions, retains absent/stale graph failures, validates durable cursor authority lazily and provides truthful outline-resource failures and actionable add hints. The canonical replay retains the earlier native-program, Python, diagnostics and DTO25 lockfile work; the only join is the additive directory-admission export.
+
+Current combined canonical native/installed CLI-MCP-daemon public acceptance is still UNRUN. These protocol/unit/integration controls do not prove all 17 listed and 38 catalog routes have useful positive results on real projects. The final matched three-binary build and fresh-HOME observer must supply that evidence. Root/Luna rejected earlier observer startup probes that could create extra daemons or infer readiness from a losing candidate; genuine passive admitted health is required. A separate CLI atom reuses the existing bounded owner wait for one command invocation and remains native UNRUN. Compiler finalization, Go native selection edge cases, OpenWebUI deadline and GUI diagnostic/retained-content defects remain open.
+
+Evidence: [root native audit](../../audits/mcp-private-workspace-native-evidence-20261009.json).
+
 Lockfile membership checkpoint — 2026-10-09
 
 The selected lockfile now enters a bounded typed inventory instead of the project synchronizer interpreting JSON/TOML lines as paths. Cargo, npm v1/v2/v3, uv, Poetry and Go module operands retain package identities, contained workspace paths and explicit unresolved evidence. Coverage describes the admitted lockfile rows, not a resolved dependency graph or whole repository. Stable descriptor reads reject symlinks, FIFOs and mid-read changes. Member, text and reply budgets are charged before persistence; refused growth leaves the original state intact.

@@ -721,11 +721,34 @@ pub(super) fn create_directory(
     directory: LocalHostDirectory,
     path: &Path,
 ) -> Result<(), LocalCompilerHostError> {
-    fs::create_dir_all(path).map_err(|source| LocalCompilerHostError::CreateDirectory {
+    // The ordinary Go module cache follows Go's existing shared-cache policy.
+    // Compiler-owned state is created through no-follow private capabilities.
+    let result = if directory == LocalHostDirectory::GoModuleCache {
+        fs::create_dir_all(path)
+    } else {
+        create_private_directory_path(path)
+    };
+    result.map_err(|source| LocalCompilerHostError::CreateDirectory {
         directory,
         path: path.to_path_buf().into_boxed_path(),
         source,
     })
+}
+
+fn create_private_directory_path(path: &Path) -> io::Result<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        match backend_platform::DirectoryCapability::open(parent) {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                create_private_directory_path(parent)?
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    backend_platform::OwnedWorkspaceDirectory::open(path)?.verify_path()
 }
 
 fn first_existing(

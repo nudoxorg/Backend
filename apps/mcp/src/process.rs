@@ -94,7 +94,7 @@ fn serve_json_rpc_stdio(
     let project = backend_runtime::normalize_surface_path(paths.project())
         .to_string_lossy()
         .into_owned();
-    let cursor_secret = crate::jsonrpc::cursor_secret(paths)?;
+    let cursor_secret = crate::jsonrpc::CursorAuthority::workspace(paths);
     // The connection is deliberately deferred until an owner-backed request.
     // MCP initialize and tools/list are local protocol operations, so an
     // unavailable owner must still receive a correlated tool error instead of
@@ -442,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn stdio_initializes_a_new_workspace_before_any_owner_request() {
+    fn stdio_metadata_does_not_initialize_a_new_workspace() {
         let fixture = Fixture::new("fresh");
         restrict_to_owner(&fixture.root);
 
@@ -454,6 +454,31 @@ mod tests {
         assert_eq!(replies[0]["id"], 1);
         assert_eq!(replies[1]["id"], 2);
         assert!(replies[1]["result"]["tools"].is_array());
-        assert!(fixture.data.join("authority.secret").is_file());
+        assert!(
+            !fixture.data.exists(),
+            "metadata must not create durable workspace state"
+        );
+    }
+
+    #[test]
+    fn stdio_metadata_answers_when_durable_workspace_admission_is_unavailable() {
+        let fixture = Fixture::new("metadata-unavailable");
+        fs::write(&fixture.data, b"not a workspace directory")
+            .expect("deliberately unavailable durable state");
+        let [initialize, initialized] = handshake("metadata-only");
+        let tools = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} });
+        let replies = drive(&fixture.paths(), &[initialize, initialized, tools]);
+        assert_eq!(replies.len(), 2);
+        assert_eq!(replies[0]["id"], 1);
+        assert!(replies[0]["result"]["serverInfo"].is_object());
+        assert_eq!(replies[1]["id"], 2);
+        assert_eq!(
+            replies[1]["result"]["tools"].as_array().map(Vec::len),
+            Some(17)
+        );
+        assert_eq!(
+            fs::read(&fixture.data).expect("original unavailable state"),
+            b"not a workspace directory"
+        );
     }
 }

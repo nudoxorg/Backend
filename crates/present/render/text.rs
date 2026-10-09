@@ -396,7 +396,7 @@ pub fn shelf(shelf: &Shelf, theme: Theme) -> String {
     let mut lines = Lines::new();
     if shelf.is_empty() {
         lines.push("no project is on the shelf at this revision");
-        lines.push(theme.paint(Style::Dim, "  → backend index <PATH>"));
+        lines.push(theme.paint(Style::Dim, "  → nudox add <PATH>"));
         return lines.finish();
     }
     for entry in shelf.entries() {

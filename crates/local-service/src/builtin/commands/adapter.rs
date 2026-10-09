@@ -4403,6 +4403,20 @@ impl CommandAdapter {
         query: backend_engine::GraphNeighborhoodQuery,
         include_incoming: bool,
     ) -> Result<Option<backend_engine::ViewSnapshot>, BuiltinModelError> {
+        let library = daemon.engine().daemon().library();
+        // Canonical addresses can resolve to a key without a declaration at
+        // that key. Leave absent sources and stale bases to the library's
+        // typed read refusal, before opening either graph residence.
+        if !query.basis().matches(library.revision_root())
+            || !query.resolve_symbol(library.view()).is_some_and(|symbol| {
+                library
+                    .view()
+                    .row_ref(backend_engine::RowId::Symbol(symbol))
+                    .is_some()
+            })
+        {
+            return Ok(None);
+        }
         match execute_semantic_graph(
             &mut self.structural_calls,
             daemon,
@@ -5873,12 +5887,15 @@ mod tests {
         let package = backend_library::package_key("/workspace/not-published");
         let symbol = backend_library::symbol_key("/workspace/not-published::absent");
         let document = backend_library::DocumentQuery::new(symbol, root);
+        let graph = backend_library::GraphNeighborhoodQuery::new(symbol, root);
         let page = backend_library::PageRequest::new(root, backend_library::QueryLimit::default());
         for (index, command) in [
             Command::Outline(backend_library::OutlineQuery::new(package, root)),
             Command::OutlinePage { package, page },
             Command::Document(document),
             Command::Source(document),
+            Command::Graph(graph),
+            Command::Related(graph),
             Command::GraphPage {
                 symbol: backend_library::SymbolAddress::canonical(symbol),
                 page,
@@ -5891,6 +5908,8 @@ mod tests {
                 Command::GraphPage { symbol, page } => {
                     adapter.graph_page(daemon, symbol, page, None)
                 }
+                Command::Graph(query) => adapter.graph(daemon, query, None, false),
+                Command::Related(query) => adapter.graph(daemon, query, None, true),
                 _ => adapter.standard(daemon, &command, None),
             }
             .expect("actual read dispatch");
@@ -5922,6 +5941,72 @@ mod tests {
             owner_cursor(daemon),
             before,
             "failed reads do not admit source or work"
+        );
+    }
+
+    #[test]
+    fn project_graph_reads_keep_absence_and_stale_basis_typed() {
+        use backend_library::CommandReply;
+
+        let mut fixture = AdapterFixture::new();
+        let label = fixture.label.clone();
+        let package = fixture.package;
+        let (adapter, daemon) = fixture.parts();
+        let library = daemon.engine().daemon().library();
+        assert!(
+            library
+                .view()
+                .row_ref(backend_library::RowId::Package(package))
+                .is_some()
+        );
+        let root = library.revision_root();
+        let symbol = backend_library::symbol_key(&label);
+        assert!(
+            library
+                .view()
+                .row_ref(backend_library::RowId::Symbol(symbol))
+                .is_none()
+        );
+        let before = owner_cursor(daemon);
+        for incoming in [false, true] {
+            let query = backend_library::GraphNeighborhoodQuery::new(symbol, root);
+            let command = if incoming {
+                Command::Related(query)
+            } else {
+                Command::Graph(query)
+            };
+            let admitted = adapter
+                .graph(daemon, query, None, incoming)
+                .expect("typed graph read");
+            assert_eq!(
+                admitted.0,
+                CommandReply::Failed(backend_library::CommandFailure::NotFound)
+            );
+            let bytes =
+                CommandAdapter::encode(daemon, 970, admitted, None).expect("failure envelope");
+            let decoded = backend_library::decode_reply_body(&bytes).expect("wire decode");
+            backend_library::admit_reply(&backend_library::CommandDto::new(970, command), &decoded)
+                .expect("caller admission");
+            assert_eq!(
+                decoded.reply,
+                CommandReply::Failed(backend_library::CommandFailure::NotFound)
+            );
+
+            let stale =
+                backend_library::view_state_root(&[("qa13".to_owned(), "foreign".to_owned())]);
+            let stale_query = backend_library::GraphNeighborhoodQuery::new(symbol, stale);
+            assert!(matches!(
+                adapter
+                    .graph(daemon, stale_query, None, incoming)
+                    .expect("typed stale graph read")
+                    .0,
+                CommandReply::Failed(backend_library::CommandFailure::WrongBasis { .. })
+            ));
+        }
+        assert_eq!(
+            owner_cursor(daemon),
+            before,
+            "reads never admit project work"
         );
     }
 

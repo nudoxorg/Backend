@@ -66,7 +66,7 @@ backend-client = { path = "../client", features = ["test-support"] }
 backend-store-s3 = { path = "../store-s3", features = ["test-support"] }
 
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "1.1.4", default-features = false, features = ["fs", "std"] }
+rustix = { version = "1.1.4", default-features = false, features = ["fs", "process", "std"] }
 
 [[bench]]
 name = "package_publication"

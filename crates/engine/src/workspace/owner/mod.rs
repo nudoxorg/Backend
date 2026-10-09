@@ -56,7 +56,7 @@ pub use handoff::{
     UnselectedWorkspaceCandidate, WorkspaceCandidateClaim, WorkspacePublicationFailure,
     WorkspaceWriter,
 };
-pub use lease::{OwnerLease, OwnerLeaseIdentity};
+pub use lease::{OwnerLease, OwnerLeaseIdentity, WorkspaceDirectoryAdmission};
 pub(crate) use recovery::{store_head_matches, sync_directory, write_diagnostic};
 
 const DIAGNOSTIC_FILE: &str = "workspace.diagnostic";
@@ -131,6 +131,17 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
     #[must_use]
     pub const fn writer_reserved(&self) -> bool {
         self.writer.is_none()
+    }
+
+    /// Admits workspace children through this owner's still-held physical lease.
+    /// The immutable lease identity cannot mint directory repair authority.
+    ///
+    /// # Errors
+    /// Refuses while the writer is transferred or its original fence is stale.
+    pub fn directory_admission(&self) -> Result<WorkspaceDirectoryAdmission, WorkspaceError> {
+        let lease = &self.writer()?.lease;
+        lease.assert_current()?;
+        Ok(lease.directory_admission())
     }
 
     fn writer(&self) -> Result<&WriterAuthority, WorkspaceError> {
