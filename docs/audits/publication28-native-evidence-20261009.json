@@ -1,0 +1,367 @@
+{
+  "schema": "nudox.root.publication28-native-evidence.v1",
+  "utc": "2026-10-09T09:04:43.502958+00:00",
+  "canonical_base": "1c52dfa73a552354144bee78f402f60d86cbc6ef",
+  "native_source": {
+    "cargo_lock_sha256": "b45bb9a10382c70e6888b220e82061d038b886a5235978f9442c6483229bb1dd",
+    "clean": true,
+    "commit": "09e0eae9928e8e3beb109cab94c9bbe40263ad84",
+    "tree": "84530a75787c6aa70e76da4e1d32dfd60a97844b"
+  },
+  "archive_sha256": "2064d70a8df685bd519aef7a2b6e91a7a4e824ef561ae57228bb58fcc4bcc069",
+  "raw_manifest_sha256": "c6aa63636419a38c6955f35a78e26e47199a8598f46ecfc3b61ced428409b8ae",
+  "raw_files_rehashed": 127,
+  "uncompressed_bytes_rehashed": 95936217,
+  "git_blobs_independently_rehashed": 18022,
+  "gitlinks": [
+    {
+      "git_mode": "160000",
+      "git_object": "052ad81a7dbb6efed34ea482ae6c7e2e6f6682e0",
+      "path": "server/index/turso",
+      "uninitialized": true
+    }
+  ],
+  "receipts": [
+    {
+      "gate": 0,
+      "kind": "build",
+      "receipt_sha256": "c1d99cec66d6bcf0c616c3a0d496d9cec96cb42ce2685bddf886e5c6362fd368",
+      "elapsed_seconds": 427.4971999999834,
+      "image": {
+        "path": "/Users/rmccrar6/sol61-publication-current09e-journal25-native28-20261009/evidence/build-00/images/localservice-lib",
+        "sha256": "ca96a577789dc414c1086d137a399b668f6740fb55b9ee59ac1e56a5901d0799",
+        "bytes": 727711272,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007/debug/deps/backend_local_service-0db23a08ab9a77e3"
+      }
+    },
+    {
+      "gate": 1,
+      "kind": "build",
+      "receipt_sha256": "40453ba9ea31912cd1be7b099f4bc2dc2136e68efa62508ef2668a4d7d068467",
+      "elapsed_seconds": 191.59042766701896,
+      "image": {
+        "path": "/Users/rmccrar6/sol61-publication-current09e-journal25-native28-20261009/evidence/build-01/images/turso-lib",
+        "sha256": "ca0d0a6a6e3372c7e98824da4857679c273c2b17178de0b8d4d85812d5a7ee4e",
+        "bytes": 99398136,
+        "compiler_artifact_path": "/Users/rmccrar6/codex-worktrees/luna-clippy-warning-cleanup-20261007/.local/build/clippy-current-canonical-20261007/debug/deps/backend_extension_turso-411c9111eadd4563"
+      }
+    },
+    {
+      "gate": 0,
+      "kind": "run",
+      "receipt_sha256": "05412dd20d8e4e0c2e643b34d887a10b93f3a781ec23deed52116be3671b0b64",
+      "elapsed_seconds": 10.235640208004043,
+      "inventory_names": [
+        "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_cancel_before_grant_returns_all_original_writers",
+        "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_close_joins_selected_publisher_before_owner_retires",
+        "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_failed_capture_cold_retry_preserves_original_terminal",
+        "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_grant_then_prepublication_unwind_is_failed_even_after_cancel",
+        "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_native_dispatch_preserves_old_graph_through_receipt",
+        "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_native_grant_unwind_preserves_selector_for_next_publication",
+        "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_native_partial_dispatch_preserves_old_graph_through_receipt",
+        "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_panicking_payload_drop_preserves_exact_selector_and_next_commit",
+        "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_refused_install_retains_the_original_unselected_capability",
+        "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_selected_unwind_retains_writer_until_explicit_retry",
+        "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_selected_write_keeps_old_queries_and_late_cancel_loses",
+        "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_sql_terminal_is_not_an_installed_owner_head"
+      ]
+    },
+    {
+      "gate": 1,
+      "kind": "run",
+      "receipt_sha256": "49bf31228c1adae87d0425f738e53ac672aa2139d3f4f92bd03060a2144a0602",
+      "elapsed_seconds": 2.1677289169747382,
+      "inventory_names": [
+        "builtin::commands::adapter::tests::index_profile_worker_tests::existing_index_worker_actual_compiler_refusal_returns_writers_before_terminal",
+        "builtin::commands::adapter::tests::index_profile_worker_tests::existing_index_worker_caught_admission_panic_returns_writers_for_next_real_commit",
+        "builtin::commands::adapter::tests::index_profile_worker_tests::existing_index_worker_displaced_read_maps_retire_on_its_original_thread",
+        "builtin::commands::adapter::tests::index_profile_worker_tests::existing_index_worker_listener_error_and_drop_cancel_and_join_before_retirement",
+        "builtin::commands::adapter::tests::index_profile_worker_tests::existing_index_worker_retirement_failure_does_not_skip_queued_attempts",
+        "builtin::commands::adapter::tests::index_profile_worker_tests::existing_index_worker_shutdown_preserves_selected_current_and_retires_queue",
+        "builtin::commands::adapter::tests::index_profile_worker_tests::existing_index_worker_shutdown_retires_current_and_queued_attempts",
+        "builtin::commands::adapter::tests::index_profile_worker_tests::existing_index_worker_spawn_rejection_retains_writers_for_next_real_commit"
+      ]
+    },
+    {
+      "gate": 2,
+      "kind": "run",
+      "receipt_sha256": "faf367793f7cb9672e8994f395c333a96f394b80fe135451e44f1cba9e5a3f5d",
+      "elapsed_seconds": 2.165664541069418,
+      "inventory_names": [
+        "builtin::commands::index_operation::tests::publication_journal_foreign_return_retains_both_original_connections",
+        "builtin::commands::index_operation::tests::publication_journal_original_writer_and_readonly_observer_keep_exact_prepared_state"
+      ]
+    },
+    {
+      "gate": 3,
+      "kind": "run",
+      "receipt_sha256": "cdc9c391caddd7db7ab0c1d10b1071a2ca57a8d39064f15e6772ecbd6bd222b6",
+      "elapsed_seconds": 2.170917583978735,
+      "inventory_names": [
+        "tests::captured_sql_read_snapshot_keeps_old_graph_during_same_generation_and_selector_writes"
+      ]
+    },
+    {
+      "gate": 4,
+      "kind": "run",
+      "receipt_sha256": "c00e17ef93da4d7a2cf1e42e7327f2110d61a8df28d919616452e1b6391b9baf",
+      "elapsed_seconds": 2.1748558750841767,
+      "inventory_names": [
+        "builtin::commands::adapter::tests::absent_catalog_reads_keep_typed_failure_through_the_real_adapter_and_wire"
+      ]
+    },
+    {
+      "gate": 5,
+      "kind": "run",
+      "receipt_sha256": "29a5942b63d980afc8b92e392d251031dfbb5e81aa56574a659489ee95be0376",
+      "elapsed_seconds": 2.1783662090310827,
+      "inventory_names": [
+        "builtin::commands::adapter::tests::project_graph_reads_keep_absence_and_stale_basis_typed"
+      ]
+    },
+    {
+      "gate": 6,
+      "kind": "run",
+      "receipt_sha256": "fffe0543a1150600315cd57fa364999206a9af0e0782a64adf0b964ed6f5e092",
+      "elapsed_seconds": 66.59242562507279,
+      "native_names": [
+        "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_cancel_before_grant_returns_all_original_writers",
+        "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_close_joins_selected_publisher_before_owner_retires",
+        "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_failed_capture_cold_retry_preserves_original_terminal",
+        "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_grant_then_prepublication_unwind_is_failed_even_after_cancel",
+        "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_native_dispatch_preserves_old_graph_through_receipt",
+        "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_native_grant_unwind_preserves_selector_for_next_publication",
+        "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_native_partial_dispatch_preserves_old_graph_through_receipt",
+        "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_panicking_payload_drop_preserves_exact_selector_and_next_commit",
+        "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_refused_install_retains_the_original_unselected_capability",
+        "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_selected_unwind_retains_writer_until_explicit_retry",
+        "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_selected_write_keeps_old_queries_and_late_cancel_loses",
+        "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_sql_terminal_is_not_an_installed_owner_head"
+      ]
+    },
+    {
+      "gate": 7,
+      "kind": "run",
+      "receipt_sha256": "a119a4c191cf8003f4a34c30ca52c464b785fa9fa7f1a551880e2a8aba41d6a5",
+      "elapsed_seconds": 18.29807683394756,
+      "native_names": [
+        "builtin::commands::adapter::tests::index_profile_worker_tests::existing_index_worker_actual_compiler_refusal_returns_writers_before_terminal",
+        "builtin::commands::adapter::tests::index_profile_worker_tests::existing_index_worker_caught_admission_panic_returns_writers_for_next_real_commit",
+        "builtin::commands::adapter::tests::index_profile_worker_tests::existing_index_worker_displaced_read_maps_retire_on_its_original_thread",
+        "builtin::commands::adapter::tests::index_profile_worker_tests::existing_index_worker_listener_error_and_drop_cancel_and_join_before_retirement",
+        "builtin::commands::adapter::tests::index_profile_worker_tests::existing_index_worker_retirement_failure_does_not_skip_queued_attempts",
+        "builtin::commands::adapter::tests::index_profile_worker_tests::existing_index_worker_shutdown_preserves_selected_current_and_retires_queue",
+        "builtin::commands::adapter::tests::index_profile_worker_tests::existing_index_worker_shutdown_retires_current_and_queued_attempts",
+        "builtin::commands::adapter::tests::index_profile_worker_tests::existing_index_worker_spawn_rejection_retains_writers_for_next_real_commit"
+      ]
+    },
+    {
+      "gate": 8,
+      "kind": "run",
+      "receipt_sha256": "f66f695173fcc1e6e554edf7b75514eb522c8f204471cfe8f0e8573a96b0ec4c",
+      "elapsed_seconds": 2.180010542040691,
+      "native_names": [
+        "builtin::commands::index_operation::tests::publication_journal_foreign_return_retains_both_original_connections",
+        "builtin::commands::index_operation::tests::publication_journal_original_writer_and_readonly_observer_keep_exact_prepared_state"
+      ]
+    },
+    {
+      "gate": 9,
+      "kind": "run",
+      "receipt_sha256": "84e2cdb2e223eea85a13ccb64b9e14849cd86ff06432fb07100de0aab16425f6",
+      "elapsed_seconds": 2.1509718330344185,
+      "native_names": [
+        "tests::captured_sql_read_snapshot_keeps_old_graph_during_same_generation_and_selector_writes"
+      ]
+    },
+    {
+      "gate": 10,
+      "kind": "run",
+      "receipt_sha256": "b6789e44a8f68f7e24ade28918e4b439dec783f5e9a5ad5698cb91d3334cdcb6",
+      "elapsed_seconds": 2.1576882500667125,
+      "native_names": [
+        "builtin::commands::adapter::tests::absent_catalog_reads_keep_typed_failure_through_the_real_adapter_and_wire"
+      ]
+    },
+    {
+      "gate": 11,
+      "kind": "run",
+      "receipt_sha256": "92d5b66469f5b27ab8a3efe1a810ea61c0e3fc3200486d845011497a34adf4f2",
+      "elapsed_seconds": 2.1520995830651373,
+      "native_names": [
+        "builtin::commands::adapter::tests::project_graph_reads_keep_absence_and_stale_basis_typed"
+      ]
+    },
+    {
+      "gate": 12,
+      "kind": "run",
+      "receipt_sha256": "f4322a859403fc628ecfd804367236c37f06048cb8281cef55fc21bc09bccd0c",
+      "elapsed_seconds": 2.172817333950661,
+      "inventory_names": [
+        "builtin::view_journal::tests::journal_v3_known_snapshots_events_chain_to_current_without_replacing_history",
+        "builtin::view_journal::tests::journal_v3_native_v21_fixture_appends_checked_current_and_reopens_twice",
+        "builtin::view_journal::tests::journal_v3_refuses_unknown_versions_fields_proof_basis_and_descriptor_changes"
+      ]
+    },
+    {
+      "gate": 13,
+      "kind": "run",
+      "receipt_sha256": "4bd03b45e1997c6655fc6e49d9f47cabb6d0a2e68d04ae7c569225428676e77c",
+      "elapsed_seconds": 2.1698059999616817,
+      "native_names": [
+        "builtin::view_journal::tests::journal_v3_known_snapshots_events_chain_to_current_without_replacing_history",
+        "builtin::view_journal::tests::journal_v3_native_v21_fixture_appends_checked_current_and_reopens_twice",
+        "builtin::view_journal::tests::journal_v3_refuses_unknown_versions_fields_proof_basis_and_descriptor_changes"
+      ]
+    }
+  ],
+  "native_counts": {
+    "passed": 28,
+    "failed": 0,
+    "ignored": 0
+  },
+  "sdk_return_sha256": "6d8a9813ae5cad20507367d62555d30da6ee4bd576e61bb781ec6149c81d28a8",
+  "source_postimages": [
+    {
+      "path": "crates/library/wire/journal_grammar.rs",
+      "canonical_sha256": "2568a9544c4a58e0c5c8c89d5528bea73e193d0bc19d59cbc58349534ba392c0",
+      "final_sha256": "f20ab4c0b72a730f8c72988db9248ef8b6201d7fb83016f5bdddcc32e42fc2fd",
+      "bytes": 3579,
+      "git_blob_sha1": "240bbae975f3be328ee0985e90ce480f776911dc"
+    },
+    {
+      "path": "crates/local-service/src/builtin/commands/adapter.rs",
+      "canonical_sha256": "aad9831d9121d4bc606e63c7e4b9a1e4fd56ac7147182fb76ac4c017d3c4787b",
+      "final_sha256": "d90e382765ff35002a4c238d33b47e9f99c5f63e4ad59c94b88519e9710857a9",
+      "bytes": 416882,
+      "git_blob_sha1": "12a306776a5352164c121bed6e1dd08117bce63c"
+    },
+    {
+      "path": "crates/local-service/src/builtin/commands/adapter/tests/index_profile_worker.rs",
+      "canonical_sha256": "876e89abc1386730e91c721bc74c36967fd27dda6ba2e6bb65db4b26bf47f8da",
+      "final_sha256": "d7a68f11a2a4bcde32c516a80c5668e836ce958a066eb90490d8bf40eacc89d5",
+      "bytes": 19426,
+      "git_blob_sha1": "0105c5db44f1f1e899162c05118f49aed28a49be"
+    },
+    {
+      "path": "crates/local-service/src/builtin/commands/adapter/tests/index_publication_worker.rs",
+      "canonical_sha256": null,
+      "final_sha256": "89022772f367332e33aa0a3d246535b6adf059bb9ac854fa77e2ba6f540adfd6",
+      "bytes": 50687,
+      "git_blob_sha1": "2e37e00ac93fd485ac242615fbca949da0479b5c"
+    },
+    {
+      "path": "crates/local-service/src/builtin/commands/capture_recovery.rs",
+      "canonical_sha256": "831187d489b81edf0954e86b4a254f6d49047a99d2ac66d53d1e2f36e13d7ee5",
+      "final_sha256": "645ec15a17df9287b21176d8079368c7c073dcfdaeb62c8e986ccca9ccbf925a",
+      "bytes": 17264,
+      "git_blob_sha1": "990fb406a4407097c454b07034f9cc0d59628ab7"
+    },
+    {
+      "path": "crates/local-service/src/builtin/commands/index.rs",
+      "canonical_sha256": "9740735b9df8abbd5c7007cd2e358965ea5424b860fc025c8ac5c091d5b70fc5",
+      "final_sha256": "cbd544091983601ba620341b1b52af973e5063e43e11dd59ccd4b2bf700abd5f",
+      "bytes": 306170,
+      "git_blob_sha1": "e22e8756d681eeed6c7ab6bd17914c2ddfe154f3"
+    },
+    {
+      "path": "crates/local-service/src/builtin/commands/index_operation.rs",
+      "canonical_sha256": "45fb37e58d4df15ee97e19b7453beb797baee41c45309c044108b0f4d9d8b4ea",
+      "final_sha256": "54ea3e98a805d1896be56f35140e77ce26ac0f112d7a736bad73e4dc8d9b1a76",
+      "bytes": 137384,
+      "git_blob_sha1": "43357d916abffec3cac4327372763d0193c93e44"
+    },
+    {
+      "path": "crates/local-service/src/builtin/commands/index_profile_worker.rs",
+      "canonical_sha256": "4c68dc74f1eca4befda78b0d8de11b01696e8385698f3a9760ef7d7c9f3fe06a",
+      "final_sha256": "6deec17b8c2d77b24bbf1a7b2a8e422fa352f169e66f8713a3fb14f01c35a10b",
+      "bytes": 12286,
+      "git_blob_sha1": "5d443c8c830396d4b251563173a40a775a323c17"
+    },
+    {
+      "path": "crates/local-service/src/builtin/commands/index_publication_worker.rs",
+      "canonical_sha256": null,
+      "final_sha256": "bd196e7a0fa2c57994d0c63dd1584d2b42857814ae4c147cead81c73cc349f84",
+      "bytes": 31709,
+      "git_blob_sha1": "75ac0e5ceb158c1f4d46b12e46926bfe027de046"
+    },
+    {
+      "path": "crates/local-service/src/builtin/semantic_authority.rs",
+      "canonical_sha256": "90d112d0eb765f9b4ad319c7229c370b5aa1a5da48e1edf2ceace72148f90330",
+      "final_sha256": "b973b420e3c94bda86cbd83b1807c30b344699d66f662918dc287ac79c9c564d",
+      "bytes": 231055,
+      "git_blob_sha1": "18267f7ae6061a5733cb497001481e16186f4829"
+    },
+    {
+      "path": "crates/local-service/src/builtin/sql_projection.rs",
+      "canonical_sha256": "3f5fb363d9b14ef95f21a5bedbc0c7efcb4fdc4d719187e77721da3eb6313d70",
+      "final_sha256": "5a98f2e46c6d20c81e1c0e28322a0d12c249a17e117a247fe5761166caaeaad0",
+      "bytes": 8395,
+      "git_blob_sha1": "0a10fd684ffaa8f3eadc0117b9cf0b89f6827baf"
+    },
+    {
+      "path": "crates/local-service/src/builtin/view_journal_tests.rs",
+      "canonical_sha256": "32106af87e647e65d4760d5903a469b6d90cdd5c5d9779aa9cf27a51c6f32393",
+      "final_sha256": "e3241e37f70fba7efa671391100490dc40c8a676b04aa8cbbc07e78063958761",
+      "bytes": 67932,
+      "git_blob_sha1": "904b39dd63bc2c77c1ac3ff1459874b1ec531f99"
+    },
+    {
+      "path": "extensions/turso/src/graph.rs",
+      "canonical_sha256": "628a9411ba2ec12c7e4391edebc1ec30d070f0d6458a90db812d0a9603922846",
+      "final_sha256": "64181ae3740f887859270423485745bd5c001a5688ecc76b24c6194907a4a261",
+      "bytes": 57494,
+      "git_blob_sha1": "0f1895188263f7d7bdedce3824be74f7e1a257eb"
+    },
+    {
+      "path": "extensions/turso/src/lib.rs",
+      "canonical_sha256": "0c93bfb1b9abc23d5502597807a3c287c5402274c79eec9f1dd483c27f339b2a",
+      "final_sha256": "36acb1591f0eae08b0f5d3adc86dd5a90fa361c6a20b4353ab3d1da69500415f",
+      "bytes": 4688,
+      "git_blob_sha1": "57fddd355a46a3c3ce47ca1e8cdd2fea929c6226"
+    },
+    {
+      "path": "extensions/turso/src/package_graph_read.rs",
+      "canonical_sha256": "904227a7cc885a07cc5eb9a19506c0e43c229840f4d63fd66b2666d1f125854e",
+      "final_sha256": "0471fdab44c2e9a4428128a918722542e283bc22516627107598aa2dfae3be9e",
+      "bytes": 66469,
+      "git_blob_sha1": "86e8486a395efc9119026a564270b63d4f23a37f"
+    },
+    {
+      "path": "extensions/turso/src/read_snapshot.rs",
+      "canonical_sha256": null,
+      "final_sha256": "eeea063713a1c3736bbef991f888e72f2c439d000a727c15c67ffa0d91a6d5d2",
+      "bytes": 3422,
+      "git_blob_sha1": "1c8062b92ad6d0e930a77390677472c1d19d536f"
+    },
+    {
+      "path": "extensions/turso/src/tests.rs",
+      "canonical_sha256": "c59b99888eb90bdae0b46d00b579138fff4ea6dcb5ffe49a0206b3ebb14c3f03",
+      "final_sha256": "6198d6f3a3bcee18b5c28541778b9c0e2956806010675e77aa46a3abb6fc4e2a",
+      "bytes": 146501,
+      "git_blob_sha1": "1e6ab1a504b4da4cfeb5d2cd2bb05eda137f42e8"
+    }
+  ],
+  "worker_packet_sha256": "0113439222b6482827501a023316ffa55a6be02adab3d9d54953a03e268b1e07",
+  "limits": [
+    "Native test cohort; matching normal CLI/MCP/locald and GUI public-project gates remain open.",
+    "Native producer source is09e; integrated17 postimages are exact on newer canonical106 with its client lockfile retained.",
+    "Bounded archive excludes images. Return rehashes images remotely; Root independently rehashes native image bytes over SSH separately.",
+    "Previous b4 3/22 and4d23/2 native failures remain recorded separately."
+  ],
+  "integrated_source_commit": "250580591b32a41885a37802073540caada9a2c7",
+  "integrated_source_tree": "52033aa2b9f32d1ce0ac41d205d8a10380763518",
+  "root_independent_remote_image_rehash": {
+    "host": "h16001mac",
+    "verified_sha256": [
+      "ca96a577789dc414c1086d137a399b668f6740fb55b9ee59ac1e56a5901d0799",
+      "ca0d0a6a6e3372c7e98824da4857679c273c2b17178de0b8d4d85812d5a7ee4e"
+    ]
+  },
+  "returned_sdk_owner_source": {
+    "commit": "7382f9f8a31990f3b0fe2e2b44093717699ad934",
+    "tree": "155f1b793645fff3bccbadae11e3a144d08db2f2",
+    "cargo_lock_sha256": "de731929bbf72c5220e59c0543aaddd06fcc2bc16899741a9d6cb5546e60780e",
+    "clean": true
+  }
+}
