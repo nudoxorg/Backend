@@ -1291,6 +1291,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
     use std::time::{Duration, Instant};
+    use tsz::parser::node::NodeAccess;
 
     fn options() -> TszProjectOptions {
         let mut checker = TszCheckerOptions::default();
