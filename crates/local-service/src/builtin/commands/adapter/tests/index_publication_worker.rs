@@ -4,6 +4,9 @@
 //! None of these controls simulates process death during publication.
 use super::*;
 use crate::builtin::BuiltinModelError;
+use crate::builtin::commands::adapter::index_profile_worker::{
+    ProfileCompletion, ProfileOutcome, ProfileWorker,
+};
 use crate::builtin::commands::adapter::index_publication_worker::{
     Completion, Disposition, Event, Head, TestHook, TestStage,
 };
@@ -50,6 +53,41 @@ fn until(
     }
 }
 
+fn profile_completion_state(completion: &ProfileCompletion) -> String {
+    let outcome = match &completion.outcome {
+        ProfileOutcome::Cancelled => "Cancelled".to_owned(),
+        ProfileOutcome::Admitted(result) => format!("Admitted({result:?})"),
+    };
+    format!(
+        "profile={:?}, ordinal={}/{}, outcome={outcome}, read_head_present={}, semantic_writer_present={}",
+        completion.work.identity.profile,
+        completion.work.identity.ordinal,
+        completion.work.identity.total,
+        completion.work.read_head.is_some(),
+        completion.work.semantic.is_some(),
+    )
+}
+
+fn profile_worker_state(worker: &ProfileWorker) -> String {
+    match worker {
+        ProfileWorker::Running(handle) => format!("Running(finished={})", handle.is_finished()),
+        ProfileWorker::Owned { handle, .. } => {
+            format!(
+                "Owned(finished={}, original_completion_channel)",
+                handle.is_finished()
+            )
+        }
+        ProfileWorker::Returned(completion) => {
+            format!("Returned({})", profile_completion_state(completion))
+        }
+        ProfileWorker::Retiring { handle, completion } => format!(
+            "Retiring(finished={}, {})",
+            handle.is_finished(),
+            profile_completion_state(completion)
+        ),
+    }
+}
+
 // Observe the original actor/worker channels. Reading keyed status here would
 // admit an explicit retry and could hide the attempt that missed this barrier.
 fn after_grant_state(
@@ -62,7 +100,9 @@ fn after_grant_state(
         let phase = match &job.work {
             IndexJobWork::Acquiring(_) => "Acquiring".to_owned(),
             IndexJobWork::Scanning(_) => "Scanning".to_owned(),
-            IndexJobWork::Compiling { .. } => "Compiling".to_owned(),
+            IndexJobWork::Compiling { worker } => {
+                format!("Compiling({})", profile_worker_state(worker))
+            }
             IndexJobWork::Publishing { .. } => "Publishing".to_owned(),
             IndexJobWork::PublicationWorker {
                 worker,
