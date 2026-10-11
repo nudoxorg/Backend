@@ -561,17 +561,19 @@ struct SummaryRecordDto<'a> {
 }
 
 /// Summary retains both exact operand families and captured site facts. The
-/// trail, parsed project/segments and short key are redundant display facets
-/// available in the standard/full identity, not additional row authority.
+/// required trail/segments stay decodable as the public IdentityDto. Parsed
+/// project and short key are optional display facets available in standard/full.
 #[derive(Serialize)]
 struct SummaryIdentityDto<'a> {
     coordinate: &'a str,
+    trail: String,
     name: &'a str,
     shape: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     line: Option<u32>,
+    segments: SummarySegments<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
     semantic_data: Option<crate::dto::IdentitySemanticData>,
 }
@@ -580,12 +582,26 @@ impl<'a> SummaryIdentityDto<'a> {
     fn new(identity: &'a crate::Identity) -> Self {
         Self {
             coordinate: identity.coordinate().as_str(),
+            trail: identity.trail_within(None),
             name: identity.name(),
             shape: crate::dto::shape_name(identity),
             path: identity.path().map(crate::identity::PackagePath::as_str),
             line: identity.line().map(crate::identity::LineNumber::get),
+            segments: SummarySegments(identity.trail().segments()),
             semantic_data: crate::dto::identity_semantic_data(identity),
         }
+    }
+}
+
+struct SummarySegments<'a>(&'a [crate::identity::SymbolSegment]);
+
+impl Serialize for SummarySegments<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut segments = serializer.serialize_seq(Some(self.0.len()))?;
+        for segment in self.0 {
+            segments.serialize_element(segment.as_str())?;
+        }
+        segments.end()
     }
 }
 
@@ -957,12 +973,23 @@ mod tests {
         .expect("standard fits");
         let summary: Value = serde_json::from_slice(&summary.bytes).expect("summary JSON");
         let standard: Value = serde_json::from_slice(&standard.bytes).expect("standard JSON");
+        let typed: crate::SummaryPageDto = serde_json::from_value(summary.clone())
+            .expect("the actual Summary page decodes through its public projection type");
+        let identity: crate::IdentityDto = serde_json::from_value(summary["identity"].clone())
+            .expect("Summary retains the existing public IdentityDto grammar");
+        assert_eq!(typed.identity, identity);
+        assert_eq!(
+            typed.signature.as_deref(),
+            Some("function entrySummary(entry: Entry): string")
+        );
         for field in [
             "coordinate",
+            "trail",
             "name",
             "shape",
             "path",
             "line",
+            "segments",
             "semantic_data",
         ] {
             assert_eq!(summary["identity"][field], standard["identity"][field]);
@@ -1037,6 +1064,11 @@ mod tests {
         .expect("full fits");
         let summary_value: Value = serde_json::from_slice(&summary.bytes).expect("summary JSON");
         let full_value: Value = serde_json::from_slice(&full.bytes).expect("full JSON");
+        let typed_summary: crate::RecordListDto = serde_json::from_value(summary_value.clone())
+            .expect("actual Summary rows decode through the existing public RecordListDto");
+        let typed_full: crate::RecordListDto =
+            serde_json::from_value(full_value.clone()).expect("actual full rows decode");
+        assert_eq!(typed_summary.query, typed_full.query);
         for field in ["query", "coverage", "readiness", "more", "nextCursor"] {
             assert_eq!(summary_value[field], full_value[field], "{field}");
         }
@@ -1053,10 +1085,12 @@ mod tests {
             assert_eq!(record["identity"]["line"], line);
             for field in [
                 "coordinate",
+                "trail",
                 "name",
                 "shape",
                 "path",
                 "line",
+                "segments",
                 "semantic_data",
             ] {
                 assert_eq!(
@@ -1078,7 +1112,7 @@ mod tests {
                     "{field}"
                 );
             }
-            for field in ["trail", "project", "segments", "key"] {
+            for field in ["project", "key"] {
                 assert!(record["identity"].get(field).is_none());
                 assert!(
                     full_value["records"][index]["identity"]
@@ -1104,6 +1138,49 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn all_record_details_preserve_eight_metadata_combinations_and_public_decode() {
+        use backend_library::{
+            Cursor, PageContinuation, SemanticSearchReason, SemanticSearchStatus,
+        };
+
+        for flags in 0..8 {
+            let mut list = crate::RecordList::new(
+                "外部::Inner",
+                crate::CoverageLine::new(&[backend_library::Coverage::Complete], Some(0)),
+                Vec::<crate::Record>::new(),
+            );
+            if flags & 1 != 0 {
+                list = list.with_empty_reason("No graph edges were recorded at this coordinate.");
+            }
+            if flags & 2 != 0 {
+                list = list.with_semantic_search_status(SemanticSearchStatus::Unavailable {
+                    reason: SemanticSearchReason::Unconfigured,
+                });
+            }
+            if flags & 4 != 0 {
+                list = list.with_continuation(Some(PageContinuation::from_cursor(Cursor::new())));
+            }
+            let expected = crate::RecordListDto::new(&list);
+            let cursor = list.has_more().then_some("exact opaque continuation");
+            let answer = Answer::Records(Box::new(list));
+            for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+                let encoded = encode_answer(&answer, detail, cursor, DEFAULT_RESPONSE_BUDGET_BYTES)
+                    .expect("bounded metadata matrix");
+                let value: Value = serde_json::from_slice(&encoded.bytes).expect("actual envelope");
+                let actual: crate::RecordListDto = serde_json::from_value(value.clone())
+                    .expect("every actual detail decodes through the public result-list DTO");
+                assert_eq!(actual, expected, "flags={flags} detail={detail:?}");
+                assert_eq!(value["nextCursor"].as_str(), cursor);
+                assert_eq!(value["budget"]["bytes"], encoded.bytes.len());
+                let exact = encode_answer(&answer, detail, cursor, encoded.bytes.len())
+                    .expect("exact measured boundary fits");
+                assert_eq!(exact.bytes, encoded.bytes);
+                assert!(encode_answer(&answer, detail, cursor, encoded.bytes.len() - 1).is_err());
+            }
+        }
     }
 
     fn membership_answer(count: usize, path_bytes: usize) -> Answer {

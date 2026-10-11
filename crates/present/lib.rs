@@ -110,7 +110,7 @@ pub use dto::{
     IdentitySemanticData, LanguageCountDto, MemberGroupDto, OutlineDto, OutlineNodeDto, PageDto,
     ProductDto, ProductIndexSearchPageDto, ProductRecordDto, ReasonDto, RecordDto, RecordListDto,
     RelationGroupDto, SelectedSymbolIdDto, ShelfDto, ShelfEntryDto, SignatureTokenDto, SourceDto,
-    StatusDto, answer_value, fault_value,
+    StatusDto, SummaryPageDto, answer_value, fault_value,
 };
 pub use fault::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand, OwnerContext};
 pub use glyph::{KindGlyph, LanguageGlyph, RelationDirection, RelationLabel, relation_label};

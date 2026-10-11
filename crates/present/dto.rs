@@ -1,7 +1,10 @@
 //! The stable JSON projection of the presentation model.
 //!
-//! `--format json` and MCP `structuredContent` emit these types and nothing
-//! else. They are deliberately *not* the wire DTOs: a wire reply is shaped for
+//! Standard/full `--format json` and MCP `structuredContent` use these DTOs.
+//! Summary retains the public identity and result-list grammar; a Summary page
+//! uses [`SummaryPageDto`] and omits the unrequested page sections. Projection
+//! envelope fields such as `answer`, `detail`, and `nextCursor` are additional.
+//! These are deliberately *not* the wire DTOs: a wire reply is shaped for
 //! proof and framing, and dumping it at a caller leaks identity digests,
 //! certificate claims, and cursor internals that no consumer should bind to.
 //! What a consumer binds to is here — identity parts, resolved names, typed
@@ -403,6 +406,24 @@ pub struct PageDto {
     /// Faults explaining any section this page could not fill.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<FaultDto>,
+}
+
+/// The owned decoder for a Summary declaration page.
+///
+/// The identity, kind, language and signature are retained facts. Sections
+/// omitted by the Summary projection do not become empty page sections.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SummaryPageDto {
+    /// The retained public identity, including its readable trail and segments.
+    pub identity: IdentityDto,
+    /// The declaration kind, when observed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// The observed source language.
+    pub language: String,
+    /// The retained signature text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 /// Members that share one kind.
