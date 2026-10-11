@@ -16,7 +16,7 @@ current_directory = { lifetime = "ProgramStable", capability = "ProgramLookupCon
 compiler_options = { lifetime = "FileLocalReset", capability = "CheckerInputs", reason = "checker-local mutable state tied to the active file or traversal; reset at file-session boundary" }
 capabilities = { lifetime = "FileLocalReset", capability = "CheckerInputs", reason = "checker-local mutable state tied to the active file or traversal; reset at file-session boundary" }
 no_implicit_override = { lifetime = "DiagnosticsOnly", capability = "DiagnosticState", reason = "diagnostic emission, dedupe, or suppression state; clear at file-session boundary" }
-report_unresolved_imports = { lifetime = "DiagnosticsOnly", capability = "DiagnosticState", reason = "diagnostic emission, dedupe, or suppression state; clear at file-session boundary" }
+report_unresolved_imports = { lifetime = "ProgramStable", capability = "CheckerInputs", reason = "unresolved-module reporting policy enabled by compiler-owned project outcomes; inherited with cross-file context and preserved across file sessions; standalone construction defaults to false unless the caller opts in" }
 allow_source_file_test_pragmas = { lifetime = "DiagnosticsOnly", capability = "DiagnosticState", reason = "diagnostic emission, dedupe, or suppression state; clear at file-session boundary" }
 file_is_esm = { lifetime = "FileLocalReset", capability = "CheckerInputs", reason = "checker-local mutable state tied to the active file or traversal; reset at file-session boundary" }
 file_is_esm_map = { lifetime = "ProgramStable", capability = "ProgramLookupContext", reason = "shared immutable program data; valid until the compilation or project version changes" }
