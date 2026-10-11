@@ -45,6 +45,9 @@ pub struct MergedProgramResidencyStats {
     /// Total estimated size of unique `NodeArena` allocations in bytes.
     /// Computed by calling `estimated_size_bytes()` on each deduplicated arena.
     pub unique_arena_estimated_bytes: usize,
+    /// One shared compiler-owned file-format map allocation, including key
+    /// capacity and hash-table/control storage. Checker Arc clones add no copies.
+    pub compiler_file_format_estimated_bytes: usize,
     /// Whether a dependency graph was computed from skeleton import sources.
     pub has_dep_graph: bool,
     /// Number of import edges in the dependency graph.
@@ -70,6 +73,7 @@ impl MergedProgramResidencyStats {
     pub const fn retained_file_state_bytes_est(&self) -> usize {
         self.total_bound_file_bytes
             .saturating_add(self.unique_arena_estimated_bytes)
+            .saturating_add(self.compiler_file_format_estimated_bytes)
     }
 }
 
@@ -117,6 +121,28 @@ impl MergedProgram {
             }
         }
         unique_arena_map
+    }
+
+    /// Estimate the one shared format-map allocation, independently of how
+    /// many plans or checker sessions borrow it through Arc handles.
+    fn compiler_file_format_bytes_est(&self) -> usize {
+        use rustc_hash::FxHashMap;
+        use std::mem::size_of;
+        let map = &self.file_is_esm_map;
+        // HashMap capacity describes usable entries at its load factor. Include
+        // spare buckets, one control byte per bucket, and the control-group tail.
+        let capacity = map.capacity();
+        let buckets = capacity.saturating_add(capacity.div_ceil(7));
+        let table = buckets
+            .saturating_mul(size_of::<(String, bool)>() + 1)
+            .saturating_add(if buckets == 0 { 0 } else { 16 });
+        let keys = map
+            .keys()
+            .fold(0usize, |size, path| size.saturating_add(path.capacity()));
+        size_of::<FxHashMap<String, bool>>()
+            .saturating_add(2 * size_of::<usize>()) // Arc allocation header, once
+            .saturating_add(table)
+            .saturating_add(keys)
     }
 
     /// Return residency-oriented counters for the current merged program.
@@ -188,6 +214,7 @@ impl MergedProgram {
             pre_merge_bind_total_bytes: self.pre_merge_bind_total_bytes,
             total_bound_file_bytes,
             unique_arena_estimated_bytes,
+            compiler_file_format_estimated_bytes: self.compiler_file_format_bytes_est(),
             has_dep_graph,
             dep_graph_edge_count: dep_edge_count,
             dep_graph_root_count: dep_root_count,
@@ -199,14 +226,18 @@ impl MergedProgram {
 
     /// Estimate the heap bytes of the program-wide symbol state retained by
     /// the merge: the merged `SymbolArena`, global/file-local symbol tables,
-    /// module export tables, semantic-def entries, and the map overhead of
+    /// module export tables, semantic-def entries, the shared compiler-format
+    /// map, and the map overhead of
     /// the declaration-arena lookup tables (the arenas themselves are
     /// counted by the unique-arena walk).
     fn program_symbol_state_bytes_est(&self) -> usize {
         use std::mem::size_of;
         const ENTRY_OVERHEAD: usize = 16;
 
-        let mut size = self.symbols.estimated_size_bytes();
+        let mut size = self
+            .symbols
+            .estimated_size_bytes()
+            .saturating_add(self.compiler_file_format_bytes_est());
         size += self.globals.estimated_size_bytes();
         size += self.lib_globals.estimated_size_bytes();
         size += self
@@ -407,6 +438,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn compiler_format_map_counts_shared_retained_memory_in_budget_pressure() {
+        use super::super::core::{
+            ProjectFileFormat, ProjectFileFormatInput, compile_files_with_libs,
+        };
+        let path = "src/long/path/with/a/compiler/owned/format/main.ts";
+        let mut program = compile_files_with_libs(vec![(path.into(), "export {};".into())], &[]);
+        let before = program.residency_stats();
+        program
+            .set_project_file_formats(&[ProjectFileFormatInput {
+                path: path.into(),
+                format: ProjectFileFormat::EsModule,
+            }])
+            .unwrap();
+        let after = program.residency_stats();
+        assert!(
+            after.compiler_file_format_estimated_bytes
+                >= before.compiler_file_format_estimated_bytes + path.len()
+        );
+        assert_eq!(
+            after.retained_file_state_bytes_est() - before.retained_file_state_bytes_est(),
+            after.compiler_file_format_estimated_bytes
+                - before.compiler_file_format_estimated_bytes
+        );
+        let budget = ResidencyBudget {
+            low_watermark_bytes: before.retained_file_state_bytes_est() + 1,
+            high_watermark_bytes: after.retained_file_state_bytes_est(),
+        };
+        assert_eq!(budget.assess(&before), MemoryPressure::Low);
+        assert_eq!(budget.assess(&after), MemoryPressure::High);
+        let first_checker_handle = Arc::clone(&program.file_is_esm_map);
+        let second_checker_handle = Arc::clone(&program.file_is_esm_map);
+        assert!(Arc::ptr_eq(&first_checker_handle, &second_checker_handle));
+        assert_eq!(
+            program
+                .residency_stats()
+                .compiler_file_format_estimated_bytes,
+            after.compiler_file_format_estimated_bytes
+        );
+        program
+            .set_project_file_formats(&[ProjectFileFormatInput {
+                path: path.into(),
+                format: ProjectFileFormat::Unknown,
+            }])
+            .unwrap();
+        assert_eq!(
+            program
+                .residency_stats()
+                .compiler_file_format_estimated_bytes,
+            before.compiler_file_format_estimated_bytes
+        );
+    }
+
+    #[test]
     fn low_pressure_below_watermark() {
         let budget = ResidencyBudget {
             low_watermark_bytes: 1000,
@@ -426,6 +510,7 @@ mod tests {
             pre_merge_bind_total_bytes: 300,
             total_bound_file_bytes: 200,
             unique_arena_estimated_bytes: 0,
+            compiler_file_format_estimated_bytes: 0,
             has_dep_graph: false,
             dep_graph_edge_count: 0,
             dep_graph_root_count: 0,
@@ -459,6 +544,7 @@ mod tests {
             // is excluded from the residency formula.
             total_bound_file_bytes: 2500,
             unique_arena_estimated_bytes: 0,
+            compiler_file_format_estimated_bytes: 0,
             has_dep_graph: false,
             dep_graph_edge_count: 0,
             dep_graph_root_count: 0,
@@ -485,6 +571,7 @@ mod tests {
             pre_merge_bind_total_bytes: 50_000,
             total_bound_file_bytes: 20_000,
             unique_arena_estimated_bytes: 0,
+            compiler_file_format_estimated_bytes: 0,
             has_dep_graph: false,
             dep_graph_edge_count: 0,
             dep_graph_root_count: 0,
@@ -512,6 +599,7 @@ mod tests {
             pre_merge_bind_total_bytes: 50_000,
             total_bound_file_bytes: 20_000,
             unique_arena_estimated_bytes: 0,
+            compiler_file_format_estimated_bytes: 0,
             has_dep_graph: false,
             dep_graph_edge_count: 0,
             dep_graph_root_count: 0,
