@@ -2290,7 +2290,9 @@ fn a_painted_dependency_back_return_refuses_later_focus_read_owner_or_visit(
                         .mount_claim("pkg-licence")
                         .expect("actual freshly painted alternate native control");
                     assert!(targets.admits_mount(&licence, window));
-                    assert!(targets.focus_native("pkg-licence", window, app));
+                    let handle = targets.native_handle(&"pkg-licence".into(), app);
+                    assert!(window.is_focus_handle_mounted(&handle));
+                    window.focus(&handle, app); // Actual later native input, not a deferred return.
                     assert_eq!(targets.native_focused(window).as_deref(), Some("pkg-licence"));
                 }
                 Interruption::ReadStamp => {

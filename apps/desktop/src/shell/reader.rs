@@ -1185,6 +1185,40 @@ impl Reader {
         }
     }
 
+    /// Settings targets are admitted only after this exact Reader child has
+    /// painted, using the original return ticket and input lease.
+    fn finish_painted_settings_return(&mut self, ticket: &Rc<()>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pending) = self.pending_settings_focus.as_ref()
+            .filter(|pending| Rc::ptr_eq(&pending.ticket, ticket)) else { return; };
+        let SettingsNativeOrigin::Target(target) = &pending.origin else { return; };
+        let snapshot = self.links.snapshot(cx);
+        let lease_current = pending.lease.is_some_and(|lease| {
+            self.links.shell.upgrade().is_some_and(|shell| {
+                let shell = shell.read(cx);
+                lease.current(window.window_handle().window_id(), shell.focus_return_generation(), window.focus_epoch())
+                    && shell.allows_reader_native_return(window)
+            })
+        });
+        if !lease_current || !pending.focus.has_same_authority(snapshot.key())
+            || self.places.last().is_none_or(|place| place.key != pending.focus.place)
+            || snapshot.overlay().is_some() || snapshot.page_overlay().is_some()
+            || super::titlebar::menu_open(window, cx) {
+            self.pending_settings_focus = None;
+            return;
+        }
+        if self.painted != Some(pending.focus.place) || !self.native_input_allowed()
+            || !self.targets.is_active() { return; }
+        let target = target.clone();
+        // focus_native captures the actual painted mount and defers its
+        // action admission until this Reader borrow has returned. New input
+        // between these two callbacks retains its own native focus.
+        if self.targets.focus_native(&target, window, cx) {
+            self.reveal.set(true);
+            cx.notify();
+        }
+        self.pending_settings_focus = None;
+    }
+
     #[cfg(test)]
     pub(super) fn diagnostic_native_history_return_after_paint(&self) -> bool {
         self.native_return.as_ref().is_some_and(|pending|
@@ -2265,6 +2299,7 @@ struct SettingsDeparture {
 }
 
 struct PendingSettingsReturn {
+    ticket: Rc<()>,
     focus: SettingsReturn,
     origin: SettingsNativeOrigin,
     lease: Option<NativeReturnLease>,
@@ -2651,7 +2686,7 @@ impl Region for Reader {
                         departure.route == *snapshot.route()
                             && departure.root.same_authority(snapshot.key())
                     }).map_or(SettingsNativeOrigin::Unmatched, |departure| departure.origin);
-                    Some(PendingSettingsReturn { focus: SettingsReturn {
+                    Some(PendingSettingsReturn { ticket: Rc::new(()), focus: SettingsReturn {
                         place: self.descents,
                         root: snapshot.key(),
                         target: None,
@@ -3051,6 +3086,7 @@ impl Render for Reader {
                 reading: None,
                 scroll_mount: None,
                 native_return: None,
+                settings_return: None,
                 child: div().size_full().child(map.clone()).into_any_element(),
             };
             let framed = if retaining_departure {
@@ -3160,12 +3196,11 @@ impl Render for Reader {
             } else if lease_current == Some(true) && self.painted == Some(current.key) && self.native_input_allowed() {
                 if pending.focus.has_same_authority(snapshot.key()) {
                     match pending.origin.clone() {
-                        SettingsNativeOrigin::Target(target) if self.targets.is_active() => {
-                            if self.targets.focus_native(&target, window, cx) {
-                                self.targets.focus(target);
-                                self.reveal.set(true);
-                                cx.notify();
-                            }
+                        SettingsNativeOrigin::Target(_) if self.targets.is_active() => {
+                            // Native leaves register and paint after this render.
+                            // Retain this original return for its child-paint
+                            // completion; an unpainted row cannot grant focus.
+                            self.pending_settings_focus = Some(pending);
                         }
                         SettingsNativeOrigin::Find(_) => {
                             // Its existing after-frame callback registers and
@@ -3249,6 +3284,9 @@ impl Render for Reader {
                 .then(|| (snapshot.session().reading.current.id, snapshot.session().reading.current.presentation.controls().offset, self.links.clone())),
             scroll_mount: Some((Rc::clone(&self.scroll_mounted), current.key)),
             native_return: self.native_return.as_ref().map(|pending| (cx.weak_entity(), Rc::clone(&pending.ticket))),
+            settings_return: self.pending_settings_focus.as_ref()
+                .filter(|pending| pending.lease.is_some() && matches!(pending.origin, SettingsNativeOrigin::Target(_)))
+                .map(|pending| (cx.weak_entity(), Rc::clone(&pending.ticket))),
             child: scroller.into_any_element(),
         });
         let scroller = facet::motion::flow::local_paint("reader-flow-paint", scroller);
@@ -3548,6 +3586,7 @@ struct Reveal {
     reading: Option<(crate::navigation::presentation::VisitId, crate::navigation::presentation::ReadingOffset, Links)>,
     scroll_mount: Option<(Rc<Cell<Option<u64>>>, u64)>,
     native_return: Option<(gpui::WeakEntity<Reader>, Rc<()>)>,
+    settings_return: Option<(gpui::WeakEntity<Reader>, Rc<()>)>,
     child: gpui::AnyElement,
 }
 
@@ -3694,6 +3733,13 @@ impl gpui::Element for Reveal {
         cx: &mut gpui::App,
     ) {
         self.child.paint(window, cx);
+        if let Some((reader, ticket)) = &self.settings_return {
+            let reader = reader.clone();
+            let ticket = Rc::clone(ticket);
+            window.defer(cx, move |window, cx| {
+                let _ = reader.update(cx, |reader, cx| reader.finish_painted_settings_return(&ticket, window, cx));
+            });
+        }
         if let Some((reader, ticket)) = &self.native_return {
             let reader = reader.clone();
             let ticket = Rc::clone(ticket);

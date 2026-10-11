@@ -1671,9 +1671,13 @@ mod tests {
             .is_some_and(|words| words.contains("pub enum RelationLabel")),
             "the fresh native control copies the visible bounded source");
 
-        let other_owner = rig.cx.update(|window, cx| {
-            let targets = rig.shell.read(cx).reader_targets(cx);
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        rig.cx.update(|window, cx| {
             assert!(targets.focus_native("source-jump-go", window, cx), "the unrelated Go control owns native focus");
+        });
+        let other_owner = rig.cx.update(|window, cx| {
+            assert_eq!(targets.native_focused(window).as_deref(), Some("source-jump-go"),
+                "the admitted Go receiver owns focus after the deferred effect");
             window.focused(cx).expect("Go control focus")
         });
         rig.cx.write_to_clipboard(gpui::ClipboardItem::new_string("stale-copy-sentinel".into()));
