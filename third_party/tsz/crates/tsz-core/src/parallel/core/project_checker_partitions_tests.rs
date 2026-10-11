@@ -684,13 +684,15 @@ fn project_session_latches_one_shot_database_stop_and_discards_callback_output()
     let result = session.with_file_checker_and_types(0, |_, _, _, types| {
         callback_ran.store(true, Ordering::Release);
         source.0.store(true, Ordering::Release);
+        let stopped_union = types.union(vec![TypeId::NUMBER, TypeId::STRING]);
         assert_eq!(
-            types.execution_checkpoint(1),
-            Err(ProjectExecutionStop::Cancelled)
+            stopped_union,
+            TypeId::UNKNOWN,
+            "the actual database union must observe the one-shot stop"
         );
-        // This models a solver-local sentinel after a typed database stop. It
-        // must not become a successful semantic callback result.
-        TypeId::UNKNOWN
+        // The solver-local sentinel must not become a successful semantic
+        // callback result at the typed session boundary.
+        stopped_union
     });
     assert!(callback_ran.load(Ordering::Acquire));
     assert_eq!(

@@ -89,7 +89,7 @@ fn shared_eval_memo_sink_rechecks_after_local_insert_latches_stop() {
 #[test]
 fn shared_application_eval_sink_rechecks_stop_before_local_publish() {
     let interner = TypeInterner::new();
-    let shared = SharedQueryCache::new();
+    let shared = SharedQueryCache::new_for_instantiation_family_test(true);
     // The entry poll admits the call; the shared-tier guard sees the stop,
     // and the following local-write guard must keep it out of both tiers.
     let source = StopOnPoll(std::sync::atomic::AtomicUsize::new(1));
