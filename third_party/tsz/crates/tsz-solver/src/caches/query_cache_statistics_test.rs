@@ -2,7 +2,7 @@
 
 use crate::caches::db::{
     IntersectionMergeCacheEntry, QueryDatabase, TypeApplicationEvalCache, TypeDatabase,
-    TypePredicateCache,
+    TypeExecutionCheckpoint, TypePredicateCache,
 };
 use crate::caches::instantiation_cache::{CanonicalSubst, InstantiationCacheKey};
 use crate::caches::query_cache::{QueryCache, SharedQueryCache};
@@ -10,6 +10,95 @@ use crate::caches::query_cache_statistics::QueryCacheStatistics;
 use crate::def::{DefId, DefinitionStore};
 use crate::intern::TypeInterner;
 use crate::types::{RelationCacheConfig, RelationCacheKey, TypeId};
+
+struct OneShotExecutionStop(std::sync::atomic::AtomicBool);
+
+impl tsz_common::ExecutionCheckpoint for OneShotExecutionStop {
+    fn checkpoint(&self, _work_units: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
+        if self.0.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            Err(tsz_common::ProjectExecutionStop::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+struct StopOnPoll(std::sync::atomic::AtomicUsize);
+
+impl tsz_common::ExecutionCheckpoint for StopOnPoll {
+    fn checkpoint(&self, _work_units: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
+        if self
+            .0
+            .fetch_update(
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+                |remaining| remaining.checked_sub(1),
+            )
+            .is_err()
+        {
+            Err(tsz_common::ProjectExecutionStop::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn query_cache_latches_union_stop_before_unknown_or_memo_publication() {
+    let interner = TypeInterner::new();
+    let shared = SharedQueryCache::new();
+    let source = OneShotExecutionStop(std::sync::atomic::AtomicBool::new(true));
+    let db = QueryCache::new_with_shared(&interner, &shared).with_execution_checkpoint(&source);
+
+    assert_eq!(
+        db.union(vec![TypeId::STRING, TypeId::NUMBER]),
+        TypeId::UNKNOWN
+    );
+    assert_eq!(
+        db.execution_checkpoint(0),
+        Err(tsz_common::ProjectExecutionStop::Cancelled),
+        "the typed boundary must observe the same first stop after UNKNOWN"
+    );
+    db.insert_eval_memo(TypeId::BOOLEAN, false, TypeId::STRING);
+    assert_eq!(db.statistics().eval_cache_entries, 0);
+
+    let observer = QueryCache::new_with_shared(&interner, &shared);
+    assert_eq!(observer.lookup_eval_memo(TypeId::BOOLEAN, false), None);
+}
+
+#[test]
+fn shared_eval_memo_sink_rechecks_after_local_insert_latches_stop() {
+    let interner = TypeInterner::new();
+    let shared = SharedQueryCache::new();
+    // `insert_eval_memo` polls once at entry. The local cache writer's own
+    // guard observes the next poll, so its stop must prevent the later shared
+    // write-through sink from publishing the value.
+    let source = StopOnPoll(std::sync::atomic::AtomicUsize::new(1));
+    let db = QueryCache::new_with_shared(&interner, &shared).with_execution_checkpoint(&source);
+    db.insert_eval_memo(TypeId::BOOLEAN, false, TypeId::STRING);
+    assert_eq!(db.statistics().eval_cache_entries, 0);
+
+    let observer = QueryCache::new_with_shared(&interner, &shared);
+    assert_eq!(observer.lookup_eval_memo(TypeId::BOOLEAN, false), None);
+}
+
+#[test]
+fn shared_application_eval_sink_rechecks_stop_before_local_publish() {
+    let interner = TypeInterner::new();
+    let shared = SharedQueryCache::new();
+    // The first poll admits the call; the shared-tier sink sees the one-shot
+    // stop before either shared or local application-cache publication.
+    let source = StopOnPoll(std::sync::atomic::AtomicUsize::new(1));
+    let db = QueryCache::new_with_shared(&interner, &shared).with_execution_checkpoint(&source);
+    db.insert_application_eval_cache(DefId(913), &[TypeId::STRING], false, TypeId::NUMBER);
+    assert_eq!(db.statistics().application_eval_cache_entries, 0);
+
+    let observer = QueryCache::new_with_shared(&interner, &shared);
+    assert_eq!(
+        observer.lookup_application_eval_cache(DefId(913), &[TypeId::STRING], false),
+        None,
+    );
+}
 
 #[test]
 fn query_cache_type_database_identity_is_backing_interner() {

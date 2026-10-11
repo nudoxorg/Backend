@@ -177,12 +177,17 @@ impl<'cancel> ProjectExecutionBudget<'cancel> {
         if Instant::now() >= self.deadline {
             return Err(self.latch(ProjectExecutionStop::Deadline));
         }
-        if self
-            .remaining_work
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
-                remaining.checked_sub(work_units)
-            })
-            .is_err()
+        // A zero-work poll still observes cancellation, deadline, and a
+        // previously latched stop above and below. It does not consume any
+        // allowance, so avoid contending on the shared counter for the many
+        // cache-boundary polls that use this value.
+        if work_units != 0
+            && self
+                .remaining_work
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                    remaining.checked_sub(work_units)
+                })
+                .is_err()
         {
             return Err(self.latch(ProjectExecutionStop::WorkBudgetExhausted));
         }
@@ -283,6 +288,21 @@ mod tests {
             budget.checkpoint(0),
             Err(ProjectExecutionStop::WorkBudgetExhausted)
         );
+    }
+
+    #[test]
+    fn zero_work_checkpoint_observes_stops_without_charging_allowance() {
+        let cancelled = AtomicBool::new(false);
+        let budget =
+            ProjectExecutionBudget::new(Instant::now() + Duration::from_secs(2), &cancelled, 0);
+        assert_eq!(budget.remaining_work_units(), 0);
+        assert_eq!(budget.checkpoint(0), Ok(()));
+        assert_eq!(budget.remaining_work_units(), 0);
+        assert_eq!(
+            budget.checkpoint(1),
+            Err(ProjectExecutionStop::WorkBudgetExhausted)
+        );
+        assert_eq!(budget.remaining_work_units(), 0);
     }
 
     #[test]

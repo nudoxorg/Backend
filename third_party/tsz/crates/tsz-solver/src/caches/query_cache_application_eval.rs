@@ -141,7 +141,9 @@ impl TypeApplicationEvalCache for QueryCache<'_> {
             self.exact_optional_property_types(),
         );
         self.insert_eval_cache_entry_if_absent(key, result);
-        if let Some(shared) = self.shared {
+        if !self.execution_stopped()
+            && let Some(shared) = self.shared
+        {
             shared.insert_eval_cache_if_absent(self.interner, self.definition_store(), key, result);
         }
     }

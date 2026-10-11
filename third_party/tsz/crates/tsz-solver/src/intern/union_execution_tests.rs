@@ -230,6 +230,93 @@ fn nested_function_subtyping_uses_a_metered_worklist() {
     let charged = checkpoint.charged_units.load(Ordering::Acquire);
     assert!(charged > 256 && charged <= 320, "charged {charged} units");
     assert_eq!(interner.len(), type_count_before_stop);
+
+    // Function parameters reverse the comparison direction. Optional
+    // parameters use the same iterative path while preserving the optionality
+    // gate; even nesting restores the number <: any relation at the leaf.
+    let parameter_name = interner.intern_string("nested");
+    let mut source_parameter = TypeId::NUMBER;
+    let mut target_parameter = TypeId::ANY;
+    for _ in 0..20_000 {
+        source_parameter = interner.function(crate::types::FunctionShape::new(
+            vec![crate::types::ParamInfo::optional(
+                parameter_name,
+                source_parameter,
+            )],
+            TypeId::NUMBER,
+        ));
+        target_parameter = interner.function(crate::types::FunctionShape::new(
+            vec![crate::types::ParamInfo::optional(
+                parameter_name,
+                target_parameter,
+            )],
+            TypeId::NUMBER,
+        ));
+    }
+    assert!(interner.is_subtype_shallow(source_parameter, target_parameter));
+    let continue_checkpoint = ContinueCheckpoint;
+    let mut work = UnionExecutionWork::new(&continue_checkpoint).expect("initial checkpoint");
+    let mut metered_work = Some(&mut work);
+    assert_eq!(
+        interner.is_subtype_shallow_with_work(
+            source_parameter,
+            target_parameter,
+            &mut metered_work,
+        ),
+        Ok(true),
+    );
+
+    let type_count_before_stop = interner.len();
+    let checkpoint = ControlledCheckpoint::stop_after(256);
+    let mut work = UnionExecutionWork::new(&checkpoint).expect("initial checkpoint");
+    let mut metered_work = Some(&mut work);
+    assert_eq!(
+        interner.is_subtype_shallow_with_work(
+            source_parameter,
+            target_parameter,
+            &mut metered_work
+        ),
+        Err(ProjectExecutionStop::Cancelled),
+    );
+    let charged = checkpoint.charged_units.load(Ordering::Acquire);
+    assert!(charged > 256 && charged <= 320, "charged {charged} units");
+    assert_eq!(interner.len(), type_count_before_stop);
+}
+
+#[test]
+fn literal_source_scans_wide_target_union_with_cancellable_work() {
+    let interner = TypeInterner::new();
+    let source = interner.literal_string("match-last");
+    let mut members: Vec<TypeId> = (0..100)
+        .map(|index| interner.literal_number(f64::from(index)))
+        .collect();
+    members.push(source);
+    let target = interner.union_preserve_members(members);
+    let Some(TypeData::Union(list_id)) = interner.lookup(target) else {
+        panic!("wide fixture should remain a union");
+    };
+    assert_eq!(interner.type_list(list_id).len(), 101);
+    assert_eq!(interner.type_list(list_id).last(), Some(&source));
+
+    // The pre-unification ordinary and checked branches both scanned every
+    // target arm here; the exact string literal is deliberately last.
+    assert!(interner.is_subtype_shallow(source, target));
+    let continue_checkpoint = ContinueCheckpoint;
+    let mut work = UnionExecutionWork::new(&continue_checkpoint).expect("initial checkpoint");
+    let mut metered_work = Some(&mut work);
+    assert_eq!(
+        interner.is_subtype_shallow_with_work(source, target, &mut metered_work),
+        Ok(true),
+    );
+
+    let checkpoint = ControlledCheckpoint::stop_after(63);
+    let mut work = UnionExecutionWork::new(&checkpoint).expect("initial checkpoint");
+    let mut metered_work = Some(&mut work);
+    assert_eq!(
+        interner.is_subtype_shallow_with_work(source, target, &mut metered_work),
+        Err(ProjectExecutionStop::Cancelled),
+    );
+    assert_eq!(checkpoint.charged_units.load(Ordering::Acquire), 64);
 }
 
 #[test]
@@ -264,6 +351,39 @@ fn discriminant_candidate_scan_observes_stop_after_property_counting() {
         charged > property_count_work as u64 && charged <= property_count_work as u64 + 64,
         "candidate scan should stop at the next bounded poll, charged {charged}"
     );
+}
+
+#[test]
+fn discriminant_partition_copy_is_metered_after_all_groups_reduce() {
+    let interner = TypeInterner::new();
+    let members: Vec<TypeId> = (0..80)
+        .map(|index| {
+            let tag = interner.literal_number(f64::from(index));
+            interner.object(vec![property(&interner, "tag", tag)])
+        })
+        .collect();
+
+    let continue_checkpoint = ContinueCheckpoint;
+    let mut work = UnionExecutionWork::new(&continue_checkpoint).expect("initial checkpoint");
+    let mut metered_work = Some(&mut work);
+    assert_eq!(
+        interner.try_partition_union_reduction_with_work(&members, &mut metered_work),
+        Ok(None),
+        "disjoint singleton groups preserve the original union"
+    );
+
+    // Counting, candidate selection, partitioning, and group iteration charge
+    // 480 units. The next bounded poll occurs after 32 of the 80 reduced
+    // members are copied into the result; the copy must not be an unmetered
+    // tail.
+    let checkpoint = ControlledCheckpoint::stop_after(480);
+    let mut work = UnionExecutionWork::new(&checkpoint).expect("initial checkpoint");
+    let mut metered_work = Some(&mut work);
+    assert_eq!(
+        interner.try_partition_union_reduction_with_work(&members, &mut metered_work),
+        Err(ProjectExecutionStop::Cancelled),
+    );
+    assert_eq!(checkpoint.charged_units.load(Ordering::Acquire), 512);
 }
 
 #[test]

@@ -1,5 +1,6 @@
-//! Shallow, allocation-free subtype checks used during union/intersection
-//! normalization.
+//! Shallow subtype checks used during union/intersection normalization. Their
+//! explicit task/result worklists use inline storage for common cases and may
+//! grow for deeply nested function signatures.
 //!
 //! Every method here reads types through `lookup()` / `type_list()` style
 //! accessors only -- never `intern()` or `evaluate()` -- so union and
@@ -167,18 +168,17 @@ impl TypeInterner {
                             continue;
                         }
                         if let Some(TypeData::Union(members)) = t_data {
-                            if self.type_list(members).len() > 8 {
-                                results.push(false);
-                            } else if self.type_list(members).is_empty() {
-                                results.push(false);
-                            } else {
-                                tasks.push(ShallowSubtypeTask::AnyTargetUnion {
-                                    source,
-                                    members,
-                                    depth,
-                                    index: 0,
-                                });
-                            }
+                            // Preserve the literal-source rule: unlike the
+                            // general target-union check below, it scans every
+                            // arm. Each child Evaluate task charges work, so a
+                            // wide union stays cancellable without changing its
+                            // prior subtype result.
+                            tasks.push(ShallowSubtypeTask::AnyTargetUnion {
+                                source,
+                                members,
+                                depth,
+                                index: 0,
+                            });
                             continue;
                         }
                         if let Some(domain) = self.literal_domain_from_type(source)

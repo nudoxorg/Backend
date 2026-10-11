@@ -235,7 +235,7 @@ impl SharedCacheCounter {
 pub struct QueryCache<'a> {
     interner: &'a TypeInterner,
     project_semantic_options: ProjectSemanticOptions,
-    execution_checkpoint: Option<&'a dyn tsz_common::ExecutionCheckpoint>,
+    execution_checkpoint: Option<tsz_common::LatchedExecutionCheckpoint<'a>>,
     eval_cache: RefCell<FxHashMap<EvaluationCacheKey, TypeId>>,
     eval_dependency_index: EvalDependencyIndex,
     /// Top-level `eval_cache` keys whose result passed the depth-agnostic gate
@@ -431,7 +431,7 @@ impl<'a> QueryCache<'a> {
         mut self,
         checkpoint: &'a dyn tsz_common::ExecutionCheckpoint,
     ) -> Self {
-        self.execution_checkpoint = Some(checkpoint);
+        self.execution_checkpoint = Some(tsz_common::LatchedExecutionCheckpoint::new(checkpoint));
         self
     }
 
@@ -439,6 +439,7 @@ impl<'a> QueryCache<'a> {
     /// writes must stop because `TypeId` cannot encode execution provenance.
     pub(super) fn execution_stopped(&self) -> bool {
         self.execution_checkpoint
+            .as_ref()
             .is_some_and(|checkpoint| checkpoint.checkpoint(0).is_err())
     }
 
@@ -666,7 +667,9 @@ impl<'a> QueryCache<'a> {
         self.relation_local_cache(relation)
             .borrow_mut()
             .insert(key, value);
-        if let Some(shared) = self.shared {
+        if !self.execution_stopped()
+            && let Some(shared) = self.shared
+        {
             relation.shared_slot(shared).insert(key, value);
         }
     }
@@ -1148,10 +1151,10 @@ impl TypeDatabase for QueryCache<'_> {
 
     fn union(&self, members: Vec<TypeId>) -> TypeId {
         // TypeDatabase's constructor contract cannot carry a stop error. UNKNOWN
-        // is the local sentinel; ProjectCheckerSession checks this same latched
-        // checkpoint after its callback and returns the typed stop instead of
-        // publishing the callback's partial result.
-        match self.execution_checkpoint {
+        // is the local sentinel; this cache latches the typed stop for direct
+        // callers, and ProjectCheckerSession's plan-owned checkpoint latches
+        // the same source error so its callback boundary can reject the result.
+        match self.execution_checkpoint.as_ref() {
             Some(checkpoint) => self
                 .interner
                 .union_with_execution_checkpoint(members, checkpoint)
@@ -1161,7 +1164,7 @@ impl TypeDatabase for QueryCache<'_> {
     }
 
     fn union_from_slice(&self, members: &[TypeId]) -> TypeId {
-        match self.execution_checkpoint {
+        match self.execution_checkpoint.as_ref() {
             Some(checkpoint) => self
                 .interner
                 .union_from_slice_with_execution_checkpoint(members, checkpoint)
@@ -1171,7 +1174,7 @@ impl TypeDatabase for QueryCache<'_> {
     }
 
     fn union_literal_reduce(&self, members: Vec<TypeId>) -> TypeId {
-        match self.execution_checkpoint {
+        match self.execution_checkpoint.as_ref() {
             Some(checkpoint) => self
                 .interner
                 .union_literal_reduce_with_execution_checkpoint(members, checkpoint)
@@ -1181,7 +1184,7 @@ impl TypeDatabase for QueryCache<'_> {
     }
 
     fn union_from_sorted_vec(&self, flat: Vec<TypeId>) -> TypeId {
-        match self.execution_checkpoint {
+        match self.execution_checkpoint.as_ref() {
             Some(checkpoint) => self
                 .interner
                 .union_from_sorted_vec_with_execution_checkpoint(flat, checkpoint)
@@ -1191,7 +1194,7 @@ impl TypeDatabase for QueryCache<'_> {
     }
 
     fn union2(&self, left: TypeId, right: TypeId) -> TypeId {
-        match self.execution_checkpoint {
+        match self.execution_checkpoint.as_ref() {
             Some(checkpoint) => self
                 .interner
                 .union2_with_execution_checkpoint(left, right, checkpoint)
@@ -1201,7 +1204,7 @@ impl TypeDatabase for QueryCache<'_> {
     }
 
     fn union3(&self, first: TypeId, second: TypeId, third: TypeId) -> TypeId {
-        match self.execution_checkpoint {
+        match self.execution_checkpoint.as_ref() {
             Some(checkpoint) => self
                 .interner
                 .union3_with_execution_checkpoint(first, second, third, checkpoint)
@@ -1321,7 +1324,7 @@ impl TypeDatabase for QueryCache<'_> {
     }
 
     fn union_preserve_members(&self, members: Vec<TypeId>) -> TypeId {
-        match self.execution_checkpoint {
+        match self.execution_checkpoint.as_ref() {
             Some(checkpoint) => self
                 .interner
                 .union_preserve_members_with_execution_checkpoint(members, checkpoint)
@@ -1393,7 +1396,7 @@ impl super::db_base_traits::TypeExecutionCheckpoint for QueryCache<'_> {
         &self,
         work_units: u64,
     ) -> Result<(), tsz_common::ProjectExecutionStop> {
-        match self.execution_checkpoint {
+        match self.execution_checkpoint.as_ref() {
             Some(checkpoint) => checkpoint.checkpoint(work_units),
             None => Ok(()),
         }
@@ -1637,7 +1640,10 @@ impl QueryDatabase for QueryCache<'_> {
                 // write on run-wide stability, matching the intermediate drain
                 // below (previously it inherited only the looser
                 // `top_level_clean`, which tolerates `UnresolvedDef`).
-                if intermediates_clean && let Some(shared) = self.shared {
+                if intermediates_clean
+                    && !self.execution_stopped()
+                    && let Some(shared) = self.shared
+                {
                     shared.insert_eval_cache(self.interner, self.definition_store(), key, result);
                 }
             }
@@ -1648,7 +1654,9 @@ impl QueryDatabase for QueryCache<'_> {
                 {
                     let ikey = request.with_type_id(intermediate_id).cache_key();
                     self.insert_eval_cache_entry_if_absent(ikey, intermediate_result);
-                    if let Some(shared) = self.shared {
+                    if !self.execution_stopped()
+                        && let Some(shared) = self.shared
+                    {
                         shared.insert_eval_cache_if_absent(
                             self.interner,
                             self.definition_store(),
@@ -1773,10 +1781,14 @@ impl QueryDatabase for QueryCache<'_> {
         if let Some(shared) = self.shared
             && shared.shares_instantiation_family()
             && stable_for_project_cache
+            && !self.execution_stopped()
         {
             shared.instantiation_cache.insert(key.clone(), result);
             self.instantiation_cache_stats.record_shared_insert();
             tsz_common::perf_counters::record_shared_instantiation_cache_insert();
+        }
+        if self.execution_stopped() {
+            return;
         }
         self.instantiation_cache.insert(key, result);
     }
@@ -1873,7 +1885,9 @@ impl QueryDatabase for QueryCache<'_> {
                 }
             }
         }
-        if let Some(shared) = self.shared {
+        if !self.execution_stopped()
+            && let Some(shared) = self.shared
+        {
             match shared.subtype_cache.entry(key) {
                 dashmap::mapref::entry::Entry::Occupied(mut entry) => {
                     if matches!(entry.get(), RelationCacheValue::LimitTrue { .. }) {
@@ -1912,7 +1926,9 @@ impl QueryDatabase for QueryCache<'_> {
                 }
             }
         }
-        if let Some(shared) = self.shared {
+        if !self.execution_stopped()
+            && let Some(shared) = self.shared
+        {
             match shared.subtype_cache.entry(key) {
                 dashmap::mapref::entry::Entry::Occupied(mut entry) => merge(entry.get_mut()),
                 dashmap::mapref::entry::Entry::Vacant(slot) => {

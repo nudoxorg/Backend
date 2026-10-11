@@ -210,6 +210,7 @@ impl QueryCache<'_> {
         }
         if let Some(shared) = self.shared
             && shared.shares_instantiation_family()
+            && !self.execution_stopped()
         {
             shared.insert_application_eval_cache(
                 self.interner,
@@ -219,6 +220,9 @@ impl QueryCache<'_> {
             );
             self.application_eval_cache_stats.record_shared_insert();
             tsz_common::perf_counters::record_shared_application_eval_cache_insert();
+        }
+        if self.execution_stopped() {
+            return;
         }
         let old_result = self
             .application_eval_cache

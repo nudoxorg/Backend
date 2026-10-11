@@ -342,12 +342,18 @@ impl TypeInterner {
             tick_union_execution_work(work, 1)?;
             let mut group = TypeListBuffer::from_vec(group);
             self.reduce_union_subtypes_sized_with_work(&mut group, work)?;
-            result.extend(group);
+            for member in group {
+                tick_union_execution_work(work, 1)?;
+                result.push(member);
+            }
         }
         if !fallback.is_empty() {
             let mut fallback = TypeListBuffer::from_vec(fallback);
             self.reduce_union_subtypes_sized_with_work(&mut fallback, work)?;
-            result.extend(fallback);
+            for member in fallback {
+                tick_union_execution_work(work, 1)?;
+                result.push(member);
+            }
         }
         if result.len() < members.len() {
             self.reduce_union_subtypes_sized_with_work(&mut result, work)?;
